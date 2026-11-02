@@ -25,7 +25,7 @@ const fixtures = Object.fromEntries(
 );
 const STRESS = "stress";
 const HUGE = "huge";
-const STRESS_MESSAGES = 5000;
+const STRESS_MESSAGES = Number(new URLSearchParams(location.search).get("stressMessages")) || 5000;
 const HUGE_MESSAGES = 100_000;
 const STRESS_RATE = 200;
 
@@ -34,6 +34,12 @@ let messageRenders = 0;
 let dispatched = 0;
 let lastAction = "";
 let continueReplay = () => {};
+let nextStoreKey = 0;
+const storeKeys = new WeakMap<object, number>();
+const storeKey = (store: object) => {
+  if (!storeKeys.has(store)) storeKeys.set(store, nextStoreKey++);
+  return storeKeys.get(store)!;
+};
 function CountedMessage({ id }: { id: string }) {
   useItem(id);
   messageRenders++;
@@ -252,7 +258,7 @@ function App() {
           <Readout />
         </div>
         <div className="scroll" ref={scroll}>
-          <Timeline renderers={renderers} scrollRef={scroll} />
+          <Timeline key={storeKey(store)} renderers={renderers} scrollRef={scroll} />
         </div>
       </div>
     </RunProvider>
