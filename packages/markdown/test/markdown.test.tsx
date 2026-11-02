@@ -526,3 +526,19 @@ test("highlighter uses the shared cumulative source contract", async () => {
     { code: "const a = 1;\npartial\n", context: { id: "message:one:0", version: 1, state: "done" } },
   ]);
 });
+
+const plain = (blocks: unknown) => JSON.stringify(blocks, (key, value) => (key === "open" ? undefined : value));
+test("a table followed by a whitespace-only partial line streams without throwing or adding a row", () => {
+  for (const source of ["| a | b |\n| - | - |\n| 1 | 2 |\n   ", "| a | b |\n|---|---|\n\t"]) {
+    for (const split of [1, 2, 3, 7, 1000]) {
+      const document = createStreamingDocument();
+      for (let offset = 0; offset < source.length; offset += split) {
+        document.append(source.slice(offset, offset + split));
+        expect(() => document.render()).not.toThrow();
+      }
+      expect(plain(document.render())).toBe(plain(parseMarkdown(source)));
+      document.finish();
+      expect(plain(document.render())).toBe(plain(parseMarkdown(source)));
+    }
+  }
+});
