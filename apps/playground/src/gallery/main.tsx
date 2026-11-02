@@ -1,6 +1,11 @@
-import "@fulcrum/react/styles.css";
+import "../fonts.css";
+import baseline from "@fulcrum/react/styles.css?inline";
+import folio from "./directions/folio.css?inline";
+import trace from "./directions/trace.css?inline";
+import pebble from "./directions/pebble.css?inline";
+import themes from "./themes.css?inline";
 import "./gallery.css";
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore } from "@fulcrum/core";
 import { Approval, RunProvider, Timeline, type Renderers } from "@fulcrum/react";
@@ -19,6 +24,23 @@ const fresh = (demo: Demo) => {
   if (!demo.live) demo.events.forEach(store.dispatch);
   return store;
 };
+
+// Candidate replacements for styles.css (shape, density, motion). Themes (color) apply on top of any of them.
+const directions: Record<string, { css: string; note: string }> = {
+  baseline: { css: baseline, note: "The shipped styles.css, unchanged: system type and bordered boxes. Compare the others against it." },
+  folio: { css: folio, note: "Quiet and editorial. Calm prose, tools as margin notes, color only where the run needs you." },
+  trace: { css: trace, note: "Dense and technical. One-line tool rows, a status rail, terminal output, a hazard band on approvals." },
+  pebble: { css: pebble, note: "Soft product UI. Chat bubbles, rounded cards, a sweep while tools run, a halo on approvals." },
+};
+const themeNames = ["light", "dark", "pine", "graphite", "iris", "phosphor"];
+// One style element, direction first, so a theme always wins over the direction's own colors.
+const partStyle = document.head.appendChild(document.createElement("style"));
+const param = (name: string, allowed: string[], fallback: string) => {
+  const value = new URLSearchParams(location.search).get(name);
+  return value && allowed.includes(value) ? value : fallback;
+};
+const systemTheme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const LOOP_PAUSE_MS = 1500;
 
@@ -33,7 +55,7 @@ function attributes(root: HTMLElement) {
   return [...new Set(lines)].join("\n");
 }
 
-function DemoCard({ demo, toast }: { demo: Demo; toast: (message: string) => void }) {
+function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: string) => void; inspect: boolean }) {
   const [store, setStore] = useState(() => fresh(demo));
   const [paused, setPaused] = useState(reducedMotion);
   const [touched, setTouched] = useState(false);
@@ -62,13 +84,14 @@ function DemoCard({ demo, toast }: { demo: Demo; toast: (message: string) => voi
   }, [store, paused]);
 
   useEffect(() => {
+    if (!inspect) return;
     const root = body.current!;
     const read = () => setCaption(attributes(root));
     read();
     const observer = new MutationObserver(read);
     observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-state"] });
     return () => observer.disconnect();
-  }, []);
+  }, [inspect]);
 
   return (
     <article className="demo" id={demo.id}>
@@ -76,6 +99,7 @@ function DemoCard({ demo, toast }: { demo: Demo; toast: (message: string) => voi
         <div>
           <h3>
             <a href={`#${demo.id}`}>{demo.title}</a>
+            {demo.live ? <span className="chip" data-paused={paused || undefined}>{paused ? "paused" : "live"}</span> : null}
           </h3>
           <p>{demo.description}</p>
         </div>
@@ -99,20 +123,73 @@ function DemoCard({ demo, toast }: { demo: Demo; toast: (message: string) => voi
           </RunProvider>
         </ActContext.Provider>
       </div>
-      <pre className="demo-attrs">{caption}</pre>
+      {inspect ? <pre className="demo-attrs" aria-label="rendered data attributes">{caption}</pre> : null}
     </article>
   );
 }
 
 const parts = [...new Set(demos.map((demo) => demo.part))];
-const systemTheme = () => (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+
+function Segmented({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
+  return (
+    <div className="segmented" role="radiogroup" aria-label={label}>
+      {options.map((option) => (
+        <button key={option} type="button" role="radio" aria-checked={option === value} onClick={() => onChange(option)}>
+          {option}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Each swatch carries its own data-fulcrum-theme, so it paints with that theme's variables.
+function ThemePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="swatches" role="radiogroup" aria-label="theme">
+      {themeNames.map((name) => (
+        <button key={name} type="button" role="radio" aria-checked={name === value} onClick={() => onChange(name)}>
+          <span className="swatch" data-fulcrum-theme={name} />
+          <span className="swatch-name">{name}</span>
+        </button>
+      ))}
+      <span className="theme-name">{value}</span>
+    </div>
+  );
+}
+
+// Marks the nav link of the demo nearest the top of the viewport.
+function useActive(ids: string[]) {
+  const [active, setActive] = useState(ids[0]);
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const top = entries.find((entry) => entry.isIntersecting);
+        if (top) setActive(top.target.id);
+      },
+      { rootMargin: "-80px 0px -70% 0px" },
+    );
+    ids.forEach((id) => observer.observe(document.getElementById(id)!));
+    return () => observer.disconnect();
+  }, []);
+  return active;
+}
 
 function Gallery() {
-  const [theme, setTheme] = useState(systemTheme);
+  const [theme, setTheme] = useState(() => param("theme", themeNames, systemTheme));
+  const [direction, setDirection] = useState(() => param("direction", Object.keys(directions), "baseline"));
+  const [inspect, setInspect] = useState(() => new URLSearchParams(location.search).get("inspect") === "1");
   const [message, setMessage] = useState<{ text: string; key: number }>();
-  useEffect(() => {
+  const active = useActive(demos.map((demo) => demo.id));
+  useLayoutEffect(() => {
     document.documentElement.dataset.fulcrumTheme = theme;
-  }, [theme]);
+    partStyle.textContent = directions[direction].css + themes;
+    const url = new URL(location.href);
+    url.searchParams.set("direction", direction);
+    url.searchParams.set("theme", theme);
+    if (inspect) url.searchParams.set("inspect", "1");
+    else url.searchParams.delete("inspect");
+    history.replaceState(null, "", url);
+  }, [theme, direction, inspect]);
   // The page renders after load, so the browser cannot jump to a #demo link by itself.
   useEffect(() => document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(), []);
   useEffect(() => {
@@ -124,10 +201,21 @@ function Gallery() {
 
   return (
     <div className="gallery">
-      <nav className="nav" aria-label="components">
+      <header className="topbar">
         <a className="brand" href="#">
+          <span className="brand-mark" aria-hidden="true" />
           fulcrum
+          <span className="brand-sub">gallery</span>
         </a>
+        <div className="controls">
+          <Segmented label="direction" value={direction} options={Object.keys(directions)} onChange={setDirection} />
+          <ThemePicker value={theme} onChange={setTheme} />
+          <button type="button" className="inspect" aria-pressed={inspect} onClick={() => setInspect(!inspect)}>
+            inspect
+          </button>
+        </div>
+      </header>
+      <nav className="nav" aria-label="components">
         {parts.map((part) => (
           <div key={part} className="nav-group">
             <a className="nav-part" href={`#${part}`}>
@@ -136,7 +224,7 @@ function Gallery() {
             {demos
               .filter((demo) => demo.part === part)
               .map((demo) => (
-                <a key={demo.id} href={`#${demo.id}`}>
+                <a key={demo.id} href={`#${demo.id}`} aria-current={demo.id === active ? "location" : undefined}>
                   {demo.title}
                 </a>
               ))}
@@ -145,24 +233,25 @@ function Gallery() {
       </nav>
       <main className="main">
         <header className="intro">
-          <div>
-            <h1>component gallery</h1>
-            <p>
-              Every <code>@fulcrum/react</code> part in every state, built from <code>@fulcrum/core</code> events with
-              the default <code>styles.css</code>. No server, no session.
-            </p>
-          </div>
-          <button type="button" className="theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
-            {theme === "dark" ? "light" : "dark"} theme
-          </button>
+          <h1>Agent UI parts, in every state.</h1>
+          <p>
+            Every <code>@fulcrum/react</code> part, rendered from <code>@fulcrum/core</code> events. No server, no
+            session. {parts.length} parts, {demos.length} demos. Turn on <strong>inspect</strong> to see the{" "}
+            <code>data-*</code> attributes each part renders.
+          </p>
+          <p className="direction-note" key={direction}>
+            <strong>{direction}</strong> {directions[direction].note}
+          </p>
         </header>
         {parts.map((part) => (
           <section key={part} id={part} className="part">
-            <h2>{part}</h2>
+            <h2>
+              &lt;{part} /&gt;<span>{demos.filter((demo) => demo.part === part).length}</span>
+            </h2>
             {demos
               .filter((demo) => demo.part === part)
               .map((demo) => (
-                <DemoCard key={demo.id} demo={demo} toast={toast} />
+                <DemoCard key={demo.id} demo={demo} toast={toast} inspect={inspect} />
               ))}
           </section>
         ))}
