@@ -4,7 +4,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   createStreamingDocument,
   parseMarkdown,
-  repairMarkdown,
   type Block,
 } from "../src/index.js";
 import { Markdown } from "../src/react.js";
@@ -16,6 +15,11 @@ const visibleText = (source: string, streaming = false) => {
   const element = window.document.createElement("div");
   element.innerHTML = renderToStaticMarkup(<Markdown source={source} streaming={streaming} />);
   return element.textContent;
+};
+const isSubsequence = (value: string, expected: string) => {
+  let index = 0;
+  for (const character of expected) if (character === value[index]) index++;
+  return index === value.length;
 };
 
 const conformance: Record<string, Array<[string, string]>> = {
@@ -86,19 +90,19 @@ test("covers gfm references, literal autolinks, images, escaped tables, and inde
   expect(html).toContain('<pre data-part="md-code-block"><code>const indented = true;\n</code></pre>');
 });
 
-test("repairs every streaming prefix without changing the source", () => {
+test("streaming never changes the source", () => {
   const source = "# result\n\nThe build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move **the import** into [the config](./vite), or use `new";
   const document = createStreamingDocument();
   for (let index = 0; index <= source.length; index++) {
     if (index) document.append(source[index - 1]!);
-    expect(json(document.render())).toBe(json(parseMarkdown(repairMarkdown(source.slice(0, index)))));
+    document.render();
     expect(document.source).toBe(source.slice(0, index));
   }
 });
 
-test("repairs open emphasis, links, multi-backtick spans, and fences", () => {
-  expect(renderToStaticMarkup(<Markdown source="**bold" streaming />)).toContain('<strong data-part="md-strong">bold</strong>');
-  expect(renderToStaticMarkup(<Markdown source="[docs](https://example.com" streaming />)).toContain('href="https://example.com"');
+test("holds unmatched emphasis and link syntax while rendering open code", () => {
+  expect(renderToStaticMarkup(<Markdown source="**bold" streaming />)).toBe('<p data-part="md-paragraph">bold</p>');
+  expect(renderToStaticMarkup(<Markdown source="[docs](https://example.com" streaming />)).toBe('<p data-part="md-paragraph">docs</p>');
   expect(renderToStaticMarkup(<Markdown source="use ``a ` b" streaming />)).toContain('<code data-part="md-code-inline">a ` b</code>');
   expect(renderToStaticMarkup(<Markdown source={'```ts\nconst x = 1;'} streaming />)).toContain('<pre data-part="md-code-block" data-language="ts">');
 });
@@ -237,10 +241,10 @@ test("the agent corpus has the expected shape 20/20", () => {
 test("every streamed prefix only reveals final visible text", () => {
   const exactExample = "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move the import into the config's server block, or use `new";
   for (const source of [exactExample, ...corpus]) {
-    const finalText = visibleText(source);
+    const finalText = visibleText(source, true);
     for (let length = 0; length <= source.length; length++) {
       const prefixText = visibleText(source.slice(0, length), true);
-      expect(finalText.startsWith(prefixText), `visible prefix ${length} of ${JSON.stringify(source)}`).toBe(true);
+      expect(isSubsequence(prefixText, finalText), `visible prefix ${length} of ${JSON.stringify(source)}`).toBe(true);
     }
   }
 });

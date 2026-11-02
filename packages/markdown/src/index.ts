@@ -219,27 +219,163 @@ const openFence = (source: string) => {
   return marker;
 };
 
-export function repairMarkdown(source: string): string {
+const unmatchedCodeSpan = (source: string) => {
+  let opener: { index: number; length: number } | undefined;
+  for (const run of source.matchAll(/`+/g)) {
+    if (run.index === undefined) continue;
+    let escapes = 0;
+    for (let index = run.index - 1; index >= 0 && source[index] === "\\"; index--) escapes++;
+    if (escapes % 2) continue;
+    if (!opener) opener = { index: run.index, length: run[0].length };
+    else if (opener.length === run[0].length) opener = undefined;
+  }
+  return opener;
+};
+
+const codeSpanValue = (value: string) => {
+  const normalized = value.replace(/\n/g, " ");
+  return normalized.startsWith(" ") && normalized.endsWith(" ") && /[^ ]/.test(normalized)
+    ? normalized.slice(1, -1)
+    : normalized;
+};
+
+function tailInline(blocks: Block[]): Inline[] | undefined {
+  const last = blocks.at(-1);
+  if (last?.type === "paragraph" || last?.type === "heading") return last.children;
+  if (last?.type === "list") return tailInline(last.items.at(-1)?.children ?? []);
+  if (last?.type === "blockquote") return tailInline(last.children);
+  return undefined;
+}
+
+function tailCode(blocks: Block[]): Extract<Block, { type: "code" }> | undefined {
+  const last = blocks.at(-1);
+  if (last?.type === "code") return last;
+  if (last?.type === "list") return tailCode(last.items.at(-1)?.children ?? []);
+  if (last?.type === "blockquote") return tailCode(last.children);
+  return undefined;
+}
+
+function appendOpenCodeSpan(blocks: Block[], value: string) {
+  const code: Inline = { type: "code", value: codeSpanValue(value) };
+  const inline = tailInline(blocks);
+  if (inline) inline.push(code);
+  else blocks.push({ type: "paragraph", children: [code] });
+}
+
+function safeBlockSource(source: string) {
+  const lines = source.split("\n");
+  const tableDelimiter = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/;
+  const cellCount = (line: string) => line.split("|").filter((cell, index, cells) => cell.trim() || index > 0 && index < cells.length - 1).length;
+  const delimiterIndex = lines.findIndex((line, index) => index > 0 && tableDelimiter.test(line) && cellCount(line) === cellCount(lines[index - 1]!));
+  if (delimiterIndex < 0) {
+    source = lines.map((line) => {
+      if (!line.includes("|")) return line;
+      if (/[:-]/.test(line) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(line)) return "";
+      if (line.trimStart().startsWith("|") || line.split("|").length > 2)
+        return line.split("|").map((cell) => cell.trim()).join("");
+      return line;
+    }).join("\n");
+  }
+  const lineStart = source.lastIndexOf("\n") + 1;
+  const line = source.slice(lineStart);
+  if (/^ {0,3}[-+*]\s+\[[ xX]?\]?\s*$/.test(line)) return source.slice(0, lineStart);
+  if (/^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)]?)\s*$/.test(line)) return source.slice(0, lineStart);
+  if (/^ {0,3}(?:`{1,2}(?!`)|~{1,2}(?!~))[^\n]*$/.test(line)) return source.slice(0, lineStart);
+  if (/[:-]/.test(line) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(line)) return source.slice(0, lineStart);
+  return source;
+}
+
+function safeInlineSource(source: string) {
+  source = safeBlockSource(source);
+  const angle = source.lastIndexOf("<");
+  if (angle > source.lastIndexOf(">") && !/[\s\n]/.test(source.slice(angle + 1))) source = source.slice(0, angle);
+
+  const image = source.lastIndexOf("![");
+  if (image >= 0 && !/\]\([^\n)]*\)/.test(source.slice(image + 1))) return source.slice(0, image);
+
+  const bracket = source.lastIndexOf("[");
+  if (bracket >= 0) {
+    const rest = source.slice(bracket + 1);
+    const close = rest.indexOf("]");
+    if (close < 0) source = source.slice(0, bracket) + rest;
+    else {
+      const after = rest.slice(close + 1);
+      let depth = 0;
+      let destinationClosed = false;
+      if (after.startsWith("(")) {
+        for (const character of after) {
+          if (character === "(") depth++;
+          else if (character === ")" && --depth === 0) { destinationClosed = true; break; }
+        }
+      }
+      if (!after || after.startsWith("(") && !destinationClosed) return source.slice(0, bracket) + rest.slice(0, close);
+    }
+  }
+
+  const codeRanges: Array<[number, number]> = [];
+  let codeOpener: { index: number; length: number } | undefined;
+  for (const run of source.matchAll(/`+/g)) {
+    if (run.index === undefined) continue;
+    if (!codeOpener) codeOpener = { index: run.index, length: run[0].length };
+    else if (codeOpener.length === run[0].length) {
+      codeRanges.push([codeOpener.index, run.index + run[0].length]);
+      codeOpener = undefined;
+    }
+  }
+  const stack: Array<{ marker: string; index: number }> = [];
+  for (const run of source.matchAll(/(?:\*+|_+|~+)/g)) {
+    if (run.index !== undefined && codeRanges.some(([start, end]) => run.index! >= start && run.index! < end)) continue;
+    if (run.index === undefined) continue;
+    const marker = run[0];
+    const previous = source[run.index - 1];
+    const next = source[run.index + marker.length];
+    if (previous === "\\" || marker[0] === "_" && /[\p{L}\p{N}]/u.test(previous ?? "") && /[\p{L}\p{N}]/u.test(next ?? "")) continue;
+    if (/\s/.test(next ?? "") && !/\S/.test(previous ?? "")) continue;
+    let match = -1;
+    for (let index = stack.length - 1; index >= 0; index--) {
+      if (stack[index]!.marker === marker) { match = index; break; }
+    }
+    if (match >= 0 && /\S/.test(source.slice(stack[match]!.index + marker.length, run.index))) stack.splice(match, 1);
+    else stack.push({ marker, index: run.index });
+  }
+  for (const { marker, index } of stack.sort((a, b) => b.index - a.index)) source = source.slice(0, index) + source.slice(index + marker.length);
+  return source;
+}
+
+function parseStreamingMarkdown(source: string, environment: Environment = {}): ParsedBlock[] {
   const fence = openFence(source);
   if (fence) {
     const opener = source.lastIndexOf(fence);
     const contentStart = source.indexOf("\n", opener);
-    return contentStart < 0 || contentStart === source.length - 1 ? source.slice(0, opener) : source;
+    if (contentStart < 0 || contentStart === source.length - 1) return parseDetailed(source.slice(0, opener), environment);
+    const parsed = parseDetailed(source, environment);
+    const last = tailCode(parsed.map(({ block }) => block));
+    if (last) {
+      last.open = true;
+      const partialCloser = new RegExp(`(?:^|\\n) {0,3}${fence[0]}{1,${fence.length - 1}}$`).exec(last.value);
+      if (partialCloser) last.value = last.value.slice(0, partialCloser.index + (partialCloser[0].startsWith("\n") ? 1 : 0));
+    }
+    return parsed;
   }
-  const runs = [...source.matchAll(/`+/g)];
-  const tick = runs.find((run, index) => !runs.slice(index + 1).some((later) => later[0].length === run[0].length));
-  if (tick?.index !== undefined) {
-    const content = source.slice(tick.index + tick[0].length);
-    if (!content) return source.slice(0, tick.index);
-    return `${source}${tick[0]}`;
+
+  source = safeBlockSource(source);
+  const opener = unmatchedCodeSpan(source);
+  if (opener) {
+    const parsed = parseDetailed(source.slice(0, opener.index), environment);
+    let content = source.slice(opener.index + opener.length);
+    const trailingTicks = /`+$/.exec(content)?.[0];
+    if (trailingTicks && trailingTicks.length < opener.length) content = content.slice(0, -trailingTicks.length);
+    if (content) {
+      const blocks = parsed.map(({ block }) => block);
+      const whitespace = /[ \t]+$/.exec(source.slice(0, opener.index))?.[0];
+      const inline = tailInline(blocks);
+      if (whitespace && inline) inline.push({ type: "text", value: whitespace });
+      appendOpenCodeSpan(blocks, content);
+      return blocks.map((block) => ({ block, map: [0, 0], closed: false }));
+    }
+    return parsed;
   }
-  const marker = /(\*\*|__|~~|\*|_)<?([^\n]*)$/.exec(source);
-  if (marker && !marker[2]) return source.slice(0, marker.index);
-  if (marker && marker[2] && !marker[2].includes(marker[1]!)) return `${source}${marker[1]}`;
-  if (/\[$/.test(source)) return source.slice(0, -1);
-  const link = /\[([^\]]+)\]\(([^)\s]+)$/.exec(source);
-  if (link) return `${source})`;
-  return source;
+  return parseDetailed(safeInlineSource(source), environment);
 }
 
 export interface StreamingDocument {
@@ -275,9 +411,9 @@ export function createStreamingDocument(): StreamingDocument {
     if (source === renderedSource) return cached;
     const tail = source.slice(tailOffset);
     const fence = !finished && openFence(tail);
-    const parsed = parseDetailed(finished ? tail : repairMarkdown(tail), { references: environment.references ? { ...environment.references } : undefined });
-    const last = parsed.at(-1)?.block;
-    if (fence && last?.type === "code") last.open = true;
+    const parsed = finished
+      ? parseDetailed(tail, { references: environment.references ? { ...environment.references } : undefined })
+      : parseStreamingMarkdown(tail, { references: environment.references ? { ...environment.references } : undefined });
     tailParses++;
 
     let freezeCount = finished ? parsed.length : 0;
@@ -299,7 +435,9 @@ export function createStreamingDocument(): StreamingDocument {
         frozenParses++;
         tailOffset += offset;
         const open = source.slice(tailOffset);
-        const openBlocks = open ? parseMarkdown(finished ? open : repairMarkdown(open)) : [];
+        const openBlocks = open
+          ? (finished ? parseMarkdown(open) : parseStreamingMarkdown(open).map(({ block }) => block))
+          : [];
         cached = [...frozen, ...openBlocks];
         renderedSource = source;
         return cached;
