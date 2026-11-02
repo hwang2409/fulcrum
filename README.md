@@ -1,5 +1,7 @@
 # fulcrum core
 
+start: `make dev` installs, builds every package, and runs the playground (then open `/gallery.html`). `make test` builds and runs the tests; `make clean` removes builds.
+
 ## packages
 
 - `@fulcrum/core`: agent-agnostic run events and a burst-coalescing run store.
@@ -57,11 +59,11 @@ const renderers: Renderers = {
   `item` is the normalized core tool item, including the agent-neutral `item.view` hint when the adapter set one. `output` is the streamed output plus a final result that adds to it. Approvals pass the requested call, with the `view` an adapter may put on `approval_request`, as an active tool item with no output and state `pending` or `submitting`. The default `body` is `ToolBody`, which picks the card for `item.view.kind` (`ShellBody`, `ReadBody`, `EditBody`, `WriteBody`, `SearchBody`, `FetchBody`) or `GenericBody` with no view; each is exported for reuse in your own body. The default `summary` is `toolSummary`: `$ ls`, `src/a.ts:1-40`, `src/a.ts +3 -1`, `"TODO" packages/`, `example.com/docs`, or the first string argument with no view. `view.durationMs`, when set, shows next to the status word. With a view the part sets `data-tool-view="<kind>"`.
 - tool cards: shell shows stdout, then stderr apart when the view has the split streams, and the exit code; read numbers lines from the range start; edit renders a unified diff with old and new line numbers and the changed span marked; write numbers the written content; search groups `path:line:text` matches by file; fetch shows the HTTP status, the full url, and the body. Every card ends in a row of copy buttons (command, path, output). Large output, arguments, file bodies, search results, and diffs show a short preview and open in one fixed-height virtual text viewer. The viewer splits giant lines into 2,000-character segments and mounts at most 200 rows, while copy still returns the complete value. Because only the visible window is mounted, browser find-in-page searches only that window; use the copy control when the complete value must be searched.
 
-- playground: `bunx tsc -b`, then `bun run --cwd apps/playground dev`
+- playground: `make dev`
 
 - styles: copy `packages/react/styles.css` (layout, states, markdown and code) and `packages/react/themes.css` (color) into your app and edit them. themes.css has 12 real palettes: gruvbox-dark, gruvbox-light, dracula, nord, tokyo-night, catppuccin-mocha, catppuccin-latte, solarized-dark, solarized-light, github-dark, github-light, one-dark. Set `data-fulcrum-theme="<name>"` on `<html>` or any subtree; with no attribute it follows the OS with github-light or github-dark. Each theme also sets `--fulcrum-tok-*` colors for `<span class="tok-<type>">` syntax tokens. The type is "JetBrains Mono" with monospace fallbacks; load the font yourself.
-- playground: `bunx tsc -b`, then `bun run --cwd apps/playground dev`.
-- gallery: every part in every state, no server or session. Run `bun run dev` in `apps/playground`, then open `/gallery.html`.
+- playground: `make dev`.
+- gallery: every part in every state, no server or session. Run `make dev`, then open `/gallery.html`.
 - performance checks: `bun run bench:check` and `bun run size:check`; run the production browser stress report with `bun run stress`.
 
 
