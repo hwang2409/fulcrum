@@ -1,4 +1,4 @@
-import { memo, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
 import type { RunItem, ToolCall as ToolCallData } from "@fulcrum/core";
 import { useItem, useItemSelector, useTimelineSnapshot } from "./hooks.js";
 import { useVirtualList } from "./virtual.js";
@@ -241,6 +241,81 @@ export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
 
 const defaults: Renderers = { message: Message, tool: ToolCall, approval: Approval };
 
+export const announcementForItem = (item: RunItem): string | null => {
+  switch (item.type) {
+    case "message": return item.active ? null : `${item.message.role} replied`;
+    case "tool": {
+      if (item.active) return null;
+      if (item.canceled) return `tool ${item.tool_call.name} canceled`;
+      const result = item.result?.content ?? item.output;
+      const exitCode = item.view?.kind === "shell" ? item.view.exitCode : undefined;
+      const parsedCode = exitCode ?? result.match(/\b(?:exit(?:ed)?(?: with code)?|code)\s+(-?\d+)\b/i)?.[1];
+      return `tool ${item.tool_call.name} finished${parsedCode === undefined ? "" : `: exit ${parsedCode}`}`;
+    }
+    case "approval":
+      return !item.ended && item.request.type === "approval_request" ? `approval needed: ${item.request.tool_call.name}` : null;
+    case "error": return item.event.type === "error" ? `error: ${item.event.error.message}` : null;
+    case "notification": return "new notification";
+    case "unknown": return "new activity";
+    case "sub_agent": return ["done", "error", "canceled"].includes(item.status) ? `sub-agent ${item.status}` : null;
+    case "user": return null;
+  }
+};
+
+const liveRegionStyle: CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+};
+
+function AnnouncementTracker({ id, announce }: { id: string; announce(id: string, text: string): void }) {
+  const item = useItem(id);
+  const text = item ? announcementForItem(item) : null;
+  useEffect(() => { if (text) announce(id, text); }, [announce, id, text]);
+  return null;
+}
+
+function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; change: { type: "append" | "prepend"; count: number } | null }) {
+  const initialized = useRef(false);
+  const pending = useRef<string[]>([]);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [watched, setWatched] = useState<readonly string[]>([]);
+  const [text, setText] = useState("");
+  const announce = useCallback((id: string, next: string) => {
+    pending.current.push(next);
+    setWatched((current) => current.filter((candidate) => candidate !== id));
+    if (timer.current !== null) return;
+    setText("");
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      const announcements = pending.current.splice(0);
+      setText(announcements.length === 1 ? announcements[0]! : `${announcements.length} new items`);
+    }, 1_000);
+  }, []);
+  useLayoutEffect(() => {
+    if (!initialized.current) {
+      initialized.current = true;
+      return;
+    }
+    const present = new Set(items.map(({ id }) => id));
+    const appended = change?.type === "append" && change.count > 0 ? items.slice(-change.count).map(({ id }) => id) : [];
+    setWatched((current) => [...new Set([...current.filter((id) => present.has(id)), ...appended])]);
+  }, [change, items]);
+  useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current); }, []);
+  return (
+    <>
+      {watched.map((id) => <AnnouncementTracker key={id} id={id} announce={announce} />)}
+      <div data-part="timeline-live" aria-live="polite" aria-atomic="true" style={liveRegionStyle}>{text}</div>
+    </>
+  );
+}
+
 // Subscribes to a string key only, so text deltas never re-render the row.
 const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Renderers }) {
   const kind = useItemSelector(id, (item) => item?.type);
@@ -307,9 +382,12 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
   }, [enabled, items, scrollRef]);
   if (!enabled) {
     return (
-      <div ref={plainRef} className={className} data-part="timeline" data-virtual="false" role="log" aria-label={ariaLabel} aria-live="polite" aria-relevant="additions">
-        {items.map(({ id }) => <Row key={id} id={id} renderers={renderers} />)}
-      </div>
+      <>
+        <div ref={plainRef} className={className} data-part="timeline" data-virtual="false" role="log" aria-label={ariaLabel} aria-live="off">
+          {items.map(({ id }) => <Row key={id} id={id} renderers={renderers} />)}
+        </div>
+        <LiveAnnouncer items={items} change={change} />
+      </>
     );
   }
   const mounted = list.snapshot.rows;
@@ -327,8 +405,7 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
         data-unseen-count={list.unseenCount}
         role="log"
         aria-label={ariaLabel}
-        aria-live="polite"
-        aria-relevant="additions"
+        aria-live="off"
         style={{ ...virtualContainerStyle, height: list.snapshot.totalSize }}
         onFocusCapture={(event) => setFocusedId(event.target instanceof Element ? event.target.closest<HTMLElement>("[data-virtual-id]")?.dataset.virtualId ?? null : null)}
         onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedId(null); }}
@@ -357,6 +434,7 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
           </div>
         ))}
       </div>
+      <LiveAnnouncer items={items} change={change} />
       {list.debug ? (
         <output data-part="virtual-debug">
           {list.debug}

@@ -252,7 +252,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   let scrollTop = 0;
   let viewportSize = 0;
   let pinned = true;
-  let unseenCount = 0;
+  const unseenIds = new Set<Id>();
   let programmatic = false;
   let correctionEvent = false;
   let jump = 0;
@@ -404,7 +404,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     if (viewport.source === "user" && !isCorrection) {
       const distance = layout.total - scrollTop - viewportSize;
       pinned = pinned ? distance <= bottomThreshold : distance < 0.5;
-      if (pinned) unseenCount = 0;
+      if (pinned) unseenIds.clear();
     }
     if (isCorrection) expectedCorrectionScroll = null;
     if (isCorrection) jump = 0;
@@ -415,7 +415,6 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   return {
     setOutline(items, update) {
       const expectedAnchor = captureExpectedAnchor();
-      const added = Math.max(0, items.length - layout.length);
       const cursorId = layout.at(rangeCursorIndex)?.id;
       const incremental = update && update.count >= 0 && items.length === layout.length + update.count;
       if (update && !incremental) throw new Error("outline update does not match the current length");
@@ -453,7 +452,12 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       rangeCursorStart = layout.prefix(rangeCursorIndex);
       calibrateKindEstimates();
       restoreExpectedAnchor(expectedAnchor);
-      if (!pinned) unseenCount += added;
+      if (!pinned && incremental && update.type === "append")
+        for (const { id } of source) unseenIds.add(id);
+      if (!incremental) {
+        const retained = new Set(items.map(({ id }) => id));
+        for (const id of unseenIds) if (!retained.has(id)) unseenIds.delete(id);
+      }
       log("outline", { count: layout.length, totalSize: layout.total });
       changed();
     },
@@ -485,7 +489,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     },
     setFollow(follow) {
       pinned = follow;
-      if (follow) unseenCount = 0;
+      if (follow) unseenIds.clear();
       log("viewport", { scrollTop, size: viewportSize, programmatic: false, pinned });
       changed();
     },
@@ -544,14 +548,14 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       if (index === undefined) throw new Error("cannot scroll to an id outside the outline");
       setViewport({ scrollTop: Math.max(0, layout.prefix(index) - viewportOffset), size: viewportSize, source: "programmatic" });
       pinned = maxScroll() - scrollTop < 0.5;
-      if (pinned) unseenCount = 0;
+      if (pinned) unseenIds.clear();
       log("scroll-to-id", { index, scrollTop });
       return scrollTop;
     },
     scrollToEnd() {
       setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
       pinned = true;
-      unseenCount = 0;
+      unseenIds.clear();
       return scrollTop;
     },
     snapshotCache() {
@@ -587,7 +591,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
         correctionEvent,
         jump,
         pendingJump,
-        unseenCount,
+        unseenCount: unseenIds.size,
       };
       return snapshot;
     },
