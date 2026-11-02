@@ -13,6 +13,14 @@ export interface ToolCall {
   name: string;
   arguments: Record<string, unknown>;
 }
+export type ToolView =
+  | { kind: "shell"; command: string; cwd?: string; exitCode?: number }
+  | { kind: "read"; path: string; range?: { offset?: number; limit?: number } }
+  | { kind: "edit"; path: string; diff: string }
+  | { kind: "write"; path: string; bytes?: number }
+  | { kind: "search"; pattern: string; path?: string; matches?: string[] }
+  | { kind: "fetch"; url?: string; query?: string; title?: string; bytes?: number }
+  | { kind: "agent"; childRunId?: string; status?: string; description?: string };
 export interface ToolResult {
   tool_call_id: string;
   content: string;
@@ -32,6 +40,7 @@ export type RunItem =
       id: string;
       type: "tool";
       tool_call: ToolCall;
+      view?: ToolView;
       output: string;
       version: number;
       active: boolean;
@@ -59,17 +68,19 @@ export type RunEvent =
   | { type: "message_delta"; message_id?: string; delta: string; kind?: string }
   | { type: "retry" }
   | { type: "message_commit"; message_id?: string; message: Message }
-  | { type: "tool_start"; tool_call: ToolCall; data?: Record<string, unknown> }
+  | { type: "tool_start"; tool_call: ToolCall; view?: ToolView; data?: Record<string, unknown> }
   | {
       type: "tool_output";
       tool_call: ToolCall;
       output: string;
+      view?: ToolView;
       data?: Record<string, unknown>;
     }
   | {
       type: "tool_end";
       tool_call: ToolCall;
       tool_result?: ToolResult;
+      view?: ToolView;
       data?: Record<string, unknown>;
     }
   | {
