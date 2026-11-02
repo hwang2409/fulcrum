@@ -54,38 +54,47 @@ const safeHref = (href: string | null) => {
 
 const attr = (token: MarkdownToken, name: string) => token.attrGet(name) ?? undefined;
 
+type InlineContainer = Extract<Inline, { children: Inline[] }>;
+type InlineStack = Array<{ node: InlineContainer }>;
+
+const inlineText = (node: Inline): string => node.type === "text" || node.type === "code"
+  ? node.value
+  : "children" in node ? node.children.map(inlineText).join("") : node.type === "image" ? node.alt : "";
+
+function inlineContainer(token: MarkdownToken): InlineContainer | undefined {
+  if (token.type === "em_open") return { type: "emphasis", children: [] };
+  if (token.type === "strong_open") return { type: "strong", children: [] };
+  if (token.type === "s_open") return { type: "strike", children: [] };
+  if (token.type === "link_open") return { type: "link", href: safeHref(attr(token, "href") ?? null), title: attr(token, "title"), children: [] };
+}
+
+function appendInlineToken(token: MarkdownToken, root: Inline[], stack: InlineStack) {
+  const target = stack.at(-1)?.node.children ?? root;
+  if (token.type === "text" || token.type === "html_inline" || token.type === "softbreak") {
+    const value = token.type === "softbreak" ? "\n" : token.content;
+    const last = target.at(-1);
+    if (last?.type === "text") last.value += value;
+    else if (value) target.push({ type: "text", value });
+    return;
+  }
+  if (token.type === "hardbreak") target.push({ type: "break" });
+  else if (token.type === "code_inline") target.push({ type: "code", value: token.content });
+  else if (token.type === "image") {
+    const alt = inlineNodes(token.children ?? []).map(inlineText).join("") || token.content;
+    target.push({ type: "image", src: safeHref(attr(token, "src") ?? null), title: attr(token, "title"), alt });
+  } else if (token.nesting === 1) {
+    const node = inlineContainer(token);
+    if (node) {
+      target.push(node);
+      stack.push({ node });
+    }
+  } else if (token.nesting === -1 && stack.length) stack.pop();
+}
+
 function inlineNodes(tokens: MarkdownToken[]): Inline[] {
   const root: Inline[] = [];
-  const stack: Array<{ kind: "emphasis" | "strong" | "strike" | "link"; node: Inline & { children: Inline[] } }> = [];
-  const target = () => stack.at(-1)?.node.children ?? root;
-  const pushText = (value: string) => {
-    if (!value) return;
-    const last = target().at(-1);
-    if (last?.type === "text") last.value += value;
-    else target().push({ type: "text", value });
-  };
-
-  for (const token of tokens) {
-    if (token.type === "text" || token.type === "html_inline") pushText(token.content);
-    else if (token.type === "softbreak") pushText("\n");
-    else if (token.type === "hardbreak") target().push({ type: "break" });
-    else if (token.type === "code_inline") target().push({ type: "code", value: token.content });
-    else if (token.type === "image") {
-      const text = (node: Inline): string => node.type === "text" || node.type === "code" ? node.value : "children" in node ? node.children.map(text).join("") : node.type === "image" ? node.alt : "";
-      const alt = inlineNodes(token.children ?? []).map(text).join("") || token.content;
-      target().push({ type: "image", src: safeHref(attr(token, "src") ?? null), title: attr(token, "title"), alt });
-    }
-    else if (token.nesting === 1 && ["em_open", "strong_open", "s_open", "link_open"].includes(token.type)) {
-      const kind = token.type === "em_open" ? "emphasis" : token.type === "strong_open" ? "strong" : token.type === "s_open" ? "strike" : "link";
-      const node: Inline & { children: Inline[] } = kind === "link"
-        ? { type: "link", href: safeHref(attr(token, "href") ?? null), title: attr(token, "title"), children: [] }
-        : kind === "emphasis" ? { type: "emphasis", children: [] }
-          : kind === "strong" ? { type: "strong", children: [] }
-            : { type: "strike", children: [] };
-      target().push(node);
-      stack.push({ kind, node });
-    } else if (token.nesting === -1 && stack.length) stack.pop();
-  }
+  const stack: InlineStack = [];
+  for (const token of tokens) appendInlineToken(token, root, stack);
   return root;
 }
 
@@ -135,34 +144,44 @@ function convertList(tokens: MarkdownToken[], index: number): [ParsedBlock, numb
   return [{ block: { type: "list", ordered, start: startValue, items }, map: tokenMap(token), closed: true }, index + 1];
 }
 
+type TableState = {
+  header: Inline[][];
+  rows: Inline[][][];
+  align: Array<"left" | "center" | "right" | undefined>;
+  row?: Inline[][];
+  inHeader: boolean;
+};
+
+function tableAlignment(token: MarkdownToken): "left" | "center" | "right" | undefined {
+  const style = attr(token, "style") ?? "";
+  if (style.includes("center")) return "center";
+  if (style.includes("right")) return "right";
+  if (style.includes("left")) return "left";
+}
+
+function appendTableToken(state: TableState, token: MarkdownToken, inline?: MarkdownToken) {
+  if (token.type === "thead_open") state.inHeader = true;
+  else if (token.type === "thead_close") state.inHeader = false;
+  else if (token.type === "tr_open") state.row = [];
+  else if (token.type === "tr_close" && state.row) {
+    if (state.inHeader) state.header.push(...state.row);
+    else state.rows.push(state.row);
+    state.row = undefined;
+  } else if ((token.type === "th_open" || token.type === "td_open") && state.row) {
+    state.row.push(inline?.type === "inline" ? inlineNodes(inline.children ?? []) : []);
+    if (token.type === "th_open") state.align.push(tableAlignment(token));
+  }
+}
+
 function convertTable(tokens: MarkdownToken[], index: number): [ParsedBlock, number] {
   const token = tokens[index]!;
-  const header: Inline[][] = [];
-  const rows: Inline[][][] = [];
-  const align: Array<"left" | "center" | "right" | undefined> = [];
-  let row: Inline[][] | undefined;
-  let inHeader = false;
+  const state: TableState = { header: [], rows: [], align: [], inHeader: false };
   index++;
   while (index < tokens.length && tokens[index]!.type !== "table_close") {
-    const current = tokens[index]!;
-    if (current.type === "thead_open") inHeader = true;
-    else if (current.type === "thead_close") inHeader = false;
-    else if (current.type === "tr_open") row = [];
-    else if (current.type === "tr_close" && row) {
-      if (inHeader) header.push(...row);
-      else rows.push(row);
-      row = undefined;
-    } else if ((current.type === "th_open" || current.type === "td_open") && row) {
-      const inline = tokens[index + 1];
-      row.push(inline?.type === "inline" ? inlineNodes(inline.children ?? []) : []);
-      if (current.type === "th_open") {
-        const style = attr(current, "style") ?? "";
-        align.push(style.includes("center") ? "center" : style.includes("right") ? "right" : style.includes("left") ? "left" : undefined);
-      }
-    }
+    appendTableToken(state, tokens[index]!, tokens[index + 1]);
     index++;
   }
-  return [{ block: { type: "table", header, rows, align }, map: tokenMap(token), closed: true }, index + 1];
+  return [{ block: { type: "table", header: state.header, rows: state.rows, align: state.align }, map: tokenMap(token), closed: true }, index + 1];
 }
 
 function convertBlocks(tokens: MarkdownToken[], start = 0, stop?: string): [ParsedBlock[], number] {
@@ -254,7 +273,7 @@ function appendOpenCodeSpan(blocks: Block[], value: string) {
   else blocks.push({ type: "paragraph", children: [code] });
 }
 
-function safeBlockSource(source: string) {
+function safeBlockPass(source: string) {
   const lines = source.split("\n");
   const tableDelimiter = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$/;
   const cellCount = (line: string) => line.split("|").filter((cell, index, cells) => cell.trim() || index > 0 && index < cells.length - 1).length;
@@ -277,61 +296,95 @@ function safeBlockSource(source: string) {
   return source;
 }
 
-function safeInlineSource(source: string) {
-  source = safeBlockSource(source);
-  const angle = source.lastIndexOf("<");
-  if (angle > source.lastIndexOf(">") && !/[\s\n]/.test(source.slice(angle + 1))) source = source.slice(0, angle);
+function safeBlockSource(source: string) {
+  for (;;) {
+    const next = safeBlockPass(source);
+    if (next === source) return source;
+    source = next;
+  }
+}
 
+function withoutOpenAngle(source: string) {
+  const angle = source.lastIndexOf("<");
+  return angle > source.lastIndexOf(">") && !/[\s\n]/.test(source.slice(angle + 1)) ? source.slice(0, angle) : source;
+}
+
+function withoutOpenLink(source: string) {
+  if (source.endsWith("!") && !source.endsWith("\\!")) source = source.slice(0, -1);
   const image = source.lastIndexOf("![");
   if (image >= 0 && !/\]\([^\n)]*\)/.test(source.slice(image + 1))) return source.slice(0, image);
-
   const bracket = source.lastIndexOf("[");
-  if (bracket >= 0) {
-    const rest = source.slice(bracket + 1);
-    const close = rest.indexOf("]");
-    if (close < 0) source = source.slice(0, bracket) + rest;
-    else {
-      const after = rest.slice(close + 1);
-      let depth = 0;
-      let destinationClosed = false;
-      if (after.startsWith("(")) {
-        for (const character of after) {
-          if (character === "(") depth++;
-          else if (character === ")" && --depth === 0) { destinationClosed = true; break; }
-        }
-      }
-      if (!after || after.startsWith("(") && !destinationClosed) return source.slice(0, bracket) + rest.slice(0, close);
-    }
+  if (bracket < 0) return source;
+  const rest = source.slice(bracket + 1);
+  const close = rest.indexOf("]");
+  if (close < 0) return source.slice(0, bracket) + rest;
+  const destination = rest.slice(close + 1);
+  if (!destination) return source.slice(0, bracket) + rest.slice(0, close);
+  if (!destination.startsWith("(")) return source;
+  let depth = 0;
+  for (const character of destination) {
+    if (character === "(") depth++;
+    else if (character === ")" && --depth === 0) return source;
   }
+  return source.slice(0, bracket) + rest.slice(0, close);
+}
 
-  const codeRanges: Array<[number, number]> = [];
-  let codeOpener: { index: number; length: number } | undefined;
+function closedCodeRanges(source: string) {
+  const ranges: Array<[number, number]> = [];
+  let opener: { index: number; length: number } | undefined;
   for (const run of source.matchAll(/`+/g)) {
     if (run.index === undefined) continue;
-    if (!codeOpener) codeOpener = { index: run.index, length: run[0].length };
-    else if (codeOpener.length === run[0].length) {
-      codeRanges.push([codeOpener.index, run.index + run[0].length]);
-      codeOpener = undefined;
+    if (!opener) opener = { index: run.index, length: run[0].length };
+    else if (opener.length === run[0].length) {
+      ranges.push([opener.index, run.index + run[0].length]);
+      opener = undefined;
     }
   }
+  return ranges;
+}
+
+function lastMarkerIndex(stack: Array<{ marker: string }>, marker: string) {
+  for (let index = stack.length - 1; index >= 0; index--) if (stack[index]!.marker === marker) return index;
+  return -1;
+}
+
+function withoutOpenEmphasis(source: string) {
+  const codeRanges = closedCodeRanges(source);
   const stack: Array<{ marker: string; index: number }> = [];
   for (const run of source.matchAll(/(?:\*+|_+|~+)/g)) {
-    if (run.index !== undefined && codeRanges.some(([start, end]) => run.index! >= start && run.index! < end)) continue;
-    if (run.index === undefined) continue;
+    if (run.index === undefined || codeRanges.some(([start, end]) => run.index! >= start && run.index! < end)) continue;
     const marker = run[0];
     const previous = source[run.index - 1];
     const next = source[run.index + marker.length];
     if (previous === "\\" || marker[0] === "_" && /[\p{L}\p{N}]/u.test(previous ?? "") && /[\p{L}\p{N}]/u.test(next ?? "")) continue;
     if (/\s/.test(next ?? "") && !/\S/.test(previous ?? "")) continue;
-    let match = -1;
-    for (let index = stack.length - 1; index >= 0; index--) {
-      if (stack[index]!.marker === marker) { match = index; break; }
-    }
+    const match = lastMarkerIndex(stack, marker);
     if (match >= 0 && /\S/.test(source.slice(stack[match]!.index + marker.length, run.index))) stack.splice(match, 1);
     else stack.push({ marker, index: run.index });
   }
   for (const { marker, index } of stack.sort((a, b) => b.index - a.index)) source = source.slice(0, index) + source.slice(index + marker.length);
   return source;
+}
+
+type SafeInlineContent = { source: string; openCode?: string };
+
+// This is the only entry point for rendering unfinished inline markdown.
+function safeInlineContent(source: string): SafeInlineContent {
+  source = withoutOpenEmphasis(withoutOpenLink(withoutOpenAngle(source)));
+  const opener = unmatchedCodeSpan(source);
+  if (!opener) return { source };
+  let content = source.slice(opener.index + opener.length);
+  const trailingTicks = /`+$/.exec(content)?.[0];
+  if (trailingTicks && trailingTicks.length < opener.length) content = content.slice(0, -trailingTicks.length);
+  return { source: source.slice(0, opener.index), openCode: content || undefined };
+}
+
+function parseInline(source: string, streaming: boolean) {
+  const safe = streaming ? safeInlineContent(source) : { source };
+  const tokens = markdown.parseInline(safe.source, {});
+  const nodes = inlineNodes(tokens[0]?.children ?? []);
+  if (safe.openCode) nodes.push({ type: "code", value: codeSpanValue(safe.openCode) });
+  return nodes;
 }
 
 function parseStreamingMarkdown(source: string, environment: Environment = {}): ParsedBlock[] {
@@ -351,23 +404,15 @@ function parseStreamingMarkdown(source: string, environment: Environment = {}): 
   }
 
   source = safeBlockSource(source);
-  const opener = unmatchedCodeSpan(source);
-  if (opener) {
-    const parsed = parseDetailed(source.slice(0, opener.index), environment);
-    let content = source.slice(opener.index + opener.length);
-    const trailingTicks = /`+$/.exec(content)?.[0];
-    if (trailingTicks && trailingTicks.length < opener.length) content = content.slice(0, -trailingTicks.length);
-    if (content) {
-      const blocks = parsed.map(({ block }) => block);
-      const whitespace = /[ \t]+$/.exec(source.slice(0, opener.index))?.[0];
-      const inline = tailInline(blocks);
-      if (whitespace && inline) inline.push({ type: "text", value: whitespace });
-      appendOpenCodeSpan(blocks, content);
-      return blocks.map((block) => ({ block, map: [0, 0], closed: false }));
-    }
-    return parsed;
-  }
-  return parseDetailed(safeInlineSource(source), environment);
+  const safe = safeInlineContent(source);
+  const parsed = parseDetailed(safe.source, environment);
+  if (!safe.openCode) return parsed;
+  const blocks = parsed.map(({ block }) => block);
+  const whitespace = /[ \t]+$/.exec(safe.source)?.[0];
+  const inline = tailInline(blocks);
+  if (whitespace && inline) inline.push({ type: "text", value: whitespace });
+  appendOpenCodeSpan(blocks, safe.openCode);
+  return blocks.map((block) => ({ block, map: [0, 0], closed: false }));
 }
 
 export interface StreamingDocument {
@@ -389,6 +434,59 @@ const lineOffset = (source: string, line: number) => {
 };
 
 const openSnapshot = <BlockType extends Block>(block: BlockType): BlockType => ({ ...block });
+
+const BLOCK_CHUNK_SIZE = 64;
+
+class BlockBuffer {
+  readonly view: readonly Block[];
+  private readonly chunks: Block[][] = [];
+  private open: Block[] = [];
+  private frozenLength = 0;
+
+  constructor() {
+    const target: Block[] = [];
+    this.view = new Proxy(target, {
+      get: (_target, property, receiver) => {
+        if (property === "length") return this.length;
+        if (property === "map") return this.map.bind(this);
+        if (property === "at") return this.at.bind(this);
+        if (property === Symbol.iterator) return this.values.bind(this);
+        if (typeof property === "string" && /^\d+$/.test(property)) return this.at(Number(property));
+        return Reflect.get(target, property, receiver);
+      },
+    });
+  }
+
+  get length() { return this.frozenLength + this.open.length; }
+
+  freeze(blocks: Block[]) {
+    for (const block of blocks) {
+      let chunk = this.chunks.at(-1);
+      if (!chunk || chunk.length === BLOCK_CHUNK_SIZE) this.chunks.push(chunk = []);
+      chunk.push(block);
+      this.frozenLength++;
+    }
+  }
+
+  publish(blocks: Block[]) { this.open = blocks; }
+
+  at(index: number) {
+    if (index < 0) index += this.length;
+    if (index < 0 || index >= this.length) return undefined;
+    if (index >= this.frozenLength) return this.open[index - this.frozenLength];
+    return this.chunks[Math.floor(index / BLOCK_CHUNK_SIZE)]![index % BLOCK_CHUNK_SIZE];
+  }
+
+  map<Result>(callback: (block: Block, index: number, blocks: readonly Block[]) => Result) {
+    const result: Result[] = [];
+    for (let index = 0; index < this.length; index++) result.push(callback(this.at(index)!, index, this.view));
+    return result;
+  }
+
+  *values() {
+    for (let index = 0; index < this.length; index++) yield this.at(index)!;
+  }
+}
 
 type OpenParagraphState = {
   scannedOffset: number;
@@ -427,7 +525,7 @@ const fenceCloser = (marker: string, line: string) => new RegExp(`^ {0,3}${marke
 
 function listItem(state: OpenListState, line: string) {
   const match = /^ {0,3}(?:[-+*]|\d{1,9}[.)])\s+(.+)$/.exec(line);
-  if (match && !/[\\*_`~[\]<>]/.test(match[1]!))
+  if (match && !/[\\*_`~[\]<>!]/.test(match[1]!))
     return { children: [{ type: "paragraph", children: [{ type: "text", value: match[1]! }], tight: true }] } satisfies ListItem;
   const block = parseStreamingMarkdown(line)[0]?.block;
   return block?.type === "list" && block.ordered === state.ordered ? block.items[0] : undefined;
@@ -457,7 +555,7 @@ function appendListDelta(state: OpenListState, delta: string) {
   return true;
 }
 
-function tableRow(state: OpenTableState, line: string) {
+function tableRow(state: OpenTableState, line: string, streaming: boolean) {
   const cells: string[] = [];
   let cell = "";
   for (let index = 0; index < line.length; index++) {
@@ -471,9 +569,8 @@ function tableRow(state: OpenTableState, line: string) {
   if (!cells.at(-1)!.trim()) cells.pop();
   return Array.from({ length: state.block.header.length }, (_, index) => {
     const value = cells[index]?.trim() ?? "";
-    if (!/[\\*_`~[\]<>]/.test(value)) return value ? [{ type: "text", value } satisfies Inline] : [];
-    const tokens = markdown.parseInline(value, {});
-    return inlineNodes(tokens[0]?.children ?? []);
+    if (!streaming && !/[\\*_`~[\]<>]/.test(value)) return value ? [{ type: "text", value } satisfies Inline] : [];
+    return parseInline(value, streaming);
   });
 }
 
@@ -486,11 +583,11 @@ function appendTableDelta(state: OpenTableState, delta: string) {
   state.pending = lines.pop()!;
   for (const line of lines) {
     if (!line.trim()) return false;
-    const row = tableRow(state, line);
+    const row = tableRow(state, line, false);
     if (row) state.block.rows.push(row);
   }
   if (state.pending) {
-    const row = tableRow(state, state.pending);
+    const row = tableRow(state, state.pending, true);
     if (row) {
       state.block.rows.push(row);
       state.hasPendingRow = true;
@@ -517,8 +614,8 @@ function appendFenceDelta(state: OpenFenceState, delta: string) {
 export function createStreamingDocument(): StreamingDocument {
   let source = "";
   let tailOffset = 0;
-  let frozen: Block[] = [];
-  let cached: readonly Block[] = [];
+  const blocks = new BlockBuffer();
+  const cached = blocks.view;
   let renderedSource = "";
   let finished = false;
   let frozenParses = 0;
@@ -529,147 +626,141 @@ export function createStreamingDocument(): StreamingDocument {
   let paragraphState: OpenParagraphState | undefined;
   const environment: Environment = {};
 
-  const render = () => {
-    if (source === renderedSource) return cached;
-    if (!finished && paragraphState) {
-      const delta = source.slice(paragraphState.scannedOffset);
-      const next = paragraphState.pendingNewline + delta;
-      if (!/[\\*_`~[\]<>&]/.test(delta) && !next.includes("\n\n")) {
-        const pendingNewline = next.endsWith("\n") ? "\n" : "";
-        const visible = pendingNewline ? next.slice(0, -1) : next;
-        if (paragraphState.text.value.length + visible.length > 1024) {
-          paragraphState.text = { type: "text", value: visible };
-          paragraphState.block.children.push(paragraphState.text);
-        } else paragraphState.text.value += visible;
-        paragraphState.pendingNewline = pendingNewline;
-        paragraphState.scannedOffset += delta.length;
-        cached = [...frozen, openSnapshot(paragraphState.block)];
-        renderedSource = source;
-        return cached;
-      }
+  const publishOpen = (open: Block[]) => {
+    blocks.publish(open);
+    renderedSource = source;
+    return cached;
+  };
+
+  const continueParagraph = () => {
+    if (!paragraphState) return;
+    const delta = source.slice(paragraphState.scannedOffset);
+    const next = paragraphState.pendingNewline + delta;
+    if (/[\\*_`~[\]<>&!]/.test(delta) || next.includes("\n\n")) {
       paragraphState = undefined;
+      return;
     }
-    if (!finished && listState) {
-      const delta = source.slice(listState.scannedOffset);
-      if (appendListDelta(listState, delta)) {
-        cached = [...frozen, openSnapshot(listState.block)];
-        renderedSource = source;
-        return cached;
-      }
+    const pendingNewline = next.endsWith("\n") ? "\n" : "";
+    const visible = pendingNewline ? next.slice(0, -1) : next;
+    if (paragraphState.text.value.length + visible.length > 1024) {
+      paragraphState.text = { type: "text", value: visible };
+      paragraphState.block.children.push(paragraphState.text);
+    } else paragraphState.text.value += visible;
+    paragraphState.pendingNewline = pendingNewline;
+    paragraphState.scannedOffset += delta.length;
+    return openSnapshot(paragraphState.block);
+  };
+
+  const continueOpenBlock = () => {
+    if (finished) return;
+    const paragraph = continueParagraph();
+    if (paragraph) return paragraph;
+    if (listState) {
+      if (appendListDelta(listState, source.slice(listState.scannedOffset))) return openSnapshot(listState.block);
       listState = undefined;
     }
-    if (!finished && tableState) {
-      const delta = source.slice(tableState.scannedOffset);
-      if (appendTableDelta(tableState, delta)) {
-        cached = [...frozen, openSnapshot(tableState.block)];
-        renderedSource = source;
-        return cached;
-      }
+    if (tableState) {
+      if (appendTableDelta(tableState, source.slice(tableState.scannedOffset))) return openSnapshot(tableState.block);
       tableState = undefined;
     }
-    if (!finished && fenceState) {
-      const delta = source.slice(fenceState.scannedOffset);
-      if (appendFenceDelta(fenceState, delta)) {
-        cached = [...frozen, openSnapshot(fenceState.block)];
-        renderedSource = source;
-        return cached;
-      }
+    if (fenceState) {
+      if (appendFenceDelta(fenceState, source.slice(fenceState.scannedOffset))) return openSnapshot(fenceState.block);
       fenceState = undefined;
     }
-    const tail = source.slice(tailOffset);
-    if (!finished) {
-      const list = /^( {0,3}(?:[-+*]|\d{1,9}[.)])\s+[^\n]+\n)/.exec(tail);
-      if (list) {
-        const initial = parseMarkdown(list[1]!)[0];
-        if (initial?.type === "list") {
-          const contentOffset = tailOffset + list[0].length;
-          listState = { ordered: initial.ordered, scannedOffset: contentOffset, pending: "", hasPendingItem: false, block: initial };
-          if (appendListDelta(listState, source.slice(contentOffset))) {
-            cached = [...frozen, openSnapshot(initial)];
-            renderedSource = source;
-            return cached;
-          }
-          listState = undefined;
-        }
-      }
-      const table = /^([^\n]*\|[^\n]*)\n(\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*)\n/.exec(tail);
-      if (table) {
-        const initial = parseMarkdown(`${table[1]}\n${table[2]}`)[0];
-        if (initial?.type === "table") {
-          const contentOffset = tailOffset + table[0].length;
-          tableState = { header: table[1]!, delimiter: table[2]!, scannedOffset: contentOffset, pending: "", hasPendingRow: false, block: initial };
-          if (appendTableDelta(tableState, source.slice(contentOffset))) {
-            cached = [...frozen, openSnapshot(initial)];
-            renderedSource = source;
-            return cached;
-          }
-          tableState = undefined;
-        }
-      }
-      const opener = /^ {0,3}(`{3,}|~{3,})([^\n]*)\n/.exec(tail);
-      if (opener) {
-        const contentOffset = tailOffset + opener[0].length;
-        const block: Extract<Block, { type: "code" }> = {
-          type: "code",
-          language: opener[2]!.trim().split(/\s+/)[0] || undefined,
-          value: "",
-          open: true,
-        };
-        fenceState = { marker: opener[1]!, language: block.language, scannedOffset: contentOffset, value: "", pending: "", block };
-        if (appendFenceDelta(fenceState, source.slice(contentOffset))) {
-          cached = [...frozen, openSnapshot(block)];
-          renderedSource = source;
-          return cached;
-        }
-        fenceState = undefined;
-      }
-      const paragraph = tail.replace(/^\n+/, "");
-      if (/\s/.test(paragraph) && !/[\n]{2}|[\\*_`~[\]<>&|]/.test(paragraph) && !/^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)])(?:\s|$)/.test(paragraph)) {
-        const pendingNewline = paragraph.endsWith("\n") ? "\n" : "";
-        const text: Extract<Inline, { type: "text" }> = { type: "text", value: pendingNewline ? paragraph.slice(0, -1) : paragraph };
-        const block: Extract<Block, { type: "paragraph" }> = { type: "paragraph", children: [text] };
-        paragraphState = { scannedOffset: source.length, pendingNewline, text, block };
-        cached = [...frozen, openSnapshot(block)];
-        renderedSource = source;
-        return cached;
-      }
-    }
+  };
+
+  const startList = (tail: string) => {
+    const match = /^( {0,3}(?:[-+*]|\d{1,9}[.)])\s+[^\n]+\n)/.exec(tail);
+    if (!match) return;
+    const initial = parseMarkdown(match[1]!)[0];
+    if (initial?.type !== "list") return;
+    const contentOffset = tailOffset + match[0].length;
+    listState = { ordered: initial.ordered, scannedOffset: contentOffset, pending: "", hasPendingItem: false, block: initial };
+    if (appendListDelta(listState, source.slice(contentOffset))) return openSnapshot(initial);
+    listState = undefined;
+  };
+
+  const startTable = (tail: string) => {
+    const match = /^([^\n]*\|[^\n]*)\n(\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*)\n/.exec(tail);
+    if (!match) return;
+    const initial = parseMarkdown(`${match[1]}\n${match[2]}`)[0];
+    if (initial?.type !== "table") return;
+    const contentOffset = tailOffset + match[0].length;
+    tableState = { header: match[1]!, delimiter: match[2]!, scannedOffset: contentOffset, pending: "", hasPendingRow: false, block: initial };
+    if (appendTableDelta(tableState, source.slice(contentOffset))) return openSnapshot(initial);
+    tableState = undefined;
+  };
+
+  const startFence = (tail: string) => {
+    const opener = /^ {0,3}(`{3,}|~{3,})([^\n]*)\n/.exec(tail);
+    if (!opener) return;
+    const contentOffset = tailOffset + opener[0].length;
+    const block: Extract<Block, { type: "code" }> = {
+      type: "code",
+      language: opener[2]!.trim().split(/\s+/)[0] || undefined,
+      value: "",
+      open: true,
+    };
+    fenceState = { marker: opener[1]!, language: block.language, scannedOffset: contentOffset, value: "", pending: "", block };
+    if (appendFenceDelta(fenceState, source.slice(contentOffset))) return openSnapshot(block);
+    fenceState = undefined;
+  };
+
+  const startParagraph = (tail: string) => {
+    const paragraph = tail.replace(/^\n+/, "");
+    if (!/\s/.test(paragraph) || /[\n]{2}|[\\*_`~[\]<>&|!]/.test(paragraph) || /^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)])(?:\s|$)/.test(paragraph)) return;
+    const pendingNewline = paragraph.endsWith("\n") ? "\n" : "";
+    const text: Extract<Inline, { type: "text" }> = { type: "text", value: pendingNewline ? paragraph.slice(0, -1) : paragraph };
+    const block: Extract<Block, { type: "paragraph" }> = { type: "paragraph", children: [text] };
+    paragraphState = { scannedOffset: source.length, pendingNewline, text, block };
+    return openSnapshot(block);
+  };
+
+  const startOpenBlock = (tail: string) => startList(tail) ?? startTable(tail) ?? startFence(tail) ?? startParagraph(tail);
+
+  const commitFrozen = (frozen: Block[]) => blocks.freeze(frozen);
+
+  const parseTail = (tail: string) => {
     const fence = !finished && openFence(tail);
     const parsed = finished
       ? parseDetailed(tail, { references: environment.references ? { ...environment.references } : undefined })
       : parseStreamingMarkdown(tail, { references: environment.references ? { ...environment.references } : undefined });
     tailParses++;
-
     let freezeCount = finished ? parsed.length : 0;
-    if (!finished) {
-      for (let index = 0; index < parsed.length - 1; index++) {
-        if (parsed[index + 1]!.map[0] > parsed[index]!.map[1]) freezeCount = index + 1;
-      }
+    if (!finished) for (let index = 0; index < parsed.length - 1; index++) {
+      if (parsed[index + 1]!.map[0] > parsed[index]!.map[1]) freezeCount = index + 1;
     }
     if (!finished && !fence && parsed.length && parsed.at(-1)!.closed && parsed.at(-1)!.block.type === "code") freezeCount = parsed.length;
-    if (freezeCount) {
-      const endLine = parsed[freezeCount - 1]!.map[1];
-      const offset = freezeCount === parsed.length ? tail.length : lineOffset(tail, endLine);
-      if (offset > 0) {
-        const committed = tail.slice(0, offset);
-        const committedEnvironment: Environment = { references: environment.references ? { ...environment.references } : undefined };
-        const committedBlocks = parseDetailed(committed, committedEnvironment).map(({ block }) => block);
-        environment.references = committedEnvironment.references;
-        frozen = [...frozen, ...committedBlocks];
-        frozenParses++;
-        tailOffset += offset;
-        const open = source.slice(tailOffset);
-        const openBlocks = open
-          ? (finished ? parseMarkdown(open) : parseStreamingMarkdown(open).map(({ block }) => block))
-          : [];
-        cached = [...frozen, ...openBlocks];
-        renderedSource = source;
-        return cached;
-      }
+    return { parsed, freezeCount };
+  };
+
+  const freezeParsed = (tail: string, parsed: ParsedBlock[], freezeCount: number) => {
+    if (!freezeCount) return;
+    const endLine = parsed[freezeCount - 1]!.map[1];
+    const offset = freezeCount === parsed.length ? tail.length : lineOffset(tail, endLine);
+    if (offset <= 0) return;
+    const committedEnvironment: Environment = { references: environment.references ? { ...environment.references } : undefined };
+    const committedBlocks = parseDetailed(tail.slice(0, offset), committedEnvironment).map(({ block }) => block);
+    environment.references = committedEnvironment.references;
+    commitFrozen(committedBlocks);
+    frozenParses++;
+    tailOffset += offset;
+    const open = source.slice(tailOffset);
+    return open ? (finished ? parseMarkdown(open) : parseStreamingMarkdown(open).map(({ block }) => block)) : [];
+  };
+
+  const render = () => {
+    if (source === renderedSource) return cached;
+    const continued = continueOpenBlock();
+    if (continued) return publishOpen([continued]);
+    const tail = source.slice(tailOffset);
+    if (!finished) {
+      const started = startOpenBlock(tail);
+      if (started) return publishOpen([started]);
     }
-    cached = [...frozen, ...parsed.map(({ block }) => block)];
-    renderedSource = source;
-    return cached;
+    const { parsed, freezeCount } = parseTail(tail);
+    const open = freezeParsed(tail, parsed, freezeCount);
+    return publishOpen(open ?? parsed.map(({ block }) => block));
   };
 
   return {

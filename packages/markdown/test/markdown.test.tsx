@@ -130,6 +130,7 @@ test("finished blocks keep identity and parse count while only the tail reparses
 
   document.append(" grows");
   const next = document.render();
+  expect(next).toBe(first);
   expect(next[0]).toBe(frozen);
   expect(document.stats.frozenParses).toBe(1);
   expect(document.stats.tailParses).toBe(parsed);
@@ -248,6 +249,35 @@ test("every streamed prefix only reveals final visible text", () => {
     for (let length = 0; length <= source.length; length++) {
       const prefixText = visibleText(source.slice(0, length), true);
       expect(isSubsequence(prefixText, finalText), `visible prefix ${length} of ${JSON.stringify(source)}`).toBe(true);
+    }
+  }
+});
+
+test("every inline construct has a safe visible prefix in every container", () => {
+  const constructs = [
+    "`value`",
+    "*value*",
+    "**value**",
+    "~~value~~",
+    "[value](https://example.com)",
+    "<value@example.com>",
+    "![value](/image.png)",
+  ];
+  const containers: Array<[string, (inline: string) => string]> = [
+    ["root", (inline) => `before ${inline} after`],
+    ["list", (inline) => `- before ${inline} after`],
+    ["nested list", (inline) => `- outer\n  - before ${inline} after`],
+    ["quote", (inline) => `> before ${inline} after`],
+    ["table header", (inline) => `| before ${inline} after | fixed |\n| --- | --- |`],
+    ["table cell", (inline) => `| fixed | fixed |\n| --- | --- |\n| before ${inline} after | fixed |`],
+  ];
+
+  for (const construct of constructs) for (const [container, wrap] of containers) {
+    const source = wrap(construct);
+    const finalText = visibleText(source, true);
+    for (let length = 0; length <= source.length; length++) {
+      const prefixText = visibleText(source.slice(0, length), true);
+      expect(isSubsequence(prefixText, finalText), `${container} prefix ${length} of ${JSON.stringify(source)} rendered ${JSON.stringify(prefixText)}`).toBe(true);
     }
   }
 });
