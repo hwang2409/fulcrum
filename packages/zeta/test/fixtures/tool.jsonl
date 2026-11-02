@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","method":"event","params":{"event":"tool_start","tool_call":{"id":"t","name":"bash","arguments":{}},"data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"tool_output","tool_call":{"id":"t","name":"bash","arguments":{}},"output":"x","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"tool_end","tool_call":{"id":"t","name":"bash","arguments":{}},"tool_result":{"tool_call_id":"t","content":"bad","is_error":true},"data":{}}}

@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","method":"event","params":{"event":"approval_request","request_id":"r","delegated":false,"tool_call":{"id":"t","name":"bash","arguments":{}}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"approval_end","request_id":"r","data":{}}}
