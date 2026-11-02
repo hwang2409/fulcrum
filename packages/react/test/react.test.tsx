@@ -6,7 +6,7 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { act, Profiler, StrictMode, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { createRunStore, type RunEvent } from "@fulcrum/core";
+import { createRunStore, type RunEvent, type ToolCall as ToolCallData } from "@fulcrum/core";
 import { Markdown } from "../../markdown/src/react.js";
 import {
   Approval,
@@ -18,6 +18,7 @@ import {
   useRun,
   useTimeline,
   type Renderers,
+  type ToolBodyProps,
 } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
@@ -289,25 +290,218 @@ test("unknown item kind uses the fallback renderer", () => {
   expect(items[1]!.textContent).toBe("hi there");
 });
 
-test("approval calls onApprove and onDeny with the request id", () => {
+test("approval calls onApprove or onDeny with the request id", () => {
   const { store } = setup([
     { type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false },
+    { type: "approval_request", request_id: "r2", tool_call: call("t2", "bash"), delegated: false },
   ]);
   const calls: string[] = [];
   mount(
     <RunProvider store={store}>
-      <Approval
-        id="approval:r1"
-        className="mine"
-        onApprove={(id) => calls.push(`approve:${id}`)}
-        onDeny={(id) => calls.push(`deny:${id}`)}
-      />
+      <Approval id="approval:r1" className="mine" onApprove={(id) => calls.push(`approve:${id}`)} onDeny={(id) => calls.push(`deny:${id}`)} />
+      <Approval id="approval:r2" onApprove={(id) => calls.push(`approve:${id}`)} onDeny={(id) => calls.push(`deny:${id}`)} />
     </RunProvider>,
   );
   expect(q('[data-part="approval"]').className).toBe("mine");
+  act(() => q('[data-id="approval:r1"] [data-action="approve"]').click());
+  act(() => q('[data-id="approval:r2"] [data-action="deny"]').click());
+  expect(calls).toEqual(["approve:r1", "deny:r2"]);
+});
+
+test("approval is a labelled group and submits once until the handler fails or the request resolves", async () => {
+  const { store, send } = setup([
+    { type: "approval_request", request_id: "r1", tool_call: { id: "t1", name: "bash", arguments: { command: "rm -rf dist" } }, delegated: false },
+  ]);
+  const calls: string[] = [];
+  let fail: (error: Error) => void = () => {};
+  mount(
+    <RunProvider store={store}>
+      <Approval
+        id="approval:r1"
+        onApprove={(id) => {
+          calls.push(`approve:${id}`);
+          return new Promise((_, reject) => (fail = reject));
+        }}
+        onDeny={(id) => void calls.push(`deny:${id}`)}
+      />
+    </RunProvider>,
+  );
+  const group = q('[data-part="approval"]');
+  expect(group.getAttribute("role")).toBe("group");
+  const label = document.getElementById(group.getAttribute("aria-labelledby")!)!;
+  expect(label.getAttribute("data-part")).toBe("tool-header");
+  expect(label.textContent).toBe("bashrm -rf distneeds approval");
+  expect(q('[data-part="tool-body"] [data-part="tool-args"]').textContent).toContain('"command": "rm -rf dist"');
+  expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["approve", "deny"]);
+
+  act(() => q('[data-action="approve"]').click());
   act(() => q('[data-action="approve"]').click());
   act(() => q('[data-action="deny"]').click());
+  expect(calls).toEqual(["approve:r1"]);
+  expect(group.getAttribute("data-state")).toBe("submitting");
+  expect(group.getAttribute("aria-busy")).toBe("true");
+  expect(q('[data-part="tool-status"]').textContent).toBe("approving");
+  expect(q('[data-action="deny"]').getAttribute("aria-disabled")).toBe("true");
+
+  await act(async () => fail(new Error("offline")));
+  expect(group.getAttribute("data-state")).toBe("pending");
+  act(() => q('[data-action="deny"]').click());
   expect(calls).toEqual(["approve:r1", "deny:r1"]);
+
+  send({ type: "approval_end", request_id: "r1" });
+  expect(group.getAttribute("data-state")).toBe("done");
+  expect(q('[data-part="tool-status"]').textContent).toBe("resolved");
+  expect(group.querySelector("button")).toBeNull();
+});
+
+test("tool header shows name, a one-line summary, and status; json stays in the collapsed body", () => {
+  const big = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
+  const grep = { id: "t1", name: "grep", arguments: { pattern: "TODO", path: "packages/" } };
+  const empty = { id: "t2", name: "noop", arguments: {} };
+  const { store } = setup([
+    { type: "tool_start", tool_call: grep },
+    { type: "tool_end", tool_call: grep, tool_result: { tool_call_id: "t1", content: big, is_error: false } },
+    { type: "tool_start", tool_call: empty },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <ToolCall id="tool:t1" />
+      <ToolCall id="tool:t2" />
+    </RunProvider>,
+  );
+  const tool = q('[data-id="tool:t1"]') as HTMLDetailsElement;
+  const header = tool.querySelector('[data-part="tool-header"]')!;
+  expect(tool.tagName).toBe("DETAILS");
+  expect(header.tagName).toBe("SUMMARY");
+  expect([...header.children].map((el) => `${el.getAttribute("data-part")}=${el.textContent}`)).toEqual([
+    "tool-name=grep",
+    "tool-summary=TODO",
+    "tool-status=done",
+  ]);
+  expect(header.textContent).not.toContain("{");
+  expect(tool.open).toBe(false);
+  const body = tool.querySelector('[data-part="tool-body"]')!;
+  expect(body.firstElementChild!.getAttribute("data-part")).toBe("tool-output");
+  expect(body.querySelector('[data-part="tool-output"]')!.textContent).toBe(big);
+  const args = body.querySelector('[data-part="tool-args-details"]') as HTMLDetailsElement;
+  expect(args.open).toBe(false);
+  expect(args.querySelector('[data-part="tool-args"]')!.textContent).toBe(JSON.stringify(grep.arguments, null, 2));
+  expect(q('[data-id="tool:t2"] [data-part="tool-summary"]').textContent).toBe("");
+});
+
+test("tool opens by default while running, after failure, and for short output, and keeps the user's toggle", () => {
+  const bash = call("t1", "bash");
+  const { store, send } = setup([
+    { type: "tool_start", tool_call: bash },
+    { type: "tool_start", tool_call: call("t2", "bash") },
+    { type: "tool_end", tool_call: call("t2", "bash"), tool_result: { tool_call_id: "t2", content: "x\n".repeat(50), is_error: true } },
+    { type: "tool_start", tool_call: call("t3", "edit") },
+    { type: "tool_end", tool_call: call("t3", "edit"), tool_result: { tool_call_id: "t3", content: "1 replacement", is_error: false } },
+    { type: "tool_start", tool_call: call("t4", "bash") },
+    { type: "tool_end", tool_call: call("t4", "bash"), tool_result: { tool_call_id: "t4", content: "", is_error: false } },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      {["t1", "t2", "t3", "t4"].map((t) => <ToolCall key={t} id={`tool:${t}`} />)}
+    </RunProvider>,
+  );
+  const open = (t: string) => (q(`[data-id="tool:${t}"]`) as HTMLDetailsElement).open;
+  expect(["t1", "t2", "t3", "t4"].map(open)).toEqual([true, true, true, false]);
+  act(() => ((q('[data-id="tool:t1"]') as HTMLDetailsElement).open = false));
+  send({ type: "tool_output", tool_call: bash, output: "more\n" }, { type: "tool_end", tool_call: bash, tool_result: { tool_call_id: "t1", content: "", is_error: false } });
+  expect(open("t1")).toBe(false);
+});
+
+test("canceled comes from the normalized item and wins over the error flag", () => {
+  const bash = call("t1", "bash");
+  const { store } = setup([
+    { type: "tool_start", tool_call: bash },
+    { type: "tool_end", tool_call: bash, tool_result: { tool_call_id: "t1", content: "canceled by user", is_error: true, is_canceled: true } },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <ToolCall id="tool:t1" />
+    </RunProvider>,
+  );
+  expect(q('[data-part="tool"]').getAttribute("data-state")).toBe("canceled");
+  expect(q('[data-part="tool-status"]').textContent).toBe("canceled");
+});
+
+test("tool output keeps the streamed text and appends a final result that adds to it", () => {
+  const a = call("t1", "bash");
+  const b = call("t2", "grep");
+  const { store } = setup([
+    { type: "tool_output", tool_call: a, output: "building..." },
+    { type: "tool_end", tool_call: a, tool_result: { tool_call_id: "t1", content: "error: exited with code 1", is_error: true } },
+    { type: "tool_output", tool_call: b, output: "x.ts:1\n" },
+    { type: "tool_end", tool_call: b, tool_result: { tool_call_id: "t2", content: "x.ts:1\n", is_error: false } },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <ToolCall id="tool:t1" />
+      <ToolCall id="tool:t2" />
+    </RunProvider>,
+  );
+  expect(q('[data-id="tool:t1"] [data-part="tool-output"]').textContent).toBe("building...\nerror: exited with code 1");
+  expect(q('[data-id="tool:t2"] [data-part="tool-output"]').textContent).toBe("x.ts:1\n");
+});
+
+test("a tool body gets the normalized item and renders inside the one shared header", () => {
+  const ls = { id: "t1", name: "bash", arguments: { command: "ls", timeout: 5 } };
+  const { store } = setup([
+    { type: "tool_start", tool_call: ls, view: { kind: "shell", command: "ls -la" } },
+    { type: "tool_output", tool_call: ls, output: "README.md\n" },
+    { type: "approval_request", request_id: "r1", tool_call: { ...ls, id: "t2" }, view: { kind: "shell", command: "ls" }, delegated: false },
+    { type: "approval_request", request_id: "r2", tool_call: { ...ls, id: "t3" }, delegated: false },
+  ]);
+  const seen: string[] = [];
+  const Shell = ({ item, output, state }: ToolBodyProps) => {
+    seen.push(`${item.tool_call.id}:${item.view?.kind}:${state}`);
+    return <pre data-part="tool-output">{`${item.tool_call.arguments.command}|${output}`}</pre>;
+  };
+  mount(
+    <RunProvider store={store}>
+      <ToolCall id="tool:t1" body={Shell} />
+      <Approval id="approval:r1" body={Shell} onApprove={() => {}} />
+      <Approval id="approval:r2" summary={(item) => `run ${item.tool_call.arguments.command}`} />
+    </RunProvider>,
+  );
+  const tool = q('[data-id="tool:t1"]');
+  expect(tool.getAttribute("data-tool-view")).toBe("shell");
+  // The view, not the raw arguments, names the call in the header.
+  expect(tool.querySelector('[data-part="tool-summary"]')!.textContent).toBe("$ ls -la");
+  expect(tool.querySelector('[data-part="tool-status"]')!.textContent).toBe("running");
+  expect(tool.querySelector('[data-part="tool-body"]')!.textContent).toBe("ls|README.md\n");
+  expect(tool.querySelector('[data-part="tool-args"]')).toBeNull();
+  expect(tool.querySelectorAll('[data-part="tool-header"]').length).toBe(1);
+  const approval = q('[data-id="approval:r1"]');
+  expect(approval.getAttribute("data-tool-view")).toBe("shell");
+  expect(approval.querySelector('[data-part="tool-summary"]')!.textContent).toBe("$ ls");
+  expect(approval.querySelectorAll('[data-part="tool-header"]').length).toBe(1);
+  const plain = q('[data-id="approval:r2"]');
+  expect(plain.hasAttribute("data-tool-view")).toBe(false);
+  expect(plain.querySelector('[data-part="tool-summary"]')!.textContent).toBe("run ls");
+  expect(approval.querySelector('[data-part="tool-body"]')!.textContent).toBe("ls|");
+  expect(approval.querySelector('[data-action="approve"]')).not.toBeNull();
+  expect(seen).toEqual(["t1:shell:streaming", "t2:shell:pending"]);
+});
+
+test("the default header summary reads each view kind, then falls back to the first string argument", () => {
+  const views = [
+    [{ kind: "shell", command: "bun test" }, "$ bun test"],
+    [{ kind: "read", path: "a.ts" }, "a.ts"],
+    [{ kind: "edit", path: "b.ts", diff: "-a\n+b" }, "b.ts"],
+    [{ kind: "write", path: "c.ts" }, "c.ts"],
+    [{ kind: "search", pattern: "TODO", path: "src" }, "TODO in src"],
+    [{ kind: "fetch", url: "https://x.dev" }, "https://x.dev"],
+    [{ kind: "fetch", query: "fulcrum" }, "fulcrum"],
+    [undefined, "first"],
+  ] as const;
+  const { store } = setup(
+    views.map(([view], i) => ({ type: "tool_start", tool_call: { id: `v${i}`, name: "x", arguments: { a: 1, b: "first" } }, view } as RunEvent)),
+  );
+  mount(<RunProvider store={store}>{views.map((_, i) => <ToolCall key={i} id={`tool:v${i}`} />)}</RunProvider>);
+  expect(views.map((_, i) => q(`[data-id="tool:v${i}"] [data-part="tool-summary"]`).textContent)).toEqual(views.map(([, text]) => text));
 });
 
 test("data-state reflects streaming, done, error, pending", () => {
