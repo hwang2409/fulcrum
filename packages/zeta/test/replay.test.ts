@@ -91,11 +91,20 @@ test("approval and its tool execution stay distinct in the timeline", () => {
   expect(state.items.map((id) => state.itemsById[id].type)).toEqual(["approval", "tool"]);
 });
 
-const contentText = (state: RunState, id: string) =>
-  state.messagesById[id].content
+const contentText = (state: RunState, itemId: string) => {
+  const item = state.itemsById[itemId];
+  if (item?.type !== "message") return "";
+  return item.message.content
     .filter((block) => block.type === "text")
     .map((block) => String(block.text))
     .join("");
+};
+
+const eventsByType = (state: RunState, type: "error" | "notification" | "unknown") =>
+  state.items
+    .map((id) => state.itemsById[id])
+    .filter((item) => item.type === type)
+    .map((item) => item.event);
 
 // Copied from /Users/henry/me/fun/zeta/src/zeta/server/event_contract.py.
 const eventTypes: Record<string, string> = {
@@ -156,7 +165,8 @@ test("simple streaming turn commits one assistant message", () => {
   const state = replay("simple.jsonl").get("simple")!;
   expect(state.items.filter((id) => state.itemsById[id]?.type === "message")).toHaveLength(1);
   expect(contentText(state, state.items[0])).toBe("hi there");
-  expect(state.messagesById[state.items[0]].chunks).toBeUndefined();
+  expect(state.itemsById[state.items[0]].type).toBe("message");
+  expect(state.messagesById.assistant.chunks).toBeUndefined();
 });
 
 test("two assistant turns keep two distinct messages in order", () => {
@@ -169,7 +179,7 @@ test("two assistant turns keep two distinct messages in order", () => {
 
 test("tool call start/output/end with error result", () => {
   const state = replay("tool.jsonl").get("tool")!;
-  expect(state.items).toEqual(["tool-call-1"]);
+  expect(state.items).toEqual(["tool:tool-call-1"]);
   expect(state.toolCallsById["tool-call-1"].outputs).toEqual(["permission denied"]);
   expect(state.toolCallsById["tool-call-1"].is_error).toBe(true);
   expect(state.toolCallsById["tool-call-1"].result?.content).toBe("permission denied");
@@ -177,7 +187,7 @@ test("tool call start/output/end with error result", () => {
 
 test("approval request then approval end", () => {
   const state = replay("approval.jsonl").get("approval")!;
-  expect(state.items).toEqual(["tool-call-1"]);
+  expect(state.items).toEqual(["approval:tool-call-1"]);
   expect(state.approvalsById["tool-call-1"].delegated).toBe(false);
   expect(state.approvalsById["tool-call-1"].ended?.type).toBe("approval_end");
 });
@@ -186,19 +196,21 @@ test("turn_aborted leaves turn and agent idle", () => {
   const state = replay("terminal.jsonl").get("aborted")!;
   expect(state.agent).toBe("idle");
   expect(state.turn).toBe("idle");
-  expect(state.errors.at(-1)?.code).toBe("turn_aborted");
+  const event = eventsByType(state, "error").at(-1);
+  expect(event?.type === "error" ? event.error.code : undefined).toBe("turn_aborted");
 });
 
 test("max_turns error then agent_end leaves run idle", () => {
   const state = replay("terminal.jsonl").get("max-turns")!;
   expect(state.agent).toBe("idle");
   expect(state.turn).toBe("idle");
-  expect(state.errors.at(-1)).toEqual({ code: "max_turns", message: "maximum turns reached: 1" });
+  const event = eventsByType(state, "error").at(-1);
+  expect(event?.type === "error" ? event.error : undefined).toEqual({ code: "max_turns", message: "maximum turns reached: 1" });
 });
 
 test("reconnect replay of the same notification_id is deduped", () => {
   const state = replay("notifications.jsonl").get("notify")!;
-  const receipts = state.childNotifications.filter((event) => event.type === "notification");
+  const receipts = eventsByType(state, "notification");
   expect(receipts).toHaveLength(1);
   expect(state.receipts["same-id"]).toBe(true);
 });
@@ -224,7 +236,7 @@ test("two interleaved sessions do not touch each other's state", async () => {
 
 test("unknown future event keeps the full wire payload", () => {
   const state = replay("notifications.jsonl").get("notify")!;
-  const event = state.childNotifications.find(
+  const event = eventsByType(state, "unknown").find(
     (candidate) => candidate.type === "unknown" && candidate.name === "future_event",
   );
   expect(event?.type).toBe("unknown");
@@ -240,7 +252,7 @@ test("unknown future event keeps the full wire payload", () => {
 
 test("memory_updated keeps its top-level message", () => {
   const state = replay("notifications.jsonl").get("notify")!;
-  const event = state.childNotifications.find(
+  const event = eventsByType(state, "unknown").find(
     (candidate) => candidate.type === "unknown" && candidate.name === "memory_updated",
   );
   expect(event?.type).toBe("unknown");

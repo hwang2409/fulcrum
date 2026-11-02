@@ -38,8 +38,8 @@ export type RunItem =
   | { id: string; type: "approval"; request: RunEvent; ended?: RunEvent }
   | {
       id: string;
-      type: "user" | "error" | "notification";
-      data: Record<string, unknown>;
+      type: "user" | "error" | "notification" | "unknown";
+      event: RunEvent;
     };
 export type RunEvent =
   | {

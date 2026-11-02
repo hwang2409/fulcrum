@@ -5,35 +5,34 @@ import type {
   ToolCall,
   ToolResult,
 } from "./events.js";
+import { appendStream, shareStream } from "./stream.js";
+
+interface StreamedMessage extends Message {
+  chunks?: string[];
+  version: number;
+}
+interface StreamedTool {
+  tool_call: ToolCall;
+  outputs: string[];
+  version: number;
+  result?: ToolResult;
+  is_error: boolean;
+  canceled: boolean;
+}
 export interface RunState {
   turns: string[];
   items: string[];
   itemsById: Record<string, RunItem>;
-  messagesById: Record<
-    string,
-    Message & { chunks?: string[]; version: number }
-  >;
-  toolCallsById: Record<
-    string,
-    {
-      tool_call: ToolCall;
-      outputs: string[];
-      version: number;
-      result?: ToolResult;
-      is_error: boolean;
-      canceled: boolean;
-    }
-  >;
+  messagesById: Record<string, StreamedMessage>;
+  toolCallsById: Record<string, StreamedTool>;
   approvalsById: Record<
     string,
     { request: RunEvent; ended?: RunEvent; delegated: boolean }
   >;
   usage: Record<string, number>;
   userMessages: Array<{ text: string; mode: string; attachments?: unknown[] }>;
-  errors: Array<{ code: string; message: string }>;
   agent: "idle" | "running";
   turn: "idle" | "running";
-  childNotifications: RunEvent[];
   receipts: Record<string, boolean>;
   nextId: number;
   activeMessageId?: string;
@@ -47,10 +46,8 @@ export const initialState: RunState = {
   approvalsById: {},
   usage: {},
   userMessages: [],
-  errors: [],
   agent: "idle",
   turn: "idle",
-  childNotifications: [],
   receipts: {},
   nextId: 1,
 };
@@ -59,10 +56,10 @@ const append = (state: RunState, item: RunItem): RunState => ({
   items: [...state.items, item.id],
   itemsById: { ...state.itemsById, [item.id]: item },
 });
-const idFor = (state: RunState, prefix: string): [string, number] => [
-  `${prefix}-${state.nextId}`,
-  state.nextId + 1,
-];
+const messageItemId = (id: string) => `message:${id}`;
+const toolItemId = (id: string) => `tool:${id}`;
+const approvalItemId = (id: string) => `approval:${id}`;
+
 export function reduce(state: RunState, event: RunEvent): RunState {
   const candidate =
     event.type === "notification"
@@ -75,6 +72,7 @@ export function reduce(state: RunState, event: RunEvent): RunState {
   let next = receipt
     ? { ...state, receipts: { ...state.receipts, [receipt]: true } }
     : state;
+
   switch (event.type) {
     case "run_start":
       return { ...next, agent: "running" };
@@ -99,33 +97,38 @@ export function reduce(state: RunState, event: RunEvent): RunState {
         next.activeMessageId ??
         (next.nextId === 1 ? "assistant" : `assistant-${next.nextId}`);
       const old = next.messagesById[id];
-      const chunks = old?.chunks ?? [];
-      chunks.push(event.delta);
-      const message: Message & { chunks: string[]; version: number } = {
-        role: old?.role ?? "assistant",
-        content: old?.content ?? [],
-        chunks,
-        version: (old?.version ?? 0) + 1,
-      };
-      if (!old) {
-        next = {
-          ...next,
-          items: [...next.items, id],
-          itemsById: { ...next.itemsById },
-          messagesById: { ...next.messagesById },
-          nextId: next.nextId + 1,
-          activeMessageId: id,
-        };
-        next.itemsById[id] = {
-          id,
-          type: "message",
+      const continuing = next.activeMessageId === id;
+      const message = appendStream(
+        {
+          role: old?.role ?? "assistant",
+          content: old?.content ?? [],
+          version: (old?.version ?? 0) + 1,
+        },
+        "chunks",
+        continuing ? old : undefined,
+        event.delta,
+      );
+      const itemId = messageItemId(id);
+      const item = shareStream(
+        {
+          id: itemId,
+          type: "message" as const,
           message,
-          version: 1,
-          chunks,
-        };
-      }
-      next.messagesById[id] = message;
-      return next;
+          version: message.version,
+        },
+        "chunks",
+        message,
+      );
+      const updated = {
+        ...next,
+        activeMessageId: id,
+        nextId: old ? next.nextId : next.nextId + 1,
+        messagesById: { ...next.messagesById, [id]: message },
+        itemsById: { ...next.itemsById, [itemId]: item },
+      };
+      return old
+        ? updated
+        : { ...updated, items: [...updated.items, itemId] };
     }
     case "message_commit": {
       const id =
@@ -137,122 +140,141 @@ export function reduce(state: RunState, event: RunEvent): RunState {
         ...event.message,
         version: (old?.version ?? 0) + 1,
       };
+      const itemId = messageItemId(id);
+      const item = {
+        id: itemId,
+        type: "message" as const,
+        message,
+        version: message.version,
+      };
       const updated = {
         ...next,
         activeMessageId: undefined,
         nextId: old ? next.nextId : next.nextId + 1,
         messagesById: { ...next.messagesById, [id]: message },
+        itemsById: { ...next.itemsById, [itemId]: item },
       };
       return old
-        ? {
-            ...updated,
-            itemsById: {
-              ...updated.itemsById,
-              [id]: {
-                id,
-                type: "message" as const,
-                message,
-                version: message.version,
-              },
-            },
-          }
-        : append(updated, {
-            id,
-            type: "message" as const,
-            message,
-            version: message.version,
-          });
+        ? updated
+        : { ...updated, items: [...updated.items, itemId] };
     }
     case "message_reset": {
       const id = next.activeMessageId;
       if (!id) return next;
+      const itemId = messageItemId(id);
       const messagesById = { ...next.messagesById };
       const itemsById = { ...next.itemsById };
       delete messagesById[id];
-      delete itemsById[id];
+      delete itemsById[itemId];
       return {
         ...next,
         activeMessageId: undefined,
-        items: next.items.filter((itemId) => itemId !== id),
+        items: next.items.filter((candidate) => candidate !== itemId),
         itemsById,
         messagesById,
       };
     }
     case "retry":
-      return next;
+      return next.activeMessageId
+        ? { ...next, activeMessageId: undefined }
+        : next;
     case "tool_start": {
       const id = event.tool_call.id;
+      const itemId = toolItemId(id);
       const value = {
         tool_call: event.tool_call,
         outputs: [],
         version: 1,
         is_error: false,
         canceled: false,
+      };
+      const item = {
+        id: itemId,
+        type: "tool" as const,
+        tool_call: event.tool_call,
+        outputs: value.outputs,
+        version: 1,
       };
       const updated = {
         ...next,
         toolCallsById: { ...next.toolCallsById, [id]: value },
       };
-      return append(updated, {
-        id,
-        type: "tool",
-        tool_call: event.tool_call,
-        outputs: value.outputs,
-        version: 1,
-      });
+      return next.itemsById[itemId]
+        ? {
+            ...updated,
+            itemsById: { ...updated.itemsById, [itemId]: item },
+          }
+        : append(updated, item);
     }
     case "tool_output": {
-      const old = next.toolCallsById[event.tool_call.id] ?? {
-        tool_call: event.tool_call,
-        outputs: [],
-        version: 0,
-        is_error: false,
-        canceled: false,
-      };
-      old.outputs.push(event.output);
-      const value = { ...old, version: old.version + 1 };
-      return {
-        ...next,
-        toolCallsById: { ...next.toolCallsById, [event.tool_call.id]: value },
-        itemsById: {
-          ...next.itemsById,
-          [event.tool_call.id]: {
-            id: event.tool_call.id,
-            type: "tool",
-            tool_call: value.tool_call,
-            outputs: value.outputs,
-            version: value.version,
-            result: value.result,
-          },
+      const id = event.tool_call.id;
+      const old = next.toolCallsById[id];
+      const value = appendStream(
+        {
+          tool_call: old?.tool_call ?? event.tool_call,
+          version: (old?.version ?? 0) + 1,
+          result: old?.result,
+          is_error: old?.is_error ?? false,
+          canceled: old?.canceled ?? false,
         },
+        "outputs",
+        old,
+        event.output,
+      );
+      const itemId = toolItemId(id);
+      const item = shareStream(
+        {
+          id: itemId,
+          type: "tool" as const,
+          tool_call: value.tool_call,
+          version: value.version,
+          result: value.result,
+        },
+        "outputs",
+        value,
+      );
+      const updated = {
+        ...next,
+        toolCallsById: { ...next.toolCallsById, [id]: value },
+        itemsById: { ...next.itemsById, [itemId]: item },
       };
+      return next.itemsById[itemId]
+        ? updated
+        : { ...updated, items: [...updated.items, itemId] };
     }
     case "tool_end": {
-      const old = next.toolCallsById[event.tool_call.id] ?? {
-        tool_call: event.tool_call,
-        outputs: [],
-        version: 0,
-        is_error: false,
-        canceled: false,
-      };
+      const id = event.tool_call.id;
+      const old = next.toolCallsById[id];
+      const outputs = old?.outputs ?? [];
       const result = event.tool_result;
       const value = {
-        ...old,
+        tool_call: old?.tool_call ?? event.tool_call,
+        outputs,
         result,
-        version: old.version + 1,
+        version: (old?.version ?? 0) + 1,
         is_error: result?.is_error ?? false,
         canceled: result?.is_canceled ?? false,
       };
-      next.toolCallsById[event.tool_call.id] = value;
-      const item = next.itemsById[event.tool_call.id];
-      if (item && item.type === "tool") {
-        item.outputs = value.outputs;
-        item.version = value.version;
-        item.result = result;
-      }
-      return { ...next };
+      const itemId = toolItemId(id);
+      const item = {
+        id: itemId,
+        type: "tool" as const,
+        tool_call: value.tool_call,
+        outputs,
+        version: value.version,
+        result,
+      };
+      const updated = {
+        ...next,
+        toolCallsById: { ...next.toolCallsById, [id]: value },
+        itemsById: { ...next.itemsById, [itemId]: item },
+      };
+      return next.itemsById[itemId]
+        ? updated
+        : { ...updated, items: [...updated.items, itemId] };
     }
-    case "approval_request":
+    case "approval_request": {
+      const itemId = approvalItemId(event.request_id);
       return append(
         {
           ...next,
@@ -261,28 +283,29 @@ export function reduce(state: RunState, event: RunEvent): RunState {
             [event.request_id]: { request: event, delegated: event.delegated },
           },
         },
-        { id: event.request_id, type: "approval", request: event },
+        { id: itemId, type: "approval", request: event },
       );
+    }
     case "approval_end": {
       const old = next.approvalsById[event.request_id];
-      return old
-        ? {
-            ...next,
-            approvalsById: {
-              ...next.approvalsById,
-              [event.request_id]: { ...old, ended: event },
-            },
-            itemsById: {
-              ...next.itemsById,
-              [event.request_id]: {
-                id: event.request_id,
-                type: "approval",
-                request: old.request,
-                ended: event,
-              },
-            },
-          }
-        : next;
+      if (!old) return next;
+      const itemId = approvalItemId(event.request_id);
+      return {
+        ...next,
+        approvalsById: {
+          ...next.approvalsById,
+          [event.request_id]: { ...old, ended: event },
+        },
+        itemsById: {
+          ...next.itemsById,
+          [itemId]: {
+            id: itemId,
+            type: "approval",
+            request: old.request,
+            ended: event,
+          },
+        },
+      };
     }
     case "usage": {
       const usage = { ...next.usage };
@@ -290,24 +313,43 @@ export function reduce(state: RunState, event: RunEvent): RunState {
         usage[key] = (usage[key] ?? 0) + value;
       return { ...next, usage };
     }
-    case "user_message":
+    case "user_message": {
+      const id = `user:${next.nextId}`;
       return append(
-        { ...next, userMessages: [...next.userMessages, event] },
-        { id: `user-${next.nextId}`, type: "user", data: event },
+        {
+          ...next,
+          nextId: next.nextId + 1,
+          userMessages: [...next.userMessages, event],
+        },
+        { id, type: "user", event },
       );
-    case "error":
-      return {
-        ...next,
-        agent: "idle",
-        turn: "idle",
-        errors: [...next.errors, event.error],
-      };
-    case "notification":
-    case "unknown":
-      return {
-        ...next,
-        childNotifications: [...next.childNotifications, event],
-      };
+    }
+    case "error": {
+      const id = `error:${next.nextId}`;
+      return append(
+        {
+          ...next,
+          nextId: next.nextId + 1,
+          agent: "idle",
+          turn: "idle",
+        },
+        { id, type: "error", event },
+      );
+    }
+    case "notification": {
+      const id = `notification:${receipt ?? next.nextId}`;
+      return append(
+        { ...next, nextId: next.nextId + 1 },
+        { id, type: "notification", event },
+      );
+    }
+    case "unknown": {
+      const id = `unknown:${receipt ?? next.nextId}`;
+      return append(
+        { ...next, nextId: next.nextId + 1 },
+        { id, type: "unknown", event },
+      );
+    }
   }
   throw new Error("unreachable run event");
 }

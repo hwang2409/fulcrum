@@ -13,18 +13,7 @@ export function createRunStore(
   const listeners = new Set<() => void>();
   let queued = false;
   return {
-    getState: () => {
-      const id = current.activeMessageId;
-      const message = id ? current.messagesById[id] : undefined;
-      if (!id || !message?.chunks) return current;
-      return {
-        ...current,
-        messagesById: {
-          ...current.messagesById,
-          [id]: { ...message, chunks: [...message.chunks] },
-        },
-      };
-    },
+    getState: () => current,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
