@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { initialState, reduce, type RunState } from "@fulcrum/core";
+import { createRunStore, initialState, reduce, type RunState } from "@fulcrum/core";
 import {
   createClient,
   fromZetaEvent,
@@ -40,6 +40,56 @@ function replay(name: string) {
   }
   return sessions;
 }
+
+
+const materialize = (state: RunState) => {
+  const clone = structuredClone(state);
+  for (const message of Object.values(clone.messagesById)) {
+    if (message.chunks) message.chunks = [message.chunks.join("")];
+  }
+  for (const tool of Object.values(clone.toolCallsById)) {
+    tool.outputs = [tool.outputs.join("")];
+  }
+  for (const item of Object.values(clone.itemsById)) {
+    if (item.type === "message" && item.chunks) item.chunks = [item.chunks.join("")];
+    if (item.type === "tool") item.outputs = [item.outputs.join("")];
+  }
+  return clone;
+};
+
+const replayEveryFixture = (assertState: (state: RunState) => void) => {
+  for (const frames of Object.values(fixtures)) {
+    const stores = new Map<string, ReturnType<typeof createRunStore>>();
+    for (const frame of frames) {
+      const id = frame.params.session_id ?? "default";
+      const store = stores.get(id) ?? createRunStore(freshState());
+      stores.set(id, store);
+      for (const event of fromZetaEvent(frame.params)) {
+        store.dispatch(event);
+        assertState(store.getState());
+      }
+    }
+  }
+};
+
+test("published snapshots never change", () => {
+  const snapshots: Array<{ state: RunState; clone: RunState }> = [];
+  replayEveryFixture((state) => snapshots.push({ state, clone: materialize(state) }));
+  for (const snapshot of snapshots) expect(materialize(snapshot.state)).toEqual(snapshot.clone);
+});
+
+test("timeline ids are unique and all resolve", () => {
+  replayEveryFixture((state) => {
+    expect(new Set(state.items).size).toBe(state.items.length);
+    for (const id of state.items) expect(state.itemsById[id]).toBeDefined();
+  });
+});
+
+test("approval and its tool execution stay distinct in the timeline", () => {
+  const state = replay("approval-then-tool.jsonl").get("approval-tool")!;
+  expect(state.items).toHaveLength(2);
+  expect(state.items.map((id) => state.itemsById[id].type)).toEqual(["approval", "tool"]);
+});
 
 const contentText = (state: RunState, id: string) =>
   state.messagesById[id].content
