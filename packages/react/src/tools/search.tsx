@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo } from "react";
 import type { ToolBodyProps } from "../parts.js";
-import { Arguments, asking, boundLines, boundText, Empty, Foot, Gap, Output, ShowAll, splitLines } from "./common.js";
+import { Arguments, asking, boundText, Empty, Foot, Output, splitLines } from "./common.js";
+import { needsTextViewer, TextViewer, useTextMetrics } from "./text-viewer.js";
 
 // `path:line:text` (grep -n, ripgrep), or `path-line-text` for ripgrep context lines.
 const MATCH = /^(.+?):(\d+):(.*)$/;
@@ -23,16 +24,15 @@ function group(lines: string[]) {
 }
 
 export function SearchBody({ item, output, state }: ToolBodyProps) {
-  const [expanded, setExpanded] = useState(false);
+  const text = item.view?.kind === "search" ? item.view.matches?.join("\n") ?? output : "";
+  const metrics = useTextMetrics(text, true);
+  const large = needsTextViewer(text, metrics);
+  const groups = useMemo(() => large ? undefined : group(splitLines(text)), [large, text]);
   if (item.view?.kind !== "search") return null;
-  const text = item.view.matches?.join("\n") ?? output;
-  // Results read top-down, so the bound keeps only the head.
-  const window = boundLines(splitLines(text), expanded, 0);
-  const groups = group(window.head);
   return (
     <>
       {asking(state) ? <pre data-part="tool-path">{boundText(item.view.path ? `${item.view.pattern} in ${item.view.path}` : item.view.pattern).text}</pre> : null}
-      {!text ? <Empty state={state} noun="matches" /> : groups ? (
+      {!text ? <Empty state={state} noun="matches" /> : large ? <TextViewer text={text} label="search results" appendOnly metrics={metrics} /> : groups ? (
         <div data-part="tool-matches">
           {groups.map((file, i) => (
             <div key={i} data-part="search-file">
@@ -40,11 +40,9 @@ export function SearchBody({ item, output, state }: ToolBodyProps) {
               {file.lines.map((line, j) => <div key={j} data-part="line"><span data-part="line-number">{line.number}</span><span data-part="line-text">{line.text}</span></div>)}
             </div>
           ))}
-          <Gap window={window} expanded={expanded} noun="matches" />
         </div>
       ) : <Output text={text} />}
-      {groups ? <ShowAll window={window} expanded={expanded} expand={() => setExpanded(true)} noun="matches" /> : null}
-      {asking(state) ? <Arguments call={item.tool_call} version={item.version} /> : null}
+      {asking(state) ? <Arguments call={item.tool_call} /> : null}
       <Foot copy={[["pattern", item.view.pattern], ["output", text]]} />
     </>
   );

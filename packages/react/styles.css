@@ -229,7 +229,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 }
 [data-part="tool-meta"] { display: flex; flex: 1; flex-wrap: wrap; gap: 0 12px; min-width: 0; }
 [data-part="tool-foot"] button,
-[data-part="tool-body"] > [data-action="show-all"] {
+[data-part="tool-body"] > [data-action="open-viewer"] {
   min-height: 26px;
   padding: 0 6px;
   border: 0;
@@ -239,10 +239,28 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   font-size: 12px;
   cursor: pointer;
 }
-[data-part="tool-body"] > [data-action="show-all"] { display: block; width: 100%; padding: 0 12px; text-align: left; }
-:is([data-part="tool-foot"] button, [data-action="show-all"]):hover { color: var(--fulcrum-fg); text-decoration: underline; text-underline-offset: 3px; }
-:is([data-part="tool-foot"] button, [data-action="show-all"]):focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
-@media (pointer: coarse) { :is([data-part="tool-foot"] button, [data-action="show-all"]) { min-height: 44px; } }
+[data-part="tool-body"] > [data-action="open-viewer"] { display: block; width: 100%; padding: 0 12px; text-align: left; }
+:is([data-part="tool-foot"] button, [data-action="open-viewer"]):hover { color: var(--fulcrum-fg); text-decoration: underline; text-underline-offset: 3px; }
+:is([data-part="tool-foot"] button, [data-action="open-viewer"]):focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+@media (pointer: coarse) { :is([data-part="tool-foot"] button, [data-action="open-viewer"]) { min-height: 44px; } }
+[data-part="text-viewer"] {
+  position: relative;
+  max-height: 320px;
+  overflow: auto;
+  overflow-anchor: none;
+  background: var(--fulcrum-bg);
+  color: var(--fulcrum-fg);
+  contain: layout paint style;
+}
+[data-part="text-viewer"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+[data-part="text-viewer-content"] { position: relative; min-height: 100%; }
+[data-part="text-viewer-row"] {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 [data-part="tool-exit"]:not([data-exit-code="0"]) { color: var(--fulcrum-fg); font-weight: 700; }
 
 /* Shell: the header reads "$ command"; the tool name stays for screen readers. stderr gets a label and a danger edge;

@@ -161,6 +161,18 @@ test("tool output changes only the streamed tool identity", () => {
   expect(store.getOutline()).toBe(outline);
 });
 
+test("tool output adopts a new arguments value without replacing an unchanged one", () => {
+  const store = replay([{ type: "tool_start", tool_call: toolCall }]);
+  store.dispatch({ type: "tool_output", tool_call: { ...toolCall }, output: "a" });
+  const unchanged = store.getItem(`tool:${toolCall.id}`);
+  expect(unchanged?.type === "tool" ? unchanged.tool_call.arguments : undefined).toBe(toolCall.arguments);
+
+  const arguments_ = { command: "updated" };
+  store.dispatch({ type: "tool_output", tool_call: { ...toolCall, arguments: arguments_ }, output: "b" });
+  const updated = store.getItem(`tool:${toolCall.id}`);
+  expect(updated?.type === "tool" ? updated.tool_call.arguments : undefined).toBe(arguments_);
+});
+
 test("commit replaces streamed text with the final message", () => {
   const store = replay([
     { type: "message_delta", delta: "draft " },

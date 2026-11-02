@@ -6,7 +6,7 @@ export function GenericBody({ item, output, state }: ToolBodyProps) {
   return (
     <>
       {output ? <Output text={output} /> : null}
-      <Arguments call={item.tool_call} version={item.version} open={asking(state)} />
+      <Arguments call={item.tool_call} open={asking(state)} />
       <Foot copy={[["output", output]]} />
     </>
   );

@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
 import { Approval, RunProvider, Timeline, ToolCall } from "../src/index.js";
 import { boundLines } from "../src/tools/common.js";
+import { segmentText } from "../src/tools/text-viewer.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
@@ -151,25 +152,38 @@ test("copy buttons copy the command, the path, and the full output", async () =>
   expect(buttons[0]!.textContent).toBe("copied");
 });
 
-test("large output is capped until show all is requested", () => {
+test("large output opens in the shared bounded viewer", () => {
   const output = Array.from({ length: 500 }, (_, index) => `line ${index}`).join("\n");
   render(tool("large", "bash", { kind: "shell", command: "log" }, output), ["tool:large"]);
-  const text = () => q('[data-part="tool-output"]').textContent!;
-  expect(text()).toContain("line 0\n");
-  expect(text()).toContain("line 499");
-  expect(text()).toContain("… 440 lines hidden …");
-  expect(text()).not.toContain("line 250");
-  const button = q('[data-action="show-all"]') as HTMLButtonElement;
-  expect(button.textContent).toBe("show all 500 lines");
+  const preview = () => q('[data-part="tool-output"]').textContent!;
+  expect(preview()).toContain("line 0\n");
+  expect(preview()).toContain("line 499");
+  expect(preview()).toContain("500 lines / 4,389 characters; open to view all");
+  expect(preview()).not.toContain("line 250");
+  const button = q('[data-action="open-viewer"]') as HTMLButtonElement;
+  expect(button.textContent).toBe("open all 500 lines / 4,389 characters");
   act(() => button.click());
-  expect(text()).toContain("line 250");
-  expect(q('[data-action="show-all"]')).toBeNull();
+  const viewer = q('[data-part="text-viewer"]');
+  expect(viewer.getAttribute("role")).toBe("region");
+  expect(viewer.getAttribute("aria-label")).toBe("output viewer");
+  expect(viewer.getAttribute("tabindex")).toBe("0");
+  expect(q('[data-action="show-more"]')).toBeNull();
 });
 
-test("expanded output caps one million short rows", () => {
-  const window = boundLines(Array.from({ length: 1_000_000 }, () => "x"), true);
-  expect(window.head.length + window.tail.length).toBeLessThanOrEqual(2_000);
-  expect(window.hidden).toBe(998_000);
+test("giant lines split into surrogate-safe fixed-size viewer rows", () => {
+  const text = `${"x".repeat(1_999)}😀${"y".repeat(2_001)}`;
+  const segments = segmentText(text, 1);
+  expect(segments).toHaveLength(3);
+  const values = segments.map((segment, index) => text.slice(segment.start, segments[index + 1]?.start));
+  expect(values.every((value) => value.length <= 2_000)).toBe(true);
+  expect(values.join("")).toBe(text);
+  expect(values.some((value) => value.endsWith("\ud83d"))).toBe(false);
+});
+
+test("the compact line preview stays bounded", () => {
+  const window = boundLines(Array.from({ length: 1_000_000 }, () => "x"));
+  expect(window.head.length + window.tail.length).toBeLessThanOrEqual(60);
+  expect(window.hidden).toBe(999_940);
 });
 
 test("multi-megabyte output stays bounded in the dom and says what it left out", () => {
@@ -177,9 +191,10 @@ test("multi-megabyte output stays bounded in the dom and says what it left out",
   render(tool("huge", "bash", { kind: "shell", command: "log" }, output), ["tool:huge"]);
   expect(output.length).toBeGreaterThan(1_000_000);
   expect(container.textContent!.length).toBeLessThan(110_000);
-  act(() => (q('[data-action="show-all"]') as HTMLButtonElement).click());
+  act(() => (q('[data-action="open-viewer"]') as HTMLButtonElement).click());
+  expect(container.querySelectorAll('[data-part="text-viewer-row"]').length).toBeLessThanOrEqual(200);
   expect(container.textContent!.length).toBeLessThan(110_000);
-  expect(container.textContent).toMatch(/\d+ lines not shown, over 100 kB/);
+  expect(container.querySelector('[data-action="show-more"]')).toBeNull();
   // One huge line is cut too.
   act(() => root!.unmount());
   root = undefined;
@@ -222,8 +237,9 @@ test("every card and approval bounds multi-megabyte presentation surfaces", asyn
       expect(surface.textContent!.length).toBeLessThanOrEqual(100_000);
       expect(surface.textContent).not.toContain("\ud83d…");
     }
-    expect(container.textContent).toMatch(/showing \d+ of \d+ characters/);
-    expect(container.querySelector('[data-action="show-more"]')).not.toBeNull();
+    expect(container.textContent).toMatch(/(?:showing \d+ of \d+ characters|[\d,]+ lines \/ [\d,]+ characters; open to view all)/);
+    expect(container.querySelector('[data-action="show-more"]')).toBeNull();
+    expect(container.querySelector('[data-action="open-viewer"]')).not.toBeNull();
     const copyArguments = container.querySelector<HTMLButtonElement>('[aria-label="copy arguments"]');
     expect(copyArguments).not.toBeNull();
     await act(async () => copyArguments!.click());
@@ -235,7 +251,26 @@ test("every card and approval bounds multi-megabyte presentation surfaces", asyn
   }
 });
 
-test("a bounded large diff reports hidden changed-line counts", () => {
+test("large write, edit, and grouped search bodies all open the shared viewer", () => {
+  const huge = "x".repeat(60_000);
+  const grep = Array.from({ length: 2_000 }, (_, index) => `src/a.ts:${index + 1}:${huge.slice(0, 40)}`).join("\n");
+  const events: RunEvent[] = [
+    { type: "approval_request", request_id: "write-viewer", tool_call: { id: "write-viewer", name: "write", arguments: {} }, view: { kind: "write", path: "a.ts", content: huge }, delegated: false },
+    { type: "approval_request", request_id: "edit-viewer", tool_call: { id: "edit-viewer", name: "edit", arguments: {} }, view: { kind: "edit", path: "a.ts", diff: `@@ -1 +1 @@\n-${huge}\n+new` }, delegated: false },
+    ...tool("search-viewer", "search", { kind: "search", pattern: "x", path: "src" }, grep),
+  ];
+  render(events, ["approval:write-viewer", "approval:edit-viewer", "tool:search-viewer"]);
+  for (const id of ["approval:write-viewer", "approval:edit-viewer", "tool:search-viewer"]) {
+    const card = q(`[data-id="${id}"]`);
+    const open = card.querySelector<HTMLButtonElement>('[data-action="open-viewer"]');
+    expect(open).not.toBeNull();
+    act(() => open!.click());
+    expect(card.querySelector('[data-part="text-viewer"]')).not.toBeNull();
+    expect(card.querySelector('[data-action="show-more"]')).toBeNull();
+  }
+});
+
+test("a large diff uses the shared viewer with an honest preview", () => {
   const deletions = Array.from({ length: 3_000 }, (_, i) => `-${i} ${"old".repeat(12)}`);
   const insertions = Array.from({ length: 3_000 }, (_, i) => `+${i} ${"new".repeat(12)}`);
   const diff = ["@@ -1,3000 +1,3000 @@", ...deletions, ...insertions].join("\n");
@@ -243,11 +278,12 @@ test("a bounded large diff reports hidden changed-line counts", () => {
   render([
     { type: "approval_request", request_id: "large-edit", tool_call, view: { kind: "edit", path: "large.ts", diff }, delegated: false },
   ], ["approval:large-edit"]);
-  expect(q('[data-part="tool-diff"]').textContent!.length).toBeLessThanOrEqual(100_000);
-  expect(q('[data-part="tool-gap"]').textContent).toMatch(/\d+ lines \(\+\d+ -\d+\) not shown, over 100 kB/);
+  expect(q('[data-part="tool-output"]').textContent!.length).toBeLessThanOrEqual(50_100);
+  expect(q('[data-part="tool-output"]').textContent).toMatch(/6,001 lines \/ [\d,]+ characters; open to view all/);
+  expect(q('[data-action="open-viewer"]')).not.toBeNull();
 });
 
-test("collapsed arguments serialize only when opened and refresh on version changes", () => {
+test("open arguments serialize once across 1,000 output tokens and once per arguments identity", () => {
   const arguments_ = { path: "src/a.ts", value: "x".repeat(10_000) };
   const tool_call = { id: "lazy", name: "custom", arguments: arguments_ };
   const store = createRunStore((callback) => callback());
@@ -255,7 +291,7 @@ test("collapsed arguments serialize only when opened and refresh on version chan
   const original = JSON.stringify;
   let serializations = 0;
   JSON.stringify = ((value: unknown, ...rest: unknown[]) => {
-    if (value === arguments_) serializations++;
+    if (value && typeof value === "object" && "path" in value && "value" in value) serializations++;
     return original(value, ...(rest as [((key: string, value: unknown) => unknown) | null, string | number | undefined]));
   }) as typeof JSON.stringify;
   try {
@@ -267,10 +303,12 @@ test("collapsed arguments serialize only when opened and refresh on version chan
       details.dispatchEvent(new Event("toggle"));
     });
     expect(serializations).toBe(1);
-    arguments_.value = "streamed second";
-    act(() => store.dispatch({ type: "tool_output", tool_call, output: "next" }));
+    for (let index = 0; index < 1_000; index++) act(() => store.dispatch({ type: "tool_output", tool_call, output: "x" }));
+    expect(serializations).toBe(1);
+    const nextArguments = { ...arguments_, value: "updated" };
+    act(() => store.dispatch({ type: "tool_output", tool_call: { ...tool_call, arguments: nextArguments }, output: "x" }));
     expect(serializations).toBe(2);
-    expect(q('[data-part="tool-args"]').textContent).toContain("streamed second");
+    expect(q('[data-part="tool-args"]').textContent).toContain("updated");
   } finally {
     JSON.stringify = original;
   }
