@@ -1,9 +1,11 @@
 /* @fulcrum/react themes. Load after styles.css and keep the themes you use.
    Set data-fulcrum-theme="<name>" on <html> or on any subtree. With no attribute, github-light or github-dark follows the OS.
    Each palette uses its official colors; the source is above each block. muted mixes fg into bg where a palette has no
-   secondary text color with 4.5:1 contrast. */
+   secondary text color with 4.5:1 contrast. ok and warn mark state with no text, so they need 3:1 on bg; where a light
+   palette's own green or yellow misses that and it has no darker official shade, a little fg is mixed in. */
 
-/* gruvbox-dark: https://github.com/morhetz/gruvbox (README palette; syntax from colors/gruvbox.vim) */
+/* gruvbox-dark: https://github.com/morhetz/gruvbox (README palette; syntax from colors/gruvbox.vim, except functions:
+   vim tells them from strings only by bold, so they take aqua as in https://github.com/jdinhify/vscode-theme-gruvbox) */
 [data-fulcrum-theme="gruvbox-dark"] {
   color-scheme: dark;
   --fulcrum-bg: #282828;
@@ -19,7 +21,7 @@
   --fulcrum-tok-string: #b8bb26;
   --fulcrum-tok-number: #d3869b;
   --fulcrum-tok-comment: #928374;
-  --fulcrum-tok-function: #b8bb26;
+  --fulcrum-tok-function: #8ec07c;
   --fulcrum-tok-type: #fabd2f;
   --fulcrum-tok-variable: #83a598;
   --fulcrum-tok-constant: #d3869b;
@@ -32,7 +34,8 @@
   --fulcrum-tok-deleted: #fb4934;
 }
 
-/* gruvbox-light: https://github.com/morhetz/gruvbox (README palette, faded accents for light; syntax from colors/gruvbox.vim) */
+/* gruvbox-light: https://github.com/morhetz/gruvbox (README palette, faded accents for light; syntax from colors/gruvbox.vim,
+   except functions in aqua as in https://github.com/jdinhify/vscode-theme-gruvbox) */
 [data-fulcrum-theme="gruvbox-light"] {
   color-scheme: light;
   --fulcrum-bg: #fbf1c7;
@@ -48,7 +51,7 @@
   --fulcrum-tok-string: #79740e;
   --fulcrum-tok-number: #8f3f71;
   --fulcrum-tok-comment: #928374;
-  --fulcrum-tok-function: #79740e;
+  --fulcrum-tok-function: #427b58;
   --fulcrum-tok-type: #b57614;
   --fulcrum-tok-variable: #076678;
   --fulcrum-tok-constant: #8f3f71;
@@ -187,8 +190,8 @@
   --fulcrum-border: #ccd0da;
   --fulcrum-accent: #1e66f5;
   --fulcrum-danger: #d20f39;
-  --fulcrum-ok: #40a02b;
-  --fulcrum-warn: #df8e1d;
+  --fulcrum-ok: color-mix(in srgb, var(--fulcrum-fg) 15%, #40a02b); /* green + text: 3.37:1 on base */
+  --fulcrum-warn: color-mix(in srgb, var(--fulcrum-fg) 35%, #df8e1d); /* yellow + text: 3.38:1 on base */
   --fulcrum-tok-keyword: #8839ef;
   --fulcrum-tok-string: #40a02b;
   --fulcrum-tok-number: #fe640b;
@@ -245,8 +248,8 @@
   --fulcrum-border: #93a1a1;
   --fulcrum-accent: #268bd2;
   --fulcrum-danger: #dc322f;
-  --fulcrum-ok: #859900;
-  --fulcrum-warn: #b58900;
+  --fulcrum-ok: color-mix(in srgb, var(--fulcrum-fg) 10%, #859900); /* green + base02: 3.40:1 on base3 */
+  --fulcrum-warn: color-mix(in srgb, var(--fulcrum-fg) 10%, #b58900); /* yellow + base02: 3.40:1 on base3 */
   --fulcrum-tok-keyword: #859900;
   --fulcrum-tok-string: #2aa198;
   --fulcrum-tok-number: #2aa198;

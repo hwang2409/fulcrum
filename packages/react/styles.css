@@ -121,17 +121,22 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="tool-body"] { border-top: 1px solid var(--fulcrum-border); }
 [data-part="tool-body"]:empty { display: none; }
 [data-part="tool-body"] pre { margin: 0; font: inherit; white-space: pre-wrap; }
+/* Caps are whole lines plus the padding at the scroll start, so the cut edge falls between lines, never through glyphs.
+   Capped arguments sit in their disclosure with no top padding; approvals show them uncapped. */
 [data-part="tool-args"] {
-  max-height: 16em;
+  max-height: calc(10 * 1.55em);
+  max-height: 10lh;
   overflow: auto;
   padding: 8px 12px;
   color: var(--fulcrum-muted);
 }
-/* Output keeps its newest line in view: column-reverse starts the scroll at the bottom. */
+/* Output keeps its newest line in view: column-reverse starts the scroll at the bottom, and the top edge then sits
+   on a line boundary. */
 [data-part="tool-output"] {
   display: flex;
   flex-direction: column-reverse;
-  max-height: 20em;
+  max-height: calc(12 * 1.55em + 8px);
+  max-height: calc(12lh + 8px);
   overflow: auto;
   padding: 8px 12px;
   background: var(--fulcrum-surface);
