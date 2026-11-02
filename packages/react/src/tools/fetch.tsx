@@ -1,10 +1,11 @@
-import { languageForContentType, languageForPath } from "@fulcrum/highlight";
+import { languageForContentType, languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import { Arguments, asking, boundText, bytes, Empty, Foot, Output } from "./common.js";
 
-// The body's language: the Content-Type when the harness reports it, else the url path's extension (`/data.json`).
+// The body's language: the Content-Type's when it names one, else the url path's extension (`/data.json`), else none.
 const bodyLanguage = (url: string | undefined, contentType: string | undefined) => {
-  if (contentType) return languageForContentType(contentType);
+  const typed = contentType ? languageForContentType(contentType) : undefined;
+  if (typed) return typed;
   try {
     return url ? languageForPath(new URL(url).pathname) : undefined;
   } catch {

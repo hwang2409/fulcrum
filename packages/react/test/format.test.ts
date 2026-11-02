@@ -16,8 +16,11 @@ test("SGR colors, bold, and underline become themed spans; reset ends them", () 
   expect(styled(`${ESC}[92mpass${ESC}[39m ${ESC}[41;30m FAIL ${ESC}[49m${ESC}[2mdim${ESC}[0m`).spans).toEqual([
     ["pass", "ansi-bright-green"], [" FAIL ", "ansi-black ansi-bg-red"], ["dim", "ansi-black ansi-dim"],
   ]);
-  // Inverse (7) swaps the run's colors through a themed class; 27 and 0 end it.
-  expect(styled(`${ESC}[7mA${ESC}[27mB${ESC}[31;7mC${ESC}[0mD`).spans).toEqual([["A", "ansi-inverse"], ["C", "ansi-red ansi-inverse"]]);
+  // Inverse (7) swaps foreground and background: the default colors swap through ansi-inverse, a colored foreground
+  // becomes that color's badge; 27 and 0 end it.
+  expect(styled(`${ESC}[7mA${ESC}[27mB${ESC}[31;7mC${ESC}[27mD${ESC}[39;1;7mE${ESC}[0mF`).spans).toEqual([
+    ["A", "ansi-inverse"], ["C", "ansi-bg-red"], ["D", "ansi-red"], ["E", "ansi-inverse ansi-bold"],
+  ]);
   // 256-color indexes below 16 are the theme's 16 colors; others and truecolor keep the theme's text color.
   expect(styled(`${ESC}[38;5;9mA${ESC}[38;5;200mB${ESC}[38;2;1;2;3mC${ESC}[0m`).spans).toEqual([["A", "ansi-bright-red"]]);
 });
@@ -48,9 +51,9 @@ test("malicious and huge sequences stay bounded and linear", () => {
 });
 
 test("streamed chunks parse the same as the whole, even when a chunk splits an escape", () => {
-  const input = `${ESC}[1;31mFAIL${ESC}[0m src/a.test.ts\n${ESC}[32m✓${ESC}[39m ok ${ESC}[7mselected${ESC}[27m back\n`;
+  const input = `${ESC}[1;31mFAIL${ESC}[0m src/a.test.ts\n${ESC}[32m✓${ESC}[39m ok ${ESC}[7mselected${ESC}[27m ${ESC}[33;7mwarn${ESC}[27mback\n`;
   const whole = parseAnsi(input);
-  expect(whole.spans.map(({ start, end, style }) => [whole.text.slice(start, end), style]).at(-1)).toEqual(["selected", "ansi-green ansi-inverse"]);
+  expect(whole.spans.map(({ start, end, style }) => [whole.text.slice(start, end), style]).slice(-3)).toEqual([["selected", "ansi-inverse"], ["warn", "ansi-bg-yellow"], ["back\n", "ansi-yellow"]]);
   for (let cut = 0; cut <= input.length; cut++) {
     const first = parseAnsi(input.slice(0, cut));
     expect([cut, parseAnsi(input.slice(cut), first)]).toEqual([cut, whole]);

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { languageForPath } from "@fulcrum/highlight";
+import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import { MarkedTokens, tokenLines, useTokens } from "../highlight.js";
 import { Arguments, asking, boundText, Empty, Foot, Output, splitLines } from "./common.js";

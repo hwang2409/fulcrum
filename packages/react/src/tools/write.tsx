@@ -1,4 +1,4 @@
-import { languageForPath } from "@fulcrum/highlight";
+import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import { Arguments, asking, boundText, bytes, Foot, NumberedLines, Output } from "./common.js";
 

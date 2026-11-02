@@ -5,7 +5,7 @@ export type AnsiSpan = { start: number; end: number; style: string };
  * and `tail` (an escape split by a chunk boundary, held back) let `parseAnsi(next, prior)` continue a stream.
  */
 export type AnsiText = { text: string; spans: AnsiSpan[]; style: Style; tail: string };
-type Style = { fg?: number; bg?: number; bold?: boolean; dim?: boolean; italic?: boolean; underline?: boolean };
+type Style = { fg?: number; bg?: number; bold?: boolean; dim?: boolean; italic?: boolean; underline?: boolean; inverse?: boolean };
 
 const NAMES = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
 const color = (index: number) => (index < 8 ? NAMES[index] : `bright-${NAMES[index - 8]}`);
@@ -19,8 +19,13 @@ const C1_STRINGS: Record<number, boolean> = { 0x9d: true, 0x90: true, 0x98: true
 
 const classes = (style: Style) => {
   const out: string[] = [];
-  if (style.fg !== undefined) out.push(`ansi-${color(style.fg)}`);
-  if (style.bg !== undefined) out.push(`ansi-bg-${color(style.bg)}`);
+  // Inverse draws the foreground as the background, with the page background as text (the badge rule below), so it
+  // keeps the contrast every theme is checked for; a set background's color is not used as text.
+  if (style.inverse) out.push(style.fg === undefined ? "ansi-inverse" : `ansi-bg-${color(style.fg)}`);
+  else {
+    if (style.fg !== undefined) out.push(`ansi-${color(style.fg)}`);
+    if (style.bg !== undefined) out.push(`ansi-bg-${color(style.bg)}`);
+  }
   if (style.bold) out.push("ansi-bold");
   if (style.dim) out.push("ansi-dim");
   if (style.italic) out.push("ansi-italic");
@@ -42,10 +47,12 @@ function applySgr(style: Style, params: string): Style {
     else if (code === 2) next.dim = true;
     else if (code === 3) next.italic = true;
     else if (code === 4) next.underline = fields[1] !== "0";
+    else if (code === 7) next.inverse = true;
     else if (code === 21) next.underline = true;
     else if (code === 22) { delete next.bold; delete next.dim; }
     else if (code === 23) delete next.italic;
     else if (code === 24) delete next.underline;
+    else if (code === 27) delete next.inverse;
     else if (code! >= 30 && code! <= 37) next.fg = code! - 30;
     else if (code === 39) delete next.fg;
     else if (code! >= 40 && code! <= 47) next.bg = code! - 40;

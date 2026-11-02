@@ -1,0 +1,472 @@
+{
+  "commit": "0ddf108e3f3b06b226a4fd6be76c903a0ad950e5",
+  "browser": "156.0.8078.4",
+  "cpuThrottle": 4,
+  "repetitions": 3,
+  "aggregation": "median, except maximum long-task count",
+  "seed": "fulcrum-stress-v1",
+  "contract": {
+    "200": {
+      "firstPaint": {
+        "direction": "atMost",
+        "enforce": {
+          "budget": 500
+        }
+      },
+      "fps": {
+        "direction": "atLeast",
+        "enforce": {
+          "budget": 48
+        }
+      },
+      "p95Frame": {
+        "direction": "atMost",
+        "enforce": {
+          "budget": 45
+        }
+      },
+      "longTasks": {
+        "direction": "atMost",
+        "enforce": {
+          "budget": 8
+        }
+      },
+      "mountedDomNodes": {
+        "direction": "atMost",
+        "enforce": {
+          "budget": 250
+        }
+      },
+      "commitsPerEvent": {
+        "direction": "atMost",
+        "enforce": {
+          "budget": 0.5
+        }
+      },
+      "upwardScrollShift": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "66-67.5 px",
+          "target": 1,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      },
+      "idleAnimationFrames": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "126-141",
+          "target": 0,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      },
+      "idleTimers": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "2",
+          "target": 0,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      }
+    },
+    "5000": {
+      "firstPaint": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "1,123.1-2,102.6 ms",
+          "target": 250,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      },
+      "fps": {
+        "direction": "atLeast",
+        "knownFail": {
+          "measured": "16.4-21.5 fps",
+          "target": 55,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      },
+      "p95Frame": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "100.7-132.7 ms",
+          "target": 18,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      },
+      "worstFrame": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "145.3-190.2 ms",
+          "target": 50,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      },
+      "longTasks": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "87-114",
+          "target": 0,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      },
+      "mountedDomNodes": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "5,013",
+          "target": 500,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      },
+      "commitsPerEvent": {
+        "direction": "atMost",
+        "enforce": {
+          "budget": 0.1
+        }
+      },
+      "upwardScrollShift": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "66-67.5 px",
+          "target": 1,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      },
+      "idleAnimationFrames": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "126-141",
+          "target": 0,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      },
+      "idleTimers": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "2",
+          "target": 0,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      }
+    },
+    "100000": {
+      "mountedDomNodes": {
+        "direction": "atMost",
+        "knownFail": {
+          "measured": "100,000 seeded rows",
+          "target": 500,
+          "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+        }
+      }
+    }
+  },
+  "cases": [
+    {
+      "case": 200,
+      "samples": [
+        {
+          "case": 200,
+          "seed": "fulcrum-stress-v1",
+          "firstPaint": 113.59999996423721,
+          "fps": 60,
+          "p95Frame": 18.30000001192093,
+          "worstFrame": 19,
+          "longTasks": 0,
+          "mountedDomNodes": 27,
+          "mutationBatches": 18,
+          "estimatedEvents": 2000,
+          "commitsPerEvent": 0.009,
+          "upwardScrollShift": 383.90625,
+          "idleAnimationFrames": 0,
+          "idleTimers": 3
+        },
+        {
+          "case": 200,
+          "seed": "fulcrum-stress-v1",
+          "firstPaint": 101.89999997615814,
+          "fps": 60,
+          "p95Frame": 18.5,
+          "worstFrame": 19.30000001192093,
+          "longTasks": 0,
+          "mountedDomNodes": 27,
+          "mutationBatches": 18,
+          "estimatedEvents": 2000,
+          "commitsPerEvent": 0.009,
+          "upwardScrollShift": 383.90625,
+          "idleAnimationFrames": 0,
+          "idleTimers": 3
+        },
+        {
+          "case": 200,
+          "seed": "fulcrum-stress-v1",
+          "firstPaint": 101.39999997615814,
+          "fps": 60,
+          "p95Frame": 18.5,
+          "worstFrame": 19.299999952316284,
+          "longTasks": 0,
+          "mountedDomNodes": 27,
+          "mutationBatches": 18,
+          "estimatedEvents": 2000,
+          "commitsPerEvent": 0.009,
+          "upwardScrollShift": 383.90625,
+          "idleAnimationFrames": 0,
+          "idleTimers": 3
+        }
+      ],
+      "firstPaint": 101.89999997615814,
+      "fps": 60,
+      "p95Frame": 18.5,
+      "worstFrame": 19.299999952316284,
+      "longTasks": 0,
+      "mountedDomNodes": 27,
+      "commitsPerEvent": 0.009,
+      "upwardScrollShift": 383.90625,
+      "idleAnimationFrames": 0,
+      "idleTimers": 3,
+      "contract": {
+        "firstPaint": {
+          "direction": "atMost",
+          "enforce": {
+            "budget": 500
+          }
+        },
+        "fps": {
+          "direction": "atLeast",
+          "enforce": {
+            "budget": 48
+          }
+        },
+        "p95Frame": {
+          "direction": "atMost",
+          "enforce": {
+            "budget": 45
+          }
+        },
+        "longTasks": {
+          "direction": "atMost",
+          "enforce": {
+            "budget": 8
+          }
+        },
+        "mountedDomNodes": {
+          "direction": "atMost",
+          "enforce": {
+            "budget": 250
+          }
+        },
+        "commitsPerEvent": {
+          "direction": "atMost",
+          "enforce": {
+            "budget": 0.5
+          }
+        },
+        "upwardScrollShift": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "66-67.5 px",
+            "target": 1,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        },
+        "idleAnimationFrames": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "126-141",
+            "target": 0,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        },
+        "idleTimers": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "2",
+            "target": 0,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        }
+      },
+      "failures": [],
+      "knownFailures": [
+        "upwardScrollShift: 383.90625 (measured 66-67.5 px; target 1; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs)",
+        "idleTimers: 3 (measured 2; target 0; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs)"
+      ],
+      "resolvedKnownFailures": [
+        "FLIP ME: 200/idleAnimationFrames reached target 0; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+      ]
+    },
+    {
+      "case": 5000,
+      "samples": [
+        {
+          "case": 5000,
+          "seed": "fulcrum-stress-v1",
+          "firstPaint": 175.69999998807907,
+          "fps": 60,
+          "p95Frame": 18.200000047683716,
+          "worstFrame": 19.100000023841858,
+          "longTasks": 0,
+          "mountedDomNodes": 27,
+          "mutationBatches": 15,
+          "estimatedEvents": 2000,
+          "commitsPerEvent": 0.0075,
+          "upwardScrollShift": 38.40625,
+          "idleAnimationFrames": 0,
+          "idleTimers": 3
+        },
+        {
+          "case": 5000,
+          "seed": "fulcrum-stress-v1",
+          "firstPaint": 202.69999998807907,
+          "fps": 60,
+          "p95Frame": 18.30000001192093,
+          "worstFrame": 19.100000023841858,
+          "longTasks": 0,
+          "mountedDomNodes": 27,
+          "mutationBatches": 15,
+          "estimatedEvents": 2000,
+          "commitsPerEvent": 0.0075,
+          "upwardScrollShift": 38.40625,
+          "idleAnimationFrames": 0,
+          "idleTimers": 3
+        },
+        {
+          "case": 5000,
+          "seed": "fulcrum-stress-v1",
+          "firstPaint": 174.30000001192093,
+          "fps": 60,
+          "p95Frame": 18.399999976158142,
+          "worstFrame": 19.100000023841858,
+          "longTasks": 0,
+          "mountedDomNodes": 27,
+          "mutationBatches": 18,
+          "estimatedEvents": 2000,
+          "commitsPerEvent": 0.009,
+          "upwardScrollShift": 38.40625,
+          "idleAnimationFrames": 0,
+          "idleTimers": 2
+        }
+      ],
+      "firstPaint": 175.69999998807907,
+      "fps": 60,
+      "p95Frame": 18.30000001192093,
+      "worstFrame": 19.100000023841858,
+      "longTasks": 0,
+      "mountedDomNodes": 27,
+      "commitsPerEvent": 0.0075,
+      "upwardScrollShift": 38.40625,
+      "idleAnimationFrames": 0,
+      "idleTimers": 3,
+      "contract": {
+        "firstPaint": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "1,123.1-2,102.6 ms",
+            "target": 250,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        },
+        "fps": {
+          "direction": "atLeast",
+          "knownFail": {
+            "measured": "16.4-21.5 fps",
+            "target": 55,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        },
+        "p95Frame": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "100.7-132.7 ms",
+            "target": 18,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        },
+        "worstFrame": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "145.3-190.2 ms",
+            "target": 50,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        },
+        "longTasks": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "87-114",
+            "target": 0,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        },
+        "mountedDomNodes": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "5,013",
+            "target": 500,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        },
+        "commitsPerEvent": {
+          "direction": "atMost",
+          "enforce": {
+            "budget": 0.1
+          }
+        },
+        "upwardScrollShift": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "66-67.5 px",
+            "target": 1,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        },
+        "idleAnimationFrames": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "126-141",
+            "target": 0,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        },
+        "idleTimers": {
+          "direction": "atMost",
+          "knownFail": {
+            "measured": "2",
+            "target": 0,
+            "flipWhen": "flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+          }
+        }
+      },
+      "failures": [],
+      "knownFailures": [
+        "p95Frame: 18.30000001192093 (measured 100.7-132.7 ms; target 18; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs)",
+        "upwardScrollShift: 38.40625 (measured 66-67.5 px; target 1; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs)",
+        "idleTimers: 3 (measured 2; target 0; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs)"
+      ],
+      "resolvedKnownFailures": [
+        "FLIP ME: 5000/firstPaint reached target 250; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+        "FLIP ME: 5000/fps reached target 55; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+        "FLIP ME: 5000/worstFrame reached target 50; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+        "FLIP ME: 5000/longTasks reached target 0; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+        "FLIP ME: 5000/mountedDomNodes reached target 500; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+        "FLIP ME: 5000/idleAnimationFrames reached target 0; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+      ]
+    },
+    {
+      "case": 100000,
+      "timeout": "not run: non-virtual Timeline",
+      "failures": [],
+      "knownFailures": [
+        "mountedDomNodes: not run: non-virtual Timeline"
+      ],
+      "resolvedKnownFailures": []
+    }
+  ],
+  "flipMe": [
+    "FLIP ME: 200/idleAnimationFrames reached target 0; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+    "FLIP ME: 5000/firstPaint reached target 250; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+    "FLIP ME: 5000/fps reached target 55; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+    "FLIP ME: 5000/worstFrame reached target 50; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+    "FLIP ME: 5000/longTasks reached target 0; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+    "FLIP ME: 5000/mountedDomNodes reached target 500; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs",
+    "FLIP ME: 5000/idleAnimationFrames reached target 0; flip to enforced when the virtual Timeline meets the target in 3 sequential CI runs"
+  ]
+}

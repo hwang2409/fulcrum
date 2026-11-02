@@ -14,7 +14,7 @@ const tokens = await highlight(code, "typescript", {
 highlight.dispose();
 ```
 
-`languageForPath("src/a.ts")` and `languageForContentType("application/json; charset=utf-8")` resolve a file path (extension or well-known name such as `Makefile`, `Dockerfile`, `.bashrc`) or an HTTP media type (including `+json` and `+xml` suffixes) to a language name, or undefined.
+`languageForPath("src/a.ts")` and `languageForContentType("application/json; charset=utf-8")` resolve a file path (extension or well-known name such as `Makefile`, `Dockerfile`, `.bashrc`) or an HTTP media type (including `+json` and `+xml` suffixes) to a language name, or undefined. Both are also exported from `@fulcrum/highlight/languages`, which imports no worker or grammar, so a bundler emits neither for code that only resolves names (`@fulcrum/react` uses it).
 
 render typed fragments as text in `<span class="tok-<type>">` and untyped fragments as text nodes. import `@fulcrum/highlight/styles.css`; themes provide `--fulcrum-tok-<type>` variables. a strict csp only needs the static worker origin, for example `worker-src 'self'`. unknown languages return `null`.
 

@@ -499,6 +499,7 @@ ul[data-part="md-list"] { list-style: "- "; }
 .ansi-bright-cyan { color: var(--fulcrum-ansi-bright-cyan); }
 .ansi-bright-white { color: var(--fulcrum-ansi-bright-white); }
 [class*="ansi-bg-"] { color: var(--fulcrum-bg); }
+.ansi-inverse { background: var(--fulcrum-fg); color: var(--fulcrum-bg); }
 .ansi-bg-black { background: var(--fulcrum-ansi-black); }
 .ansi-bg-red { background: var(--fulcrum-ansi-red); }
 .ansi-bg-green { background: var(--fulcrum-ansi-green); }
