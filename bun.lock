@@ -110,6 +110,7 @@
       },
       "devDependencies": {
         "@fulcrum/adapter-test": "workspace:*",
+        "@types/node": "^22",
       },
     },
   },

@@ -108,8 +108,17 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const request = pending.get(message.id); if (!request) return;
     settle(message.id, (item) => message.error ? item.reject(Object.assign(new Error(message.error.message), message.error)) : item.resolve(message.result));
   });
-  const rejectPending = (code?: number) => { const error = closeError?.(handshaken, code) ?? new Error("transport closed"); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); };
-  transport.onClose?.(rejectPending);
+  const closeListeners = new Set<(error: unknown) => void>();
+  let closed = false;
+  const rejectPending = (code?: number) => { const error = closeError?.(handshaken, code) ?? new Error("transport closed"); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); return error; };
+  transport.onClose?.((code) => {
+    const error = rejectPending(code);
+    if (closed) return;
+    closed = true;
+    closeListeners.forEach((listener) => listener(error));
+  });
+  /** Calls `listener` once when the transport closes, with the same error that rejected pending requests. */
+  const onClose = (listener: (error: unknown) => void) => { closeListeners.add(listener); return () => { closeListeners.delete(listener); }; };
   const request = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
     if (!handshaken && method !== "hello") return Promise.reject(new Error("hello required"));
     if (pending.size >= maxPending) return Promise.reject(Object.assign(new Error("too many pending requests"), { code: "pending_limit" }));
@@ -129,7 +138,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const send = () => request("hello", { protocol_version: "1.0", client_version: "1.2", ...(requestedFeatures ? { features: requestedFeatures } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => { handshaken = true; negotiatedFeatures = result.capabilities?.features ?? []; return result; });
   };
-  return { store, stores, forSession, request, hello, get features() { return negotiatedFeatures; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
+  return { store, stores, forSession, request, hello, onClose, get features() { return negotiatedFeatures; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
 }
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }
 export type { RunState };

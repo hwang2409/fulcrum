@@ -2,11 +2,9 @@ import "./fonts.css";
 import "@fulcrum/react/styles.css";
 import "@fulcrum/react/themes.css";
 import "./shell.css";
-import themeSource from "@fulcrum/react/themes.css?raw";
+import { themes as themeNames } from "@fulcrum/react";
 import { useLayoutEffect, useState, type ReactNode } from "react";
 
-// The theme list comes from the shipped themes.css, so the picker never drifts from it.
-export const themeNames = [...themeSource.matchAll(/^\[data-fulcrum-theme="([^"]+)"\] \{$/gm)].map((match) => match[1]!);
 const AUTO = "auto";
 const pages = [
   ["playground", "/"],
@@ -21,7 +19,7 @@ const paletteVars = ["bg", "fg", "accent", "ok", "warn", "danger", "tok-keyword"
 export function Shell({ page, children }: { page: (typeof pages)[number][0]; children: ReactNode }) {
   const [theme, setTheme] = useState(() => {
     const value = new URLSearchParams(location.search).get("theme");
-    return value && themeNames.includes(value) ? value : AUTO;
+    return value && (themeNames as readonly string[]).includes(value) ? value : AUTO;
   });
   useLayoutEffect(() => {
     const url = new URL(location.href);

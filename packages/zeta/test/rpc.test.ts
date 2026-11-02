@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { connect, type Transport } from "../src/index.js";
+import { connect, createClient, type Transport } from "../src/index.js";
 
 function fakeTransport() {
   let onMessage!: (text: string) => void;
@@ -60,4 +60,18 @@ test("hello, responses, errors, and events", async () => {
     params: { event: "usage", usage: { input_tokens: 2 } },
   });
   expect(client.store.getState().usage.input_tokens).toBe(2);
+});
+
+test("onClose reports a dropped transport once, with the close error, and can unsubscribe", async () => {
+  let closeTransport!: (code?: number) => void;
+  const transport: Transport = { send() {}, onMessage() {}, onClose(callback) { closeTransport = callback; }, close() {} };
+  const client = createClient(transport, undefined, (_handshaken, code) => new Error(`closed ${code}`));
+  const seen: unknown[] = [];
+  const kept = client.onClose((error) => seen.push(error));
+  const dropped = client.onClose(() => seen.push("unsubscribed listener ran"));
+  dropped();
+  closeTransport(1006);
+  closeTransport(1006);
+  expect(seen.map(String)).toEqual(["Error: closed 1006"]);
+  kept();
 });
