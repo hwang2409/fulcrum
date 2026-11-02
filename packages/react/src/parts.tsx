@@ -130,13 +130,16 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
       if (list.snapshot.anchor) modeAnchor.current = { id: list.snapshot.anchor.id, offset: list.snapshot.anchor.offset };
     } else {
       if (priorMode.current && modeAnchor.current) {
-        const row = [...plainRef.current!.children].find((child) => (child as HTMLElement).dataset.id === modeAnchor.current!.id) as HTMLElement | undefined;
+        const index = items.findIndex(({ id }) => id === modeAnchor.current!.id);
+        const row = index >= 0 ? plainRef.current!.children[index] as HTMLElement | undefined : undefined;
         if (row) container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - modeAnchor.current.offset;
       }
       const capture = () => {
         const top = container.getBoundingClientRect().top;
-        const row = [...(plainRef.current?.children ?? [])].find((child) => child.getBoundingClientRect().bottom > top) as HTMLElement | undefined;
-        if (row?.dataset.id) modeAnchor.current = { id: row.dataset.id, offset: row.getBoundingClientRect().top - top };
+        const children = [...(plainRef.current?.children ?? [])];
+        const index = children.findIndex((child) => child.getBoundingClientRect().bottom > top);
+        const row = index >= 0 ? children[index] as HTMLElement : undefined;
+        if (row) modeAnchor.current = { id: items[index]!.id, offset: row.getBoundingClientRect().top - top };
       };
       capture();
       container.addEventListener("scroll", capture, { passive: true });
@@ -144,7 +147,7 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
       return () => container.removeEventListener("scroll", capture);
     }
     priorMode.current = enabled;
-  }, [enabled, list.snapshot, scrollRef]);
+  }, [enabled, items, list.snapshot, scrollRef]);
   const debug = typeof location !== "undefined" && new URLSearchParams(location.search).get("virtualDebug") === "1";
   if (!enabled) {
     return (
