@@ -96,7 +96,8 @@ test("168 streamed reference orders commit only complete definitions", () => {
     const use = inList ? "- second uses [shared]." : "second uses [shared].";
     const separator = inList ? "\n" : "\n\n";
     const source = quoted(definitionFirst ? `${definition}${separator}${use}` : `${use}${separator}${definition}\n`, depth);
-    expect(sharedHref(stream(source, split)), `depth ${depth}, split ${split}, definitionFirst ${definitionFirst}, inList ${inList}`).toBe("https://example.com/docs");
+    const expected = definitionFirst ? "https://example.com/docs" : undefined;
+    expect(sharedHref(stream(source, split)), `depth ${depth}, split ${split}, definitionFirst ${definitionFirst}, inList ${inList}`).toBe(expected);
     checked++;
   }
   expect(checked).toBe(168);

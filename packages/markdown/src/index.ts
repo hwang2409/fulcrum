@@ -316,7 +316,7 @@ function safeBlockPass(source: string, work?: ParserWork) {
   const line = source.slice(lineStart);
   if (/^ {0,3}[-+*]\s+\[[ xX]?\]?\s*$/.test(line)) return source.slice(0, lineStart);
   if (/^ {0,3}(?:[-*_]\s*)+$/.test(line)) return source.slice(0, lineStart);
-  if (/^ {0,3}(?:=+|-+)\s*$/.test(line)) return source.slice(0, lineStart);
+  if (/^ {0,3}-+\s*$/.test(line)) return source.slice(0, lineStart);
   if (/^ {0,3}\[[^\]\n]*(?:\]|$)(?::[^\n]*)?$/.test(line)) return source.slice(0, lineStart);
   if (/^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)]?)\s*$/.test(line)) return source.slice(0, lineStart);
   if (/^ {0,3}(?:`{1,2}(?!`)|~{1,2}(?!~))[^\n]*$/.test(line)) return source.slice(0, lineStart);
@@ -424,10 +424,35 @@ function parseInline(source: string, streaming: boolean, work?: ParserWork) {
   return nodes;
 }
 
+const provisionalReferenceDefinition = /^ {0,3}\[([^\]\n]+)\]:\s*(?:<[^>\n]+>|\S+)\s*$/;
+
+function openReferenceTitle(line: string) {
+  if (/^ {4}/.test(line)) return false;
+  const value = line.trimStart();
+  const closer = value[0] === "(" ? ")" : value[0] === "\"" || value[0] === "'" ? value[0] : undefined;
+  if (!closer) return !value;
+  for (let index = 1; index < value.length; index++) {
+    if (value[index] === closer && value[index - 1] !== "\\") return false;
+  }
+  return true;
+}
+
+function provisionalReference(source: string) {
+  const completeLine = source.endsWith("\n");
+  const body = completeLine ? source.slice(0, -1) : source;
+  const lineStart = body.lastIndexOf("\n") + 1;
+  const line = body.slice(lineStart);
+  const current = provisionalReferenceDefinition.exec(line);
+  if (current) return { start: lineStart };
+  const previousEnd = Math.max(0, lineStart - 1);
+  const previousStart = body.lastIndexOf("\n", previousEnd - 1) + 1;
+  const previous = provisionalReferenceDefinition.exec(body.slice(previousStart, previousEnd));
+  if (previous && !completeLine && openReferenceTitle(line)) return { start: previousStart };
+}
+
 function withoutPendingReferenceDefinition(source: string) {
-  const lineStart = source.lastIndexOf("\n") + 1;
-  const line = source.slice(lineStart);
-  return /^ {0,3}\[[^\]\n]+\]:[^\n]*$/.test(line) ? source.slice(0, lineStart) : source;
+  const pending = provisionalReference(source);
+  return pending ? source.slice(0, pending.start) : source;
 }
 
 function parseStreamingMarkdown(source: string, environment: Environment = {}, work?: ParserWork): ParsedBlock[] {
@@ -777,19 +802,19 @@ function startListChild(state: OpenContainerState, match: RegExpExecArray, newli
   if (newline) document.append("\n");
 }
 
-function appendContainerLine(state: OpenContainerState, line: string) {
-  if (state.kind === "quote") {
-    const marker = /^ {0,3}> ?(.*)$/.exec(line);
-    if (marker) {
-      currentContainerChild(state).document.append(`${marker[1]}\n`);
-      state.previousBlank = !marker[1]!.trim();
-      return true;
-    }
-    if (!line.trim() || state.previousBlank) return false;
-    currentContainerChild(state).document.append(`${line}\n`);
+function appendQuoteLine(state: OpenContainerState, line: string) {
+  const marker = /^ {0,3}> ?(.*)$/.exec(line);
+  if (marker) {
+    currentContainerChild(state).document.append(`${marker[1]}\n`);
+    state.previousBlank = !marker[1]!.trim();
     return true;
   }
+  if (!line.trim() || state.previousBlank) return false;
+  currentContainerChild(state).document.append(`${line}\n`);
+  return true;
+}
 
+function appendListLine(state: OpenContainerState, line: string) {
   const marker = listMarker.exec(line);
   if (marker && /^\d/.test(marker[2]!) === state.ordered) {
     if (state.previousBlank) markListLoose(state);
@@ -812,6 +837,10 @@ function appendContainerLine(state: OpenContainerState, line: string) {
   if (state.previousBlank) return false;
   currentContainerChild(state).document.append(`${line}\n`);
   return true;
+}
+
+function appendContainerLine(state: OpenContainerState, line: string) {
+  return state.kind === "quote" ? appendQuoteLine(state, line) : appendListLine(state, line);
 }
 
 function previewQuoteContent(state: OpenContainerState, line: string) {
@@ -1006,7 +1035,7 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
       : appendFenceDelta(state.value, unrendered) && openSnapshot(state.value.block);
     if (continued) return continued;
     if (state.kind === "container") commitOpenContainer(state.value);
-    else if (state.kind !== "fence" && !(state.kind === "paragraph" && !unrendered.includes("\n\n"))) commitOpenPrefix(state.value.scannedOffset);
+    else if (state.kind !== "fence" && !(state.kind === "paragraph" && (!state.value.pendingNewline || !unrendered.includes("\n\n")))) commitOpenPrefix(state.value.scannedOffset);
     openState = undefined;
   };
 
