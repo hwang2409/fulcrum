@@ -7,6 +7,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { act, Profiler, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
+import { Markdown } from "../../markdown/src/react.js";
 import {
   Approval,
   Message,
@@ -55,6 +56,35 @@ const q = (selector: string) => container.querySelector(selector) as HTMLElement
 // react-dom keeps the committed props object on each host node; a new object means the owner re-rendered.
 const hostProps = (el: Element) =>
   (el as unknown as Record<string, unknown>)[Object.keys(el).find((key) => key.startsWith("__reactProps$"))!];
+
+test("Message composes assistant markdown while user and explicit plain modes stay text", () => {
+  const { store } = setup([
+    { type: "message_commit", message_id: "assistant", message: message("use `code`") },
+    { type: "message_commit", message_id: "user", message: { role: "user", content: [{ type: "text", text: "use `plain`" }] } },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <Message id="message:assistant" markdown={Markdown} />
+      <Message id="message:user" markdown={Markdown} />
+      <Message id="message:assistant" markdown={false} className="plain" />
+    </RunProvider>,
+  );
+  expect(q('[data-id="message:assistant"] [data-part="md-code-inline"]')?.textContent).toBe("code");
+  expect(q('[data-id="message:user"]').textContent).toBe("use `plain`");
+  expect(q(".plain").textContent).toBe("use `code`");
+});
+
+test("Message can opt user messages into markdown", () => {
+  const { store } = setup([
+    { type: "message_commit", message_id: "user", message: { role: "user", content: [{ type: "text", text: "use **strong**" }] } },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <Message id="message:user" markdown={Markdown} markdownFor="all" />
+    </RunProvider>,
+  );
+  expect(q('[data-part="md-strong"]').textContent).toBe("strong");
+});
 
 test("a delta re-renders only the streaming item", async () => {
   const { store, send } = setup([
