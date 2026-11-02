@@ -7,7 +7,11 @@ import type {
   TransportMessage,
 } from "./wire.js";
 import type { Transport } from "./transport.js";
-export function createClient(transport: Transport, scheduler?: Scheduler) {
+export function createClient(
+  transport: Transport,
+  scheduler?: Scheduler,
+  closeError?: (handshaken: boolean) => unknown,
+) {
   let nextId = 1;
   let handshaken = false;
   let negotiatedFeatures: string[] = [];
@@ -44,7 +48,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler) {
     else request.resolve(message.result);
   });
   const rejectPending = () => {
-    const error = new Error("transport closed");
+    const error = closeError?.(handshaken) ?? new Error("transport closed");
     pending.forEach((request) => request.reject(error));
     pending.clear();
   };
@@ -63,11 +67,15 @@ export function createClient(transport: Transport, scheduler?: Scheduler) {
       }
     });
   };
-  const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
+  const hello = (
+    requestedFeatures?: string[],
+    extraParams: Record<string, unknown> = {},
+  ): Promise<HelloResult> => {
     const send = () =>
       request("hello", {
         protocol_version: "1.0",
         client_version: "1.2",
+        ...extraParams,
         ...(requestedFeatures ? { features: requestedFeatures } : {}),
       }) as Promise<HelloResult>;
     const response = transport.ready ? transport.ready.then(send) : send();

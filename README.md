@@ -3,7 +3,7 @@
 ## packages
 
 - `@fulcrum/core`: agent-agnostic run events, normalized state reducer, and burst-coalescing store.
-- `@fulcrum/zeta`: zeta serve wire types, adapter, JSON-RPC client, and websocket transport.
+- `@fulcrum/zeta`: zeta serve wire types, adapter, JSON-RPC client, websocket transport, and provisional authenticated `connectZeta`.
 
 ## reducer and store
 
