@@ -10,6 +10,7 @@ test("AI SDK UI message stream conforms to generic run events", () => {
   expect(runAdapterConformance({
     name: "ai-sdk",
     fixtures,
+    capabilities: { approval: true, reasoning: true, reset: false, usage: true },
     create: () => {
       const adapter = createAiSdkAdapter();
       return { decode: (value) => adapter.decode((value as { part: unknown }).part) };

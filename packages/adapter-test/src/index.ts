@@ -10,37 +10,54 @@ export interface AdapterFixture {
   sessionId: string;
   [key: string]: unknown;
 }
+export interface AdapterCapabilities {
+  approval: boolean;
+  reasoning: boolean;
+  reset: boolean;
+  usage: boolean;
+}
 export interface AdapterConformanceOptions {
   name: string;
   fixtures: readonly AdapterFixture[];
   create(): { decode(value: unknown): RunEvent[] };
-  capabilities?: { approval?: boolean };
+  capabilities: AdapterCapabilities;
 }
 
-const identity = (event: RunEvent) => {
+type Store = ReturnType<typeof createRunStore>;
+type Adapter = ReturnType<AdapterConformanceOptions["create"]>;
+
+const identity = (event: RunEvent): string | undefined => {
   switch (event.type) {
-    case "message_delta": case "message_commit": return `message:${event.message_id ?? ""}`;
-    case "tool_start": case "tool_input": case "tool_output": case "tool_end": return `tool:${event.tool_call.id}`;
-    case "approval_request": case "approval_end": return `approval:${event.request_id}`;
-    default: return event.type;
+    case "message_delta": case "message_commit": return event.message_id ? `message:${event.message_id}` : undefined;
+    case "tool_start": case "tool_input": case "tool_output": case "tool_end": return event.tool_call.id ? `tool:${event.tool_call.id}` : undefined;
+    case "approval_request": case "approval_end": return event.request_id ? `approval:${event.request_id}` : undefined;
+    default: return undefined;
   }
 };
 const messageText = (item: RunItem) => item.type === "message"
   ? item.message.content.filter((part) => part.type === "text").map((part) => String(part.text ?? "")).join("") || item.text || ""
   : "";
 const has = (events: readonly RunEvent[], type: RunEvent["type"]) => events.some((event) => event.type === type);
+const scenarioEnabled = (scenario: AdapterScenario, capabilities: AdapterCapabilities) => {
+  if (scenario === "approval") return capabilities.approval;
+  if (scenario === "reasoning") return capabilities.reasoning;
+  if (scenario === "usage") return capabilities.usage;
+  return true;
+};
 
 /** Runs Fulcrum-owned behavioral scenarios without depending on a test framework. */
 export function runAdapterConformance(options: AdapterConformanceOptions): string[] {
   const failures: string[] = [];
   const fixtureScenarios = new Set(options.fixtures.map(({ scenario }) => scenario));
   for (const scenario of canonicalScenarios)
-    if (scenario !== "approval" || options.capabilities?.approval !== false)
-      if (!fixtureScenarios.has(scenario)) failures.push(`${scenario}: fixture is missing`);
+    if (scenarioEnabled(scenario, options.capabilities) && !fixtureScenarios.has(scenario))
+      failures.push(`${scenario}: fixture is missing`);
 
-  const run = (fixtures: readonly AdapterFixture[]) => {
-    const adapters = new Map<string, ReturnType<AdapterConformanceOptions["create"]>>();
-    const stores = new Map<string, ReturnType<typeof createRunStore>>();
+  const run = (
+    fixtures: readonly AdapterFixture[],
+    adapters = new Map<string, Adapter>(),
+    stores = new Map<string, Store>(),
+  ) => {
     const events: RunEvent[] = [];
     for (const fixture of fixtures) {
       const adapter = adapters.get(fixture.sessionId) ?? options.create();
@@ -62,9 +79,11 @@ export function runAdapterConformance(options: AdapterConformanceOptions): strin
   require(has(text.events, "message_delta") && has(text.events, "message_commit"), "text", "must stream and commit text");
   require([...text.stores.values()].some((store) => store.getOutline().some(({ id }) => messageText(store.getItem(id)!).includes("hello"))), "text", "committed text was lost");
 
-  const reasoning = scenario("reasoning");
-  require(reasoning.events.some((event) => event.type === "message_delta" && (event.kind === "reasoning" || event.kind === "thinking")), "reasoning", "reasoning delta was not preserved");
-  require(reasoning.events.some((event) => event.type === "message_commit" && event.message.content.some((part) => part.type === "reasoning" || part.type === "thinking")), "reasoning", "reasoning commit was not preserved");
+  if (options.capabilities.reasoning) {
+    const reasoning = scenario("reasoning");
+    require(reasoning.events.some((event) => event.type === "message_delta" && (event.kind === "reasoning" || event.kind === "thinking")), "reasoning", "reasoning delta was not preserved");
+    require(reasoning.events.some((event) => event.type === "message_commit" && event.message.content.some((part) => part.type === "reasoning" || part.type === "thinking")), "reasoning", "reasoning commit was not preserved");
+  }
 
   const tool = scenario("tool").events;
   require(has(tool, "tool_start") && has(tool, "tool_output") && has(tool, "tool_end"), "tool", "tool lifecycle is incomplete");
@@ -72,14 +91,16 @@ export function runAdapterConformance(options: AdapterConformanceOptions): strin
   require(tool.some((event) => event.type === "tool_end" && !event.tool_result?.is_error), "tool", "successful tool end is missing");
   require(scenario("tool-error").events.some((event) => event.type === "tool_end" && event.tool_result?.is_error), "tool-error", "tool error is missing");
 
-  if (options.capabilities?.approval !== false) {
+  if (options.capabilities.approval) {
     const approval = scenario("approval").events;
     require(has(approval, "approval_request") && has(approval, "approval_end"), "approval", "approval lifecycle is incomplete");
   }
   const recovery = scenario("reset-retry-abort").events;
-  require(has(recovery, "message_reset") && has(recovery, "retry"), "reset-retry-abort", "reset or retry is missing");
+  if (options.capabilities.reset)
+    require(has(recovery, "message_reset") && has(recovery, "retry"), "reset-retry-abort", "reset or retry is missing");
   require(recovery.some((event) => event.type === "error" && /abort|cancel/i.test(`${event.error.code} ${event.error.message}`)), "reset-retry-abort", "abort is missing");
-  require(scenario("usage").events.some((event) => event.type === "usage" && Object.values(event.usage).every(Number.isFinite)), "usage", "numeric usage is missing");
+  if (options.capabilities.usage)
+    require(scenario("usage").events.some((event) => event.type === "usage" && Object.values(event.usage).length > 0 && Object.values(event.usage).every(Number.isFinite)), "usage", "numeric usage is missing");
   const invalid = scenario("unknown-malformed").events;
   require(has(invalid, "unknown") && invalid.some((event) => event.type === "error" && event.error.code === "adapter_invalid_payload"), "unknown-malformed", "unknown data or malformed-input error is missing");
 
@@ -91,8 +112,15 @@ export function runAdapterConformance(options: AdapterConformanceOptions): strin
   }
 
   const replayFixtures = options.fixtures.filter((fixture) => fixture.scenario === "replay");
-  const first = run(replayFixtures).events.map(identity).filter((id) => /^(message|tool|approval):/.test(id));
-  const second = run(replayFixtures).events.map(identity).filter((id) => /^(message|tool|approval):/.test(id));
-  require(first.length > 0 && JSON.stringify(first) === JSON.stringify(second), "replay", "ids changed across reconnect replay");
+  const stores = new Map<string, Store>();
+  const first = run(replayFixtures, new Map(), stores);
+  const firstIds = first.events.map(identity);
+  require(firstIds.length > 0 && firstIds.every(Boolean), "replay", "event identity must be nonempty");
+  const before = [...stores.values()].map((store) => store.getOutline().map(({ id }) => id));
+  const second = run(replayFixtures, new Map(), stores);
+  const secondIds = second.events.map(identity);
+  require(JSON.stringify(firstIds) === JSON.stringify(secondIds), "replay", "ids changed across reconnect replay");
+  const after = [...stores.values()].map((store) => store.getOutline().map(({ id }) => id));
+  require(JSON.stringify(before) === JSON.stringify(after), "replay", "reconnect replay changed outline membership");
   return failures;
 }

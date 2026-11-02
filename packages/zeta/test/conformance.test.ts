@@ -30,6 +30,7 @@ test("zeta passes the harness-neutral adapter contract", () => {
   expect(runAdapterConformance({
     name: "zeta",
     fixtures,
+    capabilities: { approval: true, reasoning: true, reset: true, usage: true },
     create: () => ({ decode: (value) => fromZetaEvent((value as { part: unknown }).part) }),
   })).toEqual([]);
 });
