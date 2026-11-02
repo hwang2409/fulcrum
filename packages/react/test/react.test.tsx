@@ -4,7 +4,7 @@ GlobalRegistrator.register();
 
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { act, Profiler, type ReactNode } from "react";
+import { act, Profiler, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
 import {
@@ -14,6 +14,7 @@ import {
   Timeline,
   ToolCall,
   useItem,
+  useRun,
   useTimeline,
   type Renderers,
 } from "../src/index.js";
@@ -89,6 +90,48 @@ test("a delta re-renders only the streaming item", async () => {
   expect(rows).toEqual(before.rows);
   expect(hostProps(q('[data-part="timeline"]'))).toBe(timelineProps);
   expect(store.getState().items).toHaveLength(3);
+});
+
+test("useRun applies a changed selector without a store update", () => {
+  const { store } = setup([{ type: "run_start" }]);
+  let selectTurn!: () => void;
+  const View = () => {
+    const [turn, setTurn] = useState(false);
+    selectTurn = () => setTurn(true);
+    const value = useRun(turn ? (state) => state.turn : (state) => state.agent);
+    return <span>{turn ? `turn=${value}` : `agent=${value}`}</span>;
+  };
+  mount(
+    <RunProvider store={store}>
+      <View />
+    </RunProvider>,
+  );
+
+  expect(container.textContent).toBe("agent=running");
+  act(selectTurn);
+  expect(container.textContent).toBe("turn=idle");
+});
+
+test("dispose publishes the terminal snapshot to mounted hooks", () => {
+  const { store } = setup([
+    { type: "message_delta", message_id: "m", delta: "x" },
+  ]);
+  const View = () => {
+    const outline = useTimeline();
+    const item = useItem("message:m");
+    return <span>{outline.length}:{item?.type === "message" ? item.text : "none"}</span>;
+  };
+  mount(
+    <RunProvider store={store}>
+      <View />
+    </RunProvider>,
+  );
+
+  expect(container.textContent).toBe("1:x");
+  act(() => store.dispose());
+  expect(store.getOutline()).toHaveLength(0);
+  expect(store.getItem("message:m")).toBeUndefined();
+  expect(container.textContent).toBe("0:none");
 });
 
 test("keyed hooks do not read unrelated items or the outline", () => {
