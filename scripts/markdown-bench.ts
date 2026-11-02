@@ -24,21 +24,27 @@ function proveGateSensitivity() {
 }
 
 function measure(source: string, deltaSize: number): Measurement {
-  const document = createStreamingDocument();
-  const durations: number[] = [];
-  const work: number[] = [];
-  for (let index = 0; index < source.length; index += deltaSize) {
-    const before = document.stats.scannedCharacters;
-    const start = performance.now();
-    document.append(source.slice(index, index + deltaSize));
-    document.render();
-    durations.push(performance.now() - start);
-    work.push(document.stats.scannedCharacters - before);
-  }
-  const sorted = [...durations].sort((a, b) => a - b);
+  let work: number[] = [];
+  const trials = Array.from({ length: 3 }, (_, trial) => {
+    const document = createStreamingDocument();
+    const durations: number[] = [];
+    const trialWork: number[] = [];
+    for (let index = 0; index < source.length; index += deltaSize) {
+      const before = document.stats.scannedCharacters;
+      const start = performance.now();
+      document.append(source.slice(index, index + deltaSize));
+      document.render();
+      durations.push(performance.now() - start);
+      trialWork.push(document.stats.scannedCharacters - before);
+    }
+    if (trial === 0) work = trialWork;
+    const sorted = durations.sort((a, b) => a - b);
+    return { p95: sorted[Math.floor(durations.length * 0.95)]!, max: sorted.at(-1)! };
+  });
+  const median = (key: "p95" | "max") => trials.map((trial) => trial[key]).sort((a, b) => a - b)[1]!;
   return {
-    p95: sorted[Math.floor(durations.length * 0.95)]!,
-    max: sorted.at(-1)!,
+    p95: median("p95"),
+    max: median("max"),
     workRatio: quarterRatio(work),
     maxWork: Math.max(...work),
   };
