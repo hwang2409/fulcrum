@@ -59,3 +59,34 @@ const renderers: Renderers = {
 ## virtual
 
 `@fulcrum/virtual` is a zero-dependency, framework-agnostic vertical windowing engine. `createVirtualizer` accepts generic `{ id, kind }` outlines, kind-based estimates, and an optional cache from `snapshotCache()`. Its small interface owns measured per-kind medians, capped overscan ranges, stable or end-relative anchor corrections, deferred momentum-scroll jumps, pinned-bottom decisions, and a bounded structured action log. Callers apply the returned rows, spacers, and scroll decisions in their own renderer; the package does not use React, the DOM, or browser APIs.
+
+## use fulcrum with another harness
+
+map harness tool names to fulcrum's small, agent-neutral view contract in `@fulcrum/core`. resolvers receive safe argument readers; missing or invalid arguments return no view instead of throwing.
+
+```ts
+import { defineToolMap, resolveToolView } from "@fulcrum/core";
+
+const claudeCodeTools = defineToolMap({
+  Bash: (args) => {
+    const command = args.string("command");
+    return command ? { kind: "shell", command } : undefined;
+  },
+  Read: (args) => {
+    const path = args.string("file_path");
+    return path ? { kind: "read", path } : undefined;
+  },
+  Edit: (args) => {
+    const path = args.string("file_path");
+    const before = args.string("old_string");
+    const after = args.string("new_string");
+    return path && before !== undefined && after !== undefined
+      ? { kind: "edit", path, diff: `-${before}\n+${after}` }
+      : undefined;
+  },
+});
+
+const view = resolveToolView(claudeCodeTools, toolCall);
+```
+
+adapters can attach `view` to core tool events, or use `applyToolMap` for an existing tool item. unknown tools keep the generic card.

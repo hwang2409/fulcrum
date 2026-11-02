@@ -47,7 +47,6 @@ const cases: Array<[ToolView, string, string]> = [
   [{ kind: "write", path: "src/a.ts", bytes: 12 }, "write", "12 B"],
   [{ kind: "search", pattern: "TODO", path: "src" }, "search", "TODO"],
   [{ kind: "fetch", url: "https://example.com", title: "Example", bytes: 128 }, "fetch", "https://example.com"],
-  [{ kind: "agent", childRunId: "child-1", status: "running", description: "review" }, "agent", "review"],
 ];
 
 for (const [view, kind, text] of cases) {
@@ -76,16 +75,6 @@ test("large output is capped until show all is requested", () => {
   expect(button.textContent).toContain("440");
   act(() => button.click());
   expect(container.textContent).toContain("line 250");
-});
-
-test("agent card opens its child run", () => {
-  const opened: string[] = [];
-  render(
-    tool("agent", "agent", { kind: "agent", childRunId: "child-1", status: "done", description: "review" }),
-    <ToolBody id="tool:agent" onOpenRun={(id) => opened.push(id)} />,
-  );
-  act(() => (container.querySelector('[data-action="open-run"]') as HTMLButtonElement).click());
-  expect(opened).toEqual(["child-1"]);
 });
 
 test("unknown tools use a one-line summary and collapsed json", () => {

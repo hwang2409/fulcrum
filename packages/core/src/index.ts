@@ -1,4 +1,5 @@
 export * from "./events.js";
+export * from "./tool-map.js";
 export {
   RECEIPT_LIMIT,
   initialState,

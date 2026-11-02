@@ -19,8 +19,7 @@ export type ToolView =
   | { kind: "edit"; path: string; diff: string }
   | { kind: "write"; path: string; bytes?: number }
   | { kind: "search"; pattern: string; path?: string; matches?: string[] }
-  | { kind: "fetch"; url?: string; query?: string; title?: string; bytes?: number }
-  | { kind: "agent"; childRunId?: string; status?: string; description?: string };
+  | { kind: "fetch"; url?: string; query?: string; title?: string; bytes?: number };
 export interface ToolResult {
   tool_call_id: string;
   content: string;
