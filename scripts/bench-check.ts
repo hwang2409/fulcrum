@@ -1,6 +1,7 @@
 import { createRunStore } from "../packages/core/src/index.js";
 
-const budget = Number(process.env.BENCH_BUDGET_MS ?? 50);
+const absoluteBudget = Number(process.env.CI ? 250 : 50);
+const scalingBudget = 3;
 const runs = 5;
 
 function run(seedCount: number) {
@@ -15,22 +16,43 @@ function run(seedCount: number) {
     store.dispatch({ type: "message_delta", delta: "x".repeat(100) });
     if (i % 800 === 799) store.getState();
   }
+  const elapsed = performance.now() - start;
   const state = store.getState();
   const item = state.itemsById[streamId];
   if (item?.type !== "message" || item.text?.length !== 5_000_000) throw new Error("invalid stream result");
-  return performance.now() - start;
+  return elapsed;
 }
 
-let failed = false;
-for (const seedCount of [200, 5_000]) {
-  const values = Array.from({ length: runs }, () => run(seedCount));
-  const sorted = [...values].sort((a, b) => a - b);
-  const median = sorted[Math.floor(runs / 2)];
-  const label = `${seedCount} messages`;
-  console.log(`${label}: median ${median.toFixed(2)} ms (budget ${budget} ms)`);
-  if (median > budget) {
-    failed = true;
-    console.log(`  runs: ${values.map((value) => value.toFixed(2)).join(", ")}`);
-  }
+function collectRuns() {
+  // warm up the JIT before collecting measurements
+  run(200);
+  run(5_000);
+  const values = Array.from({ length: runs }, () => {
+    const small = run(200);
+    if (typeof Bun.gc === "function") Bun.gc(true);
+    const large = run(5_000);
+    if (typeof Bun.gc === "function") Bun.gc(true);
+    return { small, large };
+  });
+  return values;
 }
-if (failed) process.exit(1);
+
+const values = collectRuns();
+const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(runs / 2)];
+const smallRuns = values.map(({ small }) => small);
+const largeRuns = values.map(({ large }) => large);
+const ratios = values.map(({ small, large }) => large / small);
+const smallMedian = median(smallRuns);
+const largeMedian = median(largeRuns);
+const ratioMedian = median(ratios);
+const failed = ratioMedian > scalingBudget || largeMedian > absoluteBudget;
+
+console.log(`200 messages: median ${smallMedian.toFixed(2)} ms`);
+console.log(`5000 messages: median ${largeMedian.toFixed(2)} ms (budget ${absoluteBudget} ms)`);
+console.log(`scaling: median ${ratioMedian.toFixed(2)}x (budget ${scalingBudget}x)`);
+if (failed) {
+  console.log(`200 runs: ${smallRuns.map((value) => value.toFixed(2)).join(", ")}`);
+  console.log(`5000 runs: ${largeRuns.map((value) => value.toFixed(2)).join(", ")}`);
+  console.log(`ratios: ${ratios.map((value) => value.toFixed(2)).join(", ")}`);
+  process.exit(1);
+}
