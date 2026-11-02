@@ -48,6 +48,16 @@ test("does not send before open", async () => {
   expect(socket.sent).toEqual(["hello"]);
 });
 
+test("buffers a response received before the client attaches", async () => {
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  const connecting = webSocketTransport("ws://test");
+  const socket = FakeWebSocket.instances[0]; socket.emit("open");
+  const transport = await connecting;
+  socket.emit("message", { data: "early" });
+  let received = ""; transport.onMessage((text) => { received = text; });
+  expect(received).toBe("early");
+});
+
 test("error before open rejects", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   const connecting = webSocketTransport("ws://test");

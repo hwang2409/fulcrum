@@ -1,0 +1,24 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { connectZeta, type ZetaError } from "@fulcrum/zeta";
+const cmd = process.env.ZETA_CMD ?? "uv run --project /tmp/zeta-ws zeta";
+const parts = cmd.split(/\s+/); const home = await mkdtemp(join(tmpdir(), "fulcrum-zeta-smoke-"));
+const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {}, open() {}, close() {} } }); const port = probe.port; probe.stop();
+await writeFile(join(home, "settings.toml"), 'provider = "ollama"\nmodel = "qwen3:4b"\n');
+const child = spawn(parts[0], [...parts.slice(1), "serve", "--ws", String(port)], { env: { ...process.env, ZETA_HOME: home }, stdio: ["ignore", "pipe", "pipe"] });
+let stderr = ""; child.stderr.on("data", (data) => { stderr += data.toString(); });
+const discovery = join(home, "run", "serve.ws.json");
+for (let i = 0; i < 100; i++) { try { JSON.parse(await readFile(discovery, "utf8")); break; } catch { await Bun.sleep(100); } }
+const connection = JSON.parse(await readFile(discovery, "utf8")) as { port: number; token: string }; const url = `ws://127.0.0.1:${connection.port}/`; await Bun.sleep(300);
+const connectReady = async () => { for (let i = 0; i < 30; i++) { try { return await connectZeta({ url, token: connection.token }); } catch { await Bun.sleep(100); } } throw new Error(`server did not accept websocket: ${stderr}`); };
+const rows: Array<[string, string]> = []; const check = async (name: string, fn: () => Promise<void>) => { try { await fn(); rows.push([name, "pass"]); } catch (error) { rows.push([name, `fail: ${error instanceof Error ? error.message : error}`]); } };
+await check("hello", async () => { const c = await connectReady(); const hello = await c.hello(); console.log(`negotiated version: ${hello.protocol_version}; features: ${(c.features ?? []).join(",") || "none"}`); c.close(); });
+await check("list_sessions", async () => { const c = await connectReady(); const result = await c.request("list_sessions"); if (!Array.isArray((result as { sessions?: unknown[] }).sessions)) throw new Error("invalid result"); c.close(); });
+await check("wrong token -> connect_failed", async () => { try { await connectZeta({ url, token: "wrong" }); throw new Error("connected"); } catch (error) { if ((error as ZetaError).kind !== "connect_failed") throw error; if (String(error).includes("wrong")) throw new Error("token leaked"); } });
+const first = await connectReady(); await check("second concurrent client -> busy", async () => { try { await connectZeta({ url, token: connection.token }); throw new Error("connected"); } catch (error) { if ((error as ZetaError).kind !== "busy") throw error; } }); first.close();
+const raw = async (payload: string | ArrayBuffer, expected: number) => await new Promise<void>((resolve, reject) => { const ws = new WebSocket(`${url}?token=${connection.token}`); ws.onopen = () => ws.send(payload); ws.onclose = (event) => event.code === expected ? resolve() : reject(new Error(`close ${event.code}`)); ws.onerror = () => {}; });
+await check("binary frame -> closed 1003", () => raw(new Uint8Array([1]).buffer, 1003)); await check(">1 MiB frame -> closed 1009", () => raw("x".repeat(1024 * 1024 + 1), 1009));
+console.log("\ncheck                         result\n----------------------------  ------"); for (const [name, result] of rows) console.log(`${name.padEnd(28)}  ${result}`); console.log("bun WebSocket sends no Origin header; the server accepts this native-client case when the token is valid.");
+child.kill("SIGTERM"); await Bun.sleep(300); child.kill("SIGKILL"); await rm(home, { recursive: true, force: true }); if (rows.some(([, result]) => result.startsWith("fail")) || stderr.includes(connection.token)) process.exitCode = 1;

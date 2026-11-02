@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
 import { Approval, Message, RunProvider, Timeline, useItem, useRun, type Renderers } from "@fulcrum/react";
+import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
 import { replayStep } from "./replay";
 
@@ -157,7 +158,42 @@ function Readout() {
   );
 }
 
+function Live() {
+  const [input, setInput] = useState("");
+  const [client, setClient] = useState<Awaited<ReturnType<typeof connectZeta>> | null>(null);
+  const [session, setSession] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<Array<{ id: string; name?: string }>>([]);
+  const [error, setError] = useState("");
+  const [text, setText] = useState("");
+  useEffect(() => { void fetch("/__fulcrum/zeta").then((response) => response.ok ? response.json() : null).then((value: { url: string; token: string } | null) => { if (value) setInput(`${value.url}?token=${encodeURIComponent(value.token)}`); }).catch(() => {}); }, []);
+  const connect = async () => {
+    const parsed = parseZetaUrl(input);
+    if (!parsed) { setError("paste a loopback websocket url with its token"); return; }
+    try {
+      const next = await connectZeta(parsed);
+      setClient(next);
+      const result = await next.request("list_sessions") as { sessions: Array<{ id: string; name?: string }> };
+      setSessions(result.sessions ?? []);
+      if (result.sessions?.[0]) setSession(result.sessions[0].id);
+      else {
+        const created = await next.request("new_session", {}) as { session?: { session_id?: string; id?: string }; session_id?: string; id?: string };
+        setSession(created.session?.session_id ?? created.session_id ?? created.session?.id ?? created.id ?? null);
+      }
+      setError("");
+    } catch (cause) {
+      const kind = (cause as ZetaError).kind;
+      setError(kind === "connect_failed" ? "connection failed: check the token, server, and --ws-origin http://localhost:5173 (different from http://127.0.0.1:5173)" : kind === "busy" ? "zeta is busy with another client" : kind === "closed" ? "zeta connection closed" : `zeta error: ${kind ?? "unknown"}`);
+    }
+  };
+  const store = client && session ? client.stores.get(session) ?? client.store : createRunStore();
+  const approve = (id: string) => void client?.request("approve", { session_id: session, request_id: id });
+  const deny = (id: string) => void client?.request("deny", { session_id: session, request_id: id });
+  const renderers: Renderers = { approval: ({ id }) => <Approval id={id} onApprove={approve} onDeny={deny} /> };
+  return <div className="app live-app"><div className="bar"><strong>live zeta</strong><input aria-label="zeta websocket url" value={input} onChange={(e) => setInput(e.target.value)} placeholder="ws://127.0.0.1:8765/?token=..." /><button type="button" onClick={() => void connect()}>connect</button><select value={session ?? ""} onChange={(e) => setSession(e.target.value)}><option value="">session</option>{sessions.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>{error && <span role="alert">{error}</span>}</div><div className="scroll"><RunProvider store={store}><Timeline renderers={renderers} /></RunProvider></div>{client && session && <form className="composer" onSubmit={(e) => { e.preventDefault(); if (text.trim()) { void client.request("send", { session_id: session, text }); setText(""); } }}><textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="send a message" /><button type="submit">send</button></form>}</div>;
+}
+
 function App() {
+  const [live, setLive] = useState(false);
   const [mode, setMode] = useState(Object.keys(fixtures)[0] ?? STRESS);
   const [speed, setSpeed] = useState(20);
   const [run, setRun] = useState(0);
@@ -178,10 +214,12 @@ function App() {
       cancelAnimationFrame(raf);
     };
   }, []);
+  if (live) return <Live />;
   return (
     <RunProvider store={store}>
       <div className="app">
         <div className="bar">
+          <button type="button" onClick={() => setLive(true)}>live zeta</button>
           <label>
             replay
             <select value={mode} onChange={(e) => setMode(e.target.value)}>
