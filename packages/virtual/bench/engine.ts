@@ -18,9 +18,12 @@ for (let index = 0; index < 10_000; index++) {
 }
 const updates = performance.now() - updateStart;
 
-virtual.setViewport({ scrollTop: 0, size: 0, source: "programmatic" });
+virtual.setViewport({ scrollTop: 0, size: 800, source: "programmatic" });
 const queryStart = performance.now();
-for (let index = 0; index < 10_000; index++) virtual.scrollToId(`row-${random() % count}`);
+for (let index = 0; index < 10_000; index++) {
+  virtual.setViewport({ scrollTop: index * 100, size: 800, source: "user" });
+  virtual.getSnapshot();
+}
 const queries = performance.now() - queryStart;
 
 console.log(`construction (100,000 rows): ${construction.toFixed(2)} ms`);

@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { createVirtualizer, type OutlineItem, type MutationToken } from "../src/index.js";
 
 const items = (sizes: readonly number[], loaded = true): { outline: OutlineItem[]; estimate: (kind: string) => number; loaded: string[] } => ({
-  outline: sizes.map((size, index) => ({ id: `row-${index}`, kind: String(size) })),
-  estimate: (kind) => Number(kind),
+  outline: sizes.map((size, index) => ({ id: `row-${index}`, kind: `${size}:${index}` })),
+  estimate: (kind) => Number.parseFloat(kind),
   loaded: loaded ? sizes.map((_, index) => `row-${index}`) : [],
 });
 
@@ -47,6 +47,30 @@ describe("prefix and range math", () => {
     virtual.measure("row-1", 25);
     expect(virtual.getSnapshot().rows.map((row) => row.start)).toEqual([0, 10, 35]);
     expect(virtual.getSnapshot().totalSize).toBe(45);
+  });
+  test("replaces each kind estimate with its measured median", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 100, bottomThreshold: 0 });
+    virtual.setOutline([
+      { id: "a-0", kind: "a" }, { id: "a-1", kind: "a" }, { id: "a-2", kind: "a" }, { id: "a-3", kind: "a" },
+      { id: "b-0", kind: "b" }, { id: "b-1", kind: "b" },
+    ]);
+    virtual.setViewport({ scrollTop: 0, size: 50, source: "user" });
+    virtual.measure("a-0", 10);
+    virtual.measure("a-1", 30);
+    virtual.measure("a-2", 20);
+    virtual.measure("b-0", 80);
+    expect(virtual.getSnapshot().totalSize).toBe(240);
+  });
+  test("restores measured sizes and kind medians by stable id", () => {
+    const first = createVirtualizer({ estimateSize: () => 100 });
+    first.setOutline([{ id: "a", kind: "x" }, { id: "b", kind: "x" }]);
+    first.setViewport({ scrollTop: 0, size: 5, source: "user" });
+    first.measure("a", 12);
+    const cache = first.snapshotCache();
+    const restored = createVirtualizer({ estimateSize: () => 100, cache });
+    restored.setOutline([{ id: "a", kind: "x" }, { id: "b", kind: "x" }]);
+    restored.setViewport({ scrollTop: 0, size: 100, source: "programmatic" });
+    expect(restored.getSnapshot().rows.map(({ size }) => size)).toEqual([12, 12]);
   });
   test("handles 100,000 rows and 10,000 seeded updates", () => {
     const count = 100_000;
@@ -185,6 +209,35 @@ describe("bottom and scroll semantics", () => {
     const virtual = engine([10, 10, 10], 5, 0);
     expect(virtual.scrollToId("row-2")).toBe(20);
     expect(virtual.getSnapshot().programmatic).toBe(true);
+  });
+  test("deferred corrections accumulate until scroll end", () => {
+    const virtual = engine([10, 10, 10], 10, 12);
+    const first = virtual.beforeMutation();
+    virtual.measure("row-0", 15);
+    expect(virtual.afterMutation(first, { deferCorrection: true })).toMatchObject({ jump: 0, pendingJump: 5, scrollTop: 12 });
+    const second = virtual.beforeMutation();
+    virtual.measure("row-0", 20);
+    expect(virtual.afterMutation(second, { deferCorrection: true }).pendingJump).toBe(10);
+    expect(virtual.flushPendingCorrection()).toMatchObject({ jump: 10, pendingJump: 0, scrollTop: 22 });
+  });
+  test("the correction scroll event is not user intent", () => {
+    const virtual = engine([10, 10, 10], 10, 12);
+    const result = mutate(virtual, () => virtual.measure("row-0", 20));
+    virtual.setViewport({ scrollTop: result.scrollTop, size: 10, source: "user" });
+    expect(virtual.getSnapshot()).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
+  });
+  test("a later user scroll changes state normally", () => {
+    const virtual = engine([10, 10, 10], 10, 12);
+    const result = mutate(virtual, () => virtual.measure("row-0", 20));
+    virtual.setViewport({ scrollTop: result.scrollTop, size: 10, source: "user" });
+    virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
+    expect(virtual.getSnapshot()).toMatchObject({ programmatic: false, correctionEvent: false, pinned: true });
+  });
+  test("shift mode keeps distance from the end on prepend", () => {
+    const virtual = engine([10, 10, 10], 10, 5);
+    const token = virtual.beforeMutation({ mode: "shift" });
+    virtual.setOutline([{ id: "older", kind: "7" }, ...items([10, 10, 10]).outline]);
+    expect(virtual.afterMutation(token)).toMatchObject({ scrollTop: 12, jump: 7 });
   });
 });
 
