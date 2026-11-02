@@ -30,7 +30,7 @@ const fields: Record<string, string[]> = {
   approval_end: ["event", "data", "request_id", "data.agent_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   tool_start: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments"],
   tool_output: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "output"],
-  tool_end: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "tool_result", "tool_result.tool_call_id", "tool_result.content", "tool_result.is_error", "tool_result.is_canceled"],
+  tool_end: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "tool_result", "tool_result.tool_call_id", "tool_result.content", "tool_result.is_error", "tool_result.is_canceled", "tool_result.structured_content", "tool_result.structured_content.exit_code", "tool_result.structured_content.stdout", "tool_result.structured_content.stderr"],
   notification_by_kind: ["event", "data", "data.kind", "data.child_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   child_message_delivered: ["event", "data", "data.agent_instance_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   account_limit: ["event", "data"],
@@ -99,7 +99,8 @@ test("every consumed field is decoded or becomes a typed adapter error", () => {
   };
   baseByName.tool_end = {
     ...baseByName.tool_end,
-    tool_result: { tool_call_id: "tool-1", content: "ok", is_error: false, is_canceled: false },
+    tool_call: { id: "tool-1", name: "bash", arguments: { command: "ls" } },
+    tool_result: { tool_call_id: "tool-1", content: "ok", is_error: false, is_canceled: false, structured_content: { exit_code: 0, stdout: "ok", stderr: "" } },
   };
   baseByName.approval_request = { ...baseByName.approval_request, agent_instance_id: "child" };
   baseByName.error = { ...baseByName.error, data: { agent_instance_id: "child" } };

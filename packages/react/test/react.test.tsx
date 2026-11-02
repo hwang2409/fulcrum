@@ -368,7 +368,7 @@ test("approval is a labelled group and submits once until the handler fails or t
   expect(label.getAttribute("data-part")).toBe("tool-header");
   expect(label.textContent).toBe("bashrm -rf distneeds approval");
   expect(q('[data-part="tool-body"] [data-part="tool-args"]').textContent).toContain('"command": "rm -rf dist"');
-  expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["approve", "deny"]);
+  expect([...group.querySelectorAll('[data-part="approval-actions"] button')].map((b) => b.textContent)).toEqual(["approve", "deny"]);
 
   act(() => q('[data-action="approve"]').click());
   act(() => q('[data-action="approve"]').click());
@@ -390,7 +390,7 @@ test("approval is a labelled group and submits once until the handler fails or t
   expect(group.querySelector("button")).toBeNull();
 });
 
-test("tool header shows name, a one-line summary, and status; json stays in the collapsed body", () => {
+test("tool header shows name, a one-line summary, and status; json loads when expanded", () => {
   const big = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
   const grep = { id: "t1", name: "grep", arguments: { pattern: "TODO", path: "packages/" } };
   const empty = { id: "t2", name: "noop", arguments: {} };
@@ -421,6 +421,11 @@ test("tool header shows name, a one-line summary, and status; json stays in the 
   expect(body.querySelector('[data-part="tool-output"]')!.textContent).toBe(big);
   const args = body.querySelector('[data-part="tool-args-details"]') as HTMLDetailsElement;
   expect(args.open).toBe(false);
+  expect(args.querySelector('[data-part="tool-args"]')).toBeNull();
+  act(() => {
+    args.open = true;
+    args.dispatchEvent(new Event("toggle"));
+  });
   expect(args.querySelector('[data-part="tool-args"]')!.textContent).toBe(JSON.stringify(grep.arguments, null, 2));
   expect(q('[data-id="tool:t2"] [data-part="tool-summary"]').textContent).toBe("");
 });
@@ -526,10 +531,14 @@ test("the default header summary reads each view kind, then falls back to the fi
   const views = [
     [{ kind: "shell", command: "bun test" }, "$ bun test"],
     [{ kind: "read", path: "a.ts" }, "a.ts"],
-    [{ kind: "edit", path: "b.ts", diff: "-a\n+b" }, "b.ts"],
+    [{ kind: "read", path: "src/a.ts", range: { offset: 0, limit: 40 } }, "src/a.ts:1-40"],
+    [{ kind: "read", path: "src/a.ts", range: { offset: 10 } }, "src/a.ts:11"],
+    [{ kind: "edit", path: "b.ts", diff: "--- a/b.ts\n+++ b/b.ts\n@@ -1,2 +1,4 @@\n-a\n+b\n+c\n+d\n e" }, "b.ts +3 -1"],
     [{ kind: "write", path: "c.ts" }, "c.ts"],
-    [{ kind: "search", pattern: "TODO", path: "src" }, "TODO in src"],
-    [{ kind: "fetch", url: "https://x.dev" }, "https://x.dev"],
+    [{ kind: "write", path: "c.ts", content: "one\ntwo\n" }, "c.ts +2"],
+    [{ kind: "search", pattern: "TODO", path: "packages/" }, '"TODO" packages/'],
+    [{ kind: "search", pattern: "TODO" }, '"TODO"'],
+    [{ kind: "fetch", url: "https://example.com/docs?q=1" }, "example.com/docs?q=1"],
     [{ kind: "fetch", query: "fulcrum" }, "fulcrum"],
     [undefined, "first"],
   ] as const;
@@ -538,6 +547,17 @@ test("the default header summary reads each view kind, then falls back to the fi
   );
   mount(<RunProvider store={store}>{views.map((_, i) => <ToolCall key={i} id={`tool:v${i}`} />)}</RunProvider>);
   expect(views.map((_, i) => q(`[data-id="tool:v${i}"] [data-part="tool-summary"]`).textContent)).toEqual(views.map(([, text]) => text));
+});
+
+test("the header status carries the view's duration next to the state word", () => {
+  const ls = { id: "t1", name: "bash", arguments: { command: "ls" } };
+  const { store } = setup([
+    { type: "tool_start", tool_call: ls, view: { kind: "shell", command: "ls" } },
+    { type: "tool_end", tool_call: ls, view: { kind: "shell", command: "ls", durationMs: 1250 }, tool_result: { tool_call_id: "t1", content: "", is_error: false } },
+  ]);
+  mount(<RunProvider store={store}><ToolCall id="tool:t1" /></RunProvider>);
+  expect(q('[data-part="tool-status"]').firstChild!.textContent).toBe("done");
+  expect(q('[data-part="tool-status"] [data-part="tool-duration"]').textContent).toBe("1.3 s");
 });
 
 test("data-state reflects streaming, done, error, pending", () => {
@@ -603,9 +623,15 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
 });
 
 test("react does not import @fulcrum/zeta", () => {
-  const dir = new URL("../src/", import.meta.url);
-  for (const name of readdirSync(dir))
-    expect(readFileSync(new URL(name, dir), "utf8")).not.toContain("@fulcrum/zeta");
+  const pending = [new URL("../src/", import.meta.url)];
+  while (pending.length) {
+    const dir = pending.pop()!;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = new URL(entry.name, dir);
+      if (entry.isDirectory()) pending.push(new URL(`${path.href}/`));
+      else expect(readFileSync(path, "utf8")).not.toContain("@fulcrum/zeta");
+    }
+  }
   const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
   expect(pkg).not.toContain("@fulcrum/zeta");
 });

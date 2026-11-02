@@ -7,7 +7,10 @@ import type {
   SubAgentUrgency,
   ToolCall,
   ToolResult,
+  ToolView,
 } from "@fulcrum/core";
+import { resolveToolView } from "@fulcrum/core";
+import { zetaTools } from "./tool-map.js";
 
 const object = (value: unknown, name: string): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -179,6 +182,24 @@ const childNotification = (name: string, data: Record<string, unknown>): RunEven
   }
 };
 
+const viewOf = (call: ToolCall) => {
+  const view = resolveToolView(zetaTools, call);
+  return view ? { view } : {};
+};
+// bash reports exit_code, stdout, and stderr in structured_content. Values of the wrong type are ignored, not trusted.
+const finishedView = (call: ToolCall, result: unknown) => {
+  const view = resolveToolView(zetaTools, call);
+  if (view?.kind !== "shell") return view ? { view } : {};
+  const extra = (result as { structured_content?: unknown } | null | undefined)?.structured_content;
+  const { exit_code, stdout, stderr } = extra && typeof extra === "object" ? (extra as Record<string, unknown>) : {};
+  const done: ToolView = {
+    ...view,
+    ...(Number.isInteger(exit_code) ? { exitCode: exit_code as number } : {}),
+    ...(typeof stdout === "string" && typeof stderr === "string" ? { stdout, stderr } : {}),
+  };
+  return { view: done };
+};
+
 export function fromZetaEvent(value: unknown): RunEvent[] {
   try {
     const wire = object(value, "event");
@@ -198,11 +219,19 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       case "assistant_message": return [{ type: "message_commit", message_id: optionalString(data.message_id, "data.message_id"), message: message(wire.message) }];
       case "assistant_reset": return [{ type: "message_reset", data }];
       case "retry": return [{ type: "retry" }];
-      case "tool_start": return [{ type: "tool_start", tool_call: tool(wire.tool_call), data }];
+      case "tool_start": {
+        const call = tool(wire.tool_call);
+        return [{ type: "tool_start", tool_call: call, ...viewOf(call), data }];
+      }
       case "tool_output": return [{ type: "tool_output", tool_call: tool(wire.tool_call), output: string(wire.output, "output"), data }];
-      case "tool_end": return [{ type: "tool_end", tool_call: tool(wire.tool_call), ...(wire.tool_result === undefined || wire.tool_result === null ? {} : { tool_result: toolResult(wire.tool_result) }), data }];
+      case "tool_end": {
+        const call = tool(wire.tool_call);
+        const result = wire.tool_result === undefined || wire.tool_result === null ? {} : { tool_result: toolResult(wire.tool_result) };
+        return [{ type: "tool_end", tool_call: call, ...result, ...finishedView(call, wire.tool_result), data }];
+      }
       case "approval_request": {
-        const approval: RunEvent = { type: "approval_request", request_id: string(wire.request_id, "request_id"), tool_call: tool(wire.tool_call), delegated: boolean(wire.delegated, "delegated") };
+        const call = tool(wire.tool_call);
+        const approval: RunEvent = { type: "approval_request", request_id: string(wire.request_id, "request_id"), tool_call: call, ...viewOf(call), delegated: boolean(wire.delegated, "delegated") };
         const childRunId = optionalString(wire.agent_instance_id, "agent_instance_id");
         return childRunId ? [approval, subAgent({ ...data, child_instance_id: childRunId, description: `approval for ${approval.tool_call.name}` }, "waiting_approval", "approval")] : [approval];
       }
