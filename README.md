@@ -62,7 +62,7 @@ const renderers: Renderers = {
 
 ## use fulcrum with another harness
 
-map harness tool names to fulcrum's small, agent-neutral view contract in `@fulcrum/core`. resolvers receive safe argument readers; missing or invalid arguments return no view instead of throwing.
+map harness tool names to fulcrum's small, agent-neutral view contract in `@fulcrum/core`. the stable view kinds are `shell`, `read`, `edit`, `write`, `search`, and `fetch`. resolvers receive safe argument readers; missing or invalid arguments return no view instead of throwing.
 
 ```ts
 import { defineToolMap, resolveToolView } from "@fulcrum/core";
