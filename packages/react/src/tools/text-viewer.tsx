@@ -7,15 +7,22 @@ const MAX_PREVIEW_LINES = 60;
 const HEAD_CHARS = 40_000;
 const TAIL_CHARS = 10_000;
 const ROW_HEIGHT = 21;
+const GRAPHEME_LOOKBACK = 128;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 export type TextMetrics = { characters: number; lines: number };
 export type TextSegment = { id: string; kind: string; start: number };
 
 const safeEnd = (text: string, end: number) => {
   if (end >= text.length) return text.length;
-  const before = text.charCodeAt(end - 1);
-  const after = text.charCodeAt(end);
-  return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff ? end - 1 : end;
+  const windowStart = Math.max(0, end - GRAPHEME_LOOKBACK);
+  let boundary = windowStart;
+  for (const segment of graphemes.segment(text.slice(windowStart, end + GRAPHEME_LOOKBACK))) {
+    const index = windowStart + segment.index;
+    if (index > end) break;
+    boundary = index;
+  }
+  return boundary;
 };
 
 export function textMetrics(text: string): TextMetrics {
@@ -119,12 +126,8 @@ function VirtualText({ text, label, appendOnly, follow, metrics }: { text: strin
     outlineUpdate: update,
   });
   useLayoutEffect(() => {
-    const viewer = scrollRef.current;
-    if (!viewer || !follow || !following.current) return;
-    viewer.scrollTop = viewer.scrollHeight;
-    const frame = requestAnimationFrame(() => { if (following.current) viewer.scrollTop = viewer.scrollHeight; });
-    return () => cancelAnimationFrame(frame);
-  }, [follow, text]);
+    if (follow && following.current) list.scrollToEnd();
+  }, [follow, text, list.scrollToEnd]);
   return (
     <div
       ref={scrollRef}

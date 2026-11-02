@@ -333,3 +333,16 @@ export const demos: Demo[] = [
     events: [{ type: "unknown", name: "session/checkpoint_saved", data: {} }],
   },
 ];
+
+const viewerFixture = new URLSearchParams(location.search).get("viewerFixture");
+if (viewerFixture === "single" || viewerFixture === "lines") {
+  const fixture = viewerFixture === "single" ? "x".repeat(2_000_000) : "x\n".repeat(1_000_000);
+  const tool = call("viewer-check", "bash", { command: "stream fixture" });
+  demos.splice(0, demos.length, {
+    id: "text-viewer-check",
+    part: "ToolCall",
+    title: `${viewerFixture} text viewer check`,
+    description: "browser-only layout fixture for measured text viewer behavior",
+    events: [start(tool, { kind: "shell", command: "stream fixture" }), out(tool, fixture)],
+  });
+}

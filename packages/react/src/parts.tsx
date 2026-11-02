@@ -66,11 +66,9 @@ const statusText: Record<ItemState, string> = {
 
 // Harness tool names are free strings; a blank one still needs a readable label.
 const isBlank = (name: string) => name.trim() === "";
-const toolLabel = (name: string) => (isBlank(name) ? "unnamed tool" : name);
+const toolLabel = (name: string) => boundText(isBlank(name) ? "unnamed tool" : name, MAX_SUMMARY_CHARS).text;
 function ToolName({ name }: { name: string }) {
-  return isBlank(name)
-    ? <span data-part="tool-name" data-blank="">unnamed tool</span>
-    : <span data-part="tool-name">{name}</span>;
+  return <span data-part="tool-name" data-blank={isBlank(name) ? "" : undefined} title={name}>{toolLabel(name)}</span>;
 }
 
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
@@ -119,7 +117,7 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
       data-part="tool"
       data-kind="tool"
       data-id={id}
-      data-tool={tool.tool_call.name}
+      data-tool={toolLabel(tool.tool_call.name)}
       data-tool-view={tool.view?.kind}
       data-state={state}
     >
@@ -173,7 +171,7 @@ export const Approval = memo(function Approval({
       data-part="approval"
       data-kind="approval"
       data-id={id}
-      data-tool={tool_call.name}
+      data-tool={toolLabel(tool_call.name)}
       data-tool-view={view?.kind}
       data-state={state}
     >

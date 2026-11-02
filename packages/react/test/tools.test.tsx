@@ -170,14 +170,31 @@ test("large output opens in the shared bounded viewer", () => {
   expect(q('[data-action="show-more"]')).toBeNull();
 });
 
-test("giant lines split into surrogate-safe fixed-size viewer rows", () => {
-  const text = `${"x".repeat(1_999)}😀${"y".repeat(2_001)}`;
+test("giant lines split into grapheme-safe fixed-size viewer rows", () => {
+  const text = `${"x".repeat(1_999)}e\u0301${"y".repeat(1_997)}👩🏽‍💻${"z".repeat(2_001)}`;
   const segments = segmentText(text, 1);
-  expect(segments).toHaveLength(3);
   const values = segments.map((segment, index) => text.slice(segment.start, segments[index + 1]?.start));
+  const boundaries = new Set([0, ...[...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map(({ index }) => index), text.length]);
   expect(values.every((value) => value.length <= 2_000)).toBe(true);
   expect(values.join("")).toBe(text);
-  expect(values.some((value) => value.endsWith("\ud83d"))).toBe(false);
+  expect(segments.every(({ start }) => boundaries.has(start))).toBe(true);
+});
+
+test("tool names use one bounded label in calls and approvals", () => {
+  const name = `tool-${"x".repeat(2_000_000)}`;
+  const call = { id: "named", name, arguments: {} };
+  render([
+    { type: "tool_start", tool_call: call },
+    { type: "approval_request", request_id: "named", tool_call: { ...call, id: "approval" }, delegated: false },
+  ], ["tool:named", "approval:named"]);
+  const cards = [...container.querySelectorAll<HTMLElement>('[data-part="tool"], [data-part="approval"]')];
+  expect(cards).toHaveLength(2);
+  for (const card of cards) {
+    const label = card.querySelector<HTMLElement>('[data-part="tool-name"]')!;
+    expect(label.textContent!.length).toBeLessThanOrEqual(240);
+    expect(label.title).toBe(name);
+    expect(card.dataset.tool!.length).toBeLessThanOrEqual(240);
+  }
 });
 
 test("the compact line preview stays bounded", () => {

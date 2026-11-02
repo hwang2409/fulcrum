@@ -22,7 +22,7 @@ const renderers: Renderers = { approval: GalleryApproval };
 
 // A live demo starts empty and plays; paused from the start (reduced motion), it shows its in-progress state instead.
 const fresh = (demo: Demo, paused = false) => {
-  const store = createRunStore();
+  const store = demo.id === "text-viewer-check" ? createRunStore((flush) => flush()) : createRunStore();
   (demo.live ? (paused ? demo.events.slice(0, -1) : []) : demo.events).forEach(store.dispatch);
   return store;
 };
@@ -77,6 +77,17 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
     }, demo.live);
     return () => clearInterval(timer);
   }, [store, paused]);
+
+  useEffect(() => {
+    if (demo.id !== "text-viewer-check") return;
+    const target = window as typeof window & { __appendViewerFixture?: (delta: string) => void };
+    target.__appendViewerFixture = (delta) => store.dispatch({
+      type: "tool_output",
+      tool_call: { id: "viewer-check", name: "bash", arguments: { command: "stream fixture" } },
+      output: delta,
+    });
+    return () => { delete target.__appendViewerFixture; };
+  }, [demo.id, store]);
 
   useEffect(() => {
     if (!inspect) return;
