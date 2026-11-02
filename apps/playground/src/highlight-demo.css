@@ -1,0 +1,11 @@
+:root { color-scheme: dark; --fulcrum-font: "JetBrains Mono", monospace; --fulcrum-tok-keyword: #ff79c6; --fulcrum-tok-string: #f1fa8c; --fulcrum-tok-number: #bd93f9; --fulcrum-tok-comment: #6272a4; --fulcrum-tok-function: #50fa7b; --fulcrum-tok-type: #8be9fd; --fulcrum-tok-variable: #f8f8f2; --fulcrum-tok-constant: #bd93f9; --fulcrum-tok-operator: #ff79c6; --fulcrum-tok-punctuation: #f8f8f2; --fulcrum-tok-tag: #ff79c6; --fulcrum-tok-attribute: #f1fa8c; --fulcrum-tok-regexp: #ff5555; --fulcrum-tok-inserted: #50fa7b; --fulcrum-tok-deleted: #ff5555; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #191a21; color: #f8f8f2; font: 14px/1.65 var(--fulcrum-font); }
+main { width: min(880px, calc(100% - 32px)); margin: 64px auto; }
+header { margin-bottom: 32px; }
+header p, figcaption { color: #8be9fd; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+h1 { margin: 4px 0; font-size: clamp(24px, 5vw, 42px); line-height: 1.15; }
+article { display: grid; gap: 16px; }
+figure { margin: 0; border: 1px solid #343641; border-radius: 8px; overflow: hidden; background: #282a36; }
+figcaption { padding: 8px 14px; border-bottom: 1px solid #343641; }
+pre { min-height: 72px; margin: 0; padding: 14px; overflow: auto; white-space: pre-wrap; }
