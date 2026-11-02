@@ -134,7 +134,7 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
       if (row) container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - modeAnchor.current.offset;
     }
     priorMode.current = enabled;
-  }, [enabled, items, list, scrollRef]);
+  }, [enabled, items, list.scrollToId, scrollRef]);
   useLayoutEffect(() => {
     if (enabled && list.snapshot.anchor) modeAnchor.current = { id: list.snapshot.anchor.id, offset: list.snapshot.anchor.offset };
   }, [enabled, list.snapshot.anchor]);
@@ -153,7 +153,6 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
     container.addEventListener("scroll", capture, { passive: true });
     return () => container.removeEventListener("scroll", capture);
   }, [enabled, items, scrollRef]);
-  const debug = typeof location !== "undefined" && new URLSearchParams(location.search).get("virtualDebug") === "1";
   if (!enabled) {
     return (
       <div ref={plainRef} className={className} data-part="timeline" data-virtual="false" role="log" aria-label={ariaLabel} aria-live="polite" aria-relevant="additions">
@@ -193,12 +192,12 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
             aria-posinset={row.index + 1}
             tabIndex={row === retainedRow ? -1 : 0}
             onKeyDown={(event) => {
-              const nextIndex = event.key === "ArrowUp" ? row.index - 1 : event.key === "ArrowDown" ? row.index + 1 : event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : -1;
-              if (nextIndex < 0 || nextIndex >= items.length) return;
+              const nextIndex = row.index + (event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0);
+              if (nextIndex === row.index || nextIndex < 0 || nextIndex >= items.length) return;
               event.preventDefault();
-              const id = items[nextIndex]!.id;
-              list.scrollToId(id);
-              requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-virtual-id="${CSS.escape(id)}"]`)?.focus());
+              const parent = event.currentTarget.parentElement!;
+              list.scrollToId(items[nextIndex]!.id);
+              requestAnimationFrame(() => (parent.children[nextIndex - list.snapshot.range.start] as HTMLElement | undefined)?.focus());
             }}
             style={{ ...virtualRowStyle, transform: `translateY(${row.start - list.snapshot.pendingJump}px)`, opacity: row === retainedRow ? 0 : undefined, pointerEvents: row === retainedRow ? "none" : undefined }}
           >
@@ -206,9 +205,9 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
           </div>
         ))}
       </div>
-      {debug ? (
-        <output data-part="virtual-debug" style={{ position: "fixed", inset: "8px 8px auto auto", zIndex: 1000, maxWidth: "min(560px, 90vw)", maxHeight: "40vh", overflow: "auto", whiteSpace: "pre-wrap", font: "11px monospace", background: "#111", color: "#eee", padding: 8 }}>
-          {JSON.stringify({ range: list.snapshot.range, visible: list.snapshot.visible, totalSize: list.snapshot.totalSize, scrollTop: list.snapshot.scrollTop, pinned: list.snapshot.pinned, actions: list.actions.slice(-8) }, null, 2)}
+      {list.debug ? (
+        <output data-part="virtual-debug">
+          {list.debug}
         </output>
       ) : null}
       {list.unseenCount > 0 ? (

@@ -8,14 +8,14 @@ import {
 } from "react";
 import {
   createVirtualizer,
+  formatVirtualDebug,
   type OutlineItem,
   type OutlineUpdate,
-  type VirtualAction,
   type VirtualOptions,
   type VirtualSnapshot,
 } from "@fulcrum/virtual";
 
-const isIOSWebKit = () => /iP(?:ad|hone|od)/.test(navigator.userAgent) && /WebKit/.test(navigator.userAgent);
+const isIOSWebKit = () => navigator.userAgent.includes("iP");
 
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
@@ -25,7 +25,7 @@ export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
 
 export type VirtualListState<Id extends string> = {
   snapshot: VirtualSnapshot<Id>;
-  actions: readonly VirtualAction[];
+  debug: string | false;
   unseenCount: number;
   timelineRef: RefCallback<HTMLElement>;
   observeRow(id: Id): RefCallback<HTMLElement>;
@@ -41,8 +41,8 @@ export function useVirtualList<Id extends string>(
   const engineRef = useRef<ReturnType<typeof createVirtualizer<Id>>>(undefined);
   if (!engineRef.current) engineRef.current = createVirtualizer(options);
   const engine = engineRef.current;
-  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("virtualDebug") === "1")
-    (window as typeof window & { __fulcrumVirtual?: typeof engine }).__fulcrumVirtual = engine;
+  const debug = typeof window !== "undefined" && location.search.includes("virtualDebug=1");
+  if (debug) (window as typeof window & { __fulcrumVirtual?: typeof engine }).__fulcrumVirtual = engine;
   const containerRef = useRef<HTMLElement | null>(null);
   const timelineElement = useRef<HTMLElement | null>(null);
   const rows = useRef(new Map<Id, HTMLElement>());
@@ -57,10 +57,7 @@ export function useVirtualList<Id extends string>(
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
-  const unseenBase = useRef(outline.length);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
-  const outlineLength = useRef(outline.length);
-  outlineLength.current = outline.length;
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
 
@@ -72,10 +69,9 @@ export function useVirtualList<Id extends string>(
       appliedOutline.current = outline;
       if (initial.current) initial.current = false;
       else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
-      if (snapshot.pinned) unseenBase.current = outline.length;
     }
     wasEnabled.current = options.enabled !== false;
-  }, [engine, outline, options.enabled, options.outlineUpdate, snapshot.pinned]);
+  }, [engine, outline, options.enabled, options.outlineUpdate]);
 
   useLayoutEffect(() => {
     if (options.enabled === false || typeof ResizeObserver === "undefined") return;
@@ -113,20 +109,16 @@ export function useVirtualList<Id extends string>(
       if (Math.abs(result.jump) >= 0.5) container.scrollTop = result.scrollTop;
     };
     const onScroll = () => {
-      const wasPinned = engine.getSnapshot().pinned;
       if (container.scrollTop < lastScrollTop.current) engine.setFollow(false);
       lastScrollTop.current = container.scrollTop;
       engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
-      const next = engine.getSnapshot();
-      if (wasPinned && !next.pinned) unseenBase.current = outlineLength.current;
-      if (next.pinned) unseenBase.current = outlineLength.current;
-      if (next.programmatic) return;
-      if (scrollEndTimer.current !== null) clearTimeout(scrollEndTimer.current);
+      if (engine.getSnapshot().programmatic) return;
+      if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
       scrollEndTimer.current = setTimeout(finishScroll, 150);
     };
     const onWheel = (event: WheelEvent) => { if (event.deltaY < 0) engine.setFollow(false); };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") engine.setFollow(false);
+      if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
     };
     const onTouchStart = (event: TouchEvent) => {
       touching.current = true;
@@ -134,12 +126,12 @@ export function useVirtualList<Id extends string>(
     };
     const onTouchMove = (event: TouchEvent) => {
       const next = event.touches[0]?.clientY;
-      if (next !== undefined && touchY.current !== null && next > touchY.current) engine.setFollow(false);
+      if (next !== undefined && touchY.current != null && next > touchY.current) engine.setFollow(false);
       touchY.current = next ?? null;
     };
     const onTouchEnd = () => {
       touchY.current = null;
-      if (scrollEndTimer.current !== null) clearTimeout(scrollEndTimer.current);
+      if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
       scrollEndTimer.current = setTimeout(finishScroll, 150);
     };
     container.addEventListener("scroll", onScroll, { passive: true });
@@ -162,8 +154,8 @@ export function useVirtualList<Id extends string>(
       container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("touchend", onTouchEnd);
       container.removeEventListener("touchcancel", onTouchEnd);
-      if (resizeFrame.current !== null) cancelAnimationFrame(resizeFrame.current);
-      if (scrollEndTimer.current !== null) clearTimeout(scrollEndTimer.current);
+      if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
+      if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
       container.style.overflowAnchor = priorOverflowAnchor;
     };
   }, [engine, options.scrollRef, options.enabled]);
@@ -197,30 +189,19 @@ export function useVirtualList<Id extends string>(
   const scrollToId = useCallback((id: Id, viewportOffset = 0) => {
     const container = containerRef.current;
     if (!container) return;
-    const top = Math.max(0, engine.scrollToId(id) - viewportOffset);
-    engine.setViewport({ scrollTop: top, size: container.clientHeight, source: "programmatic" });
-    // The first event consumes the engine target; the second records this explicit navigation intent.
-    engine.setViewport({ scrollTop: top, size: container.clientHeight, source: "user" });
-    engine.setViewport({ scrollTop: top, size: container.clientHeight, source: "user" });
-    container.scrollTop = top;
+    container.scrollTop = engine.scrollToId(id, viewportOffset);
   }, [engine]);
 
   const scrollToEnd = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
-    const top = Math.max(0, engine.getSnapshot().totalSize - container.clientHeight);
-    engine.setViewport({ scrollTop: top, size: container.clientHeight, source: "programmatic" });
-    // Jumping to the end is user intent, so future appends must stay pinned.
-    engine.setViewport({ scrollTop: top, size: container.clientHeight, source: "user" });
-    engine.setViewport({ scrollTop: top, size: container.clientHeight, source: "user" });
-    container.scrollTop = top;
-    unseenBase.current = outline.length;
-  }, [engine, outline.length]);
+    container.scrollTop = engine.scrollToEnd();
+  }, [engine]);
 
   return {
     snapshot,
-    actions: engine.getActions(),
-    unseenCount: snapshot.pinned ? 0 : Math.max(0, outline.length - unseenBase.current),
+    debug: debug && formatVirtualDebug(snapshot, engine.getActions()),
+    unseenCount: snapshot.unseenCount,
     timelineRef,
     observeRow,
     scrollToId,

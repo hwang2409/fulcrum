@@ -6,16 +6,17 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { createRunStore, OutlineSnapshot, RunItem, RunState } from "@fulcrum/core";
+import type { createRunStore, RunItem, RunState } from "@fulcrum/core";
 
 export type RunStore = Pick<
   ReturnType<typeof createRunStore>,
   | "getState"
   | "getItem"
   | "getOutline"
+  | "getOutlineSnapshot"
   | "subscribe"
   | "subscribeOutline"
-> & { getOutlineSnapshot?: () => OutlineSnapshot };
+>;
 
 const StoreContext = createContext<RunStore | null>(null);
 
@@ -75,25 +76,10 @@ export function useItemSelector<T>(
   );
 }
 
-export const useTimeline = () => {
-  const store = useStore();
-  return useSyncExternalStore(
-    store.subscribeOutline,
-    store.getOutline,
-    store.getOutline,
-  );
-};
-
 export const useTimelineSnapshot = () => {
   const store = useStore();
-  const fallback = useRef<OutlineSnapshot | null>(null);
-  const read = () => {
-    if (store.getOutlineSnapshot) return store.getOutlineSnapshot();
-    const items = store.getOutline();
-    if (fallback.current?.items !== items) fallback.current = { items, change: null };
-    return fallback.current!;
-  };
-  return useSyncExternalStore(store.subscribeOutline, read, read);
+  return useSyncExternalStore(store.subscribeOutline, store.getOutlineSnapshot, store.getOutlineSnapshot);
 };
 
+export const useTimeline = () => useTimelineSnapshot().items;
 export const useItem = (id: string) => useItemSelector(id, (item) => item);

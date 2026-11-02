@@ -59,9 +59,13 @@ export type VirtualSnapshot<Id extends string = string> = {
   correctionEvent: boolean;
   jump: number;
   pendingJump: number;
+  unseenCount: number;
 };
 
 export type OutlineUpdate = { readonly type: "append" | "prepend"; readonly count: number };
+
+export const formatVirtualDebug = (snapshot: VirtualSnapshot, actions: readonly VirtualAction[]) =>
+  JSON.stringify({ range: snapshot.range, visible: snapshot.visible, totalSize: snapshot.totalSize, scrollTop: snapshot.scrollTop, pinned: snapshot.pinned, actions: actions.slice(-8) }, null, 2);
 
 export type Virtualizer<Id extends string = string> = {
   setOutline(items: readonly OutlineItem<Id>[], update?: OutlineUpdate): void;
@@ -72,7 +76,8 @@ export type Virtualizer<Id extends string = string> = {
   beforeMutation(options?: { mode?: "anchor" | "shift" }): MutationToken<Id>;
   afterMutation(token: MutationToken<Id>, options?: { deferCorrection?: boolean }): MutationResult;
   flushPendingCorrection(): MutationResult;
-  scrollToId(id: Id): number;
+  scrollToId(id: Id, viewportOffset?: number): number;
+  scrollToEnd(): number;
   snapshotCache(): VirtualCache<Id>;
   subscribe(listener: () => void): () => void;
   getSnapshot(): VirtualSnapshot<Id>;
@@ -247,6 +252,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   let scrollTop = 0;
   let viewportSize = 0;
   let pinned = true;
+  let unseenCount = 0;
   let programmatic = false;
   let correctionEvent = false;
   let jump = 0;
@@ -398,6 +404,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     if (viewport.source === "user" && !isCorrection) {
       const distance = layout.total - scrollTop - viewportSize;
       pinned = pinned ? distance <= bottomThreshold : distance < 0.5;
+      if (pinned) unseenCount = 0;
     }
     if (isCorrection) expectedCorrectionScroll = null;
     if (isCorrection) jump = 0;
@@ -408,6 +415,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   return {
     setOutline(items, update) {
       const expectedAnchor = captureExpectedAnchor();
+      const added = Math.max(0, items.length - layout.length);
       const cursorId = layout.at(rangeCursorIndex)?.id;
       const incremental = update && update.count >= 0 && items.length === layout.length + update.count;
       if (update && !incremental) throw new Error("outline update does not match the current length");
@@ -445,6 +453,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       rangeCursorStart = layout.prefix(rangeCursorIndex);
       calibrateKindEstimates();
       restoreExpectedAnchor(expectedAnchor);
+      if (!pinned) unseenCount += added;
       log("outline", { count: layout.length, totalSize: layout.total });
       changed();
     },
@@ -476,6 +485,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     },
     setFollow(follow) {
       pinned = follow;
+      if (follow) unseenCount = 0;
       log("viewport", { scrollTop, size: viewportSize, programmatic: false, pinned });
       changed();
     },
@@ -529,11 +539,19 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       changed();
       return { scrollTop, correction, appliedCorrection: jump, jump, pendingJump, followedBottom: false };
     },
-    scrollToId(id) {
+    scrollToId(id, viewportOffset = 0) {
       const index = layout.indexOf(id);
       if (index === undefined) throw new Error("cannot scroll to an id outside the outline");
-      setViewport({ scrollTop: layout.prefix(index), size: viewportSize, source: "programmatic" });
+      setViewport({ scrollTop: Math.max(0, layout.prefix(index) - viewportOffset), size: viewportSize, source: "programmatic" });
+      pinned = maxScroll() - scrollTop < 0.5;
+      if (pinned) unseenCount = 0;
       log("scroll-to-id", { index, scrollTop });
+      return scrollTop;
+    },
+    scrollToEnd() {
+      setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
+      pinned = true;
+      unseenCount = 0;
       return scrollTop;
     },
     snapshotCache() {
@@ -569,6 +587,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
         correctionEvent,
         jump,
         pendingJump,
+        unseenCount,
       };
       return snapshot;
     },

@@ -109,3 +109,17 @@
 [data-part="approval"] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 
 [data-part="item"] { color: var(--fulcrum-muted); font-size: 13px; }
+
+[data-part="virtual-debug"] {
+  position: fixed;
+  inset: 8px 8px auto auto;
+  z-index: 1000;
+  max-width: min(560px, 90vw);
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: 11px monospace;
+  background: #111;
+  color: #eee;
+  padding: 8px;
+}

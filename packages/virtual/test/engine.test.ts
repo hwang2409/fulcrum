@@ -464,6 +464,12 @@ test("explicit upward intent releases follow until the user reaches the exact bo
   virtual.setFollow(false);
   virtual.setViewport({ scrollTop: 189, size: 10, source: "user" });
   expect(virtual.getSnapshot().pinned).toBe(false);
-  virtual.setViewport({ scrollTop: 190, size: 10, source: "user" });
-  expect(virtual.getSnapshot().pinned).toBe(true);
+  virtual.setOutline([
+    { id: "row-0", kind: "100:0" },
+    { id: "row-1", kind: "100:1" },
+    { id: "row-2", kind: "100:2" },
+  ], { type: "append", count: 1 });
+  expect(virtual.getSnapshot().unseenCount).toBe(1);
+  virtual.setViewport({ scrollTop: 290, size: 10, source: "user" });
+  expect(virtual.getSnapshot()).toMatchObject({ pinned: true, unseenCount: 0 });
 });
