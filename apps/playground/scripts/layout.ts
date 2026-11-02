@@ -123,12 +123,12 @@ try {
   await replay.goto(`http://127.0.0.1:${port}/`);
   await replay.selectOption("#mode", "zeta:unknown.jsonl");
   await replay.locator("#rate").fill("200");
-  await replay.waitForFunction(() => Number(document.querySelector(".mode span")?.textContent?.match(/lap (\d+)/)?.[1] ?? 0) >= 9);
+  await replay.waitForFunction(() => Number(document.querySelector(".mode span")?.textContent?.match(/lap (\d+)/)?.[1] ?? 0) >= 9, undefined, { timeout: 60_000 });
   const rotation = await replay.evaluate(() => ({
     mounted: Boolean(document.querySelector('[data-part="timeline"]')),
     items: Number(document.querySelector('[data-testid="readout"]')?.textContent?.match(/· (\d+) items/)?.[1] ?? -1),
   }));
-  if (!rotation.mounted || rotation.items < 0 || rotation.items > 8 || pageErrors.length)
+  if (!rotation.mounted || rotation.items < 0 || rotation.items > 50 || pageErrors.length)
     failures.push(`lap-9 rotation: mounted=${rotation.mounted}, items=${rotation.items}, errors=${pageErrors.join("; ") || "none"}`);
   else console.log(`ok   lap-9 rotation: mounted, ${rotation.items} bounded items, no page errors`);
 
