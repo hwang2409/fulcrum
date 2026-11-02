@@ -178,6 +178,7 @@ test("giant lines split into grapheme-safe fixed-size viewer rows", () => {
   expect(values.every((value) => value.length <= 2_000)).toBe(true);
   expect(values.join("")).toBe(text);
   expect(segments.every(({ start }) => boundaries.has(start))).toBe(true);
+  expect(segmentText(`${"x".repeat(1_999)}\r\n${"y".repeat(2_000)}`, 2)[1]!.start).toBe(1_999);
 });
 
 test("tool names use one bounded label in calls and approvals", () => {

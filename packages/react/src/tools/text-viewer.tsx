@@ -15,6 +15,9 @@ export type TextSegment = { id: string; kind: string; start: number };
 
 const safeEnd = (text: string, end: number) => {
   if (end >= text.length) return text.length;
+  const before = text.charCodeAt(end - 1);
+  const after = text.charCodeAt(end);
+  if (before <= 0x7f && after <= 0x7f && !(before === 13 && after === 10)) return end;
   const windowStart = Math.max(0, end - GRAPHEME_LOOKBACK);
   let boundary = windowStart;
   for (const segment of graphemes.segment(text.slice(windowStart, end + GRAPHEME_LOOKBACK))) {
