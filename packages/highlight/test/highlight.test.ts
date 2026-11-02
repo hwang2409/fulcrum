@@ -171,15 +171,34 @@ describe("identity, failure, and caps", () => {
     highlighter.dispose();
   });
 
-  test("completed cache is capped at 64 blocks", async () => {
+  test("a busy worker that keeps answering is not treated as hung", async () => {
+    // A backlog posted at once takes longer than one request's patience, but the worker answers steadily.
+    let terminated = false;
+    const queue: Array<{ requestId: number; code: string }> = [];
+    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() { terminated = true; }, postMessage(value) { if (value.requestId) queue.push({ requestId: value.requestId, code: value.code! }); },
+    };
+    const pump = setInterval(() => {
+      const next = queue.shift();
+      if (next) fake.onmessage!({ data: { requestId: next.requestId, tokens: [{ text: next.code, type: "keyword" }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    }, 150);
+    const highlighter = createHighlighter({ workerFactory: () => fake });
+    const results = await Promise.all(Array.from({ length: 6 }, (_, index) => highlighter(`const n = ${index};\n`, "typescript", { id: `busy-${index}`, version: 1, state: "done" })));
+    clearInterval(pump);
+    expect(terminated).toBe(false);
+    expect(results.every((tokens) => tokens![0]!.type === "keyword")).toBe(true);
+    highlighter.dispose();
+  });
+
+  test("completed cache is capped at 512 blocks", async () => {
     let calls = 0;
     const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
       onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) { calls++; queueMicrotask(() => fake.onmessage!({ data: { requestId: value.requestId!, tokens: [{ text: value.code! }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>)); } },
     };
     const highlighter = createHighlighter({ workerFactory: () => fake });
-    for (let index = 0; index < 65; index++) await highlighter(`const n = ${index};\n`, "typescript", { id: `cap-${index}`, version: 1, state: "done" });
+    for (let index = 0; index < 513; index++) await highlighter(`const n = ${index};\n`, "typescript", { id: `cap-${index}`, version: 1, state: "done" });
     await highlighter("const n = 0;\n", "typescript", { id: "cap-0", version: 1, state: "done" });
-    expect(calls).toBe(66);
+    expect(calls).toBe(514);
     highlighter.dispose();
   });
 });

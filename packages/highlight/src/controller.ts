@@ -5,10 +5,13 @@ import type { WorkerRequest, WorkerResponse } from "./protocol.js";
 const MAX_BLOCK = 512 * 1024;
 const MAX_LINES = 10_000;
 const MAX_CACHE_BYTES = 8 * 1024 * 1024;
-const MAX_CACHE_BLOCKS = 64;
+const MAX_CACHE_BLOCKS = 512; // tool cards and mounted viewer rows each hold a block
 type WorkerLike = { postMessage(value: WorkerRequest): void; terminate(): void; onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null };
 export type HighlighterOptions = { worker?: false; workerFactory?: () => WorkerLike };
-type Pending = { resolve: (tokens: Token[]) => void; timer: ReturnType<typeof setTimeout>; code: string; language: string; context: HighlightContext };
+type Pending = { resolve: (tokens: Token[]) => void; code: string; language: string; context: HighlightContext };
+// The worker is hung only when it answers nothing for this long while work is pending. A per-request deadline would
+// misfire on a long backlog and move all highlighting onto the main thread.
+const WORKER_SILENCE_MS = 2_000;
 type CacheEntry = { tokens: Token[]; weight: number; used: number; done: boolean; id: string };
 
 export function createController(options: HighlighterOptions = {}): Highlight {
@@ -18,6 +21,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   let failures = 0;
   let disposed = false;
   let clock = 0;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
   const pending = new Map<number, Pending>();
   const cache = new Map<string, CacheEntry>();
   const inflight = new Map<string, Promise<Token[]>>();
@@ -57,9 +61,10 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   };
   const failWorker = () => {
     failures++;
+    clearTimeout(watchdog); watchdog = undefined;
     worker?.terminate(); worker = undefined;
     for (const [id, job] of pending) {
-      clearTimeout(job.timer); pending.delete(id);
+      pending.delete(id);
       void fallback(job.code, job.language, job.context).then(job.resolve, () => job.resolve(plain(job.code)));
     }
   };
@@ -72,7 +77,9 @@ export function createController(options: HighlighterOptions = {}): Highlight {
       next.onmessage = (event) => {
         const job = pending.get(event.data.requestId);
         if (!job) return;
-        clearTimeout(job.timer); pending.delete(event.data.requestId);
+        pending.delete(event.data.requestId);
+        clearTimeout(watchdog);
+        watchdog = pending.size ? setTimeout(failWorker, WORKER_SILENCE_MS) : undefined;
         if ("tokens" in event.data) job.resolve(event.data.tokens);
         else void fallback(job.code, job.language, job.context).then(job.resolve, () => job.resolve(plain(job.code)));
       };
@@ -99,8 +106,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     const target = getWorker();
     const result = target ? new Promise<Token[]>((resolve) => {
       const id = ++requestId;
-      const timer = setTimeout(() => { pending.delete(id); failWorker(); resolve(plain(code)); }, 500);
-      pending.set(id, { resolve, timer, code, language, context: actual });
+      pending.set(id, { resolve, code, language, context: actual });
+      watchdog ??= setTimeout(failWorker, WORKER_SILENCE_MS);
       target.postMessage({ type: "highlight", requestId: id, code, language, context: actual });
     }) : fallback(code, language, actual);
     const tracked = result.then((tokens): Token[] | Promise<Token[]> => {
@@ -126,7 +133,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   highlight.dispose = () => {
     disposed = true;
     if (worker) { worker.postMessage({ type: "dispose" }); worker.terminate(); }
-    for (const job of pending.values()) { clearTimeout(job.timer); job.resolve(plain(job.code)); }
+    clearTimeout(watchdog);
+    for (const job of pending.values()) job.resolve(plain(job.code));
     pending.clear(); cache.clear(); inflight.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); runtime?.dispose();
   };
   return highlight;
