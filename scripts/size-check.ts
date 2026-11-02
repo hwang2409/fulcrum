@@ -1,8 +1,9 @@
 const budget = Number(process.env.SIZE_BUDGET_BYTES ?? 5_000);
-const builds = [
+const builds: Array<{ name: string; entry: string; external: string[]; budget?: number }> = [
   { name: "core", entry: "packages/core/dist/index.js", external: [] },
   { name: "virtual", entry: "packages/virtual/dist/index.js", external: [] },
-  { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "react", "react-dom"] },
+  // The per-tool cards live in react. Henry: "i dont really care about the size of fulcrum", so this budget only catches runaway growth.
+  { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "react", "react-dom"], budget: 8_000 },
 ];
 let failed = false;
 const dir = await Bun.$`mktemp -d`.text();
@@ -15,8 +16,9 @@ for (const target of builds) {
     process.exit(1);
   }
   const bytes = Bun.gzipSync(await Bun.file(output).arrayBuffer()).byteLength;
-  console.log(`${target.name}: ${bytes} bytes gzipped (budget ${budget} bytes)`);
-  if (bytes > budget) failed = true;
+  const limit = target.budget ?? budget;
+  console.log(`${target.name}: ${bytes} bytes gzipped (budget ${limit} bytes)`);
+  if (bytes > limit) failed = true;
 }
 // Copy-in stylesheets, gzipped as shipped. Henry ranks polish over bytes, so these budgets catch runaway growth only.
 const styles = [
