@@ -6,9 +6,10 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { act, Profiler, StrictMode, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { createRunStore, type RunEvent, type ToolCall as ToolCallData } from "@fulcrum/core";
+import { createRunStore, initialState, type OutlineChange, type RunEvent, type RunItem, type ToolCall as ToolCallData } from "@fulcrum/core";
 import { Markdown } from "../../markdown/src/react.js";
 import {
+  announcementForItem,
   Approval,
   Message,
   RunProvider,
@@ -18,6 +19,7 @@ import {
   useRun,
   useTimeline,
   type Renderers,
+  type RunStore,
   type ToolBodyProps,
 } from "../src/index.js";
 
@@ -25,6 +27,40 @@ afterAll(() => GlobalRegistrator.unregister());
 
 const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
 const call = (id: string, name: string) => ({ id, name, arguments: {} });
+
+function timelineStore(initialItems: RunItem[]) {
+  let items = initialItems;
+  let snapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change: null as OutlineChange | null };
+  const entities = new Map(items.map((item) => [item.id, item]));
+  const outlineListeners = new Set<() => void>();
+  const itemListeners = new Map<string, Set<() => void>>();
+  const store: RunStore = {
+    getState: () => initialState,
+    getItem: (id) => entities.get(id),
+    getOutline: () => snapshot.items,
+    getOutlineSnapshot: () => snapshot,
+    subscribe(first: string | (() => void), second?: () => void) {
+      if (typeof first !== "string") return () => {};
+      const listeners = itemListeners.get(first) ?? new Set();
+      itemListeners.set(first, listeners);
+      listeners.add(second!);
+      return () => listeners.delete(second!);
+    },
+    subscribeOutline(listener) {
+      outlineListeners.add(listener);
+      return () => outlineListeners.delete(listener);
+    },
+  };
+  return {
+    store,
+    replace(next: RunItem[], change: OutlineChange | null) {
+      items = next;
+      for (const item of items) entities.set(item.id, item);
+      snapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change };
+      act(() => outlineListeners.forEach((listener) => listener()));
+    },
+  };
+}
 
 function setup(events: RunEvent[]) {
   const jobs: Array<() => void> = [];
@@ -534,10 +570,126 @@ test("data-state reflects streaming, done, error, pending", () => {
   expect(q('[data-part="tool"]').getAttribute("data-tool")).toBe("bash");
 });
 
+test("timeline selects virtual mode above 200 items and supports explicit modes", () => {
+  const events = Array.from({ length: 201 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: String(index),
+    message: message(String(index)),
+  }));
+  const { store } = setup(events);
+
+  mount(
+    <RunProvider store={store}>
+      <Timeline />
+    </RunProvider>,
+  );
+  expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
+
+  act(() => root!.render(
+    <RunProvider store={store}>
+      <Timeline virtual={false} />
+    </RunProvider>,
+  ));
+  expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("false");
+  expect(container.querySelectorAll('[data-part="message"]')).toHaveLength(201);
+
+  act(() => root!.render(
+    <RunProvider store={store}>
+      <Timeline virtual />
+    </RunProvider>,
+  ));
+  expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
+  expect(container.querySelectorAll('[data-part="message"]').length).toBeLessThanOrEqual(200);
+});
+
 test("react does not import @fulcrum/zeta", () => {
   const dir = new URL("../src/", import.meta.url);
   for (const name of readdirSync(dir))
     expect(readFileSync(new URL(name, dir), "utf8")).not.toContain("@fulcrum/zeta");
   const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
   expect(pkg).not.toContain("@fulcrum/zeta");
+});
+
+const committedItem = (id: string): RunItem => ({
+  id: `message:${id}`,
+  type: "message",
+  message: message(id),
+  version: 1,
+  active: false,
+});
+
+const waitForAnnouncement = () => act(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 1_050));
+});
+
+test("announcement text describes only committed item-level activity", () => {
+  expect(announcementForItem(committedItem("a"))).toBe("assistant replied");
+  expect(announcementForItem({
+    id: "tool:t",
+    type: "tool",
+    tool_call: call("t", "bash"),
+    output: "",
+    version: 1,
+    active: false,
+    is_error: true,
+    canceled: false,
+    result: { tool_call_id: "t", content: "exited with code 1", is_error: true },
+  })).toBe("tool bash finished: exit 1");
+  expect(announcementForItem({
+    id: "approval:r",
+    type: "approval",
+    request: { type: "approval_request", request_id: "r", tool_call: call("t", "bash"), delegated: false },
+  })).toBe("approval needed: bash");
+  expect(announcementForItem({ ...committedItem("streaming"), active: true })).toBeNull();
+});
+
+test("virtual history mount, scroll, and prepend never enter the live region", () => {
+  const current = Array.from({ length: 5_000 }, (_, index) => committedItem(String(index)));
+  const history = Array.from({ length: 500 }, (_, index) => committedItem(`history-${index}`));
+  const source = timelineStore(current);
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  mount(<RunProvider store={source.store}><Timeline virtual /></RunProvider>);
+  const timeline = q('[data-part="timeline"]');
+  const live = q('[data-part="timeline-live"]');
+  expect(timeline.getAttribute("role")).toBe("log");
+  expect(timeline.getAttribute("aria-label")).toBe("agent activity");
+  expect(timeline.getAttribute("aria-live")).toBe("off");
+  expect(live.textContent).toBe("");
+  act(() => {
+    container.scrollTop = 20_000;
+    container.dispatchEvent(new Event("scroll"));
+  });
+  expect(live.textContent).toBe("");
+  source.replace([...history, ...current], { type: "prepend", count: history.length });
+  expect(live.textContent).toBe("");
+  const row = q("[data-virtual-id]");
+  expect(row.getAttribute("aria-setsize")).toBe("5500");
+  expect(Number(row.getAttribute("aria-posinset"))).toBeGreaterThan(0);
+  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+});
+
+test("a streamed message announces once after commit", async () => {
+  const { store, send } = setup([]);
+  mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
+  const live = q('[data-part="timeline-live"]');
+  send({ type: "message_delta", message_id: "stream", delta: "hello" });
+  expect(live.textContent).toBe("");
+  send({ type: "message_commit", message_id: "stream", message: message("hello") });
+  expect(live.textContent).toBe("");
+  await waitForAnnouncement();
+  expect(live.textContent).toBe("assistant replied");
+});
+
+test("a burst of ten appends produces one coalesced announcement", async () => {
+  const { store, send } = setup([]);
+  mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
+  send(...Array.from({ length: 10 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: String(index),
+    message: message(String(index)),
+  })));
+  expect(q('[data-part="timeline-live"]').textContent).toBe("");
+  await waitForAnnouncement();
+  expect(q('[data-part="timeline-live"]').textContent).toBe("10 new items");
 });

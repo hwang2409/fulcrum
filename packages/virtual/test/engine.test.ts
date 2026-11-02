@@ -413,3 +413,92 @@ describe("structured action log and traces", () => {
     }
   });
 });
+
+describe("incremental outline updates", () => {
+  test("append and prepend hints stay equal to full rebuilds through random structural changes", () => {
+    let seed = 0x51f15e;
+    const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+    let serial = 0;
+    let outline: OutlineItem[] = [];
+    const expectedUnseen = new Set<string>();
+    const incremental = createVirtualizer({ estimateSize: (kind) => Number(kind), overscan: 20 });
+    const rebuilt = createVirtualizer({ estimateSize: (kind) => Number(kind), overscan: 20 });
+    incremental.setViewport({ scrollTop: 0, size: 80, source: "user" });
+    rebuilt.setViewport({ scrollTop: 0, size: 80, source: "user" });
+    for (let step = 0; step < 300; step++) {
+      const count = 1 + Math.floor(random() * 4);
+      const added = Array.from({ length: count }, () => ({ id: `random-${serial++}`, kind: String(5 + Math.floor(random() * 40)) }));
+      const operation = Math.floor(random() * 5);
+      const wasPinned = incremental.getSnapshot().pinned;
+      if (operation < 2) {
+        outline = [...outline, ...added];
+        incremental.setOutline(outline, { type: "append", count });
+        if (!wasPinned) for (const { id } of added) expectedUnseen.add(id);
+      } else if (operation < 4) {
+        outline = [...added, ...outline];
+        incremental.setOutline(outline, { type: "prepend", count });
+      } else {
+        const kept = outline.filter(() => random() > 0.2);
+        outline = [...kept.slice(0, Math.floor(kept.length / 2)), ...added, ...kept.slice(Math.floor(kept.length / 2))];
+        incremental.setOutline(outline);
+        const ids = new Set(outline.map(({ id }) => id));
+        for (const id of expectedUnseen) if (!ids.has(id)) expectedUnseen.delete(id);
+      }
+      rebuilt.setOutline(outline);
+      const max = Math.max(0, rebuilt.getSnapshot().totalSize - 80);
+      const top = random() * max;
+      incremental.setViewport({ scrollTop: top, size: 80, source: "user" });
+      rebuilt.setViewport({ scrollTop: top, size: 80, source: "user" });
+      const { unseenCount, ...incrementalLayout } = incremental.getSnapshot();
+      const { unseenCount: _rebuiltUnseen, ...rebuiltLayout } = rebuilt.getSnapshot();
+      expect(incrementalLayout).toEqual(rebuiltLayout);
+      if (incremental.getSnapshot().pinned) expectedUnseen.clear();
+      expect(unseenCount).toBe(expectedUnseen.size);
+    }
+  });
+
+  test("only surviving end appends remain unseen after prepends and replacements", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10 });
+    const current = Array.from({ length: 100 }, (_, index) => ({ id: `row-${index}`, kind: "x" }));
+    virtual.setOutline(current);
+    virtual.setViewport({ scrollTop: 0, size: 10, source: "user" });
+
+    const history = Array.from({ length: 500 }, (_, index) => ({ id: `history-${index}`, kind: "x" }));
+    virtual.setOutline([...history, ...current], { type: "prepend", count: history.length });
+    expect(virtual.getSnapshot().unseenCount).toBe(0);
+
+    const latest = [{ id: "latest-1", kind: "x" }, { id: "latest-2", kind: "x" }];
+    virtual.setOutline([...history, ...current, ...latest], { type: "append", count: latest.length });
+    expect(virtual.getSnapshot().unseenCount).toBe(2);
+
+    virtual.setOutline([...current, latest[1]!]);
+    expect(virtual.getSnapshot().unseenCount).toBe(1);
+    virtual.setOutline(current);
+    expect(virtual.getSnapshot().unseenCount).toBe(0);
+  });
+
+  test("all-loaded mode follows incremental outline updates", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10 });
+    const outline = [{ id: "a", kind: "x" }];
+    virtual.setOutline(outline);
+    virtual.setLoaded("all");
+    virtual.setOutline([...outline, { id: "b", kind: "x" }], { type: "append", count: 1 });
+    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
+    expect(virtual.getSnapshot().rows.map((row) => row.loaded)).toEqual([true, true]);
+  });
+});
+
+test("explicit upward intent releases follow until the user reaches the exact bottom", () => {
+  const virtual = engine([100, 100], 10, 190);
+  virtual.setFollow(false);
+  virtual.setViewport({ scrollTop: 189, size: 10, source: "user" });
+  expect(virtual.getSnapshot().pinned).toBe(false);
+  virtual.setOutline([
+    { id: "row-0", kind: "100:0" },
+    { id: "row-1", kind: "100:1" },
+    { id: "row-2", kind: "100:2" },
+  ], { type: "append", count: 1 });
+  expect(virtual.getSnapshot().unseenCount).toBe(1);
+  virtual.setViewport({ scrollTop: 290, size: 10, source: "user" });
+  expect(virtual.getSnapshot()).toMatchObject({ pinned: true, unseenCount: 0 });
+});

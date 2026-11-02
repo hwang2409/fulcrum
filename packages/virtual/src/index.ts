@@ -59,17 +59,25 @@ export type VirtualSnapshot<Id extends string = string> = {
   correctionEvent: boolean;
   jump: number;
   pendingJump: number;
+  unseenCount: number;
 };
 
+export type OutlineUpdate = { readonly type: "append" | "prepend"; readonly count: number };
+
+export const formatVirtualDebug = (snapshot: VirtualSnapshot, actions: readonly VirtualAction[]) =>
+  JSON.stringify({ range: snapshot.range, visible: snapshot.visible, totalSize: snapshot.totalSize, scrollTop: snapshot.scrollTop, pinned: snapshot.pinned, actions: actions.slice(-8) }, null, 2);
+
 export type Virtualizer<Id extends string = string> = {
-  setOutline(items: readonly OutlineItem<Id>[]): void;
+  setOutline(items: readonly OutlineItem<Id>[], update?: OutlineUpdate): void;
   setViewport(viewport: Viewport): void;
   measure(id: Id, size: number): void;
-  setLoaded(ids: Iterable<Id>): void;
+  setLoaded(ids: Iterable<Id> | "all"): void;
+  setFollow(follow: boolean): void;
   beforeMutation(options?: { mode?: "anchor" | "shift" }): MutationToken<Id>;
   afterMutation(token: MutationToken<Id>, options?: { deferCorrection?: boolean }): MutationResult;
   flushPendingCorrection(): MutationResult;
-  scrollToId(id: Id): number;
+  scrollToId(id: Id, viewportOffset?: number): number;
+  scrollToEnd(): number;
   snapshotCache(): VirtualCache<Id>;
   subscribe(listener: () => void): () => void;
   getSnapshot(): VirtualSnapshot<Id>;
@@ -77,53 +85,142 @@ export type Virtualizer<Id extends string = string> = {
   destroy(): void;
 };
 
-class Fenwick {
-  readonly values: number[];
-  private readonly tree: Float64Array;
+type SequenceNode<Id extends string> = {
+  item: OutlineItem<Id>;
+  value: number;
+  sum: number;
+  count: number;
+  priority: number;
+  left: SequenceNode<Id> | null;
+  right: SequenceNode<Id> | null;
+  parent: SequenceNode<Id> | null;
+};
 
-  constructor(values: readonly number[]) {
-    this.values = [...values];
-    this.tree = new Float64Array(values.length + 1);
-    for (let index = 0; index < values.length; index++) this.add(index, values[index]!);
+class Sequence<Id extends string> {
+  private root: SequenceNode<Id> | null = null;
+  readonly nodes = new Map<Id, SequenceNode<Id>>();
+  private seed = 0x9e3779b9;
+
+  constructor(entries: readonly { item: OutlineItem<Id>; value: number }[] = []) {
+    this.append(entries);
   }
 
-  get total(): number {
-    return this.prefix(this.values.length);
+  get length(): number { return this.root?.count ?? 0; }
+  get total(): number { return this.root?.sum ?? 0; }
+
+  at(index: number): OutlineItem<Id> | undefined { return this.nodeAt(index)?.item; }
+  valueAt(index: number): number { return this.nodeAt(index)?.value ?? 0; }
+
+  indexOf(id: Id): number | undefined {
+    let node = this.nodes.get(id);
+    if (!node) return undefined;
+    let index = node.left?.count ?? 0;
+    while (node.parent) {
+      if (node === node.parent.right) index += 1 + (node.parent.left?.count ?? 0);
+      node = node.parent;
+    }
+    return index;
   }
 
   prefix(end: number): number {
+    let node = this.root;
+    let remaining = Math.min(Math.max(0, end), this.length);
     let sum = 0;
-    for (let index = end; index > 0; index -= index & -index) sum += this.tree[index]!;
+    while (node && remaining > 0) {
+      const leftCount = node.left?.count ?? 0;
+      if (remaining <= leftCount) node = node.left;
+      else {
+        sum += (node.left?.sum ?? 0) + node.value;
+        remaining -= leftCount + 1;
+        node = node.right;
+      }
+    }
     return sum;
   }
 
   update(index: number, value: number): void {
-    const delta = value - this.values[index]!;
-    this.values[index] = value;
-    this.add(index, delta);
+    let node = this.nodeAt(index);
+    if (!node) throw new RangeError("row index is outside the outline");
+    node.value = value;
+    while (node) { this.recalculate(node); node = node.parent; }
   }
 
-  // Fenwick keeps both point updates and prefix lookup logarithmic at 100,000 rows.
   lowerBound(offset: number): number {
     if (offset < 0) return 0;
+    let node = this.root;
     let index = 0;
-    let sum = 0;
-    let step = 1;
-    while (step * 2 <= this.values.length) step *= 2;
-    for (; step > 0; step >>= 1) {
-      const next = index + step;
-      if (next <= this.values.length && sum + this.tree[next]! <= offset) {
-        index = next;
-        sum += this.tree[next]!;
+    let remaining = offset;
+    while (node) {
+      const leftSum = node.left?.sum ?? 0;
+      const leftCount = node.left?.count ?? 0;
+      if (remaining < leftSum) node = node.left;
+      else if (remaining < leftSum + node.value) return index + leftCount;
+      else {
+        remaining -= leftSum + node.value;
+        index += leftCount + 1;
+        node = node.right;
       }
     }
-    return Math.min(index, this.values.length);
+    return index;
   }
 
-  private add(index: number, delta: number): void {
-    for (let cursor = index + 1; cursor < this.tree.length; cursor += cursor & -cursor) this.tree[cursor]! += delta;
+  append(entries: readonly { item: OutlineItem<Id>; value: number }[]): void {
+    this.root = this.merge(this.root, this.build(entries));
+    if (this.root) this.root.parent = null;
+  }
+
+  prepend(entries: readonly { item: OutlineItem<Id>; value: number }[]): void {
+    this.root = this.merge(this.build(entries), this.root);
+    if (this.root) this.root.parent = null;
+  }
+
+  private nodeAt(index: number): SequenceNode<Id> | null {
+    if (index < 0 || index >= this.length) return null;
+    let node = this.root;
+    while (node) {
+      const leftCount = node.left?.count ?? 0;
+      if (index < leftCount) node = node.left;
+      else if (index === leftCount) return node;
+      else { index -= leftCount + 1; node = node.right; }
+    }
+    return null;
+  }
+
+  private build(entries: readonly { item: OutlineItem<Id>; value: number }[]): SequenceNode<Id> | null {
+    let root: SequenceNode<Id> | null = null;
+    for (const { item, value } of entries) {
+      if (this.nodes.has(item.id)) throw new Error("outline ids must be unique");
+      this.seed ^= this.seed << 13; this.seed ^= this.seed >>> 17; this.seed ^= this.seed << 5;
+      const node: SequenceNode<Id> = { item, value, sum: value, count: 1, priority: this.seed >>> 0, left: null, right: null, parent: null };
+      this.nodes.set(item.id, node);
+      root = this.merge(root, node);
+    }
+    return root;
+  }
+
+  private merge(left: SequenceNode<Id> | null, right: SequenceNode<Id> | null): SequenceNode<Id> | null {
+    if (!left) { if (right) right.parent = null; return right; }
+    if (!right) { left.parent = null; return left; }
+    if (left.priority < right.priority) {
+      left.right = this.merge(left.right, right);
+      if (left.right) left.right.parent = left;
+      this.recalculate(left);
+      left.parent = null;
+      return left;
+    }
+    right.left = this.merge(left, right.left);
+    if (right.left) right.left.parent = right;
+    this.recalculate(right);
+    right.parent = null;
+    return right;
+  }
+
+  private recalculate(node: SequenceNode<Id>): void {
+    node.count = 1 + (node.left?.count ?? 0) + (node.right?.count ?? 0);
+    node.sum = node.value + (node.left?.sum ?? 0) + (node.right?.sum ?? 0);
   }
 }
+
 
 const checkSize = (size: number): number => {
   if (!Number.isFinite(size) || size < 0) throw new RangeError("row sizes must be finite and nonnegative");
@@ -145,18 +242,17 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   if (!Number.isInteger(maxMounted) || maxMounted < 1) throw new RangeError("maxMounted must be a positive integer");
   checkSize(bottomThreshold);
 
-  let outline: readonly OutlineItem<Id>[] = [];
-  let indexes = new Map<Id, number>();
+  let layout = new Sequence<Id>();
   const measured = new Map<Id, number>(options.cache?.sizes);
   const kindMedians = new Map<string, number>(options.cache?.kindMedians);
   const measuredByKind = new Map<string, Map<Id, number>>();
-  let indicesByKind = new Map<string, number[]>();
+  let idsByKind = new Map<string, Set<Id>>();
   let totalMeasuredSize = 0;
-  let loaded = new Set<Id>();
-  let sizes = new Fenwick([]);
+  let loaded: Set<Id> | "all" = new Set<Id>();
   let scrollTop = 0;
   let viewportSize = 0;
   let pinned = true;
+  const unseenIds = new Set<Id>();
   let programmatic = false;
   let correctionEvent = false;
   let jump = 0;
@@ -183,29 +279,31 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     listeners.forEach((listener) => listener());
   };
 
-  const maxScroll = (): number => Math.max(0, sizes.total - viewportSize);
+  const maxScroll = (): number => Math.max(0, layout.total - viewportSize);
   const clampScroll = (value: number): number => Math.min(maxScroll(), Math.max(0, value));
   const effectiveScrollTop = (): number => scrollTop + pendingJump;
   const captureExpectedAnchor = (): Anchor<Id> | null => {
-    if (expectedCorrectionScroll === null || outline.length === 0) return null;
-    const index = Math.min(sizes.lowerBound(expectedCorrectionScroll), outline.length - 1);
-    return { id: outline[index]!.id, index, offset: sizes.prefix(index) - expectedCorrectionScroll };
+    if (expectedCorrectionScroll === null || layout.length === 0) return null;
+    const index = Math.min(layout.lowerBound(expectedCorrectionScroll), layout.length - 1);
+    return { id: layout.at(index)!.id, index, offset: layout.prefix(index) - expectedCorrectionScroll };
   };
   const restoreExpectedAnchor = (anchor: Anchor<Id> | null): void => {
     if (expectedCorrectionScroll === null) return;
-    if (anchor && outline.length > 0) {
-      const index = indexes.get(anchor.id) ?? Math.min(anchor.index, outline.length - 1);
-      expectedCorrectionScroll = sizes.prefix(index) - anchor.offset;
+    if (anchor && layout.length > 0) {
+      const index = layout.indexOf(anchor.id) ?? Math.min(anchor.index, layout.length - 1);
+      expectedCorrectionScroll = layout.prefix(index) - anchor.offset;
     }
     expectedCorrectionScroll = clampScroll(expectedCorrectionScroll);
   };
 
   const applyKindEstimate = (kind: string, median: number): void => {
     kindMedians.set(kind, median);
-    for (const index of indicesByKind.get(kind) ?? []) {
-      if (measured.has(outline[index]!.id)) continue;
-      const delta = median - sizes.values[index]!;
-      sizes.update(index, median);
+    for (const id of idsByKind.get(kind) ?? []) {
+      if (measured.has(id)) continue;
+      const index = layout.indexOf(id);
+      if (index === undefined) continue;
+      const delta = median - layout.valueAt(index);
+      layout.update(index, median);
       if (index < rangeCursorIndex) rangeCursorStart += delta;
     }
   };
@@ -220,44 +318,44 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   };
 
   const findStartFromCursor = (offset: number): number => {
-    if (outline.length === 0) return 0;
-    rangeCursorIndex = Math.min(rangeCursorIndex, outline.length - 1);
+    if (layout.length === 0) return 0;
+    rangeCursorIndex = Math.min(rangeCursorIndex, layout.length - 1);
     let steps = 0;
     while (rangeCursorIndex > 0 && rangeCursorStart > offset && steps++ < 16) {
       rangeCursorIndex--;
-      rangeCursorStart -= sizes.values[rangeCursorIndex]!;
+      rangeCursorStart -= layout.valueAt(rangeCursorIndex);
     }
-    while (rangeCursorIndex < outline.length - 1 && rangeCursorStart + sizes.values[rangeCursorIndex]! <= offset && steps++ < 16) {
-      rangeCursorStart += sizes.values[rangeCursorIndex]!;
+    while (rangeCursorIndex < layout.length - 1 && rangeCursorStart + layout.valueAt(rangeCursorIndex) <= offset && steps++ < 16) {
+      rangeCursorStart += layout.valueAt(rangeCursorIndex);
       rangeCursorIndex++;
     }
     // Nearby scrolling walks from the prior range; large jumps fall back to logarithmic lookup.
-    if (rangeCursorStart > offset || rangeCursorStart + sizes.values[rangeCursorIndex]! <= offset) {
-      rangeCursorIndex = Math.min(sizes.lowerBound(offset), outline.length - 1);
-      rangeCursorStart = sizes.prefix(rangeCursorIndex);
+    if (rangeCursorStart > offset || rangeCursorStart + layout.valueAt(rangeCursorIndex) <= offset) {
+      rangeCursorIndex = Math.min(layout.lowerBound(offset), layout.length - 1);
+      rangeCursorStart = layout.prefix(rangeCursorIndex);
     }
     return rangeCursorIndex;
   };
 
   const endAt = (offset: number): number => {
-    let end = sizes.lowerBound(offset);
-    if (end < outline.length && sizes.prefix(end) < offset) end++;
+    let end = layout.lowerBound(offset);
+    if (end < layout.length && layout.prefix(end) < offset) end++;
     return end;
   };
 
   const visibleRange = (): VirtualRange => {
-    if (outline.length === 0 || viewportSize <= 0) return { start: 0, end: 0 };
+    if (layout.length === 0 || viewportSize <= 0) return { start: 0, end: 0 };
     const top = effectiveScrollTop();
     const start = findStartFromCursor(top);
     const end = endAt(top + viewportSize);
-    return { start: Math.min(start, outline.length), end: Math.max(Math.min(end, outline.length), Math.min(start + 1, outline.length)) };
+    return { start: Math.min(start, layout.length), end: Math.max(Math.min(end, layout.length), Math.min(start + 1, layout.length)) };
   };
 
   const mountedRange = (visible: VirtualRange): VirtualRange => {
     if (visible.end === 0) return visible;
     const buffer = overscan ?? viewportSize;
     const top = effectiveScrollTop();
-    let start = sizes.lowerBound(Math.max(0, top - buffer));
+    let start = layout.lowerBound(Math.max(0, top - buffer));
     let end = endAt(top + viewportSize + buffer);
     end = Math.max(end, visible.end);
     const visibleCount = visible.end - visible.start;
@@ -270,9 +368,9 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       end = visible.end + after;
       const missing = limit - (end - start);
       start = Math.max(0, start - Math.min(missing, start));
-      end = Math.min(outline.length, end + (limit - (end - start)));
+      end = Math.min(layout.length, end + (limit - (end - start)));
     }
-    return { start, end: Math.min(end, outline.length) };
+    return { start, end: Math.min(end, layout.length) };
   };
 
   const captureAnchor = (): Anchor<Id> | null => {
@@ -280,13 +378,13 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     if (visible.start === visible.end) return null;
     let index = visible.start;
     for (let cursor = visible.start; cursor < visible.end; cursor++) {
-      if (loaded.has(outline[cursor]!.id)) {
+      if (loaded === "all" || loaded.has(layout.at(cursor)!.id)) {
         index = cursor;
         break;
       }
     }
-    const item = outline[index]!;
-    return { id: item.id, index, offset: sizes.prefix(index) - effectiveScrollTop() };
+    const item = layout.at(index)!;
+    return { id: item.id, index, offset: layout.prefix(index) - effectiveScrollTop() };
   };
 
   const setViewport = (viewport: Viewport): void => {
@@ -303,7 +401,11 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     scrollTop = nextScrollTop;
     correctionEvent = isCorrection;
     programmatic = viewport.source === "programmatic" || isCorrection;
-    if (viewport.source === "user" && !isCorrection) pinned = sizes.total - scrollTop - viewportSize <= bottomThreshold;
+    if (viewport.source === "user" && !isCorrection) {
+      const distance = layout.total - scrollTop - viewportSize;
+      pinned = pinned ? distance <= bottomThreshold : distance < 0.5;
+      if (pinned) unseenIds.clear();
+    }
     if (isCorrection) expectedCorrectionScroll = null;
     if (isCorrection) jump = 0;
     log("viewport", { scrollTop, size: viewportSize, programmatic, pinned });
@@ -311,71 +413,91 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   };
 
   return {
-    setOutline(items) {
+    setOutline(items, update) {
       const expectedAnchor = captureExpectedAnchor();
-      const cursorId = outline[rangeCursorIndex]?.id;
-      const ownedItems = items.map(({ id, kind }) => ({ id, kind }));
-      const nextIndexes = new Map<Id, number>();
-      const nextIndicesByKind = new Map<string, number[]>();
-      measuredByKind.clear();
-      totalMeasuredSize = 0;
-      const values = ownedItems.map((item, index) => {
-        if (nextIndexes.has(item.id)) throw new Error("outline ids must be unique");
-        nextIndexes.set(item.id, index);
-        const kindIndices = nextIndicesByKind.get(item.kind) ?? [];
-        kindIndices.push(index);
-        nextIndicesByKind.set(item.kind, kindIndices);
-        const measuredSize = measured.get(item.id);
+      const cursorId = layout.at(rangeCursorIndex)?.id;
+      const incremental = update && update.count >= 0 && items.length === layout.length + update.count;
+      if (update && !incremental) throw new Error("outline update does not match the current length");
+      const source = incremental
+        ? update.type === "append" ? items.slice(items.length - update.count) : items.slice(0, update.count)
+        : items;
+      const addedIds = new Set<Id>();
+      for (const { id } of source) {
+        if (addedIds.has(id) || (incremental && layout.nodes.has(id))) throw new Error("outline ids must be unique");
+        addedIds.add(id);
+      }
+      if (!incremental) {
+        measuredByKind.clear();
+        idsByKind = new Map();
+        totalMeasuredSize = 0;
+      }
+      const entries = source.map(({ id, kind }) => {
+        const item = { id, kind };
+        const ids = idsByKind.get(kind) ?? new Set<Id>();
+        ids.add(id);
+        idsByKind.set(kind, ids);
+        const measuredSize = measured.get(id);
         if (measuredSize !== undefined) {
           totalMeasuredSize += measuredSize;
-          const samples = measuredByKind.get(item.kind) ?? new Map<Id, number>();
-          samples.set(item.id, measuredSize);
-          measuredByKind.set(item.kind, samples);
+          const samples = measuredByKind.get(kind) ?? new Map<Id, number>();
+          samples.set(id, measuredSize);
+          measuredByKind.set(kind, samples);
         }
-        return checkSize(measuredSize ?? kindMedians.get(item.kind) ?? options.estimateSize(item.kind));
+        return { item, value: checkSize(measuredSize ?? kindMedians.get(kind) ?? options.estimateSize(kind)) };
       });
-      outline = ownedItems;
-      indexes = nextIndexes;
-      indicesByKind = nextIndicesByKind;
-      sizes = new Fenwick(values);
-      rangeCursorIndex = cursorId === undefined ? 0 : (indexes.get(cursorId) ?? Math.min(rangeCursorIndex, Math.max(0, outline.length - 1)));
-      rangeCursorStart = sizes.prefix(rangeCursorIndex);
+      if (!incremental) layout = new Sequence(entries);
+      else if (update.type === "append") layout.append(entries);
+      else layout.prepend(entries);
+      rangeCursorIndex = cursorId === undefined ? 0 : (layout.indexOf(cursorId) ?? Math.min(rangeCursorIndex, Math.max(0, layout.length - 1)));
+      rangeCursorStart = layout.prefix(rangeCursorIndex);
       calibrateKindEstimates();
       restoreExpectedAnchor(expectedAnchor);
-      log("outline", { count: outline.length, totalSize: sizes.total });
+      if (!pinned && incremental && update.type === "append")
+        for (const { id } of source) unseenIds.add(id);
+      if (!incremental) {
+        const retained = new Set(items.map(({ id }) => id));
+        for (const id of unseenIds) if (!retained.has(id)) unseenIds.delete(id);
+      }
+      log("outline", { count: layout.length, totalSize: layout.total });
       changed();
     },
     setViewport,
     measure(id, size) {
       const expectedAnchor = captureExpectedAnchor();
       checkSize(size);
-      const index = indexes.get(id);
+      const index = layout.indexOf(id);
       if (index === undefined) throw new Error("cannot measure an id outside the outline");
-      const item = outline[index]!;
+      const item = layout.at(index)!;
       const previousMeasurement = measured.get(id);
-      const previousSize = sizes.values[index]!;
+      const previousSize = layout.valueAt(index);
       measured.set(id, size);
       totalMeasuredSize += size - (previousMeasurement ?? 0);
       const samples = measuredByKind.get(item.kind) ?? new Map<Id, number>();
       samples.set(id, size);
       measuredByKind.set(item.kind, samples);
-      sizes.update(index, size);
+      layout.update(index, size);
       if (index < rangeCursorIndex) rangeCursorStart += size - previousSize;
       calibrateKindEstimates();
       restoreExpectedAnchor(expectedAnchor);
-      log("measure", { index, size, totalSize: sizes.total });
+      log("measure", { index, size, totalSize: layout.total });
       changed();
     },
     setLoaded(ids) {
-      loaded = new Set(ids);
-      log("loaded", { count: loaded.size });
+      loaded = ids === "all" ? "all" : new Set(ids);
+      log("loaded", { count: loaded === "all" ? layout.length : loaded.size });
+      changed();
+    },
+    setFollow(follow) {
+      pinned = follow;
+      if (follow) unseenIds.clear();
+      log("viewport", { scrollTop, size: viewportSize, programmatic: false, pinned });
       changed();
     },
     beforeMutation(mutationOptions) {
       const anchor = captureAnchor();
       const mode = mutationOptions?.mode ?? "anchor";
       log("anchor", { index: anchor?.index ?? null, offset: anchor?.offset ?? null, pinned });
-      return { anchor, pinned, mode, distanceFromEnd: sizes.total - effectiveScrollTop() };
+      return { anchor, pinned, mode, distanceFromEnd: layout.total - effectiveScrollTop() };
     },
     afterMutation(token, mutationOptions) {
       const actualBefore = scrollTop;
@@ -386,10 +508,10 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
         requested = maxScroll();
         followedBottom = true;
       } else if (token.mode === "shift") {
-        requested = sizes.total - token.distanceFromEnd;
-      } else if (token.anchor && outline.length > 0) {
-        const index = indexes.get(token.anchor.id) ?? Math.min(token.anchor.index, outline.length - 1);
-        requested = sizes.prefix(index) - token.anchor.offset;
+        requested = layout.total - token.distanceFromEnd;
+      } else if (token.anchor && layout.length > 0) {
+        const index = layout.indexOf(token.anchor.id) ?? Math.min(token.anchor.index, layout.length - 1);
+        requested = layout.prefix(index) - token.anchor.offset;
       }
       const correction = requested - logicalBefore;
       if (mutationOptions?.deferCorrection) {
@@ -421,11 +543,19 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       changed();
       return { scrollTop, correction, appliedCorrection: jump, jump, pendingJump, followedBottom: false };
     },
-    scrollToId(id) {
-      const index = indexes.get(id);
+    scrollToId(id, viewportOffset = 0) {
+      const index = layout.indexOf(id);
       if (index === undefined) throw new Error("cannot scroll to an id outside the outline");
-      setViewport({ scrollTop: sizes.prefix(index), size: viewportSize, source: "programmatic" });
+      setViewport({ scrollTop: Math.max(0, layout.prefix(index) - viewportOffset), size: viewportSize, source: "programmatic" });
+      pinned = maxScroll() - scrollTop < 0.5;
+      if (pinned) unseenIds.clear();
       log("scroll-to-id", { index, scrollTop });
+      return scrollTop;
+    },
+    scrollToEnd() {
+      setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
+      pinned = true;
+      unseenIds.clear();
       return scrollTop;
     },
     snapshotCache() {
@@ -439,14 +569,15 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       if (snapshot) return snapshot;
       const visible = visibleRange();
       const range = mountedRange(visible);
-      const rows = outline.slice(range.start, range.end).map((item, offset): VirtualRow<Id> => {
-        const index = range.start + offset;
-        return { ...item, index, start: sizes.prefix(index), size: sizes.values[index]!, loaded: loaded.has(item.id) };
-      });
-      const topSpacer = sizes.prefix(range.start);
-      const bottomSpacer = sizes.total - sizes.prefix(range.end);
+      const rows: VirtualRow<Id>[] = [];
+      for (let index = range.start; index < range.end; index++) {
+        const item = layout.at(index)!;
+        rows.push({ ...item, index, start: layout.prefix(index), size: layout.valueAt(index), loaded: loaded === "all" || loaded.has(item.id) });
+      }
+      const topSpacer = layout.prefix(range.start);
+      const bottomSpacer = layout.total - layout.prefix(range.end);
       snapshot = {
-        totalSize: sizes.total,
+        totalSize: layout.total,
         topSpacer,
         bottomSpacer,
         rows,
@@ -460,6 +591,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
         correctionEvent,
         jump,
         pendingJump,
+        unseenCount: unseenIds.size,
       };
       return snapshot;
     },
