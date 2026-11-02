@@ -4,9 +4,10 @@ GlobalRegistrator.register();
 
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { act, Profiler, useState, type ReactNode } from "react";
+import { act, Profiler, StrictMode, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, initialState, type OutlineChange, type RunEvent, type RunItem, type ToolCall as ToolCallData } from "@fulcrum/core";
+import { Markdown } from "../../markdown/src/react.js";
 import {
   announcementForItem,
   Approval,
@@ -93,6 +94,82 @@ const q = (selector: string) => container.querySelector(selector) as HTMLElement
 // react-dom keeps the committed props object on each host node; a new object means the owner re-rendered.
 const hostProps = (el: Element) =>
   (el as unknown as Record<string, unknown>)[Object.keys(el).find((key) => key.startsWith("__reactProps$"))!];
+
+test("highlighting passes cumulative source with stable identity and monotonic versions", async () => {
+  type Context = { id: string; version: number; state: "streaming" | "done" };
+  type Token = { type?: "keyword"; text: string };
+  const calls: Array<{ code: string; language: string | undefined; context: Context | undefined }> = [];
+  const resolves: Array<(result: Token[]) => void> = [];
+  const highlight = (code: string, language: string | undefined, context?: Context) => {
+    calls.push({ code, language, context });
+    return new Promise<Token[]>((resolve) => resolves.push(resolve));
+  };
+  mount(<Markdown id="message:one" source={"```ts\na\n"} streaming highlight={highlight} />);
+  act(() => root!.render(<Markdown id="message:one" source={"```ts\na\nb\npartial"} streaming highlight={highlight} />));
+  expect(calls).toEqual([
+    { code: "a\n", language: "ts", context: { id: "message:one:0", version: 1, state: "streaming" } },
+    { code: "a\nb\npartial", language: "ts", context: { id: "message:one:0", version: 2, state: "streaming" } },
+  ]);
+
+  await act(async () => {
+    resolves.shift()!([{ type: "keyword", text: "a\n" }]);
+    resolves.shift()!([{ type: "keyword", text: "a\nb\npartial" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(container.textContent).toBe("a\nb\npartial");
+  expect(container.querySelectorAll(".tok-keyword")).toHaveLength(1);
+
+  act(() => root!.render(<Markdown id="message:one" source={"```ts\na\nb\npartial\n```"} streaming highlight={highlight} />));
+  expect(calls[2]).toEqual({ code: "a\nb\npartial\n", language: "ts", context: { id: "message:one:0", version: 3, state: "done" } });
+});
+
+test("async highlighting commits in strict mode", async () => {
+  let resolve!: (tokens: Array<{ text: string; type?: "keyword" }>) => void;
+  const highlight = () => new Promise<Array<{ text: string; type?: "keyword" }>>((done) => { resolve = done; });
+  mount(<StrictMode><Markdown source={"```ts\nconst x = 1;\n```"} highlight={highlight} /></StrictMode>);
+  await act(async () => {
+    resolve([{ text: "const x = 1;\n", type: "keyword" }]);
+    await Promise.resolve();
+  });
+  expect(container.querySelector(".tok-keyword")?.textContent).toBe("const x = 1;\n");
+});
+
+test("streaming markdown keeps a finished block element mounted", () => {
+  mount(<Markdown source={"first\n\nsecond"} streaming />);
+  const first = q('[data-part="md-paragraph"]');
+  act(() => root!.render(<Markdown source={"first\n\nsecond grows"} streaming />));
+  expect(q('[data-part="md-paragraph"]')).toBe(first);
+  expect(container.querySelectorAll('[data-part="md-paragraph"]')[1]?.textContent).toBe("second grows");
+});
+
+test("Message composes assistant markdown while user and explicit plain modes stay text", () => {
+  const { store } = setup([
+    { type: "message_commit", message_id: "assistant", message: message("use `code`") },
+    { type: "message_commit", message_id: "user", message: { role: "user", content: [{ type: "text", text: "use `plain`" }] } },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <Message id="message:assistant" markdown={Markdown} />
+      <Message id="message:user" markdown={Markdown} />
+      <Message id="message:assistant" markdown={false} className="plain" />
+    </RunProvider>,
+  );
+  expect(q('[data-id="message:assistant"] [data-part="md-code-inline"]')?.textContent).toBe("code");
+  expect(q('[data-id="message:user"]').textContent).toBe("use `plain`");
+  expect(q(".plain").textContent).toBe("use `code`");
+});
+
+test("Message can opt user messages into markdown", () => {
+  const { store } = setup([
+    { type: "message_commit", message_id: "user", message: { role: "user", content: [{ type: "text", text: "use **strong**" }] } },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <Message id="message:user" markdown={Markdown} markdownFor="all" />
+    </RunProvider>,
+  );
+  expect(q('[data-part="md-strong"]').textContent).toBe("strong");
+});
 
 test("a delta re-renders only the streaming item", async () => {
   const { store, send } = setup([

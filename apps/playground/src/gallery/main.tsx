@@ -1,14 +1,19 @@
 import "../fonts.css";
 import "@fulcrum/react/styles.css";
 import "@fulcrum/react/themes.css";
+import "@fulcrum/highlight/styles.css";
 import themeSource from "@fulcrum/react/themes.css?raw";
 import "./gallery.css";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore } from "@fulcrum/core";
-import { Approval, RunProvider, Timeline, type Renderers } from "@fulcrum/react";
+import { createHighlighter } from "@fulcrum/highlight";
+import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
+import { Approval, Message, RunProvider, Timeline, type Renderers } from "@fulcrum/react";
 import { demos, type Demo } from "./demos";
-import { MarkdownPreview } from "./markdown-preview";
+
+const highlight = createHighlighter();
+const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
 
 type Act = (action: "approve" | "deny", requestId: string) => void;
 const ActContext = createContext<Act>(() => {});
@@ -17,8 +22,11 @@ function GalleryApproval({ id }: { id: string }) {
   const act = useContext(ActContext);
   return <Approval id={id} onApprove={(r) => act("approve", r)} onDeny={(r) => act("deny", r)} />;
 }
-// Tools use ToolCall's default body: the card for each item's view kind.
-const renderers: Renderers = { approval: GalleryApproval };
+// Tools use ToolCall's default body; messages use the shared highlighted markdown renderer.
+const renderers: Renderers = {
+  message: ({ id }) => <Message id={id} markdown={RichMarkdown} />,
+  approval: GalleryApproval,
+};
 
 // A live demo starts empty and plays; paused from the start (reduced motion), it shows its in-progress state instead.
 const fresh = (demo: Demo, paused = false) => {
@@ -51,6 +59,7 @@ function attributes(root: HTMLElement) {
 
 function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: string) => void; inspect: boolean }) {
   const [store, setStore] = useState(() => fresh(demo, reducedMotion));
+  const [generation, setGeneration] = useState(0);
   const [paused, setPaused] = useState(reducedMotion);
   const [touched, setTouched] = useState(false);
   const [caption, setCaption] = useState("");
@@ -62,6 +71,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
     index.current = start(paused);
     setTouched(false);
     setStore(fresh(demo, paused));
+    setGeneration((value) => value + 1);
   };
   const act: Act = (action, requestId) => {
     store.dispatch({ type: "approval_end", request_id: requestId, data: { action } });
@@ -123,15 +133,11 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
         </div>
       </header>
       <div className="demo-body" ref={body}>
-        {demo.preview === "markdown" ? (
-          <MarkdownPreview />
-        ) : (
-          <ActContext.Provider value={act}>
-            <RunProvider store={store}>
-              <Timeline renderers={renderers} />
-            </RunProvider>
-          </ActContext.Provider>
-        )}
+        <ActContext.Provider value={act}>
+          <RunProvider key={generation} store={store}>
+            <Timeline renderers={renderers} />
+          </RunProvider>
+        </ActContext.Provider>
       </div>
       {inspect ? <pre className="demo-attrs" aria-label="rendered data attributes">{caption}</pre> : null}
     </article>
@@ -181,6 +187,7 @@ function useActive(ids: string[]) {
 }
 
 function Gallery() {
+  useEffect(() => () => highlight.dispose(), []);
   const [theme, setTheme] = useState(() => param("theme", themeNames, AUTO));
   const [inspect, setInspect] = useState(() => new URLSearchParams(location.search).get("inspect") === "1");
   const [message, setMessage] = useState<{ text: string; key: number }>();

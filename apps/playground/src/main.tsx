@@ -1,7 +1,10 @@
+import "@fulcrum/highlight/styles.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, initialState, type RunEvent, type RunItem } from "@fulcrum/core";
 import { createAiSdkAdapter } from "@fulcrum/ai-sdk";
+import { createHighlighter } from "@fulcrum/highlight";
+import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
 import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
 import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
@@ -33,7 +36,17 @@ const aiSdkFixtures = Object.fromEntries(
     return [path.split("/").pop()!, text.split("\n").filter(Boolean).flatMap((line) => adapter.decode(JSON.parse(line)))];
   }),
 );
-const fixtureSources: Record<string, Record<string, RunEvent[]>> = { zeta: zetaFixtures, "ai-sdk": aiSdkFixtures };
+const demoFixtures: Record<string, RunEvent[]> = {
+  "markdown-code": [{
+    type: "message_commit",
+    message_id: "markdown-code",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Here is a focused TypeScript fix:\n\n```ts\nconst retries = Math.min(attempt + 1, 3);\nawait runTask({ retries });\n```\n\nThe retry count stays bounded." }],
+    },
+  }],
+};
+const fixtureSources: Record<string, Record<string, RunEvent[]>> = { demo: demoFixtures, zeta: zetaFixtures, "ai-sdk": aiSdkFixtures };
 const fixtures = Object.fromEntries(Object.entries(fixtureSources).flatMap(([source, sourceFixtures]) =>
   Object.entries(sourceFixtures).map(([name, events]) => [`${source}:${name}`, events]),
 ));
@@ -44,6 +57,9 @@ const HUGE_MESSAGES = 100_000;
 const HUGE = `${STATIC}${HUGE_MESSAGES}`;
 const STRESS_RATE = 200;
 const REPLAY_STORE_LAPS = 8;
+const highlight = createHighlighter();
+const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
+addEventListener("pagehide", () => highlight.dispose(), { once: true });
 
 // Sampled by the readout outside React state, so the readout never re-renders the timeline.
 let messageRenders = 0;
@@ -62,7 +78,7 @@ let continueReplay = () => {};
 function CountedMessage({ id }: { id: string }) {
   useItem(id);
   messageRenders++;
-  return <Message id={id} />;
+  return <Message id={id} markdown={RichMarkdown} />;
 }
 function LoggedApproval({ id }: { id: string }) {
   return (
@@ -280,7 +296,10 @@ function Live() {
   const store = held?.store ?? fallbackStore;
   const approve = (id: string) => void client?.request("approve", { session_id: session, request_id: id });
   const deny = (id: string) => void client?.request("deny", { session_id: session, request_id: id });
-  const renderers: Renderers = { approval: ({ id }) => <Approval id={id} onApprove={approve} onDeny={deny} /> };
+  const renderers: Renderers = {
+    message: ({ id }) => <Message id={id} markdown={RichMarkdown} />,
+    approval: ({ id }) => <Approval id={id} onApprove={approve} onDeny={deny} />,
+  };
   return (
     <Shell page="playground">
       <div className="toolbar">

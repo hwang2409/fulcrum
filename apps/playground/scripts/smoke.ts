@@ -8,16 +8,16 @@ const paths = (await readdir(root))
   .filter((file) => file.endsWith(".html"))
   .sort()
   .map((file) => file === "index.html" ? "/" : `/${file}`);
-const preview = spawn("bun", ["x", "vite", "preview", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], {
+const server = spawn("bun", ["run", "dev", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], {
   cwd: root.pathname,
-  stdio: "ignore",
+  stdio: "inherit",
 });
 
 try {
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (preview.exitCode !== null) throw new Error("vite preview exited");
+    if (server.exitCode !== null) throw new Error("vite dev server exited");
     if (await fetch(`http://127.0.0.1:${port}`).then((response) => response.ok).catch(() => false)) break;
-    if (attempt === 99) throw new Error("vite preview did not start");
+    if (attempt === 99) throw new Error("vite dev server did not start");
     await Bun.sleep(100);
   }
 
@@ -45,8 +45,8 @@ try {
     await browser.close();
   }
 } finally {
-  if (preview.exitCode === null) {
-    preview.kill("SIGTERM");
-    await new Promise<void>((resolve) => preview.once("exit", () => resolve()));
+  if (server.exitCode === null) {
+    server.kill("SIGTERM");
+    await new Promise<void>((resolve) => server.once("exit", () => resolve()));
   }
 }

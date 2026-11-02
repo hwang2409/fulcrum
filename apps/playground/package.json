@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "bun run --cwd ../../packages/highlight build",
+    "predev": "bun run --cwd ../.. build:packages",
     "dev": "vite",
-    "prebuild": "bun run --cwd ../../packages/highlight build",
+    "prebuild": "bun run --cwd ../.. build:packages",
     "build": "tsc -p . && vite build",
     "smoke": "bun scripts/smoke.ts",
     "stress": "bun scripts/stress.ts",
@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@fulcrum/core": "workspace:*",
+    "@fulcrum/markdown": "workspace:*",
     "@fulcrum/react": "workspace:*",
     "@fulcrum/zeta": "workspace:*",
     "react": "^19",

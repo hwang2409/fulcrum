@@ -1,0 +1,36 @@
+{
+  "name": "@fulcrum/markdown",
+  "version": "0.0.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js"
+    }
+  },
+  "files": ["dist", "MARKDOWN_IT_LICENSE.md"],
+  "scripts": {
+    "build": "tsc -p ."
+  },
+  "peerDependencies": {
+    "@fulcrum/highlight": "*",
+    "react": ">=19"
+  },
+  "peerDependenciesMeta": {
+    "@fulcrum/highlight": { "optional": true }
+  },
+  "devDependencies": {
+    "@fulcrum/highlight": "workspace:*",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "happy-dom": "^21.0.4",
+    "markdown-it": "14.1.0",
+    "react": "^19",
+    "react-dom": "^19"
+  }
+}
