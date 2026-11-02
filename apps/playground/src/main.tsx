@@ -23,7 +23,7 @@ const fixtures = Object.fromEntries(
 );
 const STRESS = "stress";
 const HUGE = "huge";
-const STRESS_MESSAGES = 5000;
+const STRESS_MESSAGES = Number(new URLSearchParams(location.search).get("stressMessages")) || 5000;
 const HUGE_MESSAGES = 100_000;
 const STRESS_RATE = 200;
 
