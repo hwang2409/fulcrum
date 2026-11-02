@@ -72,6 +72,8 @@ const renderers: Renderers = {
 
 `@fulcrum/virtual` is a zero-dependency, framework-agnostic vertical windowing engine. `createVirtualizer` accepts generic `{ id, kind }` outlines, kind-based estimates, and an optional cache from `snapshotCache()`. Its small interface owns measured per-kind medians, capped overscan ranges, stable or end-relative anchor corrections, deferred momentum-scroll jumps, pinned-bottom decisions, and a bounded structured action log. Callers apply the returned rows, spacers, and scroll decisions in their own renderer; the package does not use React, the DOM, or browser APIs.
 
+Virtual mode mounts only the visible window, so native find-in-page can find only mounted rows. A full-session search interface is planned. Until it is available, use `<Timeline virtual={false}>` when native find-in-page must search the complete transcript.
+
 ## use fulcrum with another harness
 
 the cards are generic; a harness maps its own tool names to them. a tool map is the middleware layer: it reads a tool call's arguments and returns one of fulcrum's agent-neutral views, defined in `@fulcrum/core`:
