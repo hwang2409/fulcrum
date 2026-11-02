@@ -22,8 +22,10 @@ export type ServerStatus = {
 
 export const PAGE_SIZE = 100;
 
+/** The name, else the first prompt, else where it ran and a short id, so untitled rows still differ. */
 export const sessionTitle = (session: SessionMeta) =>
-  session.name?.trim() || session.first_message_preview?.trim() || "untitled session";
+  session.name?.trim() || session.first_message_preview?.trim() ||
+  (session.cwd ? `${session.cwd.split("/").filter(Boolean).at(-1) ?? "/"} · ${session.session_id.slice(0, 8)}` : "untitled session");
 
 /** "now", "4m", "3h", "2d", then a short date. Short, because the list is narrow and scanned, not read. */
 export function ago(iso: string, now: number): string {

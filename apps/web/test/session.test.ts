@@ -73,6 +73,7 @@ const kinds = (state: ReturnType<typeof createSessions>["state"]) => {
 
 test("titles, times, and the top-level list", () => {
   expect(sessions.map(sessionTitle)).toEqual(["alpha", "fix the build", "untitled session"]);
+  expect(sessionTitle(meta("0123456789", "x", { cwd: "/Users/dev/me/fun/fulcrum" }))).toBe("fulcrum · 01234567");
   const now = Date.parse("2026-11-02T12:00:00Z");
   expect(["2026-11-02T11:59:30Z", "2026-11-02T11:15:00Z", "2026-11-02T07:00:00Z", "2026-10-30T12:00:00Z", "2026-10-01T12:00:00Z", "2025-10-01T12:00:00Z"].map((iso) => ago(iso, now)))
     .toEqual(["now", "45m", "5h", "3d", "Oct 1", "Oct 1, 2025"]);
