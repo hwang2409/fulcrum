@@ -210,6 +210,8 @@ function App() {
     const onScroll = () => (atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40);
     el.addEventListener("scroll", onScroll);
     let raf = requestAnimationFrame(function tick() {
+      const busyUntil = performance.now() + 5;
+      while (performance.now() < busyUntil) {}
       if (atBottom && el.scrollTop + el.clientHeight < el.scrollHeight) el.scrollTop = el.scrollHeight;
       raf = requestAnimationFrame(tick);
     });
