@@ -73,6 +73,7 @@ function attributes(root: HTMLElement) {
 
 function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: string) => void; inspect: boolean }) {
   const [store, setStore] = useState(() => fresh(demo, reducedMotion));
+  const [generation, setGeneration] = useState(0);
   const [paused, setPaused] = useState(reducedMotion);
   const [touched, setTouched] = useState(false);
   const [caption, setCaption] = useState("");
@@ -84,6 +85,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
     index.current = start(paused);
     setTouched(false);
     setStore(fresh(demo, paused));
+    setGeneration((value) => value + 1);
   };
   const act: Act = (action, requestId) => {
     store.dispatch({ type: "approval_end", request_id: requestId, data: { action } });
@@ -135,7 +137,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
       </header>
       <div className="demo-body" ref={body}>
         <ActContext.Provider value={act}>
-          <RunProvider store={store}>
+          <RunProvider key={generation} store={store}>
             <Timeline renderers={renderers} />
           </RunProvider>
         </ActContext.Provider>
