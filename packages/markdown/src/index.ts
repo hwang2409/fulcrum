@@ -424,17 +424,10 @@ function parseInline(source: string, streaming: boolean, work?: ParserWork) {
   return nodes;
 }
 
-function withoutPendingReferenceDefinition(source: string, environment: Environment, work?: ParserWork) {
+function withoutPendingReferenceDefinition(source: string) {
   const lineStart = source.lastIndexOf("\n") + 1;
   const line = source.slice(lineStart);
-  if (!/^ {0,3}\[[^\]\n]+\]:[^\n]*$/.test(line)) return source;
-  const label = normalizeReference(/^ {0,3}\[([^\]\n]+)\]:/.exec(line)![1]!);
-  const probe: Environment = { references: environment.references ? { ...environment.references } : undefined };
-  if (probe.references) delete probe.references[label];
-  const parsed = parseDetailed(`${line}\n`, probe, work);
-  const reference = probe.references?.[label];
-  if (parsed.length === 0 && reference) environment.references = { ...environment.references, [label]: reference };
-  return source.slice(0, lineStart);
+  return /^ {0,3}\[[^\]\n]+\]:[^\n]*$/.test(line) ? source.slice(0, lineStart) : source;
 }
 
 function parseStreamingMarkdown(source: string, environment: Environment = {}, work?: ParserWork): ParsedBlock[] {
@@ -454,7 +447,7 @@ function parseStreamingMarkdown(source: string, environment: Environment = {}, w
     return parsed;
   }
 
-  source = safeBlockSource(withoutPendingReferenceDefinition(source, environment, work), work);
+  source = safeBlockSource(withoutPendingReferenceDefinition(source), work);
   const safe = safeInlineContent(source, work);
   const parsed = parseDetailed(safe.source, environment, work);
   if (!safe.openCode) return parsed;
@@ -695,11 +688,12 @@ function unresolvedReferenceLabels(source: string, references: Environment["refe
 
 const fenceCloser = (marker: string, line: string) => new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(line);
 
-function markPendingReferences(inlines: Inline[]) {
+function markPendingReferences(inlines: Inline[], work?: ParserWork) {
+  scanned(work, inlines.length);
   for (let index = 0; index < inlines.length; index++) {
     const node = inlines[index]!;
     if ("children" in node) {
-      markPendingReferences(node.children);
+      markPendingReferences(node.children, work);
       continue;
     }
     if (node.type !== "text" || !node.value.includes("[")) continue;
@@ -718,24 +712,33 @@ function markPendingReferences(inlines: Inline[]) {
   }
 }
 
-function markPendingReferenceBlocks(blocks: Block[]) {
+function markPendingReferenceBlocks(blocks: Block[], work?: ParserWork) {
+  scanned(work, blocks.length);
   for (const block of blocks) {
-    if (block.type === "paragraph" || block.type === "heading") markPendingReferences(block.children);
-    else if (block.type === "blockquote") markPendingReferenceBlocks(block.children);
-    else if (block.type === "list") for (const item of block.items) markPendingReferenceBlocks(item.children);
+    if (block.type === "paragraph" || block.type === "heading") markPendingReferences(block.children, work);
+    else if (block.type === "blockquote") markPendingReferenceBlocks(block.children, work);
+    else if (block.type === "list") for (const item of block.items) markPendingReferenceBlocks(item.children, work);
     else if (block.type === "table") {
-      for (const cell of block.header) markPendingReferences(cell);
-      for (const row of block.rows) for (const cell of row) markPendingReferences(cell);
+      for (const cell of block.header) markPendingReferences(cell, work);
+      for (const row of block.rows) for (const cell of row) markPendingReferences(cell, work);
     }
   }
 }
 
 const listMarker = /^( {0,3})([-+*]|\d{1,9}[.)])(\s+)(.*)$/;
 
-function setListTightness(block: ListBlock, tight: boolean) {
-  for (const item of block.items)
-    for (const child of item.children)
-      if (child.type === "paragraph") child.tight = tight || undefined;
+function setListTightness(block: ListBlock, tight: boolean, work?: ParserWork) {
+  scanned(work, block.items.length);
+  for (const item of block.items) {
+    scanned(work, item.children.length);
+    for (const child of item.children) if (child.type === "paragraph") child.tight = tight || undefined;
+  }
+}
+
+function markListLoose(state: OpenContainerState) {
+  if (state.loose || state.block.type !== "list") return;
+  setListTightness(state.block, false, state.work);
+  state.loose = true;
 }
 
 function currentContainerChild(state: OpenContainerState) {
@@ -789,6 +792,7 @@ function appendContainerLine(state: OpenContainerState, line: string) {
 
   const marker = listMarker.exec(line);
   if (marker && /^\d/.test(marker[2]!) === state.ordered) {
+    if (state.previousBlank) markListLoose(state);
     startListChild(state, marker);
     state.previousBlank = false;
     return true;
@@ -796,12 +800,11 @@ function appendContainerLine(state: OpenContainerState, line: string) {
   if (!line.trim()) {
     currentContainerChild(state).document.append("\n");
     state.previousBlank = true;
-    if (!state.loose && state.block.type === "list") setListTightness(state.block, false);
-    state.loose = true;
     return true;
   }
   const indent = state.contentIndent ?? 0;
   if (line.startsWith(" ".repeat(indent))) {
+    if (state.previousBlank) markListLoose(state);
     currentContainerChild(state).document.append(`${line.slice(indent)}\n`);
     state.previousBlank = false;
     return true;
@@ -811,30 +814,43 @@ function appendContainerLine(state: OpenContainerState, line: string) {
   return true;
 }
 
-function previewContainerLine(state: OpenContainerState, line: string) {
-  let content: string | undefined;
-  if (state.kind === "quote") content = /^ {0,3}> ?(.*)$/.exec(line)?.[1];
-  else {
-    const marker = listMarker.exec(line);
-    if (marker && /^\d/.test(marker[2]!) === state.ordered) {
-      if (!state.pendingStarted) {
-        startListChild(state, marker, false);
-        state.pendingForwarded = marker[4]!.length;
-        state.pendingStarted = true;
-        return;
-      }
-      content = marker[4]!;
-    } else if (!state.child || /^ {0,3}(?:[-+*]|\d{1,9}[.)]?)?$/.test(line) || /^ *$/.test(line)) return;
-    else {
-      const indent = state.contentIndent ?? 0;
-      content = line.startsWith(" ".repeat(indent)) ? line.slice(indent) : state.previousBlank ? undefined : line;
+function previewQuoteContent(state: OpenContainerState, line: string) {
+  const marker = /^ {0,3}> ?(.*)$/.exec(line);
+  if (marker) return marker[1]!;
+  if (!line.trim() || /^ {0,3}>?$/.test(line)) return;
+  return state.previousBlank ? false : line;
+}
+
+function previewListContent(state: OpenContainerState, line: string) {
+  const marker = listMarker.exec(line);
+  if (marker && /^\d/.test(marker[2]!) === state.ordered) {
+    if (!state.pendingStarted) {
+      if (state.previousBlank) markListLoose(state);
+      startListChild(state, marker, false);
+      state.pendingForwarded = marker[4]!.length;
+      state.pendingStarted = true;
+      return;
     }
+    return marker[4]!;
   }
-  if (content === undefined) return;
+  if (!state.child || /^ {0,3}(?:[-+*]|\d{1,9}[.)]?)?$/.test(line) || /^ *$/.test(line)) return;
+  const indent = state.contentIndent ?? 0;
+  if (line.startsWith(" ".repeat(indent))) {
+    if (state.previousBlank) markListLoose(state);
+    return line.slice(indent);
+  }
+  return state.previousBlank ? false : line;
+}
+
+function previewContainerLine(state: OpenContainerState, line: string) {
+  const content = state.kind === "quote" ? previewQuoteContent(state, line) : previewListContent(state, line);
+  if (content === false) return false;
+  if (content === undefined) return true;
   const delta = content.slice(state.pendingForwarded);
   if (delta) currentContainerChild(state).document.append(delta);
   state.pendingForwarded = content.length;
   state.pendingStarted = true;
+  return true;
 }
 
 function appendContainerDelta(state: OpenContainerState, delta: string) {
@@ -851,7 +867,7 @@ function appendContainerDelta(state: OpenContainerState, delta: string) {
     state.pendingForwarded = 0;
     state.pendingStarted = false;
   }
-  previewContainerLine(state, state.pending);
+  if (!previewContainerLine(state, state.pending)) return false;
   publishContainer(state);
   return true;
 }
@@ -969,7 +985,7 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
     const offset = Math.min(state.scannedOffset, tailSource.length);
     if (!offset) return;
     const block = publishContainer(state);
-    markPendingReferenceBlocks([block]);
+    markPendingReferenceBlocks([block], work);
     const record: FrozenReference = { owner: blocks, index: blocks.frozen, source: tailSource.slice(0, offset) };
     for (const label of unresolvedReferenceLabels(record.source, environment.references, work)) {
       let records = referenceBlocks.get(label);
@@ -1087,12 +1103,14 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
 
   const updateReferenceBlocks = (references: Environment["references"]) => {
     if (!references) return;
+    scanned(work, referenceBlocks.size);
     for (const [label, records] of referenceBlocks) {
       const reference = references[label];
       if (!reference) continue;
       const version = `${reference.href}\n${reference.title}`;
       if (appliedReferences.get(label) === version) continue;
       appliedReferences.set(label, version);
+      scanned(work, records.size);
       for (const record of records) {
         const replacement = parseDetailed(record.source, { references: { ...references } }, work)[0]?.block;
         const previous = record.owner.at(record.index);
@@ -1105,7 +1123,7 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
   const commitFrozen = (tail: string, offset: number, committedEnvironment: Environment) => {
     const prefix = tail.slice(0, offset);
     const details = parseDetailed(prefix, committedEnvironment, work);
-    markPendingReferenceBlocks(details.map(({ block }) => block));
+    markPendingReferenceBlocks(details.map(({ block }) => block), work);
     const firstIndex = blocks.frozen;
     details.forEach((detail, index) => {
       const blockSource = prefix.slice(lineOffset(prefix, detail.map[0], work), lineOffset(prefix, detail.map[1], work));
@@ -1124,7 +1142,7 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
     const parsedEnvironment: Environment = { references: environment.references ? { ...environment.references } : undefined };
     const parsed = finished ? parseDetailed(tail, parsedEnvironment, work) : parseStreamingMarkdown(tail, parsedEnvironment, work);
     if (parsedEnvironment.references) environment.references = parsedEnvironment.references;
-    if (!finished) markPendingReferenceBlocks(parsed.map(({ block }) => block));
+    if (!finished) markPendingReferenceBlocks(parsed.map(({ block }) => block), work);
     updateReferenceBlocks(environment.references);
     if (countedTailSource !== source) {
       countedTailSource = source;
@@ -1212,7 +1230,7 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
       environment.references = parsedEnvironment.references;
       updateReferenceBlocks(environment.references);
       const next = details.map(({ block }) => block);
-      markPendingReferenceBlocks(next);
+      markPendingReferenceBlocks(next, work);
       blocks.reset(next, true, work);
       details.forEach((detail, index) => {
         const blockSource = source.slice(lineOffset(source, detail.map[0], work), lineOffset(source, detail.map[1], work));

@@ -454,11 +454,14 @@ test("later reference definitions update frozen blocks and react", () => {
   const before = document.render()[0];
   expect(before?.type).toBe("paragraph");
   document.append(definition);
+  const pending = document.render()[0];
+  expect(pending?.type === "paragraph" && pending.children.some((node) => node.type === "link")).toBe(false);
+  document.append("\n");
   const after = document.render()[0];
   expect(after).not.toBe(before);
   expect(after?.type === "paragraph" && after.children.some((node) => node.type === "link")).toBe(true);
   document.finish();
-  expect(json(document.render())).toBe(json(parseMarkdown(first + definition)));
+  expect(json(document.render())).toBe(json(parseMarkdown(`${first}${definition}\n`)));
 
   const browser = new Window();
   Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
@@ -467,6 +470,8 @@ test("later reference definitions update frozen blocks and react", () => {
   act(() => root.render(<Markdown source={first} streaming />));
   expect(host.querySelector("a")).toBeNull();
   act(() => root.render(<Markdown source={first + definition} streaming />));
+  expect(host.querySelector("a")).toBeNull();
+  act(() => root.render(<Markdown source={`${first}${definition}\n`} streaming />));
   expect(host.querySelector("a")?.getAttribute("href")).toBe("https://example.com");
   act(() => root.unmount());
 });

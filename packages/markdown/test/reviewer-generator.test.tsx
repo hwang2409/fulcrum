@@ -56,19 +56,60 @@ test("reviewer generator prefixes only reveal final visible text", () => {
   }
 }, 30_000);
 
-test("streaming list references share one document context", () => {
-  for (const source of [
-    "- first uses [later].\n- [later]: https://example.com/docs",
-    "- [known]: https://example.com/docs\n- then [known].",
-    "> - first uses [later].\n> - [later]: https://example.com/docs",
-  ]) {
-    const document = createStreamingDocument();
-    for (const character of source) {
-      document.append(character);
-      document.render();
-    }
-    expect(json(document.render())).toBe(json(parseMarkdown(source)));
+const quoted = (source: string, depth: number) => source.split("\n").map((line) => `${"> ".repeat(depth)}${line}`).join("\n");
+const stream = (source: string, split: number) => {
+  const document = createStreamingDocument();
+  for (let offset = 0; offset < source.length; offset += split) {
+    document.append(source.slice(offset, offset + split));
+    document.render();
   }
+  return document.render();
+};
+const sharedHref = (blocks: readonly Block[]): string | undefined => {
+  const visitInline = (nodes: readonly Inline[]): string | undefined => {
+    for (const node of nodes) {
+      if (node.type === "link" && inline(node.children) === "shared") return node.href;
+      if ("children" in node) {
+        const href = visitInline(node.children);
+        if (href) return href;
+      }
+    }
+  };
+  for (const block of blocks) {
+    if (block.type === "paragraph" || block.type === "heading") {
+      const href = visitInline(block.children);
+      if (href) return href;
+    } else if (block.type === "blockquote") {
+      const href = sharedHref(block.children);
+      if (href) return href;
+    } else if (block.type === "list") for (const item of block.items) {
+      const href = sharedHref(item.children);
+      if (href) return href;
+    }
+  }
+};
+
+test("168 streamed reference orders commit only complete definitions", () => {
+  let checked = 0;
+  for (let depth = 0; depth <= 6; depth++) for (const split of splits) for (const definitionFirst of [false, true]) for (const inList of [false, true]) {
+    const definition = inList ? "- [shared]: https://example.com/docs" : "[shared]: https://example.com/docs";
+    const use = inList ? "- second uses [shared]." : "second uses [shared].";
+    const separator = inList ? "\n" : "\n\n";
+    const source = quoted(definitionFirst ? `${definition}${separator}${use}` : `${use}${separator}${definition}\n`, depth);
+    expect(sharedHref(stream(source, split)), `depth ${depth}, split ${split}, definitionFirst ${definitionFirst}, inList ${inList}`).toBe("https://example.com/docs");
+    checked++;
+  }
+  expect(checked).toBe(168);
+});
+
+test("168 streamed list closures replay the rejected line once", () => {
+  let checked = 0;
+  for (let depth = 0; depth <= 6; depth++) for (const split of splits) for (const marker of ["-", "3."]) for (const outside of ["outside", "## outside"]) {
+    const source = quoted(`${marker} item\n\n${outside}`, depth);
+    expect(json(stream(source, split)), `depth ${depth}, split ${split}, marker ${marker}, outside ${outside}`).toBe(json(parseMarkdown(source)));
+    checked++;
+  }
+  expect(checked).toBe(168);
 });
 
 test("streaming lists preserve ordered starts and loose paragraphs", () => {
