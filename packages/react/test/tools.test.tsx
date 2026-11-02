@@ -93,6 +93,15 @@ test("large output is capped until show all is requested", () => {
   expect(container.textContent).toContain("line 250");
 });
 
+test("multi-megabyte output stays bounded in the dom", () => {
+  const output = Array.from({ length: 30_000 }, (_, index) => `${index} ${"x".repeat(60)}`).join("\n");
+  render(tool("huge", "bash", { kind: "shell", command: "log" }, output), <ToolBody id="tool:huge" />);
+  expect(output.length).toBeGreaterThan(1_000_000);
+  expect(container.textContent!.length).toBeLessThan(110_000);
+  act(() => (container.querySelector('[data-action="show-all"]') as HTMLButtonElement).click());
+  expect(container.textContent!.length).toBeLessThan(110_000);
+});
+
 test("unknown tools use a one-line summary and collapsed json", () => {
   render(tool("unknown", "custom", undefined), <ToolBody id="tool:unknown" />);
   const card = container.querySelector('[data-tool-view="generic"]')!;
