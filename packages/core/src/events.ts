@@ -25,6 +25,7 @@ export type RunItem =
       type: "message";
       message: Message;
       version: number;
+      active: boolean;
       text?: string;
     }
   | {
@@ -33,6 +34,7 @@ export type RunItem =
       tool_call: ToolCall;
       output: string;
       version: number;
+      active: boolean;
       result?: ToolResult;
       is_error: boolean;
       canceled: boolean;
