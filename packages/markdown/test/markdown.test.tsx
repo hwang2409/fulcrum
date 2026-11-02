@@ -170,6 +170,25 @@ test("streaming references never flash bracket syntax", () => {
   }
 });
 
+test("generated mixed reference streams hide definitions and brackets", () => {
+  const sources = Array.from({ length: 100 }, (_, index) => {
+    const label = `ref-${index}`;
+    const use = index % 3 === 0 ? `> See [${label}].` : index % 3 === 1 ? `- See [${label}].` : `See [${label}].`;
+    const definition = `[${label}]: https://example.com/${index}`;
+    return index % 2 ? `${use}\n\n${definition}` : `${definition}\n\n${use}`;
+  });
+  for (const source of sources) {
+    const document = createStreamingDocument();
+    for (const character of source) {
+      document.append(character);
+      expect(visibleText(document.source, true), JSON.stringify(document.source)).not.toMatch(/\[[^\]]*\]/);
+    }
+    document.finish();
+    expect(json(document.render())).toBe(json(parseMarkdown(source)));
+  }
+  expect(renderToStaticMarkup(<Markdown source="See [later]." streaming />)).toContain('data-part="md-reference-pending"');
+});
+
 test("finish retains blocks whose final output is unchanged", () => {
   const document = createStreamingDocument();
   document.append("first\n\nsecond");

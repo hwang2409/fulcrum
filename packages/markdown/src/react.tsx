@@ -26,6 +26,7 @@ export interface MarkdownProps {
 const InlineView = ({ nodes }: { nodes: Inline[] }): ReactNode => nodes.map((node, index) => {
   const key = index;
   if (node.type === "text") return <Fragment key={key}>{node.value}</Fragment>;
+  if (node.type === "pending-reference") return <span key={key} data-part="md-reference-pending">{node.value}</span>;
   if (node.type === "code") return <code key={key} data-part="md-code-inline">{node.value}</code>;
   if (node.type === "break") return <br key={key} data-part="md-break" />;
   if (node.type === "emphasis") return <em key={key} data-part="md-emphasis"><InlineView nodes={node.children} /></em>;

@@ -19,6 +19,7 @@ export type HighlightResult = ReturnType<Highlight>;
 
 export type Inline =
   | { type: "text"; value: string }
+  | { type: "pending-reference"; value: string }
   | { type: "code"; value: string }
   | { type: "break" }
   | { type: "emphasis"; children: Inline[] }
@@ -57,7 +58,7 @@ const attr = (token: MarkdownToken, name: string) => token.attrGet(name) ?? unde
 type InlineContainer = Extract<Inline, { children: Inline[] }>;
 type InlineStack = Array<{ node: InlineContainer }>;
 
-const inlineText = (node: Inline): string => node.type === "text" || node.type === "code"
+const inlineText = (node: Inline): string => node.type === "text" || node.type === "pending-reference" || node.type === "code"
   ? node.value
   : "children" in node ? node.children.map(inlineText).join("") : node.type === "image" ? node.alt : "";
 
@@ -410,6 +411,15 @@ function parseInline(source: string, streaming: boolean) {
   return nodes;
 }
 
+function withoutPendingReferenceDefinition(source: string, environment: Environment) {
+  const lineStart = source.lastIndexOf("\n") + 1;
+  const line = source.slice(lineStart);
+  if (!/^ {0,3}\[[^\]\n]+\]:[^\n]*$/.test(line)) return source;
+  const probe: Environment = { references: environment.references ? { ...environment.references } : undefined };
+  if (parseDetailed(`${line}\n`, probe).length === 0 && Object.keys(probe.references ?? {}).length > Object.keys(environment.references ?? {}).length) return source;
+  return source.slice(0, lineStart);
+}
+
 function parseStreamingMarkdown(source: string, environment: Environment = {}): ParsedBlock[] {
   const fence = openFence(source);
   if (fence) {
@@ -426,7 +436,7 @@ function parseStreamingMarkdown(source: string, environment: Environment = {}): 
     return parsed;
   }
 
-  source = safeBlockSource(source);
+  source = safeBlockSource(withoutPendingReferenceDefinition(source, environment));
   const safe = safeInlineContent(source);
   const parsed = parseDetailed(safe.source, environment);
   if (!safe.openCode) return parsed;
@@ -440,7 +450,7 @@ function parseStreamingMarkdown(source: string, environment: Environment = {}): 
 
 export interface StreamingDocument {
   readonly source: string;
-  readonly stats: { readonly frozenParses: number; readonly tailParses: number };
+  readonly stats: { readonly frozenParses: number; readonly tailParses: number; readonly scannedCharacters: number };
   append(delta: string): void;
   finish(): void;
   render(): readonly Block[];
@@ -499,11 +509,12 @@ class BlockBuffer {
     this.chunks[Math.floor(index / BLOCK_CHUNK_SIZE)]![index % BLOCK_CHUNK_SIZE] = block;
   }
 
-  reset(blocks: Block[]) {
+  reset(blocks: Block[], preserveEqual = false) {
+    const previous = preserveEqual ? Array.from(this.values()) : [];
     this.chunks.length = 0;
     this.open = [];
     this.frozenLength = 0;
-    this.freeze(blocks);
+    this.freeze(blocks.map((block, index) => previous[index] && JSON.stringify(previous[index]) === JSON.stringify(block) ? previous[index]! : block));
   }
 
   at(index: number) {
@@ -602,6 +613,14 @@ type OpenTableState = {
   block: Extract<Block, { type: "table" }>;
 };
 
+type OpenQuoteState = {
+  child: StreamingDocument;
+  block: Extract<Block, { type: "blockquote" }>;
+  atLineStart: boolean;
+  leadingSpaces: number;
+  skipMarkerSpace: boolean;
+};
+
 type OpenFenceState = {
   marker: string;
   language?: string;
@@ -615,6 +634,7 @@ type OpenBlockState =
   | { kind: "paragraph"; value: OpenParagraphState }
   | { kind: "list"; value: OpenListState }
   | { kind: "table"; value: OpenTableState }
+  | { kind: "quote"; value: OpenQuoteState }
   | { kind: "fence"; value: OpenFenceState };
 
 type FrozenReference = { index: number; source: string };
@@ -636,11 +656,47 @@ function unresolvedReferenceLabels(source: string, references: Environment["refe
 
 const fenceCloser = (marker: string, line: string) => new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(line);
 
+function markPendingReferences(inlines: Inline[]) {
+  for (let index = 0; index < inlines.length; index++) {
+    const node = inlines[index]!;
+    if ("children" in node) {
+      markPendingReferences(node.children);
+      continue;
+    }
+    if (node.type !== "text" || !node.value.includes("[")) continue;
+    const replacement: Inline[] = [];
+    let offset = 0;
+    for (const match of node.value.matchAll(/!?\[([^\]\n]+)\](?:\[([^\]\n]*)\])?/g)) {
+      if (match.index === undefined || match.index > 0 && node.value[match.index - 1] === "\\") continue;
+      if (match.index > offset) replacement.push({ type: "text", value: node.value.slice(offset, match.index) });
+      replacement.push({ type: "pending-reference", value: match[1]! });
+      offset = match.index + match[0].length;
+    }
+    if (!replacement.length) continue;
+    if (offset < node.value.length) replacement.push({ type: "text", value: node.value.slice(offset) });
+    inlines.splice(index, 1, ...replacement);
+    index += replacement.length - 1;
+  }
+}
+
+function markPendingReferenceBlocks(blocks: Block[]) {
+  for (const block of blocks) {
+    if (block.type === "paragraph" || block.type === "heading") markPendingReferences(block.children);
+    else if (block.type === "blockquote") markPendingReferenceBlocks(block.children);
+    else if (block.type === "list") for (const item of block.items) markPendingReferenceBlocks(item.children);
+    else if (block.type === "table") {
+      for (const cell of block.header) markPendingReferences(cell);
+      for (const row of block.rows) for (const cell of row) markPendingReferences(cell);
+    }
+  }
+}
+
 function listItem(state: OpenListState, line: string) {
   const match = /^ {0,3}(?:[-+*]|\d{1,9}[.)])\s+(.+)$/.exec(line);
   if (match && !/[\\*_`~[\]<>!]/.test(match[1]!))
     return { children: [{ type: "paragraph", children: [{ type: "text", value: match[1]! }], tight: true }] } satisfies ListItem;
   const block = parseStreamingMarkdown(line)[0]?.block;
+  if (block) markPendingReferenceBlocks([block]);
   return block?.type === "list" && block.ordered === state.ordered ? block.items[0] : undefined;
 }
 
@@ -649,10 +705,16 @@ function appendListDelta(state: OpenListState, delta: string) {
     state.items.pop();
     state.hasPendingItem = false;
   }
+  const previousPendingLength = state.pending.length;
   const lines = `${state.pending}${delta}`.split("\n");
   state.pending = lines.pop()!;
+  let consumed = 0;
   for (const line of lines) {
-    if (!line.trim()) return false;
+    if (!line.trim()) {
+      state.scannedOffset += Math.max(0, Math.min(delta.length, consumed - previousPendingLength));
+      return false;
+    }
+    consumed += line.length + 1;
     const item = listItem(state, line);
     if (!item) return false;
     state.items.push(item);
@@ -692,10 +754,16 @@ function appendTableDelta(state: OpenTableState, delta: string) {
     state.block.rows.pop();
     state.hasPendingRow = false;
   }
+  const previousPendingLength = state.pending.length;
   const lines = `${state.pending}${delta}`.split("\n");
   state.pending = lines.pop()!;
+  let consumed = 0;
   for (const line of lines) {
-    if (!line.trim()) return false;
+    if (!line.trim()) {
+      state.scannedOffset += Math.max(0, Math.min(delta.length, consumed - previousPendingLength));
+      return false;
+    }
+    consumed += line.length + 1;
     const row = tableRow(state, line, false);
     if (row) state.block.rows.push(row);
   }
@@ -707,6 +775,30 @@ function appendTableDelta(state: OpenTableState, delta: string) {
     }
   }
   state.scannedOffset += delta.length;
+  return true;
+}
+
+function appendQuoteDelta(state: OpenQuoteState, delta: string) {
+  for (const character of delta) {
+    if (state.atLineStart) {
+      if (character === " " && state.leadingSpaces < 3) {
+        state.leadingSpaces++;
+        continue;
+      }
+      if (character !== ">") return false;
+      state.atLineStart = false;
+      state.leadingSpaces = 0;
+      state.skipMarkerSpace = true;
+      continue;
+    }
+    if (state.skipMarkerSpace) {
+      state.skipMarkerSpace = false;
+      if (character === " ") continue;
+    }
+    state.child.append(character);
+    if (character === "\n") state.atLineStart = true;
+  }
+  state.block.children = state.child.render() as Block[];
   return true;
 }
 
@@ -734,6 +826,7 @@ export function createStreamingDocument(): StreamingDocument {
   let finished = false;
   let frozenParses = 0;
   let tailParses = 0;
+  let scannedCharacters = 0;
   let openState: OpenBlockState | undefined;
   const environment: Environment = {};
   const referenceBlocks = new Map<string, Set<FrozenReference>>();
@@ -761,14 +854,39 @@ export function createStreamingDocument(): StreamingDocument {
     return openSnapshot(state.block);
   };
 
+  const commitOpenPrefix = (requestedOffset: number) => {
+    const offset = Math.min(requestedOffset, tailSource.length);
+    if (offset <= 0) return;
+    const committedEnvironment: Environment = { references: environment.references ? { ...environment.references } : undefined };
+    commitFrozen(tailSource, offset, committedEnvironment);
+    environment.references = committedEnvironment.references;
+    frozenParses++;
+    scannedCharacters += offset;
+    tailSource = tailSource.slice(offset).replace(/^\n+/, "");
+  };
+
   const continueOpenBlock = () => {
     if (finished || !openState) return;
     const state = openState;
+    scannedCharacters += unrendered.length;
     const continued = state.kind === "paragraph" ? continueParagraph(state.value)
       : state.kind === "list" ? appendListDelta(state.value, unrendered) && openSnapshot(state.value.block)
       : state.kind === "table" ? appendTableDelta(state.value, unrendered) && openSnapshot(state.value.block)
+      : state.kind === "quote" ? appendQuoteDelta(state.value, unrendered) && openSnapshot(state.value.block)
       : appendFenceDelta(state.value, unrendered) && openSnapshot(state.value.block);
     if (continued) return continued;
+    if (state.kind !== "quote" && state.kind !== "fence") commitOpenPrefix(state.value.scannedOffset);
+    openState = undefined;
+  };
+
+  const startQuote = (tail: string) => {
+    if (!/^ {0,3}>/.test(tail)) return;
+    const child = createStreamingDocument();
+    const block: Extract<Block, { type: "blockquote" }> = { type: "blockquote", children: [] };
+    const state: OpenQuoteState = { child, block, atLineStart: true, leadingSpaces: 0, skipMarkerSpace: false };
+    openState = { kind: "quote", value: state };
+    scannedCharacters += tail.length;
+    if (appendQuoteDelta(state, tail)) return openSnapshot(block);
     openState = undefined;
   };
 
@@ -777,12 +895,14 @@ export function createStreamingDocument(): StreamingDocument {
     if (!match || match[1]!.includes("|")) return;
     const initial = parseMarkdown(match[1]!)[0];
     if (initial?.type !== "list") return;
+    markPendingReferenceBlocks([initial]);
     const contentOffset = match[0].length;
     const items = new ListItemBuffer(initial.items);
     initial.items = items.view;
     const state: OpenListState = { ordered: initial.ordered, scannedOffset: contentOffset, pending: "", hasPendingItem: false, items, block: initial };
     openState = { kind: "list", value: state };
     if (appendListDelta(state, tailSource.slice(contentOffset))) return openSnapshot(initial);
+    commitOpenPrefix(state.scannedOffset);
     openState = undefined;
   };
 
@@ -795,6 +915,7 @@ export function createStreamingDocument(): StreamingDocument {
     const state: OpenTableState = { header: match[1]!, delimiter: match[2]!, scannedOffset: contentOffset, pending: "", hasPendingRow: false, block: initial };
     openState = { kind: "table", value: state };
     if (appendTableDelta(state, tailSource.slice(contentOffset))) return openSnapshot(initial);
+    commitOpenPrefix(state.scannedOffset);
     openState = undefined;
   };
 
@@ -824,7 +945,7 @@ export function createStreamingDocument(): StreamingDocument {
     return openSnapshot(block);
   };
 
-  const startOpenBlock = (tail: string) => startList(tail) ?? startTable(tail) ?? startFence(tail) ?? startParagraph(tail);
+  const startOpenBlock = (tail: string) => startQuote(tail) ?? startList(tail) ?? startTable(tail) ?? startFence(tail) ?? startParagraph(tail);
 
   const updateReferenceBlocks = (references: Environment["references"]) => {
     if (!references) return;
@@ -844,6 +965,7 @@ export function createStreamingDocument(): StreamingDocument {
   const commitFrozen = (tail: string, offset: number, committedEnvironment: Environment) => {
     const prefix = tail.slice(0, offset);
     const details = parseDetailed(prefix, committedEnvironment);
+    markPendingReferenceBlocks(details.map(({ block }) => block));
     const firstIndex = blocks.frozen;
     details.forEach((detail, index) => {
       const blockSource = prefix.slice(lineOffset(prefix, detail.map[0]), lineOffset(prefix, detail.map[1]));
@@ -861,8 +983,10 @@ export function createStreamingDocument(): StreamingDocument {
     const fence = !finished && openFence(tail);
     const parsedEnvironment: Environment = { references: environment.references ? { ...environment.references } : undefined };
     const parsed = finished ? parseDetailed(tail, parsedEnvironment) : parseStreamingMarkdown(tail, parsedEnvironment);
+    if (!finished) markPendingReferenceBlocks(parsed.map(({ block }) => block));
     updateReferenceBlocks(parsedEnvironment.references);
     tailParses++;
+    scannedCharacters += tail.length;
     let freezeCount = finished ? parsed.length : 0;
     if (!finished) for (let index = 0; index < parsed.length - 1; index++) {
       if (parsed[index + 1]!.map[0] > parsed[index]!.map[1]) freezeCount = index + 1;
@@ -890,7 +1014,7 @@ export function createStreamingDocument(): StreamingDocument {
     commitFrozen(tail, offset, committedEnvironment);
     environment.references = committedEnvironment.references;
     frozenParses++;
-    tailSource = tailSource.slice(offset);
+    tailSource = tailSource.slice(offset).replace(/^\n+/, "");
     const open = tailSource;
     return open ? (finished ? parseDetailed(open, parsedEnvironment).map(({ block }) => block) : parseStreamingMarkdown(open, parsedEnvironment).map(({ block }) => block)) : [];
   };
@@ -911,7 +1035,14 @@ export function createStreamingDocument(): StreamingDocument {
 
   return {
     get source() { return source; },
-    get stats() { return { frozenParses, tailParses }; },
+    get stats() {
+      const child = openState?.kind === "quote" ? openState.value.child.stats : undefined;
+      return {
+        frozenParses: frozenParses + (child?.frozenParses ?? 0),
+        tailParses: tailParses + (child?.tailParses ?? 0),
+        scannedCharacters: scannedCharacters + (child?.scannedCharacters ?? 0),
+      };
+    },
     append(delta) {
       if (finished) throw new Error("cannot append to a finished markdown document");
       source += delta;
@@ -920,8 +1051,9 @@ export function createStreamingDocument(): StreamingDocument {
     },
     finish() {
       finished = true;
+      if (openState?.kind === "quote") openState.value.child.finish();
       openState = undefined;
-      blocks.reset(parseMarkdown(source));
+      blocks.reset(parseMarkdown(source), true);
       tailSource = "";
       unrendered = "";
       renderedSource = source;
