@@ -16,7 +16,7 @@
   },
   "files": ["dist", "MARKDOWN_IT_LICENSE.md"],
   "scripts": {
-    "build": "tsc -p . && mkdir -p dist/vendor && cp src/vendor/markdown-it.mjs dist/vendor/markdown-it.mjs"
+    "build": "tsc -p ."
   },
   "peerDependencies": {
     "react": ">=19"

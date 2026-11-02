@@ -1,4 +1,17 @@
-import MarkdownIt, { type MarkdownToken } from "./vendor/markdown-it.mjs";
+import MarkdownIt from "./vendor/markdown-it.mjs";
+
+type MarkdownToken = {
+  type: string;
+  tag: string;
+  nesting: number;
+  map: [number, number] | null;
+  markup: string;
+  info: string;
+  content: string;
+  hidden: boolean;
+  children: MarkdownToken[] | null;
+  attrGet(name: string): string | null;
+};
 
 export const tokenTypes = [
   "keyword", "string", "number", "comment", "function", "type", "variable",
