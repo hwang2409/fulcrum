@@ -270,6 +270,20 @@ test("a blank tool name keeps the wire value and later names update the call", (
   expect(start?.type === "tool_start" ? start.tool_call.name : undefined).toBe("");
   const [available] = adapter.decode({ type: "tool-input-available", toolCallId: "c", toolName: " ", input: {} });
   expect(available?.type === "tool_start" ? available.tool_call.name : undefined).toBe(" ");
+  // a placeholder from an approval request gets its blank wire name later (truthiness regression).
+  const late = createAiSdkAdapter({ streamKey: "late-name" });
+  const [request] = late.decode({ type: "tool-approval-request", toolCallId: "p", approvalId: "a" });
+  const placeholder = request?.type === "approval_request" ? request.tool_call.name : undefined;
+  expect(placeholder).not.toBe("");
+  const [named] = late.decode({ type: "tool-input-start", toolCallId: "p", toolName: "" });
+  expect(named?.type === "tool_start" ? named.tool_call.name : undefined).toBe("");
+});
+
+test("an empty tool input delta is a no-op", () => {
+  const adapter = createAiSdkAdapter({ streamKey: "empty-input" });
+  adapter.decode({ type: "tool-input-start", toolCallId: "c", toolName: "bash" });
+  expect(adapter.decode({ type: "tool-input-delta", toolCallId: "c", inputTextDelta: "" })).toEqual([]);
+  expect(adapter.decode({ type: "tool-input-delta", toolCallId: "c", inputTextDelta: 3 })[0]?.type).toBe("error");
 });
 
 test("tool part titles are validated as wire strings", () => {

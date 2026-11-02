@@ -197,6 +197,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
       const state = tools.get(id);
       if (!state) throw new Error("tool-input-delta requires tool-input-start");
       const input = wireString(part.inputTextDelta, "part.inputTextDelta");
+      if (input === "") return [];
       state.input += input;
       return [{ type: "tool_input", tool_call: state.call, input }];
     }

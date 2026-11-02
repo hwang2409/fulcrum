@@ -244,3 +244,13 @@ test("streaming reasoning stays separate from assistant text", () => {
   ]);
   expect(item?.type === "message" ? item.text : undefined).toBe("answer");
 });
+
+test("an empty message_delta from any adapter is a no-op", () => {
+  const store = replay([{ type: "message_commit", message_id: "m0", message: message("hi") }]);
+  const state = store.getState();
+  const outline = store.getOutline();
+  store.dispatch({ type: "message_delta", message_id: "empty", delta: "" });
+  expect(store.getOutline()).toBe(outline);
+  expect(store.getItem("message:empty")).toBeUndefined();
+  expect(store.getState()).toBe(state);
+});
