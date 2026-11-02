@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createHighlighter, type Token, type TokenType } from "../src/index";
+import { createHighlighter, type Token, type TokenType } from "../src/index.js";
 
 const samples: Record<string, string> = {
   typescript: "type User = { id: number };\nconst greet = (user: User) => `hi ${user.id}`;\n",
@@ -19,6 +19,19 @@ const samples: Record<string, string> = {
   markdown: "# title\n\n**bold** and `code`\n",
   toml: "[package]\nname = \"fulcrum\"\n",
   dockerfile: "FROM oven/bun:1\nRUN bun install\n",
+  c: "#include <stdio.h>\nint main(void) { return 0; }\n",
+  cpp: "#include <vector>\nstd::vector<int> values;\n",
+  java: "class Main { public static void main(String[] args) {} }\n",
+  kotlin: "fun main() = println(\"hello\")\n",
+  swift: "let greeting: String = \"hello\"\n",
+  ruby: "def greet(name)\n  puts \"hi #{name}\"\nend\n",
+  php: "<?php echo \"hello\"; ?>\n",
+  lua: "local value = 42\nprint(value)\n",
+  makefile: "build:\n\tbun run build\n",
+  ini: "[server]\nport=8080\n",
+  xml: "<note id=\"1\">hello</note>\n",
+  graphql: "query User { user { id name } }\n",
+  protobuf: "message User { string id = 1; }\n",
 };
 
 const text = (tokens: Token[]) => tokens.map((token) => token.text).join("");
@@ -99,10 +112,49 @@ describe("identity, failure, and caps", () => {
     highlighter.dispose();
   });
 
-  test("worker construction failure falls back without losing source", async () => {
-    const highlighter = createHighlighter({ workerFactory: () => { throw new Error("blocked by csp"); } });
+  test("worker construction and runtime failure use the cooperative fallback", async () => {
+    const blocked = createHighlighter({ workerFactory: () => { throw new Error("blocked by csp"); } });
     const code = samples.python;
-    expect(text((await highlighter(code, "python", { id: "worker-failure", version: 1, state: "done" }))!)).toBe(code);
+    expect(text((await blocked(code, "python", { id: "worker-construction", version: 1, state: "done" }))!)).toBe(code);
+    blocked.dispose();
+
+    const failedWorker: { onmessage: ((event: MessageEvent<never>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() {}, postMessage() { queueMicrotask(() => failedWorker.onerror?.(new ErrorEvent("error"))); },
+    };
+    const crashed = createHighlighter({ workerFactory: () => failedWorker });
+    const tokens = await crashed(code, "python", { id: "worker-crash", version: 1, state: "done" });
+    expect(text(tokens!)).toBe(code);
+    expect(tokens!.some((token) => token.type)).toBe(true);
+    crashed.dispose();
+  });
+
+  test("an older reply cannot populate the visible cache", async () => {
+    const requests: Array<{ requestId: number; code: string }> = [];
+    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) requests.push({ requestId: value.requestId, code: value.code! }); },
+    };
+    const highlighter = createHighlighter({ workerFactory: () => fake });
+    const older = highlighter("const old = 1;\n", "typescript", { id: "stale", version: 1, state: "done" }) as Promise<Token[]>;
+    const newer = highlighter("const current = 2;\n", "typescript", { id: "stale", version: 2, state: "done" }) as Promise<Token[]>;
+    fake.onmessage!({ data: { requestId: requests[1].requestId, tokens: [{ text: requests[1].code }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    fake.onmessage!({ data: { requestId: requests[0].requestId, tokens: [{ text: requests[0].code }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    await Promise.all([older, newer]);
+    const retried = highlighter("const old = 1;\n", "typescript", { id: "stale", version: 1, state: "done" });
+    expect(requests).toHaveLength(3);
+    fake.onmessage!({ data: { requestId: requests[2].requestId, tokens: [{ text: requests[2].code }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    await retried;
+    highlighter.dispose();
+  });
+
+  test("completed cache is capped at 64 blocks", async () => {
+    let calls = 0;
+    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) { calls++; queueMicrotask(() => fake.onmessage!({ data: { requestId: value.requestId!, tokens: [{ text: value.code! }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>)); } },
+    };
+    const highlighter = createHighlighter({ workerFactory: () => fake });
+    for (let index = 0; index < 65; index++) await highlighter(`const n = ${index};\n`, "typescript", { id: `cap-${index}`, version: 1, state: "done" });
+    await highlighter("const n = 0;\n", "typescript", { id: "cap-0", version: 1, state: "done" });
+    expect(calls).toBe(66);
     highlighter.dispose();
   });
 });

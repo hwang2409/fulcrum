@@ -15,6 +15,7 @@
       "name": "@fulcrum/playground",
       "dependencies": {
         "@fulcrum/core": "workspace:*",
+        "@fulcrum/highlight": "workspace:*",
         "@fulcrum/react": "workspace:*",
         "@fulcrum/zeta": "workspace:*",
         "react": "^19",
@@ -31,6 +32,10 @@
     },
     "packages/core": {
       "name": "@fulcrum/core",
+    },
+    "packages/highlight": {
+      "name": "@fulcrum/highlight",
+      "version": "0.0.0",
     },
     "packages/react": {
       "name": "@fulcrum/react",
@@ -61,6 +66,8 @@
     "@fontsource-variable/jetbrains-mono": ["@fontsource-variable/jetbrains-mono@5.3.0", "", {}, "sha512-F32xpS2NsGYoQi2ADSkKTgpJj7ozajsGgDJ8woTnqjmIB+dxDIqImjl4pXZVEExu8UFZ2ndhmX18EBS/hdz3Lw=="],
 
     "@fulcrum/core": ["@fulcrum/core@workspace:packages/core"],
+
+    "@fulcrum/highlight": ["@fulcrum/highlight@workspace:packages/highlight"],
 
     "@fulcrum/playground": ["@fulcrum/playground@workspace:apps/playground"],
 

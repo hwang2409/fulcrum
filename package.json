@@ -7,6 +7,7 @@
     "typecheck": "tsc -b",
     "check:zeta-events": "bun packages/zeta/scripts/check-events.ts",
     "bench:check": "bun scripts/bench-check.ts",
+    "bench:highlight": "bun run --cwd packages/highlight bench",
     "size:check": "bun scripts/size-check.ts",
     "stress": "bun run --cwd apps/playground stress"
   },
