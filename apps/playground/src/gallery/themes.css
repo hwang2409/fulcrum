@@ -1,0 +1,80 @@
+/* Color themes, independent of the direction (shape, density, motion).
+   Set data-fulcrum-theme="<name>" on <html> or on any subtree. With no attribute, light or dark follows the OS.
+   The :root[...] form matches the specificity of styles.css theme rules, so a theme always wins over them. */
+:root,
+:root[data-fulcrum-theme=light], [data-fulcrum-theme=light],
+:root[data-fulcrum-theme=dark], [data-fulcrum-theme=dark] {
+  color-scheme: light dark;
+  --fulcrum-bg: light-dark(#fcfcfd, #121316);
+  --fulcrum-fg: light-dark(#17181c, #e9eaee);
+  --fulcrum-muted: light-dark(#6e717b, #8d909b);
+  --fulcrum-surface: light-dark(#f3f4f6, #1a1b1f);
+  --fulcrum-border: light-dark(#e3e4e8, #2a2c31);
+  --fulcrum-accent: light-dark(#2d5bdb, #74a2ff);
+  --fulcrum-on-accent: light-dark(#ffffff, #0d1020);
+  --fulcrum-danger: light-dark(#d1343a, #ff6b6f);
+  --fulcrum-ok: light-dark(#1d8a4e, #4fca85);
+  --fulcrum-warn: light-dark(#b46d00, #f2b544);
+}
+:root[data-fulcrum-theme=light], [data-fulcrum-theme=light] { color-scheme: light; }
+:root[data-fulcrum-theme=dark], [data-fulcrum-theme=dark] { color-scheme: dark; }
+
+/* Ink on cool paper: near-monochrome with a pine accent. */
+:root[data-fulcrum-theme=pine], [data-fulcrum-theme=pine] {
+  color-scheme: light;
+  --fulcrum-bg: #f7f8f6;
+  --fulcrum-fg: #1a201c;
+  --fulcrum-muted: #69716b;
+  --fulcrum-surface: #edf0ec;
+  --fulcrum-border: #d9dfda;
+  --fulcrum-accent: #1d5e4f;
+  --fulcrum-on-accent: #f7f8f6;
+  --fulcrum-danger: #b4321f;
+  --fulcrum-ok: #2e7a4a;
+  --fulcrum-warn: #a46500;
+}
+
+/* An editor at night: blue-gray panels, saturated status colors. */
+:root[data-fulcrum-theme=graphite], [data-fulcrum-theme=graphite] {
+  color-scheme: dark;
+  --fulcrum-bg: #0f1217;
+  --fulcrum-fg: #d4d9e0;
+  --fulcrum-muted: #7c8591;
+  --fulcrum-surface: #161a21;
+  --fulcrum-border: #262d37;
+  --fulcrum-accent: #4fa6ff;
+  --fulcrum-on-accent: #0f1217;
+  --fulcrum-danger: #ff6464;
+  --fulcrum-ok: #3fb950;
+  --fulcrum-warn: #e3b341;
+}
+
+/* Violet dusk for product surfaces. */
+:root[data-fulcrum-theme=iris], [data-fulcrum-theme=iris] {
+  color-scheme: dark;
+  --fulcrum-bg: #14131c;
+  --fulcrum-fg: #ebeaf4;
+  --fulcrum-muted: #9895ad;
+  --fulcrum-surface: #1d1b29;
+  --fulcrum-border: #2d2a3e;
+  --fulcrum-accent: #a28fff;
+  --fulcrum-on-accent: #14131c;
+  --fulcrum-danger: #ff6b8a;
+  --fulcrum-ok: #5ed3a0;
+  --fulcrum-warn: #ffc46b;
+}
+
+/* Amber phosphor terminal. */
+:root[data-fulcrum-theme=phosphor], [data-fulcrum-theme=phosphor] {
+  color-scheme: dark;
+  --fulcrum-bg: #13100a;
+  --fulcrum-fg: #f1c77c;
+  --fulcrum-muted: #a2875a;
+  --fulcrum-surface: #1c1710;
+  --fulcrum-border: #372d1c;
+  --fulcrum-accent: #ffb238;
+  --fulcrum-on-accent: #13100a;
+  --fulcrum-danger: #ff6a4d;
+  --fulcrum-ok: #b5d46a;
+  --fulcrum-warn: #ffd75e;
+}
