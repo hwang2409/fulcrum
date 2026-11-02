@@ -37,6 +37,12 @@ try {
         await page.locator(".status").filter({ hasText: "rows" }).waitFor();
         await page.locator('[data-part="message"]').first().waitFor();
       }
+      if (path === "/") {
+        await page.getByLabel("source").selectOption("demo");
+        const code = page.locator('[data-part="md-code-block"] code');
+        await code.waitFor();
+        await code.locator('[class^="tok-"]').first().waitFor({ timeout: 10_000 });
+      }
       if (errors.length) throw new Error(`${path}: ${errors.join("; ")}`);
       console.log(`ok   ${path}`);
       await page.close();

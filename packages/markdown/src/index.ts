@@ -227,7 +227,8 @@ export function parseMarkdown(source: string): Block[] {
   return parseDetailed(source).map(({ block }) => block);
 }
 
-const openFence = (source: string) => {
+const openFence = (source: string, work?: ParserWork) => {
+  scanned(work, source.length * 2);
   const lines = source.split("\n");
   let marker: string | undefined;
   for (const line of lines) {
@@ -280,7 +281,8 @@ function appendOpenCodeSpan(blocks: Block[], value: string) {
   else blocks.push({ type: "paragraph", children: [code] });
 }
 
-function safeBlockPass(source: string) {
+function safeBlockPass(source: string, work?: ParserWork) {
+  scanned(work, source.length * 3);
   const rawLines = source.split("\n");
   let listIndent = 0;
   const lines = rawLines.map((raw) => {
@@ -314,15 +316,17 @@ function safeBlockPass(source: string) {
   const line = source.slice(lineStart);
   if (/^ {0,3}[-+*]\s+\[[ xX]?\]?\s*$/.test(line)) return source.slice(0, lineStart);
   if (/^ {0,3}(?:[-*_]\s*)+$/.test(line)) return source.slice(0, lineStart);
+  if (/^ {0,3}(?:=+|-+)\s*$/.test(line)) return source.slice(0, lineStart);
+  if (/^ {0,3}\[[^\]\n]*(?:\]|$)(?::[^\n]*)?$/.test(line)) return source.slice(0, lineStart);
   if (/^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)]?)\s*$/.test(line)) return source.slice(0, lineStart);
   if (/^ {0,3}(?:`{1,2}(?!`)|~{1,2}(?!~))[^\n]*$/.test(line)) return source.slice(0, lineStart);
   if (/[:-]/.test(line) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(line)) return source.slice(0, lineStart);
   return source;
 }
 
-function safeBlockSource(source: string) {
+function safeBlockSource(source: string, work?: ParserWork) {
   for (;;) {
-    const next = safeBlockPass(source);
+    const next = safeBlockPass(source, work);
     if (next === source) return source;
     source = next;
   }
@@ -400,7 +404,8 @@ function withoutTrailingLookahead(source: string) {
   return entity ? source.slice(0, entity.index) : source;
 }
 
-function safeInlineContent(source: string): SafeInlineContent {
+function safeInlineContent(source: string, work?: ParserWork): SafeInlineContent {
+  scanned(work, source.length * 5);
   source = withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(withoutOpenAngle(source))));
   const opener = unmatchedCodeSpan(source);
   if (!opener) return { source };
@@ -412,7 +417,7 @@ function safeInlineContent(source: string): SafeInlineContent {
 
 function parseInline(source: string, streaming: boolean, work?: ParserWork) {
   scanned(work, source.length);
-  const safe = streaming ? safeInlineContent(source) : { source };
+  const safe = streaming ? safeInlineContent(source, work) : { source };
   const tokens = markdown.parseInline(safe.source, {});
   const nodes = inlineNodes(tokens[0]?.children ?? []);
   if (safe.openCode) nodes.push({ type: "code", value: codeSpanValue(safe.openCode) });
@@ -423,14 +428,18 @@ function withoutPendingReferenceDefinition(source: string, environment: Environm
   const lineStart = source.lastIndexOf("\n") + 1;
   const line = source.slice(lineStart);
   if (!/^ {0,3}\[[^\]\n]+\]:[^\n]*$/.test(line)) return source;
+  const label = normalizeReference(/^ {0,3}\[([^\]\n]+)\]:/.exec(line)![1]!);
   const probe: Environment = { references: environment.references ? { ...environment.references } : undefined };
-  if (parseDetailed(`${line}\n`, probe, work).length === 0 && Object.keys(probe.references ?? {}).length > Object.keys(environment.references ?? {}).length) return source;
+  if (probe.references) delete probe.references[label];
+  const parsed = parseDetailed(`${line}\n`, probe, work);
+  const reference = probe.references?.[label];
+  if (parsed.length === 0 && reference) environment.references = { ...environment.references, [label]: reference };
   return source.slice(0, lineStart);
 }
 
 function parseStreamingMarkdown(source: string, environment: Environment = {}, work?: ParserWork): ParsedBlock[] {
   scanned(work, source.length);
-  const fence = openFence(source);
+  const fence = openFence(source, work);
   if (fence) {
     const opener = source.lastIndexOf(fence);
     const contentStart = source.indexOf("\n", opener);
@@ -445,8 +454,8 @@ function parseStreamingMarkdown(source: string, environment: Environment = {}, w
     return parsed;
   }
 
-  source = safeBlockSource(withoutPendingReferenceDefinition(source, environment, work));
-  const safe = safeInlineContent(source);
+  source = safeBlockSource(withoutPendingReferenceDefinition(source, environment, work), work);
+  const safe = safeInlineContent(source, work);
   const parsed = parseDetailed(safe.source, environment, work);
   if (!safe.openCode) return parsed;
   const blocks = parsed.map(({ block }) => block);
@@ -522,12 +531,18 @@ class BlockBuffer {
     this.chunks[Math.floor(index / BLOCK_CHUNK_SIZE)]![index % BLOCK_CHUNK_SIZE] = block;
   }
 
-  reset(blocks: Block[], preserveEqual = false) {
+  reset(blocks: Block[], preserveEqual = false, work?: ParserWork) {
     const previous = preserveEqual ? Array.from(this.values()) : [];
     this.chunks.length = 0;
     this.open = [];
     this.frozenLength = 0;
-    this.freeze(blocks.map((block, index) => previous[index] && JSON.stringify(previous[index]) === JSON.stringify(block) ? previous[index]! : block));
+    this.freeze(blocks.map((block, index) => {
+      if (!previous[index]) return block;
+      const before = JSON.stringify(previous[index]);
+      const after = JSON.stringify(block);
+      scanned(work, before.length + after.length);
+      return before === after ? previous[index]! : block;
+    }));
   }
 
   at(index: number) {
@@ -608,19 +623,24 @@ type OpenParagraphState = {
   block: Extract<Block, { type: "paragraph" }>;
 };
 
-type ContainerChild = { document: StreamingDocument; item?: ListItem };
+type InternalStreamingDocument = StreamingDocument & { freeze(): void };
+type ContainerChild = { document: InternalStreamingDocument; item?: ListItem };
 
 type OpenContainerState = {
   kind: "quote" | "list";
+  context: DocumentContext;
   work: ParserWork;
   scannedOffset: number;
   pending: string;
+  pendingForwarded: number;
+  pendingStarted: boolean;
   previousBlank: boolean;
-  children: ContainerChild[];
+  child?: ContainerChild;
   block: Extract<Block, { type: "blockquote" }> | ListBlock;
   ordered?: boolean;
   contentIndent?: number;
   items?: ListItemBuffer;
+  loose?: boolean;
 };
 
 type OpenTableState = {
@@ -649,12 +669,18 @@ type OpenBlockState =
   | { kind: "table"; value: OpenTableState }
   | { kind: "fence"; value: OpenFenceState };
 
-type FrozenReference = { index: number; source: string };
+type FrozenReference = { owner: BlockBuffer; index: number; source: string };
+type DocumentContext = {
+  work: ParserWork;
+  environment: Environment;
+  referenceBlocks: Map<string, Set<FrozenReference>>;
+  appliedReferences: Map<string, string>;
+};
 
 const normalizeReference = (label: string) => label.trim().replace(/\s+/g, " ").toLowerCase().toUpperCase();
 
 function unresolvedReferenceLabels(source: string, references: Environment["references"], work?: ParserWork) {
-  scanned(work, source.length);
+  scanned(work, source.length * 2);
   const labels = new Set<string>();
   for (const match of source.matchAll(/!?\[([^\]\n]+)\]\[([^\]\n]*)\]/g)) {
     const label = normalizeReference(match[2] || match[1]!);
@@ -706,41 +732,46 @@ function markPendingReferenceBlocks(blocks: Block[]) {
 
 const listMarker = /^( {0,3})([-+*]|\d{1,9}[.)])(\s+)(.*)$/;
 
-function setTight(blocks: readonly Block[]) {
-  const first = blocks[0];
-  if (first?.type === "paragraph") first.tight = true;
+function setListTightness(block: ListBlock, tight: boolean) {
+  for (const item of block.items)
+    for (const child of item.children)
+      if (child.type === "paragraph") child.tight = tight || undefined;
 }
 
 function currentContainerChild(state: OpenContainerState) {
-  return state.children.at(-1)!;
+  return state.child!;
 }
 
 function publishContainerChild(state: OpenContainerState, child: ContainerChild | undefined) {
   if (!child) return;
   const rendered = child.document.render() as Block[];
   if (child.item) {
-    setTight(rendered);
+    for (const block of rendered) if (block.type === "paragraph") block.tight = state.loose ? undefined : true;
     child.item.children = rendered;
   } else if (state.block.type === "blockquote") state.block.children = rendered;
 }
 
 function publishContainer(state: OpenContainerState) {
-  publishContainerChild(state, state.children.at(-1));
+  publishContainerChild(state, state.child);
   return state.block;
 }
 
-function startListChild(state: OpenContainerState, match: RegExpExecArray) {
-  publishContainerChild(state, state.children.at(-1));
-  const document = createStreamingDocumentWithWork(state.work);
+function startListChild(state: OpenContainerState, match: RegExpExecArray, newline = true) {
+  if (state.child) {
+    state.child.document.render();
+    state.child.document.freeze();
+    publishContainerChild(state, state.child);
+  }
+  const document = createStreamingDocumentWithContext(state.context);
   let content = match[4]!;
   const task = /^\[([ xX])\]\s+/.exec(content);
   const item: ListItem = { checked: task ? task[1]!.toLowerCase() === "x" : undefined, children: [] };
   if (task) content = content.slice(task[0].length);
   state.contentIndent = match[1]!.length + match[2]!.length + match[3]!.length;
   state.items!.push(item);
-  state.children.push({ document, item });
+  state.child = { document, item };
   if (content) document.append(content);
-  document.append("\n");
+  if (newline) document.append("\n");
 }
 
 function appendContainerLine(state: OpenContainerState, line: string) {
@@ -765,6 +796,8 @@ function appendContainerLine(state: OpenContainerState, line: string) {
   if (!line.trim()) {
     currentContainerChild(state).document.append("\n");
     state.previousBlank = true;
+    if (!state.loose && state.block.type === "list") setListTightness(state.block, false);
+    state.loose = true;
     return true;
   }
   const indent = state.contentIndent ?? 0;
@@ -778,14 +811,47 @@ function appendContainerLine(state: OpenContainerState, line: string) {
   return true;
 }
 
+function previewContainerLine(state: OpenContainerState, line: string) {
+  let content: string | undefined;
+  if (state.kind === "quote") content = /^ {0,3}> ?(.*)$/.exec(line)?.[1];
+  else {
+    const marker = listMarker.exec(line);
+    if (marker && /^\d/.test(marker[2]!) === state.ordered) {
+      if (!state.pendingStarted) {
+        startListChild(state, marker, false);
+        state.pendingForwarded = marker[4]!.length;
+        state.pendingStarted = true;
+        return;
+      }
+      content = marker[4]!;
+    } else if (!state.child || /^ {0,3}(?:[-+*]|\d{1,9}[.)]?)?$/.test(line) || /^ *$/.test(line)) return;
+    else {
+      const indent = state.contentIndent ?? 0;
+      content = line.startsWith(" ".repeat(indent)) ? line.slice(indent) : state.previousBlank ? undefined : line;
+    }
+  }
+  if (content === undefined) return;
+  const delta = content.slice(state.pendingForwarded);
+  if (delta) currentContainerChild(state).document.append(delta);
+  state.pendingForwarded = content.length;
+  state.pendingStarted = true;
+}
+
 function appendContainerDelta(state: OpenContainerState, delta: string) {
-  scanned(state.work, state.pending.length);
+  scanned(state.work, (state.pending.length + delta.length) * 2);
   const lines = `${state.pending}${delta}`.split("\n");
   state.pending = lines.pop()!;
   for (const line of lines) {
-    if (!appendContainerLine(state, line)) return false;
+    if (state.pendingStarted) {
+      previewContainerLine(state, line);
+      currentContainerChild(state).document.append("\n");
+      state.previousBlank = !line.replace(/^ {0,3}> ?/, "").trim();
+    } else if (!appendContainerLine(state, line)) return false;
     state.scannedOffset += line.length + 1;
+    state.pendingForwarded = 0;
+    state.pendingStarted = false;
   }
+  previewContainerLine(state, state.pending);
   publishContainer(state);
   return true;
 }
@@ -810,7 +876,7 @@ function tableRow(state: OpenTableState, line: string, streaming: boolean) {
 }
 
 function appendTableDelta(state: OpenTableState, delta: string) {
-  scanned(state.work, state.pending.length);
+  scanned(state.work, (state.pending.length + delta.length) * 2);
   if (state.hasPendingRow) {
     state.block.rows.pop();
     state.hasPendingRow = false;
@@ -840,7 +906,7 @@ function appendTableDelta(state: OpenTableState, delta: string) {
 }
 
 function appendFenceDelta(state: OpenFenceState, delta: string) {
-  scanned(state.work, state.pending.length);
+  scanned(state.work, (state.pending.length + delta.length) * 2);
   const lines = `${state.pending}${delta}`.split("\n");
   state.pending = lines.pop()!;
   for (const line of lines) {
@@ -854,7 +920,8 @@ function appendFenceDelta(state: OpenFenceState, delta: string) {
   return true;
 }
 
-function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
+function createStreamingDocumentWithContext(context: DocumentContext): InternalStreamingDocument {
+  const { work, environment, referenceBlocks, appliedReferences } = context;
   let source = "";
   let tailSource = "";
   let unrendered = "";
@@ -864,9 +931,6 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
   let countedTailSource = "";
   let finished = false;
   let openState: OpenBlockState | undefined;
-  const environment: Environment = {};
-  const referenceBlocks = new Map<string, Set<FrozenReference>>();
-  const appliedReferences = new Map<string, string>();
 
   const publishOpen = (open: Block[]): Block[] => {
     blocks.publish(open);
@@ -878,7 +942,7 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
   const continueParagraph = (state: OpenParagraphState) => {
     const delta = unrendered;
     const next = state.pendingNewline + delta;
-    if (/[\\*_`~[\]<>&!]/.test(delta) || next.includes("\n\n")) return;
+    if (/[\\*_`~[\]<>&|!=#-]/.test(delta) || next.includes("\n\n")) return;
     const pendingNewline = next.endsWith("\n") ? "\n" : "";
     const visible = pendingNewline ? next.slice(0, -1) : next;
     if (state.text.value.length + visible.length > 1024) {
@@ -906,7 +970,7 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
     if (!offset) return;
     const block = publishContainer(state);
     markPendingReferenceBlocks([block]);
-    const record: FrozenReference = { index: blocks.frozen, source: tailSource.slice(0, offset) };
+    const record: FrozenReference = { owner: blocks, index: blocks.frozen, source: tailSource.slice(0, offset) };
     for (const label of unresolvedReferenceLabels(record.source, environment.references, work)) {
       let records = referenceBlocks.get(label);
       if (!records) referenceBlocks.set(label, records = new Set());
@@ -926,21 +990,24 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
       : appendFenceDelta(state.value, unrendered) && openSnapshot(state.value.block);
     if (continued) return continued;
     if (state.kind === "container") commitOpenContainer(state.value);
-    else if (state.kind !== "fence") commitOpenPrefix(state.value.scannedOffset);
+    else if (state.kind !== "fence" && !(state.kind === "paragraph" && !unrendered.includes("\n\n"))) commitOpenPrefix(state.value.scannedOffset);
     openState = undefined;
   };
 
   const startQuote = (tail: string) => {
     if (!/^ {0,3}>/.test(tail)) return;
-    const child = createStreamingDocumentWithWork(work);
+    const child = createStreamingDocumentWithContext(context);
     const block: Extract<Block, { type: "blockquote" }> = { type: "blockquote", children: [] };
     const state: OpenContainerState = {
       kind: "quote",
+      context,
       work,
       scannedOffset: 0,
       pending: "",
+      pendingForwarded: 0,
+      pendingStarted: false,
       previousBlank: false,
-      children: [{ document: child }],
+      child: { document: child },
       block,
     };
     openState = { kind: "container", value: state };
@@ -956,15 +1023,17 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
     if (!match) return;
     const ordered = /^\d/.test(match[2]!);
     const items = new ListItemBuffer([]);
-    const block: ListBlock = { type: "list", ordered, items: items.view };
+    const block: ListBlock = { type: "list", ordered, start: ordered ? Number.parseInt(match[2]!, 10) : undefined, items: items.view };
     const state: OpenContainerState = {
       kind: "list",
+      context,
       work,
       ordered,
       scannedOffset: 0,
       pending: "",
+      pendingForwarded: 0,
+      pendingStarted: false,
       previousBlank: false,
-      children: [],
       items,
       block,
     };
@@ -1006,7 +1075,7 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
 
   const startParagraph = (tail: string) => {
     const paragraph = tail.replace(/^\n+/, "");
-    if (!/\s/.test(paragraph) || /[\n]{2}|[\\*_`~[\]<>&|!]/.test(paragraph) || /^ {0,3}(?:[-*_]\s*)+$/.test(paragraph) || /^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)])(?:\s|$)/.test(paragraph)) return;
+    if (!/\s/.test(paragraph) || /[\n]{2}|[\\*_`~[\]<>&|!=#-]/.test(paragraph) || /^ {0,3}(?:[-*_]\s*)+$/.test(paragraph) || /^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)])(?:\s|$)/.test(paragraph)) return;
     const pendingNewline = paragraph.endsWith("\n") ? "\n" : "";
     const text: Extract<Inline, { type: "text" }> = { type: "text", value: pendingNewline ? paragraph.slice(0, -1) : paragraph };
     const block: Extract<Block, { type: "paragraph" }> = { type: "paragraph", children: [text] };
@@ -1026,7 +1095,9 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
       appliedReferences.set(label, version);
       for (const record of records) {
         const replacement = parseDetailed(record.source, { references: { ...references } }, work)[0]?.block;
-        if (replacement) blocks.replace(record.index, replacement);
+        const previous = record.owner.at(record.index);
+        if (replacement?.type === "paragraph" && previous?.type === "paragraph") replacement.tight = previous.tight;
+        if (replacement) record.owner.replace(record.index, replacement);
       }
     }
   };
@@ -1038,7 +1109,7 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
     const firstIndex = blocks.frozen;
     details.forEach((detail, index) => {
       const blockSource = prefix.slice(lineOffset(prefix, detail.map[0], work), lineOffset(prefix, detail.map[1], work));
-      const record: FrozenReference = { index: firstIndex + index, source: blockSource };
+      const record: FrozenReference = { owner: blocks, index: firstIndex + index, source: blockSource };
       for (const label of unresolvedReferenceLabels(blockSource, committedEnvironment.references, work)) {
         let records = referenceBlocks.get(label);
         if (!records) referenceBlocks.set(label, records = new Set());
@@ -1049,11 +1120,12 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
   };
 
   const parseTail = (tail: string) => {
-    const fence = !finished && openFence(tail);
+    const fence = !finished && openFence(tail, work);
     const parsedEnvironment: Environment = { references: environment.references ? { ...environment.references } : undefined };
     const parsed = finished ? parseDetailed(tail, parsedEnvironment, work) : parseStreamingMarkdown(tail, parsedEnvironment, work);
+    if (parsedEnvironment.references) environment.references = parsedEnvironment.references;
     if (!finished) markPendingReferenceBlocks(parsed.map(({ block }) => block));
-    updateReferenceBlocks(parsedEnvironment.references);
+    updateReferenceBlocks(environment.references);
     if (countedTailSource !== source) {
       countedTailSource = source;
       work.tailParses++;
@@ -1090,6 +1162,8 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
     if (!open) return [];
     if (!finished) {
       unrendered = open;
+      // The recursive open leaf owns this delta's tail parse count.
+      work.tailParses--;
       return render();
     }
     return parseDetailed(open, parsedEnvironment, work).map(({ block }) => block);
@@ -1119,14 +1193,46 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
     get stats() { return work; },
     append(delta) {
       if (finished) throw new Error("cannot append to a finished markdown document");
+      scanned(work, delta.length * 3);
       source += delta;
       tailSource += delta;
       unrendered += delta;
     },
+    freeze() {
+      if (!source.includes("[")) {
+        finished = true;
+        openState = undefined;
+        tailSource = "";
+        unrendered = "";
+        renderedSource = source;
+        return;
+      }
+      const parsedEnvironment: Environment = { references: environment.references ? { ...environment.references } : undefined };
+      const details = parseDetailed(source, parsedEnvironment, work);
+      environment.references = parsedEnvironment.references;
+      updateReferenceBlocks(environment.references);
+      const next = details.map(({ block }) => block);
+      markPendingReferenceBlocks(next);
+      blocks.reset(next, true, work);
+      details.forEach((detail, index) => {
+        const blockSource = source.slice(lineOffset(source, detail.map[0], work), lineOffset(source, detail.map[1], work));
+        const record: FrozenReference = { owner: blocks, index, source: blockSource };
+        for (const label of unresolvedReferenceLabels(blockSource, environment.references, work)) {
+          let records = referenceBlocks.get(label);
+          if (!records) referenceBlocks.set(label, records = new Set());
+          records.add(record);
+        }
+      });
+      finished = true;
+      openState = undefined;
+      tailSource = "";
+      unrendered = "";
+      renderedSource = source;
+    },
     finish() {
       finished = true;
       openState = undefined;
-      blocks.reset(parseDetailed(source, {}, work).map(({ block }) => block), true);
+      blocks.reset(parseDetailed(source, {}, work).map(({ block }) => block), true, work);
       tailSource = "";
       unrendered = "";
       renderedSource = source;
@@ -1136,5 +1242,6 @@ function createStreamingDocumentWithWork(work: ParserWork): StreamingDocument {
 }
 
 export function createStreamingDocument(): StreamingDocument {
-  return createStreamingDocumentWithWork({ frozenParses: 0, tailParses: 0, scannedCharacters: 0 });
+  const work = { frozenParses: 0, tailParses: 0, scannedCharacters: 0 };
+  return createStreamingDocumentWithContext({ work, environment: {}, referenceBlocks: new Map(), appliedReferences: new Map() });
 }
