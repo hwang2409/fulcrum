@@ -1,11 +1,11 @@
 # @fulcrum/markdown
 
-## known streaming limits
+## streaming limits
 
-The current incremental parser has three known limits in deeply nested containers:
+The recursive container parser fixes the three deep-streaming limits recorded in PR #13 review round 6:
 
-- a 100 KB `blockquote > list > blockquote` stream can rescan the retained container, so late deltas do about 2.3 times the work of early deltas;
-- the unfinished nested-table prefix `>   > |` can briefly show its raw pipe;
-- the 1-byte mixed-quote benchmark has produced a 37.260 ms worst delta against the 16 ms target.
+- a 100 KB `blockquote > list > blockquote` stream no longer rescans retained containers;
+- the unfinished nested-table prefix `>   > |` stays hidden;
+- 1-byte mixed-quote deltas stay on the bounded open path used by the latency benchmark.
 
-These limits are tracked by the known-fail tests in `test/recursive-containers.test.tsx`. Final rendering remains equal to one-shot parsing.
+`test/recursive-containers.test.tsx` keeps the regressions and generated nesting up to depth 6 covered. `bun run bench:markdown` enforces the 1.2 work-ratio and 16 ms worst-delta gates.

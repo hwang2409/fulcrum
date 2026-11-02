@@ -53,6 +53,8 @@ function measure(source: string, deltaSize: number): Measurement {
 const shortParagraph = `${"streaming markdown stays bounded ".repeat(3)}\n\n`;
 const quoteLine = `> ${"quoted agent output ".repeat(4)}\n`;
 const mixedQuote = "> summary\n>\n> - completed step\n>\n> ```ts\n> const value = 1;\n> ```\n>\n";
+const deepQuoteListQuote = "> - outer item\n>   > deepest leaf keeps streaming words and `code` safely.\n";
+const nestedTable = "> - nested quote-list\n>   > | check | result |\n>   > | --- | ---: |\n>   > | package | passing |\n";
 const cases = [
   ["many short paragraphs", shortParagraph.repeat(Math.ceil(targetBytes / shortParagraph.length)).slice(0, targetBytes)],
   ["long paragraph", "streaming markdown stays bounded ".repeat(Math.ceil(targetBytes / 33)).slice(0, targetBytes)],
@@ -61,6 +63,8 @@ const cases = [
   ["long list", "- completed agent step\n".repeat(Math.ceil(targetBytes / 23)).slice(0, targetBytes)],
   ["open blockquote", quoteLine.repeat(Math.ceil(targetBytes / quoteLine.length)).slice(0, targetBytes)],
   ["mixed quote", mixedQuote.repeat(Math.ceil(targetBytes / mixedQuote.length)).slice(0, targetBytes)],
+  ["quote list quote", deepQuoteListQuote.repeat(Math.ceil(targetBytes / deepQuoteListQuote.length)).slice(0, targetBytes)],
+  ["nested table", nestedTable.repeat(Math.ceil(targetBytes / nestedTable.length)).slice(0, targetBytes)],
 ] as const;
 
 proveGateSensitivity();

@@ -283,6 +283,7 @@ function App() {
               setSource(nextSource);
               setMode(`${nextSource}:${firstFixture(nextSource)}`);
             }}>
+              <option value="demo">demo</option>
               <option value="zeta">zeta</option>
               <option value="ai-sdk">ai-sdk</option>
             </select>
