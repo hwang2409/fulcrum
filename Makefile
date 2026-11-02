@@ -1,7 +1,8 @@
 # Start here: `make dev` installs, builds every package, and runs the playground.
 .PHONY: dev build install test clean
 
-dev: build
+# The playground's predev runs build:packages, so dev only needs the install.
+dev: install
 	bun run --cwd apps/playground dev
 
 # The playground imports each package from its dist/. The shared script drops stale

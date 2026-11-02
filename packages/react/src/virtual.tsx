@@ -139,11 +139,20 @@ export function useVirtualList<Id extends string>(
       if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
       scrollEndTimer.current = setTimeout(finishScroll, 150);
     };
-    const onWheel = (event: WheelEvent) => { if (event.deltaY < 0) engine.setFollow(false); };
+    // The stale-scroll guard after a programmatic bottom write only covers scroll events
+    // nobody asked for; any real input means the next scroll is the user's and must win.
+    const userIntent = () => { ignoreScrollUntil.current = 0; };
+    const onWheel = (event: WheelEvent) => {
+      userIntent();
+      if (event.deltaY < 0) engine.setFollow(false);
+    };
     const onKeyDown = (event: KeyboardEvent) => {
+      userIntent();
       if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
     };
+    const onPointerDown = () => userIntent();
     const onTouchStart = (event: TouchEvent) => {
+      userIntent();
       touching.current = true;
       touchY.current = event.touches[0]?.clientY ?? null;
     };
@@ -160,6 +169,7 @@ export function useVirtualList<Id extends string>(
     container.addEventListener("scroll", onScroll, { passive: true });
     container.addEventListener("wheel", onWheel, { passive: true });
     container.addEventListener("keydown", onKeyDown);
+    container.addEventListener("pointerdown", onPointerDown, { passive: true });
     container.addEventListener("touchstart", onTouchStart, { passive: true });
     container.addEventListener("touchmove", onTouchMove, { passive: true });
     container.addEventListener("touchend", onTouchEnd, { passive: true });
@@ -173,6 +183,7 @@ export function useVirtualList<Id extends string>(
       container.removeEventListener("scroll", onScroll);
       container.removeEventListener("wheel", onWheel);
       container.removeEventListener("keydown", onKeyDown);
+      container.removeEventListener("pointerdown", onPointerDown);
       container.removeEventListener("touchstart", onTouchStart);
       container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("touchend", onTouchEnd);

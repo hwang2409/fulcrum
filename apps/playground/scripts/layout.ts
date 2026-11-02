@@ -208,6 +208,30 @@ try {
     failures.push(`active-scroll store swap: scrollTop=${swap.scrollTop}, maxScroll=${swap.maxScroll}, errors=${pageErrors.join("; ") || "none"}`);
   else console.log(`ok   active-scroll store swap: scrollTop ${swap.scrollTop}, maxScroll ${swap.maxScroll}`);
 
+  // Real user intent right after a swap must win over the stale-scroll guard (review 3 blocker).
+  const intent = await replay.evaluate(async () => {
+    const scroll = document.querySelector<HTMLElement>(".scroll")!;
+    const mode = document.querySelector<HTMLSelectElement>("#mode")!;
+    mode.value = "static:100000";
+    mode.dispatchEvent(new Event("change", { bubbles: true }));
+    const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    for (let i = 0; i < 600; i++) {
+      await frame();
+      const rows = document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize");
+      if (rows === "100000" && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 1) break;
+    }
+    const swappedAt = performance.now();
+    scroll.dispatchEvent(new WheelEvent("wheel", { deltaY: -2000, bubbles: true }));
+    scroll.scrollTop -= 2000;
+    scroll.dispatchEvent(new Event("scroll"));
+    const elapsed = performance.now() - swappedAt;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return { elapsed, scrollTop: scroll.scrollTop, maxScroll: scroll.scrollHeight - scroll.clientHeight };
+  });
+  if (intent.maxScroll - intent.scrollTop < 500 || pageErrors.length)
+    failures.push(`user scroll right after swap was overridden: scrollTop=${intent.scrollTop}, maxScroll=${intent.maxScroll}, intent ${intent.elapsed.toFixed(1)} ms after the bottom write`);
+  else console.log(`ok   user scroll right after swap kept: ${intent.maxScroll - intent.scrollTop} px above bottom, intent ${intent.elapsed.toFixed(1)} ms after the bottom write`);
+
   await replay.waitForTimeout(500);
   const rafBefore = await replay.evaluate(() => (window as typeof window & { __rafRequests: number }).__rafRequests);
   await replay.waitForTimeout(500);
