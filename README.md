@@ -50,3 +50,7 @@ const renderers: Renderers = {
 ## known limits
 
 - TODO: add session eviction and bounded notification receipts before using a client as a persistent multi-session shell.
+
+## virtual
+
+`@fulcrum/virtual` is a zero-dependency, framework-agnostic vertical windowing engine. `createVirtualizer` accepts generic `{ id, kind }` outlines and kind-based size estimates. Its small interface owns measurement updates, capped overscan ranges, stable anchor corrections, pinned-bottom decisions, and a bounded structured action log. Callers apply the returned rows, spacers, and scroll decisions in their own renderer; the package does not use React, the DOM, or browser APIs.

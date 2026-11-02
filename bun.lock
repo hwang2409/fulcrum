@@ -42,6 +42,9 @@
         "react": ">=19",
       },
     },
+    "packages/virtual": {
+      "name": "@fulcrum/virtual",
+    },
     "packages/zeta": {
       "name": "@fulcrum/zeta",
       "dependencies": {
@@ -55,6 +58,8 @@
     "@fulcrum/playground": ["@fulcrum/playground@workspace:apps/playground"],
 
     "@fulcrum/react": ["@fulcrum/react@workspace:packages/react"],
+
+    "@fulcrum/virtual": ["@fulcrum/virtual@workspace:packages/virtual"],
 
     "@fulcrum/zeta": ["@fulcrum/zeta@workspace:packages/zeta"],
 

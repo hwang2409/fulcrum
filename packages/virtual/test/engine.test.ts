@@ -62,6 +62,11 @@ describe("prefix and range math", () => {
       sizes[index] = size;
       virtual.measure(`row-${index}`, size);
       expect(virtual.getSnapshot().totalSize).toBeCloseTo(total, 6);
+      const probe = Math.floor(random() * count);
+      let naivePrefix = 0;
+      for (let cursor = 0; cursor < probe; cursor++) naivePrefix += sizes[cursor]!;
+      virtual.setViewport({ scrollTop: 0, size: 0, source: "programmatic" });
+      expect(virtual.scrollToId(`row-${probe}`)).toBeCloseTo(naivePrefix, 6);
     }
     for (let index = 0, prefix = 0; index < count; index++) {
       if (index % 997 === 0) virtual.setViewport({ scrollTop: prefix, size: 0.01, source: "user" });

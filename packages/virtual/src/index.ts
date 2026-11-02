@@ -6,6 +6,7 @@ export type VirtualOptions = {
   overscan?: number;
   maxMounted?: number;
   bottomThreshold?: number;
+  onAction?: (action: VirtualAction) => void;
 };
 
 export type Viewport = { scrollTop: number; size: number; source: ScrollSource };
@@ -52,8 +53,10 @@ export type Virtualizer<Id extends string = string> = {
   beforeMutation(): MutationToken<Id>;
   afterMutation(token: MutationToken<Id>): MutationResult;
   scrollToId(id: Id): number;
+  subscribe(listener: () => void): () => void;
   getSnapshot(): VirtualSnapshot<Id>;
   getActions(): readonly VirtualAction[];
+  destroy(): void;
 };
 
 class Fenwick {
@@ -128,12 +131,16 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   let programmatic = false;
   let sequence = 0;
   const actions: VirtualAction[] = [];
+  const listeners = new Set<() => void>();
 
   const log = (type: VirtualAction["type"], detail: VirtualAction["detail"]): void => {
     sequence++;
-    actions.push({ sequence, time: sequence, type, detail });
+    const action = { sequence, time: sequence, type, detail };
+    actions.push(action);
     if (actions.length > 2_000) actions.splice(0, actions.length - 2_000);
+    options.onAction?.(action);
   };
+  const changed = (): void => listeners.forEach((listener) => listener());
 
   const maxScroll = (): number => Math.max(0, sizes.total - viewportSize);
   const clampScroll = (value: number): number => Math.min(maxScroll(), Math.max(0, value));
@@ -190,6 +197,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     programmatic = viewport.source === "programmatic";
     if (viewport.source === "user") pinned = sizes.total - scrollTop - viewportSize <= bottomThreshold;
     log("viewport", { scrollTop, size: viewportSize, programmatic, pinned });
+    changed();
   };
 
   return {
@@ -205,6 +213,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       sizes = new Fenwick(values);
       scrollTop = clampScroll(scrollTop);
       log("outline", { count: outline.length, totalSize: sizes.total });
+      changed();
     },
     setViewport,
     measure(id, size) {
@@ -214,10 +223,12 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       measured.set(id, size);
       sizes.update(index, size);
       log("measure", { index, size, totalSize: sizes.total });
+      changed();
     },
     setLoaded(ids) {
       loaded = new Set(ids);
       log("loaded", { count: loaded.size });
+      changed();
     },
     beforeMutation() {
       const anchor = captureAnchor();
@@ -240,6 +251,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       const correction = requested - before;
       const appliedCorrection = scrollTop - before;
       log("correction", { correction, appliedCorrection, followedBottom, scrollTop });
+      changed();
       return { scrollTop, correction, appliedCorrection, followedBottom };
     },
     scrollToId(id) {
@@ -248,6 +260,10 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       setViewport({ scrollTop: sizes.prefix(index), size: viewportSize, source: "programmatic" });
       log("scroll-to-id", { index, scrollTop });
       return scrollTop;
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
     getSnapshot() {
       const visible = visibleRange();
@@ -274,6 +290,9 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     },
     getActions() {
       return [...actions];
+    },
+    destroy() {
+      listeners.clear();
     },
   };
 }
