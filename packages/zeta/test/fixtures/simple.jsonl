@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","method":"event","params":{"event":"turn_start","data":{"turn":1}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","delta":"hi ","kind":"assistant"}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","delta":"there","kind":"assistant"}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_message","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"agent_end","data":{}}}
