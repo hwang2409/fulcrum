@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { Window } from "happy-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
@@ -266,6 +268,24 @@ test("every corpus character prefix streams once and finishes identically", () =
     expect(createStreamingDocument().source).toBe("");
     expect(renderToStaticMarkup(<Markdown source={delimiter} streaming />)).toBe("");
   }
+});
+
+test("a stale streaming highlight cannot replace the done result", async () => {
+  const browser = new Window();
+  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = browser.document.createElement("div");
+  const root = createRoot(container);
+  const pending: Array<(tokens: Array<{ text: string; type: "keyword" | "string" }>) => void> = [];
+  const highlight = () => new Promise<Array<{ text: string; type: "keyword" | "string" }>>((resolve) => pending.push(resolve));
+
+  await act(async () => root.render(<Markdown source={'```ts\nconst value = 1;\n'} streaming highlight={highlight} />));
+  await act(async () => root.render(<Markdown source={'```ts\nconst value = 1;\n```'} highlight={highlight} />));
+  await act(async () => pending[1]!([{ text: "done", type: "string" }]));
+  expect(container.innerHTML).toContain("tok-string");
+  await act(async () => pending[0]!([{ text: "stale", type: "keyword" }]));
+  expect(container.innerHTML).toContain("tok-string");
+  expect(container.innerHTML).not.toContain("tok-keyword");
+  await act(async () => root.unmount());
 });
 
 test("highlighter uses the shared cumulative source contract", async () => {

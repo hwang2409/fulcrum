@@ -47,7 +47,8 @@ function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block,
   const version = useRef(0);
   const previous = useRef("");
   const mounted = useRef(false);
-  const request = useRef<{ key: string; result: ReturnType<Highlighter> } | undefined>(undefined);
+  const request = useRef<{ id: number; key: string; result: ReturnType<Highlighter> } | undefined>(undefined);
+  const nextRequestId = useRef(0);
   const [tokens, setTokens] = useState<Token[] | null>(null);
   const state = block.open ? "streaming" : "done";
   if (previous.current !== block.value) {
@@ -57,7 +58,7 @@ function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block,
   const currentVersion = version.current;
   const key = `${currentVersion}:${state}:${block.language ?? ""}`;
   if (highlight && request.current?.key !== key) {
-    request.current = { key, result: highlight(block.value, block.language, { id, version: currentVersion, state }) };
+    request.current = { id: ++nextRequestId.current, key, result: highlight(block.value, block.language, { id, version: currentVersion, state }) };
   }
   const immediate = request.current?.result && !(request.current.result instanceof Promise) ? request.current.result : null;
 
@@ -65,10 +66,11 @@ function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block,
     mounted.current = true;
     if (!highlight) { setTokens(null); return () => { mounted.current = false; }; }
     const requestedVersion = currentVersion;
+    const requestedId = request.current?.id;
     const result = request.current?.result;
     if (result instanceof Promise) {
       void result.then((next) => {
-        if (mounted.current && version.current === requestedVersion) setTokens(next);
+        if (mounted.current && version.current === requestedVersion && request.current?.id === requestedId) setTokens(next);
       });
     } else setTokens(result ?? null);
     return () => { mounted.current = false; };
