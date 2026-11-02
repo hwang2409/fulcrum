@@ -21,6 +21,11 @@ test("SGR colors, bold, and underline become themed spans; reset ends them", () 
   expect(styled(`${ESC}[7mA${ESC}[27mB${ESC}[31;7mC${ESC}[27mD${ESC}[39;1;7mE${ESC}[0mF`).spans).toEqual([
     ["A", "ansi-inverse"], ["C", "ansi-bg-red"], ["D", "ansi-red"], ["E", "ansi-inverse ansi-bold"],
   ]);
+  // With a set background, inverse draws that background's color as the text (review 2): red on blue inverts to
+  // blue text on a red badge; a set background alone inverts to its color on the default foreground.
+  expect(styled(`${ESC}[31;44mX${ESC}[7mY${ESC}[0m${ESC}[44;7mZ${ESC}[0m`).spans).toEqual([
+    ["X", "ansi-red ansi-bg-blue"], ["Y", "ansi-bg-red ansi-text-blue"], ["Z", "ansi-inverse ansi-text-blue"],
+  ]);
   // 256-color indexes below 16 are the theme's 16 colors; others and truecolor keep the theme's text color.
   expect(styled(`${ESC}[38;5;9mA${ESC}[38;5;200mB${ESC}[38;2;1;2;3mC${ESC}[0m`).spans).toEqual([["A", "ansi-bright-red"]]);
 });

@@ -518,6 +518,23 @@ ul[data-part="md-list"] { list-style: "- "; }
 .ansi-bg-bright-magenta { background: var(--fulcrum-ansi-bright-magenta); }
 .ansi-bg-bright-cyan { background: var(--fulcrum-ansi-bright-cyan); }
 .ansi-bg-bright-white { background: var(--fulcrum-ansi-bright-white); }
+/* inverse with a set background: that background's color is the text (beats the badge text rule above) */
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-black { color: var(--fulcrum-ansi-black); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-red { color: var(--fulcrum-ansi-red); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-green { color: var(--fulcrum-ansi-green); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-yellow { color: var(--fulcrum-ansi-yellow); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-blue { color: var(--fulcrum-ansi-blue); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-magenta { color: var(--fulcrum-ansi-magenta); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-cyan { color: var(--fulcrum-ansi-cyan); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-white { color: var(--fulcrum-ansi-white); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-bright-black { color: var(--fulcrum-ansi-bright-black); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-bright-red { color: var(--fulcrum-ansi-bright-red); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-bright-green { color: var(--fulcrum-ansi-bright-green); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-bright-yellow { color: var(--fulcrum-ansi-bright-yellow); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-bright-blue { color: var(--fulcrum-ansi-bright-blue); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-bright-magenta { color: var(--fulcrum-ansi-bright-magenta); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-bright-cyan { color: var(--fulcrum-ansi-bright-cyan); }
+:is(.ansi-inverse, [class*="ansi-bg-"]).ansi-text-bright-white { color: var(--fulcrum-ansi-bright-white); }
 .ansi-bold { font-weight: 700; }
 .ansi-italic { font-style: italic; }
 .ansi-underline { text-decoration: underline; text-underline-offset: 3px; }

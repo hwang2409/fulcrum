@@ -19,9 +19,13 @@ const C1_STRINGS: Record<number, boolean> = { 0x9d: true, 0x90: true, 0x98: true
 
 const classes = (style: Style) => {
   const out: string[] = [];
-  // Inverse draws the foreground as the background, with the page background as text (the badge rule below), so it
-  // keeps the contrast every theme is checked for; a set background's color is not used as text.
-  if (style.inverse) out.push(style.fg === undefined ? "ansi-inverse" : `ansi-bg-${color(style.fg)}`);
+  // Inverse swaps the two colors: the foreground (or the default text color) becomes the background, and a set
+  // background becomes the text color. With no set background the text is the page background (the badge rule in
+  // styles.css), which keeps the contrast every theme is checked for.
+  if (style.inverse) {
+    out.push(style.fg === undefined ? "ansi-inverse" : `ansi-bg-${color(style.fg)}`);
+    if (style.bg !== undefined) out.push(`ansi-text-${color(style.bg)}`);
+  }
   else {
     if (style.fg !== undefined) out.push(`ansi-${color(style.fg)}`);
     if (style.bg !== undefined) out.push(`ansi-bg-${color(style.bg)}`);
