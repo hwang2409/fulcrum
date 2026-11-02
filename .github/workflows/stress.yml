@@ -18,6 +18,7 @@ jobs:
         with: { node-version: 22 }
       - run: bun install --frozen-lockfile
       - run: bunx tsc -b
+      - run: bun run --cwd packages/highlight build
       - run: bun run --cwd apps/playground build
       - run: cd apps/playground && bunx playwright install --with-deps chromium
       - run: bun run stress
