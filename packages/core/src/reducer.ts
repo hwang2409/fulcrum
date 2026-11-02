@@ -1,4 +1,4 @@
-import type { RunEvent, RunItem } from "./events.js";
+import type { RunEvent, RunItem, SubAgentEvent } from "./events.js";
 import { appendText } from "./stream.js";
 
 /** Maximum durable notification ids retained for replay dedupe. */
@@ -37,6 +37,20 @@ export const initialState: RunState = {
 const messageItemId = (id: string) => `message:${id}`;
 const toolItemId = (id: string) => `tool:${id}`;
 const approvalItemId = (id: string) => `approval:${id}`;
+const terminalSubAgentStatuses = new Set(["done", "error", "canceled"]);
+const subAgentTime = (event: SubAgentEvent) => {
+  const value = event.endedAt ?? event.updatedAt ?? event.startedAt;
+  if (!value) return undefined;
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? undefined : time;
+};
+const compareSubAgentOrder = (prior: SubAgentEvent, event: SubAgentEvent) => {
+  if (prior.sequence !== undefined && event.sequence !== undefined)
+    return Math.sign(event.sequence - prior.sequence);
+  const before = subAgentTime(prior);
+  const after = subAgentTime(event);
+  return before === undefined || after === undefined ? undefined : Math.sign(after - before);
+};
 
 interface EntityDraft {
   get(id: string): RunItem | undefined;
@@ -310,14 +324,14 @@ export function reduceAllWithEntities(
       case "sub_agent": {
         const id = `sub-agent:${event.childRunId}`;
         const prior = getItem(id);
-        const item: RunItem = {
-          ...(prior?.type === "sub_agent" ? prior : {}),
-          ...event,
-          id,
-          urgency: event.urgency,
-        };
-        if (prior?.type === "sub_agent") setItem(item);
-        else appendItem(item);
+        if (prior?.type === "sub_agent") {
+          const order = compareSubAgentOrder(prior, event);
+          const priorTerminal = terminalSubAgentStatuses.has(prior.status);
+          if (order === -1 || (priorTerminal && (order === undefined || !terminalSubAgentStatuses.has(event.status)))) break;
+          setItem({ ...prior, ...event, id, urgency: event.urgency });
+        } else {
+          appendItem({ ...event, id });
+        }
         break;
       }
       case "unknown": {

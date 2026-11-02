@@ -38,6 +38,7 @@ export interface SubAgentEvent {
   startedAt?: string;
   updatedAt?: string;
   endedAt?: string;
+  sequence?: number;
 }
 export type RunItem =
   | {

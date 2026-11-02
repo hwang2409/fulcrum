@@ -7,12 +7,12 @@ const allEvents = readFileSync(new URL("./fixtures/all-events.jsonl", import.met
   .trim().split("\n").map((line) => JSON.parse(line).params as Record<string, unknown>);
 
 const fields: Record<string, string[]> = {
-  sub_agent_receipt: ["event", "data", "data.kind", "data.child_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at"],
-  child_idle: ["event", "data", "data.child_instance_id", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at"],
+  sub_agent_receipt: ["event", "data", "data.kind", "data.child_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
+  child_idle: ["event", "data", "data.child_instance_id", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   task_exit_notification: ["event", "data", "data.notification_id"],
   project_inbox_notification: ["event", "data", "data.notification_id"],
-  child_question: ["event", "data", "data.child_instance_id", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at"],
-  child_question_withdrawn: ["event", "data", "data.child_instance_id", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at"],
+  child_question: ["event", "data", "data.child_instance_id", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
+  child_question_withdrawn: ["event", "data", "data.child_instance_id", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   memory_updated: ["event", "data"],
   turn_aborted: ["event", "data", "message"],
   usage: ["event", "data", "usage", "usage.input_tokens"],
@@ -26,18 +26,18 @@ const fields: Record<string, string[]> = {
   assistant_message: ["event", "data", "data.message_id", "message", "message.role", "message.content", "message.content.0", "message.content.0.type", "message.content.0.text", "message.content.1", "message.content.1.type", "message.content.1.text", "message.content.1.signature", "message.content.2", "message.content.2.type", "message.content.2.data", "message.content.2.mimeType", "message.content.3", "message.content.3.type", "message.content.3.data", "message.content.4", "message.content.4.type", "message.content.4.tool_call", "message.content.4.tool_call.id", "message.content.4.tool_call.name", "message.content.4.tool_call.arguments", "message.tool_result", "message.tool_result.tool_call_id", "message.tool_result.content", "message.tool_result.is_error", "message.tool_result.is_canceled", "message.metadata"],
   retry: ["event", "data"],
   assistant_reset: ["event", "data"],
-  approval_request: ["event", "data", "request_id", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "delegated", "agent_instance_id", "data.summary", "data.question", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at"],
-  approval_end: ["event", "data", "request_id"],
+  approval_request: ["event", "data", "request_id", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "delegated", "agent_instance_id", "data.summary", "data.question", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
+  approval_end: ["event", "data", "request_id", "data.agent_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   tool_start: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments"],
   tool_output: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "output"],
   tool_end: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "tool_result", "tool_result.tool_call_id", "tool_result.content", "tool_result.is_error", "tool_result.is_canceled"],
-  notification_by_kind: ["event", "data", "data.kind", "data.child_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at"],
-  child_message_delivered: ["event", "data", "data.agent_instance_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at"],
+  notification_by_kind: ["event", "data", "data.kind", "data.child_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
+  child_message_delivered: ["event", "data", "data.agent_instance_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   account_limit: ["event", "data"],
   account_state_unknown: ["event", "data"],
   turn_end: ["event", "data", "data.turn"],
   agent_end: ["event", "data"],
-  error: ["event", "data", "error", "error.code", "error.message", "data.agent_instance_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at"],
+  error: ["event", "data", "error", "error.code", "error.message", "data.agent_instance_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
 };
 
 const setPath = (source: Record<string, unknown>, path: string, value: unknown, remove = false) => {
@@ -140,22 +140,38 @@ test("client supports abort and timeout", async () => {
   await expect(client.request("slow", {}, { timeoutMs: 1 })).rejects.toThrow("timed out");
 });
 
-test("automatic eviction deletes, disposes, and safely recreates a session", () => {
+test("held sessions survive churn, then become evictable after release", () => {
   let receive!: (text: string) => void;
   const client = createClient({ send() {}, onMessage(callback) { receive = callback; }, onClose() {}, close() {} }, () => {}, undefined, { maxSessions: 2 });
-  const evicted = client.forSession("a");
-  client.forSession("b");
-  client.forSession("c");
+  const held = client.forSession("viewed");
+  const event = (session: string) => receive(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "agent_start", session_id: session, data: {} } }));
 
-  expect([...client.stores.keys()]).toEqual(["b", "c"]);
-  expect(client.evictionCount).toBe(1);
-  expect(() => evicted.dispatch({ type: "run_start" })).toThrow("store is disposed");
-  expect(() => receive(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "agent_start", session_id: "a", data: {} } }))).not.toThrow();
-  expect([...client.stores.keys()]).toEqual(["c", "a"]);
-  expect(client.forSession("a")).not.toBe(evicted);
-  expect(client.evictSession("c")).toBe(true);
-  expect(client.evictionCount).toBe(3);
-  expect(client.stores.has("c")).toBe(false);
+  for (let index = 0; index < 10_000; index++) event(`churn-${index}`);
+  event("viewed");
+  expect(held.store.getState().agent).toBe("running");
+  expect(client.stores.get("viewed")).toBe(held.store);
+  expect(client.stores.size).toBe(3);
+
+  held.release();
+  event("new-1");
+  event("new-2");
+  expect(client.stores.has("viewed")).toBe(false);
+  expect(client.stores.size).toBe(2);
+  expect(client.evictionCount).toBe(10_001);
+});
+
+test("a stale lease cannot release a replacement store", () => {
+  let receive!: (text: string) => void;
+  const client = createClient({ send() {}, onMessage(callback) { receive = callback; }, onClose() {}, close() {} }, () => {}, undefined, { maxSessions: 1 });
+  const stale = client.forSession("viewed");
+  expect(client.evictSession("viewed")).toBe(true);
+  const replacement = client.forSession("viewed");
+  const second = client.forSession("viewed");
+  stale.release();
+  replacement.release();
+  receive(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "agent_start", session_id: "churn", data: {} } }));
+  expect(client.stores.get("viewed")).toBe(second.store);
+  second.release();
 });
 
 test("frame limit measures utf-8 bytes", () => {
@@ -172,20 +188,24 @@ test("nested message blocks and tool results are decoded", () => {
   expect(fromZetaEvent({ event: "tool_end", tool_call: { id: "t", name: "bash", arguments: {} }, tool_result: { tool_call_id: 3, content: {}, is_error: "yes" } })[0]).toMatchObject({ type: "error", error: { code: "adapter_invalid_payload" } });
 });
 
-test("child transitions update one generic parent item keyed by child run", () => {
+test("zeta child transitions clear urgency and preserve terminal state", () => {
   const client = createClient({ send() {}, onMessage() {}, onClose() {}, close() {} });
-  const store = client.forSession("parent");
-  const expectTransition = (payload: Record<string, unknown>, status: string, urgency?: string) => {
-    for (const event of fromZetaEvent(payload)) store.dispatch(event);
-    const item = store.getItem("sub-agent:child");
-    expect(item).toMatchObject({ type: "sub_agent", childRunId: "child", status, ...(urgency ? { urgency } : {}) });
-    if (!urgency) expect(item?.type === "sub_agent" ? item.urgency : undefined).toBeUndefined();
+  const held = client.forSession("parent");
+  const dispatch = (payload: Record<string, unknown>) => {
+    for (const event of fromZetaEvent(payload)) held.store.dispatch(event);
+    return held.store.getItem("sub-agent:child");
   };
-  expectTransition({ event: "sub_agent_receipt", data: { child_instance_id: "child", kind: "agent_completion", status: "completed", text: "done", summary: "done" } }, "done");
-  expectTransition({ event: "child_idle", data: { child_instance_id: "child", kind: "child_idle", status: "child_idle", text: "idle", description: "worker" } }, "idle");
-  expectTransition({ event: "child_question", data: { child_instance_id: "child", question_id: "q", kind: "child_question", status: "pending", question: "continue?", text: "question", description: "child question" } }, "waiting_input", "input");
-  expectTransition({ event: "approval_request", request_id: "approval", delegated: true, agent_instance_id: "child", tool_call: { id: "tool", name: "bash", arguments: {} } }, "waiting_approval", "approval");
-  expectTransition({ event: "notification_by_kind", data: { child_instance_id: "child", kind: "agent_completion", status: "completed", text: "done", summary: "finished" } }, "done");
-  expectTransition({ event: "notification_by_kind", data: { child_instance_id: "child", kind: "agent_completion", status: "error", text: "failed", summary: "failed" } }, "error", "error");
-  expect(store.getItem("sub-agent:q")).toBeUndefined();
+
+  expect(dispatch({ event: "child_question", data: { child_instance_id: "child", question: "continue?" } })).toMatchObject({ status: "waiting_input", urgency: "input" });
+  expect(dispatch({ event: "child_message_delivered", data: { agent_instance_id: "child", preview: "answered" } })).toMatchObject({ status: "running" });
+  expect(dispatch({ event: "approval_request", request_id: "approval", delegated: true, agent_instance_id: "child", tool_call: { id: "tool", name: "bash", arguments: {} } })).toMatchObject({ status: "waiting_approval", urgency: "approval" });
+  expect(dispatch({ event: "approval_end", request_id: "approval", data: { agent_instance_id: "child" } })).toMatchObject({ status: "running" });
+  expect(dispatch({ event: "notification_by_kind", data: { child_instance_id: "child", kind: "agent_completion", status: "completed", summary: "finished" } })).toMatchObject({ status: "done" });
+  expect(dispatch({ event: "child_idle", data: { child_instance_id: "child", description: "late idle" } })).toMatchObject({ status: "done" });
+  expect(held.store.getItem("sub-agent:child")?.type === "sub_agent" ? held.store.getItem("sub-agent:child")?.urgency : undefined).toBeUndefined();
+});
+
+test("valid child delivery without an id remains a parent notification", () => {
+  const [event] = fromZetaEvent({ event: "child_message_delivered", data: { child_label: "worker", preview: "check the retry" } });
+  expect(event).toMatchObject({ type: "notification", data: { child_label: "worker", preview: "check the retry" } });
 });

@@ -4,7 +4,14 @@ import type { HelloResult, RpcError, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
 
 export interface RequestOptions { signal?: AbortSignal; timeoutMs?: number }
+/** maxSessions limits only event-created stores; held view stores can exceed it. */
 export interface ClientOptions { maxPendingRequests?: number; maxFrameSize?: number; maxSessions?: number }
+export type SessionStore = ReturnType<typeof createRunStore>;
+export interface SessionLease {
+  readonly store: SessionStore;
+  /** Releases this lease once. The store remains cached until later LRU churn. */
+  release(): void;
+}
 const adapterError = (message: string) => ({ type: "error" as const, error: { code: "adapter_invalid_frame", message } });
 const encoder = new TextEncoder();
 
@@ -17,13 +24,15 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const maxSessions = options.maxSessions ?? 100;
   type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout> };
   const pending = new Map<number, Pending>();
-  const stores = new Map<string, ReturnType<typeof createRunStore>>();
+  const stores = new Map<string, SessionStore>();
+  const holders = new Map<string, number>();
   const store = createRunStore(scheduler);
   let evictionCount = 0;
   const evict = (id: string) => {
     const value = stores.get(id);
     if (!value) return false;
     stores.delete(id);
+    holders.delete(id);
     value.dispose();
     evictionCount++;
     return true;
@@ -33,18 +42,48 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!value) return;
     stores.delete(session); stores.set(session, value);
   };
-  const forSession = (session?: string) => {
-    if (!session) return store;
-    let value = stores.get(session);
-    if (!value) {
-      while (stores.size >= maxSessions) {
-        const victim = stores.keys().next().value;
-        if (victim === undefined) break;
-        evict(victim);
-      }
-      value = createRunStore(scheduler); stores.set(session, value);
-    } else touch(session);
+  const createSession = (session: string) => {
+    const value = createRunStore(scheduler);
+    stores.set(session, value);
+    holders.set(session, 0);
     return value;
+  };
+  const trimUnheld = () => {
+    let unheld = 0;
+    for (const id of stores.keys()) if ((holders.get(id) ?? 0) === 0) unheld++;
+    while (unheld >= maxSessions) {
+      let victim: string | undefined;
+      for (const id of stores.keys()) {
+        if ((holders.get(id) ?? 0) === 0) { victim = id; break; }
+      }
+      if (victim === undefined) break;
+      evict(victim);
+      unheld--;
+    }
+  };
+  const eventStore = (session?: string) => {
+    if (!session) return store;
+    const existing = stores.get(session);
+    if (existing) { touch(session); return existing; }
+    trimUnheld();
+    return createSession(session);
+  };
+  const forSession = (session?: string): SessionLease => {
+    if (!session) return { store, release() {} };
+    const value = stores.get(session) ?? createSession(session);
+    holders.set(session, (holders.get(session) ?? 0) + 1);
+    touch(session);
+    let released = false;
+    return {
+      store: value,
+      release() {
+        if (released) return;
+        released = true;
+        const count = holders.get(session);
+        if (stores.get(session) === value && count !== undefined)
+          holders.set(session, Math.max(0, count - 1));
+      },
+    };
   };
   const settle = (id: number, callback: (request: Pending) => void) => {
     const request = pending.get(id); if (!request) return;
@@ -60,7 +99,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       if (!message.params || typeof message.params !== "object") { store.dispatch(adapterError("event params are invalid")); return; }
       const events = fromZetaEvent(message.params);
       const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
-      for (const event of events) forSession(session).dispatch(event);
+      const sessionStore = eventStore(session);
+      for (const event of events) sessionStore.dispatch(event);
       return;
     }
     if (message.id === null && message.error) { const error = Object.assign(new Error(message.error.message), message.error); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); return; }

@@ -26,6 +26,11 @@ const boolean = (value: unknown, name: string) => {
   if (typeof value !== "boolean") throw new Error(`${name} must be a boolean`);
   return value;
 };
+const optionalNumber = (value: unknown, name: string) => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${name} must be a finite number`);
+  return value;
+};
 
 const tool = (value: unknown): ToolCall => {
   const input = object(value, "tool_call");
@@ -114,6 +119,7 @@ const subAgent = (
   const startedAt = timestamp(data, "started_at");
   const updatedAt = timestamp(data, "updated_at");
   const endedAt = timestamp(data, "completed_at");
+  const sequence = optionalNumber(data.sequence, "data.sequence");
   return {
     type: "sub_agent",
     childRunId: string(data[childKey], `data.${childKey}`),
@@ -124,12 +130,26 @@ const subAgent = (
     ...(startedAt ? { startedAt } : {}),
     ...(updatedAt ? { updatedAt } : {}),
     ...(endedAt ? { endedAt } : {}),
+    ...(sequence === undefined ? {} : { sequence }),
   };
 };
 
 const completionStatus = (data: Record<string, unknown>): [SubAgentStatus, SubAgentUrgency?] => {
   switch (string(data.status, "data.status")) {
     case "completed": return ["done"];
+    case "error": return ["error", "error"];
+    case "canceled": return ["canceled"];
+    default: throw new Error("data.status is invalid");
+  }
+};
+
+const resumedStatus = (data: Record<string, unknown>): [SubAgentStatus, SubAgentUrgency?] => {
+  if (data.status === undefined) return ["running"];
+  switch (string(data.status, "data.status")) {
+    case "running": return ["running"];
+    case "idle": return ["idle"];
+    case "completed":
+    case "done": return ["done"];
     case "error": return ["error", "error"];
     case "canceled": return ["canceled"];
     default: throw new Error("data.status is invalid");
@@ -186,7 +206,13 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         const childRunId = optionalString(wire.agent_instance_id, "agent_instance_id");
         return childRunId ? [approval, subAgent({ ...data, child_instance_id: childRunId, description: `approval for ${approval.tool_call.name}` }, "waiting_approval", "approval")] : [approval];
       }
-      case "approval_end": return [{ type: "approval_end", request_id: string(wire.request_id, "request_id"), data }];
+      case "approval_end": {
+        const approval: RunEvent = { type: "approval_end", request_id: string(wire.request_id, "request_id"), data };
+        const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
+        if (!childRunId) return [approval];
+        const [status, urgency] = resumedStatus(data);
+        return [approval, subAgent({ ...data, child_instance_id: childRunId }, status, urgency)];
+      }
       case "usage": {
         const input = object(wire.usage, "usage");
         if (Object.values(input).some((item) => typeof item !== "number" || !Number.isFinite(item))) throw new Error("usage must contain finite numbers");
@@ -203,7 +229,12 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         return childRunId ? [event, subAgent({ ...data, child_instance_id: childRunId, summary: event.error.message }, "error", "error")] : [event];
       }
       case "turn_aborted": return [{ type: "error", error: { code: "turn_aborted", message: optionalString(wire.message, "message") ?? "turn aborted" } }];
-      case "child_message_delivered": return [subAgent(data, "running", undefined, "agent_instance_id")];
+      case "child_message_delivered": {
+        const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
+        return childRunId
+          ? [subAgent(data, "running", undefined, "agent_instance_id")]
+          : [{ type: "notification", notification_id: optionalString(data.notification_id, "data.notification_id"), data: { ...data } }];
+      }
       case "sub_agent_receipt":
       case "notification_by_kind":
       case "task_exit_notification":
