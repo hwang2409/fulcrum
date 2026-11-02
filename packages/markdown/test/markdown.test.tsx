@@ -11,9 +11,11 @@ import { Markdown } from "../src/react.js";
 const json = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
 
 const conformance: Record<string, Array<[string, string]>> = {
-  headings: [["# alpha", "<h1 data-part=\"md-heading\">alpha</h1>"], ["## beta", "<h2 data-part=\"md-heading\">beta</h2>"]],
+  headings: [["# alpha", "<h1 data-part=\"md-heading\">alpha</h1>"], ["## beta", "<h2 data-part=\"md-heading\">beta</h2>"], ["setext\n===", "<h1 data-part=\"md-heading\">setext</h1>"]],
   paragraphs: [["alpha\nbeta", "<p data-part=\"md-paragraph\">alpha\nbeta</p>"]],
   emphasis: [["*a* **b** ~~c~~", "<p data-part=\"md-paragraph\"><em data-part=\"md-emphasis\">a</em> <strong data-part=\"md-strong\">b</strong> <del data-part=\"md-strike\">c</del></p>"]],
+  codeSpans: [["`` a ` b ``", "<p data-part=\"md-paragraph\"><code data-part=\"md-code-inline\">a ` b</code></p>"]],
+  entities: [["&lt;b&gt; &amp;", "<p data-part=\"md-paragraph\">&lt;b&gt; &amp;</p>"]],
   links: [["[site](https://example.com) <me@example.com>", "<p data-part=\"md-paragraph\"><a data-part=\"md-link\" href=\"https://example.com\">site</a> <a data-part=\"md-link\" href=\"mailto:me@example.com\">me@example.com</a></p>"]],
   quotes: [["> alpha", "<blockquote data-part=\"md-blockquote\"><p data-part=\"md-paragraph\">alpha</p></blockquote>"]],
   rules: [["---", "<hr data-part=\"md-rule\"/>"]],
@@ -53,6 +55,29 @@ test("renders gfm blocks, nested and task lists, and fenced code language", () =
   expect(html).toContain('<pre data-part="md-code-block" data-language="ts"><code>const n = 1;</code></pre>');
 });
 
+test("covers gfm references, literal autolinks, images, escaped tables, and indented code", () => {
+  const source = [
+    "[docs]: https://example.com/docs",
+    "",
+    "[reference][docs] and www.example.com and dev@example.com",
+    "",
+    "![logo](/logo.png)",
+    "",
+    "| expression | result |",
+    "| --- | --- |",
+    "| a \\| b | ok |",
+    "",
+    "    const indented = true;",
+  ].join("\n");
+  const html = renderToStaticMarkup(<Markdown source={source} />);
+  expect(html).toContain('href="https://example.com/docs"');
+  expect(html).toContain('href="http://www.example.com"');
+  expect(html).toContain('href="mailto:dev@example.com"');
+  expect(html).toContain('data-part="md-image"');
+  expect(html).toContain("a | b");
+  expect(html).toContain('<pre data-part="md-code-block"><code>const indented = true;</code></pre>');
+});
+
 test("repairs every streaming prefix without changing the source", () => {
   const source = "# result\n\nThe build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move **the import** into [the config](./vite), or use `new";
   const document = createStreamingDocument();
@@ -61,6 +86,13 @@ test("repairs every streaming prefix without changing the source", () => {
     expect(json(document.render())).toBe(json(parseMarkdown(repairMarkdown(source.slice(0, index)))));
     expect(document.source).toBe(source.slice(0, index));
   }
+});
+
+test("repairs open emphasis, links, multi-backtick spans, and fences", () => {
+  expect(renderToStaticMarkup(<Markdown source="**bold" streaming />)).toContain('<strong data-part="md-strong">bold</strong>');
+  expect(renderToStaticMarkup(<Markdown source="[docs](https://example.com" streaming />)).toContain('href="https://example.com"');
+  expect(renderToStaticMarkup(<Markdown source="use ``a ` b" streaming />)).toContain('<code data-part="md-code-inline">a ` b</code>');
+  expect(renderToStaticMarkup(<Markdown source={'```ts\nconst x = 1;'} streaming />)).toContain('<pre data-part="md-code-block" data-language="ts">');
 });
 
 test("an unclosed backtick renders as inline code and never flashes raw syntax", () => {
@@ -96,6 +128,7 @@ test("escapes html and removes unsafe hrefs", () => {
     "[x](java\tscript:alert(1))",
     "[x](java\nscript:alert(1))",
     "[x](//example.com/remote)",
+    "![x](javascript:alert(1))",
     "<script>alert(1)</script>",
   ];
   for (const source of attacks) {

@@ -39,6 +39,9 @@ const InlineView = ({ nodes }: { nodes: readonly Inline[] }) => (
         case "link": return node.href
           ? <a key={index} data-part="md-link" href={node.href}><InlineView nodes={node.children} /></a>
           : <Fragment key={index}><InlineView nodes={node.children} /></Fragment>;
+        case "image": return node.src
+          ? <img key={index} data-part="md-image" src={node.src} alt={node.alt} />
+          : <Fragment key={index}>{node.alt}</Fragment>;
       }
     })}
   </>
