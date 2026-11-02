@@ -10,6 +10,7 @@
     "bench:highlight": "bun run --cwd packages/highlight bench",
     "check:highlight-consumer": "bun scripts/highlight-consumer-check.ts",
     "check:highlight-notices": "bun scripts/highlight-notices-check.ts",
+    "check:pack-consumer": "bun scripts/pack-consumer-check.ts",
     "size:check": "bun scripts/size-check.ts",
     "stress": "bun run --cwd apps/playground stress"
   },

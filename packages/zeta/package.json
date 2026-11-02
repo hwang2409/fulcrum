@@ -1,1 +1,1 @@
-{"name":"@fulcrum/zeta","type":"module","dependencies":{"@fulcrum/core":"workspace:*"},"exports":{".":{"types":"./dist/index.d.ts","bun":"./src/index.ts","import":"./dist/index.js"}},"scripts":{"build":"tsc -p ."}}
+{"name":"@fulcrum/zeta","type":"module","dependencies":{"@fulcrum/core":"workspace:*"},"exports":{".":{"types":"./dist/index.d.ts","bun":"./src/index.ts","import":"./dist/index.js"}},"scripts":{"build":"tsc -p ."},"devDependencies":{"@fulcrum/adapter-test":"workspace:*"},"version":"0.0.0"}

@@ -14,6 +14,7 @@
     "@fulcrum/zeta": "workspace:*",
     "react": "^19",
     "react-dom": "^19",
+    "@fulcrum/ai-sdk": "workspace:*",
     "@fulcrum/highlight": "workspace:*"
   },
   "devDependencies": {

@@ -14,6 +14,7 @@ jobs:
       - run: bun run size:check
       - run: bun run check:highlight-consumer
       - run: bun run check:highlight-notices
+      - run: bun run check:pack-consumer
       - run: bun run --cwd apps/playground build
       - run: cd apps/playground && bunx playwright install --with-deps chromium
       - run: bun run --cwd apps/playground layout
