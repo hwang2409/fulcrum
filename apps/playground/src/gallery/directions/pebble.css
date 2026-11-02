@@ -1,4 +1,4 @@
-/* pebble: soft product UI. Rounded surfaces, chat bubbles, gentle motion. */
+/* pebble: soft product UI. */
 :root {
   --fulcrum-radius: 14px;
   --fulcrum-gap: 14px;
@@ -16,7 +16,7 @@
   font: 14px/1.7 var(--fulcrum-font);
   overflow-wrap: anywhere;
 }
-/* Skip off-screen layout and paint; new rows rise in once. */
+/* Skip off-screen paint; new rows rise in once. */
 [data-part=timeline] > * {
   content-visibility: auto;
   contain-intrinsic-size: auto 3em;
@@ -45,7 +45,7 @@
   color: var(--fulcrum-on-accent, var(--fulcrum-bg));
 }
 [data-role=user]::before { content: none; }
-/* A dot breathes at the end of streaming text. */
+/* A dot breathes after streaming text. */
 [data-part=message][data-state=streaming]::after {
   content: "\25CF";
   display: inline-block;
@@ -62,8 +62,10 @@
   overflow: hidden;
   border-radius: var(--fulcrum-radius);
   background: var(--fulcrum-surface);
+  font-size: 13px;
+  line-height: 1.6;
 }
-[data-part=tool-name] { padding-right: 88px; font-weight: 600; font-size: 13px; }
+[data-part=tool-name] { padding-right: 88px; font-weight: 600; }
 /* Status pill in the state's color. */
 [data-part=tool]::before {
   position: absolute;
@@ -73,14 +75,13 @@
   border-radius: 999px;
   background: color-mix(in srgb, var(--dot) 16%, transparent);
   color: var(--dot);
-  font: 700 11.5px/22px var(--fulcrum-font);
+  font: 700 12px/22px var(--fulcrum-font);
   content: "Done";
 }
 [data-part=tool-args] {
   max-height: 6.4em; /* 4 lines */
   overflow: auto;
   color: var(--fulcrum-muted);
-  font: 11.5px/1.6 var(--fulcrum-mono);
 }
 [data-part=tool-output] {
   display: flex;
@@ -91,7 +92,6 @@
   overflow: auto;
   border-radius: 6px;
   background: var(--fulcrum-bg);
-  font: 11.5px/1.6 var(--fulcrum-mono);
 }
 [data-part=tool][data-state=streaming] { --dot: var(--fulcrum-accent); }
 [data-part=tool][data-state=streaming]::before { content: "Running"; }
@@ -110,35 +110,36 @@
 [data-part=tool][data-state=canceled]::before { content: "Canceled"; }
 
 [data-part=approval]::before { display: block; margin-bottom: 4px; color: var(--fulcrum-muted); font-size: 12px; content: "Approval resolved"; }
-/* Lifted, with a slow halo: the run waits on you. */
+/* Lifted, with a halo under the buttons: the run waits on you. */
 [data-part=approval][data-state=pending] {
   padding: 14px 16px;
+  isolation: isolate;
   background: var(--fulcrum-bg);
   box-shadow: 0 0 0 2px var(--fulcrum-warn), 0 12px 32px -12px color-mix(in srgb, var(--fulcrum-warn) 70%, transparent);
 }
-[data-part=approval][data-state=pending]::before { color: var(--fulcrum-warn); font-weight: 700; font-size: 13px; content: "\25B2  Needs your approval"; }
+[data-part=approval][data-state=pending]::before { color: var(--fulcrum-warn); font-weight: 700; content: "\25B2  Needs your approval"; }
 [data-part=approval][data-state=pending]::after {
   content: "";
   position: absolute;
   inset: 0;
-  border-radius: inherit;
+  z-index: -1;
   background: color-mix(in srgb, var(--fulcrum-warn) 9%, transparent);
   animation: pebble-halo 1.8s ease-in-out infinite alternate;
-  pointer-events: none;
 }
 [data-part=approval] button {
-  min-height: 32px;
+  min-height: 36px;
   margin: 12px 8px 0 0;
   padding: 0 18px;
-  border: 0;
+  border: 1px solid var(--fulcrum-muted);
   border-radius: 999px;
   background: var(--fulcrum-surface);
   color: inherit;
-  font: 600 13px var(--fulcrum-font);
+  font: inherit;
+  font-weight: 600;
   cursor: pointer;
   transition: transform 160ms var(--pebble-ease);
 }
-[data-part=approval] button[data-action=approve] { background: var(--fulcrum-accent); color: var(--fulcrum-on-accent, var(--fulcrum-bg)); }
+[data-part=approval] button[data-action=approve] { border-color: var(--fulcrum-accent); background: var(--fulcrum-accent); color: var(--fulcrum-on-accent, var(--fulcrum-bg)); }
 [data-part=approval] button:active { transform: scale(0.96); }
 [data-part=approval] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 
@@ -155,6 +156,7 @@
 @keyframes pebble-pulse { to { opacity: 0.35; transform: scale(0.7); } }
 @keyframes pebble-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 @keyframes pebble-halo { from { opacity: 0; } }
+@media (pointer: coarse) { [data-part=approval] button { min-height: 44px; } }
 @media (prefers-reduced-motion: reduce) {
   [data-part=timeline] > *, [data-part=timeline] ::before, [data-part=timeline] ::after { animation: none !important; }
 }

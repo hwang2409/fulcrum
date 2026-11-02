@@ -283,10 +283,12 @@ code {
 @keyframes gallery-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } }
 @keyframes gallery-pulse { to { opacity: 0.35; } }
 
-/* Touch widths: 44 px targets, including the approve and deny buttons inside demos. */
+/* Demo buttons are at least 36 px; the shipped styles.css sets no height. Directions set their own and win. */
+.demo-body button { min-height: 36px; }
+/* Touch widths: 44 px targets, including the approve and deny buttons inside every direction. */
 @media (max-width: 860px), (pointer: coarse) {
   :root { --gallery-control: 44px; }
-  .demo-body button { min-height: 44px; }
+  .demo-body [data-part] button { min-height: 44px; }
 }
 @media (max-width: 860px) {
   .gallery { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }

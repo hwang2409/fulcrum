@@ -108,14 +108,14 @@
 [data-part=approval][data-state=done] { opacity: 0.7; }
 [data-part=approval] button {
   order: 2;
-  min-height: 32px;
+  min-height: 36px;
   margin: 14px 8px 0 0;
   padding: 0 18px;
-  border: 1px solid var(--fulcrum-border);
+  border: 1px solid var(--fulcrum-muted);
   border-radius: var(--fulcrum-radius);
   background: var(--fulcrum-bg);
   color: var(--fulcrum-fg);
-  font: 600 12px var(--fulcrum-font);
+  font: 600 13px var(--fulcrum-font);
   cursor: pointer;
   transition: transform 120ms ease-out;
 }
@@ -126,6 +126,7 @@
 [data-kind=error] { padding-left: 16px; border-left: 2px solid var(--fulcrum-danger); color: var(--fulcrum-danger); font-style: normal; font-weight: 500; }
 
 @keyframes folio-breathe { 50% { opacity: 0.25; } }
+@media (pointer: coarse) { [data-part=approval] button { min-height: 44px; } }
 @media (prefers-reduced-motion: reduce) {
   [data-part=timeline] ::before, [data-part=timeline] ::after { animation: none !important; }
   [data-part=approval] button { transition: none; }

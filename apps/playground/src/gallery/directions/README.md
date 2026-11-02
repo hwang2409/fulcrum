@@ -21,8 +21,8 @@ boxed amber notice on a pending approval. Best when the prose matters more than 
 
 For tool-heavy runs that read like a terminal session. Each tool is one row (rail, name, args, status badge) with its
 output below on a recessed panel. A colored rail shows state at a glance down the whole run; args collapse to one line
-and expand on hover. A pending approval gets a striped hazard band and a bright button, because the run is blocked on
-the user. Best for coding agents and anyone who scans many calls.
+and expand on hover. A pending approval gets a striped hazard band, its full request, and a solid ink button, because
+the run is blocked on the user. Best for coding agents and anyone who scans many calls.
 
 ## pebble: soft product UI
 
@@ -39,4 +39,7 @@ a soft halo. New rows rise in once. Best for end-user facing assistants.
 - Motion uses only `transform` and `opacity`, never runs per token in JS, and stops under `prefers-reduced-motion`.
 - No `backdrop-filter`; only a pending approval gets a shadow.
 - Timeline children keep `content-visibility: auto`.
-- No horizontal page scroll at 390, 768, 1024, or 1440 px (`bun run --cwd apps/playground layout`, in CI).
+- No horizontal page scroll at 390, 768, 1024, or 1440 px, and a pending approval's approve and deny have 4.5:1 text
+  contrast and are at least 44 px tall at touch widths (36 px elsewhere), in light, dark, and pine
+  (`bun run --cwd apps/playground layout`, in CI).
+- Technical text (tool names, args, output) is at least 13 px.
