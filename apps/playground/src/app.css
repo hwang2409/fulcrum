@@ -5,4 +5,3 @@ body { margin: 0; background: var(--fulcrum-bg); color: var(--fulcrum-fg); font:
 .readout { margin-left: auto; font: 12px var(--fulcrum-mono); color: var(--fulcrum-muted); font-variant-numeric: tabular-nums; }
 .scroll { overflow: auto; padding: 16px; }
 .scroll > [data-part="timeline"] { max-width: 760px; margin: 0 auto; }
-.scroll > [data-part="timeline"] > [data-part] { content-visibility: auto; contain-intrinsic-size: 24px; }
