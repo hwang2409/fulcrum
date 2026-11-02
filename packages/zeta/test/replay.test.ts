@@ -43,20 +43,7 @@ function replay(name: string) {
 }
 
 
-const materialize = (state: RunState) => {
-  const clone = structuredClone(state);
-  for (const message of Object.values(clone.messagesById)) {
-    if (message.chunks) message.chunks = [message.chunks.join("")];
-  }
-  for (const tool of Object.values(clone.toolCallsById)) {
-    tool.outputs = [tool.outputs.join("")];
-  }
-  for (const item of Object.values(clone.itemsById)) {
-    if (item.type === "message" && item.chunks) item.chunks = [item.chunks.join("")];
-    if (item.type === "tool") item.outputs = [item.outputs.join("")];
-  }
-  return clone;
-};
+const materialize = (state: RunState) => structuredClone(state);
 
 const replayEveryFixture = (assertState: (state: RunState) => void) => {
   for (const frames of Object.values(fixtures)) {
@@ -95,8 +82,7 @@ test("approval and its tool execution stay distinct in the timeline", () => {
 const contentText = (state: RunState, itemId: string) => {
   const item = state.itemsById[itemId];
   if (item?.type !== "message") return "";
-  if ("text" in item) return String(item.text);
-  if (item.chunks) return item.chunks.join("");
+  if (item.text !== undefined) return item.text;
   return item.message.content
     .filter((block) => block.type === "text")
     .map((block) => String(block.text))
@@ -135,7 +121,8 @@ test("simple streaming turn commits one assistant message", () => {
   expect(state.items.filter((id) => state.itemsById[id]?.type === "message")).toHaveLength(1);
   expect(contentText(state, state.items[0])).toBe("hi there");
   expect(state.itemsById[state.items[0]].type).toBe("message");
-  expect(state.messagesById.assistant.chunks).toBeUndefined();
+  const item = state.itemsById["message:assistant"];
+  expect(item.type === "message" ? item.text : undefined).toBeUndefined();
 });
 
 test("two assistant turns keep two distinct messages in order", () => {
@@ -149,16 +136,18 @@ test("two assistant turns keep two distinct messages in order", () => {
 test("tool call start/output/end with error result", () => {
   const state = replay("tool.jsonl").get("tool")!;
   expect(state.items).toEqual(["tool:tool-call-1"]);
-  expect(state.toolCallsById["tool-call-1"].outputs).toEqual(["permission denied"]);
-  expect(state.toolCallsById["tool-call-1"].is_error).toBe(true);
-  expect(state.toolCallsById["tool-call-1"].result?.content).toBe("permission denied");
+  const item = state.itemsById["tool:tool-call-1"];
+  expect(item.type === "tool" ? item.output : undefined).toBe("permission denied");
+  expect(item.type === "tool" ? item.is_error : undefined).toBe(true);
+  expect(item.type === "tool" ? item.result?.content : undefined).toBe("permission denied");
 });
 
 test("approval request then approval end", () => {
   const state = replay("approval.jsonl").get("approval")!;
   expect(state.items).toEqual(["approval:tool-call-1"]);
-  expect(state.approvalsById["tool-call-1"].delegated).toBe(false);
-  expect(state.approvalsById["tool-call-1"].ended?.type).toBe("approval_end");
+  const item = state.itemsById["approval:tool-call-1"];
+  expect(item.type === "approval" && item.request.type === "approval_request" ? item.request.delegated : undefined).toBe(false);
+  expect(item.type === "approval" ? item.ended?.type : undefined).toBe("approval_end");
 });
 
 test("a delta after turn_aborted starts a new message", () => {
@@ -204,7 +193,7 @@ test("two interleaved sessions do not touch each other's state", async () => {
   expect(alpha.items.map((id) => contentText(alpha, id))).toEqual(["alpha"]);
   expect(beta.items.map((id) => contentText(beta, id))).toEqual(["beta"]);
   expect(alpha).not.toBe(beta);
-  expect(alpha.messagesById).not.toBe(beta.messagesById);
+  expect(alpha.itemsById).not.toBe(beta.itemsById);
 });
 
 test("unknown future event keeps the full wire payload", () => {

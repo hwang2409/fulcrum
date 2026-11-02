@@ -7,7 +7,7 @@
 
 ## reducer and store
 
-`reduce(state, event)` accepts generic `RunEvent` values and returns normalized run state. streamed text is kept in `messagesById[id].chunks`; the final commit replaces it. `createRunStore()` exposes `getState`, `subscribe`, and `dispatch`; pass a scheduler in tests to control notification timing. `fromZetaEvent` maps wire events to generic events, and `connect(transport)` adds JSON-RPC request matching.
+`reduce(state, event)` accepts generic `RunEvent` values and returns normalized run state. `items` orders the canonical entities in `itemsById`; active assistant and tool text is stored as a plain string on its entity. `createRunStore()` batches reduction and subscriber notification through its scheduler while `getState()` flushes pending events for synchronous reads. `fromZetaEvent` maps wire events to generic events, and `connect(transport)` adds JSON-RPC request matching.
 
 build with `bun install`, `bun test`, and `bunx tsc -b`.
 

@@ -25,15 +25,17 @@ export type RunItem =
       type: "message";
       message: Message;
       version: number;
-      chunks?: string[];
+      text?: string;
     }
   | {
       id: string;
       type: "tool";
       tool_call: ToolCall;
-      outputs: string[];
+      output: string;
       version: number;
       result?: ToolResult;
+      is_error: boolean;
+      canceled: boolean;
     }
   | { id: string; type: "approval"; request: RunEvent; ended?: RunEvent }
   | {

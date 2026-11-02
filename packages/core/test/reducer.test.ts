@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createRunStore, initialState, reduce } from "../src/index.js";
+import { createRunStore, initialState, reduce, type RunState } from "../src/index.js";
 
 const message = (text: string) => ({
   role: "assistant",
@@ -8,11 +8,11 @@ const message = (text: string) => ({
 
 const toolCall = { id: "tool-1", name: "read", arguments: { path: "README.md" } };
 
-const itemText = (state: typeof initialState, id: string) => {
+const itemText = (state: RunState, id: string) => {
   const item = state.itemsById[id];
   if (item?.type !== "message") return "";
   return (
-    item.chunks?.join("") ??
+    item.text ??
     item.message.content
       .filter((block) => block.type === "text")
       .map((block) => String(block.text))
@@ -75,17 +75,15 @@ test("delta changes only the streaming message identity", () => {
   state = reduce(state, { type: "tool_start", tool_call: toolCall });
   state = reduce(state, { type: "message_delta", message_id: "stream", delta: "a" });
 
-  const stream = state.messagesById.stream;
-  const other = state.messagesById.other;
-  const tool = state.toolCallsById[toolCall.id];
+  const other = state.itemsById["message:other"];
+  const tool = state.itemsById[`tool:${toolCall.id}`];
   const streamItem = state.itemsById["message:stream"];
   const timeline = state.items;
 
   const next = reduce(state, { type: "message_delta", message_id: "stream", delta: "b" });
-  expect(next.messagesById.stream).not.toBe(stream);
   expect(next.itemsById["message:stream"]).not.toBe(streamItem);
-  expect(next.messagesById.other).toBe(other);
-  expect(next.toolCallsById[toolCall.id]).toBe(tool);
+  expect(next.itemsById["message:other"]).toBe(other);
+  expect(next.itemsById[`tool:${toolCall.id}`]).toBe(tool);
   expect(next.items).toBe(timeline);
 });
 
@@ -93,28 +91,27 @@ test("tool output changes only the streamed tool identity", () => {
   let state = reduce(initialState, { type: "message_commit", message_id: "other", message: message("old") });
   state = reduce(state, { type: "tool_start", tool_call: toolCall });
 
-  const tool = state.toolCallsById[toolCall.id];
   const toolItem = state.itemsById[`tool:${toolCall.id}`];
-  const other = state.messagesById.other;
+  const other = state.itemsById["message:other"];
   const otherItem = state.itemsById["message:other"];
   const timeline = state.items;
 
   const next = reduce(state, { type: "tool_output", tool_call: toolCall, output: "chunk" });
-  expect(next.toolCallsById[toolCall.id]).not.toBe(tool);
   expect(next.itemsById[`tool:${toolCall.id}`]).not.toBe(toolItem);
-  expect(next.messagesById.other).toBe(other);
+  expect(next.itemsById["message:other"]).toBe(other);
   expect(next.itemsById["message:other"]).toBe(otherItem);
   expect(next.items).toBe(timeline);
 });
 
-test("commit replaces streamed chunks with the final message", () => {
+test("commit replaces streamed text with the final message", () => {
   let state = reduce(initialState, { type: "message_delta", delta: "draft " });
   state = reduce(state, { type: "message_delta", delta: "text" });
   state = reduce(state, { type: "message_commit", message: message("final text") });
 
   expect(state.items).toEqual(["message:assistant"]);
-  expect(state.messagesById.assistant.content).toEqual(message("final text").content);
-  expect(state.messagesById.assistant.chunks).toBeUndefined();
+  const item = state.itemsById["message:assistant"];
+  expect(item.type === "message" ? item.message.content : undefined).toEqual(message("final text").content);
+  expect(item.type === "message" ? item.text : undefined).toBeUndefined();
 });
 
 test("message_reset discards the in-progress stream", () => {
@@ -122,7 +119,7 @@ test("message_reset discards the in-progress stream", () => {
   state = reduce(state, { type: "message_reset" });
 
   expect(state.activeMessageId).toBeUndefined();
-  expect(state.messagesById.assistant).toBeUndefined();
+  expect(state.itemsById["message:assistant"]).toBeUndefined();
   expect(state.items).toEqual([]);
 });
 
@@ -135,7 +132,30 @@ test("state snapshots taken before a delta do not change after it", () => {
 
   store.dispatch({ type: "message_delta", delta: " after" });
 
-  expect(snapshot.messagesById.assistant.chunks?.join("")).toBe("before");
+  expect(itemText(snapshot, "message:assistant")).toBe("before");
+});
+
+test("run_end clears active assistant and tool streams", () => {
+  let state = reduce(initialState, { type: "message_delta", delta: "old" });
+  state = reduce(state, { type: "tool_start", tool_call: toolCall });
+  state = reduce(state, {
+    type: "tool_output",
+    tool_call: toolCall,
+    output: "old",
+  });
+  state = reduce(state, { type: "run_end" });
+  state = reduce(state, { type: "message_delta", delta: "new" });
+  state = reduce(state, {
+    type: "tool_output",
+    tool_call: toolCall,
+    output: "new",
+  });
+
+  expect(state.items.filter((id) => state.itemsById[id].type === "message")).toHaveLength(2);
+  expect(itemText(state, "message:assistant")).toBe("old");
+  expect(itemText(state, "message:assistant-2")).toBe("new");
+  const tool = state.itemsById[`tool:${toolCall.id}`];
+  expect(tool.type === "tool" ? tool.output : undefined).toBe("new");
 });
 
 test("handles unknown events and receipt dedupe", () => {
