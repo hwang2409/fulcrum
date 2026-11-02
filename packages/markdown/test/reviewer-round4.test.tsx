@@ -59,11 +59,31 @@ test("five depth-four continuations stay in the unfinished physical line", () =>
   expect(mismatches).toBe(0);
 });
 
+function generatedReferenceSource(first: string, continuation: string | undefined, order: "definition-first" | "use-first", list: "root" | "ul" | "ol", depth: number) {
+  const marker = list === "ul" ? "- " : list === "ol" ? "3. " : "";
+  const indent = list === "root" ? "" : " ".repeat(marker.length);
+  const definition = marker + first + (continuation ? `\n${indent}${continuation}` : "");
+  const use = `${marker}reader opens [shared].`;
+  const separator = list === "root" ? "\n\n" : "\n";
+  return quote(order === "definition-first" ? `${definition}${separator}${use}\n` : `${use}${separator}${definition}\n`, depth);
+}
+
 const invariantSources = new Set<string>();
-for (const title of ['"next title"', "'next title'", "(next title)"])
+const referenceShapes: Array<[string, string?]> = [
+  ["[shared]: <https://example.com/docs>"],
+  ['[shared]: https://example.com/docs "double title"'],
+  ["[shared]: https://example.com/docs 'single title'"],
+  ["[shared]: https://example.com/docs (paren title)"],
+  ["[shared]: https://example.com/docs", '"next title"'],
+  ["[shared]: https://example.com/docs", "'next title'"],
+  ["[shared]: https://example.com/docs", "(next title)"],
+  ["[shared]: <https://example.com/docs"],
+  ['[shared]: https://example.com/docs "never closes'],
+];
+for (const [first, continuation] of referenceShapes.slice(0, 7))
   for (const order of ["definition-first", "use-first"] as const)
     for (const list of ["root", "ul", "ol"] as const)
-      for (let depth = 0; depth <= 8; depth++) invariantSources.add(referenceSource(title, order, list, depth));
+      for (let depth = 0; depth <= 8; depth++) invariantSources.add(generatedReferenceSource(first, continuation, order, list, depth));
 for (const source of [
   "plain **strong** *emphasis* ~~strike~~ `code` &amp; end",
   "stream title\n===",
@@ -82,7 +102,7 @@ for (const marker of ["-", "3."])
 for (const source of ["- first\n\n  second paragraph", "3. first\n\n   second paragraph", "- first\n\noutside", "3. first\n\noutside"])
   for (let depth = 0; depth <= 8; depth++) invariantSources.add(quote(source, depth));
 
-const endsInProvisionalDefinition = (source: string) => /(?:^|\n)(?: {0,3}> ?)* {0,3}\[[^\]\n]+\]:\s*(?:<[^>\n]+>|\S+)\s*(?:\n(?: {0,3}> ?)*)?$/.test(source);
+const endsInProvisionalDefinition = (source: string) => /(?:^|\n)(?: {0,3}> ?)*(?: {0,3}(?:[-+*]|\d{1,9}[.)])\s+)?\[[^\]\n]+\]:[^\n]*(?:\n(?: {0,3}> ?)*)?$/.test(source);
 
 test("generator sources match one-shot parsing except a precisely pending eof definition", () => {
   let mismatches = 0;
@@ -97,9 +117,27 @@ test("generator sources match one-shot parsing except a precisely pending eof de
     }
     cases++;
   }
-  expect(cases).toBe(invariantSources.size * splits.length);
-  expect(pendingEofDefinitions).toBe(54);
+  expect(cases).toBe(3348);
+  // These are only definitions whose physical line or possible title continuation has no newline yet.
+  expect(pendingEofDefinitions).toBe(216);
   expect(mismatches).toBe(0);
+});
+
+test("648 incomplete definitions equal one-shot parsing after finish", () => {
+  let cases = 0;
+  for (const [first, continuation] of referenceShapes.slice(7))
+    for (const order of ["definition-first", "use-first"] as const)
+      for (const list of ["root", "ul", "ol"] as const)
+        for (let depth = 0; depth <= 8; depth++)
+          for (const split of splits) {
+            const source = generatedReferenceSource(first, continuation, order, list, depth);
+            const document = createStreamingDocument();
+            for (let offset = 0; offset < source.length; offset += split) document.append(source.slice(offset, offset + split));
+            document.finish();
+            expect(json(document.render())).toBe(json(parseMarkdown(source)));
+            cases++;
+          }
+  expect(cases).toBe(648);
 });
 
 test("a terminal definition stays pending until its continuation line is decided", () => {
