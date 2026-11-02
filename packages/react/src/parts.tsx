@@ -62,15 +62,15 @@ const statusText: Record<ItemState, string> = {
   error: "failed",
   canceled: "canceled",
   pending: "needs approval",
-  submitting: "sending",
+  submitting: "sending", // Approval names the action instead: "approving" or "denying"
 };
 
-function Header({ call, state, status, summary, id }: { call: ToolCallData; state: ItemState; status?: string; summary?: ToolViewProps["summary"]; id?: string }) {
+function Header({ call, state, status, summary }: { call: ToolCallData; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
   return (
     <>
       <span data-part="tool-name">{call.name}</span>
       <span data-part="tool-summary">{(summary ?? defaultSummary)(call)}</span>
-      <span data-part="tool-status" id={id}>{status ?? statusText[state]}</span>
+      <span data-part="tool-status">{status ?? statusText[state]}</span>
     </>
   );
 }
