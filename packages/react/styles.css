@@ -13,8 +13,9 @@
   --fulcrum-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* Follows the OS by default; set data-fulcrum-theme="light" or "dark" on <html> to force one. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-fulcrum-theme="light"]) {
     --fulcrum-bg: #111113;
     --fulcrum-fg: #ececef;
     --fulcrum-muted: #9a9aa3;
@@ -24,6 +25,15 @@
     --fulcrum-danger: #f87171;
   }
 }
+:root[data-fulcrum-theme="dark"] {
+  --fulcrum-bg: #111113;
+  --fulcrum-fg: #ececef;
+  --fulcrum-muted: #9a9aa3;
+  --fulcrum-surface: #1b1b1f;
+  --fulcrum-border: #2c2c31;
+  --fulcrum-accent: #60a5fa;
+  --fulcrum-danger: #f87171;
+}
 
 [data-part="timeline"] {
   display: flex;
@@ -32,6 +42,7 @@
   color: var(--fulcrum-fg);
   background: var(--fulcrum-bg);
   font: 15px/1.55 var(--fulcrum-font);
+  overflow-wrap: anywhere;
 }
 
 /* Skip layout and paint for off-screen items in long timelines. */
