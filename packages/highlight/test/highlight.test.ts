@@ -171,6 +171,21 @@ describe("identity, failure, and caps", () => {
     highlighter.dispose();
   });
 
+  test("concurrent first requests share one engine and one grammar load", async () => {
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      const highlighter = createHighlighter({ worker: false });
+      const results = await Promise.all(Array.from({ length: 24 }, (_, index) => highlighter(`const n${index} = ${index};\n`, index % 2 ? "typescript" : "json", { id: `concurrent-${index}`, version: 1, state: "done" })));
+      expect(results.every((tokens) => tokens!.some((token) => token.type))).toBe(true);
+      highlighter.dispose();
+    } finally {
+      console.warn = warn;
+    }
+    expect(warnings.filter((warning) => warning.includes("instances have been created"))).toEqual([]);
+  });
+
   test("a busy worker that keeps answering is not treated as hung", async () => {
     // A backlog posted at once takes longer than one request's patience, but the worker answers steadily.
     let terminated = false;

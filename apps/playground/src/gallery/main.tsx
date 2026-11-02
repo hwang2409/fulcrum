@@ -134,7 +134,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
       </header>
       <div className="demo-body" ref={body}>
         <ActContext.Provider value={act}>
-          <RunProvider key={generation} store={store}>
+          <RunProvider key={generation} store={store} highlight={highlight}>
             <Timeline renderers={renderers} />
           </RunProvider>
         </ActContext.Provider>
@@ -203,7 +203,7 @@ function Gallery() {
     history.replaceState(null, "", url);
   }, [theme, inspect]);
   // The page renders after load, so the browser cannot jump to a #demo link by itself.
-  useEffect(() => document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(), []);
+  useEffect(() => { document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(); }, []);
   useEffect(() => {
     if (!message) return;
     const timer = setTimeout(() => setMessage(undefined), 2000);

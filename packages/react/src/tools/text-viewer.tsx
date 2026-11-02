@@ -255,17 +255,18 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
   const [open, setOpen] = useState(false);
   const measuredMetrics = useTextMetrics(suppliedMetrics ? "" : text, appendOnly);
   const metrics = suppliedMetrics ?? measuredMetrics;
-  if (!needsTextViewer(text, metrics)) return preview ?? <pre data-part={part} data-stream={stream}><Styled text={text} format={format} id={id} done={done} /></pre>;
+  // One child in the pre: tool-output is a column-reverse flex box, which would reverse several.
+  if (!needsTextViewer(text, metrics)) return preview ?? <pre data-part={part} data-stream={stream}><span><Styled text={text} format={format} id={id} done={done} /></span></pre>;
   if (open) return <VirtualText text={text} label={label} appendOnly={appendOnly} follow={follow} metrics={metrics} format={format} id={id} done={done} />;
   const { headEnd, tailStart } = previewRanges(text);
   return (
     <>
       {preview ?? (
-        <pre data-part={part} data-stream={stream}>
+        <pre data-part={part} data-stream={stream}><span>
           <Styled text={text} end={headEnd} format={format} id={id} />
           <span data-part="tool-gap">… {count(metrics.lines)} lines / {count(metrics.characters)} characters; open to view all …{"\n"}</span>
           <Styled text={text} start={tailStart} format={format} id={id} done={done} />
-        </pre>
+        </span></pre>
       )}
       <button type="button" data-action="open-viewer" onClick={() => setOpen(true)}>
         open all {count(metrics.lines)} lines / {count(metrics.characters)} characters
