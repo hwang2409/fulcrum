@@ -19,6 +19,26 @@ export interface ToolResult {
   is_error: boolean;
   is_canceled?: boolean;
 }
+export type SubAgentStatus =
+  | "running"
+  | "waiting_approval"
+  | "waiting_input"
+  | "idle"
+  | "done"
+  | "error"
+  | "canceled";
+export type SubAgentUrgency = "approval" | "input" | "error";
+export interface SubAgentEvent {
+  type: "sub_agent";
+  childRunId: string;
+  status: SubAgentStatus;
+  summary?: string;
+  urgency?: SubAgentUrgency;
+  notificationId?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  endedAt?: string;
+}
 export type RunItem =
   | {
       id: string;
@@ -45,7 +65,7 @@ export type RunItem =
       type: "user" | "error" | "notification" | "unknown";
       event: RunEvent;
     }
-  | { id: string; type: "sub_agent"; event: Extract<RunEvent, { type: "sub_agent" }> };
+  | ({ id: string } & SubAgentEvent);
 export type RunEvent =
   | {
       type:
@@ -94,4 +114,4 @@ export type RunEvent =
       data?: Record<string, unknown>;
     }
   | { type: "unknown"; name: string; data: Record<string, unknown> }
-  | { type: "sub_agent"; child_id: string; status: string; summary?: string; data?: Record<string, unknown> };
+  | SubAgentEvent;

@@ -6,6 +6,7 @@ import type { Transport } from "./transport.js";
 export interface RequestOptions { signal?: AbortSignal; timeoutMs?: number }
 export interface ClientOptions { maxPendingRequests?: number; maxFrameSize?: number; maxSessions?: number }
 const adapterError = (message: string) => ({ type: "error" as const, error: { code: "adapter_invalid_frame", message } });
+const encoder = new TextEncoder();
 
 export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
   let nextId = 1;
@@ -18,6 +19,15 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const pending = new Map<number, Pending>();
   const stores = new Map<string, ReturnType<typeof createRunStore>>();
   const store = createRunStore(scheduler);
+  let evictionCount = 0;
+  const evict = (id: string) => {
+    const value = stores.get(id);
+    if (!value) return false;
+    stores.delete(id);
+    value.dispose();
+    evictionCount++;
+    return true;
+  };
   const touch = (session: string) => {
     const value = stores.get(session);
     if (!value) return;
@@ -27,7 +37,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!session) return store;
     let value = stores.get(session);
     if (!value) {
-      if (stores.size >= maxSessions) stores.values().next().value?.dispose();
+      while (stores.size >= maxSessions) {
+        const victim = stores.keys().next().value;
+        if (victim === undefined) break;
+        evict(victim);
+      }
       value = createRunStore(scheduler); stores.set(session, value);
     } else touch(session);
     return value;
@@ -37,7 +51,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     pending.delete(id); if (request.timer) clearTimeout(request.timer); callback(request);
   };
   transport.onMessage((text) => {
-    if (text.length > maxFrame) { store.dispatch(adapterError(`frame exceeds ${maxFrame} bytes`)); return; }
+    if (text.length > maxFrame || (text.length > maxFrame / 3 && encoder.encode(text).byteLength > maxFrame)) { store.dispatch(adapterError(`frame exceeds ${maxFrame} bytes`)); return; }
     let value: unknown;
     try { value = JSON.parse(text); } catch { store.dispatch(adapterError("frame is not valid JSON")); return; }
     if (!value || typeof value !== "object") { store.dispatch(adapterError("frame must be an object")); return; }
@@ -45,7 +59,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (message.method === "event") {
       if (!message.params || typeof message.params !== "object") { store.dispatch(adapterError("event params are invalid")); return; }
       const events = fromZetaEvent(message.params);
-      const session = message.params.session_id;
+      const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
       for (const event of events) forSession(session).dispatch(event);
       return;
     }
@@ -75,7 +89,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const send = () => request("hello", { protocol_version: "1.0", client_version: "1.2", ...(requestedFeatures ? { features: requestedFeatures } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => { handshaken = true; negotiatedFeatures = result.capabilities?.features ?? []; return result; });
   };
-  return { store, stores, forSession, request, hello, get features() { return negotiatedFeatures; }, evictSession(id: string) { const value = stores.get(id); if (value) { value.dispose(); stores.delete(id); } }, close: () => { rejectPending(); transport.close(); } };
+  return { store, stores, forSession, request, hello, get features() { return negotiatedFeatures; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
 }
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }
 export type { RunState };

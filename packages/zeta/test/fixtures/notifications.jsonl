@@ -1,4 +1,4 @@
-{"jsonrpc":"2.0","method":"event","params":{"event":"sub_agent_receipt","session_id":"notify","data":{"notification_id":"same-id","agent_instance_id":"child-1","result":"done"}}}
-{"jsonrpc":"2.0","method":"event","params":{"event":"sub_agent_receipt","session_id":"notify","data":{"notification_id":"same-id","agent_instance_id":"child-1","result":"done"}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"sub_agent_receipt","session_id":"notify","data":{"notification_id":"same-id","kind":"agent_completion","child_instance_id":"child-1","child_session_path":"/child","description":"worker","status":"completed","text":"done","summary":"done"}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"sub_agent_receipt","session_id":"notify","data":{"notification_id":"same-id","kind":"agent_completion","child_instance_id":"child-1","child_session_path":"/child","description":"worker","status":"completed","text":"done","summary":"done"}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"future_event","session_id":"notify","message":"keep me","data":{"nested":{"value":1}}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"memory_updated","session_id":"notify","message":"memory saved","data":{}}}

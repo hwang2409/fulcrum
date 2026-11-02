@@ -186,9 +186,9 @@ test("a delta after a terminal error starts a new message", () => {
   expect(event?.type === "error" ? event.error : undefined).toEqual({ code: "max_turns", message: "maximum turns reached: 1" });
 });
 
-test("reconnect replay of the same notification_id is deduped", () => {
+test("reconnect replay of the same child notification_id is deduped", () => {
   const store = replay("notifications.jsonl").get("notify")!;
-  expect(eventsByType(store, "notification")).toHaveLength(1);
+  expect(items(store).filter((item) => item.type === "sub_agent")).toHaveLength(1);
   expect(store.getState().receipts["same-id"]).toBe(true);
 });
 

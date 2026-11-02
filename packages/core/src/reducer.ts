@@ -100,9 +100,11 @@ export function reduceAllWithEntities(
     const candidate =
       event.type === "notification"
         ? event.notification_id
-        : event.type === "unknown"
-          ? event.data.notification_id
-          : undefined;
+        : event.type === "sub_agent"
+          ? event.notificationId
+          : event.type === "unknown"
+            ? event.data.notification_id
+            : undefined;
     const receipt = typeof candidate === "string" ? candidate : undefined;
     if (receipt && next.receipts[receipt]) continue;
     if (receipt) {
@@ -301,23 +303,19 @@ export function reduceAllWithEntities(
         break;
       }
       case "notification": {
-        const childId = event.data?.child_id;
-        if (typeof childId === "string") {
-          const id = `sub-agent:${childId}`;
-          const childEvent = { type: "sub_agent" as const, child_id: childId, status: String(event.data?.child_status ?? "unknown"), summary: typeof event.data?.child_summary === "string" ? event.data.child_summary : undefined, data: event.data };
-          const prior = getItem(id);
-          if (prior?.type === "notification") setItem({ id, type: "notification", event: childEvent });
-          else appendItem({ id, type: "notification", event: childEvent });
-        } else {
-          const id = `notification:${next.nextId++}`;
-          appendItem({ id, type: "notification", event });
-        }
+        const id = `notification:${next.nextId++}`;
+        appendItem({ id, type: "notification", event });
         break;
       }
       case "sub_agent": {
-        const id = `sub-agent:${event.child_id}`;
+        const id = `sub-agent:${event.childRunId}`;
         const prior = getItem(id);
-        const item = { id, type: "sub_agent" as const, event };
+        const item: RunItem = {
+          ...(prior?.type === "sub_agent" ? prior : {}),
+          ...event,
+          id,
+          urgency: event.urgency,
+        };
         if (prior?.type === "sub_agent") setItem(item);
         else appendItem(item);
         break;

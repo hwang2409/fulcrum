@@ -78,13 +78,14 @@ test("all event paths replay through the store", () => {
     { type: "usage", usage: { input_tokens: 1 } },
     { type: "user_message", text: "hello", mode: "normal" },
     { type: "notification", notification_id: "receipt-1" },
+    { type: "sub_agent", childRunId: "child-1", status: "running", summary: "working" },
     { type: "unknown", name: "future", data: {} },
     { type: "error", error: { code: "failed", message: "failed" } },
     { type: "turn_end" },
     { type: "run_end" },
   ];
   const store = replay(events);
-  expect(store.getOutline()).toHaveLength(7);
+  expect(store.getOutline()).toHaveLength(8);
   expect(store.getState().agent).toBe("idle");
 });
 
