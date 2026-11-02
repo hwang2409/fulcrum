@@ -1,5 +1,5 @@
 import type { ToolBodyProps } from "../parts.js";
-import { Arguments, asking, bytes, Empty, Foot, Output } from "./common.js";
+import { Arguments, asking, boundText, bytes, Empty, Foot, Output } from "./common.js";
 
 export function FetchBody({ item, output, state }: ToolBodyProps) {
   if (item.view?.kind !== "fetch") return null;
@@ -8,8 +8,8 @@ export function FetchBody({ item, output, state }: ToolBodyProps) {
     <>
       <div data-part="fetch-meta">
         {status !== undefined ? <span data-part="fetch-status" data-ok={status < 400 || undefined}>HTTP {status}</span> : null}
-        {url !== undefined ? <span data-part="fetch-url">{url}</span> : <span data-part="fetch-query">{query}</span>}
-        {title ? <span data-part="fetch-title">{title}</span> : null}
+        {url !== undefined ? <span data-part="fetch-url">{boundText(url).text}</span> : <span data-part="fetch-query">{boundText(query).text}</span>}
+        {title ? <span data-part="fetch-title">{boundText(title).text}</span> : null}
       </div>
       {output ? <Output text={output} /> : <Empty state={state} noun="response" />}
       {asking(state) ? <Arguments call={item.tool_call} /> : null}

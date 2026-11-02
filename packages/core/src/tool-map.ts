@@ -45,42 +45,91 @@ export function applyToolMap(
   return view ? { ...item, view } : item;
 }
 
-const lines = (text: string) => (text === "" ? [] : (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n"));
-const range = (start: number, count: number) => (count === 1 ? `${start}` : `${count ? start : 0},${count}`);
-// Above this many cells the quadratic table costs more than the diff is worth: show all old lines, then all new ones.
-const MAX_DIFF_CELLS = 4_000_000;
+type DiffLine = { text: string; newline: boolean };
+type DiffOp = { change: "context" | "delete" | "insert"; line: DiffLine };
 
-/**
- * One unified-diff hunk from a before and after text, for tool maps whose edit tools take old and new strings.
- * Line numbers count from the start of `before`, since the harness gives no position in the file.
- */
-export function lineDiff(before: string, after: string): string {
-  const a = lines(before);
-  const b = lines(after);
-  let head = 0;
-  while (head < a.length && head < b.length && a[head] === b[head]) head++;
-  let tail = 0;
-  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
-  const x = a.slice(head, a.length - tail);
-  const y = b.slice(head, b.length - tail);
-  const body: string[] = a.slice(0, head).map((line) => ` ${line}`);
-  if (x.length * y.length > MAX_DIFF_CELLS) {
-    body.push(...x.map((line) => `-${line}`), ...y.map((line) => `+${line}`));
-  } else {
-    // Longest common subsequence table, filled from the end so the walk below runs forward.
-    const width = y.length + 1;
-    const table = new Uint32Array((x.length + 1) * width);
-    for (let i = x.length - 1; i >= 0; i--)
-      for (let j = y.length - 1; j >= 0; j--)
-        table[i * width + j] = x[i] === y[j] ? table[(i + 1) * width + j + 1]! + 1 : Math.max(table[(i + 1) * width + j]!, table[i * width + j + 1]!);
-    let i = 0;
-    let j = 0;
-    while (i < x.length || j < y.length) {
-      if (i < x.length && j < y.length && x[i] === y[j]) body.push(` ${x[i++]}`), j++;
-      else if (j >= y.length || (i < x.length && table[(i + 1) * width + j]! >= table[i * width + j + 1]!)) body.push(`-${x[i++]}`);
-      else body.push(`+${y[j++]}`);
+const lines = (text: string): DiffLine[] => {
+  if (text === "") return [];
+  const values = text.split("\n");
+  const finalNewline = values.at(-1) === "";
+  if (finalNewline) values.pop();
+  return values.map((value, index) => ({ text: value, newline: index < values.length - 1 || finalNewline }));
+};
+const sameLine = (a: DiffLine, b: DiffLine) => a.text === b.text && a.newline === b.newline;
+const range = (start: number, count: number) => (count === 1 ? `${start}` : `${count ? start : 0},${count}`);
+const CONTEXT = 3;
+// Myers is linear for the common small-edit case. Beyond this edit distance, a complete delete/add fallback is clearer and bounded.
+const MAX_MYERS_DISTANCE = 256;
+
+function backtrack(trace: ReadonlyArray<ReadonlyMap<number, number>>, a: DiffLine[], b: DiffLine[], distance: number): DiffOp[] {
+  const reversed: DiffOp[] = [];
+  let x = a.length;
+  let y = b.length;
+  for (let d = distance; d > 0; d--) {
+    const v = trace[d]!;
+    const k = x - y;
+    const previousK = k === -d || (k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1)) ? k + 1 : k - 1;
+    const previousX = v.get(previousK) ?? 0;
+    const previousY = previousX - previousK;
+    while (x > previousX && y > previousY) reversed.push({ change: "context", line: a[--x]! }), y--;
+    if (x === previousX) reversed.push({ change: "insert", line: b[--y]! });
+    else reversed.push({ change: "delete", line: a[--x]! });
+  }
+  while (x > 0 && y > 0) reversed.push({ change: "context", line: a[--x]! }), y--;
+  while (x > 0) reversed.push({ change: "delete", line: a[--x]! });
+  while (y > 0) reversed.push({ change: "insert", line: b[--y]! });
+  return reversed.reverse();
+}
+
+function diffOps(a: DiffLine[], b: DiffLine[]): DiffOp[] {
+  const limit = Math.min(a.length + b.length, MAX_MYERS_DISTANCE);
+  let v = new Map<number, number>([[1, 0]]);
+  const trace: Array<Map<number, number>> = [];
+  for (let d = 0; d <= limit; d++) {
+    trace.push(new Map(v));
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1)) ? v.get(k + 1) ?? 0 : (v.get(k - 1) ?? 0) + 1;
+      let y = x - k;
+      while (x < a.length && y < b.length && sameLine(a[x]!, b[y]!)) x++, y++;
+      v.set(k, x);
+      if (x >= a.length && y >= b.length) return backtrack(trace, a, b, d);
     }
   }
-  body.push(...a.slice(a.length - tail).map((line) => ` ${line}`));
-  return [`@@ -${range(1, a.length)} +${range(1, b.length)} @@`, ...body].join("\n");
+  return [...a.map((line): DiffOp => ({ change: "delete", line })), ...b.map((line): DiffOp => ({ change: "insert", line }))];
+}
+
+const countsBefore = (ops: DiffOp[], kind: "old" | "new") => {
+  const counts = [0];
+  for (const op of ops) counts.push(counts.at(-1)! + (op.change !== (kind === "old" ? "insert" : "delete") ? 1 : 0));
+  return counts;
+};
+
+/** Conventional unified-diff hunks with three context lines. Work is bounded when edits are extremely large. */
+export function lineDiff(before: string, after: string): string {
+  const ops = diffOps(lines(before), lines(after));
+  const changes = ops.flatMap((op, index) => op.change === "context" ? [] : [index]);
+  if (!changes.length) return "";
+  const hunks: Array<[number, number]> = [];
+  for (const index of changes) {
+    const start = Math.max(0, index - CONTEXT);
+    const end = Math.min(ops.length, index + CONTEXT + 1);
+    const previous = hunks.at(-1);
+    if (previous && start < previous[1]) previous[1] = Math.max(previous[1], end);
+    else hunks.push([start, end]);
+  }
+  const oldBefore = countsBefore(ops, "old");
+  const newBefore = countsBefore(ops, "new");
+  const output: string[] = [];
+  for (const [start, end] of hunks) {
+    const oldCount = oldBefore[end]! - oldBefore[start]!;
+    const newCount = newBefore[end]! - newBefore[start]!;
+    const oldStart = oldCount ? oldBefore[start]! + 1 : oldBefore[start]!;
+    const newStart = newCount ? newBefore[start]! + 1 : newBefore[start]!;
+    output.push(`@@ -${range(oldStart, oldCount)} +${range(newStart, newCount)} @@`);
+    for (const op of ops.slice(start, end)) {
+      output.push(`${op.change === "context" ? " " : op.change === "delete" ? "-" : "+"}${op.line.text}`);
+      if (!op.line.newline) output.push("\\ No newline at end of file");
+    }
+  }
+  return output.join("\n");
 }

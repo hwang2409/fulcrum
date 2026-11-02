@@ -176,6 +176,59 @@ test("multi-megabyte output stays bounded in the dom and says what it left out",
   expect(container.textContent!.length).toBeLessThan(110_000);
 });
 
+test("every card and approval bounds multi-megabyte presentation surfaces", async () => {
+  const huge = `${"x".repeat(1_999_999)}\ud83d\ude00`;
+  const cases: Array<[string, ToolView | undefined]> = [
+    ["generic", undefined],
+    ["shell", { kind: "shell", command: huge }],
+    ["read", { kind: "read", path: huge }],
+    ["edit", { kind: "edit", path: "a.ts", diff: `@@ -1 +1 @@\n-${huge}\n+new` }],
+    ["write", { kind: "write", path: "a.ts", content: huge }],
+    ["search", { kind: "search", pattern: huge }],
+    ["fetch", { kind: "fetch", url: `https://example.com/${huge}` }],
+  ];
+  const copied: string[] = [];
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
+
+  for (const [name, view] of cases) {
+    const tool_call = { id: name, name, arguments: { value: huge } };
+    render([
+      { type: "tool_start", tool_call, view },
+      { type: "tool_output", tool_call, output: huge },
+      { type: "tool_end", tool_call, tool_result: { tool_call_id: name, content: huge, is_error: false } },
+      { type: "approval_request", request_id: name, tool_call: { ...tool_call, id: `${name}-approval` }, view, delegated: false },
+    ], [`tool:${name}`, `approval:${name}`]);
+
+    for (const surface of container.querySelectorAll<HTMLElement>(
+      '[data-part="tool-summary"], [data-part="tool-args"], [data-part="tool-output"], [data-part="shell-command"], [data-part="tool-lines"], [data-part="tool-diff"], [data-part="tool-path"], [data-part="search-pattern"], [data-part="fetch-url"]',
+    )) {
+      expect(surface.textContent!.length).toBeLessThanOrEqual(100_000);
+      expect(surface.textContent).not.toContain("\ud83d…");
+    }
+    expect(container.textContent).toMatch(/showing \d+ of \d+ characters/);
+    const copyArguments = container.querySelector<HTMLButtonElement>('[aria-label="copy arguments"]');
+    expect(copyArguments).not.toBeNull();
+    await act(async () => copyArguments!.click());
+    expect(copied.at(-1)).toBe(JSON.stringify(tool_call.arguments, null, 2));
+
+    act(() => root!.unmount());
+    root = undefined;
+    container.remove();
+  }
+});
+
+test("a bounded large diff reports hidden changed-line counts", () => {
+  const deletions = Array.from({ length: 3_000 }, (_, i) => `-${i} ${"old".repeat(12)}`);
+  const insertions = Array.from({ length: 3_000 }, (_, i) => `+${i} ${"new".repeat(12)}`);
+  const diff = ["@@ -1,3000 +1,3000 @@", ...deletions, ...insertions].join("\n");
+  const tool_call = { id: "large-edit", name: "edit", arguments: { path: "large.ts" } };
+  render([
+    { type: "approval_request", request_id: "large-edit", tool_call, view: { kind: "edit", path: "large.ts", diff }, delegated: false },
+  ], ["approval:large-edit"]);
+  expect(q('[data-part="tool-diff"]').textContent!.length).toBeLessThanOrEqual(100_000);
+  expect(q('[data-part="tool-gap"]').textContent).toMatch(/\d+ lines \(\+\d+ -\d+\) not shown, over 100 kB/);
+});
+
 test("unknown tools show output and collapsed json arguments", () => {
   render(tool("unknown", "custom", undefined, "done"), ["tool:unknown"]);
   const card = q('[data-id="tool:unknown"]');

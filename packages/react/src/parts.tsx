@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
 import type { RunItem } from "@fulcrum/core";
 import { useItem, useItemSelector, useTimelineSnapshot } from "./hooks.js";
-import { duration } from "./tools/common.js";
+import { boundText, duration, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { ToolBody, toolSummary } from "./tools/index.js";
 import { useVirtualList } from "./virtual.js";
 
@@ -66,10 +66,12 @@ const statusText: Record<ItemState, string> = {
 
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
   const ms = item.view?.durationMs;
+  const rawSummary = (summary ?? toolSummary)(item);
+  const oneLineSummary = rawSummary.replace(/\s+/g, " ").trim();
   return (
     <>
       <span data-part="tool-name">{item.tool_call.name}</span>
-      <span data-part="tool-summary">{(summary ?? toolSummary)(item)}</span>
+      <span data-part="tool-summary">{boundText(oneLineSummary, MAX_SUMMARY_CHARS).text}</span>
       <span data-part="tool-status">
         {status ?? statusText[state]}
         {ms !== undefined ? <span data-part="tool-duration">{duration(ms)}</span> : null}

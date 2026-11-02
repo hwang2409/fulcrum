@@ -1,5 +1,5 @@
 import type { ToolBodyProps } from "../parts.js";
-import { Arguments, asking, Empty, Foot, Output } from "./common.js";
+import { Arguments, asking, boundText, Empty, Foot, Output } from "./common.js";
 
 // The header cuts long commands to one line; the body then repeats the command in full.
 const LONG_COMMAND = 72;
@@ -11,7 +11,7 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
   const all = split ? stdout + stderr : output;
   return (
     <>
-      {asking(state) || command.length > LONG_COMMAND || command.includes("\n") ? <pre data-part="shell-command">{command}</pre> : null}
+      {asking(state) || command.length > LONG_COMMAND || command.includes("\n") ? <pre data-part="shell-command">{boundText(command).text}</pre> : null}
       {split ? (
         <>
           {stdout ? <Output text={stdout} /> : null}
@@ -22,7 +22,7 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
       {asking(state) ? <Arguments call={item.tool_call} /> : null}
       <Foot copy={[["command", command], ["output", all]]}>
         {exitCode !== undefined ? <span data-part="tool-exit" data-exit-code={exitCode}>exit {exitCode}</span> : null}
-        {cwd ? <span data-part="tool-cwd">{cwd}</span> : null}
+        {cwd ? <span data-part="tool-cwd">{boundText(cwd).text}</span> : null}
       </Foot>
     </>
   );

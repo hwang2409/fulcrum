@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ToolBodyProps } from "../parts.js";
-import { Arguments, asking, boundLines, Empty, Foot, Gap, Output, ShowAll, splitLines } from "./common.js";
+import { Arguments, asking, boundLines, boundText, Empty, Foot, Gap, Output, ShowAll, splitLines } from "./common.js";
 
 // `path:line:text` (grep -n, ripgrep), or `path-line-text` for ripgrep context lines.
 const MATCH = /^(.+?):(\d+):(.*)$/;
@@ -31,7 +31,7 @@ export function SearchBody({ item, output, state }: ToolBodyProps) {
   const groups = group(window.head);
   return (
     <>
-      {asking(state) ? <pre data-part="tool-path">{item.view.path ? `${item.view.pattern} in ${item.view.path}` : item.view.pattern}</pre> : null}
+      {asking(state) ? <pre data-part="tool-path">{boundText(item.view.path ? `${item.view.pattern} in ${item.view.path}` : item.view.pattern).text}</pre> : null}
       {!text ? <Empty state={state} noun="matches" /> : groups ? (
         <div data-part="tool-matches">
           {groups.map((file, i) => (

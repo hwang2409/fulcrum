@@ -6,6 +6,38 @@ const HEAD_LINES = 40;
 const TAIL_LINES = 20;
 /** The most text one body puts in the DOM, even after "show all": the rest stays in the store and in copy. */
 export const MAX_DOM_CHARS = 100_000;
+export const MAX_SUMMARY_CHARS = 240;
+const DOM_CHROME_BUDGET = 256;
+
+type BoundedText = { text: string; shown: number; total: number; truncated: boolean };
+
+const safePrefix = (text: string, length: number) => {
+  let end = Math.max(0, length);
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
+  return text.slice(0, end);
+};
+const characters = (text: string) => {
+  let count = 0;
+  for (const _ of text) count++;
+  return count;
+};
+
+/** The one truncation path for text put in the DOM. Copy controls keep the original value separately. */
+export function boundText(value: string, limit = MAX_DOM_CHARS): BoundedText {
+  if (value.length <= limit) return { text: value, shown: value.length, total: value.length, truncated: false };
+  const total = characters(value);
+  let prefix = safePrefix(value, Math.max(0, limit - 64));
+  let notice = "";
+  for (let pass = 0; pass < 2; pass++) {
+    const shown = characters(prefix);
+    notice = `… showing ${shown} of ${total} characters`;
+    prefix = safePrefix(value, limit - notice.length);
+  }
+  const shown = characters(prefix);
+  notice = `… showing ${shown} of ${total} characters`;
+  return { text: `${prefix}${notice}`, shown, total, truncated: true };
+}
 
 export const asking = (state: ItemState) => state === "pending" || state === "submitting";
 export const splitLines = (text: string) => (text === "" ? [] : (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n"));
@@ -36,12 +68,13 @@ export function bound<T>(items: T[], expanded: boolean, size: (item: T) => numbe
   let chars = 0;
   for (const item of items) chars += size(item) + 1;
   const maxLines = expanded ? Infinity : HEAD_LINES + tail;
-  if (total <= maxLines && chars <= MAX_DOM_CHARS) return { head: items, tail: [], tailFrom: total, hidden: 0, total };
-  const head = take(items, 0, 1, expanded ? Infinity : HEAD_LINES, tail ? MAX_DOM_CHARS / 2 : MAX_DOM_CHARS, size, cut);
-  const end = tail ? take(items.slice(head.length), total - head.length - 1, -1, expanded ? Infinity : tail, MAX_DOM_CHARS / 2, size, cut) : [];
+  const budget = MAX_DOM_CHARS - DOM_CHROME_BUDGET;
+  if (total <= maxLines && chars <= budget) return { head: items, tail: [], tailFrom: total, hidden: 0, total };
+  const head = take(items, 0, 1, expanded ? Infinity : HEAD_LINES, tail ? budget / 2 : budget, size, cut);
+  const end = tail ? take(items.slice(head.length), total - head.length - 1, -1, expanded ? Infinity : tail, budget / 2, size, cut) : [];
   return { head, tail: end, tailFrom: total - end.length, hidden: total - head.length - end.length, total };
 }
-const cutLine = (line: string, chars: number) => `${line.slice(0, chars)}… cut at ${MAX_DOM_CHARS / 1000} kB`;
+const cutLine = (line: string, chars: number) => boundText(line, chars).text;
 export const boundLines = (lines: string[], expanded: boolean, tail?: number) => bound(lines, expanded, (line) => line.length, cutLine, tail);
 
 /** What a bound left out, in words, and the button that shows the rest. */
@@ -60,7 +93,8 @@ export function Output({ text, stream }: { text: string; stream?: "stderr" }) {
   const lines = splitLines(text);
   const window = boundLines(lines, expanded);
   // `bound` returns the same array when everything fits.
-  const shown = window.head === lines ? text : [...window.head, ...(window.hidden ? [gapText(window, expanded, "lines")] : []), ...window.tail].join("\n");
+  const visible = window.head === lines ? text : [...window.head, ...(window.hidden ? [gapText(window, expanded, "lines")] : []), ...window.tail].join("\n");
+  const shown = boundText(visible).text;
   return (
     <>
       <pre data-part="tool-output" data-stream={stream}>{shown}</pre>
@@ -76,8 +110,9 @@ const Row = ({ number, text }: { number: number; text: string }) => (
 /** Bounded lines with a line-number gutter that starts at `start`. */
 export function NumberedLines({ text, start = 1 }: { text: string; start?: number }) {
   const [expanded, setExpanded] = useState(false);
-  const window = boundLines(splitLines(text), expanded);
-  const digits = String(start + window.total).length;
+  const lines = splitLines(text);
+  const digits = String(start + lines.length).length;
+  const window = bound(lines, expanded, (line) => line.length + digits, (line, chars) => cutLine(line, Math.max(0, chars - digits)));
   return (
     <>
       <div data-part="tool-lines" style={{ "--gutter": `${digits}ch` } as CSSProperties}>
@@ -127,14 +162,14 @@ export function Empty({ state, noun = "output" }: { state: ItemState; noun?: str
 }
 
 const json = (args: unknown) => JSON.stringify(args, null, 2);
-/** The raw arguments behind their own disclosure. Never cut: in an approval they are what the user decides on. */
+/** Raw arguments are bounded in the DOM; copy always receives the complete JSON. */
 export function Arguments({ call, open }: { call: ToolCall; open?: boolean }) {
-  return open ? (
-    <pre data-part="tool-args">{json(call.arguments)}</pre>
-  ) : (
+  const value = json(call.arguments);
+  const content = <><pre data-part="tool-args">{boundText(value).text}</pre><CopyButton label="arguments" value={value} /></>;
+  return open ? <div data-part="tool-args-wrap">{content}</div> : (
     <details data-part="tool-args-details">
       <summary>arguments</summary>
-      <pre data-part="tool-args">{json(call.arguments)}</pre>
+      {content}
     </details>
   );
 }
