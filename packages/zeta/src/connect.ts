@@ -1,23 +1,23 @@
 import { createClient } from "./client.js";
 import { webSocketTransport } from "./transport.js";
 
-/** Provisional websocket connection failure kinds. */
 export type ZetaErrorKind =
   | "connect_failed"
-  | "unauthorized"
   | "busy"
   | "version_mismatch"
   | "closed";
 
+const connectFailedMessage =
+  "zeta connection failed; check the websocket url and token, the --ws-origin allowlist, and that zeta serve is running";
+
 export class ZetaError extends Error {
   readonly name = "ZetaError";
-  constructor(readonly kind: ZetaErrorKind) {
-    super(kind);
+  constructor(readonly kind: ZetaErrorKind, readonly code?: number) {
+    super(kind === "connect_failed" ? connectFailedMessage : kind === "closed" ? `zeta websocket closed (${code})` : kind);
   }
 }
 
 const errorKinds: Record<number, ZetaErrorKind> = {
-  [-32008]: "unauthorized",
   [-32001]: "busy",
   [-32002]: "version_mismatch",
 };
@@ -29,7 +29,15 @@ export interface ConnectZetaOptions {
 }
 
 export function connectZeta({ url, token, features }: ConnectZetaOptions) {
-  return webSocketTransport(url)
+  let websocketUrl: string;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("token", token);
+    websocketUrl = parsed.toString();
+  } catch {
+    return Promise.reject(new ZetaError("connect_failed"));
+  }
+  return webSocketTransport(websocketUrl)
     .catch(() => {
       throw new ZetaError("connect_failed");
     })
@@ -37,16 +45,30 @@ export function connectZeta({ url, token, features }: ConnectZetaOptions) {
       const client = createClient(
         transport,
         undefined,
-        (handshaken) => new ZetaError(handshaken ? "closed" : "unauthorized"),
+        (handshaken, code) =>
+          new ZetaError(handshaken ? "closed" : "connect_failed", code),
       );
-      return client.hello(features, { token }).catch((error: unknown) => {
+      return client.hello(features).catch((error: unknown) => {
         const kind =
           typeof error === "object" && error !== null && "code" in error
             ? errorKinds[(error as { code?: unknown }).code as number]
             : undefined;
-        throw new ZetaError(kind ?? "unauthorized");
+        throw new ZetaError(kind ?? "connect_failed");
       }).then(() => client);
     });
+}
+
+export function parseZetaUrl(text: string): { url: string; token: string } | null {
+  try {
+    const parsed = new URL(text);
+    const token = parsed.searchParams.get("token");
+    if (parsed.protocol !== "ws:" || parsed.hostname !== "127.0.0.1" || parsed.pathname !== "/" || !token)
+      return null;
+    parsed.searchParams.delete("token");
+    return { url: parsed.toString(), token };
+  } catch {
+    return null;
+  }
 }
 
 export function parseConnectFragment(hash: string): { url: string; token: string } | null {
