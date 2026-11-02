@@ -22,7 +22,7 @@ open the live zeta panel and paste the discovery url from `$ZETA_HOME/run/serve.
 
 `reduce(state, event)` accepts generic `RunEvent` values and returns normalized run state. `items` orders the canonical entities in `itemsById`; active assistant and tool text is stored as a plain string on its entity. `createRunStore()` batches reduction and subscriber notification through its scheduler while `getState()` flushes pending events for synchronous reads. `fromZetaEvent` maps wire events to generic events, and `connect(transport)` adds JSON-RPC request matching.
 
-build with `bun install`, `bun test`, and `bunx tsc -b`.
+build with `bun install --frozen-lockfile`, `bunx tsc -b`, and `bun test`.
 
 ## react
 
@@ -43,9 +43,14 @@ const renderers: Renderers = {
 
 - hooks: `useRun(selector)` (return a primitive or a reference from state), `useTimeline()` (the `items` ids), `useItem(id)`. They use `useSyncExternalStore`, so a text delta re-renders only the item that changed.
 - parts: `Timeline`, `Message`, `ToolCall`, `Approval`, and `Fallback` for other kinds. Parts have no styles. They take `className` and expose `data-part`, `data-kind`, `data-state` (`streaming`, `done`, `error`, `pending`), `data-role`, and `data-tool`. Text is plain text with `white-space: pre-wrap`.
+
+- playground: `bunx tsc -b`, then `bun run --cwd apps/playground dev`
+
 - styles: copy `packages/react/styles.css` into your app and edit the `--fulcrum-*` variables. It follows the OS light or dark mode (set `data-fulcrum-theme="light"` or `"dark"` on `<html>` to force one) and uses `content-visibility: auto` for long timelines.
 - playground: `bunx tsc -b`, then `bun run --cwd apps/playground dev`.
 - gallery: every part in every state, no server or session. Run `bun run dev` in `apps/playground`, then open `/gallery.html`.
+- performance checks: `bun run bench:check` and `bun run size:check`; run the production browser stress report with `bun run stress`.
+
 
 ## known limits
 
