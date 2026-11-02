@@ -26,6 +26,18 @@ function isLoopbackWebSocketUrl(url: URL): boolean {
   return ["ws:", "wss:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
 }
 
+function parseWebSocketUrl(text: string): { url: string; token: string | null } | null {
+  try {
+    const parsed = new URL(text);
+    if (!isLoopbackWebSocketUrl(parsed)) return null;
+    const token = parsed.searchParams.get("token");
+    parsed.searchParams.delete("token");
+    return { url: parsed.toString(), token };
+  } catch {
+    return null;
+  }
+}
+
 export interface ConnectZetaOptions {
   url: string;
   token: string;
@@ -64,25 +76,22 @@ export function connectZeta({ url, token, features }: ConnectZetaOptions) {
 
 export function parseZetaUrl(text: string): { url: string; token: string } | null {
   try {
-    const parsed = new URL(text);
-    const token = parsed.searchParams.get("token");
-    if (!isLoopbackWebSocketUrl(parsed) || parsed.pathname !== "/" || !token)
-      return null;
-    parsed.searchParams.delete("token");
-    return { url: parsed.toString(), token };
+    if (new URL(text).pathname !== "/") return null;
   } catch {
     return null;
   }
+  const parsed = parseWebSocketUrl(text);
+  return parsed && parsed.token ? { url: parsed.url, token: parsed.token } : null;
 }
 
 export function parseConnectFragment(hash: string): { url: string; token: string } | null {
   const params = new URLSearchParams(hash.replace(/^#/, ""));
   const url = params.get("ws");
-  const token = params.get("token");
-  if (!url || !token) return null;
-  try {
-    return isLoopbackWebSocketUrl(new URL(url)) ? { url, token } : null;
-  } catch {
-    return null;
-  }
+  const fragmentToken = params.get("token");
+  if (!url) return null;
+  const parsed = parseWebSocketUrl(url);
+  if (!parsed) return null;
+  if (parsed.token && fragmentToken && parsed.token !== fragmentToken) return null;
+  const token = fragmentToken || parsed.token;
+  return token ? { url: parsed.url, token } : null;
 }

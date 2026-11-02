@@ -93,6 +93,34 @@ test("parseConnectFragment reads ws and token from the hash and rejects missing 
   expect(parseConnectFragment("#token=abc")).toBeNull();
 });
 
+test("fragment url with an embedded token returns a token-free url", () => {
+  expect(parseConnectFragment("#ws=ws%3A%2F%2F127.0.0.1%2F%3Ftoken%3Dsecret&token=secret")).toEqual({
+    url: "ws://127.0.0.1/",
+    token: "secret",
+  });
+});
+
+test("fragment with conflicting tokens is rejected", () => {
+  expect(parseConnectFragment("#ws=ws%3A%2F%2F127.0.0.1%2F%3Ftoken%3Durl-token&token=fragment-token")).toBeNull();
+});
+
+test("no parser ever returns a url containing token=", () => {
+  const inputs = [
+    () => parseZetaUrl("ws://127.0.0.1:8765/?token=abc"),
+    () => parseZetaUrl("ws://127.0.0.1:8765/"),
+    () => parseZetaUrl("http://127.0.0.1:8765/?token=abc"),
+    () => parseConnectFragment("#ws=ws%3A%2F%2F127.0.0.1%3A1%2F&token=abc"),
+    () => parseConnectFragment("#ws=ws%3A%2F%2F127.0.0.1%2F%3Ftoken%3Dsecret&token=secret"),
+    () => parseConnectFragment("#ws=ws://test/"),
+    () => parseConnectFragment("#token=abc"),
+    () => parseConnectFragment("#ws=wss%3A%2F%2Fattacker.example%2F&token=abc"),
+    () => parseConnectFragment("#ws=https%3A%2F%2F127.0.0.1%2F&token=abc"),
+  ];
+  for (const result of inputs.map((parse) => parse())) {
+    if (result) expect(result.url).not.toContain("token=");
+  }
+});
+
 test("fragment with a non-loopback host is rejected", () => {
   expect(parseConnectFragment("#ws=wss%3A%2F%2Fattacker.example%2F&token=abc")).toBeNull();
 });
