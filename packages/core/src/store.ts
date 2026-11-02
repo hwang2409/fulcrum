@@ -49,9 +49,12 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
     stateChanged = true;
     if (current.outline !== beforeOutline) {
       const appended = !events.some(({ type }) => type === "message_reset") && current.outline.length >= beforeOutline.length;
+      const priorChange = outlineChanged ? outlineSnapshot.change : { type: "append" as const, count: 0 };
       outlineSnapshot = {
         items: current.outline,
-        change: appended ? { type: "append", count: current.outline.length - beforeOutline.length } : null,
+        change: appended && priorChange?.type === "append"
+          ? { type: "append", count: priorChange.count + current.outline.length - beforeOutline.length }
+          : null,
       };
       outlineChanged = true;
     }

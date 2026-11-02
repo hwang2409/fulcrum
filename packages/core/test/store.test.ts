@@ -71,6 +71,12 @@ test("outline snapshots describe batched appends and structural deletion", () =>
   jobs.shift()!();
   expect(store.getOutlineSnapshot()).toMatchObject({ change: { type: "append", count: 2 } });
 
+  store.dispatch({ type: "message_commit", message_id: "forced-a", message: message("a") });
+  store.getOutline();
+  store.dispatch({ type: "message_commit", message_id: "forced-b", message: message("b") });
+  expect(store.getOutlineSnapshot()).toMatchObject({ change: { type: "append", count: 2 } });
+  jobs.shift()!();
+
   store.dispatch({ type: "message_delta", message_id: "c", delta: "c" });
   jobs.shift()!();
   store.dispatch({ type: "message_reset" });
