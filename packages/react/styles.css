@@ -346,6 +346,7 @@ h2[data-part="md-heading"] { font-size: 16px; }
 }
 [data-part="md-link"]:hover { text-decoration-thickness: 2px; }
 [data-part="md-link"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 1px; }
+[data-part="md-reference-pending"] { text-decoration: underline 1px dotted var(--fulcrum-muted); text-underline-offset: 3px; }
 [data-part="md-blockquote"] { margin: 0 0 0.75em; padding: 0 0 0 12px; border-left: 2px solid var(--fulcrum-border); color: var(--fulcrum-muted); }
 [data-part="md-rule"] { height: 0; margin: 1.25em 0; border: 0; border-top: 1px solid var(--fulcrum-border); }
 [data-part="md-list"] { margin: 0 0 0.75em; padding-left: 3ch; }

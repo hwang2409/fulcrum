@@ -1,9 +1,8 @@
 import { resolveToolView, type RunEvent, type ToolCall, type ToolView } from "@fulcrum/core";
 import { zetaTools } from "@fulcrum/zeta";
 
-/** `part` is the `@fulcrum/react` export the demo shows. `live` replays `events` in a loop, one event per `live` ms.
-    `preview` renders a static markup fixture instead of a timeline. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; preview?: "markdown" };
+/** `part` is the `@fulcrum/react` export the demo shows. `live` replays `events` in a loop, one event per `live` ms. */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number };
 
 const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({ id, name, arguments: args });
 const text = (role: string, value: string) => ({ role, content: [{ type: "text", text: value }] });
@@ -15,6 +14,29 @@ const stream = (id: string, value: string): RunEvent[] => [
 const answer =
   "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. " +
   "Move the import into the config's server block, or use `new URL(..., import.meta.url)` instead.";
+const markdownDemo = [
+  "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move the import into the config's server block, or use `new",
+  "`",
+  "",
+  "# fix summary",
+  "",
+  "- keep `vite.config.ts` on the server",
+  "- use a URL instead of `node:path`",
+  "",
+  "| check | result |",
+  "| --- | ---: |",
+  "| typecheck | pass |",
+  "| tests | pass |",
+  "",
+  "```ts",
+  "const outDir = new URL(\"./dist\", import.meta.url).pathname;",
+  "```",
+  "",
+  "```diff",
+  "-import { resolve } from \"node:path\";",
+  "+const outDir = new URL(\"./dist\", import.meta.url).pathname;",
+  "```",
+].join("\n");
 const longText =
   "Here is the full trace you asked for. Long tokens must wrap instead of pushing the layout sideways:\n\n" +
   "https://example.com/very/long/path/that/keeps/going/and/going/until/it/is/wider/than/any/reasonable/column?query=" +
@@ -165,12 +187,19 @@ export const demos: Demo[] = [
     events: [{ type: "message_commit", message_id: "m-long", message: text("assistant", longText) }],
   },
   {
-    id: "markdown-preview",
+    id: "markdown-streaming",
     part: "Message",
-    title: "markdown and code (preview)",
-    description: "What an assistant message looks like once @fulcrum/markdown lands: static markup in @fulcrum/markdown's data-part contract with tok-* spans, styled by styles.css and the theme.",
-    events: [],
-    preview: "markdown",
+    title: "markdown and code, streaming",
+    description: "The real @fulcrum/markdown renderer streams inline code, blocks, tables, and highlighted TypeScript and diff fences.",
+    events: stream("markdown-live", markdownDemo),
+    live: 45,
+  },
+  {
+    id: "markdown-done",
+    part: "Message",
+    title: "markdown and code, done",
+    description: "The same real markdown and highlight stack after the message commits.",
+    events: [{ type: "message_commit", message_id: "markdown-done", message: text("assistant", markdownDemo) }],
   },
   {
     id: "tool-running",

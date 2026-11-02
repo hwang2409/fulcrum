@@ -1,9 +1,10 @@
-const external = ["@fulcrum/core", "@fulcrum/react", "@fulcrum/zeta", "@fulcrum/virtual", "react", "react-dom"];
+const external = ["@fulcrum/core", "@fulcrum/highlight", "@fulcrum/markdown", "@fulcrum/react", "@fulcrum/zeta", "@fulcrum/virtual", "react", "react-dom"];
 const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external, ceiling: 8_500 },
   { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 12_000 },
   { name: "zeta", entry: "packages/zeta/dist/index.js", external, ceiling: 8_500 },
   { name: "virtual", entry: "packages/virtual/dist/index.js", external, ceiling: 11_000 },
+  { name: "markdown", entry: "packages/markdown/dist/react.js", external, reportOnly: true },
 ];
 let failed = false;
 const dir = (await Bun.$`mktemp -d`).text().trim();
@@ -16,8 +17,11 @@ for (const target of builds) {
     process.exit(1);
   }
   const bytes = Bun.gzipSync(await Bun.file(output).arrayBuffer()).byteLength;
-  console.log(`${target.name}: ${bytes} bytes gzipped (hard ceiling ${target.ceiling} bytes; accident alarm, not a regression budget)`);
-  if (bytes > target.ceiling) failed = true;
+  if ("reportOnly" in target) console.log(`${target.name}: ${bytes} bytes gzipped (reporting only)`);
+  else {
+    console.log(`${target.name}: ${bytes} bytes gzipped (hard ceiling ${target.ceiling} bytes; accident alarm, not a regression budget)`);
+    if (bytes > target.ceiling) failed = true;
+  }
 }
 const highlightBuild = Bun.spawnSync(["bun", "run", "--cwd", "packages/highlight", "build"], { stdout: "inherit", stderr: "inherit" });
 if (highlightBuild.exitCode !== 0) process.exit(highlightBuild.exitCode);
