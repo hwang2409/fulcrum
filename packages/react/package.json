@@ -4,9 +4,10 @@
   "sideEffects": false,
   "exports": {
     ".": { "types": "./dist/index.d.ts", "bun": "./src/index.ts", "import": "./dist/index.js" },
-    "./styles.css": "./styles.css"
+    "./styles.css": "./styles.css",
+    "./themes.css": "./themes.css"
   },
-  "files": ["dist", "styles.css"],
+  "files": ["dist", "styles.css", "themes.css"],
   "scripts": { "build": "tsc -p ." },
   "peerDependencies": { "@fulcrum/core": "*", "@fulcrum/virtual": "*", "react": ">=19" },
   "devDependencies": {

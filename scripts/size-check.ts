@@ -18,4 +18,14 @@ for (const target of builds) {
   console.log(`${target.name}: ${bytes} bytes gzipped (budget ${target.budget} bytes)`);
   if (bytes > target.budget) failed = true;
 }
+// Copy-in stylesheets, gzipped as shipped. Henry ranks polish over bytes, so these budgets catch runaway growth only.
+const styles = [
+  { name: "react styles.css", file: "packages/react/styles.css", budget: 8_000 },
+  { name: "react themes.css", file: "packages/react/themes.css", budget: 6_000 },
+];
+for (const sheet of styles) {
+  const bytes = Bun.gzipSync(await Bun.file(sheet.file).arrayBuffer()).byteLength;
+  console.log(`${sheet.name}: ${bytes} bytes gzipped (budget ${sheet.budget} bytes)`);
+  if (bytes > sheet.budget) failed = true;
+}
 if (failed) process.exit(1);
