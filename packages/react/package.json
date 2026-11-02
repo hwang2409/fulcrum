@@ -9,9 +9,10 @@
   },
   "files": ["dist", "styles.css", "themes.css", "src"],
   "scripts": { "build": "tsc -p ." },
-  "peerDependencies": { "@fulcrum/core": "*", "react": ">=19" },
+  "peerDependencies": { "@fulcrum/core": "*", "@fulcrum/virtual": "*", "react": ">=19" },
   "devDependencies": {
     "@fulcrum/core": "workspace:*",
+    "@fulcrum/virtual": "workspace:*",
     "@happy-dom/global-registrator": "^21.0.4",
     "@types/react": "^19",
     "@types/react-dom": "^19",

@@ -35,9 +35,15 @@
 [data-part="timeline"] *::after { box-sizing: border-box; border-radius: 0; }
 
 /* Skip layout and paint for off-screen items in long timelines. */
-[data-part="timeline"] > * {
+[data-part="timeline"][data-virtual="false"] > * {
   content-visibility: auto;
   contain-intrinsic-size: auto 2.5em;
+}
+
+[data-part="jump-to-latest"] {
+  position: sticky;
+  inset-block-end: 12px;
+  margin: 0 auto;
 }
 
 /* Messages: plain prose, no bubbles. The user's turn is a surface band with a prompt mark. */
@@ -329,4 +335,18 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
   [data-part="message"][data-state="streaming"]::after { forced-color-adjust: none; background: CanvasText; }
+}
+
+[data-part="virtual-debug"] {
+  position: fixed;
+  inset: 8px 8px auto auto;
+  z-index: 1000;
+  max-width: min(560px, 90vw);
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  font: 11px monospace;
+  background: #111;
+  color: #eee;
+  padding: 8px;
 }
