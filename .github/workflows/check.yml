@@ -17,6 +17,6 @@ jobs:
       - run: bun run check:highlight-notices
       - run: bun run check:pack-consumer
       - run: cd apps/playground && bunx playwright install --with-deps chromium
-      - run: rm -rf packages/*/dist && bun run --cwd apps/playground smoke
-      - run: rm -rf packages/*/dist && bun run --cwd apps/playground build
+      - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground smoke
+      - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
       - run: bun run --cwd apps/playground layout
