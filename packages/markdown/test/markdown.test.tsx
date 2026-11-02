@@ -136,6 +136,48 @@ test("finished blocks keep identity and parse count while only the tail reparses
   expect(document.stats.tailParses).toBe(parsed);
 });
 
+test("open containers retain completed children while only the open leaf changes", () => {
+  const document = createStreamingDocument();
+  document.append("> first\n>\n> second");
+  const quote = document.render()[0];
+  expect(quote?.type).toBe("blockquote");
+  if (quote?.type !== "blockquote") throw new Error("expected blockquote");
+  const first = quote.children[0];
+
+  document.append(" grows");
+  const next = document.render()[0];
+  expect(next?.type).toBe("blockquote");
+  if (next?.type !== "blockquote") throw new Error("expected blockquote");
+  expect(next.children[0]).toBe(first);
+});
+
+test("streaming references never flash bracket syntax", () => {
+  const cases = [
+    "[known]: https://example.com\n\nUse [known].",
+    "Use [late].\n\n[late]: https://example.com",
+    "> See [nested].\n>\n> [nested]: https://example.com",
+  ];
+  for (const source of cases) {
+    const document = createStreamingDocument();
+    for (const character of source) {
+      document.append(character);
+      const text = visibleText(document.source, true) ?? "";
+      expect(text).not.toMatch(/\[[^\]]*\]/);
+      expect(text).not.toContain("[known]:");
+    }
+    document.finish();
+    expect(json(document.render())).toBe(json(parseMarkdown(source)));
+  }
+});
+
+test("finish retains blocks whose final output is unchanged", () => {
+  const document = createStreamingDocument();
+  document.append("first\n\nsecond");
+  const first = document.render()[0];
+  document.finish();
+  expect(document.render()[0]).toBe(first);
+});
+
 test("escapes html and removes unsafe hrefs", () => {
   const attacks = [
     "<img src=x onerror=alert(1)>",
