@@ -42,6 +42,44 @@ const samples: Record<string, string> = {
 };
 
 const text = (tokens: Token[]) => tokens.map((token) => token.text).join("");
+const fallbackSource = (label: string, lines = 120) => Array.from({ length: lines }, (_, index) => `const ${label}_${index} = ${index}; // ${"x".repeat(32)}\n`).join("");
+
+async function controlledFallback(
+  requests: Array<{ code: string; language: string; context: { id: string; version: number; state: "streaming" | "done" } }>,
+  options: { first?: "oldest" | "newest"; afterFirstYield?: (runtime: { dispose(): void }) => void; prime?: { code: string; language: string; context: { id: string; version: number; state: "streaming" | "done" } } } = {},
+) {
+  const { TokenizerRuntime } = await import("../dist/runtime.js");
+  const runtime = new TokenizerRuntime();
+  for (const language of new Set(requests.map(({ language }) => language)))
+    await runtime.tokenize("const warm = 1;\n", language, { id: `warm-${language}`, version: 1, state: "done" }, false);
+  if (options.prime) await runtime.tokenize(options.prime.code, options.prime.language, options.prime.context, false);
+  const schedulerDescriptor = Object.getOwnPropertyDescriptor(globalThis, "scheduler");
+  const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
+  const yields: Array<() => void> = [];
+  let clock = 0;
+  Object.defineProperty(globalThis, "scheduler", { configurable: true, value: { yield: () => new Promise<void>((resolve) => yields.push(resolve)) } });
+  Object.defineProperty(performance, "now", { configurable: true, value: () => (clock += 5) });
+  let settled = 0;
+  const jobs = requests.map(({ code, language, context }) => runtime.tokenize(code, language, context).finally(() => settled++));
+  try {
+    while (!yields.length) await Bun.sleep(0);
+    options.afterFirstYield?.(runtime);
+    let first = true;
+    while (settled < jobs.length) {
+      if (!yields.length) { await Bun.sleep(0); continue; }
+      const index = first && options.first === "newest" ? yields.length - 1 : 0;
+      yields.splice(index, 1)[0]!();
+      first = false;
+      await Bun.sleep(0);
+    }
+    return await Promise.all(jobs);
+  } finally {
+    runtime.dispose();
+    if (schedulerDescriptor) Object.defineProperty(globalThis, "scheduler", schedulerDescriptor);
+    else delete (globalThis as { scheduler?: unknown }).scheduler;
+    if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
+  }
+}
 
 async function full(language: string, code: string) {
   return (await directHighlighter(code, language, { id: `full-${language}-${code}`, version: 1, state: "done" }))!;
@@ -93,6 +131,16 @@ describe("incremental tokenization", () => {
     highlighter.dispose();
   });
 
+  test("returns exactly the streamed text when an incomplete line follows complete ones", async () => {
+    const highlighter = createHighlighter({ worker: false });
+    const source = "--- a/run.ts\n+++ b/run.ts\n-const delay = 100;\n+const delay = 16;\n";
+    for (let length = 1; length <= source.length; length++) {
+      const code = source.slice(0, length);
+      expect(text((await highlighter(code, "diff", { id: "tail", version: length, state: length === source.length ? "done" : "streaming" }))!)).toBe(code);
+    }
+    highlighter.dispose();
+  });
+
   test("keeps an incomplete line plain until it is complete", async () => {
     const highlighter = createHighlighter({ worker: false });
     const partial = await highlighter("const value", "typescript", { id: "partial", version: 1, state: "streaming" });
@@ -100,6 +148,84 @@ describe("incremental tokenization", () => {
     const complete = await highlighter("const value = 1;\n", "typescript", { id: "partial", version: 2, state: "streaming" });
     expect(text(complete!)).toBe("const value = 1;\n");
     highlighter.dispose();
+  });
+});
+
+describe("cooperative fallback concurrency", () => {
+  test("concurrent versions return only their requested source", async () => {
+    const base = fallbackSource("base", 20);
+    const older = `${base}${fallbackSource("older")}`;
+    const newer = `${older}${fallbackSource("newer")}`;
+    const [olderTokens, newerTokens] = await controlledFallback([
+      { code: older, language: "typescript", context: { id: "concurrent", version: 2, state: "streaming" } },
+      { code: newer, language: "typescript", context: { id: "concurrent", version: 3, state: "streaming" } },
+    ], { prime: { code: base, language: "typescript", context: { id: "concurrent", version: 1, state: "streaming" } } });
+    expect(text(olderTokens)).toBe(older);
+    expect(text(newerTokens)).toBe(newer);
+  });
+
+  test("an older job finishing last cannot overwrite a newer version", async () => {
+    const older = fallbackSource("old");
+    const newer = fallbackSource("new");
+    const [olderTokens, newerTokens] = await controlledFallback([
+      { code: older, language: "typescript", context: { id: "out-of-order", version: 1, state: "done" } },
+      { code: newer, language: "typescript", context: { id: "out-of-order", version: 2, state: "done" } },
+    ], { first: "newest" });
+    expect(text(olderTokens)).toBe(older);
+    expect(text(newerTokens)).toBe(newer);
+  });
+
+  test("a version bump started mid-slice keeps both requests exact", async () => {
+    const first = fallbackSource("mid");
+    const second = `${first}${fallbackSource("bump", 20)}`;
+    const [firstTokens, secondTokens] = await controlledFallback([
+      { code: first, language: "typescript", context: { id: "mid-slice", version: 1, state: "streaming" } },
+      { code: second, language: "typescript", context: { id: "mid-slice", version: 2, state: "streaming" } },
+    ], { first: "oldest" });
+    expect(text(firstTokens)).toBe(first);
+    expect(text(secondTokens)).toBe(second);
+  });
+
+  test("a language change mid-stream isolates grammar state and tokens", async () => {
+    const typescript = fallbackSource("language");
+    const python = Array.from({ length: 120 }, (_, index) => `value_${index}: int = ${index}\n`).join("");
+    const [typescriptTokens, pythonTokens] = await controlledFallback([
+      { code: typescript, language: "typescript", context: { id: "language-change", version: 1, state: "streaming" } },
+      { code: python, language: "python", context: { id: "language-change", version: 2, state: "streaming" } },
+    ], { first: "newest" });
+    expect(text(typescriptTokens)).toBe(typescript);
+    expect(text(pythonTokens)).toBe(python);
+  });
+
+  test("done after streaming does not share a mutable prefix", async () => {
+    const streaming = fallbackSource("done");
+    const done = `${streaming}const final = true;`;
+    const [streamingTokens, doneTokens] = await controlledFallback([
+      { code: streaming, language: "typescript", context: { id: "done", version: 1, state: "streaming" } },
+      { code: done, language: "typescript", context: { id: "done", version: 2, state: "done" } },
+    ]);
+    expect(text(streamingTokens)).toBe(streaming);
+    expect(text(doneTokens)).toBe(done);
+  });
+
+  test("dispose while fallback work is pending still returns exact text", async () => {
+    const source = fallbackSource("dispose");
+    const [tokens] = await controlledFallback([
+      { code: source, language: "typescript", context: { id: "dispose", version: 1, state: "done" } },
+    ], { afterFirstYield: (runtime) => runtime.dispose() });
+    expect(text(tokens)).toBe(source);
+  });
+
+  test("concatenated token text equals source over random interleavings", async () => {
+    let seed = 0x5eed;
+    for (let run = 0; run < 12; run++) {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      const base = fallbackSource(`property_${run}`, 20 + seed % 20);
+      const sources = [base, `${base}// ${seed}\n`, fallbackSource(`replacement_${run}`, 20 + (seed >>> 8) % 20)];
+      const requests = sources.map((code, index) => ({ code, language: index === 2 && seed % 2 ? "javascript" : "typescript", context: { id: `property-${run}`, version: index + 1, state: index === 2 ? "done" as const : "streaming" as const } }));
+      const results = await controlledFallback(requests, { first: seed % 2 ? "newest" : "oldest" });
+      expect(results.map(text)).toEqual(sources);
+    }
   });
 });
 

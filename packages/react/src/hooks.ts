@@ -27,7 +27,7 @@ export function RunProvider({ store, highlight, children }: { store: RunStore; h
   return createElement(StoreContext.Provider, { value: store }, createElement(HighlightContext.Provider, { value: highlight }, children));
 }
 
-const useStore = () => {
+export const useRunStore = () => {
   const store = useContext(StoreContext);
   if (!store) throw new Error("fulcrum hooks must be used inside <RunProvider>");
   return store;
@@ -61,7 +61,7 @@ export function useRun<T>(
   selector: (state: RunState) => T,
   equal: (left: T, right: T) => boolean = Object.is,
 ): T {
-  const store = useStore();
+  const store = useRunStore();
   return useSelected(store.subscribe, store.getState, selector, equal);
 }
 
@@ -70,7 +70,7 @@ export function useItemSelector<T>(
   selector: (item: RunItem | undefined) => T,
   equal: (left: T, right: T) => boolean = Object.is,
 ): T {
-  const store = useStore();
+  const store = useRunStore();
   return useSelected(
     (listener) => store.subscribe(id, listener),
     () => store.getItem(id),
@@ -80,8 +80,25 @@ export function useItemSelector<T>(
 }
 
 export const useTimelineSnapshot = () => {
-  const store = useStore();
-  return useSyncExternalStore(store.subscribeOutline, store.getOutlineSnapshot, store.getOutlineSnapshot);
+  const store = useRunStore();
+  type Source = {
+    store: RunStore;
+    snapshot: ReturnType<RunStore["getOutlineSnapshot"]>;
+    subscribe(listener: () => void): () => void;
+    getSnapshot(): ReturnType<RunStore["getOutlineSnapshot"]>;
+  };
+  const current = useRef<Source>(undefined);
+  if (current.current?.store !== store) {
+    const source = { store, snapshot: store.getOutlineSnapshot() } as Source;
+    source.subscribe = (listener) => store.subscribeOutline(() => {
+      source.snapshot = store.getOutlineSnapshot();
+      listener();
+    });
+    source.getSnapshot = () => source.snapshot;
+    current.current = source;
+  }
+  const source = current.current;
+  return useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
 };
 
 export const useTimeline = () => useTimelineSnapshot().items;

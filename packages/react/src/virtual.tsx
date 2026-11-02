@@ -21,6 +21,8 @@ export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
   enabled?: boolean;
   outlineUpdate?: OutlineUpdate | null;
+  /** Resets the virtual engine when the outline owner changes. */
+  resetKey?: unknown;
 };
 
 export type VirtualListState<Id extends string> = {
@@ -41,6 +43,8 @@ export function useVirtualList<Id extends string>(
   const engineRef = useRef<ReturnType<typeof createVirtualizer<Id>>>(undefined);
   if (!engineRef.current) engineRef.current = createVirtualizer(options);
   const engine = engineRef.current;
+  const appliedResetKey = useRef(options.resetKey);
+  const resetPending = appliedResetKey.current !== options.resetKey;
   const debug = typeof window !== "undefined" && location.search.includes("virtualDebug=1");
   if (debug) (window as typeof window & { __fulcrumVirtual?: typeof engine }).__fulcrumVirtual = engine;
   const containerRef = useRef<HTMLElement | null>(null);
@@ -55,6 +59,7 @@ export function useVirtualList<Id extends string>(
   const touchY = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ignoreScrollUntil = useRef(0);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
@@ -62,16 +67,28 @@ export function useVirtualList<Id extends string>(
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
 
   useLayoutEffect(() => {
+    if (resetPending) {
+      appliedResetKey.current = options.resetKey;
+      appliedOutline.current = null;
+      initial.current = true;
+      wasEnabled.current = options.enabled !== false;
+      engine.reset();
+    }
     if (appliedOutline.current !== outline) {
-      const token = engine.beforeMutation();
-      engine.setOutline(outline, options.outlineUpdate ?? undefined);
-      engine.setLoaded("all");
+      const priorLength = appliedOutline.current?.length;
       appliedOutline.current = outline;
+      const token = engine.beforeMutation();
+      const update = options.outlineUpdate;
+      const validUpdate = !resetPending && update && priorLength !== undefined && outline.length === priorLength + update.count
+        ? update
+        : undefined;
+      engine.setOutline(outline, validUpdate);
+      engine.setLoaded("all");
       if (initial.current) initial.current = false;
       else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
     }
     wasEnabled.current = options.enabled !== false;
-  }, [engine, outline, options.enabled, options.outlineUpdate]);
+  }, [engine, outline, options.enabled, options.outlineUpdate, options.resetKey, resetPending]);
 
   useLayoutEffect(() => {
     if (options.enabled === false || typeof ResizeObserver === "undefined") return;
@@ -109,18 +126,33 @@ export function useVirtualList<Id extends string>(
       if (Math.abs(result.jump) >= 0.5) container.scrollTop = result.scrollTop;
     };
     const onScroll = () => {
-      if (container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+      const before = engine.getSnapshot();
+      if (performance.now() < ignoreScrollUntil.current) {
+        container.scrollTop = before.scrollTop;
+        return;
+      }
+      const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
+      if (!correction && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
       lastScrollTop.current = container.scrollTop;
       engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
-      if (engine.getSnapshot().programmatic) return;
+      if (correction) return;
       if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
       scrollEndTimer.current = setTimeout(finishScroll, 150);
     };
-    const onWheel = (event: WheelEvent) => { if (event.deltaY < 0) engine.setFollow(false); };
+    // The stale-scroll guard after a programmatic bottom write only covers scroll events
+    // nobody asked for; any real input means the next scroll is the user's and must win.
+    const userIntent = () => { ignoreScrollUntil.current = 0; };
+    const onWheel = (event: WheelEvent) => {
+      userIntent();
+      if (event.deltaY < 0) engine.setFollow(false);
+    };
     const onKeyDown = (event: KeyboardEvent) => {
+      userIntent();
       if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
     };
+    const onPointerDown = () => userIntent();
     const onTouchStart = (event: TouchEvent) => {
+      userIntent();
       touching.current = true;
       touchY.current = event.touches[0]?.clientY ?? null;
     };
@@ -137,6 +169,7 @@ export function useVirtualList<Id extends string>(
     container.addEventListener("scroll", onScroll, { passive: true });
     container.addEventListener("wheel", onWheel, { passive: true });
     container.addEventListener("keydown", onKeyDown);
+    container.addEventListener("pointerdown", onPointerDown, { passive: true });
     container.addEventListener("touchstart", onTouchStart, { passive: true });
     container.addEventListener("touchmove", onTouchMove, { passive: true });
     container.addEventListener("touchend", onTouchEnd, { passive: true });
@@ -150,6 +183,7 @@ export function useVirtualList<Id extends string>(
       container.removeEventListener("scroll", onScroll);
       container.removeEventListener("wheel", onWheel);
       container.removeEventListener("keydown", onKeyDown);
+      container.removeEventListener("pointerdown", onPointerDown);
       container.removeEventListener("touchstart", onTouchStart);
       container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("touchend", onTouchEnd);
@@ -196,12 +230,16 @@ export function useVirtualList<Id extends string>(
     const container = containerRef.current;
     if (!container) return;
     container.scrollTop = engine.scrollToEnd();
+    ignoreScrollUntil.current = performance.now() + 50;
   }, [engine]);
 
+  const visibleSnapshot = resetPending
+    ? { ...snapshot, totalSize: 0, topSpacer: 0, bottomSpacer: 0, rows: [] }
+    : snapshot;
   return {
-    snapshot,
-    debug: debug && formatVirtualDebug(snapshot, engine.getActions()),
-    unseenCount: snapshot.unseenCount,
+    snapshot: visibleSnapshot,
+    debug: debug && formatVirtualDebug(visibleSnapshot, engine.getActions()),
+    unseenCount: visibleSnapshot.unseenCount,
     timelineRef,
     observeRow,
     scrollToId,

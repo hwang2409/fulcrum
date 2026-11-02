@@ -18,6 +18,7 @@ import {
   useItem,
   useRun,
   useTimeline,
+  useVirtualList,
   type Renderers,
   type RunStore,
   type ToolBodyProps,
@@ -28,9 +29,9 @@ afterAll(() => GlobalRegistrator.unregister());
 const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
 const call = (id: string, name: string) => ({ id, name, arguments: {} });
 
-function timelineStore(initialItems: RunItem[]) {
+function timelineStore(initialItems: RunItem[], initialChange: OutlineChange | null = null) {
   let items = initialItems;
-  let snapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change: null as OutlineChange | null };
+  let snapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change: initialChange };
   const entities = new Map(items.map((item) => [item.id, item]));
   const outlineListeners = new Set<() => void>();
   const itemListeners = new Map<string, Set<() => void>>();
@@ -226,7 +227,7 @@ test("useRun applies a changed selector without a store update", () => {
   expect(container.textContent).toBe("turn=idle");
 });
 
-test("dispose publishes the terminal snapshot to mounted hooks", () => {
+test("dispose leaves the last mounted snapshot and stops notifications", () => {
   const { store } = setup([
     { type: "message_delta", message_id: "m", delta: "x" },
   ]);
@@ -245,7 +246,7 @@ test("dispose publishes the terminal snapshot to mounted hooks", () => {
   act(() => store.dispose());
   expect(store.getOutline()).toHaveLength(0);
   expect(store.getItem("message:m")).toBeUndefined();
-  expect(container.textContent).toBe("0:none");
+  expect(container.textContent).toBe("1:x");
 });
 
 test("keyed hooks do not read unrelated items or the outline", () => {
@@ -620,6 +621,80 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
   ));
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
   expect(container.querySelectorAll('[data-part="message"]').length).toBeLessThanOrEqual(200);
+});
+
+test("useVirtualList ignores a stale outline hint and resets when the outline owner changes", () => {
+  const a = Array.from({ length: 201 }, (_, index) => ({ id: `a-${index}`, kind: "message" }));
+  const b = Array.from({ length: 201 }, (_, index) => ({ id: `b-${index}`, kind: "message" }));
+  const c = Array.from({ length: 201 }, (_, index) => ({ id: `c-${index}`, kind: "message" }));
+  const Harness = ({ outline, owner }: { outline: typeof a; owner: object }) => {
+    const list = useVirtualList(outline, { estimateSize: () => 20, outlineUpdate: { type: "append", count: outline.length }, resetKey: owner });
+    return <div><div ref={list.timelineRef}>{list.snapshot.rows.map((row) => <div key={row.id} data-virtual-id={row.id} />)}</div></div>;
+  };
+  const ownerA = {};
+  const ownerB = {};
+  mount(<Harness outline={a} owner={ownerA} />);
+  expect(() => act(() => root!.render(<Harness outline={b} owner={ownerA} />))).not.toThrow();
+  expect(() => act(() => root!.render(<Harness outline={c} owner={ownerB} />))).not.toThrow();
+});
+
+test("virtual Timeline keeps its frame when a store is disposed, then replaces it mid-stream", () => {
+  const a = setup(Array.from({ length: 201 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: `a-${index}`,
+    message: message(`a-${index}`),
+  })));
+  const b = setup(Array.from({ length: 200 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: `b-${index}`,
+    message: message(`b-${index}`),
+  })));
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  mount(<RunProvider store={a.store}><Timeline virtual /></RunProvider>);
+
+  act(() => a.store.dispose());
+  expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("201");
+
+  b.send({ type: "message_commit", message_id: "b-200", message: message("b-200") });
+  expect(() => act(() => root!.render(<RunProvider store={b.store}><Timeline virtual /></RunProvider>))).not.toThrow();
+  expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("201");
+  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+});
+
+test("virtual Timeline resets and follows when its RunProvider store changes during a pending user scroll", () => {
+  const makeItems = (prefix: string, count: number) => Array.from({ length: count }, (_, index) => committedItem(`${prefix}-${index}`));
+  const a = timelineStore(makeItems("a", 5_000), { type: "append", count: 5_000 });
+  const b = timelineStore(makeItems("b", 100_000), { type: "append", count: 100_000 });
+  const c = timelineStore(makeItems("c", 201), { type: "append", count: 201 });
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const positions = new WeakMap<HTMLElement, number>();
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.min(value, Math.max(0, (this as HTMLElement).scrollHeight - (this as HTMLElement).clientHeight))); },
+  });
+
+  mount(<RunProvider store={a.store}><Timeline virtual /></RunProvider>);
+  expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("5000");
+
+  expect(() => act(() => root!.render(<RunProvider store={b.store}><Timeline virtual /></RunProvider>))).not.toThrow();
+  expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("100000");
+  container.scrollTop = 0;
+
+  expect(() => act(() => root!.render(<RunProvider store={c.store}><Timeline virtual /></RunProvider>))).not.toThrow();
+  act(() => container.dispatchEvent(new Event("scroll")));
+  expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("201");
+  expect(container.scrollTop).toBe(container.scrollHeight - container.clientHeight);
+  expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
+  expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+  if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+  if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
 });
 
 test("react does not import @fulcrum/zeta", () => {

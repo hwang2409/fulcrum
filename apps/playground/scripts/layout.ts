@@ -1,4 +1,5 @@
-// Fails when the gallery scrolls sideways at any common width in any theme, when a pending approval's actions are hard
+// Fails when the gallery or another playground page scrolls sideways at any common width (the gallery in every theme), when a
+// playground page control has no accessible name or is under 44 px tall at touch widths (36 px elsewhere), when a pending approval's actions are hard
 // to read or to hit (text contrast below 4.5:1 on the real background, or under 44 px tall at touch widths, 36 px
 // elsewhere), when a theme's fg or muted text misses 4.5:1 on its bg, or when a state indicator is hard to see: every
 // rendered status word needs 4.5:1 and every state mark and state rail 3:1 against the background it is drawn on, and
@@ -270,6 +271,84 @@ try {
     await Bun.sleep(100);
   }
   browser = await chromium.launch();
+  const replay = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  await replay.addInitScript(() => {
+    const request = window.requestAnimationFrame.bind(window);
+    (window as typeof window & { __rafRequests: number }).__rafRequests = 0;
+    window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      (window as typeof window & { __rafRequests: number }).__rafRequests++;
+      return request(callback);
+    }) as typeof window.requestAnimationFrame;
+  });
+  const pageErrors: string[] = [];
+  replay.on("pageerror", (error) => pageErrors.push(error.message));
+  await replay.goto(`http://127.0.0.1:${port}/`);
+  await replay.selectOption("#mode", "zeta:unknown.jsonl");
+  await replay.locator("#rate").fill("200");
+  await replay.waitForFunction(() => Number(document.querySelector(".mode span")?.textContent?.match(/lap (\d+)/)?.[1] ?? 0) >= 9, undefined, { timeout: 60_000 });
+  const rotation = await replay.evaluate(() => ({
+    mounted: Boolean(document.querySelector('[data-part="timeline"]')),
+    items: Number(document.querySelector('[data-testid="readout"]')?.textContent?.match(/· (\d+) items/)?.[1] ?? -1),
+  }));
+  if (!rotation.mounted || rotation.items < 0 || rotation.items > 50 || pageErrors.length)
+    failures.push(`lap-9 rotation: mounted=${rotation.mounted}, items=${rotation.items}, errors=${pageErrors.join("; ") || "none"}`);
+  else console.log(`ok   lap-9 rotation: mounted, ${rotation.items} bounded items, no page errors`);
+
+  await replay.selectOption("#mode", "stress");
+  await replay.waitForFunction(() => document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize") === "5000");
+  await replay.selectOption("#mode", "static:100000");
+  await replay.waitForFunction(() => document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize") === "100000");
+  await replay.evaluate(() => {
+    const scroll = document.querySelector<HTMLElement>(".scroll")!;
+    scroll.scrollTop = 0;
+    scroll.dispatchEvent(new Event("scroll"));
+    const mode = document.querySelector<HTMLSelectElement>("#mode")!;
+    mode.append(new Option("test static 201", "static:201"));
+    mode.value = "static:201";
+    mode.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await replay.waitForFunction(() => document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize") === "201");
+  await replay.waitForTimeout(250);
+  const swap = await replay.evaluate(() => {
+    const scroll = document.querySelector<HTMLElement>(".scroll")!;
+    return { scrollTop: scroll.scrollTop, maxScroll: scroll.scrollHeight - scroll.clientHeight };
+  });
+  if (Math.abs(swap.scrollTop - swap.maxScroll) > 1 || pageErrors.length)
+    failures.push(`active-scroll store swap: scrollTop=${swap.scrollTop}, maxScroll=${swap.maxScroll}, errors=${pageErrors.join("; ") || "none"}`);
+  else console.log(`ok   active-scroll store swap: scrollTop ${swap.scrollTop}, maxScroll ${swap.maxScroll}`);
+
+  // Real user intent right after a swap must win over the stale-scroll guard (review 3 blocker).
+  const intent = await replay.evaluate(async () => {
+    const scroll = document.querySelector<HTMLElement>(".scroll")!;
+    const mode = document.querySelector<HTMLSelectElement>("#mode")!;
+    mode.value = "static:100000";
+    mode.dispatchEvent(new Event("change", { bubbles: true }));
+    const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    for (let i = 0; i < 600; i++) {
+      await frame();
+      const rows = document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize");
+      if (rows === "100000" && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 1) break;
+    }
+    const swappedAt = performance.now();
+    scroll.dispatchEvent(new WheelEvent("wheel", { deltaY: -2000, bubbles: true }));
+    scroll.scrollTop -= 2000;
+    scroll.dispatchEvent(new Event("scroll"));
+    const elapsed = performance.now() - swappedAt;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return { elapsed, scrollTop: scroll.scrollTop, maxScroll: scroll.scrollHeight - scroll.clientHeight };
+  });
+  if (intent.maxScroll - intent.scrollTop < 500 || pageErrors.length)
+    failures.push(`user scroll right after swap was overridden: scrollTop=${intent.scrollTop}, maxScroll=${intent.maxScroll}, intent ${intent.elapsed.toFixed(1)} ms after the bottom write`);
+  else console.log(`ok   user scroll right after swap kept: ${intent.maxScroll - intent.scrollTop} px above bottom, intent ${intent.elapsed.toFixed(1)} ms after the bottom write`);
+
+  await replay.waitForTimeout(500);
+  const rafBefore = await replay.evaluate(() => (window as typeof window & { __rafRequests: number }).__rafRequests);
+  await replay.waitForTimeout(500);
+  const rafAfter = await replay.evaluate(() => (window as typeof window & { __rafRequests: number }).__rafRequests);
+  if (rafAfter !== rafBefore) failures.push(`static idle scheduled ${rafAfter - rafBefore} rAF callback(s)`);
+  else console.log("ok   static idle scheduled 0 rAF callbacks over 500 ms");
+  await replay.close();
+
   let themes: string[] = [];
   for (const width of widths) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
@@ -300,6 +379,24 @@ try {
       for (const problem of await page.evaluate(pageProblems, minHeight)) failures.push(`${theme} @ ${width}: ${problem}`);
       // Control styling does not depend on the palette: one light and one dark theme at each width.
       if (theme === "github-light" || theme === "gruvbox-dark") for (const problem of await checkControls(page)) failures.push(`${theme} @ ${width}: ${problem}`);
+    }
+    // The other playground pages share one shell: no sideways scroll, and every control is named and big enough to hit.
+    for (const path of ["/", "/virtual.html", "/highlight.html"]) {
+      await page.goto(`http://127.0.0.1:${port}${path}`);
+      await page.waitForSelector(".toolbar");
+      const problems = await page.evaluate((minHeight) => {
+        const found: string[] = [];
+        if (document.documentElement.scrollWidth > innerWidth) found.push(`scrollWidth ${document.documentElement.scrollWidth} > ${innerWidth}`);
+        for (const control of document.querySelectorAll<HTMLInputElement>(".shell-bar a, .shell-bar select, .toolbar :is(button, select, input)")) {
+          const name = control.getAttribute("aria-label") || [...(control.labels ?? [])].map((label) => label.textContent).join("") || control.textContent;
+          const label = `${control.tagName.toLowerCase()} "${name?.trim().slice(0, 24)}"`;
+          if (!name?.trim()) found.push(`${control.tagName.toLowerCase()} has no accessible name`);
+          if (control.getBoundingClientRect().height < minHeight) found.push(`${label} is ${Math.round(control.getBoundingClientRect().height)} px tall, needs ${minHeight} px`);
+        }
+        return found;
+      }, width <= touchWidth ? 44 : 36);
+      for (const problem of problems) failures.push(`${path} @ ${width}: ${problem}`);
+      if (!problems.length) console.log(`ok   ${path} @ ${width}`);
     }
     await page.close();
   }

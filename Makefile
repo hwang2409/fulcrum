@@ -1,17 +1,14 @@
 # Start here: `make dev` installs, builds every package, and runs the playground.
 .PHONY: dev build install test clean
 
-dev: build
+# The playground's predev runs build:packages, so dev only needs the install.
+dev: install
 	bun run --cwd apps/playground dev
 
-# The playground imports each package from its dist/, so always rebuild first;
-# tsc -b only rebuilds what changed; if a dist/ was deleted by hand, its stale
-# .tsbuildinfo would make tsc skip it, so drop those first. highlight also bundles
-# its worker and grammars.
+# The playground imports each package from its dist/. The shared script drops stale
+# build info when output is missing and also bundles highlight's worker and grammars.
 build: install
-	@for d in packages/*/; do [ -d "$$d/dist" ] || rm -f "$$d"*.tsbuildinfo; done
-	bunx tsc -b
-	bun run --cwd packages/highlight build
+	bun run build:packages
 
 install: node_modules/.make-stamp
 

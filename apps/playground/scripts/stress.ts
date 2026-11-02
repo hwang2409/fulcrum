@@ -104,6 +104,9 @@ async function measure(page: Page, messages: number): Promise<Record<string, num
     while (itemCount() < messages) await new Promise(requestAnimationFrame);
     const firstPaint = performance.now() - started;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
+    // Keep the calibrated commit gate on off-screen streaming; follow behavior has separate checks below.
+    scroll.scrollTop = 0;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const frames: number[] = [];
     let last = performance.now();
     let raf = 0;
@@ -208,7 +211,7 @@ try {
       await instrument(page);
       await page.goto(`http://127.0.0.1:4173?stressMessages=${messages}`);
       await page.evaluate(() => performance.mark("stress-start"));
-      await page.getByLabel("replay").selectOption("stress");
+      await page.selectOption("#mode", "stress");
       await page.context().tracing.start({ screenshots: true, snapshots: true });
       const remaining = deadline - performance.now();
       const measured = await Promise.race([

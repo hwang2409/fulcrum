@@ -68,6 +68,7 @@ export const formatVirtualDebug = (snapshot: VirtualSnapshot, actions: readonly 
   JSON.stringify({ range: snapshot.range, visible: snapshot.visible, totalSize: snapshot.totalSize, scrollTop: snapshot.scrollTop, pinned: snapshot.pinned, actions: actions.slice(-8) }, null, 2);
 
 export type Virtualizer<Id extends string = string> = {
+  reset(): void;
   setOutline(items: readonly OutlineItem<Id>[], update?: OutlineUpdate): void;
   setViewport(viewport: Viewport): void;
   measure(id: Id, size: number): void;
@@ -413,6 +414,27 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   };
 
   return {
+    reset() {
+      layout = new Sequence<Id>();
+      measured.clear();
+      kindMedians.clear();
+      measuredByKind.clear();
+      idsByKind = new Map();
+      totalMeasuredSize = 0;
+      loaded = new Set<Id>();
+      scrollTop = 0;
+      pinned = true;
+      unseenIds.clear();
+      programmatic = false;
+      correctionEvent = false;
+      jump = 0;
+      pendingJump = 0;
+      expectedCorrectionScroll = null;
+      rangeCursorIndex = 0;
+      rangeCursorStart = 0;
+      actions.length = 0;
+      snapshot = null;
+    },
     setOutline(items, update) {
       const expectedAnchor = captureExpectedAnchor();
       const cursorId = layout.at(rangeCursorIndex)?.id;
