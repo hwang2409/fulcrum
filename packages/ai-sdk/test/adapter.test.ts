@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runAdapterConformance, type AdapterFixture } from "@fulcrum/adapter-test";
 import { createRunStore } from "@fulcrum/core";
-import { createAiSdkAdapter } from "../src/index.js";
+import { createAiSdkAdapter, decodeAiSdkEntityId, encodeAiSdkEntityId, type AiSdkEntityIdentity } from "../src/index.js";
 
 const fixtures = readFileSync(new URL("./fixtures/conformance.jsonl", import.meta.url), "utf8")
   .trim().split("\n").map((line) => JSON.parse(line) as AdapterFixture);
@@ -48,8 +48,8 @@ test("two writer-only streams keep distinct replay-stable messages in one run", 
   for (const event of first.flat()) store.dispatch(event);
   expect(store.getOutline()).toHaveLength(2);
   expect(store.getOutline().map(({ id }) => id)).toEqual([
-    "message:ai-sdk:request-alpha:message-1",
-    "message:ai-sdk:request-beta:message-1",
+    "message:s:message:request-alpha:1",
+    "message:s:message:request-beta:1",
   ]);
   expect(store.getOutline().map(({ id }) => JSON.stringify(store.getItem(id)))).toEqual([
     expect.stringContaining("first"),
@@ -70,9 +70,47 @@ test("scopes part, tool, and approval ids to their stream", () => {
       : event?.type === "tool_start" ? event.tool_call.id
       : event?.type === "approval_request" ? event.request_id : undefined);
   };
-  expect(ids("alpha")).toEqual(["ai-sdk:alpha:part-same", "ai-sdk:alpha:tool-same", "ai-sdk:alpha:approval-same"]);
-  expect(ids("beta")).toEqual(["ai-sdk:beta:part-same", "ai-sdk:beta:tool-same", "ai-sdk:beta:approval-same"]);
+  expect(ids("alpha")).toEqual(["s:message:alpha:1", "w:tool:same", "w:approval:same"]);
+  expect(ids("beta")).toEqual(["s:message:beta:1", "w:tool:same", "w:approval:same"]);
   expect(ids("alpha")).toEqual(ids("alpha"));
+});
+
+test("entity id encoding is injective and reversible", () => {
+  let seed = 0x5eed;
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    const alphabet = [":", "%", "w:", "s:", "雪", "🙂", "a", "0", " "];
+    return Array.from({ length: 1 + seed % 12 }, () => alphabet[(seed = (seed * 1664525 + 1013904223) >>> 0) % alphabet.length]).join("");
+  };
+  const values = [":", "%", "w:", "s:", "unicode-雪🙂", ...Array.from({ length: 200 }, random)].filter((value) => value.trim());
+  const identities: AiSdkEntityIdentity[] = [];
+  for (const kind of ["message", "tool", "approval"] as const) {
+    for (const value of values) identities.push({ source: "wire", kind, id: value });
+    for (const streamKey of values) identities.push({ source: "synthetic", kind, streamKey, counter: 1 }, { source: "synthetic", kind, streamKey, counter: 2 });
+  }
+  const encoded = identities.map(encodeAiSdkEntityId);
+  expect(new Set(encoded).size).toBe(new Set(identities.map((identity) => JSON.stringify(identity))).size);
+  expect(encoded.map(decodeAiSdkEntityId)).toEqual(identities);
+  for (const empty of ["", " ", "\t\n"]) {
+    expect(() => encodeAiSdkEntityId({ source: "wire", kind: "message", id: empty })).toThrow();
+    expect(() => encodeAiSdkEntityId({ source: "synthetic", kind: "message", streamKey: empty, counter: 1 })).toThrow();
+  }
+});
+
+test("pinned AI SDK writer ids round trip to their original wire ids", () => {
+  const decodeFixture = (sessionId: string) => {
+    const adapter = createAiSdkAdapter({ streamKey: sessionId });
+    return fixtures.filter((fixture) => fixture.sessionId === sessionId).flatMap((fixture) => adapter.decode(fixture.part));
+  };
+  const message = decodeFixture("text").find((event) => event.type === "message_commit");
+  const tool = decodeFixture("tool").find((event) => event.type === "tool_start");
+  const approval = decodeFixture("approval").find((event) => event.type === "approval_request");
+  expect(message?.type === "message_commit" ? decodeAiSdkEntityId(message.message_id!) : undefined).toEqual({ source: "wire", kind: "message", id: "message-1" });
+  expect(message?.type === "message_commit" ? message.message.metadata : undefined).toEqual({ wireId: "message-1" });
+  expect(tool?.type === "tool_start" ? decodeAiSdkEntityId(tool.tool_call.id) : undefined).toEqual({ source: "wire", kind: "tool", id: "call-1" });
+  expect(tool?.type === "tool_start" ? tool.tool_call.meta : undefined).toMatchObject({ wireId: "call-1" });
+  expect(approval?.type === "approval_request" ? decodeAiSdkEntityId(approval.request_id) : undefined).toEqual({ source: "wire", kind: "approval", id: "approval-1" });
+  expect(approval?.type === "approval_request" ? approval.tool_call.meta : undefined).toMatchObject({ wireId: "call-approval", approvalId: "approval-1" });
 });
 
 test("malformed parts never throw", () => {
@@ -117,7 +155,7 @@ test("preserves block and tool protocol metadata in generic meta bags", () => {
   adapter.decode({ type: "text-start", id: "text", providerMetadata: { mock: { trace: "t" } } });
   adapter.decode({ type: "text-delta", id: "text", delta: "hello", providerMetadata: { mock: { trace: "delta" } } });
   const [tool] = adapter.decode({ type: "tool-input-available", toolCallId: "call", toolName: "search", input: {}, providerExecuted: true, dynamic: true, title: "Search", providerMetadata: { mock: { trace: "tool" } } });
-  expect(tool?.type === "tool_start" ? tool.tool_call.meta : undefined).toEqual({ providerExecuted: true, dynamic: true, title: "Search", providerMetadata: [{ mock: { trace: "tool" } }] });
+  expect(tool?.type === "tool_start" ? tool.tool_call.meta : undefined).toEqual({ providerExecuted: true, dynamic: true, title: "Search", providerMetadata: [{ mock: { trace: "tool" } }], wireId: "call" });
   const commit = adapter.decode({ type: "finish" }).find((event) => event.type === "message_commit");
   expect(commit?.type === "message_commit" ? commit.message.content[0]?.meta : undefined).toEqual({ providerMetadata: [{ mock: { trace: "t" } }, { mock: { trace: "delta" } }] });
 });

@@ -25,6 +25,15 @@ const fixtures: AdapterFixture[] = [
   row("sessions", "beta", event("beta", "assistant_delta", { delta: "beta", kind: "assistant", data: { message_id: "beta-message" } })),
   { ...row("streams", "stream-alpha", event("stream-alpha", "assistant_message", { message: { role: "assistant", content: [{ type: "text", text: "stream-alpha" }] }, data: { message_id: "stream-alpha-message" } })), contentMarker: "stream-alpha" },
   { ...row("streams", "stream-beta", event("stream-beta", "assistant_message", { message: { role: "assistant", content: [{ type: "text", text: "stream-beta" }] }, data: { message_id: "stream-beta-message" } })), contentMarker: "stream-beta" },
+  ...[
+    ["adversarial-a", "s:message:adversarial-b:1", "wire-synthetic-a"],
+    ["adversarial-b", "s:message:adversarial-a:1", "wire-synthetic-b"],
+    ["adversarial-w", "w:message:%:unicode-雪", "wire-separators-w"],
+    ["adversarial-s", "s:message:%:unicode-雪", "wire-separators-s"],
+  ].map(([sessionId, messageId, contentMarker]) => ({
+    ...row("adversarial-ids", sessionId!, event(sessionId!, "assistant_message", { message: { role: "assistant", content: [{ type: "text", text: contentMarker }] }, data: { message_id: messageId } })),
+    contentMarker,
+  })),
   row("replay", "replay", event("replay", "assistant_message", { message: { role: "assistant", content: [{ type: "text", text: "stable" }] }, data: { message_id: "stable-message" } })),
 ];
 

@@ -78,6 +78,19 @@ add("sessions", "beta", await modelParts("beta-message", [{ type: "text-start", 
 for (const [streamKey, marker] of [["request-alpha", "stream-alpha"], ["request-beta", "stream-beta"]] as const)
   for (const part of await hostParts([{ type: "source-url", sourceId: marker, url: `https://example.com/${marker}` }, { type: "finish", finishReason: "stop" }]))
     rows.push({ scenario: "streams", sessionId: streamKey, contentMarker: marker, part });
+const adversarial = async (sessionId: string, messageId: string | undefined, marker: string) => {
+  const parts = messageId === undefined
+    ? await hostParts([{ type: "source-url", sourceId: marker, url: `https://example.com/${marker}` }, { type: "finish", finishReason: "stop" }])
+    : await modelParts(messageId, [{ type: "text-start", id: `${marker}:text%` }, { type: "text-delta", id: `${marker}:text%`, delta: marker }, { type: "text-end", id: `${marker}:text%` }]);
+  for (const part of parts) rows.push({ scenario: "adversarial-ids", sessionId, contentMarker: marker, part });
+};
+await adversarial("adversarial-a", undefined, "synthetic-a");
+await adversarial("adversarial-a", "ai-sdk:adversarial-b:message-1", "wire-matches-old-b");
+await adversarial("adversarial-a", "s:message:adversarial-b:1", "wire-matches-b");
+await adversarial("adversarial-b", undefined, "synthetic-b");
+await adversarial("adversarial-b", "ai-sdk:adversarial-a:message-1", "wire-matches-old-a");
+await adversarial("adversarial-b", "s:message:adversarial-a:1", "wire-matches-a");
+await adversarial("adversarial-separators", "w:message:%:unicode-雪", "wire-separators");
 add("replay", "replay", await modelParts("stable-message", [{ type: "text-start", id: "stable-text" }, { type: "text-delta", id: "stable-text", delta: "stable" }, { type: "text-end", id: "stable-text" }]));
 
 const fixtureUrl = new URL("../test/fixtures/conformance.jsonl", import.meta.url);

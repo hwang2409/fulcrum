@@ -2,7 +2,7 @@ import { createRunStore, type RunEvent, type RunItem } from "@fulcrum/core";
 
 export const canonicalScenarios = [
   "text", "reasoning", "tool", "tool-error", "approval",
-  "reset-retry-abort", "usage", "unknown-malformed", "sessions", "streams", "replay",
+  "reset-retry-abort", "usage", "unknown-malformed", "sessions", "streams", "adversarial-ids", "replay",
 ] as const;
 export type AdapterScenario = (typeof canonicalScenarios)[number];
 export interface AdapterFixture {
@@ -129,6 +129,21 @@ export function runAdapterConformance(options: AdapterConformanceOptions): strin
   const replayedStreams = playStreams();
   require(JSON.stringify(identities(firstStreams.events)) === JSON.stringify(identities(replayedStreams.events)), "streams", "ids changed across independent-stream replay");
   require(JSON.stringify(streamOutline) === JSON.stringify(streamStore.getOutline().map(({ id }) => id)), "streams", "independent-stream replay changed outline membership");
+
+  const adversarialFixtures = options.fixtures.filter((fixture) => fixture.scenario === "adversarial-ids");
+  const adversarialStore = createRunStore(() => {});
+  const playAdversarial = () => run(adversarialFixtures, new Map(), new Map(adversarialFixtures.map(({ sessionId }) => [sessionId, adversarialStore])));
+  const firstAdversarial = playAdversarial();
+  const adversarialIds = firstAdversarial.events.filter((event) => event.type === "message_commit").map((event) => event.message_id);
+  require(adversarialIds.length >= 4 && new Set(adversarialIds).size === adversarialIds.length, "adversarial-ids", "wire and synthetic ids must stay distinct");
+  const adversarialMarkers = new Set(adversarialFixtures.map(({ contentMarker }) => contentMarker).filter((value): value is string => Boolean(value)));
+  const adversarialContent = adversarialStore.getOutline().map(({ id }) => adversarialStore.getItem(id)).filter((item): item is RunItem => Boolean(item));
+  for (const marker of adversarialMarkers)
+    require(adversarialContent.some((item) => JSON.stringify(item).includes(marker)), "adversarial-ids", `content marker ${marker} was lost`);
+  const adversarialOutline = adversarialStore.getOutline().map(({ id }) => id);
+  const replayedAdversarial = playAdversarial();
+  require(JSON.stringify(identities(firstAdversarial.events)) === JSON.stringify(identities(replayedAdversarial.events)), "adversarial-ids", "ids changed across adversarial replay");
+  require(JSON.stringify(adversarialOutline) === JSON.stringify(adversarialStore.getOutline().map(({ id }) => id)), "adversarial-ids", "adversarial replay changed outline membership");
 
   const replayFixtures = options.fixtures.filter((fixture) => fixture.scenario === "replay");
   const stores = new Map<string, Store>();

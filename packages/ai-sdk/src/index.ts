@@ -9,7 +9,7 @@ const object = (value: unknown, name: string): Row => {
   return value as Row;
 };
 const string = (value: unknown, name: string) => {
-  if (typeof value !== "string" || !value) throw new Error(`${name} must be a nonempty string`);
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${name} must be a nonempty string`);
   return value;
 };
 const optionalString = (value: unknown, name: string) => value === undefined ? undefined : string(value, name);
@@ -51,6 +51,40 @@ const mergeMeta = (prior: Record<string, unknown> | undefined, next: Record<stri
 interface ToolState { call: ToolCall; input: string; }
 interface BlockState { kind: "text" | "reasoning"; block: ContentBlock; }
 
+export type AiSdkEntityKind = "message" | "tool" | "approval";
+export type AiSdkEntityIdentity =
+  | { source: "wire"; kind: AiSdkEntityKind; id: string }
+  | { source: "synthetic"; kind: AiSdkEntityKind; streamKey: string; counter: number };
+
+const escapeId = (value: string) => value.replaceAll("%", "%25").replaceAll(":", "%3A");
+const unescapeId = (value: string) => value.replaceAll("%3A", ":").replaceAll("%25", "%");
+
+/** Tags and escaped separators make every source/kind/key/value tuple map to exactly one string. */
+export function encodeAiSdkEntityId(identity: AiSdkEntityIdentity): string {
+  const kind = identity.kind;
+  if (identity.source === "wire") return `w:${kind}:${escapeId(string(identity.id, "identity.id"))}`;
+  const streamKey = escapeId(string(identity.streamKey, "identity.streamKey"));
+  if (!Number.isSafeInteger(identity.counter) || identity.counter < 1) throw new Error("identity.counter must be a positive safe integer");
+  return `s:${kind}:${streamKey}:${identity.counter}`;
+}
+
+export function decodeAiSdkEntityId(value: string): AiSdkEntityIdentity {
+  const wire = /^w:(message|tool|approval):([^:]*)$/.exec(value);
+  if (wire) {
+    const id = unescapeId(wire[2]!);
+    if (escapeId(id) !== wire[2]) throw new Error("invalid encoded AI SDK entity id");
+    return { source: "wire", kind: wire[1] as AiSdkEntityKind, id: string(id, "identity.id") };
+  }
+  const synthetic = /^s:(message|tool|approval):([^:]*):([1-9]\d*)$/.exec(value);
+  if (synthetic) {
+    const streamKey = unescapeId(synthetic[2]!);
+    const counter = Number(synthetic[3]);
+    if (escapeId(streamKey) !== synthetic[2] || !Number.isSafeInteger(counter)) throw new Error("invalid encoded AI SDK entity id");
+    return { source: "synthetic", kind: synthetic[1] as AiSdkEntityKind, streamKey: string(streamKey, "identity.streamKey"), counter };
+  }
+  throw new Error("invalid encoded AI SDK entity id");
+}
+
 export interface AiSdkAdapterOptions {
   /** Stable identity for this message stream, unique within its run. */
   streamKey: string;
@@ -58,8 +92,10 @@ export interface AiSdkAdapterOptions {
 
 export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   const streamKey = string(options?.streamKey, "options.streamKey");
-  const scoped = (kind: string, id: string | number) => `ai-sdk:${encodeURIComponent(streamKey)}:${kind}-${encodeURIComponent(String(id))}`;
+  const wireId = (kind: AiSdkEntityKind, id: string) => encodeAiSdkEntityId({ source: "wire", kind, id });
+  const syntheticId = (kind: AiSdkEntityKind, counter: number) => encodeAiSdkEntityId({ source: "synthetic", kind, streamKey, counter });
   let messageId: string | undefined;
+  let wireMessageId: string | undefined;
   let messageNumber = 0;
   const content: ContentBlock[] = [];
   const blocks = new Map<string, BlockState>();
@@ -84,15 +120,19 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   };
   const commit = (): RunEvent | undefined => {
     if (!content.length) return undefined;
-    messageId ??= scoped("message", ++messageNumber);
-    return { type: "message_commit", message_id: messageId, message: { role: "assistant", content: content.map((block) => ({ ...block })) } };
+    messageId ??= syntheticId("message", ++messageNumber);
+    return {
+      type: "message_commit",
+      message_id: messageId,
+      message: { role: "assistant", content: content.map((block) => ({ ...block })), ...(wireMessageId ? { metadata: { wireId: wireMessageId } } : {}) },
+    };
   };
 
   const decodeBlock = (part: Row, type: string): RunEvent[] => {
     const kind = type.startsWith("text-") ? "text" : "reasoning";
     const id = string(part.id, "part.id");
     if (type.endsWith("-start")) {
-      messageId ??= scoped("part", id);
+      messageId ??= syntheticId("message", ++messageNumber);
       const block: ContentBlock = { type: kind, text: "", ...(providerMeta(part) ? { meta: providerMeta(part) } : {}) };
       blocks.set(id, { kind, block });
       content.push(block);
@@ -127,9 +167,11 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   };
 
   const decodeTool = (part: Row, type: string): RunEvent[] => {
-    const id = scoped("tool", string(part.toolCallId, "part.toolCallId"));
+    const originalId = string(part.toolCallId, "part.toolCallId");
+    const id = wireId("tool", originalId);
+    const meta = { ...toolMeta(part), wireId: originalId };
     if (type === "tool-input-start") {
-      const state = call(id, string(part.toolName, "part.toolName"), toolMeta(part));
+      const state = call(id, string(part.toolName, "part.toolName"), meta);
       return [{ type: "tool_start", tool_call: state.call }];
     }
     if (type === "tool-input-delta") {
@@ -141,7 +183,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     }
     if (type === "tool-input-available" || type === "tool-input-error") {
       const name = string(part.toolName, "part.toolName");
-      const state = call(id, name, toolMeta(part));
+      const state = call(id, name, meta);
       state.call = { ...state.call, id, name, arguments: argumentsFrom(part.input) };
       tools.set(id, state);
       if (type === "tool-input-available") return [{ type: "tool_start", tool_call: state.call }];
@@ -149,11 +191,12 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
       return [{ type: "tool_start", tool_call: state.call }, { type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: output, is_error: true } }];
     }
     if (type === "tool-approval-request") {
-      const requestId = scoped("approval", string(part.approvalId, "part.approvalId"));
+      const approvalId = string(part.approvalId, "part.approvalId");
+      const requestId = wireId("approval", approvalId);
       approvalByTool.set(id, requestId);
-      return [{ type: "approval_request", request_id: requestId, tool_call: (tools.get(id) ?? call(id)).call, delegated: false }];
+      return [{ type: "approval_request", request_id: requestId, tool_call: call(id, undefined, { ...meta, approvalId }).call, delegated: false }];
     }
-    const state = call(id, undefined, toolMeta(part));
+    const state = call(id, undefined, meta);
     if (type === "tool-output-denied")
       return [{ type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: "tool execution denied", is_error: true, is_canceled: true } }, ...approvalEnd(id)];
     const isError = type === "tool-output-error";
@@ -165,8 +208,8 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
 
   const decodeLifecycle = (part: Row, type: string): RunEvent[] => {
     if (type === "start") {
-      messageNumber = 0;
-      messageId = optionalString(part.messageId, "part.messageId");
+      wireMessageId = optionalString(part.messageId, "part.messageId");
+      messageId = wireMessageId ? wireId("message", wireMessageId) : undefined;
       content.length = 0; blocks.clear(); tools.clear(); approvalByTool.clear();
       return [{ type: "run_start", data: defined({ messageId, messageMetadata: part.messageMetadata }) }, { type: "turn_start" }, { type: "message_start", data: messageId ? { messageId } : {} }];
     }
