@@ -1,13 +1,11 @@
-import "@fulcrum/react/styles.css";
-import "@fulcrum/react/themes.css";
-import "./app.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, initialState, type RunEvent, type RunItem } from "@fulcrum/core";
 import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
 import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
-import { replayStep } from "./replay";
+import { relabel, replayStep } from "./replay";
+import { Shell } from "./shell";
 
 const files = import.meta.glob<string>("../../../packages/zeta/test/fixtures/*.jsonl", {
   query: "?raw",
@@ -33,6 +31,8 @@ const STRESS_RATE = 200;
 let messageRenders = 0;
 let dispatched = 0;
 let lastAction = "";
+let lap = 0;
+let phase: "streaming" | "waiting" | "static" = "streaming";
 let continueReplay = () => {};
 function CountedMessage({ id }: { id: string }) {
   useItem(id);
@@ -98,6 +98,7 @@ function useReplay(mode: string, speed: number, run: number) {
     if (mode === HUGE) {
       setStore(staticStore(HUGE_MESSAGES));
       dispatched = 0;
+      phase = "static";
       return;
     }
     if (mode === STRESS) {
@@ -110,12 +111,19 @@ function useReplay(mode: string, speed: number, run: number) {
       nextEvent = stressSource();
       stress = true;
     } else {
+      // The fixture loops with fresh ids, so the run keeps growing past the viewport and follow can be tested.
       const events = fixtures[mode] ?? [];
       let i = 0;
-      nextEvent = () => events[i++];
+      nextEvent = () => {
+        if (!events.length) return undefined;
+        lap = Math.floor(i / events.length);
+        return relabel(events[i++ % events.length]!, lap);
+      };
     }
     setStore(next);
     dispatched = 0;
+    lap = 0;
+    phase = "streaming";
     let state = { budget: 0, paused: false, elapsed: 0, rate: rate.current };
     let last = performance.now();
     continueReplay = () => {
@@ -127,6 +135,7 @@ function useReplay(mode: string, speed: number, run: number) {
       last = now;
       const step = replayStep(nextEvent, state);
       state = { ...state, ...step };
+      phase = step.done ? "static" : step.paused ? "waiting" : "streaming";
       for (const event of step.events) {
         next.dispatch(event);
         dispatched++;
@@ -141,9 +150,10 @@ function useReplay(mode: string, speed: number, run: number) {
   return store;
 }
 
-function Readout() {
+// The active mode and its live numbers. Sampled twice a second, so it never re-renders the timeline.
+function Status({ label }: { label: string }) {
   const items = useTimeline().length;
-  const [stats, setStats] = useState({ fps: 0, renders: 0, events: 0, longTasks: 0, heap: undefined as number | undefined });
+  const [stats, setStats] = useState({ fps: 0, renders: 0, events: 0, longTasks: 0, heap: undefined as number | undefined, lap: 0, phase });
   useEffect(() => {
     let frames = 0;
     let longTasks = 0;
@@ -165,6 +175,8 @@ function Readout() {
         events: dispatched,
         longTasks,
         heap: (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize,
+        lap,
+        phase,
       });
       frames = 0;
       renders = messageRenders;
@@ -177,9 +189,15 @@ function Readout() {
     };
   }, []);
   return (
-    <span className="readout" data-testid="readout">
-      {stats.fps} fps · {stats.renders} message renders/s · {items} items · {stats.events} events · {stats.longTasks} long tasks{stats.heap === undefined ? "" : ` · ${Math.round(stats.heap / 1_000_000)} MB heap`}{lastAction && ` · ${lastAction}`}
-    </span>
+    <div className="status">
+      <span className="mode" data-state={stats.phase}>
+        {label}
+        <span>{stats.phase === "waiting" ? "waiting for approval" : stats.phase === "static" ? "static" : "streaming"}{stats.lap > 0 && ` · lap ${stats.lap + 1}`}</span>
+      </span>
+      <span data-testid="readout">
+        {stats.fps} fps · {stats.renders} message renders/s · {items} items · {stats.events} events · {stats.longTasks} long tasks{stats.heap === undefined ? "" : ` · ${Math.round(stats.heap / 1_000_000)} MB heap`}{lastAction && ` · ${lastAction}`}
+      </span>
+    </div>
   );
 }
 
@@ -217,7 +235,19 @@ function Live() {
   const approve = (id: string) => void client?.request("approve", { session_id: session, request_id: id });
   const deny = (id: string) => void client?.request("deny", { session_id: session, request_id: id });
   const renderers: Renderers = { approval: ({ id }) => <Approval id={id} onApprove={approve} onDeny={deny} /> };
-  return <div className="app live-app"><div className="bar"><strong>live zeta</strong><input aria-label="zeta websocket url" value={input} onChange={(e) => setInput(e.target.value)} placeholder="ws://127.0.0.1:8765/?token=..." /><button type="button" onClick={() => void connect()}>connect</button><select value={session ?? ""} onChange={(e) => setSession(e.target.value)}><option value="">session</option>{sessions.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>{error && <span role="alert">{error}</span>}</div><div className="scroll"><RunProvider store={store}><Timeline renderers={renderers} /></RunProvider></div>{client && session && <form className="composer" onSubmit={(e) => { e.preventDefault(); if (text.trim()) { void client.request("send", { session_id: session, text }); setText(""); } }}><textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="send a message" /><button type="submit">send</button></form>}</div>;
+  return (
+    <Shell page="playground">
+      <div className="toolbar">
+        <strong>live zeta</strong>
+        <input aria-label="zeta websocket url" value={input} onChange={(e) => setInput(e.target.value)} placeholder="ws://127.0.0.1:8765/?token=..." />
+        <button type="button" onClick={() => void connect()}>connect</button>
+        <select aria-label="session" value={session ?? ""} onChange={(e) => setSession(e.target.value)}><option value="">session</option>{sessions.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>
+        {error && <span role="alert">{error}</span>}
+      </div>
+      <div className="scroll"><RunProvider store={store}><Timeline renderers={renderers} /></RunProvider></div>
+      {client && session && <form className="toolbar composer" onSubmit={(e) => { e.preventDefault(); if (text.trim()) { void client.request("send", { session_id: session, text }); setText(""); } }}><textarea aria-label="message" value={text} onChange={(e) => setText(e.target.value)} placeholder="send a message" /><button type="submit">send</button></form>}
+    </Shell>
+  );
 }
 
 function App() {
@@ -228,33 +258,42 @@ function App() {
   const store = useReplay(mode, speed, run);
   const scroll = useRef<HTMLDivElement>(null);
   if (import.meta.env.DEV && live) return <Live />;
+  const rate = mode === STRESS ? STRESS_RATE : speed;
+  const label = mode === STRESS ? "stress" : mode === HUGE ? "static" : "replay";
   return (
     <RunProvider store={store}>
-      <div className="app">
-        <div className="bar">
-          {import.meta.env.DEV && <button type="button" onClick={() => setLive(true)}>live zeta</button>}
-          <label>
-            replay
-            <select value={mode} onChange={(e) => setMode(e.target.value)}>
+      <Shell page="playground">
+        <div className="toolbar">
+          <label className="field">
+            source
+            <select id="mode" value={mode} onChange={(e) => setMode(e.target.value)}>
               {Object.keys(fixtures).map((name) => (
-                <option key={name}>{name}</option>
+                <option key={name} value={name}>replay: {name}</option>
               ))}
               <option value={STRESS}>stress: {STRESS_MESSAGES} messages + {STRESS_RATE} deltas/s</option>
-              <option value={HUGE}>virtual: {HUGE_MESSAGES} messages</option>
+              <option value={HUGE}>static: {HUGE_MESSAGES.toLocaleString("en")} messages</option>
             </select>
           </label>
-          <label>
-            events/s
-            <input type="range" min={1} max={200} value={speed} disabled={mode === STRESS} onChange={(e) => setSpeed(Number(e.target.value))} />
-            {mode === STRESS ? STRESS_RATE : speed}
-          </label>
-          <button type="button" onClick={() => setRun(run + 1)}>restart</button>
-          <Readout />
+          <span className="field">
+            <label htmlFor="rate">events/s</label>
+            <input id="rate" type="range" min={1} max={200} value={rate} disabled={mode === STRESS || mode === HUGE} aria-valuetext={`${rate} events per second`} onChange={(e) => setSpeed(Number(e.target.value))} />
+            <output htmlFor="rate">{mode === HUGE ? "-" : rate}</output>
+          </span>
+          <div className="group">
+            <button type="button" onClick={() => setRun(run + 1)}>restart</button>
+            {import.meta.env.DEV && <button type="button" onClick={() => setLive(true)}>live zeta</button>}
+          </div>
         </div>
+        <p className="caption">
+          Replays loop with fresh ids, so the run keeps growing. <strong>Follow:</strong> stay at the bottom and new rows keep it pinned.{" "}
+          <strong>Unseen:</strong> scroll up; follow stops and <strong>jump to latest (n)</strong> counts new rows.{" "}
+          <strong>Focus:</strong> tab into a row, then arrow up and down. Resize and insert anchoring: the virtual page.
+        </p>
+        <Status label={label} />
         <div className="scroll" ref={scroll}>
-          <Timeline renderers={renderers} scrollRef={scroll} />
+          <Timeline virtual renderers={renderers} scrollRef={scroll} />
         </div>
-      </div>
+      </Shell>
     </RunProvider>
   );
 }

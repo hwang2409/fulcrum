@@ -1,9 +1,9 @@
 import "@fulcrum/highlight/styles.css";
-import "./fonts.css";
 import "./highlight-demo.css";
 import { createHighlighter, type Token } from "@fulcrum/highlight";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Shell } from "./shell";
 
 const highlight = createHighlighter();
 window.addEventListener("pagehide", () => highlight.dispose(), { once: true });
@@ -38,6 +38,20 @@ function Block({ language, source, index }: { language: string; source: string; 
 }
 
 function Demo() {
-  return <main><header><p>streaming message</p><h1>plain first, highlighted by complete line</h1></header><article>{examples.map(([language, source], index) => <Block language={language} source={source} index={index} key={language} />)}</article></main>;
+  const [run, setRun] = useState(0);
+  return (
+    <Shell page="highlight">
+      <div className="toolbar">
+        <button type="button" onClick={() => setRun(run + 1)}>replay</button>
+      </div>
+      <p className="caption">
+        @fulcrum/highlight streams code the way a model writes it: text shows plain at once, and each complete line is highlighted in a worker.{" "}
+        Token colors come from the theme&apos;s <code>--fulcrum-tok-*</code> variables; switch the theme to check each palette.
+      </p>
+      <main className="samples">
+        {examples.map(([language, source], index) => <Block key={`${language}-${run}`} language={language} source={source} index={index} />)}
+      </main>
+    </Shell>
+  );
 }
 createRoot(document.getElementById("root")!).render(<Demo />);

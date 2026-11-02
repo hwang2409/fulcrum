@@ -76,7 +76,7 @@ try {
       const prependScrollDelta = scroll.scrollTop - beforePrependScroll;
       anchor = document.querySelector<HTMLElement>(`[data-virtual-id="${anchorId}"]`)!;
       const prependError = Math.abs(anchor.getBoundingClientRect().top - startTop);
-      const focused = anchor.querySelector<HTMLButtonElement>("button")!;
+      const focused = anchor;
       focused.focus();
       await frames(1);
       const heldScroll = scroll.scrollTop;

@@ -22,7 +22,7 @@ try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     await page.goto("http://127.0.0.1:4173");
     await page.evaluate(() => performance.mark("stress-start"));
-    await page.selectOption("select", "stress");
+    await page.selectOption("#mode", "stress");
     const result = await page.evaluate(async () => {
       const scroll = document.querySelector<HTMLElement>(".scroll")!;
       const started = performance.getEntriesByName("stress-start")[0]?.startTime ?? performance.now();
