@@ -1,7 +1,6 @@
 import {
   createContext,
   createElement,
-  useCallback,
   useContext,
   useRef,
   useSyncExternalStore,
@@ -79,14 +78,24 @@ export function useItemSelector<T>(
 
 export const useTimelineSnapshot = () => {
   const store = useRunStore();
-  const current = useRef({ store, snapshot: store.getOutlineSnapshot() });
-  if (current.current.store !== store) current.current = { store, snapshot: store.getOutlineSnapshot() };
-  const subscribe = useCallback((listener: () => void) => store.subscribeOutline(() => {
-    current.current = { store, snapshot: store.getOutlineSnapshot() };
-    listener();
-  }), [store]);
-  const getSnapshot = useCallback(() => current.current.snapshot, [store]);
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  type Source = {
+    store: RunStore;
+    snapshot: ReturnType<RunStore["getOutlineSnapshot"]>;
+    subscribe(listener: () => void): () => void;
+    getSnapshot(): ReturnType<RunStore["getOutlineSnapshot"]>;
+  };
+  const current = useRef<Source>(undefined);
+  if (current.current?.store !== store) {
+    const source = { store, snapshot: store.getOutlineSnapshot() } as Source;
+    source.subscribe = (listener) => store.subscribeOutline(() => {
+      source.snapshot = store.getOutlineSnapshot();
+      listener();
+    });
+    source.getSnapshot = () => source.snapshot;
+    current.current = source;
+  }
+  const source = current.current;
+  return useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
 };
 
 export const useTimeline = () => useTimelineSnapshot().items;
