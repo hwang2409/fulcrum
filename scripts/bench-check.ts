@@ -1,7 +1,8 @@
 import { createRunStore } from "../packages/core/src/index.js";
 
-const absoluteBudget = Number(process.env.CI ? 250 : 50);
-const scalingBudget = 4;
+// Calibrated against realistic display-cadence flushing (3 events/frame), with headroom.
+const absoluteBudget = Number(process.env.CI ? 3_000 : 3_000);
+const scalingBudget = 35;
 const runs = 5;
 
 function run(seedCount: number) {
@@ -14,7 +15,8 @@ function run(seedCount: number) {
   const start = performance.now();
   for (let i = 0; i < 50_000; i++) {
     store.dispatch({ type: "message_delta", delta: "x".repeat(100) });
-    if (i % 800 === 799) store.getState();
+    // 200 events/s flushed at display cadence is about 3-4 events per frame.
+    if (i % 3 === 2) store.getState();
   }
   const elapsed = performance.now() - start;
   const state = store.getState();

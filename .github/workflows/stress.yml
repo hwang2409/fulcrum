@@ -1,9 +1,15 @@
 name: stress
 on:
-  workflow_dispatch:
+  pull_request:
+    paths:
+      - "packages/**"
+      - "apps/playground/**"
+      - "scripts/**"
+      - ".github/workflows/stress.yml"
 jobs:
   stress:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -14,8 +20,9 @@ jobs:
       - run: bunx tsc -b
       - run: bun run --cwd apps/playground build
       - run: cd apps/playground && bunx playwright install --with-deps chromium
-      - run: bun run stress | tee stress-table.txt
-      - uses: actions/upload-artifact@v4
+      - run: bun run stress
+      - if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: fulcrum-stress-table
-          path: stress-table.txt
+          name: fulcrum-stress-artifacts
+          path: apps/playground/stress-artifacts/
