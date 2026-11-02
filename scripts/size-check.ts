@@ -1,6 +1,7 @@
 const budget = Number(process.env.SIZE_BUDGET_BYTES ?? 5_000);
 const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external: [] },
+  { name: "virtual", entry: "packages/virtual/dist/index.js", external: [] },
   { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "react", "react-dom"] },
 ];
 let failed = false;
