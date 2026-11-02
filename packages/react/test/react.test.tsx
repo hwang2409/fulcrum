@@ -291,7 +291,7 @@ test("approval is a labelled group and submits once until the handler fails or t
   expect(label.getAttribute("data-part")).toBe("tool-header");
   expect(label.textContent).toBe("bashrm -rf distneeds approval");
   expect(q('[data-part="tool-body"] [data-part="tool-args"]').textContent).toContain('"command": "rm -rf dist"');
-  expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["approve", "deny"]);
+  expect([...group.querySelectorAll('[data-part="approval-actions"] button')].map((b) => b.textContent)).toEqual(["approve", "deny"]);
 
   act(() => q('[data-action="approve"]').click());
   act(() => q('[data-action="approve"]').click());

@@ -11,11 +11,18 @@ test("zeta tool names map to the agent-neutral views", () => {
   expect(resolveToolView(zetaTools, call("run_background", { command: "bun run dev" }))).toEqual({ kind: "shell", command: "bun run dev" });
   expect(resolveToolView(zetaTools, call("read", { path: "a.ts", offset: 10, limit: 40 }))).toEqual({ kind: "read", path: "a.ts", range: { offset: 10, limit: 40 } });
   expect(resolveToolView(zetaTools, call("read", { path: "a.ts" }))).toEqual({ kind: "read", path: "a.ts" });
-  expect(resolveToolView(zetaTools, call("edit", { path: "a.ts", old_string: "a", new_string: "b" }))).toEqual({ kind: "edit", path: "a.ts", diff: "@@ -1 +1 @@\n-a\n+b" });
+  expect(resolveToolView(zetaTools, call("edit", { path: "a.ts", old_string: "a", new_string: "b" }))).toEqual({
+    kind: "edit",
+    path: "a.ts",
+    diff: "@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file",
+  });
   expect(resolveToolView(zetaTools, call("edit", { path: "a.ts", edits: [{ old_string: "one", new_string: "1" }, { old_string: "two", new_string: "2" }] }))).toEqual({
     kind: "edit",
     path: "a.ts",
-    diff: "@@ -1 +1 @@\n-one\n+1\n@@ -1 +1 @@\n-two\n+2",
+    diff: [
+      "@@ -1 +1 @@", "-one", "\\ No newline at end of file", "+1", "\\ No newline at end of file",
+      "@@ -1 +1 @@", "-two", "\\ No newline at end of file", "+2", "\\ No newline at end of file",
+    ].join("\n"),
   });
   expect(resolveToolView(zetaTools, call("write", { path: "n.md", content: "hi\n" }))).toEqual({ kind: "write", path: "n.md", content: "hi\n" });
   expect(resolveToolView(zetaTools, call("fetch", { url: "https://x.dev" }))).toEqual({ kind: "fetch", url: "https://x.dev" });
