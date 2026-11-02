@@ -1,6 +1,9 @@
-import "@fulcrum/react/styles.css";
+import current from "@fulcrum/react/styles.css?inline";
+import folio from "./directions/folio.css?inline";
+import trace from "./directions/trace.css?inline";
+import pebble from "./directions/pebble.css?inline";
 import "./gallery.css";
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore } from "@fulcrum/core";
 import { Approval, RunProvider, Timeline, type Renderers } from "@fulcrum/react";
@@ -19,6 +22,14 @@ const fresh = (demo: Demo) => {
   if (!demo.live) demo.events.forEach(store.dispatch);
   return store;
 };
+// Candidate replacements for styles.css; `?direction=<name>` pins one for links and screenshots.
+const directions: Record<string, string> = { current, folio, trace, pebble };
+const directionStyle = document.head.appendChild(document.createElement("style"));
+const initialDirection = () => {
+  const name = new URLSearchParams(location.search).get("direction");
+  return name && name in directions ? name : "current";
+};
+
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const LOOP_PAUSE_MS = 1500;
 
@@ -109,10 +120,17 @@ const systemTheme = () => (matchMedia("(prefers-color-scheme: dark)").matches ? 
 
 function Gallery() {
   const [theme, setTheme] = useState(systemTheme);
+  const [direction, setDirection] = useState(initialDirection);
   const [message, setMessage] = useState<{ text: string; key: number }>();
   useEffect(() => {
     document.documentElement.dataset.fulcrumTheme = theme;
   }, [theme]);
+  useLayoutEffect(() => {
+    directionStyle.textContent = directions[direction];
+    const url = new URL(location.href);
+    url.searchParams.set("direction", direction);
+    history.replaceState(null, "", url);
+  }, [direction]);
   // The page renders after load, so the browser cannot jump to a #demo link by itself.
   useEffect(() => document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(), []);
   useEffect(() => {
@@ -149,12 +167,23 @@ function Gallery() {
             <h1>component gallery</h1>
             <p>
               Every <code>@fulcrum/react</code> part in every state, built from <code>@fulcrum/core</code> events with
-              the default <code>styles.css</code>. No server, no session.
+              the selected direction. <code>current</code> is the shipped <code>styles.css</code>. No server, no
+              session.
             </p>
           </div>
-          <button type="button" className="theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
-            {theme === "dark" ? "light" : "dark"} theme
-          </button>
+          <div className="controls">
+            <label>
+              direction{" "}
+              <select value={direction} onChange={(event) => setDirection(event.target.value)}>
+                {Object.keys(directions).map((name) => (
+                  <option key={name}>{name}</option>
+                ))}
+              </select>
+            </label>
+            <button type="button" className="theme" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+              {theme === "dark" ? "light" : "dark"} theme
+            </button>
+          </div>
         </header>
         {parts.map((part) => (
           <section key={part} id={part} className="part">

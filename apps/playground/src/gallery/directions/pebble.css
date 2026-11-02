@@ -1,0 +1,158 @@
+/* pebble: soft product UI. Rounded surfaces, chat bubbles, gentle motion. */
+:root {
+  color-scheme: light dark;
+  --fulcrum-bg: light-dark(#ffffff, #15161b);
+  --fulcrum-fg: light-dark(#1f2330, #ecedf2);
+  --fulcrum-muted: light-dark(#6b7080, #9da1b0);
+  --fulcrum-surface: light-dark(#f3f4f8, #1f2128);
+  --fulcrum-border: light-dark(#e4e6ee, #2e313b);
+  --fulcrum-accent: light-dark(#5b5bd6, #8f91ff);
+  --fulcrum-danger: light-dark(#dc3e42, #ff6b70);
+  --fulcrum-ok: light-dark(#2b9a66, #4cc38a);
+  --fulcrum-radius: 14px;
+  --fulcrum-gap: 14px;
+  --fulcrum-font: system-ui, sans-serif;
+  --fulcrum-mono: ui-monospace, Menlo, Consolas, monospace;
+  --pebble-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+/* Follows the OS by default; set data-fulcrum-theme="light" or "dark" on <html> to force one. */
+:root[data-fulcrum-theme=light] { color-scheme: light; }
+:root[data-fulcrum-theme=dark] { color-scheme: dark; }
+
+[data-part=timeline] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fulcrum-gap);
+  color: var(--fulcrum-fg);
+  background: var(--fulcrum-bg);
+  font: 15px/1.6 var(--fulcrum-font);
+  overflow-wrap: anywhere;
+}
+/* Skip off-screen layout and paint; new rows rise in once. */
+[data-part=timeline] > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 3em;
+  animation: pebble-in 280ms var(--pebble-ease);
+}
+
+[data-part=item] { align-self: center; color: var(--fulcrum-muted); font-size: 12.5px; }
+/* Assistant text beside a mark; the user in a filled bubble. */
+[data-part=message] { position: relative; padding-left: 32px; text-wrap: pretty; }
+[data-part=message]::before {
+  content: "";
+  position: absolute;
+  inset: 3px auto auto 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #fff9, var(--fulcrum-accent) 65%);
+}
+[data-role=user],
+[data-kind=user] {
+  align-self: flex-end;
+  max-width: 78%;
+  padding: 9px 15px;
+  border-radius: 18px 18px 6px 18px;
+  background: var(--fulcrum-accent);
+  color: var(--fulcrum-bg);
+}
+[data-role=user]::before { content: none; }
+/* A dot breathes at the end of streaming text. */
+[data-part=message][data-state=streaming]::after {
+  content: "\25CF";
+  display: inline-block;
+  margin-left: 4px;
+  color: var(--fulcrum-accent);
+  animation: pebble-pulse 1s var(--pebble-ease) infinite alternate;
+}
+
+[data-part=tool],
+[data-part=approval] {
+  --dot: var(--fulcrum-ok);
+  position: relative;
+  padding: 10px 14px;
+  overflow: hidden;
+  border-radius: var(--fulcrum-radius);
+  background: var(--fulcrum-surface);
+}
+[data-part=tool-name] { font-weight: 600; font-size: 14px; }
+[data-part=tool] > [data-part=tool-name]::before { content: "\25CF"; display: inline-block; margin-right: 6px; color: var(--dot); }
+[data-part=tool-args] {
+  max-height: 6em;
+  overflow: auto;
+  color: var(--fulcrum-muted);
+  font: 12px/1.5 var(--fulcrum-mono);
+}
+[data-part=tool-output] {
+  display: flex;
+  flex-direction: column-reverse; /* keeps the newest output in view */
+  max-height: 13em;
+  margin-top: 8px;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--fulcrum-bg);
+  font: 12px/1.5 var(--fulcrum-mono);
+}
+[data-part=tool][data-state=streaming] { --dot: var(--fulcrum-accent); }
+[data-part=tool][data-state=streaming] > [data-part=tool-name]::before { animation: pebble-pulse 0.8s var(--pebble-ease) infinite alternate; }
+/* Sweep while running. */
+[data-part=tool][data-state=streaming]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--fulcrum-accent) 10%, transparent), transparent);
+  animation: pebble-sweep 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+[data-part=tool][data-state=error] { --dot: var(--fulcrum-danger); background: color-mix(in srgb, var(--fulcrum-danger) 10%, var(--fulcrum-bg)); }
+[data-part=tool][data-state=canceled] { --dot: var(--fulcrum-muted); opacity: 0.7; }
+
+[data-part=approval]::before { display: block; margin-bottom: 4px; color: var(--fulcrum-muted); font-size: 12.5px; content: "Approval resolved"; }
+/* Lifted, with a slow halo: the run waits on you. */
+[data-part=approval][data-state=pending] {
+  padding: 14px 16px;
+  background: var(--fulcrum-bg);
+  box-shadow: 0 0 0 1.5px var(--fulcrum-accent), 0 10px 28px -12px color-mix(in srgb, var(--fulcrum-accent) 60%, transparent);
+}
+[data-part=approval][data-state=pending]::before { color: var(--fulcrum-accent); font-weight: 600; content: "Needs your approval"; }
+[data-part=approval][data-state=pending]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--fulcrum-accent) 7%, transparent);
+  animation: pebble-halo 1.8s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+[data-part=approval] button {
+  margin: 12px 8px 0 0;
+  padding: 7px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--fulcrum-surface);
+  color: inherit;
+  font: 500 14px var(--fulcrum-font);
+  cursor: pointer;
+  transition: transform 160ms var(--pebble-ease);
+}
+[data-part=approval] button[data-action=approve] { background: var(--fulcrum-accent); color: var(--fulcrum-bg); }
+[data-part=approval] button:active { transform: scale(0.96); }
+[data-part=approval] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
+
+[data-kind=error] {
+  align-self: stretch;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--fulcrum-danger) 10%, var(--fulcrum-bg));
+  color: var(--fulcrum-danger);
+  font-size: 14px;
+}
+
+@keyframes pebble-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes pebble-pulse { to { opacity: 0.35; transform: scale(0.7); } }
+@keyframes pebble-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@keyframes pebble-halo { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  [data-part=timeline] > *, [data-part=timeline] ::before, [data-part=timeline] ::after { animation: none !important; }
+}

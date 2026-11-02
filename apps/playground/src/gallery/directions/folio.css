@@ -1,0 +1,153 @@
+/* folio: quiet and editorial. Serif prose, marginal tools, one ink accent. */
+:root {
+  color-scheme: light dark;
+  --fulcrum-bg: light-dark(#fbfbfa, #171716);
+  --fulcrum-fg: light-dark(#1d1c1a, #e8e6e1);
+  --fulcrum-muted: light-dark(#76736c, #97938b);
+  --fulcrum-surface: light-dark(#f1f0ec, #211f1d);
+  --fulcrum-border: light-dark(#e2e0da, #34322e);
+  --fulcrum-accent: light-dark(#1f5c4f, #7fc5b1);
+  --fulcrum-danger: light-dark(#b3321f, #ef8470);
+  --fulcrum-radius: 3px;
+  --fulcrum-gap: 22px;
+  --fulcrum-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --fulcrum-serif: ui-serif, "Iowan Old Style", "Charter", "Sitka Text", Georgia, serif;
+  --fulcrum-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* Follows the OS by default; set data-fulcrum-theme="light" or "dark" on <html> to force one. */
+:root[data-fulcrum-theme=light] { color-scheme: light; }
+:root[data-fulcrum-theme=dark] { color-scheme: dark; }
+
+[data-part=timeline] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fulcrum-gap);
+  max-width: 40em;
+  color: var(--fulcrum-fg);
+  background: var(--fulcrum-bg);
+  font: 17px/1.7 var(--fulcrum-serif);
+  overflow-wrap: anywhere;
+}
+/* Skip layout and paint for off-screen items in long timelines. */
+[data-part=timeline] > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 3em;
+}
+
+[data-part=message] { text-wrap: pretty; }
+[data-part=item] { color: var(--fulcrum-muted); font: italic 14px/1.5 var(--fulcrum-serif); }
+/* The reader asks in sans; the agent answers in serif. */
+[data-role=user],
+[data-kind=user] {
+  padding-left: 16px;
+  border-left: 2px solid var(--fulcrum-fg);
+  color: var(--fulcrum-fg);
+  font: 500 15px/1.6 var(--fulcrum-font);
+}
+[data-part=message][data-state=streaming]::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 3px;
+  vertical-align: -0.15em;
+  background: var(--fulcrum-accent);
+  animation: folio-breathe 1.4s ease-in-out infinite;
+}
+
+/* Tools read as marginal notes: no box, a status mark, then the call. */
+[data-part=tool],
+[data-part=approval] {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 12px;
+  font: 12.5px/1.55 var(--fulcrum-mono);
+  color: var(--fulcrum-muted);
+}
+[data-part=approval] { display: flex; flex-wrap: wrap; }
+[data-part=approval] > [data-part=tool-args] { flex: 1 1 0; min-width: 0; }
+/* A zero-height row break that puts the buttons on their own line. */
+[data-part=approval]::after { content: ""; flex-basis: 100%; order: 1; }
+[data-part=tool-name] { color: var(--fulcrum-fg); }
+[data-part=tool] > [data-part=tool-name]::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  vertical-align: 1px;
+  border: 1px solid var(--fulcrum-muted);
+  border-radius: 50%;
+}
+[data-part=tool-args] { max-height: 6.2em; overflow: auto; }
+[data-part=tool-output] {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column-reverse; /* keeps the newest output in view */
+  max-height: 12em;
+  margin-top: 8px;
+  padding-left: 14px;
+  overflow: auto;
+  border-left: 1px solid var(--fulcrum-border);
+  color: var(--fulcrum-fg);
+}
+[data-part=tool][data-state=streaming] > [data-part=tool-name]::before {
+  border-color: var(--fulcrum-accent);
+  background: var(--fulcrum-accent);
+  animation: folio-breathe 1.4s ease-in-out infinite;
+}
+[data-part=tool][data-state=done] > [data-part=tool-name]::before { background: var(--fulcrum-muted); }
+[data-part=tool][data-state=error] > [data-part=tool-name] { color: var(--fulcrum-danger); }
+[data-part=tool][data-state=error] > [data-part=tool-name]::before { border-color: var(--fulcrum-danger); background: var(--fulcrum-danger); }
+[data-part=tool][data-state=error] > [data-part=tool-output] { border-color: var(--fulcrum-danger); color: var(--fulcrum-danger); }
+[data-part=tool][data-state=canceled] > [data-part=tool-name] { text-decoration: line-through; }
+
+/* The one loud moment: a request that waits for the reader. */
+[data-part=approval][data-state=pending] {
+  padding: 16px 18px;
+  border-left: 3px solid var(--fulcrum-accent);
+  background: var(--fulcrum-surface);
+}
+[data-part=approval]::before {
+  flex-basis: 100%;
+  margin-bottom: 6px;
+  font: 13px/1.4 var(--fulcrum-font);
+  content: "Approval resolved";
+}
+[data-part=approval][data-state=pending]::before {
+  content: "Waiting for your approval";
+  color: var(--fulcrum-accent);
+  font-weight: 600;
+}
+[data-part=approval][data-state=done] { opacity: 0.72; }
+[data-part=approval] button {
+  order: 2;
+  margin: 14px 8px 0 0;
+  padding: 6px 16px;
+  border: 1px solid var(--fulcrum-fg);
+  border-radius: var(--fulcrum-radius);
+  background: transparent;
+  color: var(--fulcrum-fg);
+  font: 500 14px var(--fulcrum-font);
+  cursor: pointer;
+  transition: transform 120ms ease-out;
+}
+[data-part=approval] button[data-action=approve] {
+  border-color: var(--fulcrum-accent);
+  background: var(--fulcrum-accent);
+  color: var(--fulcrum-bg);
+}
+[data-part=approval] button:active { transform: scale(0.96); }
+[data-part=approval] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
+
+[data-kind=error] {
+  padding-left: 16px;
+  border-left: 2px solid var(--fulcrum-danger);
+  color: var(--fulcrum-danger);
+  font: 500 14px/1.5 var(--fulcrum-font);
+}
+
+@keyframes folio-breathe { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) {
+  [data-part=timeline] *, [data-part=timeline] *::before, [data-part=timeline] *::after { animation: none !important; transition: none !important; }
+}
