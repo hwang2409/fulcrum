@@ -35,7 +35,13 @@ function normalized(html: string) {
   return visit(body);
 }
 
-const requiresRawHtml = ({ markdown }: Example) => /<!--|<\/?[A-Za-z][A-Za-z\d-]*(?:\s[^>]*|\s*\/?)>/.test(markdown);
+function requiresRawHtml({ markdown, html }: Example) {
+  if (markdown.includes("<!--") && html.includes("<!--")) return true;
+  const expected = window.document.createElement("body");
+  expected.innerHTML = html;
+  const tags = [...markdown.matchAll(/<\/?([A-Za-z][A-Za-z\d-]*)(?:\s[^>]*|\s*\/?)>/g)].map((match) => match[1]!);
+  return tags.some((tag) => expected.querySelector(tag));
+}
 
 function runSuite(examples: Example[]) {
   const excluded = examples.filter((example) => ["HTML blocks", "Raw HTML", "Disallowed Raw HTML"].includes(example.section) || requiresRawHtml(example));

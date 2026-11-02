@@ -271,6 +271,23 @@ test("every corpus character prefix streams once and finishes identically", () =
   }
 });
 
+test("renders a real typescript fence with the shared highlighter", async () => {
+  const build = Bun.spawnSync(["bun", "run", "build"], { cwd: new URL("../../highlight/", import.meta.url).pathname });
+  if (build.exitCode !== 0) throw new Error(build.stderr.toString());
+  const { createHighlighter } = await import("../../highlight/dist/index.js");
+  const browser = new Window();
+  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = browser.document.createElement("div");
+  const root = createRoot(container);
+  const highlight = createHighlighter({ worker: false });
+  await act(async () => root.render(<Markdown source={'```typescript\nconst value: string = "ok";\n```'} highlight={highlight} />));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+  expect(container.querySelector('[data-language="typescript"]')?.textContent).toBe('const value: string = "ok";\n');
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 1_500)));
+  await act(async () => root.unmount());
+  highlight.dispose();
+}, 15_000);
+
 test("a stale streaming highlight cannot replace the done result", async () => {
   const browser = new Window();
   Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
