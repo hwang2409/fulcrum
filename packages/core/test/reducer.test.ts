@@ -67,6 +67,7 @@ test("all event paths replay through the store", () => {
     { type: "message_reset" },
     { type: "retry" },
     { type: "tool_start", tool_call: toolCall },
+    { type: "tool_input", tool_call: toolCall, input: "{\"path\":" },
     { type: "tool_output", tool_call: toolCall, output: "output" },
     {
       type: "tool_end",
@@ -229,4 +230,27 @@ test("receipt dedupe is bounded and evicts the oldest receipt", () => {
   expect(Object.keys(state.receipts)).toHaveLength(RECEIPT_LIMIT);
   expect(state.receipts["0"]).toBeUndefined();
   expect(state.receipts[String(RECEIPT_LIMIT)]).toBe(true);
+});
+
+test("streaming reasoning stays separate from assistant text", () => {
+  const store = replay([
+    { type: "message_delta", message_id: "mixed", kind: "reasoning", delta: "check " },
+    { type: "message_delta", message_id: "mixed", kind: "reasoning", delta: "evidence" },
+    { type: "message_delta", message_id: "mixed", kind: "text", delta: "answer" },
+  ]);
+  const item = store.getItem("message:mixed");
+  expect(item?.type === "message" ? item.message.content : []).toEqual([
+    { type: "reasoning", text: "check evidence" },
+  ]);
+  expect(item?.type === "message" ? item.text : undefined).toBe("answer");
+});
+
+test("an empty message_delta from any adapter is a no-op", () => {
+  const store = replay([{ type: "message_commit", message_id: "m0", message: message("hi") }]);
+  const state = store.getState();
+  const outline = store.getOutline();
+  store.dispatch({ type: "message_delta", message_id: "empty", delta: "" });
+  expect(store.getOutline()).toBe(outline);
+  expect(store.getItem("message:empty")).toBeUndefined();
+  expect(store.getState()).toBe(state);
 });

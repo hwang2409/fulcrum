@@ -12,6 +12,7 @@
     "check:highlight-consumer": "bun scripts/highlight-consumer-check.ts",
     "check:highlight-notices": "bun scripts/highlight-notices-check.ts",
     "check:markdown-consumer": "bun scripts/markdown-consumer-check.ts",
+    "check:pack-consumer": "bun scripts/pack-consumer-check.ts",
     "size:check": "bun scripts/size-check.ts",
     "vendor:markdown-it": "bun scripts/vendor-markdown-it.ts",
     "stress": "bun run --cwd apps/playground stress"

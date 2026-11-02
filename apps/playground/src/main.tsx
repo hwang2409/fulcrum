@@ -5,6 +5,7 @@ import "./app.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, initialState, type RunEvent, type RunItem } from "@fulcrum/core";
+import { createAiSdkAdapter } from "@fulcrum/ai-sdk";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
 import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
@@ -12,13 +13,13 @@ import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
 import { replayStep } from "./replay";
 
-const files = import.meta.glob<string>("../../../packages/zeta/test/fixtures/*.jsonl", {
+const zetaFiles = import.meta.glob<string>("../../../packages/zeta/test/fixtures/*.jsonl", {
   query: "?raw",
   import: "default",
   eager: true,
 });
-const fixtures = Object.fromEntries(
-  Object.entries(files).map(([path, text]) => [
+const zetaFixtures = Object.fromEntries(
+  Object.entries(zetaFiles).map(([path, text]) => [
     path.split("/").pop()!,
     text
       .split("\n")
@@ -26,6 +27,31 @@ const fixtures = Object.fromEntries(
       .flatMap((line) => fromZetaEvent((JSON.parse(line) as { params: EventParams }).params)),
   ]),
 );
+const aiSdkFiles = import.meta.glob<string>("../../../packages/ai-sdk/test/fixtures/playground.jsonl", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+const aiSdkFixtures = Object.fromEntries(
+  Object.entries(aiSdkFiles).map(([path, text]) => {
+    const adapter = createAiSdkAdapter({ streamKey: path.split("/").pop()! });
+    return [path.split("/").pop()!, text.split("\n").filter(Boolean).flatMap((line) => adapter.decode(JSON.parse(line)))];
+  }),
+);
+const demoFixtures: Record<string, RunEvent[]> = {
+  "markdown-code": [{
+    type: "message_commit",
+    message_id: "markdown-code",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Here is a focused TypeScript fix:\n\n```ts\nconst retries = Math.min(attempt + 1, 3);\nawait runTask({ retries });\n```\n\nThe retry count stays bounded." }],
+    },
+  }],
+};
+const fixtureSources: Record<string, Record<string, RunEvent[]>> = { demo: demoFixtures, zeta: zetaFixtures, "ai-sdk": aiSdkFixtures };
+const fixtures = Object.fromEntries(Object.entries(fixtureSources).flatMap(([source, sourceFixtures]) =>
+  Object.entries(sourceFixtures).map(([name, events]) => [`${source}:${name}`, events]),
+));
 const STRESS = "stress";
 const HUGE = "huge";
 const STRESS_MESSAGES = Number(new URLSearchParams(location.search).get("stressMessages")) || 5000;
@@ -237,7 +263,9 @@ function Live() {
 
 function App() {
   const [live, setLive] = useState(false);
-  const [mode, setMode] = useState(Object.keys(fixtures)[0] ?? STRESS);
+  const [source, setSource] = useState("zeta");
+  const firstFixture = (nextSource: string) => Object.keys(fixtureSources[nextSource] ?? {})[0];
+  const [mode, setMode] = useState(() => `zeta:${firstFixture("zeta")}`);
   const [speed, setSpeed] = useState(20);
   const [run, setRun] = useState(0);
   const store = useReplay(mode, speed, run);
@@ -249,13 +277,24 @@ function App() {
         <div className="bar">
           {import.meta.env.DEV && <button type="button" onClick={() => setLive(true)}>live zeta</button>}
           <label>
+            source
+            <select value={source} onChange={(e) => {
+              const nextSource = e.target.value;
+              setSource(nextSource);
+              setMode(`${nextSource}:${firstFixture(nextSource)}`);
+            }}>
+              <option value="zeta">zeta</option>
+              <option value="ai-sdk">ai-sdk</option>
+            </select>
+          </label>
+          <label>
             replay
             <select value={mode} onChange={(e) => setMode(e.target.value)}>
-              {Object.keys(fixtures).map((name) => (
-                <option key={name}>{name}</option>
+              {Object.keys(fixtureSources[source] ?? {}).map((name) => (
+                <option key={name} value={`${source}:${name}`}>{name}</option>
               ))}
-              <option value={STRESS}>stress: {STRESS_MESSAGES} messages + {STRESS_RATE} deltas/s</option>
-              <option value={HUGE}>virtual: {HUGE_MESSAGES} messages</option>
+              {source === "zeta" && <option value={STRESS}>stress: {STRESS_MESSAGES} messages + {STRESS_RATE} deltas/s</option>}
+              {source === "zeta" && <option value={HUGE}>virtual: {HUGE_MESSAGES} messages</option>}
             </select>
           </label>
           <label>
