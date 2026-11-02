@@ -82,7 +82,7 @@ function staticStore(count: number): ReturnType<typeof createRunStore> {
   };
   const state = { ...structuredClone(initialState), outline };
   const subscribe = (() => () => {}) as ReturnType<typeof createRunStore>["subscribe"];
-  return { getState: () => state, getItem, getOutline: () => outline, subscribe, subscribeOutline: () => () => true, dispatch: () => {}, dispose: () => {} };
+  return { getState: () => state, getItem, getOutline: () => outline, getOutlineSnapshot: () => ({ items: outline, change: { type: "append", count: outline.length } }), subscribe, subscribeOutline: () => () => true, dispatch: () => {}, dispose: () => {} };
 }
 
 function useReplay(mode: string, speed: number, run: number) {
