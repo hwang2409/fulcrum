@@ -35,22 +35,33 @@ export const Message = memo(function Message({ id, className }: ItemProps) {
 });
 
 export type ToolItem = Extract<RunItem, { type: "tool" }>;
-/** What a tool-specific body gets. Approvals pass the requested call with empty output and state "pending". */
-export type ToolBodyProps = { call: ToolCallData; output: string; state: ItemState };
 /**
- * Per-tool customization shared by ToolCall and Approval. The header row, status slot, collapse, and approval
- * actions stay the same; `body` replaces the generic arguments/output inside `data-part="tool-body"`.
+ * What a tool body gets. `item` is the normalized tool item, with its agent-neutral `view` hint when the adapter set
+ * one; `output` is the streamed output plus a final result that adds to it. Approvals pass the requested call (and
+ * the request's view) as an active tool item with no output and state "pending" or "submitting".
+ */
+export type ToolBodyProps = { item: ToolItem; output: string; state: ItemState };
+/**
+ * Per-tool customization shared by ToolCall and Approval. They own the one header row (name, summary, status), the
+ * disclosure, and the approval actions; `body` renders only what goes inside `data-part="tool-body"`.
  */
 export type ToolViewProps = {
-  /** Sets `data-tool-view` for styling, for example "shell". */
-  view?: string;
-  /** One-line summary for the header. Defaults to the first string argument. */
-  summary?: (call: ToolCallData) => string;
+  /** One-line header summary. Defaults to the view (`$ command` for shell), else the first string argument. */
+  summary?: (item: ToolItem) => string;
   body?: ComponentType<ToolBodyProps>;
 };
 
-// shortcut: the first string argument is the most telling one for common tools (command, path, pattern, url); per-tool views override it.
-const defaultSummary = (call: ToolCallData) => {
+const defaultSummary = ({ view, tool_call }: ToolItem) => {
+  switch (view?.kind) {
+    case "shell": return `$ ${view.command}`;
+    case "read": case "edit": case "write": return view.path;
+    case "search": return view.path ? `${view.pattern} in ${view.path}` : view.pattern;
+    case "fetch": return view.url ?? view.query;
+  }
+  return firstArgument(tool_call);
+};
+// shortcut: the first string argument is the most telling one for common tools (command, path, pattern, url); adapters that set a view do better.
+const firstArgument = (call: ToolCallData) => {
   const args = call.arguments ?? {};
   const first = Object.values(args).find((value) => typeof value === "string");
   return typeof first === "string" ? first : Object.keys(args).length ? JSON.stringify(args) : "";
@@ -65,18 +76,18 @@ const statusText: Record<ItemState, string> = {
   submitting: "sending", // Approval names the action instead: "approving" or "denying"
 };
 
-function Header({ call, state, status, summary }: { call: ToolCallData; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
+function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
   return (
     <>
-      <span data-part="tool-name">{call.name}</span>
-      <span data-part="tool-summary">{(summary ?? defaultSummary)(call)}</span>
+      <span data-part="tool-name">{item.tool_call.name}</span>
+      <span data-part="tool-summary">{(summary ?? defaultSummary)(item)}</span>
       <span data-part="tool-status">{status ?? statusText[state]}</span>
     </>
   );
 }
 
 // Output first; the raw JSON arguments stay behind their own collapsed disclosure.
-function GenericBody({ call, output, state }: ToolBodyProps) {
+function GenericBody({ item: { tool_call: call }, output, state }: ToolBodyProps) {
   const asking = state === "pending" || state === "submitting";
   return (
     <>
@@ -109,7 +120,7 @@ const toolOutput = ({ output, result }: ToolItem) => {
 const toolState = (item: ToolItem): ItemState =>
   item.canceled ? "canceled" : item.is_error ? "error" : item.active ? "streaming" : "done";
 
-export const ToolCall = memo(function ToolCall({ id, className, view, summary, body: Body = GenericBody }: ItemProps & ToolViewProps) {
+export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = GenericBody }: ItemProps & ToolViewProps) {
   const item = useItem(id);
   const tool = item?.type === "tool" ? item : undefined;
   const [open] = useState(() => openByDefault(tool, tool ? toolOutput(tool) : ""));
@@ -124,14 +135,14 @@ export const ToolCall = memo(function ToolCall({ id, className, view, summary, b
       data-kind="tool"
       data-id={id}
       data-tool={tool.tool_call.name}
-      data-tool-view={view}
+      data-tool-view={tool.view?.kind}
       data-state={state}
     >
       <summary data-part="tool-header">
-        <Header call={tool.tool_call} state={state} summary={summary} />
+        <Header item={tool} state={state} summary={summary} />
       </summary>
       <div data-part="tool-body">
-        <Body call={tool.tool_call} output={output} state={state} />
+        <Body item={tool} output={output} state={state} />
       </div>
     </details>
   );
@@ -144,7 +155,6 @@ export const Approval = memo(function Approval({
   className,
   onApprove,
   onDeny,
-  view,
   summary,
   body: Body = GenericBody,
 }: ItemProps & ToolViewProps & { onApprove?: Decide; onDeny?: Decide }) {
@@ -152,7 +162,8 @@ export const Approval = memo(function Approval({
   const [sending, setSending] = useState<"approve" | "deny">();
   const labelId = useId();
   if (item?.type !== "approval" || item.request.type !== "approval_request") return null;
-  const { request_id, tool_call } = item.request;
+  const { request_id, tool_call, view } = item.request;
+  const requested: ToolItem = { id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false };
   const pending = !item.ended;
   const state: ItemState = !pending ? "done" : sending ? "submitting" : "pending";
   // One decision per request: later clicks are ignored until the handler fails or the request resolves.
@@ -178,16 +189,16 @@ export const Approval = memo(function Approval({
       data-kind="approval"
       data-id={id}
       data-tool={tool_call.name}
-      data-tool-view={view}
+      data-tool-view={view?.kind}
       data-state={state}
     >
       <div data-part="tool-header" id={labelId}>
-        <Header call={tool_call} state={state} status={status} summary={summary} />
+        <Header item={requested} state={state} status={status} summary={summary} />
       </div>
       {pending ? (
         <>
           <div data-part="tool-body">
-            <Body call={tool_call} output="" state={state} />
+            <Body item={requested} output="" state={state} />
           </div>
           {onApprove || onDeny ? (
             <div data-part="approval-actions">

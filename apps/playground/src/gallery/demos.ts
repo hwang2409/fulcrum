@@ -48,6 +48,12 @@ const testLines = Array.from(
   { length: 120 },
   (_, i) => `${String(i + 1).padStart(4, "0")}  ok  packages/core/test/reducer.test.ts > case ${i + 1} (${(i % 7) + 1}ms)\n`,
 );
+// Adapters attach the agent-neutral view; the shell view makes the header read `$ command`.
+const shellStart = (tool: ToolCall): RunEvent => ({
+  type: "tool_start",
+  tool_call: tool,
+  view: { kind: "shell", command: String(tool.arguments.command) },
+});
 const ok = (tool: ToolCall, content: string): RunEvent => ({
   type: "tool_end",
   tool_call: tool,
@@ -65,7 +71,7 @@ export const demos: Demo[] = [
       { type: "user_message", text: "Why does the playground build fail on CI?", mode: "default" },
       { type: "turn_start" },
       ...stream("m1", "I will reproduce the build first, then read the config it points at."),
-      { type: "tool_start", tool_call: build },
+      shellStart(build),
       { type: "tool_output", tool_call: build, output: "vite v8.3.5 building for production...\n" },
       {
         type: "tool_end",
@@ -81,7 +87,7 @@ export const demos: Demo[] = [
       { type: "approval_end", request_id: "r-edit" },
       { type: "tool_start", tool_call: edit },
       ok(edit, "1 replacement"),
-      { type: "tool_start", tool_call: bash },
+      shellStart(bash),
       { type: "tool_output", tool_call: bash, output: "bun test v1.3.13\n 42 pass\n 0 fail\n" },
       ok(bash, ""),
       { type: "message_commit", message_id: "m2", message: text("assistant", answer) },
@@ -134,7 +140,7 @@ export const demos: Demo[] = [
     title: "running",
     description: "Output streams in while the tool is active (data-state=\"streaming\").",
     events: [
-      { type: "tool_start", tool_call: bash },
+      shellStart(bash),
       ...testLines.slice(0, 24).map((output): RunEvent => ({ type: "tool_output", tool_call: bash, output })),
       ok(bash, ""),
     ],
@@ -153,7 +159,7 @@ export const demos: Demo[] = [
     title: "error",
     description: "The tool result has is_error=true.",
     events: [
-      { type: "tool_start", tool_call: bash },
+      shellStart(bash),
       {
         type: "tool_end",
         tool_call: bash,
@@ -167,7 +173,7 @@ export const demos: Demo[] = [
     title: "canceled",
     description: "The user canceled the tool (data-state=\"canceled\", from the core's normalized canceled flag).",
     events: [
-      { type: "tool_start", tool_call: bash },
+      shellStart(bash),
       { type: "tool_output", tool_call: bash, output: "bun test v1.3.13\n" },
       {
         type: "tool_end",
@@ -188,7 +194,7 @@ export const demos: Demo[] = [
     part: "Approval",
     title: "pending",
     description: "A shell command waiting for the user. Approve or deny resolves it; a second click while sending is ignored.",
-    events: [{ type: "approval_request", request_id: "r-deploy", tool_call: deploy, delegated: false }],
+    events: [{ type: "approval_request", request_id: "r-deploy", tool_call: deploy, view: { kind: "shell", command: String(deploy.arguments.command) }, delegated: false }],
   },
   {
     id: "approval-generic",

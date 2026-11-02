@@ -211,7 +211,6 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-tool-view="shell"] > [data-part="tool-header"] { grid-template-columns: auto minmax(0, 1fr) auto; }
 [data-tool-view="shell"] [data-part="tool-name"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 [data-tool-view="shell"] [data-part="tool-summary"] { color: var(--fulcrum-fg); }
-[data-tool-view="shell"] [data-part="tool-summary"]::before { content: "$ "; color: var(--fulcrum-muted); }
 [data-tool-view="shell"] [data-part="shell-command"] { padding: 8px 12px; color: var(--fulcrum-fg); }
 [data-tool-view="shell"] [data-part="shell-command"]::before { content: "$ "; color: var(--fulcrum-muted); }
 [data-tool-view="shell"] [data-part="tool-output"] { background: var(--fulcrum-bg); }

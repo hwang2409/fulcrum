@@ -369,35 +369,62 @@ test("tool output keeps the streamed text and appends a final result that adds t
   expect(q('[data-id="tool:t2"] [data-part="tool-output"]').textContent).toBe("x.ts:1\n");
 });
 
-test("a tool view replaces the generic body and keeps the header, status, and approval actions", () => {
+test("a tool body gets the normalized item and renders inside the one shared header", () => {
   const ls = { id: "t1", name: "bash", arguments: { command: "ls", timeout: 5 } };
   const { store } = setup([
-    { type: "tool_start", tool_call: ls },
+    { type: "tool_start", tool_call: ls, view: { kind: "shell", command: "ls -la" } },
     { type: "tool_output", tool_call: ls, output: "README.md\n" },
-    { type: "approval_request", request_id: "r1", tool_call: { ...ls, id: "t2" }, delegated: false },
+    { type: "approval_request", request_id: "r1", tool_call: { ...ls, id: "t2" }, view: { kind: "shell", command: "ls" }, delegated: false },
+    { type: "approval_request", request_id: "r2", tool_call: { ...ls, id: "t3" }, delegated: false },
   ]);
   const seen: string[] = [];
-  const Shell = ({ call, output, state }: ToolBodyProps) => {
-    seen.push(state);
-    return <pre data-part="tool-output">{`${call.arguments.command}|${output}`}</pre>;
+  const Shell = ({ item, output, state }: ToolBodyProps) => {
+    seen.push(`${item.tool_call.id}:${item.view?.kind}:${state}`);
+    return <pre data-part="tool-output">{`${item.tool_call.arguments.command}|${output}`}</pre>;
   };
-  const summary = (c: ToolCallData) => String(c.arguments.command);
   mount(
     <RunProvider store={store}>
-      <ToolCall id="tool:t1" view="shell" summary={summary} body={Shell} />
-      <Approval id="approval:r1" view="shell" summary={summary} body={Shell} onApprove={() => {}} />
+      <ToolCall id="tool:t1" body={Shell} />
+      <Approval id="approval:r1" body={Shell} onApprove={() => {}} />
+      <Approval id="approval:r2" summary={(item) => `run ${item.tool_call.arguments.command}`} />
     </RunProvider>,
   );
   const tool = q('[data-id="tool:t1"]');
   expect(tool.getAttribute("data-tool-view")).toBe("shell");
-  expect(tool.querySelector('[data-part="tool-summary"]')!.textContent).toBe("ls");
+  // The view, not the raw arguments, names the call in the header.
+  expect(tool.querySelector('[data-part="tool-summary"]')!.textContent).toBe("$ ls -la");
   expect(tool.querySelector('[data-part="tool-status"]')!.textContent).toBe("running");
   expect(tool.querySelector('[data-part="tool-body"]')!.textContent).toBe("ls|README.md\n");
   expect(tool.querySelector('[data-part="tool-args"]')).toBeNull();
+  expect(tool.querySelectorAll('[data-part="tool-header"]').length).toBe(1);
   const approval = q('[data-id="approval:r1"]');
+  expect(approval.getAttribute("data-tool-view")).toBe("shell");
+  expect(approval.querySelector('[data-part="tool-summary"]')!.textContent).toBe("$ ls");
+  expect(approval.querySelectorAll('[data-part="tool-header"]').length).toBe(1);
+  const plain = q('[data-id="approval:r2"]');
+  expect(plain.hasAttribute("data-tool-view")).toBe(false);
+  expect(plain.querySelector('[data-part="tool-summary"]')!.textContent).toBe("run ls");
   expect(approval.querySelector('[data-part="tool-body"]')!.textContent).toBe("ls|");
   expect(approval.querySelector('[data-action="approve"]')).not.toBeNull();
-  expect(seen).toEqual(["streaming", "pending"]);
+  expect(seen).toEqual(["t1:shell:streaming", "t2:shell:pending"]);
+});
+
+test("the default header summary reads each view kind, then falls back to the first string argument", () => {
+  const views = [
+    [{ kind: "shell", command: "bun test" }, "$ bun test"],
+    [{ kind: "read", path: "a.ts" }, "a.ts"],
+    [{ kind: "edit", path: "b.ts", diff: "-a\n+b" }, "b.ts"],
+    [{ kind: "write", path: "c.ts" }, "c.ts"],
+    [{ kind: "search", pattern: "TODO", path: "src" }, "TODO in src"],
+    [{ kind: "fetch", url: "https://x.dev" }, "https://x.dev"],
+    [{ kind: "fetch", query: "fulcrum" }, "fulcrum"],
+    [undefined, "first"],
+  ] as const;
+  const { store } = setup(
+    views.map(([view], i) => ({ type: "tool_start", tool_call: { id: `v${i}`, name: "x", arguments: { a: 1, b: "first" } }, view } as RunEvent)),
+  );
+  mount(<RunProvider store={store}>{views.map((_, i) => <ToolCall key={i} id={`tool:v${i}`} />)}</RunProvider>);
+  expect(views.map((_, i) => q(`[data-id="tool:v${i}"] [data-part="tool-summary"]`).textContent)).toEqual(views.map(([, text]) => text));
 });
 
 test("data-state reflects streaming, done, error, pending", () => {

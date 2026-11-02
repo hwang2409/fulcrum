@@ -7,34 +7,31 @@ import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState
 import { createRoot } from "react-dom/client";
 import { createRunStore } from "@fulcrum/core";
 import { Approval, RunProvider, Timeline, ToolCall, useItem, type Renderers, type ToolBodyProps } from "@fulcrum/react";
-import type { ToolCall as ToolCallData } from "@fulcrum/core";
 import { demos, type Demo } from "./demos";
 import { MarkdownPreview } from "./markdown-preview";
 
 type Act = (action: "approve" | "deny", requestId: string) => void;
 const ActContext = createContext<Act>(() => {});
 
-// A sketch of the shell card through ToolCall's view slot; the real per-tool cards land in @fulcrum/react/tools.
-const shellSummary = (call: ToolCallData) => String(call.arguments.command ?? "");
-function ShellBody({ call, output, state }: ToolBodyProps) {
+// A sketch of the shell card through the body slot; the real per-tool cards land in @fulcrum/react/tools. The demo
+// events carry a shell view, as an adapter would attach, so the shared header already reads `$ command`.
+function ShellBody({ item, output, state }: ToolBodyProps) {
   const asking = state === "pending" || state === "submitting";
   return (
     <>
-      {asking ? <pre data-part="shell-command">{shellSummary(call)}</pre> : null}
+      {asking && item.view?.kind === "shell" ? <pre data-part="shell-command">{item.view.command}</pre> : null}
       {output ? <pre data-part="tool-output">{output}</pre> : null}
     </>
   );
 }
-const shell = { view: "shell", summary: shellSummary, body: ShellBody };
-const isShell = (name?: string) => name === "bash";
 
 function GalleryApproval({ id }: { id: string }) {
   const act = useContext(ActContext);
   const item = useItem(id);
   const name = item?.type === "approval" && item.request.type === "approval_request" ? item.request.tool_call.name : undefined;
-  return <Approval id={id} {...(isShell(name) ? shell : {})} onApprove={(r) => act("approve", r)} onDeny={(r) => act("deny", r)} />;
+  return <Approval id={id} {...(name === "bash" ? { body: ShellBody } : {})} onApprove={(r) => act("approve", r)} onDeny={(r) => act("deny", r)} />;
 }
-const renderers: Renderers = { approval: GalleryApproval, "tool:bash": ({ id }) => <ToolCall id={id} {...shell} /> };
+const renderers: Renderers = { approval: GalleryApproval, "tool:bash": ({ id }) => <ToolCall id={id} body={ShellBody} /> };
 
 // A live demo starts empty and plays; paused from the start (reduced motion), it shows its in-progress state instead.
 const fresh = (demo: Demo, paused = false) => {
