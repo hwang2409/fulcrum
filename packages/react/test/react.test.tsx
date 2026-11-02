@@ -313,7 +313,7 @@ test("approval is a labelled group and submits once until the handler fails or t
   expect(group.querySelector("button")).toBeNull();
 });
 
-test("tool header shows name, a one-line summary, and status; json stays in the collapsed body", () => {
+test("tool header shows name, a one-line summary, and status; json loads when expanded", () => {
   const big = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
   const grep = { id: "t1", name: "grep", arguments: { pattern: "TODO", path: "packages/" } };
   const empty = { id: "t2", name: "noop", arguments: {} };
@@ -344,6 +344,11 @@ test("tool header shows name, a one-line summary, and status; json stays in the 
   expect(body.querySelector('[data-part="tool-output"]')!.textContent).toBe(big);
   const args = body.querySelector('[data-part="tool-args-details"]') as HTMLDetailsElement;
   expect(args.open).toBe(false);
+  expect(args.querySelector('[data-part="tool-args"]')).toBeNull();
+  act(() => {
+    args.open = true;
+    args.dispatchEvent(new Event("toggle"));
+  });
   expect(args.querySelector('[data-part="tool-args"]')!.textContent).toBe(JSON.stringify(grep.arguments, null, 2));
   expect(q('[data-id="tool:t2"] [data-part="tool-summary"]').textContent).toBe("");
 });
