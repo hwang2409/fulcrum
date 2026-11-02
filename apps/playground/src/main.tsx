@@ -214,12 +214,12 @@ function App() {
       cancelAnimationFrame(raf);
     };
   }, []);
-  if (live) return <Live />;
+  if (import.meta.env.DEV && live) return <Live />;
   return (
     <RunProvider store={store}>
       <div className="app">
         <div className="bar">
-          <button type="button" onClick={() => setLive(true)}>live zeta</button>
+          {import.meta.env.DEV && <button type="button" onClick={() => setLive(true)}>live zeta</button>}
           <label>
             replay
             <select value={mode} onChange={(e) => setMode(e.target.value)}>
