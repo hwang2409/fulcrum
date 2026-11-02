@@ -8,6 +8,68 @@ const message = (text: string) => ({
 
 const toolCall = { id: "tool-1", name: "read", arguments: { path: "README.md" } };
 
+const itemText = (state: typeof initialState, id: string) => {
+  const item = state.itemsById[id];
+  if (item?.type !== "message") return "";
+  return (
+    item.chunks?.join("") ??
+    item.message.content
+      .filter((block) => block.type === "text")
+      .map((block) => String(block.text))
+      .join("")
+  );
+};
+
+const deepFreeze = <T>(value: T): T => {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
+};
+
+test("reduce is pure: branching one state gives independent results", () => {
+  const a = reduce(initialState, { type: "message_delta", delta: "a" });
+  const ab = reduce(a, { type: "message_delta", delta: "b" });
+  const ac = reduce(a, { type: "message_delta", delta: "c" });
+
+  expect(itemText(a, "message:assistant")).toBe("a");
+  expect(itemText(ab, "message:assistant")).toBe("ab");
+  expect(itemText(ac, "message:assistant")).toBe("ac");
+});
+
+test("reduce never mutates its input", () => {
+  const events = [
+    { type: "run_start" as const },
+    { type: "turn_start" as const },
+    { type: "message_start" as const },
+    { type: "message_delta" as const, delta: "draft" },
+    { type: "message_commit" as const, message: message("done") },
+    { type: "message_delta" as const, delta: "discard" },
+    { type: "message_reset" as const },
+    { type: "retry" as const },
+    { type: "tool_start" as const, tool_call: toolCall },
+    { type: "tool_output" as const, tool_call: toolCall, output: "output" },
+    {
+      type: "tool_end" as const,
+      tool_call: toolCall,
+      tool_result: { tool_call_id: toolCall.id, content: "output", is_error: false },
+    },
+    { type: "approval_request" as const, request_id: "approval-1", tool_call: toolCall, delegated: false },
+    { type: "approval_end" as const, request_id: "approval-1" },
+    { type: "usage" as const, usage: { input_tokens: 1 } },
+    { type: "user_message" as const, text: "hello", mode: "normal" },
+    { type: "notification" as const, notification_id: "receipt-1" },
+    { type: "unknown" as const, name: "future", data: {} },
+    { type: "error" as const, error: { code: "failed", message: "failed" } },
+    { type: "turn_end" as const },
+    { type: "run_end" as const },
+  ];
+  let state = structuredClone(initialState);
+
+  for (const event of events) state = reduce(deepFreeze(state), event);
+});
+
 test("delta changes only the streaming message identity", () => {
   let state = reduce(initialState, { type: "message_commit", message_id: "other", message: message("old") });
   state = reduce(state, { type: "tool_start", tool_call: toolCall });

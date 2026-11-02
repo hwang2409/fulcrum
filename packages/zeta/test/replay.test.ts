@@ -95,6 +95,8 @@ test("approval and its tool execution stay distinct in the timeline", () => {
 const contentText = (state: RunState, itemId: string) => {
   const item = state.itemsById[itemId];
   if (item?.type !== "message") return "";
+  if ("text" in item) return String(item.text);
+  if (item.chunks) return item.chunks.join("");
   return item.message.content
     .filter((block) => block.type === "text")
     .map((block) => String(block.text))
@@ -159,18 +161,22 @@ test("approval request then approval end", () => {
   expect(state.approvalsById["tool-call-1"].ended?.type).toBe("approval_end");
 });
 
-test("turn_aborted leaves turn and agent idle", () => {
+test("a delta after turn_aborted starts a new message", () => {
   const state = replay("terminal.jsonl").get("aborted")!;
-  expect(state.agent).toBe("idle");
-  expect(state.turn).toBe("idle");
+  const messageIds = state.items.filter((id) => state.itemsById[id].type === "message");
+  expect(messageIds.map((id) => contentText(state, id))).toEqual(["old", "new"]);
+  expect(state.agent).toBe("running");
+  expect(state.turn).toBe("running");
   const event = eventsByType(state, "error").at(-1);
   expect(event?.type === "error" ? event.error.code : undefined).toBe("turn_aborted");
 });
 
-test("max_turns error then agent_end leaves run idle", () => {
+test("a delta after a terminal error starts a new message", () => {
   const state = replay("terminal.jsonl").get("max-turns")!;
-  expect(state.agent).toBe("idle");
-  expect(state.turn).toBe("idle");
+  const messageIds = state.items.filter((id) => state.itemsById[id].type === "message");
+  expect(messageIds.map((id) => contentText(state, id))).toEqual(["old", "new"]);
+  expect(state.agent).toBe("running");
+  expect(state.turn).toBe("running");
   const event = eventsByType(state, "error").at(-1);
   expect(event?.type === "error" ? event.error : undefined).toEqual({ code: "max_turns", message: "maximum turns reached: 1" });
 });

@@ -1,7 +1,15 @@
 {"jsonrpc":"2.0","method":"event","params":{"event":"agent_start","session_id":"aborted","data":{}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"turn_start","session_id":"aborted","data":{"turn":1}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","session_id":"aborted","delta":"old","kind":"assistant","data":{}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"turn_aborted","session_id":"aborted","data":{"turn":1}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"agent_start","session_id":"aborted","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"turn_start","session_id":"aborted","data":{"turn":2}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","session_id":"aborted","delta":"new","kind":"assistant","data":{}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"agent_start","session_id":"max-turns","data":{}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"turn_start","session_id":"max-turns","data":{"turn":1}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","session_id":"max-turns","delta":"old","kind":"assistant","data":{}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"error","session_id":"max-turns","error":{"code":"max_turns","message":"maximum turns reached: 1"},"data":{}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"agent_end","session_id":"max-turns","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"agent_start","session_id":"max-turns","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"turn_start","session_id":"max-turns","data":{"turn":2}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","session_id":"max-turns","delta":"new","kind":"assistant","data":{}}}
