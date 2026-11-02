@@ -1,0 +1,21 @@
+name: stress
+on:
+  workflow_dispatch:
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: 1.3.13 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc -b
+      - run: bun run --cwd apps/playground build
+      - run: cd apps/playground && bunx playwright install --with-deps chromium
+      - run: bun run stress | tee stress-table.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fulcrum-stress-table
+          path: stress-table.txt
