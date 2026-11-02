@@ -241,6 +241,7 @@ export function reduceAllWithEntities(
           id: itemId,
           type: "tool",
           tool_call: event.tool_call,
+          view: event.view,
           output: "",
           version: 1,
           active: true,
@@ -258,11 +259,11 @@ export function reduceAllWithEntities(
         const old = getItem(itemId);
         const prior = old?.type === "tool" ? old : undefined;
         if (!prior) {
-          appendItem({ id: itemId, type: "tool", tool_call: event.tool_call, output: "", version: 1, active: true, is_error: false, canceled: false });
+          appendItem({ id: itemId, type: "tool", tool_call: event.tool_call, view: event.view, output: "", version: 1, active: true, is_error: false, canceled: false });
           setToolActive(id, true);
           break;
         }
-        setItem({ ...prior, tool_call: event.tool_call, version: prior.version + 1 });
+        setItem({ ...prior, tool_call: event.tool_call, view: event.view ?? prior.view, version: prior.version + 1 });
         break;
       }
       case "tool_output": {
@@ -276,6 +277,7 @@ export function reduceAllWithEntities(
             id: itemId,
             type: "tool",
             tool_call: prior?.tool_call ?? event.tool_call,
+            view: event.view ?? prior?.view,
             output: "",
             version: (prior?.version ?? 0) + 1,
             active: true,
@@ -303,6 +305,7 @@ export function reduceAllWithEntities(
           id: itemId,
           type: "tool",
           tool_call: prior?.tool_call ?? event.tool_call,
+          view: event.view ?? prior?.view,
           output: prior?.output ?? "",
           version: (prior?.version ?? 0) + 1,
           active: false,
