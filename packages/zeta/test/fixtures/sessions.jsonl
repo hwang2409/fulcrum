@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","method":"event","params":{"event":"agent_start","session_id":"alpha","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"agent_start","session_id":"beta","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","session_id":"alpha","delta":"alpha","kind":"assistant"}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","session_id":"beta","delta":"beta","kind":"assistant"}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_message","session_id":"alpha","message":{"role":"assistant","content":[{"type":"text","text":"alpha"}]}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_message","session_id":"beta","message":{"role":"assistant","content":[{"type":"text","text":"beta"}]}}}

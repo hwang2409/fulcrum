@@ -1,18 +1,71 @@
-import { describe, expect, test } from "bun:test";
-import { initialState, reduce } from "../src/index.js";
+import { expect, test } from "bun:test";
+import { createRunStore, initialState, reduce } from "../src/index.js";
 
-test("replays streaming text and preserves unrelated identity", () => {
-  let state = reduce(initialState, { type: "tool_start", tool_call: { id: "t", name: "x", arguments: {} }, data: {} });
-  const tool = state.toolCallsById.t;
-  state = reduce(state, { type: "message_delta", delta: "a" });
-  expect(state.toolCallsById.t).toBe(tool);
-  state = reduce(state, { type: "message_delta", delta: "b" });
-  expect(state.messagesById.assistant?.chunks).toEqual(["a", "b"]);
+const message = (text: string) => ({
+  role: "assistant",
+  content: [{ type: "text", text }],
+});
+
+const toolCall = { id: "tool-1", name: "read", arguments: { path: "README.md" } };
+
+test("delta changes only the streaming message identity", () => {
+  let state = reduce(initialState, { type: "message_commit", message_id: "other", message: message("old") });
+  state = reduce(state, { type: "tool_start", tool_call: toolCall });
+  state = reduce(state, { type: "message_delta", message_id: "stream", delta: "a" });
+
+  const stream = state.messagesById.stream;
+  const other = state.messagesById.other;
+  const tool = state.toolCallsById[toolCall.id];
+  const timeline = state.items;
+
+  const next = reduce(state, { type: "message_delta", message_id: "stream", delta: "b" });
+  expect(next.messagesById.stream).not.toBe(stream);
+  expect(next.messagesById.other).toBe(other);
+  expect(next.toolCallsById[toolCall.id]).toBe(tool);
+  expect(next.items).toBe(timeline);
+});
+
+test("commit replaces streamed chunks with the final message", () => {
+  let state = reduce(initialState, { type: "message_delta", delta: "draft " });
+  state = reduce(state, { type: "message_delta", delta: "text" });
+  state = reduce(state, { type: "message_commit", message: message("final text") });
+
+  expect(state.items).toEqual(["assistant"]);
+  expect(state.messagesById.assistant.content).toEqual(message("final text").content);
+  expect(state.messagesById.assistant.chunks).toBeUndefined();
+});
+
+test("message_reset discards the in-progress stream", () => {
+  let state = reduce(initialState, { type: "message_delta", delta: "discard me" });
+  state = reduce(state, { type: "message_reset" });
+
+  expect(state.activeMessageId).toBeUndefined();
+  expect(state.messagesById.assistant).toBeUndefined();
+  expect(state.items).toEqual([]);
+});
+
+test("state snapshots taken before a delta do not change after it", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore(undefined, (job) => jobs.push(job));
+  store.dispatch({ type: "message_delta", delta: "before" });
+  const snapshot = store.getState();
+
+  store.dispatch({ type: "message_delta", delta: " after" });
+
+  expect(snapshot.messagesById.assistant.chunks?.join("")).toBe("before");
 });
 
 test("handles unknown events and receipt dedupe", () => {
-  let state = reduce(initialState, { type: "unknown", name: "future_event", data: { notification_id: "1", value: 1 } });
-  state = reduce(state, { type: "unknown", name: "future_event", data: { notification_id: "1", value: 2 } });
+  let state = reduce(initialState, {
+    type: "unknown",
+    name: "future_event",
+    data: { notification_id: "1", value: 1 },
+  });
+  state = reduce(state, {
+    type: "unknown",
+    name: "future_event",
+    data: { notification_id: "1", value: 2 },
+  });
   expect(state.childNotifications).toHaveLength(1);
   expect(state.receipts["1"]).toBe(true);
 });

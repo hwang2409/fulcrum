@@ -1,2 +1,2 @@
-{"jsonrpc":"2.0","method":"event","params":{"event":"approval_request","request_id":"r","delegated":false,"tool_call":{"id":"t","name":"bash","arguments":{}}}}
-{"jsonrpc":"2.0","method":"event","params":{"event":"approval_end","request_id":"r","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"approval_request","session_id":"approval","request_id":"tool-call-1","delegated":false,"tool_call":{"id":"tool-call-1","name":"bash","arguments":{"command":"ls"}}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"approval_end","session_id":"approval","request_id":"tool-call-1","tool_call":{"id":"tool-call-1","name":"bash","arguments":{"command":"ls"}},"data":{}}}
