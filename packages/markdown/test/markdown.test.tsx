@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { Highlight, HighlightContext, Token } from "@fulcrum/highlight";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Window } from "happy-dom";
@@ -275,8 +276,11 @@ test("a stale streaming highlight cannot replace the done result", async () => {
   Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
   const container = browser.document.createElement("div");
   const root = createRoot(container);
-  const pending: Array<(tokens: Array<{ text: string; type: "keyword" | "string" }>) => void> = [];
-  const highlight = () => new Promise<Array<{ text: string; type: "keyword" | "string" }>>((resolve) => pending.push(resolve));
+  const pending: Array<(tokens: Token[]) => void> = [];
+  const highlight: Highlight = Object.assign(
+    () => new Promise<Token[]>((resolve) => pending.push(resolve)),
+    { dispose() {} },
+  );
 
   await act(async () => root.render(<Markdown source={'```ts\nconst value = 1;\n'} streaming highlight={highlight} />));
   await act(async () => root.render(<Markdown source={'```ts\nconst value = 1;\n```'} highlight={highlight} />));
@@ -289,14 +293,14 @@ test("a stale streaming highlight cannot replace the done result", async () => {
 });
 
 test("highlighter uses the shared cumulative source contract", async () => {
-  type SharedToken = { text: string; type?: "keyword" };
-  type SharedContext = { id: string; version: number; state: "streaming" | "done" };
-  type SharedHighlight = (code: string, language: string | undefined, context?: SharedContext) => SharedToken[] | Promise<SharedToken[]> | null;
-  const calls: Array<{ code: string; context?: SharedContext }> = [];
-  const highlight: SharedHighlight = (code, _language, context) => {
-    calls.push({ code, context });
-    return [{ type: "keyword", text: code }];
-  };
+  const calls: Array<{ code: string; context?: HighlightContext }> = [];
+  const highlight: Highlight = Object.assign(
+    (code: string, _language: string | undefined, context?: HighlightContext) => {
+      calls.push({ code, context });
+      return [{ type: "keyword" as const, text: code }];
+    },
+    { dispose() {} },
+  );
   renderToStaticMarkup(<Markdown id="message:one" source={'```ts\nconst a = 1;\npartial'} streaming highlight={highlight} />);
   renderToStaticMarkup(<Markdown id="message:one" source={'```ts\nconst a = 1;\npartial\n```'} highlight={highlight} />);
   await Promise.resolve();

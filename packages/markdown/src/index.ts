@@ -1,3 +1,4 @@
+import type { Highlight } from "@fulcrum/highlight";
 import MarkdownIt from "./vendor/markdown-it.mjs";
 
 type MarkdownToken = {
@@ -13,20 +14,8 @@ type MarkdownToken = {
   attrGet(name: string): string | null;
 };
 
-export const tokenTypes = [
-  "keyword", "string", "number", "comment", "function", "type", "variable",
-  "constant", "operator", "punctuation", "tag", "attribute", "regexp", "inserted", "deleted",
-] as const;
-
-export type TokenType = (typeof tokenTypes)[number];
-export type Token = { text: string; type?: TokenType };
-export type HighlightContext = { id: string; version: number; state: "streaming" | "done" };
-export type HighlightResult = Token[] | null;
-export type Highlighter = (
-  code: string,
-  lang: string | undefined,
-  context?: HighlightContext,
-) => HighlightResult | Promise<HighlightResult>;
+export type { Highlight as Highlighter, HighlightContext, Token, TokenType } from "@fulcrum/highlight";
+export type HighlightResult = ReturnType<Highlight>;
 
 export type Inline =
   | { type: "text"; value: string }
