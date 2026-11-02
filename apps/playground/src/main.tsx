@@ -1,10 +1,12 @@
 import "@fulcrum/react/styles.css";
 import "@fulcrum/react/themes.css";
+import "@fulcrum/highlight/styles.css";
 import "./app.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, initialState, type RunEvent, type RunItem } from "@fulcrum/core";
-import { Markdown } from "@fulcrum/markdown/react";
+import { createHighlighter } from "@fulcrum/highlight";
+import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
 import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
 import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
@@ -29,6 +31,9 @@ const HUGE = "huge";
 const STRESS_MESSAGES = 5000;
 const HUGE_MESSAGES = 100_000;
 const STRESS_RATE = 200;
+const highlight = createHighlighter();
+const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
+addEventListener("pagehide", () => highlight.dispose(), { once: true });
 
 // Sampled by the readout outside React state, so the readout never re-renders the timeline.
 let messageRenders = 0;
@@ -38,7 +43,7 @@ let continueReplay = () => {};
 function CountedMessage({ id }: { id: string }) {
   useItem(id);
   messageRenders++;
-  return <Message id={id} markdown={Markdown} />;
+  return <Message id={id} markdown={RichMarkdown} />;
 }
 function LoggedApproval({ id }: { id: string }) {
   return (
@@ -218,7 +223,7 @@ function Live() {
   const approve = (id: string) => void client?.request("approve", { session_id: session, request_id: id });
   const deny = (id: string) => void client?.request("deny", { session_id: session, request_id: id });
   const renderers: Renderers = {
-    message: ({ id }) => <Message id={id} markdown={Markdown} />,
+    message: ({ id }) => <Message id={id} markdown={RichMarkdown} />,
     approval: ({ id }) => <Approval id={id} onApprove={approve} onDeny={deny} />,
   };
   return <div className="app live-app"><div className="bar"><strong>live zeta</strong><input aria-label="zeta websocket url" value={input} onChange={(e) => setInput(e.target.value)} placeholder="ws://127.0.0.1:8765/?token=..." /><button type="button" onClick={() => void connect()}>connect</button><select value={session ?? ""} onChange={(e) => setSession(e.target.value)}><option value="">session</option>{sessions.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>{error && <span role="alert">{error}</span>}</div><div className="scroll"><RunProvider store={store}><Timeline renderers={renderers} /></RunProvider></div>{client && session && <form className="composer" onSubmit={(e) => { e.preventDefault(); if (text.trim()) { void client.request("send", { session_id: session, text }); setText(""); } }}><textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="send a message" /><button type="submit">send</button></form>}</div>;

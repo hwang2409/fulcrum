@@ -1,15 +1,19 @@
 import "../fonts.css";
 import "@fulcrum/react/styles.css";
 import "@fulcrum/react/themes.css";
+import "@fulcrum/highlight/styles.css";
 import themeSource from "@fulcrum/react/themes.css?raw";
 import "./gallery.css";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore } from "@fulcrum/core";
-import { Markdown } from "@fulcrum/markdown/react";
+import { createHighlighter } from "@fulcrum/highlight";
+import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
 import { Approval, Message, RunProvider, Timeline, ToolCall, useItem, type Renderers, type ToolBodyProps } from "@fulcrum/react";
 import { demos, type Demo } from "./demos";
-import { MarkdownPreview } from "./markdown-preview";
+
+const highlight = createHighlighter();
+const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
 
 type Act = (action: "approve" | "deny", requestId: string) => void;
 const ActContext = createContext<Act>(() => {});
@@ -33,7 +37,7 @@ function GalleryApproval({ id }: { id: string }) {
   return <Approval id={id} {...(name === "bash" ? { body: ShellBody } : {})} onApprove={(r) => act("approve", r)} onDeny={(r) => act("deny", r)} />;
 }
 const renderers: Renderers = {
-  message: ({ id }) => <Message id={id} markdown={Markdown} />,
+  message: ({ id }) => <Message id={id} markdown={RichMarkdown} />,
   approval: GalleryApproval,
   "tool:bash": ({ id }) => <ToolCall id={id} body={ShellBody} />,
 };
@@ -130,15 +134,11 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
         </div>
       </header>
       <div className="demo-body" ref={body}>
-        {demo.preview === "markdown" ? (
-          <MarkdownPreview />
-        ) : (
-          <ActContext.Provider value={act}>
-            <RunProvider store={store}>
-              <Timeline renderers={renderers} />
-            </RunProvider>
-          </ActContext.Provider>
-        )}
+        <ActContext.Provider value={act}>
+          <RunProvider store={store}>
+            <Timeline renderers={renderers} />
+          </RunProvider>
+        </ActContext.Provider>
       </div>
       {inspect ? <pre className="demo-attrs" aria-label="rendered data attributes">{caption}</pre> : null}
     </article>
@@ -188,6 +188,7 @@ function useActive(ids: string[]) {
 }
 
 function Gallery() {
+  useEffect(() => () => highlight.dispose(), []);
   const [theme, setTheme] = useState(() => param("theme", themeNames, AUTO));
   const [inspect, setInspect] = useState(() => new URLSearchParams(location.search).get("inspect") === "1");
   const [message, setMessage] = useState<{ text: string; key: number }>();
