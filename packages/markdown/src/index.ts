@@ -396,6 +396,30 @@ const lineOffset = (source: string, line: number) => {
   return offset;
 };
 
+type OpenFenceState = {
+  marker: string;
+  language?: string;
+  scannedOffset: number;
+  value: string;
+  pending: string;
+  block: Extract<Block, { type: "code" }>;
+};
+
+const fenceCloser = (marker: string, line: string) => new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(line);
+
+function appendFenceDelta(state: OpenFenceState, delta: string) {
+  const lines = `${state.pending}${delta}`.split("\n");
+  state.pending = lines.pop()!;
+  for (const line of lines) {
+    if (fenceCloser(state.marker, line)) return false;
+    state.value += `${line}\n`;
+  }
+  const possibleCloser = new RegExp(`^ {0,3}${state.marker[0]}{1,}\\s*$`).test(state.pending);
+  state.block.value = state.value + (possibleCloser ? "" : state.pending);
+  state.scannedOffset += delta.length;
+  return true;
+}
+
 export function createStreamingDocument(): StreamingDocument {
   let source = "";
   let tailOffset = 0;
@@ -405,11 +429,40 @@ export function createStreamingDocument(): StreamingDocument {
   let finished = false;
   let frozenParses = 0;
   let tailParses = 0;
+  let fenceState: OpenFenceState | undefined;
   const environment: Environment = {};
 
   const render = () => {
     if (source === renderedSource) return cached;
+    if (!finished && fenceState) {
+      const delta = source.slice(fenceState.scannedOffset);
+      if (appendFenceDelta(fenceState, delta)) {
+        cached = [...frozen, fenceState.block];
+        renderedSource = source;
+        return cached;
+      }
+      fenceState = undefined;
+    }
     const tail = source.slice(tailOffset);
+    if (!finished) {
+      const opener = /^ {0,3}(`{3,}|~{3,})([^\n]*)\n/.exec(tail);
+      if (opener) {
+        const contentOffset = tailOffset + opener[0].length;
+        const block: Extract<Block, { type: "code" }> = {
+          type: "code",
+          language: opener[2]!.trim().split(/\s+/)[0] || undefined,
+          value: "",
+          open: true,
+        };
+        fenceState = { marker: opener[1]!, language: block.language, scannedOffset: contentOffset, value: "", pending: "", block };
+        if (appendFenceDelta(fenceState, source.slice(contentOffset))) {
+          cached = [...frozen, block];
+          renderedSource = source;
+          return cached;
+        }
+        fenceState = undefined;
+      }
+    }
     const fence = !finished && openFence(tail);
     const parsed = finished
       ? parseDetailed(tail, { references: environment.references ? { ...environment.references } : undefined })
