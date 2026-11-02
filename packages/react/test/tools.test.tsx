@@ -193,9 +193,19 @@ test("tool names use one bounded label in calls and approvals", () => {
   for (const card of cards) {
     const label = card.querySelector<HTMLElement>('[data-part="tool-name"]')!;
     expect(label.textContent!.length).toBeLessThanOrEqual(240);
-    expect(label.title).toBe(name);
+    // The hover title shows more of a cut name, but never the multi-megabyte raw value.
+    expect(label.title.startsWith("tool-xxx")).toBe(true);
+    expect(label.title.length).toBeLessThanOrEqual(1_000);
     expect(card.dataset.tool!.length).toBeLessThanOrEqual(240);
+    expect(card.outerHTML.length).toBeLessThan(20_000);
   }
+});
+
+test("a short tool name has no redundant title", () => {
+  render([{ type: "tool_start", tool_call: { id: "short", name: "bash", arguments: {} } }], ["tool:short"]);
+  const label = container.querySelector<HTMLElement>('[data-part="tool-name"]')!;
+  expect(label.textContent).toBe("bash");
+  expect(label.hasAttribute("title")).toBe(false);
 });
 
 test("the compact line preview stays bounded", () => {

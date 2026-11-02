@@ -67,8 +67,12 @@ const statusText: Record<ItemState, string> = {
 // Harness tool names are free strings; a blank one still needs a readable label.
 const isBlank = (name: string) => name.trim() === "";
 const toolLabel = (name: string) => boundText(isBlank(name) ? "unnamed tool" : name, MAX_SUMMARY_CHARS).text;
+// A cut name gets a longer, still bounded hover title; the exact name stays in app state only.
+const MAX_TITLE_CHARS = 1_000;
 function ToolName({ name }: { name: string }) {
-  return <span data-part="tool-name" data-blank={isBlank(name) ? "" : undefined} title={name}>{toolLabel(name)}</span>;
+  const label = toolLabel(name);
+  const title = !isBlank(name) && label !== name ? boundText(name, MAX_TITLE_CHARS).text : undefined;
+  return <span data-part="tool-name" data-blank={isBlank(name) ? "" : undefined} title={title}>{label}</span>;
 }
 
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
