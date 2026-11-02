@@ -396,6 +396,15 @@ const lineOffset = (source: string, line: number) => {
   return offset;
 };
 
+type OpenTableState = {
+  header: string;
+  delimiter: string;
+  scannedOffset: number;
+  pending: string;
+  hasPendingRow: boolean;
+  block: Extract<Block, { type: "table" }>;
+};
+
 type OpenFenceState = {
   marker: string;
   language?: string;
@@ -406,6 +415,47 @@ type OpenFenceState = {
 };
 
 const fenceCloser = (marker: string, line: string) => new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(line);
+
+function tableRow(state: OpenTableState, line: string) {
+  const cells: string[] = [];
+  let cell = "";
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index]!;
+    if (character === "\\" && line[index + 1] === "|") cell += line[++index]!;
+    else if (character === "|") { cells.push(cell); cell = ""; }
+    else cell += character;
+  }
+  cells.push(cell);
+  if (!cells[0]!.trim()) cells.shift();
+  if (!cells.at(-1)!.trim()) cells.pop();
+  return Array.from({ length: state.block.header.length }, (_, index) => {
+    const tokens = markdown.parseInline(cells[index]?.trim() ?? "", {});
+    return inlineNodes(tokens[0]?.children ?? []);
+  });
+}
+
+function appendTableDelta(state: OpenTableState, delta: string) {
+  if (state.hasPendingRow) {
+    state.block.rows.pop();
+    state.hasPendingRow = false;
+  }
+  const lines = `${state.pending}${delta}`.split("\n");
+  state.pending = lines.pop()!;
+  for (const line of lines) {
+    if (!line.trim()) return false;
+    const row = tableRow(state, line);
+    if (row) state.block.rows.push(row);
+  }
+  if (state.pending) {
+    const row = tableRow(state, state.pending);
+    if (row) {
+      state.block.rows.push(row);
+      state.hasPendingRow = true;
+    }
+  }
+  state.scannedOffset += delta.length;
+  return true;
+}
 
 function appendFenceDelta(state: OpenFenceState, delta: string) {
   const lines = `${state.pending}${delta}`.split("\n");
@@ -430,10 +480,20 @@ export function createStreamingDocument(): StreamingDocument {
   let frozenParses = 0;
   let tailParses = 0;
   let fenceState: OpenFenceState | undefined;
+  let tableState: OpenTableState | undefined;
   const environment: Environment = {};
 
   const render = () => {
     if (source === renderedSource) return cached;
+    if (!finished && tableState) {
+      const delta = source.slice(tableState.scannedOffset);
+      if (appendTableDelta(tableState, delta)) {
+        cached = [...frozen, tableState.block];
+        renderedSource = source;
+        return cached;
+      }
+      tableState = undefined;
+    }
     if (!finished && fenceState) {
       const delta = source.slice(fenceState.scannedOffset);
       if (appendFenceDelta(fenceState, delta)) {
@@ -445,6 +505,20 @@ export function createStreamingDocument(): StreamingDocument {
     }
     const tail = source.slice(tailOffset);
     if (!finished) {
+      const table = /^([^\n]*\|[^\n]*)\n(\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*)\n/.exec(tail);
+      if (table) {
+        const initial = parseMarkdown(`${table[1]}\n${table[2]}`)[0];
+        if (initial?.type === "table") {
+          const contentOffset = tailOffset + table[0].length;
+          tableState = { header: table[1]!, delimiter: table[2]!, scannedOffset: contentOffset, pending: "", hasPendingRow: false, block: initial };
+          if (appendTableDelta(tableState, source.slice(contentOffset))) {
+            cached = [...frozen, initial];
+            renderedSource = source;
+            return cached;
+          }
+          tableState = undefined;
+        }
+      }
       const opener = /^ {0,3}(`{3,}|~{3,})([^\n]*)\n/.exec(tail);
       if (opener) {
         const contentOffset = tailOffset + opener[0].length;

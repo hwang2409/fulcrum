@@ -27,9 +27,12 @@ const paragraph = `${"streaming markdown stays bounded ".repeat(3)}\n\n`;
 const paragraphs = paragraph.repeat(Math.ceil(targetBytes / paragraph.length)).slice(0, targetBytes);
 const fenceLine = "const value = 1234567890;\n";
 const openFence = `\`\`\`ts\n${fenceLine.repeat(Math.ceil(targetBytes / fenceLine.length))}`.slice(0, targetBytes);
+const tableRow = "| package | passing | 1.2ms |\n";
+const openTable = `| check | result | time |\n| --- | --- | ---: |\n${tableRow.repeat(Math.ceil(targetBytes / tableRow.length))}`.slice(0, targetBytes);
 
 console.log(`markdown stream benchmark: ${targetBytes} bytes, ${deltaSize}-byte deltas`);
 let failed = false;
 failed = measure("normal paragraphs", paragraphs, 2, Number.POSITIVE_INFINITY) || failed;
 failed = measure("open fence", openFence, 1.5) || failed;
+failed = measure("open table", openTable, 1.5) || failed;
 if (failed) process.exit(1);
