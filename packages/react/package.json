@@ -1,0 +1,20 @@
+{
+  "name": "@fulcrum/react",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./styles.css": "./styles.css"
+  },
+  "files": ["dist", "styles.css"],
+  "scripts": { "build": "tsc -p ." },
+  "peerDependencies": { "@fulcrum/core": "*", "react": ">=19" },
+  "devDependencies": {
+    "@fulcrum/core": "workspace:*",
+    "@happy-dom/global-registrator": "^21.0.4",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "react": "^19",
+    "react-dom": "^19"
+  }
+}

@@ -1,0 +1,179 @@
+import "@fulcrum/react/styles.css";
+import "./app.css";
+import { useEffect, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { createRunStore, type RunEvent } from "@fulcrum/core";
+import { Approval, Message, RunProvider, Timeline, useItem, useRun, type Renderers } from "@fulcrum/react";
+import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
+
+const files = import.meta.glob<string>("../../../packages/zeta/test/fixtures/*.jsonl", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+const fixtures = Object.fromEntries(
+  Object.entries(files).map(([path, text]) => [
+    path.split("/").pop()!,
+    text
+      .split("\n")
+      .filter(Boolean)
+      .flatMap((line) => fromZetaEvent((JSON.parse(line) as { params: EventParams }).params)),
+  ]),
+);
+const STRESS = "stress";
+const STRESS_MESSAGES = 5000;
+const STRESS_RATE = 200;
+
+// Sampled by the readout outside React state, so the readout never re-renders the timeline.
+let messageRenders = 0;
+let dispatched = 0;
+let lastAction = "";
+function CountedMessage({ id }: { id: string }) {
+  useItem(id);
+  messageRenders++;
+  return <Message id={id} />;
+}
+function LoggedApproval({ id }: { id: string }) {
+  return (
+    <Approval id={id} onApprove={(requestId) => (lastAction = `approve ${requestId}`)} onDeny={(requestId) => (lastAction = `deny ${requestId}`)} />
+  );
+}
+const renderers: Renderers = { message: CountedMessage, approval: LoggedApproval };
+
+function stressSource(): () => RunEvent {
+  let n = 0;
+  return () => {
+    const id = `stream-${Math.floor(n / STRESS_RATE)}`;
+    // Commit the streaming message once per second so the timeline also sees appends.
+    const event: RunEvent =
+      ++n % STRESS_RATE === 0
+        ? { type: "message_commit", message_id: id, message: { role: "assistant", content: [{ type: "text", text: `streamed ${STRESS_RATE} deltas` }] } }
+        : { type: "message_delta", message_id: id, delta: n % 12 === 0 ? "\n" : "word " };
+    return event;
+  };
+}
+
+function useReplay(mode: string, speed: number, run: number) {
+  const [store, setStore] = useState(() => createRunStore());
+  // Read on every tick, so moving the slider changes speed without restarting the replay.
+  const rate = useRef(speed);
+  rate.current = speed;
+  useEffect(() => {
+    const next = createRunStore();
+    let nextEvent: () => RunEvent | undefined;
+    let stress = false;
+    if (mode === STRESS) {
+      for (let i = 0; i < STRESS_MESSAGES; i++)
+        next.dispatch({
+          type: "message_commit",
+          message_id: `m${i}`,
+          message: { role: i % 2 ? "assistant" : "user", content: [{ type: "text", text: `message ${i}\nsecond line` }] },
+        });
+      nextEvent = stressSource();
+      stress = true;
+    } else {
+      const events = fixtures[mode] ?? [];
+      let i = 0;
+      nextEvent = () => events[i++];
+    }
+    setStore(next);
+    dispatched = 0;
+    let budget = 0;
+    let last = performance.now();
+    const timer = setInterval(() => {
+      const now = performance.now();
+      budget += ((now - last) * (stress ? STRESS_RATE : rate.current)) / 1000;
+      last = now;
+      for (; budget >= 1; budget--) {
+        const event = nextEvent();
+        if (!event) return clearInterval(timer);
+        next.dispatch(event);
+        dispatched++;
+      }
+    }, 16);
+    return () => clearInterval(timer);
+  }, [mode, run]);
+  return store;
+}
+
+function Readout() {
+  const items = useRun((state) => state.items.length);
+  const [stats, setStats] = useState({ fps: 0, renders: 0, events: 0 });
+  useEffect(() => {
+    let frames = 0;
+    let raf = requestAnimationFrame(function tick() {
+      frames++;
+      raf = requestAnimationFrame(tick);
+    });
+    let start = performance.now();
+    let renders = messageRenders;
+    const timer = setInterval(() => {
+      const seconds = (performance.now() - start) / 1000;
+      setStats({ fps: Math.round(frames / seconds), renders: Math.round((messageRenders - renders) / seconds), events: dispatched });
+      frames = 0;
+      renders = messageRenders;
+      start = performance.now();
+    }, 500);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearInterval(timer);
+    };
+  }, []);
+  return (
+    <span className="readout" data-testid="readout">
+      {stats.fps} fps · {stats.renders} message renders/s · {items} items · {stats.events} events{lastAction && ` · ${lastAction}`}
+    </span>
+  );
+}
+
+function App() {
+  const [mode, setMode] = useState(Object.keys(fixtures)[0] ?? STRESS);
+  const [speed, setSpeed] = useState(20);
+  const [run, setRun] = useState(0);
+  const store = useReplay(mode, speed, run);
+  const scroll = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // Stick to the bottom while the user has not scrolled up.
+    const el = scroll.current!;
+    let atBottom = true;
+    const onScroll = () => (atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+    el.addEventListener("scroll", onScroll);
+    let raf = requestAnimationFrame(function tick() {
+      if (atBottom && el.scrollTop + el.clientHeight < el.scrollHeight) el.scrollTop = el.scrollHeight;
+      raf = requestAnimationFrame(tick);
+    });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(raf);
+    };
+  }, []);
+  return (
+    <RunProvider store={store}>
+      <div className="app">
+        <div className="bar">
+          <label>
+            replay
+            <select value={mode} onChange={(e) => setMode(e.target.value)}>
+              {Object.keys(fixtures).map((name) => (
+                <option key={name}>{name}</option>
+              ))}
+              <option value={STRESS}>stress: {STRESS_MESSAGES} messages + {STRESS_RATE} deltas/s</option>
+            </select>
+          </label>
+          <label>
+            events/s
+            <input type="range" min={1} max={200} value={speed} disabled={mode === STRESS} onChange={(e) => setSpeed(Number(e.target.value))} />
+            {mode === STRESS ? STRESS_RATE : speed}
+          </label>
+          <button type="button" onClick={() => setRun(run + 1)}>restart</button>
+          <Readout />
+        </div>
+        <div className="scroll" ref={scroll}>
+          <Timeline renderers={renderers} />
+        </div>
+      </div>
+    </RunProvider>
+  );
+}
+
+createRoot(document.getElementById("root")!).render(<App />);
