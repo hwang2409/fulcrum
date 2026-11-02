@@ -57,6 +57,26 @@ const q = (selector: string) => container.querySelector(selector) as HTMLElement
 const hostProps = (el: Element) =>
   (el as unknown as Record<string, unknown>)[Object.keys(el).find((key) => key.startsWith("__reactProps$"))!];
 
+test("async highlighting queues each new complete line once", async () => {
+  const calls: string[] = [];
+  const resolves: Array<(tokens: Array<{ type: "keyword"; content: string }>) => void> = [];
+  const highlight = (code: string) => {
+    calls.push(code);
+    return new Promise<Array<{ type: "keyword"; content: string }>>((resolve) => resolves.push(resolve));
+  };
+  mount(<Markdown source={"```ts\na\n"} streaming highlight={highlight} />);
+  act(() => root!.render(<Markdown source={"```ts\na\nb\npartial"} streaming highlight={highlight} />));
+  expect(calls).toEqual(["a\n"]);
+  await act(async () => {
+    resolves.shift()!([{ type: "keyword", content: "a\n" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(calls).toEqual(["a\n", "b\n"]);
+  await act(async () => { resolves.shift()!([{ type: "keyword", content: "b\n" }]); await Promise.resolve(); });
+  expect(container.querySelectorAll(".tok-keyword")).toHaveLength(2);
+  expect(container.textContent).toBe("a\nb\npartial");
+});
+
 test("streaming markdown keeps a finished block element mounted", () => {
   mount(<Markdown source={"first\n\nsecond"} streaming />);
   const first = q('[data-part="md-paragraph"]');

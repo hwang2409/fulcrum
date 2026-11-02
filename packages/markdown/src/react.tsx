@@ -46,10 +46,12 @@ const completeLines = (code: string, open: boolean) => {
   return end < 0 ? "" : code.slice(0, end + 1);
 };
 
-function highlighted(highlight: Highlighter | undefined, code: string, language: string | undefined) {
-  if (!highlight || !code) return null;
+function initialHighlight(highlight: Highlighter | undefined, code: string, language: string | undefined) {
+  if (!highlight || !code) return { tokens: null as Token[] | null };
   const value = highlight(code, language);
-  return value && !(value instanceof Promise) ? value : null;
+  return value instanceof Promise
+    ? { tokens: null as Token[] | null, pending: value }
+    : { tokens: value };
 }
 
 const Tokens = ({ tokens }: { tokens: readonly Token[] }) => (
@@ -60,19 +62,38 @@ const Tokens = ({ tokens }: { tokens: readonly Token[] }) => (
 
 function CodeBlock({ block, highlight }: { block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) {
   const ready = completeLines(block.value, Boolean(block.open));
-  const initial = useRef<{ source: string; tokens: Token[] | null } | undefined>(undefined);
-  initial.current ??= { source: ready, tokens: highlighted(highlight, ready, block.language) };
-  const [result, setResult] = useState(initial.current);
+  const initial = useRef<{
+    source: string;
+    tokens: Token[] | null;
+    pending?: Promise<Token[]>;
+  } | undefined>(undefined);
+  if (!initial.current) initial.current = { source: ready, ...initialHighlight(highlight, ready, block.language) };
+  const [result, setResult] = useState({ source: initial.current.source, tokens: initial.current.tokens });
+  const processed = useRef(initial.current.source);
+  const queue = useRef(Promise.resolve());
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  const initialQueued = useRef(false);
   useEffect(() => {
-    if (!highlight || ready === result.source) return;
-    const suffix = ready.slice(result.source.length);
-    if (!suffix) return;
-    let live = true;
-    void Promise.resolve(highlight(suffix, block.language)).then((tokens) => {
-      if (live) setResult({ source: ready, tokens: tokens ? [...(result.tokens ?? []), ...tokens] : null });
+    if (!initial.current?.pending || initialQueued.current) return;
+    initialQueued.current = true;
+    queue.current = initial.current.pending.then((tokens) => {
+      if (mounted.current) setResult({ source: initial.current!.source, tokens });
     });
-    return () => { live = false; };
-  }, [block.language, highlight, ready, result]);
+  }, []);
+  useEffect(() => {
+    if (!highlight || ready.length <= processed.current.length) return;
+    const source = ready;
+    const suffix = source.slice(processed.current.length);
+    processed.current = source;
+    queue.current = queue.current.then(async () => {
+      const tokens = await highlight(suffix, block.language);
+      if (mounted.current) setResult((prior) => ({
+        source,
+        tokens: tokens ? [...(prior.tokens ?? []), ...tokens] : null,
+      }));
+    });
+  }, [block.language, highlight, ready]);
   const rest = block.value.slice(result.source.length);
   return (
     <pre data-part="md-code-block" data-language={block.language}>
