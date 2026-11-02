@@ -13,6 +13,8 @@ import {
   RunProvider,
   Timeline,
   ToolCall,
+  useItem,
+  useTimeline,
   type Renderers,
 } from "../src/index.js";
 
@@ -87,6 +89,45 @@ test("a delta re-renders only the streaming item", async () => {
   expect(rows).toEqual(before.rows);
   expect(hostProps(q('[data-part="timeline"]'))).toBe(timelineProps);
   expect(store.getState().items).toHaveLength(3);
+});
+
+test("keyed hooks do not read unrelated items or the outline", () => {
+  const { store, send } = setup([
+    { type: "message_commit", message_id: "a", message: message("one") },
+    { type: "message_commit", message_id: "b", message: message("two") },
+  ]);
+  let aReads = 0;
+  let bReads = 0;
+  let outlineReads = 0;
+  const A = () => {
+    aReads++;
+    useItem("message:a");
+    return null;
+  };
+  const B = () => {
+    bReads++;
+    useItem("message:b");
+    return null;
+  };
+  const Outline = () => {
+    outlineReads++;
+    useTimeline();
+    return null;
+  };
+  mount(
+    <RunProvider store={store}>
+      <A />
+      <B />
+      <Outline />
+    </RunProvider>,
+  );
+  const before = [aReads, bReads, outlineReads];
+
+  send({ type: "message_delta", message_id: "a", delta: "+" });
+
+  expect(aReads).toBe(before[0]! + 1);
+  expect(bReads).toBe(before[1]);
+  expect(outlineReads).toBe(before[2]);
 });
 
 test("timeline renders items in order with renderer by kind and by tool name", () => {

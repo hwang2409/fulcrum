@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { createRunStore, initialState, reduce, type RunState } from "../src/index.js";
+import {
+  createRunStore,
+  initialState,
+  RECEIPT_LIMIT,
+  reduce,
+  type RunState,
+} from "../src/index.js";
 
 const message = (text: string) => ({
   role: "assistant",
@@ -171,4 +177,33 @@ test("handles unknown events and receipt dedupe", () => {
   });
   expect(state.items.filter((id) => state.itemsById[id].type === "unknown")).toHaveLength(1);
   expect(state.receipts["1"]).toBe(true);
+});
+
+test("receipt dedupe is bounded and evicts the oldest receipt", () => {
+  let state = structuredClone(initialState);
+  for (let i = 0; i <= RECEIPT_LIMIT; i++) {
+    state = reduce(state, {
+      type: "notification",
+      notification_id: String(i),
+    });
+  }
+
+  expect(Object.keys(state.receipts)).toHaveLength(RECEIPT_LIMIT);
+  expect(state.receipts["0"]).toBeUndefined();
+  expect(state.receipts[String(RECEIPT_LIMIT)]).toBe(true);
+});
+
+test("tool output branches are independent and old snapshots stay unchanged", () => {
+  const started = reduce(initialState, { type: "tool_start", tool_call: toolCall });
+  const a = reduce(started, { type: "tool_output", tool_call: toolCall, output: "a" });
+  const ab = reduce(a, { type: "tool_output", tool_call: toolCall, output: "b" });
+  const ac = reduce(a, { type: "tool_output", tool_call: toolCall, output: "c" });
+  const output = (state: RunState) => {
+    const item = state.itemsById[`tool:${toolCall.id}`];
+    return item.type === "tool" ? item.output : undefined;
+  };
+
+  expect(output(a)).toBe("a");
+  expect(output(ab)).toBe("ab");
+  expect(output(ac)).toBe("ac");
 });
