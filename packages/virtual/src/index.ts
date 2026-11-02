@@ -161,6 +161,8 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   let correctionEvent = false;
   let jump = 0;
   let pendingJump = 0;
+  // Engine scroll writes alone create or replace this target; its first matching event consumes it at most once.
+  // Scroll settlement clears it, while non-scroll mutations preserve it and adjust it when bounds move.
   let expectedCorrectionScroll: number | null = null;
   let rangeCursorIndex = 0;
   let rangeCursorStart = 0;
@@ -184,6 +186,19 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   const maxScroll = (): number => Math.max(0, sizes.total - viewportSize);
   const clampScroll = (value: number): number => Math.min(maxScroll(), Math.max(0, value));
   const effectiveScrollTop = (): number => scrollTop + pendingJump;
+  const captureExpectedAnchor = (): Anchor<Id> | null => {
+    if (expectedCorrectionScroll === null || outline.length === 0) return null;
+    const index = Math.min(sizes.lowerBound(expectedCorrectionScroll), outline.length - 1);
+    return { id: outline[index]!.id, index, offset: sizes.prefix(index) - expectedCorrectionScroll };
+  };
+  const restoreExpectedAnchor = (anchor: Anchor<Id> | null): void => {
+    if (expectedCorrectionScroll === null) return;
+    if (anchor && outline.length > 0) {
+      const index = indexes.get(anchor.id) ?? Math.min(anchor.index, outline.length - 1);
+      expectedCorrectionScroll = sizes.prefix(index) - anchor.offset;
+    }
+    expectedCorrectionScroll = clampScroll(expectedCorrectionScroll);
+  };
 
   const applyKindEstimate = (kind: string, median: number): void => {
     kindMedians.set(kind, median);
@@ -277,15 +292,19 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   const setViewport = (viewport: Viewport): void => {
     checkSize(viewport.scrollTop);
     checkSize(viewport.size);
+    const writesScroll = Math.abs(viewport.scrollTop - scrollTop) >= 0.5;
+    const expectedAnchor = captureExpectedAnchor();
     viewportSize = viewport.size;
     calibrateKindEstimates();
-    const isCorrection = viewport.source === "user" && expectedCorrectionScroll !== null && Math.abs(viewport.scrollTop - expectedCorrectionScroll) < 0.5;
-    if (viewport.source === "programmatic") expectedCorrectionScroll = null;
-    scrollTop = clampScroll(viewport.scrollTop);
+    restoreExpectedAnchor(expectedAnchor);
+    const nextScrollTop = clampScroll(viewport.scrollTop);
+    const isCorrection = viewport.source === "user" && expectedCorrectionScroll !== null && Math.abs(nextScrollTop - expectedCorrectionScroll) < 0.5;
+    if (viewport.source === "programmatic" && writesScroll) expectedCorrectionScroll = nextScrollTop;
+    scrollTop = nextScrollTop;
     correctionEvent = isCorrection;
     programmatic = viewport.source === "programmatic" || isCorrection;
     if (viewport.source === "user" && !isCorrection) pinned = sizes.total - scrollTop - viewportSize <= bottomThreshold;
-    if (viewport.source === "user") expectedCorrectionScroll = null;
+    if (isCorrection) expectedCorrectionScroll = null;
     if (isCorrection) jump = 0;
     log("viewport", { scrollTop, size: viewportSize, programmatic, pinned });
     changed();
@@ -293,7 +312,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
 
   return {
     setOutline(items) {
-      expectedCorrectionScroll = null;
+      const expectedAnchor = captureExpectedAnchor();
       const cursorId = outline[rangeCursorIndex]?.id;
       const ownedItems = items.map(({ id, kind }) => ({ id, kind }));
       const nextIndexes = new Map<Id, number>();
@@ -322,12 +341,13 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       rangeCursorIndex = cursorId === undefined ? 0 : (indexes.get(cursorId) ?? Math.min(rangeCursorIndex, Math.max(0, outline.length - 1)));
       rangeCursorStart = sizes.prefix(rangeCursorIndex);
       calibrateKindEstimates();
+      restoreExpectedAnchor(expectedAnchor);
       log("outline", { count: outline.length, totalSize: sizes.total });
       changed();
     },
     setViewport,
     measure(id, size) {
-      expectedCorrectionScroll = null;
+      const expectedAnchor = captureExpectedAnchor();
       checkSize(size);
       const index = indexes.get(id);
       if (index === undefined) throw new Error("cannot measure an id outside the outline");
@@ -342,11 +362,11 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       sizes.update(index, size);
       if (index < rangeCursorIndex) rangeCursorStart += size - previousSize;
       calibrateKindEstimates();
+      restoreExpectedAnchor(expectedAnchor);
       log("measure", { index, size, totalSize: sizes.total });
       changed();
     },
     setLoaded(ids) {
-      expectedCorrectionScroll = null;
       loaded = new Set(ids);
       log("loaded", { count: loaded.size });
       changed();
@@ -358,7 +378,6 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       return { anchor, pinned, mode, distanceFromEnd: sizes.total - effectiveScrollTop() };
     },
     afterMutation(token, mutationOptions) {
-      expectedCorrectionScroll = null;
       const actualBefore = scrollTop;
       const logicalBefore = effectiveScrollTop();
       let requested = logicalBefore;
@@ -390,13 +409,12 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       return { scrollTop, correction, appliedCorrection, jump, pendingJump, followedBottom };
     },
     flushPendingCorrection() {
-      expectedCorrectionScroll = null;
       const before = scrollTop;
       const correction = pendingJump;
       scrollTop = clampScroll(scrollTop + pendingJump);
       pendingJump = 0;
       jump = scrollTop - before;
-      if (Math.abs(jump) >= 0.5) expectedCorrectionScroll = scrollTop;
+      expectedCorrectionScroll = Math.abs(jump) >= 0.5 ? scrollTop : null;
       correctionEvent = false;
       programmatic = true;
       log("correction", { correction, appliedCorrection: jump, pendingJump, followedBottom: false, scrollTop });

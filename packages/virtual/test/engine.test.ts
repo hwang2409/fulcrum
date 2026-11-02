@@ -257,24 +257,88 @@ describe("bottom and scroll semantics", () => {
     virtual.setOutline([...items([10, 30]).outline, { id: "row-2", kind: "10:2" }]);
     expect(virtual.afterMutation(append)).toMatchObject({ followedBottom: true, scrollTop: 40 });
   });
-  test("seeded scroll ownership always follows a user-pinned bottom", () => {
-    let seed = 0x51a1e;
-    const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
-    const virtual = engine([20, 20], 10, 30);
-    let count = 2;
-    for (let step = 0; step < 200; step++) {
-      const before = virtual.beforeMutation();
-      virtual.measure("row-0", 10 + Math.floor(random() * 20));
-      virtual.afterMutation(before);
-      virtual.scrollToId(random() < 0.5 ? "row-0" : `row-${count - 1}`);
-      if (random() < 0.5) virtual.flushPendingCorrection();
-      const bottom = virtual.getSnapshot().totalSize - 10;
-      virtual.setViewport({ scrollTop: bottom, size: 10, source: "user" });
-      expect(virtual.getSnapshot().pinned).toBe(true);
+  for (const [name, overlap] of [
+    ["setLoaded", (virtual: ReturnType<typeof engine>) => virtual.setLoaded(["row-0", "row-1"])],
+    ["measure", (virtual: ReturnType<typeof engine>) => virtual.measure("row-1", 30)],
+    ["setOutline", (virtual: ReturnType<typeof engine>) => virtual.setOutline(items([10, 30]).outline)],
+  ] as const) {
+    test(`${name} preserves an in-flight correction`, () => {
+      const virtual = engine([30, 30], 10, 0);
+      virtual.setViewport({ scrollTop: 50, size: 10, source: "programmatic" });
+      const correction = virtual.beforeMutation();
+      virtual.measure("row-0", 10);
+      expect(virtual.afterMutation(correction)).toMatchObject({ scrollTop: 30, jump: -20 });
+      overlap(virtual);
+      virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
+      expect(virtual.getSnapshot()).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
       const append = virtual.beforeMutation();
-      const outline = Array.from({ length: ++count }, (_, index) => ({ id: `row-${index}`, kind: index === 0 ? "20:0" : `10:${index}` }));
-      virtual.setOutline(outline);
-      expect(virtual.afterMutation(append).followedBottom).toBe(true);
+      virtual.setOutline([...items([10, 30]).outline, { id: "row-2", kind: "10:2" }]);
+      expect(virtual.afterMutation(append)).toMatchObject({ followedBottom: false, scrollTop: 30 });
+    });
+  }
+  test("moves an expected correction with content and scroll-bound changes", () => {
+    const virtual = engine([30, 30, 100], 10, 0);
+    virtual.setViewport({ scrollTop: 50, size: 10, source: "programmatic" });
+    virtual.measure("row-0", 40);
+    virtual.setViewport({ scrollTop: 60, size: 10, source: "user" });
+    expect(virtual.getSnapshot()).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
+
+    virtual.setViewport({ scrollTop: 150, size: 10, source: "programmatic" });
+    virtual.setOutline([{ id: "next-0", kind: "20" }, { id: "next-1", kind: "20" }]);
+    virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
+    expect(virtual.getSnapshot()).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
+  });
+  test("biased scroll ownership interleavings preserve user intent", () => {
+    for (let seed = 1; seed <= 100; seed++) {
+      let state = seed;
+      const random = () => ((state = (Math.imul(state, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+      for (let trace = 0; trace < 20; trace++) {
+        const virtual = engine([30, 30], 10, 0);
+        virtual.setViewport({ scrollTop: 50, size: 10, source: "programmatic" });
+        const correction = virtual.beforeMutation();
+        virtual.measure("row-0", 10);
+        expect(virtual.afterMutation(correction)).toMatchObject({ scrollTop: 30, jump: -20 });
+
+        const mutations = [
+          () => virtual.setLoaded(random() < 0.5 ? ["row-0"] : ["row-0", "row-1"]),
+          () => virtual.measure("row-1", 30),
+          () => virtual.setOutline(items([10, 30]).outline),
+          () => virtual.setViewport({ scrollTop: 30, size: 10 + Math.floor(random() * 3), source: "programmatic" }),
+        ];
+        for (let index = mutations.length - 1; index > 0; index--) {
+          const swap = Math.floor(random() * (index + 1));
+          [mutations[index], mutations[swap]] = [mutations[swap]!, mutations[index]!];
+        }
+        for (const mutation of mutations.slice(0, 1 + Math.floor(random() * mutations.length))) mutation!();
+
+        const event = Math.floor(random() * 4);
+        let lastUserPinned = false;
+        if (event === 0) {
+          virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });
+          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: true, programmatic: true, pinned: false });
+        } else if (event === 1) {
+          virtual.flushPendingCorrection();
+          virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });
+          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: false, programmatic: false, pinned: true });
+          lastUserPinned = true;
+        } else if (event === 2) {
+          virtual.setViewport({ scrollTop: 0, size: virtual.getSnapshot().viewportSize, source: "programmatic" });
+          virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });
+          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: false, programmatic: false, pinned: true });
+          lastUserPinned = true;
+          virtual.setViewport({ scrollTop: 0, size: virtual.getSnapshot().viewportSize, source: "user" });
+          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: true, programmatic: true, pinned: true });
+        } else {
+          virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });
+          expect(virtual.getSnapshot().correctionEvent).toBe(true);
+          virtual.setViewport({ scrollTop: 0, size: virtual.getSnapshot().viewportSize, source: "user" });
+          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: false, programmatic: false, pinned: false });
+        }
+
+        const append = virtual.beforeMutation();
+        virtual.setOutline([...items([10, 30]).outline, { id: "row-2", kind: "10:2" }]);
+        expect(virtual.afterMutation(append).followedBottom).toBe(lastUserPinned);
+      }
     }
   });
   test("shift mode keeps distance from the end on prepend", () => {
