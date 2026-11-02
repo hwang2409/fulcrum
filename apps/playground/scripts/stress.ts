@@ -20,10 +20,11 @@ try {
   for (let run = 1; run <= runs; run++) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     await page.goto("http://127.0.0.1:4173");
+    await page.evaluate(() => performance.mark("stress-start"));
     await page.selectOption("select", "stress");
     const result = await page.evaluate(async () => {
       const scroll = document.querySelector<HTMLElement>(".scroll")!;
-      const started = performance.now();
+      const started = performance.getEntriesByName("stress-start")[0]?.startTime ?? performance.now();
       await new Promise<void>((resolve) => {
         const check = () => document.querySelectorAll('[data-part="message"]').length >= 5000 ? resolve() : requestAnimationFrame(check);
         check();
