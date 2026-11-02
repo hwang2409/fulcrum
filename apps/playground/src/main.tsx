@@ -23,7 +23,7 @@ const fixtures = Object.fromEntries(
   ]),
 );
 const STRESS = "stress";
-const STRESS_MESSAGES = 5000;
+const STRESS_MESSAGES = Number(new URLSearchParams(location.search).get("stressMessages")) || 5000;
 const STRESS_RATE = 200;
 
 // Sampled by the readout outside React state, so the readout never re-renders the timeline.
