@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Tokens, useTokens } from "../highlight.js";
 import { useVirtualList } from "../virtual.js";
 import { spansIn, type AnsiSpan } from "./ansi.js";
@@ -9,6 +9,11 @@ const MAX_PREVIEW_LINES = 60;
 const HEAD_CHARS = 40_000;
 const TAIL_CHARS = 10_000;
 const ROW_HEIGHT = 21;
+const HEAD_ROWS = 40;
+const TAIL_ROWS = 20;
+// shortcut: structured rows are grouped by count, not characters; rows are capped at ROW_CHARS by their parsers, so a
+// group stays bounded. Group by characters if very long rows (minified files) become common.
+const ROWS_PER_SEGMENT = 40;
 const GRAPHEME_LOOKBACK = 128;
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -16,6 +21,14 @@ export type TextMetrics = { characters: number; lines: number };
 /** How text is colored: by a highlight language, or by ANSI spans over the text (already stripped of escapes). */
 export type TextFormat = { language?: string; spans?: AnsiSpan[] };
 export type TextSegment = { id: string; kind: string; start: number };
+/** The longest structured row a parser keeps (diff lines, search lines); longer rows are cut with a notice. */
+export const ROW_CHARS = 10_000;
+/**
+ * Structured rows (diff lines, search results). `render(start, end)` draws rows [start, end) and highlights them as one
+ * block: the compact view draws every row, the viewer only its mounted groups, through the same renderer. `part`
+ * names the compact view's box.
+ */
+export type RowModel = { count: number; part: string; language?: string; render: (start: number, end: number) => ReactNode };
 
 const safeEnd = (text: string, end: number) => {
   if (end >= text.length) return text.length;
@@ -130,16 +143,14 @@ export function Styled({ text, start = 0, end = text.length, format, id, done = 
 
 const count = (value: number) => value.toLocaleString("en-US");
 
-type ViewerProps = { text: string; label: string; appendOnly: boolean; follow: boolean; metrics: TextMetrics; format?: TextFormat; id: string; done: boolean };
+type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean };
 
-function VirtualText({ text, label, appendOnly, follow, metrics, format, id, done }: ViewerProps) {
+function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done }: ViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(follow);
   const [atBottom, setAtBottom] = useState(follow);
   const [newOutput, setNewOutput] = useState(false);
   const seenLength = useRef(text.length);
-  const segmentCount = Math.max(1, Math.ceil(text.length / SEGMENT_CHARS));
-  const segments = useSegments(text, appendOnly, Math.max(1, Math.ceil(metrics.lines / segmentCount)));
   const priorCount = useRef(0);
   const added = segments.length - priorCount.current;
   const update = added > 0 && priorCount.current > 0 ? { type: "append" as const, count: added } : null;
@@ -203,14 +214,16 @@ function VirtualText({ text, label, appendOnly, follow, metrics, format, id, don
           {list.snapshot.rows.map((row) => {
             const start = segments[row.index]!.start;
             const last = row.index === segments.length - 1;
-            const end = segments[row.index + 1]?.start ?? text.length;
+            const end = segments[row.index + 1]?.start ?? (rows ? rows.count : text.length);
+            const Row = rows ? "div" : "pre";
             return (
-              <pre
+              <Row
                 key={row.id}
                 ref={list.observeRow(row.id)}
                 data-part="text-viewer-row"
+                data-language={rows?.language}
                 style={{ position: "absolute", insetInline: 0, transform: `translateY(${row.start}px)` } as CSSProperties}
-              ><Styled text={text} start={start} end={end} format={format} id={id} done={done || !last} /></pre>
+              >{rows ? rows.render(start, end) : <Styled text={text} start={start} end={end} format={format} id={id} done={done || !last} />}</Row>
             );
           })}
         </div>
@@ -249,16 +262,40 @@ export type TextViewerProps = {
   format?: TextFormat;
   /** False while the text still streams in. */
   done?: boolean;
+  /** Draw `text` as these structured rows instead of as text; `text` still decides the size and is what copy uses. */
+  rows?: RowModel;
 };
 
 /** One bounded, virtualized disclosure for every large tool text surface. */
-export function TextViewer({ text, label, id, appendOnly = false, follow = false, preview, part = "tool-output", stream, metrics: suppliedMetrics, format, done = true }: TextViewerProps) {
+export function TextViewer({ text, label, id, appendOnly = false, follow = false, preview, part = "tool-output", stream, metrics: suppliedMetrics, format, done = true, rows }: TextViewerProps) {
   const [open, setOpen] = useState(false);
   const measuredMetrics = useTextMetrics(suppliedMetrics ? "" : text, appendOnly);
   const metrics = suppliedMetrics ?? measuredMetrics;
+  const large = needsTextViewer(text, metrics);
+  // Segments are built only for an open viewer: text in fixed-size ranges that start on a line, rows in fixed groups.
+  const textSegments = useSegments(open && !rows ? text : "", appendOnly, Math.max(1, Math.ceil(metrics.lines / Math.max(1, Math.ceil(text.length / SEGMENT_CHARS)))));
+  const rowCount = open && rows ? rows.count : 0;
+  const rowSegments = useMemo(() => Array.from({ length: Math.ceil(rowCount / ROWS_PER_SEGMENT) }, (_, index) => (
+    { id: `rows-${index * ROWS_PER_SEGMENT}`, kind: String(ROWS_PER_SEGMENT), start: index * ROWS_PER_SEGMENT }
+  )), [rowCount]);
+  if (rows && !(large && open)) {
+    const cut = large && rows.count > HEAD_ROWS + TAIL_ROWS;
+    return (
+      <>
+        <div data-part={rows.part} data-language={rows.language}>
+          {cut ? <>
+            {rows.render(0, HEAD_ROWS)}
+            <div data-part="tool-gap">… {count(metrics.lines)} lines / {count(metrics.characters)} characters; open to view all …</div>
+            {rows.render(rows.count - TAIL_ROWS, rows.count)}
+          </> : rows.render(0, rows.count)}
+        </div>
+        {large ? <OpenButton metrics={metrics} open={() => setOpen(true)} /> : null}
+      </>
+    );
+  }
   // One child in the pre: tool-output is a column-reverse flex box, which would reverse several.
-  if (!needsTextViewer(text, metrics)) return preview ?? <pre data-part={part} data-stream={stream} data-anchor={follow ? undefined : "start"}><span><Styled text={text} format={format} id={id} done={done} /></span></pre>;
-  if (open) return <VirtualText text={text} label={label} appendOnly={appendOnly} follow={follow} metrics={metrics} format={format} id={id} done={done} />;
+  if (!large) return preview ?? <pre data-part={part} data-stream={stream} data-anchor={follow ? undefined : "start"}><span><Styled text={text} format={format} id={id} done={done} /></span></pre>;
+  if (open) return <VirtualText text={text} label={label} follow={follow} metrics={metrics} segments={rows ? rowSegments : textSegments} rows={rows} format={format} id={id} done={done} />;
   const { headEnd, tailStart } = previewRanges(text);
   return (
     <>
@@ -269,9 +306,13 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
           <Styled text={text} start={tailStart} format={format} id={id} done={done} />
         </span></pre>
       )}
-      <button type="button" data-action="open-viewer" onClick={() => setOpen(true)}>
-        open all {count(metrics.lines)} lines / {count(metrics.characters)} characters
-      </button>
+      <OpenButton metrics={metrics} open={() => setOpen(true)} />
     </>
   );
 }
+
+const OpenButton = ({ metrics, open }: { metrics: TextMetrics; open: () => void }) => (
+  <button type="button" data-action="open-viewer" onClick={open}>
+    open all {count(metrics.lines)} lines / {count(metrics.characters)} characters
+  </button>
+);

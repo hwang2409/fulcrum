@@ -306,8 +306,10 @@ test("a large diff uses the shared viewer with an honest preview", () => {
   render([
     { type: "approval_request", request_id: "large-edit", tool_call, view: { kind: "edit", path: "large.ts", diff }, delegated: false },
   ], ["approval:large-edit"]);
-  expect(q('[data-part="tool-output"]').textContent!.length).toBeLessThanOrEqual(50_100);
-  expect(q('[data-part="tool-output"]').textContent).toMatch(/6,001 lines \/ [\d,]+ characters; open to view all/);
+  // The preview is the first 40 and last 20 diff rows, drawn as diff rows.
+  expect(container.querySelectorAll('[data-part="tool-diff"] > [data-part="diff-line"]')).toHaveLength(60);
+  expect(q('[data-part="tool-diff"]').textContent!.length).toBeLessThanOrEqual(50_100);
+  expect(q('[data-part="tool-diff"] > [data-part="tool-gap"]').textContent).toMatch(/6,001 lines \/ [\d,]+ characters; open to view all/);
   expect(q('[data-action="open-viewer"]')).not.toBeNull();
 });
 

@@ -3,12 +3,12 @@ import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import { MarkedTokens, tokenLines, useTokens } from "../highlight.js";
 import { Arguments, asking, boundText, Empty, Foot, Output, splitLines } from "./common.js";
-import { needsTextViewer, TextViewer, useTextMetrics } from "./text-viewer.js";
+import { ROW_CHARS, TextViewer, useTextMetrics, type RowModel } from "./text-viewer.js";
 
 // `path:line:text` (grep -n, ripgrep), or `path-line-text` for ripgrep context lines.
 const MATCH = /^(.+?):(\d+):(.*)$/;
 const CONTEXT = /^(.+?)-(\d+)-(.*)$/;
-type Group = { path: string; lines: Array<{ number: number; text: string; match: boolean }> };
+type Group = { path: string; matches: number; lines: Array<{ number: number; text: string; match: boolean }> };
 
 // Groups consecutive matches by file; returns undefined when the output is not in grep format.
 function group(lines: string[]) {
@@ -19,9 +19,10 @@ function group(lines: string[]) {
     if (!found) return undefined;
     const [, path, number, text] = found;
     const last = groups.at(-1);
-    const entry = { number: Number(number), text: text!, match: !!match };
-    if (last?.path === path) last.lines.push(entry);
-    else groups.push({ path: path!, lines: [entry] });
+    const entry = { number: Number(number), text: text!.length > ROW_CHARS ? boundText(text!, ROW_CHARS).text : text!, match: !!match };
+    const file = last?.path === path ? last : groups[groups.push({ path: path!, matches: 0, lines: [] }) - 1]!;
+    file.lines.push(entry);
+    if (match) file.matches++;
   }
   return groups;
 }
@@ -48,15 +49,16 @@ export function matchRanges(text: string, pattern: string): Array<[number, numbe
   return exact.length || lower.length !== text.length ? exact : find(lower);
 }
 
-function File({ file, pattern, id }: { file: Group; pattern: string; id: string }) {
-  const tokens = useTokens(file.lines.map((line) => line.text).join("\n"), languageForPath(file.path), id);
+/** Lines [from, to) of one file, highlighted as their own block; the head shows with the file's first line. */
+function File({ file, from, to, pattern, id }: { file: Group; from: number; to: number; pattern: string; id: string }) {
+  const shown = useMemo(() => file.lines.slice(from, to), [file, from, to]);
+  const tokens = useTokens(useMemo(() => shown.map((line) => line.text).join("\n"), [shown]), languageForPath(file.path), `${id}@${from}`);
   const lines = useMemo(() => tokens && tokenLines(tokens), [tokens]);
-  const matches = file.lines.filter((line) => line.match).length;
   return (
     <div data-part="search-file">
-      <div data-part="search-head"><span data-part="search-path">{file.path}</span><span data-part="search-count">{matches}</span></div>
-      {file.lines.map((line, j) => (
-        <div key={j} data-part="line" data-match={line.match || undefined}>
+      {from === 0 ? <div data-part="search-head"><span data-part="search-path">{file.path}</span><span data-part="search-count">{file.matches}</span></div> : null}
+      {shown.map((line, j) => (
+        <div key={from + j} data-part="line" data-match={line.match || undefined}>
           <span data-part="line-number">{line.number}</span>
           <span data-part="line-text"><MarkedTokens tokens={lines?.[j] ?? [{ text: line.text }]} ranges={line.match ? matchRanges(line.text, pattern) : []} part="search-match" /></span>
         </div>
@@ -65,22 +67,44 @@ function File({ file, pattern, id }: { file: Group; pattern: string; id: string 
   );
 }
 
+// Rows are the lines of every file in order; rows [start, end) draw each file they cross through File.
+function searchRows(groups: Group[], pattern: string, id: string): RowModel {
+  const starts: number[] = [];
+  let count = 0;
+  for (const file of groups) { starts.push(count); count += file.lines.length; }
+  const render = (start: number, end: number) => {
+    const out = [];
+    let low = 0;
+    for (let high = groups.length - 1; low < high;) {
+      const mid = (low + high + 1) >> 1;
+      if (starts[mid]! <= start) low = mid;
+      else high = mid - 1;
+    }
+    for (let g = low; g < groups.length && starts[g]! < end; g++) {
+      const from = Math.max(0, start - starts[g]!);
+      out.push(<File key={g} file={groups[g]!} from={from} to={Math.min(groups[g]!.lines.length, end - starts[g]!)} pattern={pattern} id={`${id}:file-${g}`} />);
+    }
+    return out;
+  };
+  return { count, part: "tool-matches", render };
+}
+
 export function SearchBody({ item, output, state }: ToolBodyProps) {
-  const text = item.view?.kind === "search" ? item.view.matches?.join("\n") ?? output : "";
+  const view = item.view?.kind === "search" ? item.view : undefined;
+  const text = view ? view.matches?.join("\n") ?? output : "";
   const metrics = useTextMetrics(text, true);
-  const large = needsTextViewer(text, metrics);
-  const groups = useMemo(() => large ? undefined : group(splitLines(text)), [large, text]);
-  if (item.view?.kind !== "search") return null;
-  const { pattern, path } = item.view;
-  const matches = groups?.reduce((sum, file) => sum + file.lines.filter((line) => line.match).length, 0);
+  const groups = useMemo(() => group(splitLines(text)), [text]);
+  const pattern = view?.pattern ?? "";
+  const model = useMemo(() => groups && searchRows(groups, pattern, item.id), [groups, pattern, item.id]);
+  if (!view) return null;
+  const { path } = view;
+  const matches = groups?.reduce((sum, file) => sum + file.matches, 0);
   return (
     <>
       {asking(state) ? <pre data-part="tool-path">{boundText(path ? `${pattern} in ${path}` : pattern).text}</pre> : null}
-      {!text ? <Empty state={state} noun="matches" /> : large ? <TextViewer text={text} id={`${item.id}:results`} label="search results" appendOnly metrics={metrics} done={state !== "streaming"} /> : groups ? (
-        <div data-part="tool-matches">
-          {groups.map((file, i) => <File key={i} file={file} pattern={pattern} id={`${item.id}:file-${i}`} />)}
-        </div>
-      ) : <Output text={text} id={`${item.id}:output`} done={state !== "streaming"} />}
+      {!text ? <Empty state={state} noun="matches" /> : model
+        ? <TextViewer text={text} id={`${item.id}:results`} label="search results" appendOnly metrics={metrics} done={state !== "streaming"} rows={model} />
+        : <Output text={text} id={`${item.id}:output`} done={state !== "streaming"} />}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["pattern", pattern], ["output", text]]}>
         {text && matches !== undefined ? <span data-part="search-total">{matches} {matches === 1 ? "match" : "matches"} in {groups!.length} {groups!.length === 1 ? "file" : "files"}</span> : null}
