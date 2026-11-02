@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "tsc -p . && vite build",
     "stress": "bun scripts/stress.ts",
-    "layout": "bun scripts/layout.ts"
+    "layout": "bun scripts/layout.ts", "test:virtual": "bun scripts/virtual-test.ts"
   },
   "dependencies": {
     "@fulcrum/core": "workspace:*",
