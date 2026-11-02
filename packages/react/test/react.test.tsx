@@ -263,6 +263,38 @@ test("data-state reflects streaming, done, error, pending", () => {
   expect(q('[data-part="tool"]').getAttribute("data-tool")).toBe("bash");
 });
 
+test("timeline selects virtual mode above 200 items and supports explicit modes", () => {
+  const events = Array.from({ length: 201 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: String(index),
+    message: message(String(index)),
+  }));
+  const { store } = setup(events);
+
+  mount(
+    <RunProvider store={store}>
+      <Timeline />
+    </RunProvider>,
+  );
+  expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
+
+  act(() => root!.render(
+    <RunProvider store={store}>
+      <Timeline virtual={false} />
+    </RunProvider>,
+  ));
+  expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("false");
+  expect(container.querySelectorAll('[data-part="message"]')).toHaveLength(201);
+
+  act(() => root!.render(
+    <RunProvider store={store}>
+      <Timeline virtual />
+    </RunProvider>,
+  ));
+  expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
+  expect(container.querySelectorAll('[data-part="message"]').length).toBeLessThanOrEqual(200);
+});
+
 test("react does not import @fulcrum/zeta", () => {
   const dir = new URL("../src/", import.meta.url);
   for (const name of readdirSync(dir))

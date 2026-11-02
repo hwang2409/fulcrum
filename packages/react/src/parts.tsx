@@ -1,6 +1,7 @@
-import { memo, type ComponentType } from "react";
+import { memo, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
 import type { RunItem } from "@fulcrum/core";
 import { useItem, useItemSelector, useTimeline } from "./hooks.js";
+import { useVirtualList } from "./virtual.js";
 
 export type ItemProps = { id: string; className?: string };
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
@@ -99,14 +100,98 @@ const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Rende
   return <Part id={id} />;
 });
 
+const estimateRowSize = (kind: string) => kind === "tool" ? 120 : kind === "approval" ? 100 : kind === "message" ? 72 : 48;
+const virtualContainerStyle: CSSProperties = { position: "relative", display: "block", contain: "size style", overflowAnchor: "none" };
+const virtualRowStyle: CSSProperties = { position: "absolute", insetInline: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBlockEnd: "var(--fulcrum-gap, 12px)", contain: "layout style" };
+
+export type TimelineProps = {
+  renderers?: Renderers;
+  className?: string;
+  /** Defaults to virtual mode above 200 rows. */
+  virtual?: boolean;
+  /** Scroll viewport. When omitted, Timeline uses its direct parent. */
+  scrollRef?: RefObject<HTMLElement | null>;
+};
+
 /** Pass a stable `renderers` object (module scope or memoized) so appends do not re-render every row. */
-export const Timeline = memo(function Timeline({ renderers, className }: { renderers?: Renderers; className?: string }) {
+export const Timeline = memo(function Timeline({ renderers, className, virtual, scrollRef }: TimelineProps) {
   const items = useTimeline();
+  const enabled = virtual ?? items.length > 200;
+  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled });
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const plainRef = useRef<HTMLDivElement>(null);
+  const priorMode = useRef(enabled);
+  const modeAnchor = useRef<{ id: string; offset: number } | null>(null);
+  useLayoutEffect(() => {
+    const container = scrollRef?.current ?? plainRef.current?.parentElement ?? null;
+    if (!container) return;
+    if (enabled) {
+      if (!priorMode.current && modeAnchor.current) list.scrollToId(modeAnchor.current.id, modeAnchor.current.offset);
+      if (list.snapshot.anchor) modeAnchor.current = { id: list.snapshot.anchor.id, offset: list.snapshot.anchor.offset };
+    } else {
+      if (priorMode.current && modeAnchor.current) {
+        const row = [...plainRef.current!.children].find((child) => (child as HTMLElement).dataset.id === modeAnchor.current!.id) as HTMLElement | undefined;
+        if (row) container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - modeAnchor.current.offset;
+      }
+      const capture = () => {
+        const top = container.getBoundingClientRect().top;
+        const row = [...(plainRef.current?.children ?? [])].find((child) => child.getBoundingClientRect().bottom > top) as HTMLElement | undefined;
+        if (row?.dataset.id) modeAnchor.current = { id: row.dataset.id, offset: row.getBoundingClientRect().top - top };
+      };
+      capture();
+      container.addEventListener("scroll", capture, { passive: true });
+      priorMode.current = enabled;
+      return () => container.removeEventListener("scroll", capture);
+    }
+    priorMode.current = enabled;
+  }, [enabled, list.snapshot, scrollRef]);
+  const debug = typeof location !== "undefined" && new URLSearchParams(location.search).get("virtualDebug") === "1";
+  if (!enabled) {
+    return (
+      <div ref={plainRef} className={className} data-part="timeline" data-virtual="false">
+        {items.map(({ id }) => <Row key={id} id={id} renderers={renderers} />)}
+      </div>
+    );
+  }
+  const mounted = list.snapshot.rows;
+  const retained = focusedId && !mounted.some(({ id }) => id === focusedId)
+    ? items.findIndex(({ id }) => id === focusedId)
+    : -1;
+  const retainedRow = retained >= 0 ? { ...items[retained]!, index: retained, start: -10_000, size: 0, loaded: true } : null;
   return (
-    <div className={className} data-part="timeline">
-      {items.map(({ id }) => (
-        <Row key={id} id={id} renderers={renderers} />
-      ))}
-    </div>
+    <>
+      <div
+        ref={list.timelineRef}
+        className={className}
+        data-part="timeline"
+        data-virtual="true"
+        data-unseen-count={list.unseenCount}
+        style={{ ...virtualContainerStyle, height: list.snapshot.totalSize }}
+        onFocusCapture={(event) => setFocusedId(event.target instanceof Element ? event.target.closest<HTMLElement>("[data-virtual-id]")?.dataset.virtualId ?? null : null)}
+        onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedId(null); }}
+      >
+        {[...mounted, ...(retainedRow ? [retainedRow] : [])].map((row) => (
+          <div
+            key={row.id}
+            ref={list.observeRow(row.id)}
+            data-virtual-id={row.id}
+            data-virtual-index={row.index}
+            style={{ ...virtualRowStyle, transform: `translateY(${row.start}px)`, opacity: row === retainedRow ? 0 : undefined, pointerEvents: row === retainedRow ? "none" : undefined }}
+          >
+            <Row id={row.id} renderers={renderers} />
+          </div>
+        ))}
+      </div>
+      {debug ? (
+        <output data-part="virtual-debug" style={{ position: "fixed", inset: "8px 8px auto auto", zIndex: 1000, maxWidth: "min(560px, 90vw)", maxHeight: "40vh", overflow: "auto", whiteSpace: "pre-wrap", font: "11px monospace", background: "#111", color: "#eee", padding: 8 }}>
+          {JSON.stringify({ range: list.snapshot.range, visible: list.snapshot.visible, totalSize: list.snapshot.totalSize, scrollTop: list.snapshot.scrollTop, pinned: list.snapshot.pinned, actions: list.actions.slice(-8) }, null, 2)}
+        </output>
+      ) : null}
+      {list.unseenCount > 0 ? (
+        <button type="button" data-part="jump-to-latest" data-unseen-count={list.unseenCount} onClick={list.scrollToEnd}>
+          jump to latest ({list.unseenCount})
+        </button>
+      ) : null}
+    </>
   );
 });

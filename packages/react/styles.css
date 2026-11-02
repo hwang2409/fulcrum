@@ -46,9 +46,15 @@
 }
 
 /* Skip layout and paint for off-screen items in long timelines. */
-[data-part="timeline"] > * {
+[data-part="timeline"][data-virtual="false"] > * {
   content-visibility: auto;
   contain-intrinsic-size: auto 3em;
+}
+
+[data-part="jump-to-latest"] {
+  position: sticky;
+  inset-block-end: 12px;
+  margin: 0 auto;
 }
 
 [data-part="message"][data-role="user"],

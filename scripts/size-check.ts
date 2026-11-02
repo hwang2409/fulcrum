@@ -1,8 +1,8 @@
-const budget = Number(process.env.SIZE_BUDGET_BYTES ?? 5_000);
+const defaultBudget = Number(process.env.SIZE_BUDGET_BYTES ?? 5_000);
 const builds = [
-  { name: "core", entry: "packages/core/dist/index.js", external: [] },
-  { name: "virtual", entry: "packages/virtual/dist/index.js", external: [] },
-  { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "react", "react-dom"] },
+  { name: "core", entry: "packages/core/dist/index.js", external: [], budget: defaultBudget },
+  { name: "virtual", entry: "packages/virtual/dist/index.js", external: [], budget: defaultBudget },
+  { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "@fulcrum/virtual", "react", "react-dom"], budget: 4_000 },
 ];
 let failed = false;
 const dir = await Bun.$`mktemp -d`.text();
@@ -15,7 +15,7 @@ for (const target of builds) {
     process.exit(1);
   }
   const bytes = Bun.gzipSync(await Bun.file(output).arrayBuffer()).byteLength;
-  console.log(`${target.name}: ${bytes} bytes gzipped (budget ${budget} bytes)`);
-  if (bytes > budget) failed = true;
+  console.log(`${target.name}: ${bytes} bytes gzipped (budget ${target.budget} bytes)`);
+  if (bytes > target.budget) failed = true;
 }
 if (failed) process.exit(1);

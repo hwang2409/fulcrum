@@ -2,7 +2,7 @@ import "@fulcrum/react/styles.css";
 import "./app.css";
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createRunStore, type RunEvent } from "@fulcrum/core";
+import { createRunStore, initialState, type RunEvent, type RunItem } from "@fulcrum/core";
 import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
 import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
@@ -23,7 +23,9 @@ const fixtures = Object.fromEntries(
   ]),
 );
 const STRESS = "stress";
+const HUGE = "huge";
 const STRESS_MESSAGES = 5000;
+const HUGE_MESSAGES = 100_000;
 const STRESS_RATE = 200;
 
 // Sampled by the readout outside React state, so the readout never re-renders the timeline.
@@ -66,6 +68,23 @@ function stressSource(): () => RunEvent {
   };
 }
 
+function staticStore(count: number): ReturnType<typeof createRunStore> {
+  const outline = Array.from({ length: count }, (_, index) => ({ id: `static:${index}`, kind: "message" as const }));
+  const entities = new Map<string, RunItem>();
+  const getItem = (id: string) => {
+    let item = entities.get(id);
+    if (!item) {
+      const index = id.slice(id.indexOf(":") + 1);
+      item = { id, type: "message", message: { role: Number(index) % 2 ? "assistant" : "user", content: [{ type: "text", text: `message ${index}\\nsecond line` }] }, version: 1, active: false };
+      entities.set(id, item);
+    }
+    return item;
+  };
+  const state = { ...structuredClone(initialState), outline };
+  const subscribe = (() => () => {}) as ReturnType<typeof createRunStore>["subscribe"];
+  return { getState: () => state, getItem, getOutline: () => outline, subscribe, subscribeOutline: () => () => true, dispatch: () => {}, dispose: () => {} };
+}
+
 function useReplay(mode: string, speed: number, run: number) {
   const [store, setStore] = useState(() => createRunStore());
   // Read on every tick, so moving the slider changes speed without restarting the replay.
@@ -75,6 +94,11 @@ function useReplay(mode: string, speed: number, run: number) {
     const next = createRunStore();
     let nextEvent: () => RunEvent | undefined;
     let stress = false;
+    if (mode === HUGE) {
+      setStore(staticStore(HUGE_MESSAGES));
+      dispatched = 0;
+      return;
+    }
     if (mode === STRESS) {
       for (let i = 0; i < STRESS_MESSAGES; i++)
         next.dispatch({
@@ -199,21 +223,6 @@ function App() {
   const [run, setRun] = useState(0);
   const store = useReplay(mode, speed, run);
   const scroll = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    // Stick to the bottom while the user has not scrolled up.
-    const el = scroll.current!;
-    let atBottom = true;
-    const onScroll = () => (atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40);
-    el.addEventListener("scroll", onScroll);
-    let raf = requestAnimationFrame(function tick() {
-      if (atBottom && el.scrollTop + el.clientHeight < el.scrollHeight) el.scrollTop = el.scrollHeight;
-      raf = requestAnimationFrame(tick);
-    });
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-      cancelAnimationFrame(raf);
-    };
-  }, []);
   if (import.meta.env.DEV && live) return <Live />;
   return (
     <RunProvider store={store}>
@@ -227,6 +236,7 @@ function App() {
                 <option key={name}>{name}</option>
               ))}
               <option value={STRESS}>stress: {STRESS_MESSAGES} messages + {STRESS_RATE} deltas/s</option>
+              <option value={HUGE}>virtual: {HUGE_MESSAGES} messages</option>
             </select>
           </label>
           <label>
@@ -238,7 +248,7 @@ function App() {
           <Readout />
         </div>
         <div className="scroll" ref={scroll}>
-          <Timeline renderers={renderers} />
+          <Timeline renderers={renderers} scrollRef={scroll} />
         </div>
       </div>
     </RunProvider>
