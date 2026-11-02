@@ -277,7 +277,7 @@ test("every inline construct has a safe visible prefix in every container", () =
     const finalText = visibleText(source, true);
     for (let length = 0; length <= source.length; length++) {
       const prefixText = visibleText(source.slice(0, length), true);
-      expect(isSubsequence(prefixText, finalText), `${container} prefix ${length} of ${JSON.stringify(source)} rendered ${JSON.stringify(prefixText)}`).toBe(true);
+      expect(isSubsequence(prefixText, finalText), `${container} prefix ${length} of ${JSON.stringify(source)} rendered ${JSON.stringify(prefixText)} final ${JSON.stringify(finalText)}`).toBe(true);
     }
   }
 });
@@ -299,6 +299,115 @@ test("every corpus character prefix streams once and finishes identically", () =
     expect(createStreamingDocument().source).toBe("");
     expect(renderToStaticMarkup(<Markdown source={delimiter} streaming />)).toBe("");
   }
+});
+
+const incrementalRows = [
+  ["lazy paragraph in quote", "> alpha\nlazy continuation\n\noutside"],
+  ["nested quotes", "> outer\n> > inner\n>\n> tail\n\noutside"],
+  ["nested lists", "- outer\n  1. inner\n     continuation\n- next\n\noutside"],
+  ["loose list", "- first\n\n  continuation\n\n- second\n\noutside"],
+  ["table in list", "- | h | x |\n  | --- | --- |\n  | [``code ` span``](https://example.com) | ok |\n\noutside"],
+  ["setext heading", "heading\n===\n\noutside"],
+  ["later full reference", "Use [the reference][later].\n\n[later]: https://example.com"],
+  ["later collapsed reference", "Use [later][].\n\n[later]: https://example.com"],
+  ["later shortcut reference", "Use [later].\n\n[later]: https://example.com"],
+  ["footnote-like literal", "Keep [^note] literal.\n\n[^note]: ordinary reference"],
+  ["disabled html", "<section>safe</section>\n\noutside"],
+  ["indented code", "    const value = true;\n    next();\n\noutside"],
+  ["fenced code", "```ts\nconst value = 1;\n```\n\noutside"],
+  ["backslash escape", "before \\*literal\\* after\n\noutside"],
+  ["entities", "&amp; &#35; &#x23;\n\noutside"],
+  ["autolink", "<me@example.com>\n\noutside"],
+  ["emphasis runs", "***important*** and ~~done~~\n\noutside"],
+  ["backtick runs", "``code ` span``\n\noutside"],
+  ["link destination", "[docs](https://example.com/a_(b))\n\noutside"],
+  ["thematic break", "---\n\noutside"],
+  ["atx heading", "## heading\n\noutside"],
+  ["hard break", "first  \nsecond\n\noutside"],
+] as const;
+
+function streamed(source: string, size: number) {
+  const document = createStreamingDocument();
+  for (let index = 0; index < source.length; index += size) {
+    document.append(source.slice(index, index + size));
+    document.render();
+  }
+  document.finish();
+  return document.render();
+}
+
+test("every retroactive commonmark and gfm row finishes like one-shot parsing", () => {
+  for (const [name, source] of incrementalRows) for (const size of [1, 20, 1000])
+    expect(json(streamed(source, size)), `${name} at ${size}-byte splits`).toBe(json(parseMarkdown(source)));
+});
+
+test("every design row checks unfinished syntax at every character", () => {
+  for (const [name, source] of incrementalRows) {
+    const document = createStreamingDocument();
+    for (const character of source) {
+      document.append(character);
+      document.render();
+      const visible = visibleText(document.source, true)!;
+      expect(visible, `${name} at ${JSON.stringify(document.source)}`).not.toMatch(/(?:^|[^\\])\\$/);
+      const openEntity = /&(?:#x?[0-9a-f]*)?$/i.exec(document.source);
+      if (openEntity) expect(visible).toBe(visibleText(document.source.slice(0, openEntity.index), true));
+    }
+  }
+
+  const rows = [
+    "before \\*literal\\* after",
+    "&amp; &#35; &#x23;",
+    "<me@example.com>",
+    "***important*** and ~~done~~",
+    "``code ` span``",
+    "[docs](https://example.com/a_(b))",
+    "![logo](/logo.png)",
+  ];
+  for (const source of rows) {
+    const final = visibleText(source)!;
+    const document = createStreamingDocument();
+    for (const character of source) {
+      document.append(character);
+      const visible = visibleText(document.source, true)!;
+      expect(isSubsequence(visible, final), `${JSON.stringify(source)} at ${JSON.stringify(document.source)}`).toBe(true);
+      expect(visible).not.toMatch(/(?:^|[^\\])\\$/);
+      const openEntity = /&(?:#x?[0-9a-f]*)?$/i.exec(document.source);
+      if (openEntity) expect(visible).toBe(visibleText(document.source.slice(0, openEntity.index), true));
+    }
+  }
+});
+
+test("a nested table stays in its list without flashing table syntax", () => {
+  const source = incrementalRows.find(([name]) => name === "table in list")![1];
+  const final = visibleText(source)!;
+  for (let length = 0; length <= source.length; length++)
+    expect(isSubsequence(visibleText(source.slice(0, length), true)!, final), `nested table prefix ${length}`).toBe(true);
+  for (const size of [1, 20, 1000]) expect(json(streamed(source, size))).toBe(json(parseMarkdown(source)));
+});
+
+test("later reference definitions update frozen blocks and react", () => {
+  const first = "Use [the reference][later].\n\n";
+  const definition = "[later]: https://example.com";
+  const document = createStreamingDocument();
+  document.append(first);
+  const before = document.render()[0];
+  expect(before?.type).toBe("paragraph");
+  document.append(definition);
+  const after = document.render()[0];
+  expect(after).not.toBe(before);
+  expect(after?.type === "paragraph" && after.children.some((node) => node.type === "link")).toBe(true);
+  document.finish();
+  expect(json(document.render())).toBe(json(parseMarkdown(first + definition)));
+
+  const browser = new Window();
+  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const host = browser.document.createElement("div");
+  const root = createRoot(host);
+  act(() => root.render(<Markdown source={first} streaming />));
+  expect(host.querySelector("a")).toBeNull();
+  act(() => root.render(<Markdown source={first + definition} streaming />));
+  expect(host.querySelector("a")?.getAttribute("href")).toBe("https://example.com");
+  act(() => root.unmount());
 });
 
 test("renders a real typescript fence with the shared highlighter", async () => {
