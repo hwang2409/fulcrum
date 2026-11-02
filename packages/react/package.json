@@ -3,11 +3,11 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    ".": { "types": "./dist/index.d.ts", "bun": "./src/index.ts", "import": "./dist/index.js" },
     "./styles.css": "./styles.css",
     "./themes.css": "./themes.css"
   },
-  "files": ["dist", "styles.css", "themes.css"],
+  "files": ["dist", "styles.css", "themes.css", "src"],
   "scripts": { "build": "tsc -p ." },
   "peerDependencies": { "@fulcrum/core": "*", "react": ">=19" },
   "devDependencies": {
