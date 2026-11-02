@@ -223,6 +223,7 @@ test("every card and approval bounds multi-megabyte presentation surfaces", asyn
       expect(surface.textContent).not.toContain("\ud83d…");
     }
     expect(container.textContent).toMatch(/showing \d+ of \d+ characters/);
+    expect(container.querySelector('[data-action="show-more"]')).not.toBeNull();
     const copyArguments = container.querySelector<HTMLButtonElement>('[aria-label="copy arguments"]');
     expect(copyArguments).not.toBeNull();
     await act(async () => copyArguments!.click());
@@ -246,10 +247,10 @@ test("a bounded large diff reports hidden changed-line counts", () => {
   expect(q('[data-part="tool-gap"]').textContent).toMatch(/\d+ lines \(\+\d+ -\d+\) not shown, over 100 kB/);
 });
 
-test("collapsed arguments serialize only when opened and stay memoized across output", () => {
+test("collapsed arguments serialize only when opened and refresh on version changes", () => {
   const arguments_ = { path: "src/a.ts", value: "x".repeat(10_000) };
   const tool_call = { id: "lazy", name: "custom", arguments: arguments_ };
-  const store = createRunStore(() => {});
+  const store = createRunStore((callback) => callback());
   store.dispatch({ type: "tool_start", tool_call });
   const original = JSON.stringify;
   let serializations = 0;
@@ -266,10 +267,10 @@ test("collapsed arguments serialize only when opened and stay memoized across ou
       details.dispatchEvent(new Event("toggle"));
     });
     expect(serializations).toBe(1);
-    act(() => {
-      for (let index = 0; index < 5; index++) store.dispatch({ type: "tool_output", tool_call, output: String(index) });
-    });
-    expect(serializations).toBe(1);
+    arguments_.value = "streamed second";
+    act(() => store.dispatch({ type: "tool_output", tool_call, output: "next" }));
+    expect(serializations).toBe(2);
+    expect(q('[data-part="tool-args"]').textContent).toContain("streamed second");
   } finally {
     JSON.stringify = original;
   }

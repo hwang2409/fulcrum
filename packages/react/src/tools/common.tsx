@@ -97,15 +97,16 @@ export function ShowAll({ window, expanded, expand, noun = "lines" }: { window: 
 /** Plain bounded text. It stays one text node when it fits, so streaming output is cheap. */
 export function Output({ text, stream }: { text: string; stream?: "stderr" }) {
   const [expanded, setExpanded] = useState(false);
+  const [limit, setLimit] = useState(MAX_DOM_CHARS);
   const lines = splitLines(text);
-  const window = boundLines(lines, expanded);
+  const window = boundLines(lines, expanded, undefined, Math.max(1, limit - DOM_CHROME_BUDGET));
   // `bound` returns the same array when everything fits.
   const visible = window.head === lines ? text : [...window.head, ...(window.hidden ? [gapText(window, expanded, "lines")] : []), ...window.tail].join("\n");
-  const shown = boundText(visible).text;
+  const shown = boundText(visible, limit).text;
   return (
     <>
       <pre data-part="tool-output" data-stream={stream}>{shown}</pre>
-      <ShowAll window={window} expanded={expanded} expand={() => setExpanded(true)} />
+      <ShowAll window={window} expanded={expanded} expand={() => expanded ? setLimit((current) => current + MAX_DOM_CHARS) : setExpanded(true)} />
     </>
   );
 }
@@ -117,9 +118,10 @@ const Row = ({ number, text }: { number: number; text: string }) => (
 /** Bounded lines with a line-number gutter that starts at `start`. */
 export function NumberedLines({ text, start = 1 }: { text: string; start?: number }) {
   const [expanded, setExpanded] = useState(false);
+  const [limit, setLimit] = useState(MAX_DOM_CHARS);
   const lines = splitLines(text);
   const digits = String(start + lines.length).length;
-  const window = bound(lines, expanded, (line) => line.length + digits, (line, chars) => cutLine(line, Math.max(0, chars - digits)));
+  const window = bound(lines, expanded, (line) => line.length + digits, (line, chars) => cutLine(line, Math.max(0, chars - digits)), TAIL_LINES, Math.max(1, limit - DOM_CHROME_BUDGET));
   return (
     <>
       <div data-part="tool-lines" style={{ "--gutter": `${digits}ch` } as CSSProperties}>
@@ -127,7 +129,7 @@ export function NumberedLines({ text, start = 1 }: { text: string; start?: numbe
         <Gap window={window} expanded={expanded} />
         {window.tail.map((line, i) => <Row key={window.tailFrom + i} number={start + window.tailFrom + i} text={line} />)}
       </div>
-      <ShowAll window={window} expanded={expanded} expand={() => setExpanded(true)} />
+      <ShowAll window={window} expanded={expanded} expand={() => expanded ? setLimit((current) => current + MAX_DOM_CHARS) : setExpanded(true)} />
     </>
   );
 }
