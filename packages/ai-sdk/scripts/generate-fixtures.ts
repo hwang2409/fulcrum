@@ -34,6 +34,11 @@ const add = (scenario: string, sessionId: string, parts: readonly unknown[]) => 
   for (const part of parts) rows.push({ scenario, sessionId, part });
 };
 
+add("text", "writer-assets", await hostParts([
+  { type: "source-url", sourceId: "writer-source", url: "https://example.com/writer", title: "Writer source" },
+  { type: "file", url: "data:text/plain;base64,aGk=", mediaType: "text/plain" },
+  { type: "finish", finishReason: "stop" },
+]));
 add("text", "text", await modelParts("message-1", [
   { type: "text-start", id: "text-1", providerMetadata: { mock: { trace: "text-start" } } },
   { type: "text-delta", id: "text-1", delta: "hello " },

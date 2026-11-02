@@ -18,6 +18,21 @@ test("AI SDK UI message stream conforms to generic run events", () => {
   })).toEqual([]);
 });
 
+test("writer-only source and file streams commit content with a stable synthetic id", () => {
+  const parts = fixtures.filter((fixture) => fixture.sessionId === "writer-assets").map((fixture) => fixture.part);
+  const decode = () => {
+    const adapter = createAiSdkAdapter();
+    return parts.flatMap((part) => adapter.decode(part));
+  };
+  const first = decode().find((event) => event.type === "message_commit");
+  const second = decode().find((event) => event.type === "message_commit");
+  expect(first?.type === "message_commit" ? first.message.content : undefined).toEqual([
+    { type: "source", kind: "source", url: "https://example.com/writer", title: "Writer source", meta: { sourceId: "writer-source" } },
+    { type: "file", kind: "file", url: "data:text/plain;base64,aGk=", mediaType: "text/plain" },
+  ]);
+  expect(first?.type === "message_commit" ? first.message_id : undefined).toBe(second?.type === "message_commit" ? second.message_id : undefined);
+});
+
 test("malformed parts never throw", () => {
   const adapter = createAiSdkAdapter();
   for (const value of [null, [], {}, { type: 1 }, { type: "tool-input-start" }]) {

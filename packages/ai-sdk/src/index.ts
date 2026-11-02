@@ -53,6 +53,8 @@ interface BlockState { kind: "text" | "reasoning"; block: ContentBlock; }
 
 export function createAiSdkAdapter() {
   let messageId: string | undefined;
+  let runNumber = 0;
+  let messageNumber = 0;
   const content: ContentBlock[] = [];
   const blocks = new Map<string, BlockState>();
   const tools = new Map<string, ToolState>();
@@ -74,9 +76,11 @@ export function createAiSdkAdapter() {
     approvalByTool.delete(toolCallId);
     return [{ type: "approval_end", request_id: requestId }];
   };
-  const commit = (): RunEvent | undefined => messageId
-    ? { type: "message_commit", message_id: messageId, message: { role: "assistant", content: content.map((block) => ({ ...block })) } }
-    : undefined;
+  const commit = (): RunEvent | undefined => {
+    if (!content.length) return undefined;
+    messageId ??= `ai-sdk-run-${runNumber || 1}-message-${++messageNumber}`;
+    return { type: "message_commit", message_id: messageId, message: { role: "assistant", content: content.map((block) => ({ ...block })) } };
+  };
 
   const decodeBlock = (part: Row, type: string): RunEvent[] => {
     const kind = type.startsWith("text-") ? "text" : "reasoning";
@@ -155,6 +159,8 @@ export function createAiSdkAdapter() {
 
   const decodeLifecycle = (part: Row, type: string): RunEvent[] => {
     if (type === "start") {
+      runNumber += 1;
+      messageNumber = 0;
       messageId = optionalString(part.messageId, "part.messageId");
       content.length = 0; blocks.clear(); tools.clear(); approvalByTool.clear();
       return [{ type: "run_start", data: defined({ messageId, messageMetadata: part.messageMetadata }) }, { type: "turn_start" }, { type: "message_start", data: messageId ? { messageId } : {} }];

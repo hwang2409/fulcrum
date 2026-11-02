@@ -1,3 +1,6 @@
+{"scenario":"text","sessionId":"writer-assets","part":{"type":"source-url","sourceId":"writer-source","url":"https://example.com/writer","title":"Writer source"}}
+{"scenario":"text","sessionId":"writer-assets","part":{"type":"file","url":"data:text/plain;base64,aGk=","mediaType":"text/plain"}}
+{"scenario":"text","sessionId":"writer-assets","part":{"type":"finish","finishReason":"stop"}}
 {"scenario":"text","sessionId":"text","part":{"type":"start","messageId":"message-1"}}
 {"scenario":"text","sessionId":"text","part":{"type":"start-step"}}
 {"scenario":"text","sessionId":"text","part":{"type":"text-start","id":"text-1","providerMetadata":{"mock":{"trace":"text-start"}}}}
