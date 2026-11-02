@@ -36,7 +36,7 @@ function CountedMessage({ id }: { id: string }) {
   useRun((state) => state);
   useItem(id);
   messageRenders++;
-  return <Message id={id} />;
+  return <div data-mutation-render={messageRenders}><Message id={id} /></div>;
 }
 function LoggedApproval({ id }: { id: string }) {
   return (
