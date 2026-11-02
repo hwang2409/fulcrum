@@ -24,7 +24,7 @@ export function RunProvider({ store, children }: { store: RunStore; children?: R
   return createElement(StoreContext.Provider, { value: store }, children);
 }
 
-const useStore = () => {
+export const useRunStore = () => {
   const store = useContext(StoreContext);
   if (!store) throw new Error("fulcrum hooks must be used inside <RunProvider>");
   return store;
@@ -58,7 +58,7 @@ export function useRun<T>(
   selector: (state: RunState) => T,
   equal: (left: T, right: T) => boolean = Object.is,
 ): T {
-  const store = useStore();
+  const store = useRunStore();
   return useSelected(store.subscribe, store.getState, selector, equal);
 }
 
@@ -67,7 +67,7 @@ export function useItemSelector<T>(
   selector: (item: RunItem | undefined) => T,
   equal: (left: T, right: T) => boolean = Object.is,
 ): T {
-  const store = useStore();
+  const store = useRunStore();
   return useSelected(
     (listener) => store.subscribe(id, listener),
     () => store.getItem(id),
@@ -77,7 +77,7 @@ export function useItemSelector<T>(
 }
 
 export const useTimelineSnapshot = () => {
-  const store = useStore();
+  const store = useRunStore();
   return useSyncExternalStore(store.subscribeOutline, store.getOutlineSnapshot, store.getOutlineSnapshot);
 };
 

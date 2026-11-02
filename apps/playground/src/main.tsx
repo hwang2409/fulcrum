@@ -26,13 +26,21 @@ const HUGE = "huge";
 const STRESS_MESSAGES = Number(new URLSearchParams(location.search).get("stressMessages")) || 5000;
 const HUGE_MESSAGES = 100_000;
 const STRESS_RATE = 200;
+const REPLAY_STORE_LAPS = 8;
 
 // Sampled by the readout outside React state, so the readout never re-renders the timeline.
 let messageRenders = 0;
 let dispatched = 0;
 let lastAction = "";
 let lap = 0;
-let phase: "streaming" | "waiting" | "static" = "streaming";
+type Phase = "streaming" | "waiting" | "static";
+let phase: Phase = "streaming";
+const phaseListeners = new Set<(phase: Phase) => void>();
+const setPhase = (next: Phase) => {
+  if (phase === next) return;
+  phase = next;
+  phaseListeners.forEach((listener) => listener(next));
+};
 let continueReplay = () => {};
 function CountedMessage({ id }: { id: string }) {
   useItem(id);
@@ -93,13 +101,15 @@ function useReplay(mode: string, speed: number, run: number) {
   rate.current = speed;
   useEffect(() => {
     const next = createRunStore();
+    let active = next;
     let nextEvent: () => RunEvent | undefined;
     let stress = false;
     if (mode === HUGE) {
-      setStore(staticStore(HUGE_MESSAGES));
+      const fixed = staticStore(HUGE_MESSAGES);
+      setStore(fixed);
       dispatched = 0;
-      phase = "static";
-      return;
+      setPhase("static");
+      return () => fixed.dispose();
     }
     if (mode === STRESS) {
       for (let i = 0; i < STRESS_MESSAGES; i++)
@@ -111,19 +121,25 @@ function useReplay(mode: string, speed: number, run: number) {
       nextEvent = stressSource();
       stress = true;
     } else {
-      // The fixture loops with fresh ids, so the run keeps growing past the viewport and follow can be tested.
+      // Keep enough laps for follow testing, then rotate the store so an unattended replay stays bounded.
       const events = fixtures[mode] ?? [];
       let i = 0;
       nextEvent = () => {
         if (!events.length) return undefined;
         lap = Math.floor(i / events.length);
+        if (lap > 0 && lap % REPLAY_STORE_LAPS === 0 && i % events.length === 0) {
+          const retired = active;
+          active = createRunStore();
+          setStore(active);
+          retired.dispose();
+        }
         return relabel(events[i++ % events.length]!, lap);
       };
     }
     setStore(next);
     dispatched = 0;
     lap = 0;
-    phase = "streaming";
+    setPhase("streaming");
     let state = { budget: 0, paused: false, elapsed: 0, rate: rate.current };
     let last = performance.now();
     continueReplay = () => {
@@ -135,15 +151,16 @@ function useReplay(mode: string, speed: number, run: number) {
       last = now;
       const step = replayStep(nextEvent, state);
       state = { ...state, ...step };
-      phase = step.done ? "static" : step.paused ? "waiting" : "streaming";
+      setPhase(step.done ? "static" : step.paused ? "waiting" : "streaming");
       for (const event of step.events) {
-        next.dispatch(event);
+        active.dispatch(event);
         dispatched++;
       }
       if (step.done) clearInterval(timer);
     }, 16);
     return () => {
       clearInterval(timer);
+      active.dispose();
       continueReplay = () => {};
     };
   }, [mode, run]);
@@ -153,46 +170,53 @@ function useReplay(mode: string, speed: number, run: number) {
 // The active mode and its live numbers. Sampled twice a second, so it never re-renders the timeline.
 function Status({ label }: { label: string }) {
   const items = useTimeline().length;
-  const [stats, setStats] = useState({ fps: 0, renders: 0, events: 0, longTasks: 0, heap: undefined as number | undefined, lap: 0, phase });
+  const [activePhase, setActivePhase] = useState(phase);
+  const frames = useRef(0);
+  const [stats, setStats] = useState({ fps: 0, renders: 0, events: 0, longTasks: 0, heap: undefined as number | undefined, lap: 0 });
   useEffect(() => {
-    let frames = 0;
+    phaseListeners.add(setActivePhase);
+    return () => { phaseListeners.delete(setActivePhase); };
+  }, []);
+  useEffect(() => {
+    if (activePhase !== "streaming") { frames.current = 0; return; }
+    let raf = requestAnimationFrame(function tick() {
+      frames.current++;
+      raf = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [activePhase]);
+  useEffect(() => {
     let longTasks = 0;
     const observer = new PerformanceObserver((list) => {
       longTasks += list.getEntries().length;
     });
     observer.observe({ type: "longtask" });
-    let raf = requestAnimationFrame(function tick() {
-      frames++;
-      raf = requestAnimationFrame(tick);
-    });
     let start = performance.now();
     let renders = messageRenders;
     const timer = setInterval(() => {
       const seconds = (performance.now() - start) / 1000;
       setStats({
-        fps: Math.round(frames / seconds),
+        fps: Math.round(frames.current / seconds),
         renders: Math.round((messageRenders - renders) / seconds),
         events: dispatched,
         longTasks,
         heap: (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize,
         lap,
-        phase,
       });
-      frames = 0;
+      frames.current = 0;
       renders = messageRenders;
       start = performance.now();
     }, 500);
     return () => {
-      cancelAnimationFrame(raf);
       clearInterval(timer);
       observer.disconnect();
     };
   }, []);
   return (
     <div className="status">
-      <span className="mode" data-state={stats.phase}>
+      <span className="mode" data-state={activePhase}>
         {label}
-        <span>{stats.phase === "waiting" ? "waiting for approval" : stats.phase === "static" ? "no events" : "streaming"}{stats.lap > 0 && ` · lap ${stats.lap + 1}`}</span>
+        <span>{activePhase === "waiting" ? "waiting for approval" : activePhase === "static" ? "no events" : "streaming"}{stats.lap > 0 && ` · lap ${stats.lap + 1}`}</span>
       </span>
       <span data-testid="readout">
         {stats.fps} fps · {stats.renders} message renders/s · {items} items · {stats.events} events · {stats.longTasks} long tasks{stats.heap === undefined ? "" : ` · ${Math.round(stats.heap / 1_000_000)} MB heap`}{lastAction && ` · ${lastAction}`}

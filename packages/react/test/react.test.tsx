@@ -27,9 +27,9 @@ afterAll(() => GlobalRegistrator.unregister());
 const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
 const call = (id: string, name: string) => ({ id, name, arguments: {} });
 
-function timelineStore(initialItems: RunItem[]) {
+function timelineStore(initialItems: RunItem[], initialChange: OutlineChange | null = null) {
   let items = initialItems;
-  let snapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change: null as OutlineChange | null };
+  let snapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change: initialChange };
   const entities = new Map(items.map((item) => [item.id, item]));
   const outlineListeners = new Set<() => void>();
   const itemListeners = new Map<string, Set<() => void>>();
@@ -523,6 +523,28 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
   ));
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
   expect(container.querySelectorAll('[data-part="message"]').length).toBeLessThanOrEqual(200);
+});
+
+test("virtual Timeline resets and follows when its RunProvider store changes", () => {
+  const makeItems = (prefix: string, count: number) => Array.from({ length: count }, (_, index) => committedItem(`${prefix}-${index}`));
+  const a = timelineStore(makeItems("a", 5_000), { type: "append", count: 5_000 });
+  const b = timelineStore(makeItems("b", 100_000), { type: "append", count: 100_000 });
+  const c = timelineStore(makeItems("c", 201), { type: "append", count: 201 });
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+
+  mount(<RunProvider store={a.store}><Timeline virtual /></RunProvider>);
+  expect(q('[data-part="timeline"]').getAttribute("aria-setsize") ?? q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("5000");
+
+  expect(() => act(() => root!.render(<RunProvider store={b.store}><Timeline virtual /></RunProvider>))).not.toThrow();
+  expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("100000");
+  expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
+
+  expect(() => act(() => root!.render(<RunProvider store={c.store}><Timeline virtual /></RunProvider>))).not.toThrow();
+  expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("201");
+  expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
+  expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
 });
 
 test("react does not import @fulcrum/zeta", () => {
