@@ -388,6 +388,8 @@ const lineOffset = (source: string, line: number) => {
   return offset;
 };
 
+const openSnapshot = <BlockType extends Block>(block: BlockType): BlockType => ({ ...block });
+
 type OpenParagraphState = {
   scannedOffset: number;
   pendingNewline: string;
@@ -505,6 +507,7 @@ function appendFenceDelta(state: OpenFenceState, delta: string) {
     if (fenceCloser(state.marker, line)) return false;
     state.value += `${line}\n`;
   }
+  if (fenceCloser(state.marker, state.pending)) return false;
   const possibleCloser = new RegExp(`^ {0,3}${state.marker[0]}{1,}\\s*$`).test(state.pending);
   state.block.value = state.value + (possibleCloser ? "" : state.pending);
   state.scannedOffset += delta.length;
@@ -540,7 +543,7 @@ export function createStreamingDocument(): StreamingDocument {
         } else paragraphState.text.value += visible;
         paragraphState.pendingNewline = pendingNewline;
         paragraphState.scannedOffset += delta.length;
-        cached = [...frozen, paragraphState.block];
+        cached = [...frozen, openSnapshot(paragraphState.block)];
         renderedSource = source;
         return cached;
       }
@@ -549,7 +552,7 @@ export function createStreamingDocument(): StreamingDocument {
     if (!finished && listState) {
       const delta = source.slice(listState.scannedOffset);
       if (appendListDelta(listState, delta)) {
-        cached = [...frozen, listState.block];
+        cached = [...frozen, openSnapshot(listState.block)];
         renderedSource = source;
         return cached;
       }
@@ -558,7 +561,7 @@ export function createStreamingDocument(): StreamingDocument {
     if (!finished && tableState) {
       const delta = source.slice(tableState.scannedOffset);
       if (appendTableDelta(tableState, delta)) {
-        cached = [...frozen, tableState.block];
+        cached = [...frozen, openSnapshot(tableState.block)];
         renderedSource = source;
         return cached;
       }
@@ -567,7 +570,7 @@ export function createStreamingDocument(): StreamingDocument {
     if (!finished && fenceState) {
       const delta = source.slice(fenceState.scannedOffset);
       if (appendFenceDelta(fenceState, delta)) {
-        cached = [...frozen, fenceState.block];
+        cached = [...frozen, openSnapshot(fenceState.block)];
         renderedSource = source;
         return cached;
       }
@@ -582,7 +585,7 @@ export function createStreamingDocument(): StreamingDocument {
           const contentOffset = tailOffset + list[0].length;
           listState = { ordered: initial.ordered, scannedOffset: contentOffset, pending: "", hasPendingItem: false, block: initial };
           if (appendListDelta(listState, source.slice(contentOffset))) {
-            cached = [...frozen, initial];
+            cached = [...frozen, openSnapshot(initial)];
             renderedSource = source;
             return cached;
           }
@@ -596,7 +599,7 @@ export function createStreamingDocument(): StreamingDocument {
           const contentOffset = tailOffset + table[0].length;
           tableState = { header: table[1]!, delimiter: table[2]!, scannedOffset: contentOffset, pending: "", hasPendingRow: false, block: initial };
           if (appendTableDelta(tableState, source.slice(contentOffset))) {
-            cached = [...frozen, initial];
+            cached = [...frozen, openSnapshot(initial)];
             renderedSource = source;
             return cached;
           }
@@ -614,18 +617,19 @@ export function createStreamingDocument(): StreamingDocument {
         };
         fenceState = { marker: opener[1]!, language: block.language, scannedOffset: contentOffset, value: "", pending: "", block };
         if (appendFenceDelta(fenceState, source.slice(contentOffset))) {
-          cached = [...frozen, block];
+          cached = [...frozen, openSnapshot(block)];
           renderedSource = source;
           return cached;
         }
         fenceState = undefined;
       }
-      if (/\s/.test(tail) && !/[\n]{2}|[\\*_`~[\]<>&|]/.test(tail) && !/^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)])(?:\s|$)/.test(tail)) {
-        const pendingNewline = tail.endsWith("\n") ? "\n" : "";
-        const text: Extract<Inline, { type: "text" }> = { type: "text", value: pendingNewline ? tail.slice(0, -1) : tail };
+      const paragraph = tail.replace(/^\n+/, "");
+      if (/\s/.test(paragraph) && !/[\n]{2}|[\\*_`~[\]<>&|]/.test(paragraph) && !/^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)])(?:\s|$)/.test(paragraph)) {
+        const pendingNewline = paragraph.endsWith("\n") ? "\n" : "";
+        const text: Extract<Inline, { type: "text" }> = { type: "text", value: pendingNewline ? paragraph.slice(0, -1) : paragraph };
         const block: Extract<Block, { type: "paragraph" }> = { type: "paragraph", children: [text] };
         paragraphState = { scannedOffset: source.length, pendingNewline, text, block };
-        cached = [...frozen, block];
+        cached = [...frozen, openSnapshot(block)];
         renderedSource = source;
         return cached;
       }
