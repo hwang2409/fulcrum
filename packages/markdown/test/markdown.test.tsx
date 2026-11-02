@@ -129,7 +129,7 @@ test("finished blocks keep identity and parse count while only the tail reparses
   const next = document.render();
   expect(next[0]).toBe(frozen);
   expect(document.stats.frozenParses).toBe(1);
-  expect(document.stats.tailParses).toBe(parsed + 1);
+  expect(document.stats.tailParses).toBe(parsed);
 });
 
 test("escapes html and removes unsafe hrefs", () => {

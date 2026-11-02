@@ -396,6 +396,13 @@ const lineOffset = (source: string, line: number) => {
   return offset;
 };
 
+type OpenParagraphState = {
+  scannedOffset: number;
+  pendingNewline: string;
+  text: Extract<Inline, { type: "text" }>;
+  block: Extract<Block, { type: "paragraph" }>;
+};
+
 type OpenListState = {
   ordered: boolean;
   scannedOffset: number;
@@ -524,10 +531,29 @@ export function createStreamingDocument(): StreamingDocument {
   let fenceState: OpenFenceState | undefined;
   let tableState: OpenTableState | undefined;
   let listState: OpenListState | undefined;
+  let paragraphState: OpenParagraphState | undefined;
   const environment: Environment = {};
 
   const render = () => {
     if (source === renderedSource) return cached;
+    if (!finished && paragraphState) {
+      const delta = source.slice(paragraphState.scannedOffset);
+      const next = paragraphState.pendingNewline + delta;
+      if (!/[\\*_`~[\]<>&]/.test(delta) && !next.includes("\n\n")) {
+        const pendingNewline = next.endsWith("\n") ? "\n" : "";
+        const visible = pendingNewline ? next.slice(0, -1) : next;
+        if (paragraphState.text.value.length + visible.length > 1024) {
+          paragraphState.text = { type: "text", value: visible };
+          paragraphState.block.children.push(paragraphState.text);
+        } else paragraphState.text.value += visible;
+        paragraphState.pendingNewline = pendingNewline;
+        paragraphState.scannedOffset += delta.length;
+        cached = [...frozen, paragraphState.block];
+        renderedSource = source;
+        return cached;
+      }
+      paragraphState = undefined;
+    }
     if (!finished && listState) {
       const delta = source.slice(listState.scannedOffset);
       if (appendListDelta(listState, delta)) {
@@ -601,6 +627,15 @@ export function createStreamingDocument(): StreamingDocument {
           return cached;
         }
         fenceState = undefined;
+      }
+      if (/\s/.test(tail) && !/[\n]{2}|[\\*_`~[\]<>&|]/.test(tail) && !/^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)])(?:\s|$)/.test(tail)) {
+        const pendingNewline = tail.endsWith("\n") ? "\n" : "";
+        const text: Extract<Inline, { type: "text" }> = { type: "text", value: pendingNewline ? tail.slice(0, -1) : tail };
+        const block: Extract<Block, { type: "paragraph" }> = { type: "paragraph", children: [text] };
+        paragraphState = { scannedOffset: source.length, pendingNewline, text, block };
+        cached = [...frozen, block];
+        renderedSource = source;
+        return cached;
       }
     }
     const fence = !finished && openFence(tail);
