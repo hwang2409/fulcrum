@@ -12,7 +12,12 @@ const string = (value: unknown, name: string) => {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${name} must be a nonempty string`);
   return value;
 };
+const wireString = (value: unknown, name: string) => {
+  if (typeof value !== "string") throw new Error(`${name} must be a string`);
+  return value;
+};
 const optionalString = (value: unknown, name: string) => value === undefined ? undefined : string(value, name);
+const optionalWireString = (value: unknown, name: string) => value === undefined ? undefined : wireString(value, name);
 const serialized = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value) ?? "null";
 const argumentsFrom = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Row) } : { input: value };
@@ -62,7 +67,7 @@ const unescapeId = (value: string) => value.replaceAll("%3A", ":").replaceAll("%
 /** Tags and escaped separators make every source/kind/key/value tuple map to exactly one string. */
 export function encodeAiSdkEntityId(identity: AiSdkEntityIdentity): string {
   const kind = identity.kind;
-  if (identity.source === "wire") return `w:${kind}:${escapeId(string(identity.id, "identity.id"))}`;
+  if (identity.source === "wire") return `w:${kind}:${escapeId(wireString(identity.id, "identity.id"))}`;
   const streamKey = escapeId(string(identity.streamKey, "identity.streamKey"));
   if (!Number.isSafeInteger(identity.counter) || identity.counter < 1) throw new Error("identity.counter must be a positive safe integer");
   return `s:${kind}:${streamKey}:${identity.counter}`;
@@ -73,7 +78,7 @@ export function decodeAiSdkEntityId(value: string): AiSdkEntityIdentity {
   if (wire) {
     const id = unescapeId(wire[2]!);
     if (escapeId(id) !== wire[2]) throw new Error("invalid encoded AI SDK entity id");
-    return { source: "wire", kind: wire[1] as AiSdkEntityKind, id: string(id, "identity.id") };
+    return { source: "wire", kind: wire[1] as AiSdkEntityKind, id: wireString(id, "identity.id") };
   }
   const synthetic = /^s:(message|tool|approval):([^:]*):([1-9]\d*)$/.exec(value);
   if (synthetic) {
@@ -114,7 +119,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   };
   const approvalEnd = (toolCallId: string): RunEvent[] => {
     const requestId = approvalByTool.get(toolCallId);
-    if (!requestId) return [];
+    if (requestId === undefined) return [];
     approvalByTool.delete(toolCallId);
     return [{ type: "approval_end", request_id: requestId }];
   };
@@ -124,7 +129,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     return {
       type: "message_commit",
       message_id: messageId,
-      message: { role: "assistant", content: content.map((block) => ({ ...block })), ...(wireMessageId ? { metadata: { wireId: wireMessageId } } : {}) },
+      message: { role: "assistant", content: content.map((block) => ({ ...block })), ...(wireMessageId !== undefined ? { metadata: { wireId: wireMessageId } } : {}) },
     };
   };
 
@@ -167,7 +172,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   };
 
   const decodeTool = (part: Row, type: string): RunEvent[] => {
-    const originalId = string(part.toolCallId, "part.toolCallId");
+    const originalId = wireString(part.toolCallId, "part.toolCallId");
     const id = wireId("tool", originalId);
     const meta = { ...toolMeta(part), wireId: originalId };
     if (type === "tool-input-start") {
@@ -191,7 +196,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
       return [{ type: "tool_start", tool_call: state.call }, { type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: output, is_error: true } }];
     }
     if (type === "tool-approval-request") {
-      const approvalId = string(part.approvalId, "part.approvalId");
+      const approvalId = wireString(part.approvalId, "part.approvalId");
       const requestId = wireId("approval", approvalId);
       approvalByTool.set(id, requestId);
       return [{ type: "approval_request", request_id: requestId, tool_call: call(id, undefined, { ...meta, approvalId }).call, delegated: false }];
@@ -208,8 +213,8 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
 
   const decodeLifecycle = (part: Row, type: string): RunEvent[] => {
     if (type === "start") {
-      wireMessageId = optionalString(part.messageId, "part.messageId");
-      messageId = wireMessageId ? wireId("message", wireMessageId) : undefined;
+      wireMessageId = optionalWireString(part.messageId, "part.messageId");
+      messageId = wireMessageId !== undefined ? wireId("message", wireMessageId) : undefined;
       content.length = 0; blocks.clear(); tools.clear(); approvalByTool.clear();
       return [{ type: "run_start", data: defined({ messageId, messageMetadata: part.messageMetadata }) }, { type: "turn_start" }, { type: "message_start", data: messageId ? { messageId } : {} }];
     }

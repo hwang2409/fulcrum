@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runAdapterConformance, type AdapterFixture } from "@fulcrum/adapter-test";
 import { createRunStore } from "@fulcrum/core";
+import { simulateReadableStream, streamText, type UIMessageChunk } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { createAiSdkAdapter, decodeAiSdkEntityId, encodeAiSdkEntityId, type AiSdkEntityIdentity } from "../src/index.js";
 
 const fixtures = readFileSync(new URL("./fixtures/conformance.jsonl", import.meta.url), "utf8")
@@ -82,17 +84,17 @@ test("entity id encoding is injective and reversible", () => {
     const alphabet = [":", "%", "w:", "s:", "雪", "🙂", "a", "0", " "];
     return Array.from({ length: 1 + seed % 12 }, () => alphabet[(seed = (seed * 1664525 + 1013904223) >>> 0) % alphabet.length]).join("");
   };
-  const values = [":", "%", "w:", "s:", "unicode-雪🙂", ...Array.from({ length: 200 }, random)].filter((value) => value.trim());
+  const values = ["", " ", "\t\n", ":", "%", "w:", "s:", "unicode-雪🙂", ...Array.from({ length: 200 }, random)];
   const identities: AiSdkEntityIdentity[] = [];
   for (const kind of ["message", "tool", "approval"] as const) {
     for (const value of values) identities.push({ source: "wire", kind, id: value });
-    for (const streamKey of values) identities.push({ source: "synthetic", kind, streamKey, counter: 1 }, { source: "synthetic", kind, streamKey, counter: 2 });
+    for (const streamKey of values.filter((value) => value.trim())) identities.push({ source: "synthetic", kind, streamKey, counter: 1 }, { source: "synthetic", kind, streamKey, counter: 2 });
   }
   const encoded = identities.map(encodeAiSdkEntityId);
   expect(new Set(encoded).size).toBe(new Set(identities.map((identity) => JSON.stringify(identity))).size);
   expect(encoded.map(decodeAiSdkEntityId)).toEqual(identities);
   for (const empty of ["", " ", "\t\n"]) {
-    expect(() => encodeAiSdkEntityId({ source: "wire", kind: "message", id: empty })).toThrow();
+    expect(decodeAiSdkEntityId(encodeAiSdkEntityId({ source: "wire", kind: "message", id: empty }))).toEqual({ source: "wire", kind: "message", id: empty });
     expect(() => encodeAiSdkEntityId({ source: "synthetic", kind: "message", streamKey: empty, counter: 1 })).toThrow();
   }
 });
@@ -111,6 +113,37 @@ test("pinned AI SDK writer ids round trip to their original wire ids", () => {
   expect(tool?.type === "tool_start" ? tool.tool_call.meta : undefined).toMatchObject({ wireId: "call-1" });
   expect(approval?.type === "approval_request" ? decodeAiSdkEntityId(approval.request_id) : undefined).toEqual({ source: "wire", kind: "approval", id: "approval-1" });
   expect(approval?.type === "approval_request" ? approval.tool_call.meta : undefined).toMatchObject({ wireId: "call-approval", approvalId: "approval-1" });
+});
+
+test("pinned AI SDK emits blank message ids without losing identity", async () => {
+  for (const messageId of ["", " ", "\t\n"]) {
+    const model = new MockLanguageModelV3({
+      doStream: async () => ({ stream: simulateReadableStream({ chunks: [
+        { type: "text-start", id: "text" },
+        { type: "text-delta", id: "text", delta: messageId || "content" },
+        { type: "text-end", id: "text" },
+        { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } } },
+      ] as never[] }) }),
+    });
+    const result = streamText({ model, prompt: "fixture" });
+    const parts: UIMessageChunk[] = [];
+    for await (const part of result.toUIMessageStream({ generateMessageId: () => messageId })) parts.push(part);
+    const adapter = createAiSdkAdapter({ streamKey: "blank-message" });
+    const commit = parts.flatMap((part) => adapter.decode(part)).find((event) => event.type === "message_commit");
+    expect(commit?.type === "message_commit" ? decodeAiSdkEntityId(commit.message_id!) : undefined).toEqual({ source: "wire", kind: "message", id: messageId });
+    expect(commit?.type === "message_commit" ? commit.message.metadata : undefined).toEqual({ wireId: messageId });
+  }
+});
+
+test("blank tool and approval ids survive adapter and outbound decoding", () => {
+  const adapter = createAiSdkAdapter({ streamKey: "blank-tool" });
+  const [tool] = adapter.decode({ type: "tool-input-available", toolCallId: "", toolName: "deploy", input: {} });
+  const [approval] = adapter.decode({ type: "tool-approval-request", toolCallId: "", approvalId: "" });
+  expect(tool?.type === "tool_start" ? decodeAiSdkEntityId(tool.tool_call.id) : undefined).toEqual({ source: "wire", kind: "tool", id: "" });
+  expect(approval?.type === "approval_request" ? decodeAiSdkEntityId(approval.request_id) : undefined).toEqual({ source: "wire", kind: "approval", id: "" });
+  expect(approval?.type === "approval_request" ? approval.tool_call.meta : undefined).toMatchObject({ wireId: "", approvalId: "" });
+  const approvalEnd = adapter.decode({ type: "tool-output-denied", toolCallId: "" }).find((event) => event.type === "approval_end");
+  expect(approvalEnd?.type === "approval_end" ? decodeAiSdkEntityId(approvalEnd.request_id) : undefined).toEqual({ source: "wire", kind: "approval", id: "" });
 });
 
 test("malformed parts never throw", () => {
