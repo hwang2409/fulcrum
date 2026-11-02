@@ -18,6 +18,13 @@ for (const target of builds) {
   console.log(`${target.name}: ${bytes} bytes gzipped (budget ${target.budget} bytes)`);
   if (bytes > target.budget) failed = true;
 }
+const highlightBuild = Bun.spawnSync(["bun", "run", "--cwd", "packages/highlight", "build"], { stdout: "inherit", stderr: "inherit" });
+if (highlightBuild.exitCode !== 0) process.exit(highlightBuild.exitCode);
+const highlightFiles = [...new Bun.Glob("**/*.js").scanSync("packages/highlight/dist")].sort();
+for (const file of highlightFiles) {
+  const bytes = Bun.gzipSync(await Bun.file(`packages/highlight/dist/${file}`).arrayBuffer()).byteLength;
+  console.log(`highlight/${file}: ${bytes} bytes gzipped (reporting only)`);
+}
 // Copy-in stylesheets, gzipped as shipped. Henry ranks polish over bytes, so these budgets catch runaway growth only.
 const styles = [
   { name: "react styles.css", file: "packages/react/styles.css", budget: 8_000 },
