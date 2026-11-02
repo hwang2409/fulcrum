@@ -1,6 +1,6 @@
 import "@fulcrum/react/styles.css";
 import "./app.css";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
 import { Markdown } from "@fulcrum/markdown/react";
@@ -186,7 +186,10 @@ function Live() {
       setError(kind === "connect_failed" ? "connection failed: check the token, server, and --ws-origin http://localhost:5173 (different from http://127.0.0.1:5173)" : kind === "busy" ? "zeta is busy with another client" : kind === "closed" ? "zeta connection closed" : `zeta error: ${kind ?? "unknown"}`);
     }
   };
-  const store = client && session ? client.forSession(session) : createRunStore();
+  const fallbackStore = useMemo(() => createRunStore(), []);
+  const held = useMemo(() => client && session ? client.forSession(session) : null, [client, session]);
+  useEffect(() => () => held?.release(), [held]);
+  const store = held?.store ?? fallbackStore;
   const approve = (id: string) => void client?.request("approve", { session_id: session, request_id: id });
   const deny = (id: string) => void client?.request("deny", { session_id: session, request_id: id });
   const renderers: Renderers = {
