@@ -616,3 +616,16 @@ test("a burst of ten appends produces one coalesced announcement", async () => {
   await waitForAnnouncement();
   expect(q('[data-part="timeline-live"]').textContent).toBe("10 new items");
 });
+
+test("a blank tool name renders a readable fallback label", () => {
+  const blank = { id: "b1", name: "  ", arguments: {} };
+  const { store } = setup([{ type: "tool_start", tool_call: blank }]);
+  mount(
+    <RunProvider store={store}>
+      <ToolCall id="tool:b1" />
+    </RunProvider>,
+  );
+  const name = q('[data-id="tool:b1"] [data-part="tool-name"]');
+  expect(name.textContent).toBe("unnamed tool");
+  expect(name.getAttribute("data-blank")).toBe("");
+});

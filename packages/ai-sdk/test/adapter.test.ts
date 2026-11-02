@@ -253,3 +253,28 @@ test("preserves block and tool protocol metadata in generic meta bags", () => {
   const commit = adapter.decode({ type: "finish" }).find((event) => event.type === "message_commit");
   expect(commit?.type === "message_commit" ? commit.message.content[0]?.meta : undefined).toEqual({ providerMetadata: [{ mock: { trace: "t" } }, { mock: { trace: "delta" } }] });
 });
+
+test("empty text and reasoning deltas are no-ops", () => {
+  const adapter = createAiSdkAdapter({ streamKey: "empty-delta" });
+  adapter.decode({ type: "start", messageId: "m" });
+  adapter.decode({ type: "text-start", id: "t" });
+  adapter.decode({ type: "reasoning-start", id: "r" });
+  expect(adapter.decode({ type: "text-delta", id: "t", delta: "" })).toEqual([]);
+  expect(adapter.decode({ type: "reasoning-delta", id: "r", delta: "" })).toEqual([]);
+  expect(adapter.decode({ type: "text-delta", id: "t", delta: " " }).map(({ type }) => type)).toEqual(["message_delta"]);
+});
+
+test("a blank tool name keeps the wire value and later names update the call", () => {
+  const adapter = createAiSdkAdapter({ streamKey: "blank-name" });
+  const [start] = adapter.decode({ type: "tool-input-start", toolCallId: "c", toolName: "" });
+  expect(start?.type === "tool_start" ? start.tool_call.name : undefined).toBe("");
+  const [available] = adapter.decode({ type: "tool-input-available", toolCallId: "c", toolName: " ", input: {} });
+  expect(available?.type === "tool_start" ? available.tool_call.name : undefined).toBe(" ");
+});
+
+test("tool part titles are validated as wire strings", () => {
+  const adapter = createAiSdkAdapter({ streamKey: "title" });
+  const [blank] = adapter.decode({ type: "tool-input-start", toolCallId: "a", toolName: "x", title: "" });
+  expect(blank?.type === "tool_start" ? blank.tool_call.meta : undefined).toMatchObject({ title: "" });
+  expect(adapter.decode({ type: "tool-input-start", toolCallId: "b", toolName: "x", title: 5 })[0]?.type).toBe("error");
+});

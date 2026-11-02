@@ -53,7 +53,7 @@ const toolMeta = (part: Row) => {
   const meta = defined({
     providerExecuted: part.providerExecuted,
     dynamic: part.dynamic,
-    title: part.title,
+    title: part.title === undefined ? undefined : wireString(part.title, "part.title"),
     providerMetadata: part.providerMetadata === undefined ? undefined : [part.providerMetadata],
   });
   return Object.keys(meta).length ? meta : undefined;
@@ -123,7 +123,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   const call = (id: string, name?: string, meta?: Record<string, unknown>): ToolState => {
     const prior = tools.get(id);
     if (prior) {
-      if (name || meta) prior.call = { ...prior.call, ...(name ? { name } : {}), ...(meta ? { meta: mergeMeta(prior.call.meta, meta) } : {}) };
+      if (name !== undefined || meta) prior.call = { ...prior.call, ...(name !== undefined ? { name } : {}), ...(meta ? { meta: mergeMeta(prior.call.meta, meta) } : {}) };
       return prior;
     }
     const state = { call: { id, name: name ?? "tool", arguments: {}, ...(meta ? { meta } : {}) }, input: "" };
@@ -161,6 +161,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     if (part.providerMetadata !== undefined) state.block.meta = mergeMeta(state.block.meta as Record<string, unknown> | undefined, providerMeta(part)!);
     if (type.endsWith("-end")) return [];
     const delta = wireString(part.delta, "part.delta");
+    if (delta === "") return [];
     state.block.text = String(state.block.text) + delta;
     return [{ type: "message_delta", message_id: messageId, delta, kind }];
   };
