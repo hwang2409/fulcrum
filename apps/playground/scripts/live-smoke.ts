@@ -146,12 +146,14 @@ try {
       };
       socket.onerror = () => {};
     });
-  await check("binary frame -> closed 1003", () =>
-    raw(new Uint8Array([1]).buffer, 1003),
-  );
-  await check(">1 MiB frame -> closed 1009", () =>
-    raw("x".repeat(1024 * 1024 + 1), 1009),
-  );
+  await check("binary frame -> closed 1003", async () => {
+    await raw(new Uint8Array([1]).buffer, 1003);
+    await settle();
+  });
+  await check(">1 MiB frame -> closed 1009", async () => {
+    await raw("x".repeat(1024 * 1024 + 1), 1009);
+    await settle();
+  });
 
   console.log("\ncheck                         result");
   console.log("----------------------------  ------");
