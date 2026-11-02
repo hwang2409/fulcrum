@@ -2,9 +2,8 @@ import { createStreamingDocument } from "../packages/markdown/src/index.js";
 
 const targetBytes = 100_000;
 const deltaSizes = [1, 20, 200];
-const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
-// Ratios below the clock's useful resolution measure timer noise, while the separate max gate still catches stalls.
-const ratioFloorMs = 0.002;
+// CPU time makes the scaling gate independent of unrelated work on a shared CI runner.
+const ratioFloorMicroseconds = 10_000;
 
 type Measurement = { p95: number; max: number; ratio: number };
 
@@ -14,24 +13,29 @@ function measure(source: string, deltaSize: number): Measurement {
     warm.append(source.slice(index, index + deltaSize));
     warm.render();
   }
-  const trials = Array.from({ length: 3 }, () => {
+  const trials = Array.from({ length: 5 }, () => {
     const document = createStreamingDocument();
     const samples: number[] = [];
+    const count = Math.ceil(source.length / deltaSize);
+    const quarter = Math.max(1, Math.floor(count / 4));
+    const cpuMarks: NodeJS.CpuUsage[] = [];
     for (let index = 0; index < source.length; index += deltaSize) {
+      if (samples.length % quarter === 0) cpuMarks.push(process.cpuUsage());
       const start = performance.now();
       document.append(source.slice(index, index + deltaSize));
       document.render();
       samples.push(performance.now() - start);
     }
+    cpuMarks.push(process.cpuUsage());
+    const cpu = (start: NodeJS.CpuUsage, end: NodeJS.CpuUsage) => end.user + end.system - start.user - start.system;
     const sorted = [...samples].sort((a, b) => a - b);
-    const quarter = Math.max(1, Math.floor(samples.length / 4));
     return {
       p95: sorted[Math.floor(samples.length * 0.95)]!,
       max: sorted.at(-1)!,
-      ratio: Math.max(average(samples.slice(-quarter)), ratioFloorMs) / Math.max(average(samples.slice(quarter, quarter * 2)), ratioFloorMs),
+      ratio: Math.max(cpu(cpuMarks[3]!, cpuMarks[4]!), ratioFloorMicroseconds) / Math.max(cpu(cpuMarks[1]!, cpuMarks[2]!), ratioFloorMicroseconds),
     };
   });
-  const median = (key: keyof Measurement) => trials.map((trial) => trial[key]).sort((a, b) => a - b)[1]!;
+  const median = (key: keyof Measurement) => trials.map((trial) => trial[key]).sort((a, b) => a - b)[Math.floor(trials.length / 2)]!;
   return { p95: median("p95"), max: median("max"), ratio: median("ratio") };
 }
 

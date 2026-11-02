@@ -613,7 +613,8 @@ function appendFenceDelta(state: OpenFenceState, delta: string) {
 
 export function createStreamingDocument(): StreamingDocument {
   let source = "";
-  let tailOffset = 0;
+  let tailSource = "";
+  let unrendered = "";
   const blocks = new BlockBuffer();
   const cached = blocks.view;
   let renderedSource = "";
@@ -628,13 +629,14 @@ export function createStreamingDocument(): StreamingDocument {
 
   const publishOpen = (open: Block[]) => {
     blocks.publish(open);
+    unrendered = "";
     renderedSource = source;
     return cached;
   };
 
   const continueParagraph = () => {
     if (!paragraphState) return;
-    const delta = source.slice(paragraphState.scannedOffset);
+    const delta = unrendered;
     const next = paragraphState.pendingNewline + delta;
     if (/[\\*_`~[\]<>&!]/.test(delta) || next.includes("\n\n")) {
       paragraphState = undefined;
@@ -656,15 +658,15 @@ export function createStreamingDocument(): StreamingDocument {
     const paragraph = continueParagraph();
     if (paragraph) return paragraph;
     if (listState) {
-      if (appendListDelta(listState, source.slice(listState.scannedOffset))) return openSnapshot(listState.block);
+      if (appendListDelta(listState, unrendered)) return openSnapshot(listState.block);
       listState = undefined;
     }
     if (tableState) {
-      if (appendTableDelta(tableState, source.slice(tableState.scannedOffset))) return openSnapshot(tableState.block);
+      if (appendTableDelta(tableState, unrendered)) return openSnapshot(tableState.block);
       tableState = undefined;
     }
     if (fenceState) {
-      if (appendFenceDelta(fenceState, source.slice(fenceState.scannedOffset))) return openSnapshot(fenceState.block);
+      if (appendFenceDelta(fenceState, unrendered)) return openSnapshot(fenceState.block);
       fenceState = undefined;
     }
   };
@@ -674,9 +676,9 @@ export function createStreamingDocument(): StreamingDocument {
     if (!match) return;
     const initial = parseMarkdown(match[1]!)[0];
     if (initial?.type !== "list") return;
-    const contentOffset = tailOffset + match[0].length;
+    const contentOffset = match[0].length;
     listState = { ordered: initial.ordered, scannedOffset: contentOffset, pending: "", hasPendingItem: false, block: initial };
-    if (appendListDelta(listState, source.slice(contentOffset))) return openSnapshot(initial);
+    if (appendListDelta(listState, tailSource.slice(contentOffset))) return openSnapshot(initial);
     listState = undefined;
   };
 
@@ -685,16 +687,16 @@ export function createStreamingDocument(): StreamingDocument {
     if (!match) return;
     const initial = parseMarkdown(`${match[1]}\n${match[2]}`)[0];
     if (initial?.type !== "table") return;
-    const contentOffset = tailOffset + match[0].length;
+    const contentOffset = match[0].length;
     tableState = { header: match[1]!, delimiter: match[2]!, scannedOffset: contentOffset, pending: "", hasPendingRow: false, block: initial };
-    if (appendTableDelta(tableState, source.slice(contentOffset))) return openSnapshot(initial);
+    if (appendTableDelta(tableState, tailSource.slice(contentOffset))) return openSnapshot(initial);
     tableState = undefined;
   };
 
   const startFence = (tail: string) => {
     const opener = /^ {0,3}(`{3,}|~{3,})([^\n]*)\n/.exec(tail);
     if (!opener) return;
-    const contentOffset = tailOffset + opener[0].length;
+    const contentOffset = opener[0].length;
     const block: Extract<Block, { type: "code" }> = {
       type: "code",
       language: opener[2]!.trim().split(/\s+/)[0] || undefined,
@@ -702,7 +704,7 @@ export function createStreamingDocument(): StreamingDocument {
       open: true,
     };
     fenceState = { marker: opener[1]!, language: block.language, scannedOffset: contentOffset, value: "", pending: "", block };
-    if (appendFenceDelta(fenceState, source.slice(contentOffset))) return openSnapshot(block);
+    if (appendFenceDelta(fenceState, tailSource.slice(contentOffset))) return openSnapshot(block);
     fenceState = undefined;
   };
 
@@ -712,7 +714,7 @@ export function createStreamingDocument(): StreamingDocument {
     const pendingNewline = paragraph.endsWith("\n") ? "\n" : "";
     const text: Extract<Inline, { type: "text" }> = { type: "text", value: pendingNewline ? paragraph.slice(0, -1) : paragraph };
     const block: Extract<Block, { type: "paragraph" }> = { type: "paragraph", children: [text] };
-    paragraphState = { scannedOffset: source.length, pendingNewline, text, block };
+    paragraphState = { scannedOffset: tailSource.length, pendingNewline, text, block };
     return openSnapshot(block);
   };
 
@@ -744,8 +746,8 @@ export function createStreamingDocument(): StreamingDocument {
     environment.references = committedEnvironment.references;
     commitFrozen(committedBlocks);
     frozenParses++;
-    tailOffset += offset;
-    const open = source.slice(tailOffset);
+    tailSource = tailSource.slice(offset);
+    const open = tailSource;
     return open ? (finished ? parseMarkdown(open) : parseStreamingMarkdown(open).map(({ block }) => block)) : [];
   };
 
@@ -753,7 +755,7 @@ export function createStreamingDocument(): StreamingDocument {
     if (source === renderedSource) return cached;
     const continued = continueOpenBlock();
     if (continued) return publishOpen([continued]);
-    const tail = source.slice(tailOffset);
+    const tail = tailSource;
     if (!finished) {
       const started = startOpenBlock(tail);
       if (started) return publishOpen([started]);
@@ -766,7 +768,12 @@ export function createStreamingDocument(): StreamingDocument {
   return {
     get source() { return source; },
     get stats() { return { frozenParses, tailParses }; },
-    append(delta) { if (finished) throw new Error("cannot append to a finished markdown document"); source += delta; },
+    append(delta) {
+      if (finished) throw new Error("cannot append to a finished markdown document");
+      source += delta;
+      tailSource += delta;
+      unrendered += delta;
+    },
     finish() { finished = true; renderedSource = ""; },
     render,
   };
