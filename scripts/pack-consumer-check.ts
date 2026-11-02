@@ -65,7 +65,7 @@ onAiSdkPart({ type: "text-start", id: "text" });
 onAiSdkPart({ type: "text-delta", id: "text", delta: "hello" });
 onAiSdkPart({ type: "text-end", id: "text" });
 onAiSdkPart({ type: "finish" });
-if (store.getOutline()[0]?.id !== "message:packed") throw new Error("AI SDK README quickstart did not commit its message");
+if (store.getOutline()[0]?.id !== "message:w:message:packed") throw new Error("AI SDK README quickstart did not commit its message");
 if (typeof AgentRun !== "function") throw new Error("React quickstart did not load");
 `);
   run(["bun", "run", "consumer.tsx"], consumer);
