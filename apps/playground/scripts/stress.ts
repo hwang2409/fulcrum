@@ -208,7 +208,7 @@ try {
       await instrument(page);
       await page.goto(`http://127.0.0.1:4173?stressMessages=${messages}`);
       await page.evaluate(() => performance.mark("stress-start"));
-      await page.selectOption("select", "stress");
+      await page.selectOption("#mode", "stress");
       await page.context().tracing.start({ screenshots: true, snapshots: true });
       const remaining = deadline - performance.now();
       const measured = await Promise.race([
