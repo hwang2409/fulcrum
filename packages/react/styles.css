@@ -264,6 +264,11 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 /* Per-tool bodies (@fulcrum/react ToolBody). One grammar: the content, then a foot row with facts and copy buttons. */
 [data-part="tool-empty"],
 [data-part="tool-gap"] { display: block; margin: 0; padding: 6px 12px; color: var(--fulcrum-muted); font-size: 12px; }
+/* An empty body says why in words, with the state's mark: pulsing while the tool runs. */
+[data-part="tool-empty"] { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+[data-part="tool-empty"]::before { content: ""; flex: none; width: 6px; height: 6px; background: var(--fulcrum-muted); }
+[data-part="tool-empty"][data-state="streaming"]::before { background: var(--fulcrum-accent); animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
+[data-part="tool-empty"][data-state="error"]::before { background: var(--fulcrum-danger); }
 [data-part="tool-foot"] {
   display: flex;
   align-items: center;
@@ -284,6 +289,9 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   color: var(--fulcrum-muted);
   font-size: 12px;
 }
+/* The divider is the head's, not the scroll box's: a border on the scroller would leave follow-bottom a pixel short. */
+[data-part="tool-body"] > [data-part="text-viewer-head"] { border-bottom: 1px solid var(--fulcrum-border); }
+[data-part="tool-body"] > [data-part="text-viewer-head"] + [data-part="text-viewer"] { border-top: 0; }
 [data-part="text-viewer-count"] { flex: 1; min-width: 0; }
 [data-part="text-viewer-position"] { white-space: nowrap; }
 [data-part="text-viewer-position"][data-position="at-bottom"] { color: var(--fulcrum-ok); }
@@ -346,11 +354,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="search-path"] { color: var(--fulcrum-tok-function); }
 [data-part="search-count"] { color: var(--fulcrum-tok-number); font-weight: 400; }
 [data-part="search-total"] { color: var(--fulcrum-tok-number); }
-[data-part="search-match"] {
-  background: color-mix(in srgb, var(--fulcrum-warn) 22%, transparent);
-  color: inherit;
-  box-shadow: inset 0 -2px var(--fulcrum-warn);
-}
+[data-part="search-match"] { background: none; color: inherit; font-weight: 700; box-shadow: inset 0 -2px var(--fulcrum-warn); }
 [data-part="search-count"]::before { content: "("; }
 [data-part="search-count"]::after { content: ")"; }
 
@@ -360,11 +364,13 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="diff-sign"] { text-align: center; user-select: none; }
 [data-part="diff-text"] { padding-right: 12px; white-space: pre-wrap; }
 [data-part="diff-line"][data-change="hunk"] { color: var(--fulcrum-muted); }
-[data-part="diff-line"][data-change="delete"] { background: color-mix(in srgb, var(--fulcrum-tok-deleted) 12%, transparent); }
-[data-part="diff-line"][data-change="insert"] { background: color-mix(in srgb, var(--fulcrum-tok-inserted) 12%, transparent); }
-[data-part="diff-word"] { color: inherit; }
-[data-change="delete"] [data-part="diff-word"] { background: color-mix(in srgb, var(--fulcrum-tok-deleted) 32%, transparent); }
-[data-change="insert"] [data-part="diff-word"] { background: color-mix(in srgb, var(--fulcrum-tok-inserted) 32%, transparent); }
+/* Rows are tinted 8%: every text color is checked at 4.5:1 on these tints (test/themes.test.ts). A stronger tint would
+   push low-contrast palettes (solarized, one dark) under it, so the changed span is marked with a line, not a fill. */
+[data-part="diff-line"][data-change="delete"] { background: color-mix(in srgb, var(--fulcrum-tok-deleted) 8%, var(--fulcrum-bg)); }
+[data-part="diff-line"][data-change="insert"] { background: color-mix(in srgb, var(--fulcrum-tok-inserted) 8%, var(--fulcrum-bg)); }
+[data-part="diff-word"] { background: none; color: inherit; }
+[data-change="delete"] [data-part="diff-word"] { box-shadow: inset 0 -2px var(--fulcrum-tok-deleted); }
+[data-change="insert"] [data-part="diff-word"] { box-shadow: inset 0 -2px var(--fulcrum-tok-inserted); }
 
 /* Fetch: the status, the full url, and the page title above the body. */
 [data-part="fetch-meta"] { display: flex; flex-wrap: wrap; gap: 0 12px; padding: 6px 12px; }

@@ -71,8 +71,9 @@ export const needsTextViewer = (text: string, metrics = textMetrics(text)) =>
 const segmentEnd = (text: string, start: number) => {
   const limit = start + SEGMENT_CHARS;
   if (limit >= text.length) return text.length;
-  const newline = text.lastIndexOf("\n", limit - 1);
-  return newline >= start + SEGMENT_CHARS / 2 ? newline + 1 : safeEnd(text, limit);
+  // Scans back at most half a segment: lastIndexOf has no lower bound and would rescan the whole text per segment.
+  for (let index = limit - 1; index >= start + SEGMENT_CHARS / 2; index--) if (text.charCodeAt(index) === 10) return index + 1;
+  return safeEnd(text, limit);
 };
 
 export function segmentText(text: string, estimatedLines: number): TextSegment[] {

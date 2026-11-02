@@ -209,28 +209,8 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
   await page.waitForTimeout(1_500);
   const longTasks = await page.evaluate(() => (window as typeof window & { __longTasks: number[] }).__longTasks);
   const tokens = await viewer.evaluate((node) => node.querySelectorAll("[class^=tok-]").length);
-  const bottomGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
-  // Frame times while the viewer scrolls 48 px a frame from the top, on a CPU four times slower.
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-  const frames = await viewer.evaluate((node) => new Promise<number[]>((resolve) => {
-    node.scrollTop = 0;
-    const times: number[] = [];
-    const step = (time: number) => {
-      times.push(time);
-      node.scrollTop += 48;
-      if (times.length < 120) requestAnimationFrame(step);
-      else resolve(times.slice(1).map((value, index) => value - times[index]!));
-    };
-    requestAnimationFrame(step);
-  }));
-  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
-  await cdp.detach();
-  const sorted = [...frames].sort((a, b) => a - b);
-  const scroll = { median: sorted[sorted.length >> 1]!, p95: sorted[Math.floor(sorted.length * 0.95)]!, over33: frames.filter((frame) => frame > 33.4).length };
-  await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
-  await page.waitForTimeout(300);
-
+  // A log opens at its newest line; a file (read) opens at its first.
+  const bottomGap = await viewer.evaluate((node, file) => (file ? node.scrollTop : node.scrollHeight - node.scrollTop - node.clientHeight), fixture === "read");
   await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight / 2; });
   const middleBefore = await viewer.evaluate((node) => node.scrollTop);
   await viewer.hover();
@@ -259,6 +239,25 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
   })));
   await page.waitForTimeout(500);
   const appendGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
+  // Frame times while the viewer scrolls 48 px a frame from the top, on a CPU four times slower.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  const frames = await viewer.evaluate((node) => new Promise<number[]>((resolve) => {
+    node.scrollTop = 0;
+    const times: number[] = [];
+    const step = (time: number) => {
+      times.push(time);
+      node.scrollTop += 48;
+      if (times.length < 120) requestAnimationFrame(step);
+      else resolve(times.slice(1).map((value, index) => value - times[index]!));
+    };
+    requestAnimationFrame(step);
+  }));
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+  await cdp.detach();
+  const sorted = [...frames].sort((a, b) => a - b);
+  const scroll = { median: sorted[sorted.length >> 1]!, p95: sorted[Math.floor(sorted.length * 0.95)]!, over33: frames.filter((frame) => frame > 33.4).length };
+
   return { fixture, width, openMs, appendMs, bottomGap, appendGap, middleMoved: middleAfter > middleBefore, outerMiddleDelta, outerBoundaryDelta, longTasks, tokens, scroll };
 }
 
@@ -405,11 +404,12 @@ try {
       const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
       const measured = await measureViewer(page, width, fixture);
       console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms, append ${measured.appendMs.toFixed(1)} ms, gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px, long tasks [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}], ${measured.tokens} token spans, 4x-throttled scroll frames median ${measured.scroll.median.toFixed(1)} ms / p95 ${measured.scroll.p95.toFixed(1)} ms / ${measured.scroll.over33} over 33 ms`);
+      if (fixture === "read" && measured.longTasks.length) failures.push(`viewer read @ ${width}: long tasks while opening and highlighting [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}] ms`);
       if (fixture === "read" && !measured.tokens) failures.push(`viewer read @ ${width}: the mounted rows of a .ts file were not highlighted`);
       if (measured.openMs >= 16) failures.push(`viewer ${fixture} @ ${width}: open took ${measured.openMs.toFixed(1)} ms, needs <16 ms`);
       if (measured.appendMs >= 16) failures.push(`viewer ${fixture} @ ${width}: append took ${measured.appendMs.toFixed(1)} ms, needs <16 ms`);
-      if (Math.abs(measured.bottomGap) > 1) failures.push(`viewer ${fixture} @ ${width}: initial bottom gap ${measured.bottomGap.toFixed(1)} px, needs <=1 px`);
-      if (Math.abs(measured.appendGap) > 1) failures.push(`viewer ${fixture} @ ${width}: append bottom gap ${measured.appendGap.toFixed(1)} px, needs <=1 px`);
+      if (Math.abs(measured.bottomGap) > 1) failures.push(`viewer ${fixture} @ ${width}: initial ${fixture === "read" ? "top" : "bottom"} gap ${measured.bottomGap.toFixed(1)} px, needs <=1 px`);
+      if (Math.abs(measured.appendGap) > 1 && fixture !== "read") failures.push(`viewer ${fixture} @ ${width}: append bottom gap ${measured.appendGap.toFixed(1)} px, needs <=1 px`);
       if (!measured.middleMoved || measured.outerMiddleDelta !== 0) failures.push(`viewer ${fixture} @ ${width}: middle wheel did not stay inside viewer`);
       if (measured.outerBoundaryDelta !== 0) failures.push(`viewer ${fixture} @ ${width}: boundary wheel moved outer page ${measured.outerBoundaryDelta}px`);
       await page.close();

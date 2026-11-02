@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-// Every color a theme uses for text must reach 4.5:1 on the backgrounds text sits on (bg and surface).
+// Every color a theme uses for text must reach 4.5:1 on the backgrounds text sits on: bg, surface, and the 8% diff row
+// tints of styles.css.
 const css = readFileSync(new URL("../themes.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({
   name: selector!.trim().replace(/\s+/g, " "),
@@ -35,15 +36,18 @@ const contrast = (a: Rgb, b: Rgb) => {
   return (light! + 0.05) / (dark! + 0.05);
 };
 
-test("every theme defines every text color, and each reaches 4.5:1 on bg and surface", () => {
+test("every theme defines every text color, and each reaches 4.5:1 on bg, surface, and diff rows", () => {
   const themes = blocks.filter((block) => block.vars.bg);
   expect(themes.length).toBe(13); // 12 named themes and the OS-dark default
   const problems: string[] = [];
   for (const { name, vars } of themes) {
     for (const key of TEXT) {
       if (!vars[key]) { problems.push(`${name}: --fulcrum-${key} is missing`); continue; }
-      for (const background of ["bg", "surface"]) {
-        const ratio = contrast(color(vars[key]!, vars), color(vars[background]!, vars));
+      const bg = color(vars.bg!, vars);
+      const tint = (name: string): Rgb => color(vars[name]!, vars).map((c, i) => c * 0.08 + bg[i]! * 0.92) as Rgb;
+      const backgrounds: Record<string, Rgb> = { bg, surface: color(vars.surface!, vars), "inserted row": tint("tok-inserted"), "deleted row": tint("tok-deleted") };
+      for (const [background, rgb] of Object.entries(backgrounds)) {
+        const ratio = contrast(color(vars[key]!, vars), rgb);
         if (ratio < 4.5) problems.push(`${name}: --fulcrum-${key} on ${background} is ${ratio.toFixed(2)}:1`);
       }
     }

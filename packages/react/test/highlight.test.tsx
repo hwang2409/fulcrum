@@ -130,3 +130,11 @@ test("the large viewer highlights only its mounted rows, never the whole text", 
   expect(q('[data-part="text-viewer-head"]').textContent).toContain(`${(text.length / line.length).toLocaleString("en-US")} lines`);
   if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
 });
+
+test("segmenting a 2M-character line with no newline stays linear", async () => {
+  const { segmentText } = await import("../src/tools/text-viewer.js");
+  const started = performance.now();
+  const segments = segmentText("x".repeat(2_000_000), 1);
+  expect(segments).toHaveLength(1_000);
+  expect(performance.now() - started).toBeLessThan(100);
+});

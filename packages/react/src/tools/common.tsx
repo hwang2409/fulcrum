@@ -168,7 +168,7 @@ export function Foot({ children, copy }: { children?: ReactNode; copy: Array<[la
 export function Empty({ state, noun = "output" }: { state: ItemState; noun?: string }) {
   if (asking(state)) return null;
   const text = state === "streaming" ? `waiting for ${noun}` : state === "error" ? `failed without ${noun}` : state === "canceled" ? `canceled before ${noun}` : `no ${noun}`;
-  return <p data-part="tool-empty">{text}</p>;
+  return <p data-part="tool-empty" data-state={state}>{text}</p>;
 }
 
 /** Raw arguments serialize only when visible, and only when their immutable value changes. */

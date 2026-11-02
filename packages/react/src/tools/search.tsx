@@ -83,7 +83,7 @@ export function SearchBody({ item, output, state }: ToolBodyProps) {
       ) : <Output text={text} id={`${item.id}:output`} done={state !== "streaming"} />}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["pattern", pattern], ["output", text]]}>
-        {matches !== undefined ? <span data-part="search-total">{matches} {matches === 1 ? "match" : "matches"} in {groups!.length} {groups!.length === 1 ? "file" : "files"}</span> : null}
+        {text && matches !== undefined ? <span data-part="search-total">{matches} {matches === 1 ? "match" : "matches"} in {groups!.length} {groups!.length === 1 ? "file" : "files"}</span> : null}
       </Foot>
     </>
   );
