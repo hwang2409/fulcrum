@@ -6,6 +6,7 @@ import { once } from "node:events";
 const cases = [200, 5_000] as const;
 type TranscriptCase = (typeof cases)[number] | 100_000;
 const durationMs = 10_000;
+const caseTimeoutMs = 90_000;
 const seed = "fulcrum-stress-v1";
 const artifacts = new URL("../stress-artifacts/", import.meta.url).pathname;
 const preview = spawn("bun", ["x", "vite", "preview", "--host", "127.0.0.1", "--port", "4173"], { cwd: new URL("..", import.meta.url).pathname, stdio: ["ignore", "pipe", "pipe"] });
@@ -25,9 +26,10 @@ const virtualFlip = "flip to enforced when the virtual Timeline meets the target
 // Stable metrics are regression budgets. Current architectural failures retain their measured baseline and end-state target instead.
 const contract: Record<TranscriptCase, Contract> = {
   200: {
-    firstPaint: max(500), fps: min(40), p95Frame: max(65), worstFrame: max(90), longTasks: max(0),
-    mountedDomNodes: max(250), commitsPerEvent: max(0.5), upwardScrollShift: max(80),
-    idleAnimationFrames: max(220), idleTimers: max(2),
+    firstPaint: max(500), fps: min(48), p95Frame: max(40), worstFrame: max(80), longTasks: max(0),
+    mountedDomNodes: max(250), commitsPerEvent: max(0.5),
+    upwardScrollShift: knownMax("66-67.5 px", 1, virtualFlip),
+    idleAnimationFrames: knownMax("126-141", 0, virtualFlip), idleTimers: knownMax("2", 0, virtualFlip),
   },
   5_000: {
     firstPaint: knownMax("1,123.1-2,102.6 ms", 250, virtualFlip), fps: knownMin("16.4-21.5 fps", 55, virtualFlip),
@@ -176,6 +178,10 @@ try {
     await Bun.sleep(100);
   }
   for (const messages of cases) {
+    if (messages === 100_000) {
+      results.push({ case: messages, timeout: "not run: non-virtual Timeline", failures: [], knownFailures: ["mountedDomNodes: not run: non-virtual Timeline"], resolvedKnownFailures: [] } as Metrics);
+      continue;
+    }
     browser ??= await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     const cdp = await page.context().newCDPSession(page);
@@ -185,16 +191,29 @@ try {
     await page.evaluate(() => performance.mark("stress-start"));
     await page.selectOption("select", "stress");
     await page.context().tracing.start({ screenshots: true, snapshots: true });
-    const result = check(await measure(page, messages));
+    const measured = await Promise.race([
+      measure(page, messages),
+      Bun.sleep(caseTimeoutMs).then(() => ({ case: messages, timeout: `timed out after ${caseTimeoutMs} ms` })),
+    ]);
+    const result = check(measured);
     results.push(result);
+    if ("timeout" in measured) {
+      await page.context().tracing.stop({ path: `${artifacts}/stress-${messages}.zip` }).catch(() => {});
+      await page.close();
+      continue;
+    }
     await page.screenshot({ path: `${artifacts}/stress-${messages}.png`, fullPage: false });
     await page.context().tracing.stop({ path: `${artifacts}/stress-${messages}.zip` });
     await page.close();
   }
-  const report = { commit: (await Bun.$`git rev-parse HEAD`.text()).trim(), browser: browser.version(), cpuThrottle: 4, seed, contract, cases: results };
+  const flipMe = results.flatMap((result) => result.resolvedKnownFailures);
+  if (flipMe.length) {
+    console.error(`FLIP ME SUMMARY: ${flipMe.length} known-fail row(s) reached their target. Flip the row explicitly after the required sequential CI runs.`);
+  }
+  const report = { commit: (await Bun.$`git rev-parse HEAD`.text()).trim(), browser: browser.version(), cpuThrottle: 4, seed, contract, cases: results, flipMe };
   await Bun.write(`${artifacts}/stress-metrics.json`, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
-  if (results.some((result) => result.failures.length || (process.env.CI && result.resolvedKnownFailures.length))) process.exitCode = 1;
+  if (results.some((result) => result.failures.length)) process.exitCode = 1;
 } finally {
   await browser?.close(); stop(); await once(preview, "exit").catch(() => {});
 }

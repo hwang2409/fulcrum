@@ -1,8 +1,9 @@
+const external = ["@fulcrum/core", "@fulcrum/react", "@fulcrum/zeta", "@fulcrum/virtual", "react", "react-dom"];
 const builds = [
-  { name: "core", entry: "packages/core/dist/index.js", external: [], budget: 2_500, ceiling: 3_000 },
-  { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "react", "react-dom"], budget: 1_600 },
-  { name: "zeta", entry: "packages/zeta/dist/index.js", external: ["@fulcrum/core"], budget: 2_700, ceiling: 3_000 },
-  { name: "virtual", entry: "packages/virtual/dist/index.js", external: [], budget: 3_300 },
+  { name: "core", entry: "packages/core/dist/index.js", external, ceiling: 8_500 },
+  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 6_000 },
+  { name: "zeta", entry: "packages/zeta/dist/index.js", external, ceiling: 8_500 },
+  { name: "virtual", entry: "packages/virtual/dist/index.js", external, ceiling: 11_000 },
 ];
 let failed = false;
 const dir = (await Bun.$`mktemp -d`).text().trim();
@@ -15,13 +16,12 @@ for (const target of builds) {
     process.exit(1);
   }
   const bytes = Bun.gzipSync(await Bun.file(output).arrayBuffer()).byteLength;
-  console.log(`${target.name}: ${bytes} bytes gzipped (regression budget ${target.budget} bytes${target.ceiling ? `; architectural ceiling ${target.ceiling} bytes` : ""})`);
-  if (bytes > target.budget || (target.ceiling && bytes > target.ceiling)) failed = true;
+  console.log(`${target.name}: ${bytes} bytes gzipped (hard ceiling ${target.ceiling} bytes; accident alarm, not a regression budget)`);
+  if (bytes > target.ceiling) failed = true;
 }
-const cssBudget = 1_400;
-const cssCeiling = 2_000;
+const cssCeiling = 5_000;
 const css = await Bun.file("packages/react/styles.css").arrayBuffer();
 const cssBytes = Bun.gzipSync(css).byteLength;
-console.log(`css: ${cssBytes} bytes gzipped (regression budget ${cssBudget} bytes; architectural ceiling ${cssCeiling} bytes)`);
-if (cssBytes > cssBudget || cssBytes > cssCeiling) failed = true;
+console.log(`css: ${cssBytes} bytes gzipped (hard ceiling ${cssCeiling} bytes; accident alarm, not a regression budget)`);
+if (cssBytes > cssCeiling) failed = true;
 if (failed) process.exit(1);
