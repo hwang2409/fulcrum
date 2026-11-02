@@ -11,6 +11,7 @@ jobs:
       - run: bunx tsc -b
       - run: bun test
       - run: bun run bench:check
+      - run: bun run bench:markdown
       - run: bun run size:check
       - run: bun run check:highlight-consumer
       - run: bun run check:highlight-notices
