@@ -106,7 +106,7 @@ const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Rende
 });
 
 /** Pass a stable `renderers` object (module scope or memoized) so appends do not re-render every row. */
-export function Timeline({ renderers, className }: { renderers?: Renderers; className?: string }) {
+export const Timeline = memo(function Timeline({ renderers, className }: { renderers?: Renderers; className?: string }) {
   const items = useTimeline();
   return (
     <div className={className} data-part="timeline">
@@ -115,4 +115,4 @@ export function Timeline({ renderers, className }: { renderers?: Renderers; clas
       ))}
     </div>
   );
-}
+});

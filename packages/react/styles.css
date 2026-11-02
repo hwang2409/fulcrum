@@ -1,0 +1,94 @@
+/* @fulcrum/react starter styles. Copy this file into your app and edit it. */
+:root {
+  --fulcrum-bg: #ffffff;
+  --fulcrum-fg: #1c1c1e;
+  --fulcrum-muted: #6b6b72;
+  --fulcrum-surface: #f5f5f6;
+  --fulcrum-border: #e4e4e7;
+  --fulcrum-accent: #2563eb;
+  --fulcrum-danger: #dc2626;
+  --fulcrum-radius: 8px;
+  --fulcrum-gap: 12px;
+  --fulcrum-font: system-ui, -apple-system, sans-serif;
+  --fulcrum-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fulcrum-bg: #111113;
+    --fulcrum-fg: #ececef;
+    --fulcrum-muted: #9a9aa3;
+    --fulcrum-surface: #1b1b1f;
+    --fulcrum-border: #2c2c31;
+    --fulcrum-accent: #60a5fa;
+    --fulcrum-danger: #f87171;
+  }
+}
+
+[data-part="timeline"] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fulcrum-gap);
+  color: var(--fulcrum-fg);
+  background: var(--fulcrum-bg);
+  font: 15px/1.55 var(--fulcrum-font);
+}
+
+/* Skip layout and paint for off-screen items in long timelines. */
+[data-part="timeline"] > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 3em;
+}
+
+[data-part="message"][data-role="user"],
+[data-part="item"][data-kind="user"] {
+  align-self: flex-end;
+  max-width: 80%;
+  padding: 8px 12px;
+  border-radius: var(--fulcrum-radius);
+  background: var(--fulcrum-surface);
+}
+[data-part="message"][data-state="streaming"]::after {
+  content: "▍";
+  color: var(--fulcrum-muted);
+}
+
+[data-part="tool"],
+[data-part="approval"] {
+  padding: 8px 12px;
+  border: 1px solid var(--fulcrum-border);
+  border-radius: var(--fulcrum-radius);
+  font-family: var(--fulcrum-mono);
+  font-size: 13px;
+}
+[data-part="tool-name"] { font-weight: 600; }
+[data-part="tool-args"] { color: var(--fulcrum-muted); }
+[data-part="tool-output"] {
+  margin-top: 6px;
+  max-height: 16em;
+  overflow: auto;
+}
+[data-state="streaming"] > [data-part="tool-name"] { color: var(--fulcrum-accent); }
+[data-state="error"] { border-color: var(--fulcrum-danger); }
+[data-state="error"] > [data-part="tool-name"],
+[data-part="item"][data-kind="error"] { color: var(--fulcrum-danger); }
+[data-part="approval"][data-state="pending"] { border-color: var(--fulcrum-accent); }
+
+[data-part="approval"] button {
+  margin: 8px 8px 0 0;
+  padding: 4px 12px;
+  border: 1px solid var(--fulcrum-border);
+  border-radius: calc(var(--fulcrum-radius) - 2px);
+  background: var(--fulcrum-surface);
+  color: var(--fulcrum-fg);
+  font: inherit;
+  cursor: pointer;
+}
+[data-part="approval"] button[data-action="approve"] {
+  border-color: var(--fulcrum-accent);
+  background: var(--fulcrum-accent);
+  color: var(--fulcrum-bg);
+}
+[data-part="approval"] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
+
+[data-part="item"] { color: var(--fulcrum-muted); font-size: 13px; }
