@@ -129,13 +129,19 @@ async function measure(page: Page, messages: number): Promise<Record<string, num
     const anchor = [...scroll.querySelectorAll<HTMLElement>('[data-part="message"]')].find((item) => {
       const rect = item.getBoundingClientRect(); const box = scroll.getBoundingClientRect(); return rect.top >= box.top && rect.bottom <= box.bottom;
     });
+    const anchorId = anchor?.dataset.id;
     let upwardScrollShift = 0;
-    if (anchor) for (let i = 0; i < 5; i++) {
-      const before = anchor.getBoundingClientRect().top; const beforeScroll = scroll.scrollTop;
+    if (anchorId) for (let i = 0; i < 5; i++) {
+      const beforeItem = scroll.querySelector<HTMLElement>(`[data-part="message"][data-id="${anchorId}"]`);
+      if (!beforeItem) break;
+      const before = beforeItem.getBoundingClientRect().top; const beforeScroll = scroll.scrollTop;
       scroll.scrollBy(0, -300);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      upwardScrollShift += Math.abs(anchor.getBoundingClientRect().top - before + scroll.scrollTop - beforeScroll);
+      const afterItem = scroll.querySelector<HTMLElement>(`[data-part="message"][data-id="${anchorId}"]`);
+      if (!afterItem) break;
+      upwardScrollShift += Math.abs(afterItem.getBoundingClientRect().top - before + scroll.scrollTop - beforeScroll);
     }
+    window.requestAnimationFrame = (() => 0) as typeof window.requestAnimationFrame;
     const perf = (window as typeof window & { __fulcrumPerf?: Record<string, number> }).__fulcrumPerf!;
     const rafBeforeIdle = perf.rafRequested;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
