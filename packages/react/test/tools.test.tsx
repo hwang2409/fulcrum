@@ -89,6 +89,11 @@ test("read numbers lines from the range start", () => {
   render(tool("r", "read", { kind: "read", path: "src/a.ts", range: { offset: 10, limit: 2 } }, "const a = 1;\nconst b = 2;\n"), ["tool:r"]);
   expect(all('[data-part="line-number"]')).toEqual(["11", "12"]);
   expect(all('[data-part="line-text"]')).toEqual(["const a = 1;", "const b = 2;"]);
+  act(() => root!.unmount());
+  root = undefined;
+  render(tool("rc", "read", { kind: "read", path: "src/a.ts" }, "", { content: "canceled by user", is_canceled: true }), ["tool:rc"]);
+  expect(container.querySelector('[data-part="line-number"]')).toBeNull();
+  expect(q('[data-part="tool-output"]').textContent).toBe("canceled by user");
 });
 
 test("edit renders a unified diff with gutters, line numbers, and changed words", () => {
@@ -147,6 +152,7 @@ test("large output is capped until show all is requested", () => {
   const text = () => q('[data-part="tool-output"]').textContent!;
   expect(text()).toContain("line 0\n");
   expect(text()).toContain("line 499");
+  expect(text()).toContain("… 440 lines hidden …");
   expect(text()).not.toContain("line 250");
   const button = q('[data-action="show-all"]') as HTMLButtonElement;
   expect(button.textContent).toBe("show all 500 lines");

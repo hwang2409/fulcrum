@@ -53,7 +53,8 @@ const renderers: Renderers = {
   const renderers: Renderers = { "tool:bash": ({ id }) => <ToolCall id={id} body={ShellBody} /> };
   ```
 
-  `item` is the normalized core tool item, including the agent-neutral `item.view` hint when the adapter set one. `output` is the streamed output plus a final result that adds to it. Approvals pass the requested call, with the `view` an adapter may put on `approval_request`, as an active tool item with no output and state `pending` or `submitting`. With a view, the header summary reads from it (`$ command` for shell, the path for read, edit, and write, the pattern for search, the url or query for fetch) and the part sets `data-tool-view="<kind>"`. With no view, it shows the first string argument. `summary` overrides either.
+  `item` is the normalized core tool item, including the agent-neutral `item.view` hint when the adapter set one. `output` is the streamed output plus a final result that adds to it. Approvals pass the requested call, with the `view` an adapter may put on `approval_request`, as an active tool item with no output and state `pending` or `submitting`. The default `body` is `ToolBody`, which picks the card for `item.view.kind` (`ShellBody`, `ReadBody`, `EditBody`, `WriteBody`, `SearchBody`, `FetchBody`) or `GenericBody` with no view; each is exported for reuse in your own body. The default `summary` is `toolSummary`: `$ ls`, `src/a.ts:1-40`, `src/a.ts +3 -1`, `"TODO" packages/`, `example.com/docs`, or the first string argument with no view. `view.durationMs`, when set, shows next to the status word. With a view the part sets `data-tool-view="<kind>"`.
+- tool cards: shell shows stdout, then stderr apart when the view has the split streams, and the exit code; read numbers lines from the range start; edit renders a unified diff with old and new line numbers and the changed span marked; write numbers the written content; search groups `path:line:text` matches by file; fetch shows the HTTP status, the full url, and the body. Every card ends in a row of copy buttons (command, path, output). Long output shows its first 40 and last 20 lines until "show all", and no body ever puts more than 100 kB of text in the DOM; copy still copies all of it.
 
 - playground: `bunx tsc -b`, then `bun run --cwd apps/playground dev`
 
@@ -73,10 +74,35 @@ const renderers: Renderers = {
 
 ## use fulcrum with another harness
 
-map harness tool names to fulcrum's small, agent-neutral view contract in `@fulcrum/core`. the stable view kinds are `shell`, `read`, `edit`, `write`, `search`, and `fetch`. resolvers receive safe argument readers; missing or invalid arguments return no view instead of throwing.
+the cards are generic; a harness maps its own tool names to them. a tool map is the middleware layer: it reads a tool call's arguments and returns one of fulcrum's agent-neutral views, defined in `@fulcrum/core`:
+
+| `kind` | fields | card |
+| --- | --- | --- |
+| `shell` | `command`, `cwd?`, `exitCode?`, `stdout?`, `stderr?` | `$ command`, output, stderr apart, exit code |
+| `read` | `path`, `range?: { offset?, limit? }` (offset is lines skipped) | numbered lines |
+| `edit` | `path`, `diff` (unified diff) | diff with gutters and line numbers |
+| `write` | `path`, `content?`, `bytes?` | numbered written content |
+| `search` | `pattern`, `path?`, `matches?` | matches grouped by file |
+| `fetch` | `url` or `query`, `status?`, `title?`, `bytes?` | status, url, body |
+
+every view can also carry `durationMs`. a tool with no view gets the generic card (output and json arguments), so nothing is lost. resolvers receive safe argument readers; missing or invalid arguments return no view instead of throwing. `lineDiff(before, after)` writes the unified diff for edit tools that take old and new strings.
+
+zeta's map ships in `@fulcrum/zeta` as `zetaTools`, and its adapter attaches the views for you (plus `exitCode`, `stdout`, and `stderr` from bash's `structured_content`):
+
+| zeta tool | view |
+| --- | --- |
+| `bash`, `run_background` | `shell` from `command` (or the old `cmd`) and `cwd` |
+| `read` | `read` from `path`, `offset`, `limit` |
+| `edit` | `edit`: one hunk per `old_string`/`new_string` pair, or per entry of `edits` |
+| `write` | `write` from `path` and `content` |
+| `fetch` | `fetch` from `url` |
+| `websearch` | `fetch` from `query` |
+| everything else (`agent`, `todo`, `skill`, ...) | generic |
+
+a second harness writes its own map the same way. this one is for Claude Code's tool names, and has its own test in `packages/core/test/tool-map.test.ts`:
 
 ```ts
-import { defineToolMap, resolveToolView } from "@fulcrum/core";
+import { defineToolMap, lineDiff, resolveToolView } from "@fulcrum/core";
 
 const claudeCodeTools = defineToolMap({
   Bash: (args) => {
@@ -91,13 +117,12 @@ const claudeCodeTools = defineToolMap({
     const path = args.string("file_path");
     const before = args.string("old_string");
     const after = args.string("new_string");
-    return path && before !== undefined && after !== undefined
-      ? { kind: "edit", path, diff: `-${before}\n+${after}` }
-      : undefined;
+    return path && before !== undefined && after !== undefined ? { kind: "edit", path, diff: lineDiff(before, after) } : undefined;
   },
 });
 
-const view = resolveToolView(claudeCodeTools, toolCall);
+// in your adapter, for tool_start, tool_end, and approval_request:
+const event = { type: "tool_start", tool_call: toolCall, view: resolveToolView(claudeCodeTools, toolCall) };
 ```
 
-adapters can attach `view` to core tool events, or use `applyToolMap` for an existing tool item. unknown tools keep the generic card.
+`applyToolMap` adds the view to an existing tool item instead. `@fulcrum/core` and `@fulcrum/react` never import a harness package.

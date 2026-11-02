@@ -6,32 +6,19 @@ import "./gallery.css";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore } from "@fulcrum/core";
-import { Approval, RunProvider, Timeline, ToolCall, useItem, type Renderers, type ToolBodyProps } from "@fulcrum/react";
+import { Approval, RunProvider, Timeline, type Renderers } from "@fulcrum/react";
 import { demos, type Demo } from "./demos";
 import { MarkdownPreview } from "./markdown-preview";
 
 type Act = (action: "approve" | "deny", requestId: string) => void;
 const ActContext = createContext<Act>(() => {});
 
-// A sketch of the shell card through the body slot; the real per-tool cards land in @fulcrum/react/tools. The demo
-// events carry a shell view, as an adapter would attach, so the shared header already reads `$ command`.
-function ShellBody({ item, output, state }: ToolBodyProps) {
-  const asking = state === "pending" || state === "submitting";
-  return (
-    <>
-      {asking && item.view?.kind === "shell" ? <pre data-part="shell-command">{item.view.command}</pre> : null}
-      {output ? <pre data-part="tool-output">{output}</pre> : null}
-    </>
-  );
-}
-
 function GalleryApproval({ id }: { id: string }) {
   const act = useContext(ActContext);
-  const item = useItem(id);
-  const name = item?.type === "approval" && item.request.type === "approval_request" ? item.request.tool_call.name : undefined;
-  return <Approval id={id} {...(name === "bash" ? { body: ShellBody } : {})} onApprove={(r) => act("approve", r)} onDeny={(r) => act("deny", r)} />;
+  return <Approval id={id} onApprove={(r) => act("approve", r)} onDeny={(r) => act("deny", r)} />;
 }
-const renderers: Renderers = { approval: GalleryApproval, "tool:bash": ({ id }) => <ToolCall id={id} body={ShellBody} /> };
+// Tools use ToolCall's default body: the card for each item's view kind.
+const renderers: Renderers = { approval: GalleryApproval };
 
 // A live demo starts empty and plays; paused from the start (reduced motion), it shows its in-progress state instead.
 const fresh = (demo: Demo, paused = false) => {

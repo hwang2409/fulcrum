@@ -40,7 +40,7 @@ function pageProblems(minHeight: number) {
   const cards = [...document.querySelectorAll<HTMLElement>("[data-part=approval][data-state=pending]")];
   if (!cards.length) return ["no pending approval on the page"];
   for (const card of cards) {
-  const buttons = [...card.querySelectorAll<HTMLButtonElement>("button")];
+  const buttons = [...card.querySelectorAll<HTMLButtonElement>("[data-part=approval-actions] button")];
   if (buttons.length !== 2) problems.push(`${card.dataset.id}: ${buttons.length} buttons, expected approve and deny`);
   for (const button of buttons) {
     const name = `${card.dataset.id} ${button.textContent?.trim() || "(unnamed button)"}`;
@@ -86,7 +86,7 @@ function pageProblems(minHeight: number) {
     }
   }
   // A capped output or arguments box must cut between lines at its scrolled edge, not through a line's glyphs.
-  for (const box of document.querySelectorAll<HTMLElement>("[data-part=tool-output], [data-part=tool-args]")) {
+  for (const box of document.querySelectorAll<HTMLElement>("[data-part=tool-output], [data-part=tool-args], [data-part=tool-lines], [data-part=tool-diff], [data-part=tool-matches]")) {
     if (box.scrollHeight <= box.clientHeight) continue;
     const style = getComputedStyle(box);
     const pad = parseFloat(style.flexDirection === "column-reverse" ? style.paddingBottom : style.paddingTop);

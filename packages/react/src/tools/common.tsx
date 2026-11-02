@@ -57,7 +57,7 @@ export function ShowAll({ window, expanded, expand, noun = "lines" }: { window: 
 /** Plain bounded text. It stays one text node when it fits, so streaming output is cheap. */
 export function Output({ text, stream }: { text: string; stream?: "stderr" }) {
   const [expanded, setExpanded] = useState(false);
-  const lines = text.split("\n");
+  const lines = splitLines(text);
   const window = boundLines(lines, expanded);
   // `bound` returns the same array when everything fits.
   const shown = window.head === lines ? text : [...window.head, ...(window.hidden ? [gapText(window, expanded, "lines")] : []), ...window.tail].join("\n");
