@@ -1,0 +1,40 @@
+{"scenario":"text","sessionId":"text","part":{"type":"start","messageId":"message-1"}}
+{"scenario":"text","sessionId":"text","part":{"type":"text-start","id":"text-1"}}
+{"scenario":"text","sessionId":"text","part":{"type":"text-delta","id":"text-1","delta":"hello "}}
+{"scenario":"text","sessionId":"text","part":{"type":"text-delta","id":"text-1","delta":"world"}}
+{"scenario":"text","sessionId":"text","part":{"type":"text-end","id":"text-1"}}
+{"scenario":"text","sessionId":"text","part":{"type":"finish"}}
+{"scenario":"reasoning","sessionId":"reasoning","part":{"type":"start","messageId":"message-reasoning"}}
+{"scenario":"reasoning","sessionId":"reasoning","part":{"type":"reasoning-start","id":"reasoning-1"}}
+{"scenario":"reasoning","sessionId":"reasoning","part":{"type":"reasoning-delta","id":"reasoning-1","delta":"check evidence"}}
+{"scenario":"reasoning","sessionId":"reasoning","part":{"type":"reasoning-end","id":"reasoning-1"}}
+{"scenario":"reasoning","sessionId":"reasoning","part":{"type":"finish"}}
+{"scenario":"tool","sessionId":"tool","part":{"type":"start","messageId":"message-tool"}}
+{"scenario":"tool","sessionId":"tool","part":{"type":"tool-input-start","toolCallId":"call-1","toolName":"weather"}}
+{"scenario":"tool","sessionId":"tool","part":{"type":"tool-input-delta","toolCallId":"call-1","inputTextDelta":"{\"city\":\"San "}}
+{"scenario":"tool","sessionId":"tool","part":{"type":"tool-input-delta","toolCallId":"call-1","inputTextDelta":"Francisco\"}"}}
+{"scenario":"tool","sessionId":"tool","part":{"type":"tool-input-available","toolCallId":"call-1","toolName":"weather","input":{"city":"San Francisco"}}}
+{"scenario":"tool","sessionId":"tool","part":{"type":"tool-output-available","toolCallId":"call-1","output":{"weather":"sunny"}}}
+{"scenario":"tool-error","sessionId":"tool-error","part":{"type":"tool-input-start","toolCallId":"call-error","toolName":"shell"}}
+{"scenario":"tool-error","sessionId":"tool-error","part":{"type":"tool-input-available","toolCallId":"call-error","toolName":"shell","input":{"command":"false"}}}
+{"scenario":"tool-error","sessionId":"tool-error","part":{"type":"tool-output-error","toolCallId":"call-error","errorText":"exit 1"}}
+{"scenario":"approval","sessionId":"approval","part":{"type":"tool-input-available","toolCallId":"call-approval","toolName":"deploy","input":{"target":"production"}}}
+{"scenario":"approval","sessionId":"approval","part":{"type":"tool-approval-request","toolCallId":"call-approval","approvalId":"approval-1","reason":"production write"}}
+{"scenario":"approval","sessionId":"approval","part":{"type":"tool-output-denied","toolCallId":"call-approval"}}
+{"scenario":"reset-retry-abort","sessionId":"recovery","part":{"type":"start","messageId":"message-retry"}}
+{"scenario":"reset-retry-abort","sessionId":"recovery","part":{"type":"start-step"}}
+{"scenario":"reset-retry-abort","sessionId":"recovery","part":{"type":"reset-step"}}
+{"scenario":"reset-retry-abort","sessionId":"recovery","part":{"type":"abort","reason":"user cancelled"}}
+{"scenario":"usage","sessionId":"usage","part":{"type":"finish","messageMetadata":{"usage":{"inputTokens":12,"outputTokens":4}}}}
+{"scenario":"unknown-malformed","sessionId":"unknown","part":{"type":"data-weather","data":{"temperature":72}}}
+{"scenario":"unknown-malformed","sessionId":"unknown","part":{"type":"text-delta","id":7,"delta":false}}
+{"scenario":"sessions","sessionId":"alpha","part":{"type":"start","messageId":"alpha-message"}}
+{"scenario":"sessions","sessionId":"alpha","part":{"type":"text-start","id":"alpha-text"}}
+{"scenario":"sessions","sessionId":"alpha","part":{"type":"text-delta","id":"alpha-text","delta":"alpha"}}
+{"scenario":"sessions","sessionId":"beta","part":{"type":"start","messageId":"beta-message"}}
+{"scenario":"sessions","sessionId":"beta","part":{"type":"text-start","id":"beta-text"}}
+{"scenario":"sessions","sessionId":"beta","part":{"type":"text-delta","id":"beta-text","delta":"beta"}}
+{"scenario":"replay","sessionId":"replay","part":{"type":"start","messageId":"stable-message"}}
+{"scenario":"replay","sessionId":"replay","part":{"type":"text-start","id":"stable-text"}}
+{"scenario":"replay","sessionId":"replay","part":{"type":"text-delta","id":"stable-text","delta":"stable"}}
+{"scenario":"replay","sessionId":"replay","part":{"type":"finish"}}

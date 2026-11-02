@@ -59,3 +59,46 @@ const renderers: Renderers = {
 ## virtual
 
 `@fulcrum/virtual` is a zero-dependency, framework-agnostic vertical windowing engine. `createVirtualizer` accepts generic `{ id, kind }` outlines, kind-based estimates, and an optional cache from `snapshotCache()`. Its small interface owns measured per-kind medians, capped overscan ranges, stable or end-relative anchor corrections, deferred momentum-scroll jumps, pinned-bottom decisions, and a bounded structured action log. Callers apply the returned rows, spacers, and scroll decisions in their own renderer; the package does not use React, the DOM, or browser APIs.
+
+## render an AI SDK stream
+
+`@fulcrum/ai-sdk` translates the Vercel AI SDK UI message stream into the same `RunEvent` values used by every Fulcrum timeline. It implements the `x-vercel-ai-ui-message-stream: v1` protocol as shipped by `ai@6.0.0`; `ai` is not a runtime dependency.
+
+```tsx
+import { createRunStore } from "@fulcrum/core";
+import { createAiSdkAdapter } from "@fulcrum/ai-sdk";
+import { RunProvider, Timeline } from "@fulcrum/react";
+import "@fulcrum/react/styles.css";
+
+const store = createRunStore();
+const adapter = createAiSdkAdapter();
+
+// Call this for each parsed `data: {...}` UI message stream part.
+export function onAiSdkPart(part: unknown) {
+  for (const event of adapter.decode(part)) store.dispatch(event);
+}
+
+export function AgentRun() {
+  return <RunProvider store={store}><Timeline /></RunProvider>;
+}
+```
+
+Keep one adapter instance per AI SDK message stream. Feed it the JSON object from each SSE `data:` record and ignore the final `[DONE]` record. Malformed records become a generic `adapter_invalid_payload` error event; they do not throw from the callback. Custom `data-*` parts are preserved as generic `unknown` events so a host can render them without changing the adapter.
+
+## verify an adapter
+
+`@fulcrum/adapter-test` is a test-only package, separate from `@fulcrum/core` so production consumers do not ship fixtures or assertions. Its framework-neutral runner owns the canonical behavior list and accepts adapter-owned wire fixtures:
+
+```ts
+import { runAdapterConformance } from "@fulcrum/adapter-test";
+
+const failures = runAdapterConformance({
+  name: "my-harness",
+  fixtures, // records with scenario, sessionId, and harness wire data
+  create: () => ({ decode: (record) => adapter.decode(record.wire) }),
+  capabilities: { approval: false }, // omit only when the wire cannot express approval
+});
+if (failures.length) throw new Error(failures.join("\n"));
+```
+
+The canonical scenarios cover text stream and commit, reasoning, tool argument streaming or complete arguments, tool output/end/error, optional approval, reset/retry/abort, usage, unknown and malformed input, session isolation, and stable ids after reconnect replay. Both `@fulcrum/zeta` and `@fulcrum/ai-sdk` run this same kit.

@@ -1,0 +1,1 @@
+{"name":"@fulcrum/adapter-test","type":"module","dependencies":{"@fulcrum/core":"workspace:*"},"exports":{".":{"types":"./dist/index.d.ts","bun":"./src/index.ts","import":"./dist/index.js"}},"scripts":{"build":"tsc -p ."}}

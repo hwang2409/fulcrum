@@ -1,0 +1,1 @@
+{"name":"@fulcrum/ai-sdk","type":"module","dependencies":{"@fulcrum/core":"workspace:*"},"exports":{".":{"types":"./dist/index.d.ts","bun":"./src/index.ts","import":"./dist/index.js"}},"scripts":{"build":"tsc -p ."},"devDependencies":{"@fulcrum/adapter-test":"workspace:*"}}

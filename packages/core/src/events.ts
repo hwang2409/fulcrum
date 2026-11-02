@@ -82,6 +82,7 @@ export type RunEvent =
   | { type: "retry" }
   | { type: "message_commit"; message_id?: string; message: Message }
   | { type: "tool_start"; tool_call: ToolCall; data?: Record<string, unknown> }
+  | { type: "tool_input"; tool_call: ToolCall; input: string; data?: Record<string, unknown> }
   | {
       type: "tool_output";
       tool_call: ToolCall;

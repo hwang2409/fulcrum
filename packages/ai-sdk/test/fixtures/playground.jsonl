@@ -1,0 +1,13 @@
+{"type":"start","messageId":"ai-sdk-demo"}
+{"type":"reasoning-start","id":"reasoning-demo"}
+{"type":"reasoning-delta","id":"reasoning-demo","delta":"check the current directory first"}
+{"type":"reasoning-end","id":"reasoning-demo"}
+{"type":"text-start","id":"text-demo"}
+{"type":"text-delta","id":"text-demo","delta":"i'll inspect the project.\n"}
+{"type":"text-end","id":"text-demo"}
+{"type":"tool-input-start","toolCallId":"call-demo","toolName":"shell"}
+{"type":"tool-input-delta","toolCallId":"call-demo","inputTextDelta":"{\"command\":\"ls\"}"}
+{"type":"tool-input-available","toolCallId":"call-demo","toolName":"shell","input":{"command":"ls"}}
+{"type":"tool-output-available","toolCallId":"call-demo","output":"README.md\napps\npackages"}
+{"type":"finish-step"}
+{"type":"finish","messageMetadata":{"usage":{"inputTokens":18,"outputTokens":9}}}

@@ -162,19 +162,36 @@ export function reduceAllWithEntities(
         const old = getItem(itemId);
         const continuing = next.activeMessageId === id;
         const prior = old?.type === "message" ? old : undefined;
-        const item = appendText<RunItem>(
-          {
-            id: itemId,
-            type: "message",
-            message: prior?.message ?? { role: "assistant", content: [] },
-            version: (prior?.version ?? 0) + 1,
-            active: true,
-          },
-          continuing ? prior : undefined,
-          "text",
-          () => prior?.text ?? "",
-          event.delta,
-        );
+        const streamedKind = event.kind && event.kind !== "assistant" && event.kind !== "text" ? event.kind : undefined;
+        const item = streamedKind
+          ? (() => {
+              const message = prior?.message ?? { role: "assistant", content: [] };
+              const content = message.content.map((block) => ({ ...block }));
+              const block = content.at(-1);
+              if (block?.type === streamedKind && typeof block.text === "string") block.text += event.delta;
+              else content.push({ type: streamedKind, text: event.delta });
+              return {
+                id: itemId,
+                type: "message" as const,
+                message: { ...message, content },
+                version: (prior?.version ?? 0) + 1,
+                active: true,
+                ...(prior?.text === undefined ? {} : { text: prior.text }),
+              };
+            })()
+          : appendText<RunItem>(
+              {
+                id: itemId,
+                type: "message",
+                message: prior?.message ?? { role: "assistant", content: [] },
+                version: (prior?.version ?? 0) + 1,
+                active: true,
+              },
+              continuing ? prior : undefined,
+              "text",
+              () => prior?.text ?? "",
+              event.delta,
+            );
         setItem(item);
         if (!prior) {
           next.outline = [...next.outline, { id: itemId, kind: "message" }];
@@ -233,6 +250,19 @@ export function reduceAllWithEntities(
         if (exists) setItem(item);
         else appendItem(item);
         setToolActive(id, true);
+        break;
+      }
+      case "tool_input": {
+        const id = event.tool_call.id;
+        const itemId = toolItemId(id);
+        const old = getItem(itemId);
+        const prior = old?.type === "tool" ? old : undefined;
+        if (!prior) {
+          appendItem({ id: itemId, type: "tool", tool_call: event.tool_call, output: "", version: 1, active: true, is_error: false, canceled: false });
+          setToolActive(id, true);
+          break;
+        }
+        setItem({ ...prior, tool_call: event.tool_call, version: prior.version + 1 });
         break;
       }
       case "tool_output": {

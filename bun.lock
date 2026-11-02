@@ -11,6 +11,7 @@
     "apps/playground": {
       "name": "@fulcrum/playground",
       "dependencies": {
+        "@fulcrum/ai-sdk": "workspace:*",
         "@fulcrum/core": "workspace:*",
         "@fulcrum/react": "workspace:*",
         "@fulcrum/zeta": "workspace:*",
@@ -24,6 +25,21 @@
         "@types/react-dom": "^19",
         "playwright": "^1.52.0",
         "vite": "^8.3.5",
+      },
+    },
+    "packages/adapter-test": {
+      "name": "@fulcrum/adapter-test",
+      "dependencies": {
+        "@fulcrum/core": "workspace:*",
+      },
+    },
+    "packages/ai-sdk": {
+      "name": "@fulcrum/ai-sdk",
+      "dependencies": {
+        "@fulcrum/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@fulcrum/adapter-test": "workspace:*",
       },
     },
     "packages/core": {
@@ -52,10 +68,17 @@
       "dependencies": {
         "@fulcrum/core": "workspace:*",
       },
+      "devDependencies": {
+        "@fulcrum/adapter-test": "workspace:*",
+      },
     },
   },
   "packages": {
     "@fontsource-variable/jetbrains-mono": ["@fontsource-variable/jetbrains-mono@5.3.0", "", {}, "sha512-F32xpS2NsGYoQi2ADSkKTgpJj7ozajsGgDJ8woTnqjmIB+dxDIqImjl4pXZVEExu8UFZ2ndhmX18EBS/hdz3Lw=="],
+
+    "@fulcrum/adapter-test": ["@fulcrum/adapter-test@workspace:packages/adapter-test"],
+
+    "@fulcrum/ai-sdk": ["@fulcrum/ai-sdk@workspace:packages/ai-sdk"],
 
     "@fulcrum/core": ["@fulcrum/core@workspace:packages/core"],
 
