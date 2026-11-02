@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import type { RunItem } from "@fulcrum/core";
+import type { RunItem, ToolView } from "@fulcrum/core";
 
 export type ToolItem = Extract<RunItem, { type: "tool" }>;
 export type ToolCardProps = { item: ToolItem; onOpenRun?: (childRunId: string) => void };
@@ -26,6 +26,24 @@ export function CappedText({ children, part = "tool-output", renderLine }: { chi
       {hidden > 0 && !expanded ? <button type="button" data-action="show-all" onClick={() => setExpanded(true)}>show all {hidden} lines</button> : null}
     </div>
   );
+}
+
+export function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+  };
+  return <button type="button" data-action="copy" aria-label={`copy ${label}`} onClick={copy}>{copied ? "copied" : "copy"}</button>;
+}
+
+export function ToolMeta({ view }: { view: ToolView }) {
+  return view.durationMs !== undefined ? <span data-part="tool-duration">{view.durationMs < 1_000 ? `${view.durationMs} ms` : `${(view.durationMs / 1_000).toFixed(1)} s`}</span> : null;
+}
+
+export function EmptyOutput({ item, noun = "output" }: { item: ToolItem; noun?: string }) {
+  const text = item.active ? `waiting for ${noun}` : item.is_error ? `failed without ${noun}` : `no ${noun}`;
+  return <p data-part="tool-empty">{text}</p>;
 }
 
 export const toolOutput = (item: ToolItem) => item.output || item.result?.content || "";

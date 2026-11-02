@@ -41,8 +41,8 @@ function render(events: RunEvent[], body: ReactNode) {
 }
 
 const cases: Array<[ToolView, string, string]> = [
-  [{ kind: "shell", command: "bun test", cwd: "/repo", exitCode: 0 }, "shell", "$ bun test"],
-  [{ kind: "read", path: "src/a.ts", range: { offset: 10, limit: 20 } }, "read", "src/a.ts:10-29"],
+  [{ kind: "shell", command: "bun test", cwd: "/repo", exitCode: 0, durationMs: 1250 }, "shell", "$ bun test"],
+  [{ kind: "read", path: "src/a.ts", range: { offset: 10, limit: 20 } }, "read", "src/a.ts:10+20"],
   [{ kind: "edit", path: "src/a.ts", diff: "--- a/src/a.ts\n+++ b/src/a.ts\n@@\n-old\n+new" }, "edit", "src/a.ts"],
   [{ kind: "write", path: "src/a.ts", bytes: 12 }, "write", "12 B"],
   [{ kind: "search", pattern: "TODO", path: "src" }, "search", "TODO"],
@@ -57,6 +57,22 @@ for (const [view, kind, text] of cases) {
     expect(card.textContent).toContain(text);
   });
 }
+
+test("shell shows exit status and duration", () => {
+  render(tool("shell-meta", "bash", { kind: "shell", command: "true", exitCode: 0, durationMs: 1250 }), <ToolBody id="tool:shell-meta" />);
+  expect(container.querySelector('[data-part="tool-exit"]')?.textContent).toBe("exit 0");
+  expect(container.querySelector('[data-part="tool-duration"]')?.textContent).toBe("1.3 s");
+  expect(container.querySelector('[data-part="tool-empty"]')?.textContent).toBe("no output");
+});
+
+test("copy controls copy useful values", async () => {
+  const copied: string[] = [];
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
+  render(tool("copy", "read", { kind: "read", path: "src/a.ts" }), <ToolBody id="tool:copy" />);
+  await act(async () => (container.querySelector('[data-action="copy"]') as HTMLButtonElement).click());
+  expect(copied).toEqual(["src/a.ts"]);
+  expect(container.querySelector('[data-action="copy"]')?.textContent).toBe("copied");
+});
 
 test("edit diff exposes inserted and deleted line seams", () => {
   const view: ToolView = { kind: "edit", path: "a.ts", diff: "-old\n context\n+new" };

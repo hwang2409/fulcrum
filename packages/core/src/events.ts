@@ -13,13 +13,14 @@ export interface ToolCall {
   name: string;
   arguments: Record<string, unknown>;
 }
-export type ToolView =
+export type ToolView = (
   | { kind: "shell"; command: string; cwd?: string; exitCode?: number }
   | { kind: "read"; path: string; range?: { offset?: number; limit?: number } }
   | { kind: "edit"; path: string; diff: string }
   | { kind: "write"; path: string; bytes?: number }
   | { kind: "search"; pattern: string; path?: string; matches?: string[] }
-  | { kind: "fetch"; url?: string; query?: string; title?: string; bytes?: number };
+  | ({ kind: "fetch"; title?: string; bytes?: number } & ({ url: string; query?: never } | { query: string; url?: never }))
+) & { durationMs?: number };
 export interface ToolResult {
   tool_call_id: string;
   content: string;
