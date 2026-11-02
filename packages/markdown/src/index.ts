@@ -91,100 +91,103 @@ function inlineNodes(tokens: MarkdownToken[]): Inline[] {
 
 const tokenMap = (token: MarkdownToken): [number, number] => token.map ?? [0, 0];
 
+function convertLeaf(tokens: MarkdownToken[], index: number): [ParsedBlock, number] | undefined {
+  const token = tokens[index]!;
+  if (token.type === "paragraph_open" || token.type === "heading_open") {
+    const inline = tokens[index + 1]!;
+    const block: Block = token.type === "paragraph_open"
+      ? { type: "paragraph", children: inlineNodes(inline.children ?? []), tight: token.hidden || undefined }
+      : { type: "heading", level: Number(token.tag.slice(1)), children: inlineNodes(inline.children ?? []) };
+    return [{ block, map: tokenMap(token), closed: true }, index + 3];
+  }
+  if (token.type === "fence" || token.type === "code_block") {
+    const language = token.type === "fence" ? token.info.trim().split(/\s+/)[0] || undefined : undefined;
+    const lines = token.map?.[1] ?? 0;
+    const closed = token.type === "code_block" || lines > 0 && token.markup.length > 0 && token.content.endsWith("\n") && token.map !== null;
+    return [{ block: { type: "code", language, value: token.content, open: !closed }, map: tokenMap(token), closed }, index + 1];
+  }
+  if (token.type === "hr") return [{ block: { type: "rule" }, map: tokenMap(token), closed: true }, index + 1];
+  return undefined;
+}
+
+function convertList(tokens: MarkdownToken[], index: number): [ParsedBlock, number] {
+  const token = tokens[index]!;
+  const close = token.type === "bullet_list_open" ? "bullet_list_close" : "ordered_list_close";
+  const items: ListItem[] = [];
+  index++;
+  while (index < tokens.length && tokens[index]!.type !== close) {
+    if (tokens[index]!.type !== "list_item_open") { index++; continue; }
+    const [children, next] = convertBlocks(tokens, index + 1, "list_item_close");
+    index = next;
+    const item: ListItem = { children: children.map(({ block }) => block) };
+    const first = item.children[0];
+    if (first?.type === "paragraph" && first.children[0]?.type === "text") {
+      const task = /^\[([ xX])\]\s+/.exec(first.children[0].value);
+      if (task) {
+        item.checked = task[1]!.toLowerCase() === "x";
+        first.children[0].value = first.children[0].value.slice(task[0].length);
+      }
+    }
+    items.push(item);
+  }
+  const ordered = token.type === "ordered_list_open";
+  const startValue = ordered ? Number(attr(token, "start") ?? "1") : undefined;
+  return [{ block: { type: "list", ordered, start: startValue, items }, map: tokenMap(token), closed: true }, index + 1];
+}
+
+function convertTable(tokens: MarkdownToken[], index: number): [ParsedBlock, number] {
+  const token = tokens[index]!;
+  const header: Inline[][] = [];
+  const rows: Inline[][][] = [];
+  const align: Array<"left" | "center" | "right" | undefined> = [];
+  let row: Inline[][] | undefined;
+  let inHeader = false;
+  index++;
+  while (index < tokens.length && tokens[index]!.type !== "table_close") {
+    const current = tokens[index]!;
+    if (current.type === "thead_open") inHeader = true;
+    else if (current.type === "thead_close") inHeader = false;
+    else if (current.type === "tr_open") row = [];
+    else if (current.type === "tr_close" && row) {
+      if (inHeader) header.push(...row);
+      else rows.push(row);
+      row = undefined;
+    } else if ((current.type === "th_open" || current.type === "td_open") && row) {
+      const inline = tokens[index + 1];
+      row.push(inline?.type === "inline" ? inlineNodes(inline.children ?? []) : []);
+      if (current.type === "th_open") {
+        const style = attr(current, "style") ?? "";
+        align.push(style.includes("center") ? "center" : style.includes("right") ? "right" : style.includes("left") ? "left" : undefined);
+      }
+    }
+    index++;
+  }
+  return [{ block: { type: "table", header, rows, align }, map: tokenMap(token), closed: true }, index + 1];
+}
+
 function convertBlocks(tokens: MarkdownToken[], start = 0, stop?: string): [ParsedBlock[], number] {
   const blocks: ParsedBlock[] = [];
   let index = start;
   while (index < tokens.length) {
     const token = tokens[index]!;
     if (stop && token.type === stop) return [blocks, index + 1];
-
-    if (token.type === "paragraph_open" || token.type === "heading_open") {
-      const inline = tokens[index + 1]!;
-      const block: Block = token.type === "paragraph_open"
-        ? { type: "paragraph", children: inlineNodes(inline.children ?? []), tight: token.hidden || undefined }
-        : { type: "heading", level: Number(token.tag.slice(1)), children: inlineNodes(inline.children ?? []) };
-      blocks.push({ block, map: tokenMap(token), closed: true });
-      index += 3;
-      continue;
-    }
-    if (token.type === "fence" || token.type === "code_block") {
-      const language = token.type === "fence" ? token.info.trim().split(/\s+/)[0] || undefined : undefined;
-      const lines = token.map?.[1] ?? 0;
-      const closed = token.type === "code_block" || lines > 0 && token.markup.length > 0 && token.content.endsWith("\n") && token.map !== null;
-      blocks.push({ block: { type: "code", language, value: token.content, open: !closed }, map: tokenMap(token), closed });
-      index++;
-      continue;
-    }
-    if (token.type === "hr") {
-      blocks.push({ block: { type: "rule" }, map: tokenMap(token), closed: true });
-      index++;
-      continue;
-    }
-    if (token.type === "blockquote_open") {
+    const leaf = convertLeaf(tokens, index);
+    if (leaf) {
+      blocks.push(leaf[0]);
+      index = leaf[1];
+    } else if (token.type === "blockquote_open") {
       const [children, next] = convertBlocks(tokens, index + 1, "blockquote_close");
       blocks.push({ block: { type: "blockquote", children: children.map(({ block }) => block) }, map: tokenMap(token), closed: true });
       index = next;
-      continue;
-    }
-    if (token.type === "bullet_list_open" || token.type === "ordered_list_open") {
-      const close = token.type === "bullet_list_open" ? "bullet_list_close" : "ordered_list_close";
-      const items: ListItem[] = [];
-      index++;
-      while (index < tokens.length && tokens[index]!.type !== close) {
-        if (tokens[index]!.type !== "list_item_open") { index++; continue; }
-        const itemOpen = tokens[index++]!;
-        const [children, next] = convertBlocks(tokens, index, "list_item_close");
-        index = next;
-        const item: ListItem = { children: children.map(({ block }) => block) };
-        const first = item.children[0];
-        if (first?.type === "paragraph" && first.children[0]?.type === "text") {
-          const task = /^\[([ xX])\]\s+/.exec(first.children[0].value);
-          if (task) {
-            item.checked = task[1]!.toLowerCase() === "x";
-            first.children[0].value = first.children[0].value.slice(task[0].length);
-          }
-        }
-        items.push(item);
-        void itemOpen;
-      }
-      index++;
-      const ordered = token.type === "ordered_list_open";
-      const startValue = ordered ? Number(attr(token, "start") ?? "1") : undefined;
-      blocks.push({ block: { type: "list", ordered, start: startValue, items }, map: tokenMap(token), closed: true });
-      continue;
-    }
-    if (token.type === "table_open") {
-      const tableMap = tokenMap(token);
-      const header: Inline[][] = [];
-      const rows: Inline[][][] = [];
-      const align: Array<"left" | "center" | "right" | undefined> = [];
-      let row: Inline[][] | undefined;
-      let inHeader = false;
-      index++;
-      while (index < tokens.length && tokens[index]!.type !== "table_close") {
-        const current = tokens[index]!;
-        if (current.type === "thead_open") inHeader = true;
-        else if (current.type === "thead_close") inHeader = false;
-        else if (current.type === "tr_open") row = [];
-        else if (current.type === "tr_close" && row) {
-          if (inHeader) header.push(...row);
-          else rows.push(row);
-          row = undefined;
-        } else if ((current.type === "th_open" || current.type === "td_open") && row) {
-          const inline = tokens[index + 1];
-          row.push(inline?.type === "inline" ? inlineNodes(inline.children ?? []) : []);
-          if (current.type === "th_open") {
-            const style = attr(current, "style") ?? "";
-            align.push(style.includes("center") ? "center" : style.includes("right") ? "right" : style.includes("left") ? "left" : undefined);
-          }
-        }
-        index++;
-      }
-      index++;
-      blocks.push({ block: { type: "table", header, rows, align }, map: tableMap, closed: true });
-      continue;
-    }
-    index++;
+    } else if (token.type === "bullet_list_open" || token.type === "ordered_list_open") {
+      const [list, next] = convertList(tokens, index);
+      blocks.push(list);
+      index = next;
+    } else if (token.type === "table_open") {
+      const [table, next] = convertTable(tokens, index);
+      blocks.push(table);
+      index = next;
+    } else index++;
   }
   return [blocks, index];
 }
