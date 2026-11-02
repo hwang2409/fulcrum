@@ -303,8 +303,12 @@ test("tool header shows name, a one-line summary, and status; json stays in the 
   ]);
   expect(header.textContent).not.toContain("{");
   expect(tool.open).toBe(false);
-  expect(tool.querySelector('[data-part="tool-body"] [data-part="tool-args"]')!.textContent).toBe(JSON.stringify(grep.arguments, null, 2));
-  expect(tool.querySelector('[data-part="tool-output"]')!.textContent).toBe(big);
+  const body = tool.querySelector('[data-part="tool-body"]')!;
+  expect(body.firstElementChild!.getAttribute("data-part")).toBe("tool-output");
+  expect(body.querySelector('[data-part="tool-output"]')!.textContent).toBe(big);
+  const args = body.querySelector('[data-part="tool-args-details"]') as HTMLDetailsElement;
+  expect(args.open).toBe(false);
+  expect(args.querySelector('[data-part="tool-args"]')!.textContent).toBe(JSON.stringify(grep.arguments, null, 2));
   expect(q('[data-id="tool:t2"] [data-part="tool-summary"]').textContent).toBe("");
 });
 
@@ -344,6 +348,25 @@ test("canceled comes from the normalized item and wins over the error flag", () 
   );
   expect(q('[data-part="tool"]').getAttribute("data-state")).toBe("canceled");
   expect(q('[data-part="tool-status"]').textContent).toBe("canceled");
+});
+
+test("tool output keeps the streamed text and appends a final result that adds to it", () => {
+  const a = call("t1", "bash");
+  const b = call("t2", "grep");
+  const { store } = setup([
+    { type: "tool_output", tool_call: a, output: "building..." },
+    { type: "tool_end", tool_call: a, tool_result: { tool_call_id: "t1", content: "error: exited with code 1", is_error: true } },
+    { type: "tool_output", tool_call: b, output: "x.ts:1\n" },
+    { type: "tool_end", tool_call: b, tool_result: { tool_call_id: "t2", content: "x.ts:1\n", is_error: false } },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <ToolCall id="tool:t1" />
+      <ToolCall id="tool:t2" />
+    </RunProvider>,
+  );
+  expect(q('[data-id="tool:t1"] [data-part="tool-output"]').textContent).toBe("building...\nerror: exited with code 1");
+  expect(q('[data-id="tool:t2"] [data-part="tool-output"]').textContent).toBe("x.ts:1\n");
 });
 
 test("a tool view replaces the generic body and keeps the header, status, and approval actions", () => {

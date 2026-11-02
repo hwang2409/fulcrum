@@ -119,6 +119,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 }
 
 [data-part="tool-body"] { border-top: 1px solid var(--fulcrum-border); }
+[data-part="tool-body"]:empty { display: none; }
 [data-part="tool-body"] pre { margin: 0; font: inherit; white-space: pre-wrap; }
 [data-part="tool-args"] {
   max-height: 16em;
@@ -136,7 +137,26 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   background: var(--fulcrum-surface);
   color: var(--fulcrum-fg);
 }
-[data-part="tool-args"] + [data-part="tool-output"] { border-top: 1px solid var(--fulcrum-border); }
+[data-part="tool-body"] > * + * { border-top: 1px solid var(--fulcrum-border); }
+/* Approvals show the request in full: it is what the user decides on. */
+[data-part="approval"] [data-part="tool-args"] { max-height: none; color: var(--fulcrum-fg); }
+[data-part="tool-args-details"] > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 12px;
+  color: var(--fulcrum-muted);
+  font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+[data-part="tool-args-details"] > summary::-webkit-details-marker { display: none; }
+[data-part="tool-args-details"] > summary::before { content: "+"; width: 1ch; }
+[data-part="tool-args-details"][open] > summary::before { content: "-"; }
+[data-part="tool-args-details"] > summary:hover { color: var(--fulcrum-fg); }
+[data-part="tool-args-details"] > summary:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+[data-part="tool-args-details"] > [data-part="tool-args"] { padding-top: 0; }
 
 /* State vocabulary. Running: accent rail and a pulsing mark. Failed: danger rail and border, bold word.
    Canceled: muted, the summary struck through. Needs approval: warn on every edge, bold word. */
@@ -155,8 +175,6 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="approval"][data-state="pending"] > [data-part="tool-header"] > [data-part="tool-status"],
 [data-part="approval"][data-state="submitting"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-fg); font-weight: 700; }
 [data-part="approval"][data-state="submitting"] > [data-part="tool-header"] > [data-part="tool-status"]::before { animation: fulcrum-pulse 0.6s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
-/* The user must see everything they approve, so the request never scrolls inside itself. */
-[data-part="approval"] [data-part="tool-args"] { max-height: none; color: var(--fulcrum-fg); }
 
 [data-part="approval-actions"] {
   display: flex;
@@ -185,13 +203,14 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 @media (pointer: coarse) { [data-part="approval-actions"] button { min-height: 44px; } }
 
 /* Shell view: the header reads "$ command", the body is the output, no chrome beyond the hairlines. */
+[data-tool-view="shell"] > [data-part="tool-header"] { grid-template-columns: auto minmax(0, 1fr) auto; }
 [data-tool-view="shell"] [data-part="tool-name"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 [data-tool-view="shell"] [data-part="tool-summary"] { color: var(--fulcrum-fg); }
 [data-tool-view="shell"] [data-part="tool-summary"]::before { content: "$ "; color: var(--fulcrum-muted); }
 [data-tool-view="shell"] [data-part="shell-command"] { padding: 8px 12px; color: var(--fulcrum-fg); }
 [data-tool-view="shell"] [data-part="shell-command"]::before { content: "$ "; color: var(--fulcrum-muted); }
 [data-tool-view="shell"] [data-part="tool-output"] { background: var(--fulcrum-bg); }
-[data-tool-view="shell"] [data-part="shell-command"] + [data-part="tool-output"] { padding-top: 0; }
+[data-tool-view="shell"] [data-part="shell-command"] + [data-part="tool-output"] { padding-top: 0; border-top: 0; }
 
 /* Other items: errors get the danger rail, everything else is a quiet line. */
 [data-part="item"] { color: var(--fulcrum-muted); font-size: 13px; }
@@ -248,7 +267,7 @@ ul[data-part="md-list"] { list-style: "- "; }
   tab-size: 2;
   white-space: pre;
 }
-[data-part="md-code-block"] > code { font: inherit; }
+[data-part="md-code-block"] > code { padding: 0; border: 0; background: none; font: inherit; }
 [data-part="md-code-block"][data-language]::before {
   content: attr(data-language);
   float: right;

@@ -75,11 +75,20 @@ function Header({ call, state, status, summary, id }: { call: ToolCallData; stat
   );
 }
 
-function GenericBody({ call, output }: ToolBodyProps) {
+// Output first; the raw JSON arguments stay behind their own collapsed disclosure.
+function GenericBody({ call, output, state }: ToolBodyProps) {
+  const asking = state === "pending" || state === "submitting";
   return (
     <>
-      <pre data-part="tool-args">{json(call.arguments)}</pre>
       {output ? <pre data-part="tool-output">{output}</pre> : null}
+      {asking ? (
+        <pre data-part="tool-args">{json(call.arguments)}</pre>
+      ) : (
+        <details data-part="tool-args-details">
+          <summary>arguments</summary>
+          <pre data-part="tool-args">{json(call.arguments)}</pre>
+        </details>
+      )}
     </>
   );
 }
@@ -91,7 +100,12 @@ const SHORT_OUTPUT_LINES = 8;
 const openByDefault = (item: ToolItem | undefined, output: string) =>
   !item || item.active || item.is_error || (output !== "" && output.length < 1200 && output.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1);
 
-const toolOutput = (item: ToolItem) => item.output || item.result?.content || "";
+// Streamed output, then the final result when it adds something (an error message, a cancel reason).
+const toolOutput = ({ output, result }: ToolItem) => {
+  const content = result?.content ?? "";
+  if (!content || output.includes(content)) return output;
+  return output ? `${output}${output.endsWith("\n") ? "" : "\n"}${content}` : content;
+};
 const toolState = (item: ToolItem): ItemState =>
   item.canceled ? "canceled" : item.is_error ? "error" : item.active ? "streaming" : "done";
 

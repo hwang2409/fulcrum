@@ -1,7 +1,8 @@
 import type { RunEvent, ToolCall } from "@fulcrum/core";
 
-/** `part` is the `@fulcrum/react` export the demo shows. `live` replays `events` in a loop, one event per `live` ms. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number };
+/** `part` is the `@fulcrum/react` export the demo shows. `live` replays `events` in a loop, one event per `live` ms.
+    `preview` renders a static markup fixture instead of a timeline. */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; preview?: "markdown" };
 
 const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({ id, name, arguments: args });
 const text = (role: string, value: string) => ({ role, content: [{ type: "text", text: value }] });
@@ -29,6 +30,9 @@ const grepLines = [
   "packages/zeta/src/client.ts:41: // TODO: retry with backoff\n",
 ];
 const bash = call("t-bash", "bash", { command: "bun test packages/core", timeout: 120 });
+const read = call("t-read", "read_file", { path: "apps/playground/vite.config.ts", limit: 40 });
+const config = 'import { defineConfig } from "vite";\nimport { resolve } from "node:path";\n\nexport default defineConfig({ build: { outDir: resolve("dist") } });\n';
+const build = call("t-build", "bash", { command: "bun run --cwd apps/playground build" });
 const edit = call("t-edit", "edit", {
   path: "packages/core/src/store.ts",
   old_string: "pending.push(event);",
@@ -55,12 +59,21 @@ export const demos: Demo[] = [
     id: "timeline-run",
     part: "Timeline",
     title: "realistic run",
-    description: "A user question, assistant messages, tools, a resolved approval, and the final answer.",
+    description: "A failing build, a file read, a search, a resolved approval, an edit, a passing test run, and the answer.",
     events: [
       { type: "run_start" },
       { type: "user_message", text: "Why does the playground build fail on CI?", mode: "default" },
       { type: "turn_start" },
-      ...stream("m1", "Let me search the packages for open TODOs first."),
+      ...stream("m1", "I will reproduce the build first, then read the config it points at."),
+      { type: "tool_start", tool_call: build },
+      { type: "tool_output", tool_call: build, output: "vite v8.3.5 building for production...\n" },
+      {
+        type: "tool_end",
+        tool_call: build,
+        tool_result: { tool_call_id: build.id, content: '[vite]: Rollup failed to resolve import "node:path" from "vite.config.ts".\nerror: script "build" exited with code 1', is_error: true },
+      },
+      { type: "tool_start", tool_call: read },
+      ok(read, config),
       { type: "tool_start", tool_call: grep },
       ...grepLines.map((output): RunEvent => ({ type: "tool_output", tool_call: grep, output })),
       ok(grep, grepLines.join("")),
@@ -108,6 +121,14 @@ export const demos: Demo[] = [
     events: [{ type: "message_commit", message_id: "m-long", message: text("assistant", longText) }],
   },
   {
+    id: "markdown-preview",
+    part: "Message",
+    title: "markdown and code (preview)",
+    description: "What an assistant message looks like once @fulcrum/markdown lands: static markup in @fulcrum/markdown's data-part contract with tok-* spans, styled by styles.css and the theme.",
+    events: [],
+    preview: "markdown",
+  },
+  {
     id: "tool-running",
     part: "ToolCall",
     title: "running",
@@ -123,7 +144,7 @@ export const demos: Demo[] = [
     id: "tool-done",
     part: "ToolCall",
     title: "done",
-    description: "A finished tool with its output.",
+    description: "A finished generic tool: one header row, short output open below it, the arguments as JSON inside.",
     events: [{ type: "tool_start", tool_call: grep }, ok(grep, grepLines.join(""))],
   },
   {
@@ -144,7 +165,7 @@ export const demos: Demo[] = [
     id: "tool-canceled",
     part: "ToolCall",
     title: "canceled",
-    description: "The user canceled the tool. The part has no separate canceled state, so it shows as done.",
+    description: "The user canceled the tool (data-state=\"canceled\", from the core's normalized canceled flag).",
     events: [
       { type: "tool_start", tool_call: bash },
       { type: "tool_output", tool_call: bash, output: "bun test v1.3.13\n" },
@@ -159,15 +180,22 @@ export const demos: Demo[] = [
     id: "tool-large",
     part: "ToolCall",
     title: "large args and output",
-    description: "Large JSON arguments and about 9 KB of output; the output scrolls inside the part.",
+    description: "Large JSON arguments and about 9 KB of output. It starts collapsed to the header row; open it to scroll the output.",
     events: [{ type: "tool_start", tool_call: bigArgs }, ok(bigArgs, testLines.join(""))],
   },
   {
     id: "approval-pending",
     part: "Approval",
     title: "pending",
-    description: "Waiting for the user. Approve or deny resolves it and shows the action.",
+    description: "A shell command waiting for the user. Approve or deny resolves it; a second click while sending is ignored.",
     events: [{ type: "approval_request", request_id: "r-deploy", tool_call: deploy, delegated: false }],
+  },
+  {
+    id: "approval-generic",
+    part: "Approval",
+    title: "pending, generic tool",
+    description: "A non-shell tool: the full arguments are shown, never cut, so the user sees what they approve.",
+    events: [{ type: "approval_request", request_id: "r-edit-pending", tool_call: edit, delegated: false }],
   },
   {
     id: "approval-resolved",

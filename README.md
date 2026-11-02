@@ -46,7 +46,7 @@ const renderers: Renderers = {
 
 - playground: `bunx tsc -b`, then `bun run --cwd apps/playground dev`
 
-- styles: copy `packages/react/styles.css` into your app and edit the `--fulcrum-*` variables. It follows the OS light or dark mode (set `data-fulcrum-theme="light"` or `"dark"` on `<html>` to force one) and uses `content-visibility: auto` for long timelines.
+- styles: copy `packages/react/styles.css` (layout, states, markdown and code) and `packages/react/themes.css` (color) into your app and edit them. themes.css has 12 real palettes: gruvbox-dark, gruvbox-light, dracula, nord, tokyo-night, catppuccin-mocha, catppuccin-latte, solarized-dark, solarized-light, github-dark, github-light, one-dark. Set `data-fulcrum-theme="<name>"` on `<html>` or any subtree; with no attribute it follows the OS with github-light or github-dark. Each theme also sets `--fulcrum-tok-*` colors for `<span class="tok-<type>">` syntax tokens. The type is "JetBrains Mono" with monospace fallbacks; load the font yourself.
 - playground: `bunx tsc -b`, then `bun run --cwd apps/playground dev`.
 - gallery: every part in every state, no server or session. Run `bun run dev` in `apps/playground`, then open `/gallery.html`.
 - performance checks: `bun run bench:check` and `bun run size:check`; run the production browser stress report with `bun run stress`.

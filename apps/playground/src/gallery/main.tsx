@@ -1,45 +1,55 @@
 import "../fonts.css";
-import baseline from "@fulcrum/react/styles.css?inline";
-import folio from "./directions/folio.css?inline";
-import trace from "./directions/trace.css?inline";
-import pebble from "./directions/pebble.css?inline";
-import themes from "./themes.css?inline";
+import "@fulcrum/react/styles.css";
+import "@fulcrum/react/themes.css";
+import themeSource from "@fulcrum/react/themes.css?raw";
 import "./gallery.css";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore } from "@fulcrum/core";
-import { Approval, RunProvider, Timeline, type Renderers } from "@fulcrum/react";
+import { Approval, RunProvider, Timeline, ToolCall, useItem, type Renderers, type ToolBodyProps } from "@fulcrum/react";
+import type { ToolCall as ToolCallData } from "@fulcrum/core";
 import { demos, type Demo } from "./demos";
+import { MarkdownPreview } from "./markdown-preview";
 
 type Act = (action: "approve" | "deny", requestId: string) => void;
 const ActContext = createContext<Act>(() => {});
+
+// A sketch of the shell card through ToolCall's view slot; the real per-tool cards land in @fulcrum/react/tools.
+const shellSummary = (call: ToolCallData) => String(call.arguments.command ?? "");
+function ShellBody({ call, output, state }: ToolBodyProps) {
+  const asking = state === "pending" || state === "submitting";
+  return (
+    <>
+      {asking ? <pre data-part="shell-command">{shellSummary(call)}</pre> : null}
+      {output ? <pre data-part="tool-output">{output}</pre> : null}
+    </>
+  );
+}
+const shell = { view: "shell", summary: shellSummary, body: ShellBody };
+const isShell = (name?: string) => name === "bash";
+
 function GalleryApproval({ id }: { id: string }) {
   const act = useContext(ActContext);
-  return <Approval id={id} onApprove={(r) => act("approve", r)} onDeny={(r) => act("deny", r)} />;
+  const item = useItem(id);
+  const name = item?.type === "approval" && item.request.type === "approval_request" ? item.request.tool_call.name : undefined;
+  return <Approval id={id} {...(isShell(name) ? shell : {})} onApprove={(r) => act("approve", r)} onDeny={(r) => act("deny", r)} />;
 }
-const renderers: Renderers = { approval: GalleryApproval };
+const renderers: Renderers = { approval: GalleryApproval, "tool:bash": ({ id }) => <ToolCall id={id} {...shell} /> };
 
-const fresh = (demo: Demo) => {
+// A live demo starts empty and plays; paused from the start (reduced motion), it shows its in-progress state instead.
+const fresh = (demo: Demo, paused = false) => {
   const store = createRunStore();
-  if (!demo.live) demo.events.forEach(store.dispatch);
+  (demo.live ? (paused ? demo.events.slice(0, -1) : []) : demo.events).forEach(store.dispatch);
   return store;
 };
 
-// Candidate replacements for styles.css (shape, density, motion). Themes (color) apply on top of any of them.
-const directions: Record<string, { css: string; note: string }> = {
-  baseline: { css: baseline, note: "The shipped styles.css, unchanged: system type and bordered boxes. Compare the others against it." },
-  folio: { css: folio, note: "Quiet and editorial. Calm prose, tools as margin notes, color only where the run needs you." },
-  trace: { css: trace, note: "Dense and technical. One-line tool rows, a status rail, terminal output, a hazard band on approvals." },
-  pebble: { css: pebble, note: "Soft product UI. Chat bubbles, rounded cards, a sweep while tools run, a halo on approvals." },
-};
-const themeNames = ["light", "dark", "pine", "graphite", "iris", "phosphor"];
-// One style element, direction first, so a theme always wins over the direction's own colors.
-const partStyle = document.head.appendChild(document.createElement("style"));
+// The theme list comes from the shipped themes.css, so the picker never drifts from it.
+const themeNames = [...themeSource.matchAll(/^\[data-fulcrum-theme="([^"]+)"\] \{$/gm)].map((match) => match[1]);
+const AUTO = "auto";
 const param = (name: string, allowed: string[], fallback: string) => {
   const value = new URLSearchParams(location.search).get(name);
   return value && allowed.includes(value) ? value : fallback;
 };
-const systemTheme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const LOOP_PAUSE_MS = 1500;
@@ -56,17 +66,18 @@ function attributes(root: HTMLElement) {
 }
 
 function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: string) => void; inspect: boolean }) {
-  const [store, setStore] = useState(() => fresh(demo));
+  const [store, setStore] = useState(() => fresh(demo, reducedMotion));
   const [paused, setPaused] = useState(reducedMotion);
   const [touched, setTouched] = useState(false);
   const [caption, setCaption] = useState("");
-  const index = useRef(0);
+  const start = (isPaused: boolean) => (demo.live && isPaused ? demo.events.length - 1 : 0);
+  const index = useRef(start(reducedMotion));
   const body = useRef<HTMLDivElement>(null);
 
   const reset = () => {
-    index.current = 0;
+    index.current = start(paused);
     setTouched(false);
-    setStore(fresh(demo));
+    setStore(fresh(demo, paused));
   };
   const act: Act = (action, requestId) => {
     store.dispatch({ type: "approval_end", request_id: requestId, data: { action } });
@@ -99,7 +110,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
         <div>
           <h3>
             <a href={`#${demo.id}`}>{demo.title}</a>
-            {demo.live ? <span className="chip" data-paused={paused || undefined}>{paused ? "paused" : "live"}</span> : null}
+            {demo.live ? <span className="live" data-paused={paused || undefined}>{paused ? "paused" : "live"}</span> : null}
           </h3>
           <p>{demo.description}</p>
         </div>
@@ -117,11 +128,15 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
         </div>
       </header>
       <div className="demo-body" ref={body}>
-        <ActContext.Provider value={act}>
-          <RunProvider store={store}>
-            <Timeline renderers={renderers} />
-          </RunProvider>
-        </ActContext.Provider>
+        {demo.preview === "markdown" ? (
+          <MarkdownPreview />
+        ) : (
+          <ActContext.Provider value={act}>
+            <RunProvider store={store}>
+              <Timeline renderers={renderers} />
+            </RunProvider>
+          </ActContext.Provider>
+        )}
       </div>
       {inspect ? <pre className="demo-attrs" aria-label="rendered data attributes">{caption}</pre> : null}
     </article>
@@ -130,29 +145,25 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
 
 const parts = [...new Set(demos.map((demo) => demo.part))];
 
-function Segmented({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
-  return (
-    <div className="segmented" role="radiogroup" aria-label={label}>
-      {options.map((option) => (
-        <button key={option} type="button" role="radio" aria-checked={option === value} onClick={() => onChange(option)}>
-          {option}
-        </button>
-      ))}
-    </div>
-  );
-}
+const paletteVars = ["bg", "fg", "accent", "ok", "warn", "danger", "tok-keyword", "tok-string", "tok-function"];
 
-// Each swatch carries its own data-fulcrum-theme, so it paints with that theme's variables.
 function ThemePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   return (
-    <div className="swatches" role="radiogroup" aria-label="theme">
-      {themeNames.map((name) => (
-        <button key={name} type="button" role="radio" aria-checked={name === value} onClick={() => onChange(name)}>
-          <span className="swatch" data-fulcrum-theme={name} />
-          <span className="swatch-name">{name}</span>
-        </button>
-      ))}
-      <span className="theme-name">{value}</span>
+    <div className="theme">
+      <label htmlFor="theme">theme</label>
+      <select id="theme" value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value={AUTO}>auto (github, follows the OS)</option>
+        {themeNames.map((name) => (
+          <option key={name} value={name}>
+            {name}
+          </option>
+        ))}
+      </select>
+      <span className="palette" aria-hidden="true">
+        {paletteVars.map((name) => (
+          <span key={name} style={{ background: `var(--fulcrum-${name})` }} />
+        ))}
+      </span>
     </div>
   );
 }
@@ -175,21 +186,20 @@ function useActive(ids: string[]) {
 }
 
 function Gallery() {
-  const [theme, setTheme] = useState(() => param("theme", themeNames, systemTheme));
-  const [direction, setDirection] = useState(() => param("direction", Object.keys(directions), "baseline"));
+  const [theme, setTheme] = useState(() => param("theme", themeNames, AUTO));
   const [inspect, setInspect] = useState(() => new URLSearchParams(location.search).get("inspect") === "1");
   const [message, setMessage] = useState<{ text: string; key: number }>();
   const active = useActive(demos.map((demo) => demo.id));
   useLayoutEffect(() => {
-    document.documentElement.dataset.fulcrumTheme = theme;
-    partStyle.textContent = directions[direction].css + themes;
+    if (theme === AUTO) delete document.documentElement.dataset.fulcrumTheme;
+    else document.documentElement.dataset.fulcrumTheme = theme;
     const url = new URL(location.href);
-    url.searchParams.set("direction", direction);
-    url.searchParams.set("theme", theme);
+    if (theme === AUTO) url.searchParams.delete("theme");
+    else url.searchParams.set("theme", theme);
     if (inspect) url.searchParams.set("inspect", "1");
     else url.searchParams.delete("inspect");
     history.replaceState(null, "", url);
-  }, [theme, direction, inspect]);
+  }, [theme, inspect]);
   // The page renders after load, so the browser cannot jump to a #demo link by itself.
   useEffect(() => document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(), []);
   useEffect(() => {
@@ -203,12 +213,10 @@ function Gallery() {
     <div className="gallery">
       <header className="topbar">
         <a className="brand" href="#">
-          <span className="brand-mark" aria-hidden="true" />
           fulcrum
           <span className="brand-sub">gallery</span>
         </a>
         <div className="controls">
-          <Segmented label="direction" value={direction} options={Object.keys(directions)} onChange={setDirection} />
           <ThemePicker value={theme} onChange={setTheme} />
           <button type="button" className="inspect" aria-pressed={inspect} onClick={() => setInspect(!inspect)}>
             inspect
@@ -235,12 +243,9 @@ function Gallery() {
         <header className="intro">
           <h1>Agent UI parts, in every state.</h1>
           <p>
-            Every <code>@fulcrum/react</code> part, rendered from <code>@fulcrum/core</code> events. No server, no
-            session. {parts.length} parts, {demos.length} demos. Turn on <strong>inspect</strong> to see the{" "}
-            <code>data-*</code> attributes each part renders.
-          </p>
-          <p className="direction-note" key={direction}>
-            <strong>{direction}</strong> {directions[direction].note}
+            Every <code>@fulcrum/react</code> part, rendered from <code>@fulcrum/core</code> events with the shipped{" "}
+            <code>styles.css</code> and one of {themeNames.length} palettes from <code>themes.css</code>. No server, no
+            session. Turn on <strong>inspect</strong> to see the <code>data-*</code> attributes each part renders.
           </p>
         </header>
         {parts.map((part) => (

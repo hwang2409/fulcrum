@@ -1,15 +1,13 @@
-// Fails when the gallery scrolls sideways at any common width, in any direction and theme, or when a pending approval's
-// actions are hard to read or to hit: text contrast below 4.5:1 on the real background, or under 44 px tall at touch
-// widths (36 px elsewhere). Needs a production build (`bun run build`).
+// Fails when the gallery scrolls sideways at any common width in any theme, when a pending approval's actions are hard
+// to read or to hit (text contrast below 4.5:1 on the real background, or under 44 px tall at touch widths, 36 px
+// elsewhere), or when a theme's fg or muted text misses 4.5:1 on its bg. Needs a production build (`bun run build`).
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 
-const directions = ["current", "folio", "trace", "pebble"];
-const themes = ["light", "dark", "pine"];
 const widths = [390, 768, 1024, 1440];
 const touchWidth = 860; // the gallery's touch breakpoint
-const port = 4174;
+const port = Number(process.env.LAYOUT_PORT ?? 4174); // override when another checkout already serves 4174
 const preview = spawn("bun", ["x", "vite", "preview", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: new URL("..", import.meta.url).pathname, stdio: "ignore" });
 // Runs in the page. Contrast composites the button's background over its ancestors' until one is opaque.
 function approvalProblems(minHeight: number) {
@@ -25,11 +23,13 @@ function approvalProblems(minHeight: number) {
   const luminance = (c: number[]) =>
     c.slice(0, 3).map((v) => (v /= 255) <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
   const problems: string[] = [];
-  const card = document.querySelector<HTMLElement>('[data-part=approval][data-state=pending]');
-  const buttons = [...(card?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
-  if (buttons.length !== 2) return [`pending approval has ${buttons.length} buttons, expected approve and deny`];
+  const cards = [...document.querySelectorAll<HTMLElement>("[data-part=approval][data-state=pending]")];
+  if (!cards.length) return ["no pending approval on the page"];
+  for (const card of cards) {
+  const buttons = [...card.querySelectorAll<HTMLButtonElement>("button")];
+  if (buttons.length !== 2) problems.push(`${card.dataset.id}: ${buttons.length} buttons, expected approve and deny`);
   for (const button of buttons) {
-    const name = button.textContent?.trim() || "(unnamed button)";
+    const name = `${card.dataset.id} ${button.textContent?.trim() || "(unnamed button)"}`;
     const layers: number[][] = [];
     let opacity = 1;
     for (let node: HTMLElement | null = button; node; node = node.parentElement) {
@@ -46,6 +46,14 @@ function approvalProblems(minHeight: number) {
     if (height < minHeight) problems.push(`${name} is ${Math.round(height)} px tall, needs ${minHeight} px`);
     if (opacity < 1) problems.push(`${name} is faded to opacity ${opacity.toFixed(2)}`);
   }
+  }
+  const root = getComputedStyle(document.documentElement);
+  const bg = rgba(root.getPropertyValue("--fulcrum-bg"));
+  for (const name of ["fg", "muted"]) {
+    const [light, dark] = [luminance(over(rgba(root.getPropertyValue(`--fulcrum-${name}`)), bg)), luminance(bg)].sort((a, b) => b - a);
+    const contrast = (light + 0.05) / (dark + 0.05);
+    if (contrast < 4.5) problems.push(`--fulcrum-${name} on --fulcrum-bg is ${contrast.toFixed(2)}:1, needs 4.5:1`);
+  }
   return problems;
 }
 
@@ -58,10 +66,17 @@ try {
     await Bun.sleep(100);
   }
   browser = await chromium.launch();
+  let themes: string[] = [];
   for (const width of widths) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
-    for (const direction of directions) for (const theme of themes) {
-      await page.goto(`http://127.0.0.1:${port}/gallery.html?direction=${direction}&theme=${theme}`);
+    if (!themes.length) {
+      await page.goto(`http://127.0.0.1:${port}/gallery.html`);
+      // The picker lists every theme in the shipped themes.css.
+      themes = await page.$$eval("#theme option", (options) => options.map((option) => (option as HTMLOptionElement).value).filter((value) => value !== "auto"));
+      if (themes.length < 12) throw new Error(`expected at least 12 themes in the picker, found ${themes.length}`);
+    }
+    for (const theme of themes) {
+      await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}`);
       await page.waitForSelector('[data-part="tool"]');
       // Names the widest element that pokes past the viewport, so a failure points at its cause.
       const result = await page.evaluate(() => {
@@ -74,11 +89,11 @@ try {
         }
         return { scroll: document.documentElement.scrollWidth, viewport, culprit, right: Math.round(right) };
       });
-      const line = `${direction} ${theme} @ ${width}: scrollWidth ${result.scroll}, innerWidth ${result.viewport}`;
+      const line = `${theme} @ ${width}: scrollWidth ${result.scroll}, innerWidth ${result.viewport}`;
       if (result.scroll > result.viewport) failures.push(`${line} (widest: ${result.culprit} to ${result.right}px)`);
       else console.log(`ok   ${line}`);
       const minHeight = width <= touchWidth ? 44 : 36;
-      for (const problem of await page.evaluate(approvalProblems, minHeight)) failures.push(`${direction} ${theme} @ ${width}: ${problem}`);
+      for (const problem of await page.evaluate(approvalProblems, minHeight)) failures.push(`${theme} @ ${width}: ${problem}`);
     }
     await page.close();
   }
