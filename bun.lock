@@ -85,6 +85,7 @@
       "version": "0.0.0",
       "devDependencies": {
         "@fulcrum/core": "workspace:*",
+        "@fulcrum/highlight": "workspace:*",
         "@fulcrum/virtual": "workspace:*",
         "@happy-dom/global-registrator": "^21.0.4",
         "@types/react": "^19",
@@ -94,6 +95,7 @@
       },
       "peerDependencies": {
         "@fulcrum/core": "*",
+        "@fulcrum/highlight": "*",
         "@fulcrum/virtual": "*",
         "react": ">=19",
       },

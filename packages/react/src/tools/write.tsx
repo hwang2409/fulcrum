@@ -1,3 +1,4 @@
+import { languageForPath } from "@fulcrum/highlight";
 import type { ToolBodyProps } from "../parts.js";
 import { Arguments, asking, boundText, bytes, Foot, NumberedLines, Output } from "./common.js";
 
@@ -7,9 +8,9 @@ export function WriteBody({ item, output, state }: ToolBodyProps) {
   return (
     <>
       {asking(state) ? <pre data-part="tool-path">{boundText(path).text}</pre> : null}
-      {content ? <NumberedLines text={content} /> : null}
-      {output ? <Output text={output} /> : null}
-      {asking(state) ? <Arguments call={item.tool_call} /> : null}
+      {content ? <NumberedLines text={content} id={`${item.id}:content`} language={languageForPath(path)} /> : null}
+      {output ? <Output text={output} id={`${item.id}:output`} done={state !== "streaming"} /> : null}
+      {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["path", path], ["content", content]]}>
         {size !== undefined ? <span data-part="tool-size">{bytes(size)}</span> : null}
       </Foot>

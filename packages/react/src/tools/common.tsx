@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { ToolCall } from "@fulcrum/core";
 import type { ItemState } from "../parts.js";
-import { needsTextViewer, TextViewer, useTextMetrics } from "./text-viewer.js";
+import { tokenLines, Tokens, useTokens } from "../highlight.js";
+import { hasControls, parseAnsi, type AnsiText } from "./ansi.js";
+import { jsonText } from "./json.js";
+import { needsTextViewer, TextViewer, useTextMetrics, type TextFormat } from "./text-viewer.js";
 
+const JSON_FORMAT: TextFormat = { language: "json" };
 const HEAD_LINES = 40;
 const TAIL_LINES = 20;
 export const MAX_DOM_CHARS = 100_000;
@@ -79,29 +83,58 @@ export function Gap({ window, noun = "lines" }: { window: Window<unknown>; noun?
   return <span data-part="tool-gap">{text}</span>;
 }
 
-/** Plain text that switches to the shared virtual viewer above the preview budget. */
-export function Output({ text, stream }: { text: string; stream?: "stderr" }) {
-  return <TextViewer text={text} label={stream ?? "output"} appendOnly follow stream={stream} />;
+/** Append-only terminal text with its escape codes applied; undefined while the text has no control characters. */
+function useAnsi(text: string): AnsiText | undefined {
+  const cache = useRef<{ source: string; parsed?: AnsiText }>({ source: "" });
+  const prior = cache.current;
+  if (text === prior.source) return prior.parsed;
+  const appended = text.length > prior.source.length && prior.source.length > 0;
+  const delta = appended ? text.slice(prior.source.length) : text;
+  const base = appended ? prior.parsed : undefined;
+  const parsed = !base && !hasControls(delta) ? undefined : parseAnsi(delta, base ?? (appended ? parseAnsi(prior.source) : undefined));
+  cache.current = { source: text, parsed };
+  return parsed;
 }
 
-const Row = ({ number, text }: { number: number; text: string }) => (
-  <div data-part="line"><span data-part="line-number">{number}</span><span data-part="line-text">{text}</span></div>
+/** Output text without its escape codes, for copying. */
+export const plainOutput = (text: string) => (hasControls(text) ? parseAnsi(text).text : text);
+
+/**
+ * Tool output in the shared viewer, colored by what it structurally is: ANSI escape codes as theme colors, else the
+ * given language, else JSON when the finished text parses as one JSON object or array. `pretty` indents compact JSON.
+ */
+export function Output({ text, id, stream, done = true, language, pretty = false }: { text: string; id: string; stream?: "stderr"; done?: boolean; language?: string; pretty?: boolean }) {
+  const ansi = useAnsi(text);
+  const plain = ansi?.text ?? text;
+  const json = useMemo(() => (!ansi?.spans.length && done && (!language || language === "json") ? jsonText(plain) : undefined), [ansi?.spans.length, done, language, plain]);
+  const shown = json?.json && pretty ? json.text : plain;
+  const format: TextFormat | undefined = ansi?.spans.length ? { spans: ansi.spans } : json?.json ? { language: "json" } : language ? { language } : undefined;
+  return <TextViewer text={shown} id={id} label={stream ?? "output"} appendOnly={shown === plain} follow stream={stream} format={format} done={done} />;
+}
+
+const Row = ({ number, children }: { number: number; children: ReactNode }) => (
+  <div data-part="line"><span data-part="line-number">{number}</span><span data-part="line-text">{children}</span></div>
 );
 
 /** Numbered text uses rich rows while small and the shared viewer while large. */
-export function NumberedLines({ text, start = 1 }: { text: string; start?: number }) {
+export function NumberedLines({ text, start = 1, id, language, done = true }: { text: string; start?: number; id: string; language?: string; done?: boolean }) {
   const metrics = useTextMetrics(text, true);
-  if (needsTextViewer(text, metrics)) return <TextViewer text={text} label="content" appendOnly metrics={metrics} />;
+  const large = needsTextViewer(text, metrics);
+  const tokens = useTokens(large ? "" : text, language, id, done);
+  if (large) return <TextViewer text={text} id={id} label="content" appendOnly metrics={metrics} format={language ? { language } : undefined} done={done} />;
   const lines = splitLines(text);
+  const tokenRows = tokens ? tokenLines(tokens) : undefined;
   const digits = String(start + lines.length).length;
   return (
-    <div data-part="tool-lines" style={{ "--gutter": `${digits}ch` } as CSSProperties}>
-      {lines.map((line, index) => <Row key={index} number={start + index} text={line} />)}
+    <div data-part="tool-lines" data-language={language} style={{ "--gutter": `${digits}ch` } as CSSProperties}>
+      {lines.map((line, index) => <Row key={index} number={start + index}>{tokenRows?.[index] ? <Tokens tokens={tokenRows[index]} /> : line}</Row>)}
     </div>
   );
 }
 
-export function CopyButton({ value, label }: { value: string; label: string }) {
+export type CopyValue = string | (() => string);
+
+export function CopyButton({ value, label }: { value: CopyValue; label: string }) {
   const [result, setResult] = useState<"copied" | "copy failed">();
   useEffect(() => {
     if (!result) return;
@@ -110,7 +143,7 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
   }, [result]);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(value);
+      await navigator.clipboard.writeText(typeof value === "function" ? value() : value);
       setResult("copied");
     } catch {
       setResult("copy failed"); // no clipboard (insecure context) or permission denied
@@ -120,8 +153,8 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
 }
 
 /** The last row of every body: facts on the left (exit code, cwd, size), copy buttons on the right. */
-export function Foot({ children, copy }: { children?: ReactNode; copy: Array<[label: string, value: string | undefined]> }) {
-  const buttons = copy.filter((entry): entry is [string, string] => !!entry[1]);
+export function Foot({ children, copy }: { children?: ReactNode; copy: Array<[label: string, value: CopyValue | undefined]> }) {
+  const buttons = copy.filter((entry): entry is [string, CopyValue] => !!entry[1]);
   if (!children && !buttons.length) return null;
   return (
     <div data-part="tool-foot">
@@ -138,10 +171,15 @@ export function Empty({ state, noun = "output" }: { state: ItemState; noun?: str
 }
 
 /** Raw arguments serialize only when visible, and only when their immutable value changes. */
-export function Arguments({ call, open }: { call: ToolCall; open?: boolean }) {
+export function Arguments({ call, id, open }: { call: ToolCall; id: string; open?: boolean }) {
   const [expanded, setExpanded] = useState(!!open);
   const value = useMemo(() => expanded ? JSON.stringify(call.arguments, null, 2) : undefined, [call.arguments, expanded]);
-  const content = value === undefined ? null : <><TextViewer text={value} label="arguments" part="tool-args" /><CopyButton label="arguments" value={value} /></>;
+  const content = value === undefined ? null : (
+    <>
+      <TextViewer text={value} id={`${id}:arguments`} label="arguments" part="tool-args" format={JSON_FORMAT} />
+      <div data-part="tool-foot"><span data-part="tool-meta" /><CopyButton label="arguments" value={value} /></div>
+    </>
+  );
   return open ? <div data-part="tool-args-wrap">{content}</div> : (
     <details data-part="tool-args-details" onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary>arguments</summary>

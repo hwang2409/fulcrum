@@ -34,7 +34,8 @@ export interface ToolCall {
  * The agent-neutral view of a tool call. Harness tool maps produce it; renderers pick a card by `kind`. No view means
  * the generic card. `read.range.offset` is the number of lines skipped (0-based), `limit` the number of lines read.
  * `edit.diff` is a unified diff (`lineDiff` writes one from old and new text). `shell.stdout`/`stderr` are the split
- * streams when the harness reports them; the card then shows them instead of the combined output.
+ * streams when the harness reports them; the card then shows them instead of the combined output. `fetch.contentType`
+ * is the response's Content-Type header; the card highlights the body by it.
  */
 export type ToolView = (
   | { kind: "shell"; command: string; cwd?: string; exitCode?: number; stdout?: string; stderr?: string }
@@ -42,7 +43,7 @@ export type ToolView = (
   | { kind: "edit"; path: string; diff: string }
   | { kind: "write"; path: string; content?: string; bytes?: number }
   | { kind: "search"; pattern: string; path?: string; matches?: string[] }
-  | ({ kind: "fetch"; title?: string; bytes?: number; status?: number } & ({ url: string; query?: never } | { query: string; url?: never }))
+  | ({ kind: "fetch"; title?: string; bytes?: number; status?: number; contentType?: string } & ({ url: string; query?: never } | { query: string; url?: never }))
 ) & { durationMs?: number };
 export interface ToolResult {
   tool_call_id: string;

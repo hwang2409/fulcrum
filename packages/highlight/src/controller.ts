@@ -1,4 +1,4 @@
-import { normalizeLanguage } from "./languages.js";
+import { normalizeLanguage } from "./names.js";
 import type { Highlight, HighlightContext, Token } from "./types.js";
 import type { WorkerRequest, WorkerResponse } from "./protocol.js";
 

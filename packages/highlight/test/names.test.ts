@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { languageForContentType, languageForPath } from "../src/languages.js";
+import { languageForContentType, languageForPath } from "../src/names.js";
 
 test("a path resolves by extension, then by well-known file name", () => {
   const cases: Record<string, string | undefined> = {

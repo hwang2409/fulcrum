@@ -1,8 +1,10 @@
 /* @fulcrum/react themes. Load after styles.css and keep the themes you use.
    Set data-fulcrum-theme="<name>" on <html> or on any subtree. With no attribute, github-light or github-dark follows the OS.
-   Each palette uses its official colors; the source is above each block. muted mixes fg into bg where a palette has no
-   secondary text color with 4.5:1 contrast. ok and warn mark state with no text, so they need 3:1 on bg; where a light
-   palette's own green or yellow misses that and it has no darker official shade, a little fg is mixed in. */
+   Each palette uses its official colors; the source is above each block. Every color that draws text (fg, muted, accent,
+   ok, warn, danger, the tok-* syntax colors, and the 16 ansi-* terminal colors) reaches 4.5:1 on bg and on surface
+   (packages/react/test/themes.test.ts). Where an official color misses that, it is mixed with the least black (light
+   themes) or white (dark themes) that reaches it, so its hue stays; muted mixes fg into bg where a palette has no
+   secondary text color. ansi-* are each palette's official terminal colors. */
 
 /* gruvbox-dark: https://github.com/morhetz/gruvbox (README palette; syntax from colors/gruvbox.vim, except functions:
    vim tells them from strings only by bold, so they take aqua as in https://github.com/jdinhify/vscode-theme-gruvbox) */
@@ -14,13 +16,13 @@
   --fulcrum-surface: #32302f;
   --fulcrum-border: #504945;
   --fulcrum-accent: #83a598;
-  --fulcrum-danger: #fb4934;
+  --fulcrum-danger: color-mix(in srgb, #fb4934 83%, white);
   --fulcrum-ok: #b8bb26;
   --fulcrum-warn: #fabd2f;
-  --fulcrum-tok-keyword: #fb4934;
+  --fulcrum-tok-keyword: color-mix(in srgb, #fb4934 83%, white);
   --fulcrum-tok-string: #b8bb26;
   --fulcrum-tok-number: #d3869b;
-  --fulcrum-tok-comment: #928374;
+  --fulcrum-tok-comment: color-mix(in srgb, #928374 85%, white);
   --fulcrum-tok-function: #8ec07c;
   --fulcrum-tok-type: #fabd2f;
   --fulcrum-tok-variable: #83a598;
@@ -31,7 +33,23 @@
   --fulcrum-tok-attribute: #8ec07c;
   --fulcrum-tok-regexp: #fe8019;
   --fulcrum-tok-inserted: #b8bb26;
-  --fulcrum-tok-deleted: #fb4934;
+  --fulcrum-tok-deleted: color-mix(in srgb, #fb4934 83%, white);
+  --fulcrum-ansi-black: color-mix(in srgb, #282828 48%, white);
+  --fulcrum-ansi-red: color-mix(in srgb, #cc241d 60%, white);
+  --fulcrum-ansi-green: color-mix(in srgb, #98971a 95%, white);
+  --fulcrum-ansi-yellow: #d79921;
+  --fulcrum-ansi-blue: color-mix(in srgb, #458588 78%, white);
+  --fulcrum-ansi-magenta: color-mix(in srgb, #b16286 77%, white);
+  --fulcrum-ansi-cyan: color-mix(in srgb, #689d6a 93%, white);
+  --fulcrum-ansi-white: #a89984;
+  --fulcrum-ansi-bright-black: color-mix(in srgb, #928374 85%, white);
+  --fulcrum-ansi-bright-red: color-mix(in srgb, #fb4934 83%, white);
+  --fulcrum-ansi-bright-green: #b8bb26;
+  --fulcrum-ansi-bright-yellow: #fabd2f;
+  --fulcrum-ansi-bright-blue: #83a598;
+  --fulcrum-ansi-bright-magenta: #d3869b;
+  --fulcrum-ansi-bright-cyan: #8ec07c;
+  --fulcrum-ansi-bright-white: #ebdbb2;
 }
 
 /* gruvbox-light: https://github.com/morhetz/gruvbox (README palette, faded accents for light; syntax from colors/gruvbox.vim,
@@ -45,23 +63,39 @@
   --fulcrum-border: #d5c4a1;
   --fulcrum-accent: #076678;
   --fulcrum-danger: #9d0006;
-  --fulcrum-ok: #79740e;
-  --fulcrum-warn: #b57614;
+  --fulcrum-ok: color-mix(in srgb, #79740e 90%, black);
+  --fulcrum-warn: color-mix(in srgb, #b57614 78%, black);
   --fulcrum-tok-keyword: #9d0006;
-  --fulcrum-tok-string: #79740e;
+  --fulcrum-tok-string: color-mix(in srgb, #79740e 90%, black);
   --fulcrum-tok-number: #8f3f71;
-  --fulcrum-tok-comment: #928374;
-  --fulcrum-tok-function: #427b58;
-  --fulcrum-tok-type: #b57614;
+  --fulcrum-tok-comment: color-mix(in srgb, #928374 77%, black);
+  --fulcrum-tok-function: color-mix(in srgb, #427b58 92%, black);
+  --fulcrum-tok-type: color-mix(in srgb, #b57614 78%, black);
   --fulcrum-tok-variable: #076678;
   --fulcrum-tok-constant: #8f3f71;
   --fulcrum-tok-operator: #af3a03;
-  --fulcrum-tok-punctuation: #7c6f64;
+  --fulcrum-tok-punctuation: color-mix(in srgb, #7c6f64 91%, black);
   --fulcrum-tok-tag: #076678;
-  --fulcrum-tok-attribute: #427b58;
+  --fulcrum-tok-attribute: color-mix(in srgb, #427b58 92%, black);
   --fulcrum-tok-regexp: #af3a03;
-  --fulcrum-tok-inserted: #79740e;
+  --fulcrum-tok-inserted: color-mix(in srgb, #79740e 90%, black);
   --fulcrum-tok-deleted: #9d0006;
+  --fulcrum-ansi-black: color-mix(in srgb, #fbf1c7 42%, black);
+  --fulcrum-ansi-red: color-mix(in srgb, #cc241d 97%, black);
+  --fulcrum-ansi-green: color-mix(in srgb, #98971a 70%, black);
+  --fulcrum-ansi-yellow: color-mix(in srgb, #d79921 62%, black);
+  --fulcrum-ansi-blue: color-mix(in srgb, #458588 83%, black);
+  --fulcrum-ansi-magenta: color-mix(in srgb, #b16286 83%, black);
+  --fulcrum-ansi-cyan: color-mix(in srgb, #689d6a 71%, black);
+  --fulcrum-ansi-white: color-mix(in srgb, #7c6f64 91%, black);
+  --fulcrum-ansi-bright-black: color-mix(in srgb, #928374 77%, black);
+  --fulcrum-ansi-bright-red: #9d0006;
+  --fulcrum-ansi-bright-green: color-mix(in srgb, #79740e 90%, black);
+  --fulcrum-ansi-bright-yellow: color-mix(in srgb, #b57614 78%, black);
+  --fulcrum-ansi-bright-blue: #076678;
+  --fulcrum-ansi-bright-magenta: #8f3f71;
+  --fulcrum-ansi-bright-cyan: color-mix(in srgb, #427b58 92%, black);
+  --fulcrum-ansi-bright-white: #3c3836;
 }
 
 /* dracula: https://spec.draculatheme.com (palette and syntax spec) */
@@ -79,7 +113,7 @@
   --fulcrum-tok-keyword: #ff79c6;
   --fulcrum-tok-string: #f1fa8c;
   --fulcrum-tok-number: #bd93f9;
-  --fulcrum-tok-comment: #6272a4;
+  --fulcrum-tok-comment: color-mix(in srgb, #6272a4 78%, white);
   --fulcrum-tok-function: #50fa7b;
   --fulcrum-tok-type: #8be9fd;
   --fulcrum-tok-variable: #f8f8f2;
@@ -91,6 +125,22 @@
   --fulcrum-tok-regexp: #ff5555;
   --fulcrum-tok-inserted: #50fa7b;
   --fulcrum-tok-deleted: #ff5555;
+  --fulcrum-ansi-black: color-mix(in srgb, #21222c 50%, white);
+  --fulcrum-ansi-red: #ff5555;
+  --fulcrum-ansi-green: #50fa7b;
+  --fulcrum-ansi-yellow: #f1fa8c;
+  --fulcrum-ansi-blue: #bd93f9;
+  --fulcrum-ansi-magenta: #ff79c6;
+  --fulcrum-ansi-cyan: #8be9fd;
+  --fulcrum-ansi-white: #f8f8f2;
+  --fulcrum-ansi-bright-black: color-mix(in srgb, #6272a4 78%, white);
+  --fulcrum-ansi-bright-red: #ff6e6e;
+  --fulcrum-ansi-bright-green: #69ff94;
+  --fulcrum-ansi-bright-yellow: #ffffa5;
+  --fulcrum-ansi-bright-blue: #d6acff;
+  --fulcrum-ansi-bright-magenta: #ff92df;
+  --fulcrum-ansi-bright-cyan: #a4ffff;
+  --fulcrum-ansi-bright-white: #ffffff;
 }
 
 /* nord: https://www.nordtheme.com/docs/colors-and-palettes (nord0-nord15; syntax from the nord-visual-studio-code theme) */
@@ -102,24 +152,40 @@
   --fulcrum-surface: #3b4252;
   --fulcrum-border: #434c5e;
   --fulcrum-accent: #88c0d0;
-  --fulcrum-danger: #bf616a;
+  --fulcrum-danger: color-mix(in srgb, #bf616a 60%, white);
   --fulcrum-ok: #a3be8c;
   --fulcrum-warn: #ebcb8b;
-  --fulcrum-tok-keyword: #81a1c1;
+  --fulcrum-tok-keyword: color-mix(in srgb, #81a1c1 83%, white);
   --fulcrum-tok-string: #a3be8c;
-  --fulcrum-tok-number: #b48ead;
-  --fulcrum-tok-comment: #616e88;
+  --fulcrum-tok-number: color-mix(in srgb, #b48ead 80%, white);
+  --fulcrum-tok-comment: color-mix(in srgb, #616e88 56%, white);
   --fulcrum-tok-function: #88c0d0;
   --fulcrum-tok-type: #8fbcbb;
   --fulcrum-tok-variable: #d8dee9;
-  --fulcrum-tok-constant: #81a1c1;
-  --fulcrum-tok-operator: #81a1c1;
+  --fulcrum-tok-constant: color-mix(in srgb, #81a1c1 83%, white);
+  --fulcrum-tok-operator: color-mix(in srgb, #81a1c1 83%, white);
   --fulcrum-tok-punctuation: #eceff4;
-  --fulcrum-tok-tag: #81a1c1;
+  --fulcrum-tok-tag: color-mix(in srgb, #81a1c1 83%, white);
   --fulcrum-tok-attribute: #8fbcbb;
   --fulcrum-tok-regexp: #ebcb8b;
   --fulcrum-tok-inserted: #a3be8c;
-  --fulcrum-tok-deleted: #bf616a;
+  --fulcrum-tok-deleted: color-mix(in srgb, #bf616a 60%, white);
+  --fulcrum-ansi-black: color-mix(in srgb, #3b4252 43%, white);
+  --fulcrum-ansi-red: color-mix(in srgb, #bf616a 60%, white);
+  --fulcrum-ansi-green: #a3be8c;
+  --fulcrum-ansi-yellow: #ebcb8b;
+  --fulcrum-ansi-blue: color-mix(in srgb, #81a1c1 83%, white);
+  --fulcrum-ansi-magenta: color-mix(in srgb, #b48ead 80%, white);
+  --fulcrum-ansi-cyan: #88c0d0;
+  --fulcrum-ansi-white: #e5e9f0;
+  --fulcrum-ansi-bright-black: color-mix(in srgb, #4c566a 48%, white);
+  --fulcrum-ansi-bright-red: color-mix(in srgb, #bf616a 60%, white);
+  --fulcrum-ansi-bright-green: #a3be8c;
+  --fulcrum-ansi-bright-yellow: #ebcb8b;
+  --fulcrum-ansi-bright-blue: color-mix(in srgb, #81a1c1 83%, white);
+  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #b48ead 80%, white);
+  --fulcrum-ansi-bright-cyan: #8fbcbb;
+  --fulcrum-ansi-bright-white: #eceff4;
 }
 
 /* tokyo-night: https://github.com/enkia/tokyo-night-vscode-theme (Tokyo Night, night variant) */
@@ -137,7 +203,7 @@
   --fulcrum-tok-keyword: #bb9af7;
   --fulcrum-tok-string: #9ece6a;
   --fulcrum-tok-number: #ff9e64;
-  --fulcrum-tok-comment: #565f89;
+  --fulcrum-tok-comment: color-mix(in srgb, #565f89 78%, white);
   --fulcrum-tok-function: #7aa2f7;
   --fulcrum-tok-type: #2ac3de;
   --fulcrum-tok-variable: #c0caf5;
@@ -149,6 +215,22 @@
   --fulcrum-tok-regexp: #b4f9f8;
   --fulcrum-tok-inserted: #9ece6a;
   --fulcrum-tok-deleted: #f7768e;
+  --fulcrum-ansi-black: color-mix(in srgb, #15161e 53%, white);
+  --fulcrum-ansi-red: #f7768e;
+  --fulcrum-ansi-green: #9ece6a;
+  --fulcrum-ansi-yellow: #e0af68;
+  --fulcrum-ansi-blue: #7aa2f7;
+  --fulcrum-ansi-magenta: #bb9af7;
+  --fulcrum-ansi-cyan: #7dcfff;
+  --fulcrum-ansi-white: #a9b1d6;
+  --fulcrum-ansi-bright-black: color-mix(in srgb, #414868 68%, white);
+  --fulcrum-ansi-bright-red: #f7768e;
+  --fulcrum-ansi-bright-green: #9ece6a;
+  --fulcrum-ansi-bright-yellow: #e0af68;
+  --fulcrum-ansi-bright-blue: #7aa2f7;
+  --fulcrum-ansi-bright-magenta: #bb9af7;
+  --fulcrum-ansi-bright-cyan: #7dcfff;
+  --fulcrum-ansi-bright-white: #c0caf5;
 }
 
 /* catppuccin-mocha: https://github.com/catppuccin/palette (mocha; syntax from catppuccin/catppuccin docs/style-guide.md) */
@@ -178,6 +260,22 @@
   --fulcrum-tok-regexp: #f5c2e7;
   --fulcrum-tok-inserted: #a6e3a1;
   --fulcrum-tok-deleted: #f38ba8;
+  --fulcrum-ansi-black: color-mix(in srgb, #45475a 66%, white);
+  --fulcrum-ansi-red: #f38ba8;
+  --fulcrum-ansi-green: #a6e3a1;
+  --fulcrum-ansi-yellow: #f9e2af;
+  --fulcrum-ansi-blue: #89b4fa;
+  --fulcrum-ansi-magenta: #f5c2e7;
+  --fulcrum-ansi-cyan: #94e2d5;
+  --fulcrum-ansi-white: #bac2de;
+  --fulcrum-ansi-bright-black: color-mix(in srgb, #585b70 74%, white);
+  --fulcrum-ansi-bright-red: #f38ba8;
+  --fulcrum-ansi-bright-green: #a6e3a1;
+  --fulcrum-ansi-bright-yellow: #f9e2af;
+  --fulcrum-ansi-bright-blue: #89b4fa;
+  --fulcrum-ansi-bright-magenta: #f5c2e7;
+  --fulcrum-ansi-bright-cyan: #94e2d5;
+  --fulcrum-ansi-bright-white: #a6adc8;
 }
 
 /* catppuccin-latte: https://github.com/catppuccin/palette (latte; syntax from catppuccin/catppuccin docs/style-guide.md) */
@@ -188,25 +286,41 @@
   --fulcrum-muted: #5c5f77;
   --fulcrum-surface: #e6e9ef;
   --fulcrum-border: #ccd0da;
-  --fulcrum-accent: #1e66f5;
-  --fulcrum-danger: #d20f39;
-  --fulcrum-ok: color-mix(in srgb, var(--fulcrum-fg) 15%, #40a02b); /* green + text: 3.37:1 on base */
-  --fulcrum-warn: color-mix(in srgb, var(--fulcrum-fg) 35%, #df8e1d); /* yellow + text: 3.38:1 on base */
-  --fulcrum-tok-keyword: #8839ef;
-  --fulcrum-tok-string: #40a02b;
-  --fulcrum-tok-number: #fe640b;
-  --fulcrum-tok-comment: #7c7f93;
-  --fulcrum-tok-function: #1e66f5;
-  --fulcrum-tok-type: #df8e1d;
+  --fulcrum-accent: color-mix(in srgb, #1e66f5 93%, black);
+  --fulcrum-danger: color-mix(in srgb, #d20f39 99%, black);
+  --fulcrum-ok: color-mix(in srgb, #40a02b 75%, black);
+  --fulcrum-warn: color-mix(in srgb, #df8e1d 65%, black);
+  --fulcrum-tok-keyword: color-mix(in srgb, #8839ef 99%, black);
+  --fulcrum-tok-string: color-mix(in srgb, #40a02b 75%, black);
+  --fulcrum-tok-number: color-mix(in srgb, #fe640b 70%, black);
+  --fulcrum-tok-comment: color-mix(in srgb, #7c7f93 82%, black);
+  --fulcrum-tok-function: color-mix(in srgb, #1e66f5 93%, black);
+  --fulcrum-tok-type: color-mix(in srgb, #df8e1d 65%, black);
   --fulcrum-tok-variable: #4c4f69;
-  --fulcrum-tok-constant: #fe640b;
-  --fulcrum-tok-operator: #04a5e5;
-  --fulcrum-tok-punctuation: #7c7f93;
-  --fulcrum-tok-tag: #1e66f5;
-  --fulcrum-tok-attribute: #df8e1d;
-  --fulcrum-tok-regexp: #ea76cb;
-  --fulcrum-tok-inserted: #40a02b;
-  --fulcrum-tok-deleted: #d20f39;
+  --fulcrum-tok-constant: color-mix(in srgb, #fe640b 70%, black);
+  --fulcrum-tok-operator: color-mix(in srgb, #04a5e5 68%, black);
+  --fulcrum-tok-punctuation: color-mix(in srgb, #7c7f93 82%, black);
+  --fulcrum-tok-tag: color-mix(in srgb, #1e66f5 93%, black);
+  --fulcrum-tok-attribute: color-mix(in srgb, #df8e1d 65%, black);
+  --fulcrum-tok-regexp: color-mix(in srgb, #ea76cb 66%, black);
+  --fulcrum-tok-inserted: color-mix(in srgb, #40a02b 75%, black);
+  --fulcrum-tok-deleted: color-mix(in srgb, #d20f39 99%, black);
+  --fulcrum-ansi-black: #5c5f77;
+  --fulcrum-ansi-red: color-mix(in srgb, #d20f39 99%, black);
+  --fulcrum-ansi-green: color-mix(in srgb, #40a02b 75%, black);
+  --fulcrum-ansi-yellow: color-mix(in srgb, #df8e1d 65%, black);
+  --fulcrum-ansi-blue: color-mix(in srgb, #1e66f5 93%, black);
+  --fulcrum-ansi-magenta: color-mix(in srgb, #ea76cb 66%, black);
+  --fulcrum-ansi-cyan: color-mix(in srgb, #179299 79%, black);
+  --fulcrum-ansi-white: color-mix(in srgb, #acb0be 59%, black);
+  --fulcrum-ansi-bright-black: color-mix(in srgb, #6c6f85 93%, black);
+  --fulcrum-ansi-bright-red: color-mix(in srgb, #d20f39 99%, black);
+  --fulcrum-ansi-bright-green: color-mix(in srgb, #40a02b 75%, black);
+  --fulcrum-ansi-bright-yellow: color-mix(in srgb, #df8e1d 65%, black);
+  --fulcrum-ansi-bright-blue: color-mix(in srgb, #1e66f5 93%, black);
+  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #ea76cb 66%, black);
+  --fulcrum-ansi-bright-cyan: color-mix(in srgb, #179299 79%, black);
+  --fulcrum-ansi-bright-white: color-mix(in srgb, #bcc0cc 54%, black);
 }
 
 /* solarized-dark: https://ethanschoonover.com/solarized (base03-base3 and accents; syntax from vim-colors-solarized) */
@@ -214,28 +328,44 @@
   color-scheme: dark;
   --fulcrum-bg: #002b36;
   --fulcrum-fg: #93a1a1;
-  --fulcrum-muted: #839496;
+  --fulcrum-muted: color-mix(in srgb, #839496 93%, white);
   --fulcrum-surface: #073642;
   --fulcrum-border: #586e75;
-  --fulcrum-accent: #268bd2;
-  --fulcrum-danger: #dc322f;
-  --fulcrum-ok: #859900;
-  --fulcrum-warn: #b58900;
-  --fulcrum-tok-keyword: #859900;
-  --fulcrum-tok-string: #2aa198;
-  --fulcrum-tok-number: #2aa198;
-  --fulcrum-tok-comment: #586e75;
-  --fulcrum-tok-function: #268bd2;
-  --fulcrum-tok-type: #b58900;
-  --fulcrum-tok-variable: #268bd2;
-  --fulcrum-tok-constant: #2aa198;
-  --fulcrum-tok-operator: #859900;
-  --fulcrum-tok-punctuation: #839496;
-  --fulcrum-tok-tag: #268bd2;
+  --fulcrum-accent: color-mix(in srgb, #268bd2 82%, white);
+  --fulcrum-danger: color-mix(in srgb, #dc322f 66%, white);
+  --fulcrum-ok: color-mix(in srgb, #859900 92%, white);
+  --fulcrum-warn: color-mix(in srgb, #b58900 91%, white);
+  --fulcrum-tok-keyword: color-mix(in srgb, #859900 92%, white);
+  --fulcrum-tok-string: color-mix(in srgb, #2aa198 92%, white);
+  --fulcrum-tok-number: color-mix(in srgb, #2aa198 92%, white);
+  --fulcrum-tok-comment: color-mix(in srgb, #586e75 69%, white);
+  --fulcrum-tok-function: color-mix(in srgb, #268bd2 82%, white);
+  --fulcrum-tok-type: color-mix(in srgb, #b58900 91%, white);
+  --fulcrum-tok-variable: color-mix(in srgb, #268bd2 82%, white);
+  --fulcrum-tok-constant: color-mix(in srgb, #2aa198 92%, white);
+  --fulcrum-tok-operator: color-mix(in srgb, #859900 92%, white);
+  --fulcrum-tok-punctuation: color-mix(in srgb, #839496 93%, white);
+  --fulcrum-tok-tag: color-mix(in srgb, #268bd2 82%, white);
   --fulcrum-tok-attribute: #93a1a1;
-  --fulcrum-tok-regexp: #dc322f;
-  --fulcrum-tok-inserted: #859900;
-  --fulcrum-tok-deleted: #dc322f;
+  --fulcrum-tok-regexp: color-mix(in srgb, #dc322f 66%, white);
+  --fulcrum-tok-inserted: color-mix(in srgb, #859900 92%, white);
+  --fulcrum-tok-deleted: color-mix(in srgb, #dc322f 66%, white);
+  --fulcrum-ansi-black: color-mix(in srgb, #073642 49%, white);
+  --fulcrum-ansi-red: color-mix(in srgb, #dc322f 66%, white);
+  --fulcrum-ansi-green: color-mix(in srgb, #859900 92%, white);
+  --fulcrum-ansi-yellow: color-mix(in srgb, #b58900 91%, white);
+  --fulcrum-ansi-blue: color-mix(in srgb, #268bd2 82%, white);
+  --fulcrum-ansi-magenta: color-mix(in srgb, #d33682 69%, white);
+  --fulcrum-ansi-cyan: color-mix(in srgb, #2aa198 92%, white);
+  --fulcrum-ansi-white: #eee8d5;
+  --fulcrum-ansi-bright-black: color-mix(in srgb, #002b36 46%, white);
+  --fulcrum-ansi-bright-red: color-mix(in srgb, #cb4b16 70%, white);
+  --fulcrum-ansi-bright-green: color-mix(in srgb, #586e75 69%, white);
+  --fulcrum-ansi-bright-yellow: color-mix(in srgb, #657b83 75%, white);
+  --fulcrum-ansi-bright-blue: color-mix(in srgb, #839496 93%, white);
+  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #6c71c4 76%, white);
+  --fulcrum-ansi-bright-cyan: #93a1a1;
+  --fulcrum-ansi-bright-white: #fdf6e3;
 }
 
 /* solarized-light: https://ethanschoonover.com/solarized (base03-base3 and accents; syntax from vim-colors-solarized) */
@@ -243,28 +373,44 @@
   color-scheme: light;
   --fulcrum-bg: #fdf6e3;
   --fulcrum-fg: #073642;
-  --fulcrum-muted: #586e75;
+  --fulcrum-muted: color-mix(in srgb, #586e75 98%, black);
   --fulcrum-surface: #eee8d5;
   --fulcrum-border: #93a1a1;
-  --fulcrum-accent: #268bd2;
-  --fulcrum-danger: #dc322f;
-  --fulcrum-ok: color-mix(in srgb, var(--fulcrum-fg) 10%, #859900); /* green + base02: 3.40:1 on base3 */
-  --fulcrum-warn: color-mix(in srgb, var(--fulcrum-fg) 10%, #b58900); /* yellow + base02: 3.40:1 on base3 */
-  --fulcrum-tok-keyword: #859900;
-  --fulcrum-tok-string: #2aa198;
-  --fulcrum-tok-number: #2aa198;
-  --fulcrum-tok-comment: #93a1a1;
-  --fulcrum-tok-function: #268bd2;
-  --fulcrum-tok-type: #b58900;
-  --fulcrum-tok-variable: #268bd2;
-  --fulcrum-tok-constant: #2aa198;
-  --fulcrum-tok-operator: #859900;
-  --fulcrum-tok-punctuation: #657b83;
-  --fulcrum-tok-tag: #268bd2;
-  --fulcrum-tok-attribute: #586e75;
-  --fulcrum-tok-regexp: #dc322f;
-  --fulcrum-tok-inserted: #859900;
-  --fulcrum-tok-deleted: #dc322f;
+  --fulcrum-accent: color-mix(in srgb, #268bd2 78%, black);
+  --fulcrum-danger: color-mix(in srgb, #dc322f 89%, black);
+  --fulcrum-ok: color-mix(in srgb, #859900 72%, black);
+  --fulcrum-warn: color-mix(in srgb, #b58900 73%, black);
+  --fulcrum-tok-keyword: color-mix(in srgb, #859900 72%, black);
+  --fulcrum-tok-string: color-mix(in srgb, #2aa198 72%, black);
+  --fulcrum-tok-number: color-mix(in srgb, #2aa198 72%, black);
+  --fulcrum-tok-comment: color-mix(in srgb, #93a1a1 66%, black);
+  --fulcrum-tok-function: color-mix(in srgb, #268bd2 78%, black);
+  --fulcrum-tok-type: color-mix(in srgb, #b58900 73%, black);
+  --fulcrum-tok-variable: color-mix(in srgb, #268bd2 78%, black);
+  --fulcrum-tok-constant: color-mix(in srgb, #2aa198 72%, black);
+  --fulcrum-tok-operator: color-mix(in srgb, #859900 72%, black);
+  --fulcrum-tok-punctuation: color-mix(in srgb, #657b83 87%, black);
+  --fulcrum-tok-tag: color-mix(in srgb, #268bd2 78%, black);
+  --fulcrum-tok-attribute: color-mix(in srgb, #586e75 98%, black);
+  --fulcrum-tok-regexp: color-mix(in srgb, #dc322f 89%, black);
+  --fulcrum-tok-inserted: color-mix(in srgb, #859900 72%, black);
+  --fulcrum-tok-deleted: color-mix(in srgb, #dc322f 89%, black);
+  --fulcrum-ansi-black: #073642;
+  --fulcrum-ansi-red: color-mix(in srgb, #dc322f 89%, black);
+  --fulcrum-ansi-green: color-mix(in srgb, #859900 72%, black);
+  --fulcrum-ansi-yellow: color-mix(in srgb, #b58900 73%, black);
+  --fulcrum-ansi-blue: color-mix(in srgb, #268bd2 78%, black);
+  --fulcrum-ansi-magenta: color-mix(in srgb, #d33682 89%, black);
+  --fulcrum-ansi-cyan: color-mix(in srgb, #2aa198 72%, black);
+  --fulcrum-ansi-white: color-mix(in srgb, #eee8d5 45%, black);
+  --fulcrum-ansi-bright-black: #002b36;
+  --fulcrum-ansi-bright-red: color-mix(in srgb, #cb4b16 89%, black);
+  --fulcrum-ansi-bright-green: color-mix(in srgb, #586e75 98%, black);
+  --fulcrum-ansi-bright-yellow: color-mix(in srgb, #657b83 87%, black);
+  --fulcrum-ansi-bright-blue: color-mix(in srgb, #839496 72%, black);
+  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #6c71c4 86%, black);
+  --fulcrum-ansi-bright-cyan: color-mix(in srgb, #93a1a1 66%, black);
+  --fulcrum-ansi-bright-white: color-mix(in srgb, #fdf6e3 42%, black);
 }
 
 /* github-dark: https://github.com/primer/primitives (dark functional colors and prettylights syntax tokens) */
@@ -294,6 +440,22 @@
   --fulcrum-tok-regexp: #7ee787;
   --fulcrum-tok-inserted: #aff5b4;
   --fulcrum-tok-deleted: #ffdcd7;
+  --fulcrum-ansi-black: color-mix(in srgb, #484f58 70%, white);
+  --fulcrum-ansi-red: #ff7b72;
+  --fulcrum-ansi-green: #3fb950;
+  --fulcrum-ansi-yellow: #d29922;
+  --fulcrum-ansi-blue: #58a6ff;
+  --fulcrum-ansi-magenta: #bc8cff;
+  --fulcrum-ansi-cyan: #39c5cf;
+  --fulcrum-ansi-white: #b1bac4;
+  --fulcrum-ansi-bright-black: color-mix(in srgb, #6e7681 90%, white);
+  --fulcrum-ansi-bright-red: #ffa198;
+  --fulcrum-ansi-bright-green: #56d364;
+  --fulcrum-ansi-bright-yellow: #e3b341;
+  --fulcrum-ansi-bright-blue: #79c0ff;
+  --fulcrum-ansi-bright-magenta: #d2a8ff;
+  --fulcrum-ansi-bright-cyan: #56d4dd;
+  --fulcrum-ansi-bright-white: #ffffff;
 }
 
 /* github-light: https://github.com/primer/primitives (light functional colors and prettylights syntax tokens) */
@@ -324,6 +486,22 @@
   --fulcrum-tok-regexp: #116329;
   --fulcrum-tok-inserted: #116329;
   --fulcrum-tok-deleted: #82071e;
+  --fulcrum-ansi-black: #24292f;
+  --fulcrum-ansi-red: #cf222e;
+  --fulcrum-ansi-green: #116329;
+  --fulcrum-ansi-yellow: #4d2d00;
+  --fulcrum-ansi-blue: #0969da;
+  --fulcrum-ansi-magenta: #8250df;
+  --fulcrum-ansi-cyan: #1b7c83;
+  --fulcrum-ansi-white: color-mix(in srgb, #6e7781 96%, black);
+  --fulcrum-ansi-bright-black: #57606a;
+  --fulcrum-ansi-bright-red: #a40e26;
+  --fulcrum-ansi-bright-green: #1a7f37;
+  --fulcrum-ansi-bright-yellow: #633c01;
+  --fulcrum-ansi-bright-blue: color-mix(in srgb, #218bff 82%, black);
+  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #a475f9 80%, black);
+  --fulcrum-ansi-bright-cyan: color-mix(in srgb, #3192aa 84%, black);
+  --fulcrum-ansi-bright-white: color-mix(in srgb, #8c959f 77%, black);
 }
 
 /* one-dark: https://github.com/atom/atom/tree/master/packages/one-dark-syntax (styles/colors.less; ui from one-dark-ui) */
@@ -335,24 +513,40 @@
   --fulcrum-surface: #21252b;
   --fulcrum-border: #3e4451;
   --fulcrum-accent: #61afef;
-  --fulcrum-danger: #e06c75;
+  --fulcrum-danger: color-mix(in srgb, #e06c75 97%, white);
   --fulcrum-ok: #98c379;
   --fulcrum-warn: #e5c07b;
   --fulcrum-tok-keyword: #c678dd;
   --fulcrum-tok-string: #98c379;
   --fulcrum-tok-number: #d19a66;
-  --fulcrum-tok-comment: #7f848e;
+  --fulcrum-tok-comment: color-mix(in srgb, #7f848e 88%, white);
   --fulcrum-tok-function: #61afef;
   --fulcrum-tok-type: #e5c07b;
-  --fulcrum-tok-variable: #e06c75;
+  --fulcrum-tok-variable: color-mix(in srgb, #e06c75 97%, white);
   --fulcrum-tok-constant: #d19a66;
   --fulcrum-tok-operator: #56b6c2;
   --fulcrum-tok-punctuation: #abb2bf;
-  --fulcrum-tok-tag: #e06c75;
+  --fulcrum-tok-tag: color-mix(in srgb, #e06c75 97%, white);
   --fulcrum-tok-attribute: #d19a66;
   --fulcrum-tok-regexp: #56b6c2;
   --fulcrum-tok-inserted: #98c379;
-  --fulcrum-tok-deleted: #e06c75;
+  --fulcrum-tok-deleted: color-mix(in srgb, #e06c75 97%, white);
+  --fulcrum-ansi-black: color-mix(in srgb, #282c34 51%, white);
+  --fulcrum-ansi-red: color-mix(in srgb, #e06c75 97%, white);
+  --fulcrum-ansi-green: #98c379;
+  --fulcrum-ansi-yellow: #e5c07b;
+  --fulcrum-ansi-blue: #61afef;
+  --fulcrum-ansi-magenta: #c678dd;
+  --fulcrum-ansi-cyan: #56b6c2;
+  --fulcrum-ansi-white: #abb2bf;
+  --fulcrum-ansi-bright-black: color-mix(in srgb, #5c6370 69%, white);
+  --fulcrum-ansi-bright-red: color-mix(in srgb, #e06c75 97%, white);
+  --fulcrum-ansi-bright-green: #98c379;
+  --fulcrum-ansi-bright-yellow: #e5c07b;
+  --fulcrum-ansi-bright-blue: #61afef;
+  --fulcrum-ansi-bright-magenta: #c678dd;
+  --fulcrum-ansi-bright-cyan: #56b6c2;
+  --fulcrum-ansi-bright-white: #ffffff;
 }
 
 /* Default with no attribute: github-light above, github-dark when the OS prefers dark. */
@@ -383,5 +577,21 @@
     --fulcrum-tok-regexp: #7ee787;
     --fulcrum-tok-inserted: #aff5b4;
     --fulcrum-tok-deleted: #ffdcd7;
+    --fulcrum-ansi-black: color-mix(in srgb, #484f58 70%, white);
+    --fulcrum-ansi-red: #ff7b72;
+    --fulcrum-ansi-green: #3fb950;
+    --fulcrum-ansi-yellow: #d29922;
+    --fulcrum-ansi-blue: #58a6ff;
+    --fulcrum-ansi-magenta: #bc8cff;
+    --fulcrum-ansi-cyan: #39c5cf;
+    --fulcrum-ansi-white: #b1bac4;
+    --fulcrum-ansi-bright-black: color-mix(in srgb, #6e7681 90%, white);
+    --fulcrum-ansi-bright-red: #ffa198;
+    --fulcrum-ansi-bright-green: #56d364;
+    --fulcrum-ansi-bright-yellow: #e3b341;
+    --fulcrum-ansi-bright-blue: #79c0ff;
+    --fulcrum-ansi-bright-magenta: #d2a8ff;
+    --fulcrum-ansi-bright-cyan: #56d4dd;
+    --fulcrum-ansi-bright-white: #ffffff;
   }
 }
