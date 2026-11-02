@@ -28,6 +28,7 @@ const STRESS_RATE = 200;
 let messageRenders = 0;
 let dispatched = 0;
 let lastAction = "";
+let continueReplay = () => {};
 function CountedMessage({ id }: { id: string }) {
   useItem(id);
   messageRenders++;
@@ -35,7 +36,17 @@ function CountedMessage({ id }: { id: string }) {
 }
 function LoggedApproval({ id }: { id: string }) {
   return (
-    <Approval id={id} onApprove={(requestId) => (lastAction = `approve ${requestId}`)} onDeny={(requestId) => (lastAction = `deny ${requestId}`)} />
+    <Approval
+      id={id}
+      onApprove={(requestId) => {
+        lastAction = `approve ${requestId}`;
+        continueReplay();
+      }}
+      onDeny={(requestId) => {
+        lastAction = `deny ${requestId}`;
+        continueReplay();
+      }}
+    />
   );
 }
 const renderers: Renderers = { message: CountedMessage, approval: LoggedApproval };
@@ -79,8 +90,13 @@ function useReplay(mode: string, speed: number, run: number) {
     setStore(next);
     dispatched = 0;
     let budget = 0;
+    let paused = false;
     let last = performance.now();
+    continueReplay = () => {
+      paused = false;
+    };
     const timer = setInterval(() => {
+      if (paused) return;
       const now = performance.now();
       budget += ((now - last) * (stress ? STRESS_RATE : rate.current)) / 1000;
       last = now;
@@ -89,18 +105,27 @@ function useReplay(mode: string, speed: number, run: number) {
         if (!event) return clearInterval(timer);
         next.dispatch(event);
         dispatched++;
+        if (event.type === "approval_request") paused = true;
       }
     }, 16);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      continueReplay = () => {};
+    };
   }, [mode, run]);
   return store;
 }
 
 function Readout() {
   const items = useRun((state) => state.items.length);
-  const [stats, setStats] = useState({ fps: 0, renders: 0, events: 0 });
+  const [stats, setStats] = useState({ fps: 0, renders: 0, events: 0, longTasks: 0, heap: undefined as number | undefined });
   useEffect(() => {
     let frames = 0;
+    let longTasks = 0;
+    const observer = new PerformanceObserver((list) => {
+      longTasks += list.getEntries().length;
+    });
+    observer.observe({ type: "longtask" });
     let raf = requestAnimationFrame(function tick() {
       frames++;
       raf = requestAnimationFrame(tick);
@@ -109,7 +134,13 @@ function Readout() {
     let renders = messageRenders;
     const timer = setInterval(() => {
       const seconds = (performance.now() - start) / 1000;
-      setStats({ fps: Math.round(frames / seconds), renders: Math.round((messageRenders - renders) / seconds), events: dispatched });
+      setStats({
+        fps: Math.round(frames / seconds),
+        renders: Math.round((messageRenders - renders) / seconds),
+        events: dispatched,
+        longTasks,
+        heap: (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize,
+      });
       frames = 0;
       renders = messageRenders;
       start = performance.now();
@@ -117,11 +148,12 @@ function Readout() {
     return () => {
       cancelAnimationFrame(raf);
       clearInterval(timer);
+      observer.disconnect();
     };
   }, []);
   return (
     <span className="readout" data-testid="readout">
-      {stats.fps} fps · {stats.renders} message renders/s · {items} items · {stats.events} events{lastAction && ` · ${lastAction}`}
+      {stats.fps} fps · {stats.renders} message renders/s · {items} items · {stats.events} events · {stats.longTasks} long tasks{stats.heap === undefined ? "" : ` · ${Math.round(stats.heap / 1_000_000)} MB heap`}{lastAction && ` · ${lastAction}`}
     </span>
   );
 }
