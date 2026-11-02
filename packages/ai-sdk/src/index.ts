@@ -132,4 +132,3 @@ export function createAiSdkAdapter() {
   };
   return { decode };
 }
-
