@@ -192,7 +192,7 @@ function Status({ label }: { label: string }) {
     <div className="status">
       <span className="mode" data-state={stats.phase}>
         {label}
-        <span>{stats.phase === "waiting" ? "waiting for approval" : stats.phase === "static" ? "static" : "streaming"}{stats.lap > 0 && ` · lap ${stats.lap + 1}`}</span>
+        <span>{stats.phase === "waiting" ? "waiting for approval" : stats.phase === "static" ? "no events" : "streaming"}{stats.lap > 0 && ` · lap ${stats.lap + 1}`}</span>
       </span>
       <span data-testid="readout">
         {stats.fps} fps · {stats.renders} message renders/s · {items} items · {stats.events} events · {stats.longTasks} long tasks{stats.heap === undefined ? "" : ` · ${Math.round(stats.heap / 1_000_000)} MB heap`}{lastAction && ` · ${lastAction}`}
