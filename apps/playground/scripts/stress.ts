@@ -100,7 +100,8 @@ async function measure(page: Page, messages: number): Promise<Record<string, num
   return page.evaluate(async ({ messages, durationMs, seed }) => {
     const scroll = document.querySelector<HTMLElement>(".scroll")!;
     const started = performance.getEntriesByName("stress-start")[0]?.startTime ?? performance.now();
-    while (document.querySelectorAll('[data-part="message"]').length < messages) await new Promise(requestAnimationFrame);
+    const itemCount = () => Number(document.querySelector('[data-testid="readout"]')?.textContent?.match(/· (\d+) items/)?.[1] ?? 0);
+    while (itemCount() < messages) await new Promise(requestAnimationFrame);
     const firstPaint = performance.now() - started;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     const frames: number[] = [];

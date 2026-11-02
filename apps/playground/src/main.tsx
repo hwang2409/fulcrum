@@ -258,7 +258,7 @@ function App() {
           <Readout />
         </div>
         <div className="scroll" ref={scroll}>
-          <Timeline key={storeKey(store)} renderers={renderers} scrollRef={scroll} virtual={mode === STRESS ? false : undefined} />
+          <Timeline key={storeKey(store)} renderers={renderers} scrollRef={scroll} />
         </div>
       </div>
     </RunProvider>
