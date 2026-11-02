@@ -1,6 +1,8 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
-import type { RunItem, ToolCall as ToolCallData } from "@fulcrum/core";
+import type { RunItem } from "@fulcrum/core";
 import { useItem, useItemSelector, useTimelineSnapshot } from "./hooks.js";
+import { boundText, duration, MAX_SUMMARY_CHARS } from "./tools/common.js";
+import { ToolBody, toolSummary } from "./tools/index.js";
 import { useVirtualList } from "./virtual.js";
 
 export type ItemProps = { id: string; className?: string };
@@ -47,27 +49,12 @@ export type ToolBodyProps = { item: ToolItem; output: string; state: ItemState }
  * disclosure, and the approval actions; `body` renders only what goes inside `data-part="tool-body"`.
  */
 export type ToolViewProps = {
-  /** One-line header summary. Defaults to the view (`$ command` for shell), else the first string argument. */
+  /** One-line header summary. Defaults to `toolSummary`: the view (`$ command` for shell), else the first string argument. */
   summary?: (item: ToolItem) => string;
+  /** Defaults to `ToolBody`: the card for the item's view kind, or the generic card. */
   body?: ComponentType<ToolBodyProps>;
 };
 
-const defaultSummary = ({ view, tool_call }: ToolItem) => {
-  switch (view?.kind) {
-    case "shell": return `$ ${view.command}`;
-    case "read": case "edit": case "write": return view.path;
-    case "search": return view.path ? `${view.pattern} in ${view.path}` : view.pattern;
-    case "fetch": return view.url ?? view.query;
-  }
-  return firstArgument(tool_call);
-};
-// shortcut: the first string argument is the most telling one for common tools (command, path, pattern, url); adapters that set a view do better.
-const firstArgument = (call: ToolCallData) => {
-  const args = call.arguments ?? {};
-  const first = Object.values(args).find((value) => typeof value === "string");
-  return typeof first === "string" ? first : Object.keys(args).length ? JSON.stringify(args) : "";
-};
-const json = (args: unknown) => JSON.stringify(args, null, 2);
 const statusText: Record<ItemState, string> = {
   streaming: "running",
   done: "done",
@@ -79,37 +66,27 @@ const statusText: Record<ItemState, string> = {
 
 // Harness tool names are free strings; a blank one still needs a readable label.
 const isBlank = (name: string) => name.trim() === "";
-const toolLabel = (name: string) => (isBlank(name) ? "unnamed tool" : name);
+const toolLabel = (name: string) => boundText(isBlank(name) ? "unnamed tool" : name, MAX_SUMMARY_CHARS).text;
+// A cut name gets a longer, still bounded hover title; the exact name stays in app state only.
+const MAX_TITLE_CHARS = 1_000;
 function ToolName({ name }: { name: string }) {
-  return isBlank(name)
-    ? <span data-part="tool-name" data-blank="">unnamed tool</span>
-    : <span data-part="tool-name">{name}</span>;
+  const label = toolLabel(name);
+  const title = !isBlank(name) && label !== name ? boundText(name, MAX_TITLE_CHARS).text : undefined;
+  return <span data-part="tool-name" data-blank={isBlank(name) ? "" : undefined} title={title}>{label}</span>;
 }
 
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
+  const ms = item.view?.durationMs;
+  const rawSummary = (summary ?? toolSummary)(item);
+  const oneLineSummary = rawSummary.replace(/\s+/g, " ").trim();
   return (
     <>
       <ToolName name={item.tool_call.name} />
-      <span data-part="tool-summary">{(summary ?? defaultSummary)(item)}</span>
-      <span data-part="tool-status">{status ?? statusText[state]}</span>
-    </>
-  );
-}
-
-// Output first; the raw JSON arguments stay behind their own collapsed disclosure.
-function GenericBody({ item: { tool_call: call }, output, state }: ToolBodyProps) {
-  const asking = state === "pending" || state === "submitting";
-  return (
-    <>
-      {output ? <pre data-part="tool-output">{output}</pre> : null}
-      {asking ? (
-        <pre data-part="tool-args">{json(call.arguments)}</pre>
-      ) : (
-        <details data-part="tool-args-details">
-          <summary>arguments</summary>
-          <pre data-part="tool-args">{json(call.arguments)}</pre>
-        </details>
-      )}
+      <span data-part="tool-summary">{boundText(oneLineSummary, MAX_SUMMARY_CHARS).text}</span>
+      <span data-part="tool-status">
+        {status ?? statusText[state]}
+        {ms !== undefined ? <span data-part="tool-duration">{duration(ms)}</span> : null}
+      </span>
     </>
   );
 }
@@ -130,7 +107,7 @@ const toolOutput = ({ output, result }: ToolItem) => {
 const toolState = (item: ToolItem): ItemState =>
   item.canceled ? "canceled" : item.is_error ? "error" : item.active ? "streaming" : "done";
 
-export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = GenericBody }: ItemProps & ToolViewProps) {
+export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = ToolBody }: ItemProps & ToolViewProps) {
   const item = useItem(id);
   const tool = item?.type === "tool" ? item : undefined;
   const [open] = useState(() => openByDefault(tool, tool ? toolOutput(tool) : ""));
@@ -144,7 +121,7 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
       data-part="tool"
       data-kind="tool"
       data-id={id}
-      data-tool={tool.tool_call.name}
+      data-tool={toolLabel(tool.tool_call.name)}
       data-tool-view={tool.view?.kind}
       data-state={state}
     >
@@ -166,7 +143,7 @@ export const Approval = memo(function Approval({
   onApprove,
   onDeny,
   summary,
-  body: Body = GenericBody,
+  body: Body = ToolBody,
 }: ItemProps & ToolViewProps & { onApprove?: Decide; onDeny?: Decide }) {
   const item = useItem(id);
   const [sending, setSending] = useState<"approve" | "deny">();
@@ -198,7 +175,7 @@ export const Approval = memo(function Approval({
       data-part="approval"
       data-kind="approval"
       data-id={id}
-      data-tool={tool_call.name}
+      data-tool={toolLabel(tool_call.name)}
       data-tool-view={view?.kind}
       data-state={state}
     >

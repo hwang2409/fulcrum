@@ -1,7 +1,7 @@
 const external = ["@fulcrum/core", "@fulcrum/react", "@fulcrum/zeta", "@fulcrum/virtual", "react", "react-dom"];
 const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external, ceiling: 8_500 },
-  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 6_000 },
+  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 12_000 },
   { name: "zeta", entry: "packages/zeta/dist/index.js", external, ceiling: 8_500 },
   { name: "virtual", entry: "packages/virtual/dist/index.js", external, ceiling: 11_000 },
 ];
