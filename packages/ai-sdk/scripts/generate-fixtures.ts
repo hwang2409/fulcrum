@@ -75,6 +75,9 @@ add("unknown-malformed", "unknown", await hostParts([{ type: "data-weather", dat
 add("unknown-malformed", "unknown", [{ type: "text-delta", id: 7, delta: false }]);
 add("sessions", "alpha", await modelParts("alpha-message", [{ type: "text-start", id: "alpha-text" }, { type: "text-delta", id: "alpha-text", delta: "alpha" }, { type: "text-end", id: "alpha-text" }]));
 add("sessions", "beta", await modelParts("beta-message", [{ type: "text-start", id: "beta-text" }, { type: "text-delta", id: "beta-text", delta: "beta" }, { type: "text-end", id: "beta-text" }]));
+for (const [streamKey, marker] of [["request-alpha", "stream-alpha"], ["request-beta", "stream-beta"]] as const)
+  for (const part of await hostParts([{ type: "source-url", sourceId: marker, url: `https://example.com/${marker}` }, { type: "finish", finishReason: "stop" }]))
+    rows.push({ scenario: "streams", sessionId: streamKey, contentMarker: marker, part });
 add("replay", "replay", await modelParts("stable-message", [{ type: "text-start", id: "stable-text" }, { type: "text-delta", id: "stable-text", delta: "stable" }, { type: "text-end", id: "stable-text" }]));
 
 const fixtureUrl = new URL("../test/fixtures/conformance.jsonl", import.meta.url);

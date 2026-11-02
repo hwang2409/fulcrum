@@ -6,9 +6,13 @@ const fixture = (scenario: AdapterFixture["scenario"]): AdapterFixture => ({ sce
 const requiredFixtures = [
   "text", "tool", "tool-error", "reset-retry-abort", "unknown-malformed", "sessions", "replay",
 ] as const;
+const streamFixtures: AdapterFixture[] = [
+  { scenario: "streams", sessionId: "alpha", contentMarker: "alpha" },
+  { scenario: "streams", sessionId: "beta", contentMarker: "beta" },
+];
 const options = (decode: (value: unknown) => RunEvent[]): AdapterConformanceOptions => ({
   name: "mutant",
-  fixtures: requiredFixtures.map(fixture),
+  fixtures: [...requiredFixtures.map(fixture), ...streamFixtures],
   create: () => ({ decode }),
   capabilities: { approval: false, reasoning: false, reset: false, usage: false },
 });
@@ -25,6 +29,13 @@ test("replays into one store so missing ids cannot duplicate messages", () => {
     ? [{ type: "message_commit", message: { role: "assistant", content: [] } }]
     : []));
   expect(failures).toContain("replay: reconnect replay changed outline membership");
+});
+
+test("rejects colliding ids from independent streams in one run", () => {
+  const failures = runAdapterConformance(options((value) => (value as AdapterFixture).scenario === "streams"
+    ? [{ type: "message_commit", message_id: "same", message: { role: "assistant", content: [{ type: "text", text: (value as AdapterFixture).contentMarker }] } }]
+    : []));
+  expect(failures).toContain("streams: independent streams must commit distinct message ids");
 });
 
 test("usage capability rejects an empty usage object", () => {

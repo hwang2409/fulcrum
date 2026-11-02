@@ -31,7 +31,7 @@ const aiSdkFiles = import.meta.glob<string>("../../../packages/ai-sdk/test/fixtu
 });
 const aiSdkFixtures = Object.fromEntries(
   Object.entries(aiSdkFiles).map(([path, text]) => {
-    const adapter = createAiSdkAdapter();
+    const adapter = createAiSdkAdapter({ streamKey: path.split("/").pop()! });
     return [path.split("/").pop()!, text.split("\n").filter(Boolean).flatMap((line) => adapter.decode(JSON.parse(line)))];
   }),
 );

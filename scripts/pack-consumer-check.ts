@@ -53,7 +53,7 @@ if (!existsSync(fileURLToPath(worker)) || readdirSync(join(highlightDist, "chunk
   throw new Error("highlight asset entry point is missing");
 
 const store = createRunStore(() => {});
-const adapter = createAiSdkAdapter();
+const adapter = createAiSdkAdapter({ streamKey: "chat-request-123" });
 export function onAiSdkPart(part: unknown) {
   for (const event of adapter.decode(part)) store.dispatch(event);
 }

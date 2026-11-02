@@ -57,6 +57,10 @@
 {"scenario":"sessions","sessionId":"beta","part":{"type":"text-end","id":"beta-text"}}
 {"scenario":"sessions","sessionId":"beta","part":{"type":"finish-step"}}
 {"scenario":"sessions","sessionId":"beta","part":{"type":"finish","finishReason":"stop"}}
+{"scenario":"streams","sessionId":"request-alpha","contentMarker":"stream-alpha","part":{"type":"source-url","sourceId":"stream-alpha","url":"https://example.com/stream-alpha"}}
+{"scenario":"streams","sessionId":"request-alpha","contentMarker":"stream-alpha","part":{"type":"finish","finishReason":"stop"}}
+{"scenario":"streams","sessionId":"request-beta","contentMarker":"stream-beta","part":{"type":"source-url","sourceId":"stream-beta","url":"https://example.com/stream-beta"}}
+{"scenario":"streams","sessionId":"request-beta","contentMarker":"stream-beta","part":{"type":"finish","finishReason":"stop"}}
 {"scenario":"replay","sessionId":"replay","part":{"type":"start","messageId":"stable-message"}}
 {"scenario":"replay","sessionId":"replay","part":{"type":"start-step"}}
 {"scenario":"replay","sessionId":"replay","part":{"type":"text-start","id":"stable-text"}}

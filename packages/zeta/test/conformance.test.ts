@@ -23,6 +23,8 @@ const fixtures: AdapterFixture[] = [
   row("unknown-malformed", "unknown", null),
   row("sessions", "alpha", event("alpha", "assistant_delta", { delta: "alpha", kind: "assistant", data: { message_id: "alpha-message" } })),
   row("sessions", "beta", event("beta", "assistant_delta", { delta: "beta", kind: "assistant", data: { message_id: "beta-message" } })),
+  { ...row("streams", "stream-alpha", event("stream-alpha", "assistant_message", { message: { role: "assistant", content: [{ type: "text", text: "stream-alpha" }] }, data: { message_id: "stream-alpha-message" } })), contentMarker: "stream-alpha" },
+  { ...row("streams", "stream-beta", event("stream-beta", "assistant_message", { message: { role: "assistant", content: [{ type: "text", text: "stream-beta" }] }, data: { message_id: "stream-beta-message" } })), contentMarker: "stream-beta" },
   row("replay", "replay", event("replay", "assistant_message", { message: { role: "assistant", content: [{ type: "text", text: "stable" }] }, data: { message_id: "stable-message" } })),
 ];
 

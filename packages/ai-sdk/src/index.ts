@@ -51,9 +51,15 @@ const mergeMeta = (prior: Record<string, unknown> | undefined, next: Record<stri
 interface ToolState { call: ToolCall; input: string; }
 interface BlockState { kind: "text" | "reasoning"; block: ContentBlock; }
 
-export function createAiSdkAdapter() {
+export interface AiSdkAdapterOptions {
+  /** Stable identity for this message stream, unique within its run. */
+  streamKey: string;
+}
+
+export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
+  const streamKey = string(options?.streamKey, "options.streamKey");
+  const scoped = (kind: string, id: string | number) => `ai-sdk:${encodeURIComponent(streamKey)}:${kind}-${encodeURIComponent(String(id))}`;
   let messageId: string | undefined;
-  let runNumber = 0;
   let messageNumber = 0;
   const content: ContentBlock[] = [];
   const blocks = new Map<string, BlockState>();
@@ -78,7 +84,7 @@ export function createAiSdkAdapter() {
   };
   const commit = (): RunEvent | undefined => {
     if (!content.length) return undefined;
-    messageId ??= `ai-sdk-run-${runNumber || 1}-message-${++messageNumber}`;
+    messageId ??= scoped("message", ++messageNumber);
     return { type: "message_commit", message_id: messageId, message: { role: "assistant", content: content.map((block) => ({ ...block })) } };
   };
 
@@ -86,7 +92,7 @@ export function createAiSdkAdapter() {
     const kind = type.startsWith("text-") ? "text" : "reasoning";
     const id = string(part.id, "part.id");
     if (type.endsWith("-start")) {
-      messageId ??= id;
+      messageId ??= scoped("part", id);
       const block: ContentBlock = { type: kind, text: "", ...(providerMeta(part) ? { meta: providerMeta(part) } : {}) };
       blocks.set(id, { kind, block });
       content.push(block);
@@ -121,7 +127,7 @@ export function createAiSdkAdapter() {
   };
 
   const decodeTool = (part: Row, type: string): RunEvent[] => {
-    const id = string(part.toolCallId, "part.toolCallId");
+    const id = scoped("tool", string(part.toolCallId, "part.toolCallId"));
     if (type === "tool-input-start") {
       const state = call(id, string(part.toolName, "part.toolName"), toolMeta(part));
       return [{ type: "tool_start", tool_call: state.call }];
@@ -143,7 +149,7 @@ export function createAiSdkAdapter() {
       return [{ type: "tool_start", tool_call: state.call }, { type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: output, is_error: true } }];
     }
     if (type === "tool-approval-request") {
-      const requestId = string(part.approvalId, "part.approvalId");
+      const requestId = scoped("approval", string(part.approvalId, "part.approvalId"));
       approvalByTool.set(id, requestId);
       return [{ type: "approval_request", request_id: requestId, tool_call: (tools.get(id) ?? call(id)).call, delegated: false }];
     }
@@ -159,7 +165,6 @@ export function createAiSdkAdapter() {
 
   const decodeLifecycle = (part: Row, type: string): RunEvent[] => {
     if (type === "start") {
-      runNumber += 1;
       messageNumber = 0;
       messageId = optionalString(part.messageId, "part.messageId");
       content.length = 0; blocks.clear(); tools.clear(); approvalByTool.clear();

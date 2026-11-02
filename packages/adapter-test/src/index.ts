@@ -2,12 +2,13 @@ import { createRunStore, type RunEvent, type RunItem } from "@fulcrum/core";
 
 export const canonicalScenarios = [
   "text", "reasoning", "tool", "tool-error", "approval",
-  "reset-retry-abort", "usage", "unknown-malformed", "sessions", "replay",
+  "reset-retry-abort", "usage", "unknown-malformed", "sessions", "streams", "replay",
 ] as const;
 export type AdapterScenario = (typeof canonicalScenarios)[number];
 export interface AdapterFixture {
   scenario: AdapterScenario;
   sessionId: string;
+  contentMarker?: string;
   [key: string]: unknown;
 }
 export interface AdapterCapabilities {
@@ -19,7 +20,7 @@ export interface AdapterCapabilities {
 export interface AdapterConformanceOptions {
   name: string;
   fixtures: readonly AdapterFixture[];
-  create(): { decode(value: unknown): RunEvent[] };
+  create(streamKey: string): { decode(value: unknown): RunEvent[] };
   capabilities: AdapterCapabilities;
 }
 
@@ -64,7 +65,7 @@ export function runAdapterConformance(options: AdapterConformanceOptions): strin
   ) => {
     const events: RunEvent[] = [];
     for (const fixture of fixtures) {
-      const adapter = adapters.get(fixture.sessionId) ?? options.create();
+      const adapter = adapters.get(fixture.sessionId) ?? options.create(fixture.sessionId);
       adapters.set(fixture.sessionId, adapter);
       const store = stores.get(fixture.sessionId) ?? createRunStore(() => {});
       stores.set(fixture.sessionId, store);
@@ -114,6 +115,20 @@ export function runAdapterConformance(options: AdapterConformanceOptions): strin
     const contents = [...sessions.values()].map((store) => store.getOutline().map(({ id }) => messageText(store.getItem(id)!)).join(""));
     require(contents.some((value) => value.includes("alpha")) && contents.some((value) => value.includes("beta")) && contents.every((value) => !(value.includes("alpha") && value.includes("beta"))), "sessions", "session content leaked");
   }
+
+  const streamFixtures = options.fixtures.filter((fixture) => fixture.scenario === "streams");
+  const streamStore = createRunStore(() => {});
+  const playStreams = () => run(streamFixtures, new Map(), new Map(streamFixtures.map(({ sessionId }) => [sessionId, streamStore])));
+  const firstStreams = playStreams();
+  const streamIds = firstStreams.events.filter((event) => event.type === "message_commit").map((event) => event.message_id);
+  require(streamIds.length >= 2 && new Set(streamIds).size === streamIds.length, "streams", "independent streams must commit distinct message ids");
+  const streamContent = streamStore.getOutline().map(({ id }) => streamStore.getItem(id)).filter((item): item is RunItem => Boolean(item));
+  for (const marker of new Set(streamFixtures.map(({ contentMarker }) => contentMarker).filter((value): value is string => Boolean(value))))
+    require(streamContent.some((item) => JSON.stringify(item).includes(marker)), "streams", `content marker ${marker} was lost`);
+  const streamOutline = streamStore.getOutline().map(({ id }) => id);
+  const replayedStreams = playStreams();
+  require(JSON.stringify(identities(firstStreams.events)) === JSON.stringify(identities(replayedStreams.events)), "streams", "ids changed across independent-stream replay");
+  require(JSON.stringify(streamOutline) === JSON.stringify(streamStore.getOutline().map(({ id }) => id)), "streams", "independent-stream replay changed outline membership");
 
   const replayFixtures = options.fixtures.filter((fixture) => fixture.scenario === "replay");
   const stores = new Map<string, Store>();
