@@ -3,8 +3,8 @@ import type { ToolBodyProps } from "../parts.js";
 import { Arguments, asking, bound, boundText, Foot, Gap, Output, ShowAll } from "./common.js";
 import { diffRows, diffStat, type DiffRow } from "./diff.js";
 
-const sign = { hunk: "", context: " ", delete: "-", insert: "+" } as const;
-const tone = { hunk: undefined, context: undefined, delete: "tok-deleted", insert: "tok-inserted" } as const;
+const sign = { hunk: "", notice: "", context: " ", delete: "-", insert: "+" } as const;
+const tone = { hunk: undefined, notice: undefined, context: undefined, delete: "tok-deleted", insert: "tok-inserted" } as const;
 
 function Line({ row }: { row: DiffRow }) {
   const text = row.word && row.word[1] > row.word[0]

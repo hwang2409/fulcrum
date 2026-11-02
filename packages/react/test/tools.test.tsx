@@ -7,6 +7,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
 import { Approval, RunProvider, Timeline, ToolCall } from "../src/index.js";
+import { boundLines } from "../src/tools/common.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
@@ -113,6 +114,10 @@ test("edit renders a unified diff with gutters, line numbers, and changed words"
   ]);
   expect(all('[data-part="diff-word"]')).toEqual(["1", "2"]);
   expect(container.textContent).not.toContain("+++");
+  act(() => root!.unmount());
+  root = undefined;
+  render(tool("ending", "edit", { kind: "edit", path: "a.ts", diff: "\\ Line endings changed from CRLF to LF" }), ["tool:ending"]);
+  expect(q('[data-change="notice"] [data-part="diff-text"]').textContent).toBe("Line endings changed from CRLF to LF");
 });
 
 test("search groups grep-style matches by file", () => {
@@ -161,6 +166,12 @@ test("large output is capped until show all is requested", () => {
   expect(q('[data-action="show-all"]')).toBeNull();
 });
 
+test("expanded output caps one million short rows", () => {
+  const window = boundLines(Array.from({ length: 1_000_000 }, () => "x"), true);
+  expect(window.head.length + window.tail.length).toBeLessThanOrEqual(2_000);
+  expect(window.hidden).toBe(998_000);
+});
+
 test("multi-megabyte output stays bounded in the dom and says what it left out", () => {
   const output = Array.from({ length: 30_000 }, (_, index) => `${index} ${"x".repeat(60)}`).join("\n");
   render(tool("huge", "bash", { kind: "shell", command: "log" }, output), ["tool:huge"]);
@@ -199,6 +210,12 @@ test("every card and approval bounds multi-megabyte presentation surfaces", asyn
       { type: "approval_request", request_id: name, tool_call: { ...tool_call, id: `${name}-approval` }, view, delegated: false },
     ], [`tool:${name}`, `approval:${name}`]);
 
+    act(() => {
+      for (const details of container.querySelectorAll<HTMLDetailsElement>('[data-part="tool-args-details"]')) {
+        details.open = true;
+        details.dispatchEvent(new Event("toggle"));
+      }
+    });
     for (const surface of container.querySelectorAll<HTMLElement>(
       '[data-part="tool-summary"], [data-part="tool-args"], [data-part="tool-output"], [data-part="shell-command"], [data-part="tool-lines"], [data-part="tool-diff"], [data-part="tool-path"], [data-part="search-pattern"], [data-part="fetch-url"]',
     )) {
@@ -229,12 +246,47 @@ test("a bounded large diff reports hidden changed-line counts", () => {
   expect(q('[data-part="tool-gap"]').textContent).toMatch(/\d+ lines \(\+\d+ -\d+\) not shown, over 100 kB/);
 });
 
+test("collapsed arguments serialize only when opened and stay memoized across output", () => {
+  const arguments_ = { path: "src/a.ts", value: "x".repeat(10_000) };
+  const tool_call = { id: "lazy", name: "custom", arguments: arguments_ };
+  const store = createRunStore(() => {});
+  store.dispatch({ type: "tool_start", tool_call });
+  const original = JSON.stringify;
+  let serializations = 0;
+  JSON.stringify = ((value: unknown, ...rest: unknown[]) => {
+    if (value === arguments_) serializations++;
+    return original(value, ...(rest as [((key: string, value: unknown) => unknown) | null, string | number | undefined]));
+  }) as typeof JSON.stringify;
+  try {
+    mount(<RunProvider store={store}><ToolCall id="tool:lazy" /></RunProvider>);
+    expect(serializations).toBe(0);
+    const details = q('[data-part="tool-args-details"]') as HTMLDetailsElement;
+    act(() => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
+    expect(serializations).toBe(1);
+    act(() => {
+      for (let index = 0; index < 5; index++) store.dispatch({ type: "tool_output", tool_call, output: String(index) });
+    });
+    expect(serializations).toBe(1);
+  } finally {
+    JSON.stringify = original;
+  }
+});
+
 test("unknown tools show output and collapsed json arguments", () => {
   render(tool("unknown", "custom", undefined, "done"), ["tool:unknown"]);
   const card = q('[data-id="tool:unknown"]');
   expect(card.hasAttribute("data-tool-view")).toBe(false);
   expect(card.querySelector('[data-part="tool-output"]')!.textContent).toBe("done");
-  expect((card.querySelector('[data-part="tool-args-details"]') as HTMLDetailsElement).open).toBe(false);
+  const details = card.querySelector('[data-part="tool-args-details"]') as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+  expect(card.textContent).not.toContain('"extra": true');
+  act(() => {
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
   expect(card.textContent).toContain('"extra": true');
 });
 
@@ -247,6 +299,11 @@ test("approvals show the semantic body and the full requested arguments", () => 
     { type: "approval_request", request_id: "a2", tool_call: edit, view: { kind: "edit", path: "a.ts", diff: "@@ -1 +1 @@\n-a\n+b" }, delegated: false },
   ], ["approval:a1", "approval:a2"]);
   expect(q('[data-id="approval:a1"] [data-part="shell-command"]').textContent).toBe(command);
+  const details = q('[data-id="approval:a1"] [data-part="tool-args-details"]') as HTMLDetailsElement;
+  act(() => {
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+  });
   expect(q('[data-id="approval:a1"] [data-part="tool-args"]').textContent).toBe(JSON.stringify(tool_call.arguments, null, 2));
   expect(q('[data-id="approval:a1"] [data-part="tool-empty"]')).toBeNull();
   expect(container.querySelectorAll('[data-id="approval:a2"] [data-part="diff-line"]')).toHaveLength(3);

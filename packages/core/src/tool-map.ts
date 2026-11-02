@@ -58,7 +58,7 @@ const lines = (text: string): DiffLine[] => {
 const sameLine = (a: DiffLine, b: DiffLine) => a.text === b.text && a.newline === b.newline;
 const range = (start: number, count: number) => (count === 1 ? `${start}` : `${count ? start : 0},${count}`);
 const CONTEXT = 3;
-// Myers is linear for the common small-edit case. Beyond this edit distance, a complete delete/add fallback is clearer and bounded.
+// Myers runs only between stable anchors. A region over this distance becomes an exact delete/add block.
 const MAX_MYERS_DISTANCE = 256;
 
 function backtrack(trace: ReadonlyArray<ReadonlyMap<number, number>>, a: DiffLine[], b: DiffLine[], distance: number): DiffOp[] {
@@ -81,7 +81,9 @@ function backtrack(trace: ReadonlyArray<ReadonlyMap<number, number>>, a: DiffLin
   return reversed.reverse();
 }
 
-function diffOps(a: DiffLine[], b: DiffLine[]): DiffOp[] {
+function diffRegion(a: DiffLine[], b: DiffLine[]): DiffOp[] {
+  if (!a.length) return b.map((line) => ({ change: "insert", line }));
+  if (!b.length) return a.map((line) => ({ change: "delete", line }));
   const limit = Math.min(a.length + b.length, MAX_MYERS_DISTANCE);
   let v = new Map<number, number>([[1, 0]]);
   const trace: Array<Map<number, number>> = [];
@@ -98,17 +100,100 @@ function diffOps(a: DiffLine[], b: DiffLine[]): DiffOp[] {
   return [...a.map((line): DiffOp => ({ change: "delete", line })), ...b.map((line): DiffOp => ({ change: "insert", line }))];
 }
 
+const lineKey = (line: DiffLine) => `${line.newline ? "1" : "0"}${line.text}`;
+type Anchor = { old: number; next: number };
+
+// Patience anchors: unique common lines, ordered by the longest increasing sequence in the new file.
+function anchors(a: DiffLine[], b: DiffLine[]): Anchor[] {
+  const old = new Map<string, { count: number; index: number }>();
+  const next = new Map<string, { count: number; index: number }>();
+  for (let index = 0; index < a.length; index++) {
+    const key = lineKey(a[index]!);
+    const found = old.get(key);
+    old.set(key, found ? { count: found.count + 1, index: found.index } : { count: 1, index });
+  }
+  for (let index = 0; index < b.length; index++) {
+    const key = lineKey(b[index]!);
+    const found = next.get(key);
+    next.set(key, found ? { count: found.count + 1, index: found.index } : { count: 1, index });
+  }
+  const candidates: Anchor[] = [];
+  for (const [key, value] of old) {
+    const match = next.get(key);
+    if (value.count === 1 && match?.count === 1) candidates.push({ old: value.index, next: match.index });
+  }
+  candidates.sort((left, right) => left.old - right.old);
+  const tails: number[] = [];
+  const previous = new Array<number>(candidates.length).fill(-1);
+  for (let index = 0; index < candidates.length; index++) {
+    let low = 0;
+    let high = tails.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (candidates[tails[middle]!]!.next < candidates[index]!.next) low = middle + 1;
+      else high = middle;
+    }
+    if (low) previous[index] = tails[low - 1]!;
+    tails[low] = index;
+  }
+  const result: Anchor[] = [];
+  for (let index = tails.at(-1) ?? -1; index >= 0; index = previous[index]!) result.push(candidates[index]!);
+  return result.reverse();
+}
+
+function diffOps(a: DiffLine[], b: DiffLine[]): DiffOp[] {
+  let prefix = 0;
+  while (prefix < a.length && prefix < b.length && sameLine(a[prefix]!, b[prefix]!)) prefix++;
+  let suffix = 0;
+  while (suffix < a.length - prefix && suffix < b.length - prefix && sameLine(a[a.length - suffix - 1]!, b[b.length - suffix - 1]!)) suffix++;
+  const middleA = a.slice(prefix, a.length - suffix);
+  const middleB = b.slice(prefix, b.length - suffix);
+  const stable = anchors(middleA, middleB);
+  const ops = a.slice(0, prefix).map((line): DiffOp => ({ change: "context", line }));
+  let old = 0;
+  let next = 0;
+  for (const anchor of stable) {
+    ops.push(...diffRegion(middleA.slice(old, anchor.old), middleB.slice(next, anchor.next)));
+    ops.push({ change: "context", line: middleA[anchor.old]! });
+    old = anchor.old + 1;
+    next = anchor.next + 1;
+  }
+  ops.push(...diffRegion(middleA.slice(old), middleB.slice(next)));
+  ops.push(...a.slice(a.length - suffix).map((line): DiffOp => ({ change: "context", line })));
+  return ops;
+}
+
 const countsBefore = (ops: DiffOp[], kind: "old" | "new") => {
   const counts = [0];
   for (const op of ops) counts.push(counts.at(-1)! + (op.change !== (kind === "old" ? "insert" : "delete") ? 1 : 0));
   return counts;
 };
 
-/** Conventional unified-diff hunks with three context lines. Work is bounded when edits are extremely large. */
+type LineEnding = "CRLF" | "LF";
+const lineEnding = (text: string): LineEnding | undefined => {
+  let lf = 0;
+  let crlf = 0;
+  for (let index = 0; index < text.length; index++) {
+    if (text.charCodeAt(index) !== 10) continue;
+    lf++;
+    if (index && text.charCodeAt(index - 1) === 13) crlf++;
+  }
+  return !lf ? undefined : crlf === lf ? "CRLF" : crlf === 0 ? "LF" : undefined;
+};
+
+/** Conventional three-context hunks. Whole-file CRLF/LF changes are normalized and shown as a note. */
 export function lineDiff(before: string, after: string): string {
+  const beforeEnding = lineEnding(before);
+  const afterEnding = lineEnding(after);
+  const changedEnding = beforeEnding && afterEnding && beforeEnding !== afterEnding;
+  if (changedEnding) {
+    if (beforeEnding === "CRLF") before = before.replaceAll("\r\n", "\n");
+    if (afterEnding === "CRLF") after = after.replaceAll("\r\n", "\n");
+  }
+  const note = changedEnding ? `\\ Line endings changed from ${beforeEnding} to ${afterEnding}` : "";
   const ops = diffOps(lines(before), lines(after));
   const changes = ops.flatMap((op, index) => op.change === "context" ? [] : [index]);
-  if (!changes.length) return "";
+  if (!changes.length) return note;
   const hunks: Array<[number, number]> = [];
   for (const index of changes) {
     const start = Math.max(0, index - CONTEXT);
@@ -131,5 +216,5 @@ export function lineDiff(before: string, after: string): string {
       if (!op.line.newline) output.push("\\ No newline at end of file");
     }
   }
-  return output.join("\n");
+  return [...(note ? [note] : []), ...output].join("\n");
 }

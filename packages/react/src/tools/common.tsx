@@ -8,6 +8,7 @@ const TAIL_LINES = 20;
 export const MAX_DOM_CHARS = 100_000;
 export const MAX_SUMMARY_CHARS = 240;
 const DOM_CHROME_BUDGET = 256;
+const MAX_DOM_ROWS = 2_000;
 
 type BoundedText = { text: string; shown: number; total: number; truncated: boolean };
 
@@ -60,18 +61,20 @@ function take<T>(items: T[], from: number, step: 1 | -1, maxItems: number, budge
 }
 
 /**
- * Bounds a list of lines (or rows) for the DOM: collapsed, the first 40 and last 20; expanded, everything up to
- * MAX_DOM_CHARS, split between head and tail. `tail` 0 keeps only the head (search results read top-down).
+ * Bounds a list of lines (or rows) for the DOM: collapsed, the first 40 and last 20; expanded, up to
+ * MAX_DOM_CHARS and MAX_DOM_ROWS, split between head and tail. `tail` 0 keeps only the head.
  */
 export function bound<T>(items: T[], expanded: boolean, size: (item: T) => number, cut: (item: T, chars: number) => T, tail = TAIL_LINES): Window<T> {
   const total = items.length;
   let chars = 0;
   for (const item of items) chars += size(item) + 1;
-  const maxLines = expanded ? Infinity : HEAD_LINES + tail;
+  const maxLines = expanded ? MAX_DOM_ROWS : HEAD_LINES + tail;
   const budget = MAX_DOM_CHARS - DOM_CHROME_BUDGET;
   if (total <= maxLines && chars <= budget) return { head: items, tail: [], tailFrom: total, hidden: 0, total };
-  const head = take(items, 0, 1, expanded ? Infinity : HEAD_LINES, tail ? budget / 2 : budget, size, cut);
-  const end = tail ? take(items.slice(head.length), total - head.length - 1, -1, expanded ? Infinity : tail, budget / 2, size, cut) : [];
+  const headLines = expanded ? (tail ? Math.ceil(maxLines / 2) : maxLines) : HEAD_LINES;
+  const tailLines = expanded ? Math.floor(maxLines / 2) : tail;
+  const head = take(items, 0, 1, headLines, tail ? budget / 2 : budget, size, cut);
+  const end = tail ? take(items.slice(head.length), total - head.length - 1, -1, tailLines, budget / 2, size, cut) : [];
   return { head, tail: end, tailFrom: total - end.length, hidden: total - head.length - end.length, total };
 }
 const cutLine = (line: string, chars: number) => boundText(line, chars).text;
@@ -79,7 +82,9 @@ export const boundLines = (lines: string[], expanded: boolean, tail?: number) =>
 
 /** What a bound left out, in words, and the button that shows the rest. */
 const gapText = (window: Window<unknown>, expanded: boolean, noun: string) =>
-  expanded ? `… ${window.hidden} ${noun} not shown, over ${MAX_DOM_CHARS / 1000} kB …` : `… ${window.hidden} ${noun} hidden …`;
+  expanded
+    ? `… showing ${window.total - window.hidden} of ${window.total} ${noun.split(" (")[0]}; ${window.hidden} ${noun} not shown, over ${MAX_DOM_CHARS / 1000} kB or ${MAX_DOM_ROWS} rows …`
+    : `… ${window.hidden} ${noun} hidden …`;
 export function Gap({ window, expanded, noun = "lines" }: { window: Window<unknown>; expanded: boolean; noun?: string }) {
   return window.hidden ? <span data-part="tool-gap">{gapText(window, expanded, noun)}</span> : null;
 }
@@ -161,13 +166,22 @@ export function Empty({ state, noun = "output" }: { state: ItemState; noun?: str
   return <p data-part="tool-empty">{text}</p>;
 }
 
-const json = (args: unknown) => JSON.stringify(args, null, 2);
-/** Raw arguments are bounded in the DOM; copy always receives the complete JSON. */
+const argumentJson = new WeakMap<Record<string, unknown>, string>();
+const json = (args: Record<string, unknown>) => {
+  let value = argumentJson.get(args);
+  if (value === undefined) {
+    value = JSON.stringify(args, null, 2);
+    argumentJson.set(args, value);
+  }
+  return value;
+};
+/** Raw arguments serialize only when visible or copied; copy always receives the complete JSON. */
 export function Arguments({ call, open }: { call: ToolCall; open?: boolean }) {
-  const value = json(call.arguments);
-  const content = <><pre data-part="tool-args">{boundText(value).text}</pre><CopyButton label="arguments" value={value} /></>;
+  const [expanded, setExpanded] = useState(!!open);
+  const value = expanded ? json(call.arguments) : undefined;
+  const content = value === undefined ? null : <><pre data-part="tool-args">{boundText(value).text}</pre><CopyButton label="arguments" value={value} /></>;
   return open ? <div data-part="tool-args-wrap">{content}</div> : (
-    <details data-part="tool-args-details">
+    <details data-part="tool-args-details" onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary>arguments</summary>
       {content}
     </details>

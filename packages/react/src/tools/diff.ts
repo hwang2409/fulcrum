@@ -1,5 +1,5 @@
 export type DiffRow = {
-  change: "hunk" | "context" | "delete" | "insert";
+  change: "hunk" | "notice" | "context" | "delete" | "insert";
   old?: number;
   new?: number;
   text: string;
@@ -26,6 +26,8 @@ export function diffRows(diff: string): DiffRow[] {
       rows.push({ change: "hunk", text: line });
     } else if (!inHunk && /^(---|\+\+\+|diff |index )/.test(line)) {
       continue;
+    } else if (line.startsWith("\\ Line endings changed")) {
+      rows.push({ change: "notice", text: line.slice(2) });
     } else if (line.startsWith("\\")) {
       continue; // "\ No newline at end of file"
     } else if (line.startsWith("-")) {

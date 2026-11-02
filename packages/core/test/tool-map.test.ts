@@ -69,6 +69,11 @@ test("lineDiff writes conventional hunks and preserves final newlines", () => {
 });
 
 const applyDiff = (before: string, diff: string) => {
+  const ending = /^\\ Line endings changed from (CRLF|LF) to (CRLF|LF)(?:\n|$)/.exec(diff);
+  if (ending) {
+    before = ending[1] === "CRLF" ? before.replaceAll("\r\n", "\n") : before;
+    diff = diff.slice(ending[0].length);
+  }
   const old = before === "" ? [] : before.split("\n").map((text) => ({ text, newline: true }));
   if (before.endsWith("\n")) old.pop();
   else if (old.length) old.at(-1)!.newline = false;
@@ -88,24 +93,54 @@ const applyDiff = (before: string, diff: string) => {
     previous = line;
   }
   result.push(...old.slice(oldIndex));
-  return result.map((line) => line.text + (line.newline ? "\n" : "")).join("");
+  const value = result.map((line) => line.text + (line.newline ? "\n" : "")).join("");
+  return ending?.[2] === "CRLF" ? value.replaceAll("\n", "\r\n") : value;
 };
 
-test("lineDiff hunks reconstruct randomized text", () => {
+test("lineDiff hunks reconstruct 5,000 randomized texts", () => {
   let seed = 0x5eed;
   const random = () => ((seed = (seed * 1_664_525 + 1_013_904_223) >>> 0) / 2 ** 32);
-  for (let trial = 0; trial < 250; trial++) {
-    const before = Array.from({ length: Math.floor(random() * 30) }, () => String.fromCharCode(97 + Math.floor(random() * 6)));
+  for (let trial = 0; trial < 5_000; trial++) {
+    const length = trial % 500 === 0 ? 400 : Math.floor(random() * 30);
+    const before = Array.from({ length }, (_, index) => length > 30 ? `unique ${index}` : String.fromCharCode(97 + Math.floor(random() * 6)));
     const after = [...before];
-    for (let edit = 0; edit < 1 + Math.floor(random() * 6); edit++) {
+    const edits = length > 30 ? 80 : 1 + Math.floor(random() * 6);
+    for (let edit = 0; edit < edits; edit++) {
       const at = Math.floor(random() * (after.length + 1));
       if (random() < 0.5 && after.length) after.splice(Math.min(at, after.length - 1), 1);
-      else after.splice(at, 0, String.fromCharCode(97 + Math.floor(random() * 6)));
+      else after.splice(at, 0, `added ${trial} ${edit} ${Math.floor(random() * 6)}`);
     }
     const oldText = before.join("\n") + (before.length && random() < 0.5 ? "\n" : "");
     const newText = after.join("\n") + (after.length && random() < 0.5 ? "\n" : "");
     expect(applyDiff(oldText, lineDiff(oldText, newText))).toBe(newText);
   }
+});
+
+test("lineDiff anchors scattered replacements and moved blocks", () => {
+  const before = Array.from({ length: 3_000 }, (_, index) => `line ${index}`);
+  const after = [...before];
+  for (let index = 5; index < 3_000; index += 10) after[index] = `changed ${index}`;
+  const scattered = lineDiff(`${before.join("\n")}\n`, `${after.join("\n")}\n`);
+  expect(scattered.match(/^@@/gm)).toHaveLength(300);
+  expect(scattered.split("\n").filter((line) => line.startsWith("-"))).toHaveLength(300);
+  expect(applyDiff(`${before.join("\n")}\n`, scattered)).toBe(`${after.join("\n")}\n`);
+
+  const first = Array.from({ length: 500 }, (_, index) => `first ${index}`);
+  const second = Array.from({ length: 500 }, (_, index) => `second ${index}`);
+  const movedBefore = `${[...first, ...second].join("\n")}\n`;
+  const movedAfter = `${[...second, ...first].join("\n")}\n`;
+  const moved = lineDiff(movedBefore, movedAfter);
+  expect(moved.split("\n").filter((line) => line.startsWith("-"))).toHaveLength(500);
+  expect(moved.split("\n").filter((line) => line.startsWith("+"))).toHaveLength(500);
+  expect(applyDiff(movedBefore, moved)).toBe(movedAfter);
+});
+
+test("lineDiff normalizes whole-file line endings with a visible note", () => {
+  const before = `${Array.from({ length: 3_000 }, (_, index) => `line ${index}`).join("\r\n")}\r\n`;
+  const after = before.replaceAll("\r\n", "\n");
+  const diff = lineDiff(before, after);
+  expect(diff).toBe("\\ Line endings changed from CRLF to LF");
+  expect(applyDiff(before, diff)).toBe(after);
 });
 
 test("lineDiff fallback reports every changed line", () => {
@@ -117,15 +152,34 @@ test("lineDiff fallback reports every changed line", () => {
   expect(applyDiff(before, diff)).toBe(after);
 });
 
-test("lineDiff stays fast on a 5,000-line file with two changes", () => {
-  const before = Array.from({ length: 5_000 }, (_, i) => `line ${i}`);
-  const after = [...before];
-  after[20] = "changed near start";
-  after[4_980] = "changed near end";
+test("lineDiff stays bounded on pathological repeated and shuffled lines", () => {
+  const repeated = `${Array.from({ length: 10_000 }, () => "same").join("\n")}\n`;
+  expect(lineDiff(repeated, repeated)).toBe("");
+  const unique = Array.from({ length: 10_000 }, (_, index) => `unique ${index}`);
+  const before = `${unique.join("\n")}\n`;
+  const after = `${unique.reverse().join("\n")}\n`;
   const started = performance.now();
-  const diff = lineDiff(before.join("\n") + "\n", after.join("\n") + "\n");
+  const diff = lineDiff(before, after);
   expect(performance.now() - started).toBeLessThan(100);
-  expect(diff).toContain("-line 20\n+changed near start");
-  expect(diff).toContain("-line 4980\n+changed near end");
-  expect(diff.match(/^@@/gm)).toHaveLength(2);
+  expect(applyDiff(before, diff)).toBe(after);
+});
+
+test("lineDiff stays within a generous CI budget on large sparse edits", () => {
+  const cases: Array<[string[], string[]]> = [];
+  const scatteredBefore = Array.from({ length: 3_000 }, (_, i) => `line ${i}`);
+  const scatteredAfter = [...scatteredBefore];
+  for (let index = 5; index < 3_000; index += 10) scatteredAfter[index] = `changed ${index}`;
+  cases.push([scatteredBefore, scatteredAfter]);
+  const sparseBefore = Array.from({ length: 10_000 }, (_, i) => `line ${i}`);
+  const sparseAfter = [...sparseBefore];
+  sparseAfter[20] = "changed near start";
+  sparseAfter[9_980] = "changed near end";
+  cases.push([sparseBefore, sparseAfter]);
+
+  for (const [before, after] of cases) {
+    const started = performance.now();
+    const diff = lineDiff(`${before.join("\n")}\n`, `${after.join("\n")}\n`);
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(applyDiff(`${before.join("\n")}\n`, diff)).toBe(`${after.join("\n")}\n`);
+  }
 });
