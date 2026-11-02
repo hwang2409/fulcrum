@@ -19,6 +19,13 @@ for (const target of builds) {
   console.log(`${target.name}: ${bytes} bytes gzipped (hard ceiling ${target.ceiling} bytes; accident alarm, not a regression budget)`);
   if (bytes > target.ceiling) failed = true;
 }
+const highlightBuild = Bun.spawnSync(["bun", "run", "--cwd", "packages/highlight", "build"], { stdout: "inherit", stderr: "inherit" });
+if (highlightBuild.exitCode !== 0) process.exit(highlightBuild.exitCode);
+const highlightFiles = [...new Bun.Glob("**/*.js").scanSync("packages/highlight/dist")].sort();
+for (const file of highlightFiles) {
+  const bytes = Bun.gzipSync(await Bun.file(`packages/highlight/dist/${file}`).arrayBuffer()).byteLength;
+  console.log(`highlight/${file}: ${bytes} bytes gzipped (reporting only)`);
+}
 const styles = [
   { name: "react styles.css", file: "packages/react/styles.css", ceiling: 8_000 },
   { name: "react themes.css", file: "packages/react/themes.css", ceiling: 6_000 },

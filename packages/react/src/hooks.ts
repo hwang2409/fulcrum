@@ -13,6 +13,7 @@ export type RunStore = Pick<
   | "getState"
   | "getItem"
   | "getOutline"
+  | "getOutlineSnapshot"
   | "subscribe"
   | "subscribeOutline"
 >;
@@ -75,13 +76,10 @@ export function useItemSelector<T>(
   );
 }
 
-export const useTimeline = () => {
+export const useTimelineSnapshot = () => {
   const store = useStore();
-  return useSyncExternalStore(
-    store.subscribeOutline,
-    store.getOutline,
-    store.getOutline,
-  );
+  return useSyncExternalStore(store.subscribeOutline, store.getOutlineSnapshot, store.getOutlineSnapshot);
 };
 
+export const useTimeline = () => useTimelineSnapshot().items;
 export const useItem = (id: string) => useItemSelector(id, (item) => item);
