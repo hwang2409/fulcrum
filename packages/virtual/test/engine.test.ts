@@ -9,7 +9,7 @@ const items = (sizes: readonly number[], loaded = true): { outline: OutlineItem[
 
 function engine(sizes: readonly number[], viewport = 100, scrollTop = 0, loaded = true) {
   const data = items(sizes, loaded);
-  const virtual = createVirtualizer({ estimateSize: data.estimate });
+  const virtual = createVirtualizer({ estimateSize: data.estimate, bottomThreshold: 0 });
   virtual.setOutline(data.outline);
   virtual.setLoaded(data.loaded);
   virtual.setViewport({ scrollTop, size: viewport, source: "user" });
@@ -108,7 +108,7 @@ describe("anchoring", () => {
     const virtual = engine([10, 10, 10], 10, 12);
     const result = mutate(virtual, () => virtual.measure("row-0", 20));
     expect(result.correction).toBeCloseTo(10, 8);
-    expect(virtual.beforeMutation().anchor!.offset).toBeCloseTo(8, 8);
+    expect(virtual.beforeMutation().anchor!.offset).toBeCloseTo(-2, 8);
   });
   test("a height change at the anchor does not move its top", () => {
     const virtual = engine([10, 10, 10], 10, 12);
