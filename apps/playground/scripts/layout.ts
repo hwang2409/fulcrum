@@ -109,6 +109,60 @@ try {
     await Bun.sleep(100);
   }
   browser = await chromium.launch();
+  const replay = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  await replay.addInitScript(() => {
+    const request = window.requestAnimationFrame.bind(window);
+    (window as typeof window & { __rafRequests: number }).__rafRequests = 0;
+    window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      (window as typeof window & { __rafRequests: number }).__rafRequests++;
+      return request(callback);
+    }) as typeof window.requestAnimationFrame;
+  });
+  const pageErrors: string[] = [];
+  replay.on("pageerror", (error) => pageErrors.push(error.message));
+  await replay.goto(`http://127.0.0.1:${port}/`);
+  await replay.selectOption("#mode", "zeta:unknown.jsonl");
+  await replay.locator("#rate").fill("200");
+  await replay.waitForFunction(() => Number(document.querySelector(".mode span")?.textContent?.match(/lap (\d+)/)?.[1] ?? 0) >= 9);
+  const rotation = await replay.evaluate(() => ({
+    mounted: Boolean(document.querySelector('[data-part="timeline"]')),
+    items: Number(document.querySelector('[data-testid="readout"]')?.textContent?.match(/· (\d+) items/)?.[1] ?? -1),
+  }));
+  if (!rotation.mounted || rotation.items < 0 || rotation.items > 8 || pageErrors.length)
+    failures.push(`lap-9 rotation: mounted=${rotation.mounted}, items=${rotation.items}, errors=${pageErrors.join("; ") || "none"}`);
+  else console.log(`ok   lap-9 rotation: mounted, ${rotation.items} bounded items, no page errors`);
+
+  await replay.selectOption("#mode", "stress");
+  await replay.waitForFunction(() => document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize") === "5000");
+  await replay.selectOption("#mode", "static:100000");
+  await replay.waitForFunction(() => document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize") === "100000");
+  await replay.evaluate(() => {
+    const scroll = document.querySelector<HTMLElement>(".scroll")!;
+    scroll.scrollTop = 0;
+    scroll.dispatchEvent(new Event("scroll"));
+    const mode = document.querySelector<HTMLSelectElement>("#mode")!;
+    mode.append(new Option("test static 201", "static:201"));
+    mode.value = "static:201";
+    mode.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await replay.waitForFunction(() => document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize") === "201");
+  await replay.waitForTimeout(250);
+  const swap = await replay.evaluate(() => {
+    const scroll = document.querySelector<HTMLElement>(".scroll")!;
+    return { scrollTop: scroll.scrollTop, maxScroll: scroll.scrollHeight - scroll.clientHeight };
+  });
+  if (Math.abs(swap.scrollTop - swap.maxScroll) > 1 || pageErrors.length)
+    failures.push(`active-scroll store swap: scrollTop=${swap.scrollTop}, maxScroll=${swap.maxScroll}, errors=${pageErrors.join("; ") || "none"}`);
+  else console.log(`ok   active-scroll store swap: scrollTop ${swap.scrollTop}, maxScroll ${swap.maxScroll}`);
+
+  await replay.waitForTimeout(500);
+  const rafBefore = await replay.evaluate(() => (window as typeof window & { __rafRequests: number }).__rafRequests);
+  await replay.waitForTimeout(500);
+  const rafAfter = await replay.evaluate(() => (window as typeof window & { __rafRequests: number }).__rafRequests);
+  if (rafAfter !== rafBefore) failures.push(`static idle scheduled ${rafAfter - rafBefore} rAF callback(s)`);
+  else console.log("ok   static idle scheduled 0 rAF callbacks over 500 ms");
+  await replay.close();
+
   let themes: string[] = [];
   for (const width of widths) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });

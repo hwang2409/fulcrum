@@ -84,7 +84,7 @@ test("outline snapshots describe batched appends and structural deletion", () =>
   expect(store.getOutlineSnapshot()).toMatchObject({ change: null });
 });
 
-test("dispose publishes once, drops pending chunks, and rejects dispatch", () => {
+test("dispose stops notifications, drops pending chunks, and rejects dispatch", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));
   let calls = 0;
@@ -93,7 +93,7 @@ test("dispose publishes once, drops pending chunks, and rejects dispatch", () =>
   store.dispose();
   jobs.shift()!();
 
-  expect(calls).toBe(1);
+  expect(calls).toBe(0);
   expect(store.getItem("message:a")).toBeUndefined();
   expect(() => store.dispatch({ type: "message_delta", message_id: "a", delta: "late" })).toThrow(
     "store is disposed",

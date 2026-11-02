@@ -369,7 +369,14 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
   const { items, change } = useTimelineSnapshot();
   const enabled = virtual ?? items.length > 200;
   const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change, resetKey: store });
-  useLayoutEffect(() => { if (enabled) list.scrollToEnd(); }, [enabled, list.scrollToEnd]);
+  const initialScroll = useRef(enabled);
+  useLayoutEffect(() => {
+    if (!enabled) initialScroll.current = true;
+    else if (initialScroll.current && list.snapshot.totalSize > 0) {
+      initialScroll.current = false;
+      list.scrollToEnd();
+    }
+  }, [enabled, list.scrollToEnd, list.snapshot.totalSize]);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const plainRef = useRef<HTMLDivElement>(null);
   const priorMode = useRef(enabled);

@@ -38,9 +38,10 @@ const fixtures = Object.fromEntries(Object.entries(fixtureSources).flatMap(([sou
   Object.entries(sourceFixtures).map(([name, events]) => [`${source}:${name}`, events]),
 ));
 const STRESS = "stress";
-const HUGE = "huge";
+const STATIC = "static:";
 const STRESS_MESSAGES = Number(new URLSearchParams(location.search).get("stressMessages")) || 5000;
 const HUGE_MESSAGES = 100_000;
+const HUGE = `${STATIC}${HUGE_MESSAGES}`;
 const STRESS_RATE = 200;
 const REPLAY_STORE_LAPS = 8;
 
@@ -121,8 +122,8 @@ function useReplay(mode: string, speed: number, run: number) {
     let active = next;
     let nextEvent: () => RunEvent | undefined;
     let stress = false;
-    if (mode === HUGE) {
-      const fixed = staticStore(HUGE_MESSAGES);
+    if (mode.startsWith(STATIC)) {
+      const fixed = staticStore(Number(mode.slice(STATIC.length)));
       setStore(fixed);
       dispatched = 0;
       setPhase("static");
@@ -145,10 +146,8 @@ function useReplay(mode: string, speed: number, run: number) {
         if (!events.length) return undefined;
         lap = Math.floor(i / events.length);
         if (lap > 0 && lap % REPLAY_STORE_LAPS === 0 && i % events.length === 0) {
-          const retired = active;
           active = createRunStore();
           setStore(active);
-          retired.dispose();
         }
         return relabel(events[i++ % events.length]!, lap);
       };
@@ -181,6 +180,12 @@ function useReplay(mode: string, speed: number, run: number) {
       continueReplay = () => {};
     };
   }, [mode, run]);
+  const committedStore = useRef(store);
+  useEffect(() => {
+    const retired = committedStore.current;
+    committedStore.current = store;
+    if (retired !== store) retired.dispose();
+  }, [store]);
   return store;
 }
 
@@ -302,7 +307,7 @@ function App() {
   const scroll = useRef<HTMLDivElement>(null);
   if (import.meta.env.DEV && live) return <Live />;
   const rate = mode === STRESS ? STRESS_RATE : speed;
-  const label = mode === STRESS ? "stress" : mode === HUGE ? "static" : "replay";
+  const label = mode === STRESS ? "stress" : mode.startsWith(STATIC) ? "static" : "replay";
   return (
     <RunProvider store={store}>
       <Shell page="playground">
@@ -330,8 +335,8 @@ function App() {
           </label>
           <span className="field">
             <label htmlFor="rate">events/s</label>
-            <input id="rate" type="range" min={1} max={200} value={rate} disabled={mode === STRESS || mode === HUGE} aria-valuetext={`${rate} events per second`} onChange={(e) => setSpeed(Number(e.target.value))} />
-            <output htmlFor="rate">{mode === HUGE ? "-" : rate}</output>
+            <input id="rate" type="range" min={1} max={200} value={rate} disabled={mode === STRESS || mode.startsWith(STATIC)} aria-valuetext={`${rate} events per second`} onChange={(e) => setSpeed(Number(e.target.value))} />
+            <output htmlFor="rate">{mode.startsWith(STATIC) ? "-" : rate}</output>
           </span>
           <div className="group">
             <button type="button" onClick={() => setRun(run + 1)}>restart</button>

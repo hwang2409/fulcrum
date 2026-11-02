@@ -74,9 +74,14 @@ export function useVirtualList<Id extends string>(
       engine.reset();
     }
     if (appliedOutline.current !== outline) {
+      const priorLength = appliedOutline.current?.length;
       appliedOutline.current = outline;
       const token = engine.beforeMutation();
-      engine.setOutline(outline, resetPending ? undefined : options.outlineUpdate ?? undefined);
+      const update = options.outlineUpdate;
+      const validUpdate = !resetPending && update && priorLength !== undefined && outline.length === priorLength + update.count
+        ? update
+        : undefined;
+      engine.setOutline(outline, validUpdate);
       engine.setLoaded("all");
       if (initial.current) initial.current = false;
       else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
@@ -120,10 +125,17 @@ export function useVirtualList<Id extends string>(
       if (Math.abs(result.jump) >= 0.5) container.scrollTop = result.scrollTop;
     };
     const onScroll = () => {
+      const before = engine.getSnapshot();
+      if (before.programmatic) {
+        lastScrollTop.current = container.scrollTop;
+        if (Math.abs(container.scrollTop - before.scrollTop) < 0.5)
+          engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
+        else container.scrollTop = before.scrollTop;
+        return;
+      }
       if (container.scrollTop < lastScrollTop.current) engine.setFollow(false);
       lastScrollTop.current = container.scrollTop;
       engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
-      if (engine.getSnapshot().programmatic) return;
       if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
       scrollEndTimer.current = setTimeout(finishScroll, 150);
     };
