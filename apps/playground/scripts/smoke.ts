@@ -39,7 +39,7 @@ try {
       }
       if (path === "/") {
         await page.getByLabel("source").selectOption("demo");
-        const code = page.locator('[data-part="md-code-block"] code');
+        const code = page.locator('[data-part="md-code-block"] code').first();
         await code.waitFor();
         await code.locator('[class^="tok-"]').first().waitFor({ timeout: 10_000 });
       }
