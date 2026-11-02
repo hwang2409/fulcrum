@@ -334,7 +334,7 @@ export const demos: Demo[] = [
   },
 ];
 
-const viewerFixture = new URLSearchParams(location.search).get("viewerFixture");
+const viewerFixture = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("viewerFixture");
 if (viewerFixture === "single" || viewerFixture === "lines") {
   const fixture = viewerFixture === "single" ? "x".repeat(2_000_000) : "x\n".repeat(1_000_000);
   const tool = call("viewer-check", "bash", { command: "stream fixture" });
