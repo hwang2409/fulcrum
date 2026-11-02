@@ -1,0 +1,15 @@
+.tok-keyword { color: var(--fulcrum-tok-keyword, inherit); }
+.tok-string { color: var(--fulcrum-tok-string, inherit); }
+.tok-number { color: var(--fulcrum-tok-number, inherit); }
+.tok-comment { color: var(--fulcrum-tok-comment, inherit); }
+.tok-function { color: var(--fulcrum-tok-function, inherit); }
+.tok-type { color: var(--fulcrum-tok-type, inherit); }
+.tok-variable { color: var(--fulcrum-tok-variable, inherit); }
+.tok-constant { color: var(--fulcrum-tok-constant, inherit); }
+.tok-operator { color: var(--fulcrum-tok-operator, inherit); }
+.tok-punctuation { color: var(--fulcrum-tok-punctuation, inherit); }
+.tok-tag { color: var(--fulcrum-tok-tag, inherit); }
+.tok-attribute { color: var(--fulcrum-tok-attribute, inherit); }
+.tok-regexp { color: var(--fulcrum-tok-regexp, inherit); }
+.tok-inserted { color: var(--fulcrum-tok-inserted, inherit); }
+.tok-deleted { color: var(--fulcrum-tok-deleted, inherit); }
