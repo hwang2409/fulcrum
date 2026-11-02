@@ -10,4 +10,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bunx tsc -b
       - run: bun test
+      - run: bun run bench:check
+      - run: bun run size:check
       - run: bun run --cwd apps/playground build
