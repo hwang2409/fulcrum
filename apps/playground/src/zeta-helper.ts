@@ -7,12 +7,14 @@ export type Discovery = { url: string; token: string };
 
 export function createZetaDiscoveryHandler(
   file = join(process.env.ZETA_HOME || join(homedir(), ".zeta"), "run", "serve.ws.json"),
-  origin = "http://localhost:5173",
+  port: number | string | (() => number | undefined) = 5173,
 ) {
   return async (req: IncomingMessage, res: ServerResponse) => {
+    const actualPort = typeof port === "function" ? port() : typeof port === "string" ? new URL(port).port : port;
     const host = req.headers.host;
-    const expected = new URL(origin);
-    if ((!host || !new Set([`localhost:${expected.port}`, `127.0.0.1:${expected.port}`]).has(host)) || req.headers["sec-fetch-site"] !== "same-origin" || (req.headers.origin && req.headers.origin !== origin)) {
+    const hosts = new Set([`localhost:${actualPort}`, `127.0.0.1:${actualPort}`]);
+    const origins = new Set([`http://localhost:${actualPort}`, `http://127.0.0.1:${actualPort}`]);
+    if ((!actualPort || !host || !hosts.has(host)) || req.headers["sec-fetch-site"] !== "same-origin" || (req.headers.origin && !origins.has(req.headers.origin))) {
       res.statusCode = 404;
       res.end();
       return;
@@ -34,10 +36,11 @@ export function zetaDiscoveryPlugin() {
   return {
     name: "fulcrum-zeta-discovery",
     apply: "serve" as const,
-    configureServer(server: { middlewares: { use: (path: string, handler: (req: IncomingMessage, res: ServerResponse) => void) => void }; config: { server: { port?: number }; logger: { info: (message: string) => void } } }) {
-      const port = server.config.server.port || 5173;
-      const origin = `http://localhost:${port}`;
-      const handler = createZetaDiscoveryHandler(undefined, origin);
+    configureServer(server: { httpServer?: { address: () => { port: number } | string | null }; middlewares: { use: (path: string, handler: (req: IncomingMessage, res: ServerResponse) => void) => void } }) {
+      const handler = createZetaDiscoveryHandler(undefined, () => {
+        const address = server.httpServer?.address();
+        return address && typeof address === "object" ? address.port : undefined;
+      });
       server.middlewares.use("/__fulcrum/zeta", (req, res) => void handler(req, res));
     },
   };

@@ -6,5 +6,6 @@ const page = (file: string) => fileURLToPath(new URL(file, import.meta.url));
 
 export default defineConfig({
   plugins: [zetaDiscoveryPlugin()],
+  server: { cors: false },
   build: { rolldownOptions: { input: { main: page("index.html"), gallery: page("gallery.html") } } },
 });

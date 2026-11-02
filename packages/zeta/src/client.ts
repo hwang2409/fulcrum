@@ -90,6 +90,7 @@ export function createClient(
   return {
     store,
     stores,
+    forSession,
     request,
     hello,
     get features() {
