@@ -43,13 +43,13 @@
   animation: folio-breathe 1.4s ease-in-out infinite;
 }
 
-/* Margin notes: a status mark, the call, then indented output. */
+/* Margin notes: the call, a status word, then indented output. */
 [data-part=tool],
 [data-part=approval] {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   column-gap: 12px;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.65;
   color: var(--fulcrum-muted);
 }
@@ -65,6 +65,9 @@
   border-radius: 50%;
 }
 [data-part=tool-args] { max-height: 6.6em; overflow: auto; }
+[data-part=tool]::after { grid-area: 1 / 3; color: var(--fulcrum-ok); font-weight: 700; content: "done"; }
+[data-part=tool][data-state=streaming]::after { color: var(--fulcrum-accent); content: "running"; }
+[data-part=tool][data-state=error]::after { color: var(--fulcrum-danger); content: "failed"; }
 [data-part=tool-output] {
   grid-column: 1 / -1;
   display: flex;
@@ -81,11 +84,13 @@
   background: var(--fulcrum-accent);
   animation: folio-breathe 1.4s ease-in-out infinite;
 }
-[data-part=tool][data-state=done] > [data-part=tool-name]::before { background: var(--fulcrum-muted); }
+[data-part=tool][data-state=done] > [data-part=tool-name]::before { border-color: var(--fulcrum-ok); background: var(--fulcrum-ok); }
+[data-part=tool][data-state=error] { margin-left: -16px; padding: 10px 16px 12px 14px; border-left: 2px solid var(--fulcrum-danger); background: color-mix(in srgb, var(--fulcrum-danger) 7%, transparent); }
 [data-part=tool][data-state=error] > [data-part=tool-name] { color: var(--fulcrum-danger); }
 [data-part=tool][data-state=error] > [data-part=tool-name]::before { border-color: var(--fulcrum-danger); background: var(--fulcrum-danger); }
 [data-part=tool][data-state=error] > [data-part=tool-output] { border-color: var(--fulcrum-danger); color: var(--fulcrum-danger); }
 [data-part=tool][data-state=canceled] > [data-part=tool-name] { text-decoration: line-through; }
+[data-part=tool][data-state=canceled]::after { color: var(--fulcrum-muted); content: "canceled"; }
 
 /* The one loud moment: a request that waits for the reader. */
 [data-part=approval] { display: flex; flex-wrap: wrap; }
@@ -94,16 +99,18 @@
 [data-part=approval]::after { content: ""; flex-basis: 100%; order: 1; }
 [data-part=approval][data-state=pending] {
   padding: 16px 20px 18px;
-  border-left: 2px solid var(--fulcrum-accent);
-  background: var(--fulcrum-surface);
+  border: 1px solid var(--fulcrum-warn);
+  border-left-width: 4px;
+  background: color-mix(in srgb, var(--fulcrum-warn) 9%, var(--fulcrum-bg));
 }
 [data-part=approval]::before { flex-basis: 100%; margin-bottom: 4px; content: "approval resolved"; }
-[data-part=approval][data-state=pending]::before { content: "waiting for your approval"; color: var(--fulcrum-accent); font-weight: 700; }
+[data-part=approval][data-state=pending]::before { content: "\25B2  needs your approval"; color: var(--fulcrum-warn); font-weight: 700; letter-spacing: 0.02em; }
 [data-part=approval][data-state=done] { opacity: 0.7; }
 [data-part=approval] button {
   order: 2;
+  min-height: 32px;
   margin: 14px 8px 0 0;
-  padding: 6px 16px;
+  padding: 0 18px;
   border: 1px solid var(--fulcrum-border);
   border-radius: var(--fulcrum-radius);
   background: var(--fulcrum-bg);

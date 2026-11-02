@@ -53,7 +53,17 @@
 /* One line per call; hover shows all arguments. */
 [data-part=tool-args] { color: var(--fulcrum-muted); white-space: nowrap !important; overflow: hidden; text-overflow: ellipsis; }
 [data-part=tool]:hover > [data-part=tool-args] { white-space: pre-wrap !important; }
-[data-part=tool]::after { grid-area: 1 / 3; font-size: 11.5px; color: var(--rail); content: "ok"; }
+/* Status badge in the rail color: done, running, failed. */
+[data-part=tool]::after {
+  grid-area: 1 / 3;
+  align-self: center;
+  padding: 0 7px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--rail) 16%, transparent);
+  color: var(--rail);
+  font: 700 11px/1.7 var(--fulcrum-mono);
+  content: "done";
+}
 [data-part=tool-output] {
   grid-column: 1 / -1;
   display: flex;
@@ -80,8 +90,8 @@
   background: var(--fulcrum-accent);
   animation: trace-scan 1.2s linear infinite;
 }
-[data-part=tool][data-state=error] { --rail: var(--fulcrum-danger); background: var(--trace-error-bg); }
-[data-part=tool][data-state=error]::after { content: "failed"; font-weight: 700; }
+[data-part=tool][data-state=error] { --rail: var(--fulcrum-danger); border-left-width: 4px; background: var(--trace-error-bg); }
+[data-part=tool][data-state=error]::after { content: "failed"; background: var(--rail); color: var(--fulcrum-bg); }
 [data-part=tool][data-state=canceled] { --rail: var(--fulcrum-muted); }
 [data-part=tool][data-state=canceled]::after { content: "canceled"; }
 
@@ -91,7 +101,7 @@
   --rail: var(--fulcrum-warn);
   padding: 0 10px 8px;
   border: 1px solid var(--rail);
-  border-left-width: 2px;
+  border-left-width: 4px;
   background: color-mix(in srgb, var(--fulcrum-warn) 10%, var(--fulcrum-surface));
 }
 /* Hazard band: the run waits on you. */
@@ -99,19 +109,21 @@
   margin: 0 -10px 6px;
   padding: 4px 10px 3px;
   background: repeating-linear-gradient(-45deg, color-mix(in srgb, var(--rail) 22%, transparent) 0 6px, transparent 6px 12px);
+  color: var(--fulcrum-fg);
   font-weight: 700;
-  content: "awaiting approval: run is paused";
+  content: "needs your approval: run is paused";
 }
 [data-part=approval] > [data-part=tool-args] { grid-column: 2 / -1; }
 [data-part=approval] button {
   grid-row: 3;
+  min-height: 32px;
   margin-top: 8px;
-  padding: 3px 12px;
+  padding: 0 14px;
   border: 1px solid var(--fulcrum-border);
   border-radius: var(--fulcrum-radius);
   background: var(--fulcrum-bg);
   color: inherit;
-  font: 600 11.5px var(--fulcrum-mono);
+  font: 600 12px var(--fulcrum-mono);
   cursor: pointer;
 }
 [data-part=approval] button[data-action=approve] { border-color: var(--rail); background: var(--rail); color: var(--fulcrum-on-accent, var(--fulcrum-bg)); }

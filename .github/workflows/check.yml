@@ -13,3 +13,5 @@ jobs:
       - run: bun run bench:check
       - run: bun run size:check
       - run: bun run --cwd apps/playground build
+      - run: cd apps/playground && bunx playwright install --with-deps chromium
+      - run: bun run --cwd apps/playground layout

@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -p . && vite build",
-    "stress": "bun scripts/stress.ts"
+    "stress": "bun scripts/stress.ts",
+    "layout": "bun scripts/layout.ts"
   },
   "dependencies": {
     "@fulcrum/core": "workspace:*",

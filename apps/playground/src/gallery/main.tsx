@@ -1,5 +1,5 @@
 import "../fonts.css";
-import current from "@fulcrum/react/styles.css?inline";
+import baseline from "@fulcrum/react/styles.css?inline";
 import folio from "./directions/folio.css?inline";
 import trace from "./directions/trace.css?inline";
 import pebble from "./directions/pebble.css?inline";
@@ -27,7 +27,7 @@ const fresh = (demo: Demo) => {
 
 // Candidate replacements for styles.css (shape, density, motion). Themes (color) apply on top of any of them.
 const directions: Record<string, { css: string; note: string }> = {
-  current: { css: current, note: "The shipped styles.css: system type and bordered boxes, for comparison." },
+  baseline: { css: baseline, note: "The shipped styles.css, unchanged: system type and bordered boxes. Compare the others against it." },
   folio: { css: folio, note: "Quiet and editorial. Calm prose, tools as margin notes, color only where the run needs you." },
   trace: { css: trace, note: "Dense and technical. One-line tool rows, a status rail, terminal output, a hazard band on approvals." },
   pebble: { css: pebble, note: "Soft product UI. Chat bubbles, rounded cards, a sweep while tools run, a halo on approvals." },
@@ -55,7 +55,7 @@ function attributes(root: HTMLElement) {
   return [...new Set(lines)].join("\n");
 }
 
-function DemoCard({ demo, toast }: { demo: Demo; toast: (message: string) => void }) {
+function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: string) => void; inspect: boolean }) {
   const [store, setStore] = useState(() => fresh(demo));
   const [paused, setPaused] = useState(reducedMotion);
   const [touched, setTouched] = useState(false);
@@ -84,13 +84,14 @@ function DemoCard({ demo, toast }: { demo: Demo; toast: (message: string) => voi
   }, [store, paused]);
 
   useEffect(() => {
+    if (!inspect) return;
     const root = body.current!;
     const read = () => setCaption(attributes(root));
     read();
     const observer = new MutationObserver(read);
     observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-state"] });
     return () => observer.disconnect();
-  }, []);
+  }, [inspect]);
 
   return (
     <article className="demo" id={demo.id}>
@@ -122,7 +123,7 @@ function DemoCard({ demo, toast }: { demo: Demo; toast: (message: string) => voi
           </RunProvider>
         </ActContext.Provider>
       </div>
-      <pre className="demo-attrs" aria-label="rendered data attributes">{caption}</pre>
+      {inspect ? <pre className="demo-attrs" aria-label="rendered data attributes">{caption}</pre> : null}
     </article>
   );
 }
@@ -146,7 +147,7 @@ function ThemePicker({ value, onChange }: { value: string; onChange: (value: str
   return (
     <div className="swatches" role="radiogroup" aria-label="theme">
       {themeNames.map((name) => (
-        <button key={name} type="button" role="radio" aria-checked={name === value} title={name} onClick={() => onChange(name)}>
+        <button key={name} type="button" role="radio" aria-checked={name === value} onClick={() => onChange(name)}>
           <span className="swatch" data-fulcrum-theme={name} />
           <span className="swatch-name">{name}</span>
         </button>
@@ -175,7 +176,8 @@ function useActive(ids: string[]) {
 
 function Gallery() {
   const [theme, setTheme] = useState(() => param("theme", themeNames, systemTheme));
-  const [direction, setDirection] = useState(() => param("direction", Object.keys(directions), "current"));
+  const [direction, setDirection] = useState(() => param("direction", Object.keys(directions), "baseline"));
+  const [inspect, setInspect] = useState(() => new URLSearchParams(location.search).get("inspect") === "1");
   const [message, setMessage] = useState<{ text: string; key: number }>();
   const active = useActive(demos.map((demo) => demo.id));
   useLayoutEffect(() => {
@@ -184,8 +186,10 @@ function Gallery() {
     const url = new URL(location.href);
     url.searchParams.set("direction", direction);
     url.searchParams.set("theme", theme);
+    if (inspect) url.searchParams.set("inspect", "1");
+    else url.searchParams.delete("inspect");
     history.replaceState(null, "", url);
-  }, [theme, direction]);
+  }, [theme, direction, inspect]);
   // The page renders after load, so the browser cannot jump to a #demo link by itself.
   useEffect(() => document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(), []);
   useEffect(() => {
@@ -206,6 +210,9 @@ function Gallery() {
         <div className="controls">
           <Segmented label="direction" value={direction} options={Object.keys(directions)} onChange={setDirection} />
           <ThemePicker value={theme} onChange={setTheme} />
+          <button type="button" className="inspect" aria-pressed={inspect} onClick={() => setInspect(!inspect)}>
+            inspect
+          </button>
         </div>
       </header>
       <nav className="nav" aria-label="components">
@@ -229,7 +236,8 @@ function Gallery() {
           <h1>Agent UI parts, in every state.</h1>
           <p>
             Every <code>@fulcrum/react</code> part, rendered from <code>@fulcrum/core</code> events. No server, no
-            session. {parts.length} parts, {demos.length} demos.
+            session. {parts.length} parts, {demos.length} demos. Turn on <strong>inspect</strong> to see the{" "}
+            <code>data-*</code> attributes each part renders.
           </p>
           <p className="direction-note" key={direction}>
             <strong>{direction}</strong> {directions[direction].note}
@@ -243,7 +251,7 @@ function Gallery() {
             {demos
               .filter((demo) => demo.part === part)
               .map((demo) => (
-                <DemoCard key={demo.id} demo={demo} toast={toast} />
+                <DemoCard key={demo.id} demo={demo} toast={toast} inspect={inspect} />
               ))}
           </section>
         ))}
