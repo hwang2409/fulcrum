@@ -1,7 +1,7 @@
 import { createRunStore } from "../packages/core/src/index.js";
 
 const absoluteBudget = Number(process.env.CI ? 250 : 50);
-const scalingBudget = 3;
+const scalingBudget = 4;
 const runs = 5;
 
 function run(seedCount: number) {
