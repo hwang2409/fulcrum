@@ -35,16 +35,19 @@ function useSelected<S, T>(
   selector: (state: S) => T,
   equal: (left: T, right: T) => boolean,
 ): T {
-  const cache = useRef<{ source: S; value: T } | undefined>(undefined);
+  const cache = useRef<
+    { source: S; selector: (state: S) => T; value: T } | undefined
+  >(undefined);
   const snapshot = () => {
     const source = read();
-    if (cache.current?.source === source) return cache.current.value;
+    if (cache.current?.source === source && cache.current.selector === selector)
+      return cache.current.value;
     const value = selector(source);
     if (cache.current && equal(cache.current.value, value)) {
-      cache.current.source = source;
+      cache.current = { source, selector, value: cache.current.value };
       return cache.current.value;
     }
-    cache.current = { source, value };
+    cache.current = { source, selector, value };
     return value;
   };
   return useSyncExternalStore(subscribe, snapshot, snapshot);

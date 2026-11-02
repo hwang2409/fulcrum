@@ -11,9 +11,7 @@ export interface OutlineItem {
 
 export interface RunState {
   turns: string[];
-  items: string[];
   outline: readonly OutlineItem[];
-  itemsById: Record<string, RunItem>;
   usage: Record<string, number>;
   agent: "idle" | "running";
   turn: "idle" | "running";
@@ -26,9 +24,7 @@ export interface RunState {
 
 export const initialState: RunState = {
   turns: [],
-  items: [],
   outline: [],
-  itemsById: {},
   usage: {},
   agent: "idle",
   turn: "idle",
@@ -57,9 +53,7 @@ export function reduceAllWithEntities(
 
   const next: RunState = {
     turns: state.turns,
-    items: state.items,
     outline: state.outline,
-    itemsById: {},
     usage: state.usage,
     agent: state.agent,
     turn: state.turn,
@@ -73,12 +67,10 @@ export function reduceAllWithEntities(
   const setItem = (item: RunItem) => entities.set(item);
   const appendItem = (item: RunItem) => {
     setItem(item);
-    next.items = [...next.items, item.id];
     next.outline = [...next.outline, { id: item.id, kind: item.type }];
   };
   const deleteItem = (id: string) => {
     entities.delete(id);
-    next.items = next.items.filter((candidate) => candidate !== id);
     next.outline = next.outline.filter((candidate) => candidate.id !== id);
   };
   const setToolActive = (id: string, active: boolean) => {
@@ -169,7 +161,6 @@ export function reduceAllWithEntities(
         );
         setItem(item);
         if (!prior) {
-          next.items = [...next.items, itemId];
           next.outline = [...next.outline, { id: itemId, kind: "message" }];
           next.nextId += 1;
         }
@@ -194,7 +185,6 @@ export function reduceAllWithEntities(
           active: false,
         });
         if (!prior) {
-          next.items = [...next.items, itemId];
           next.outline = [...next.outline, { id: itemId, kind: "message" }];
           next.nextId += 1;
         }
@@ -323,41 +313,4 @@ export function reduceAllWithEntities(
     }
   }
   return next;
-}
-
-type EntitySource = { get(id: string): RunItem | undefined };
-const entitySources = new WeakMap<RunState, EntitySource>();
-
-export function reduceAll(state: RunState, events: RunEvent[]): RunState {
-  if (events.length === 0) return state;
-  const source =
-    entitySources.get(state) ??
-    ({ get: (id: string) => state.itemsById[id] } satisfies EntitySource);
-  const changes = new Map<string, RunItem | undefined>();
-  const get = (id: string) =>
-    changes.has(id) ? changes.get(id) : source.get(id);
-  const next = reduceAllWithEntities(state, events, {
-    get,
-    set: (item) => changes.set(item.id, item),
-    delete: (id) => changes.set(id, undefined),
-  });
-  let materialized: Record<string, RunItem> | undefined;
-  Object.defineProperty(next, "itemsById", {
-    enumerable: true,
-    get() {
-      if (materialized) return materialized;
-      materialized = {};
-      for (const { id } of next.outline) {
-        const item = get(id);
-        if (item) materialized[id] = item;
-      }
-      return materialized;
-    },
-  });
-  entitySources.set(next, { get });
-  return next;
-}
-
-export function reduce(state: RunState, event: RunEvent): RunState {
-  return reduceAll(state, [event]);
 }

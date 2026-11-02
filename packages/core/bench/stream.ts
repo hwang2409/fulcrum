@@ -1,7 +1,7 @@
 import { createRunStore } from "../src/index.js";
 
 function run(seedCount: number) {
-  const store = createRunStore(undefined, () => {});
+  const store = createRunStore(() => {});
   for (let i = 0; i < seedCount; i++) {
     store.dispatch({
       type: "message_commit",

@@ -5,7 +5,7 @@ const scalingBudget = 4;
 const runs = 5;
 
 function run(seedCount: number) {
-  const store = createRunStore(undefined, () => {});
+  const store = createRunStore(() => {});
   for (let i = 0; i < seedCount; i++) {
     store.dispatch({ type: "message_commit", message_id: `seed-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
   }
@@ -17,8 +17,8 @@ function run(seedCount: number) {
     if (i % 800 === 799) store.getState();
   }
   const elapsed = performance.now() - start;
-  const state = store.getState();
-  const item = state.itemsById[streamId];
+  store.getState();
+  const item = store.getItem(streamId);
   if (item?.type !== "message" || item.text?.length !== 5_000_000) throw new Error("invalid stream result");
   return elapsed;
 }

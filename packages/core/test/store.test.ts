@@ -8,7 +8,7 @@ const message = (text: string) => ({
 
 test("100 dispatches in one burst notify subscribers exactly once", () => {
   const jobs: Array<() => void> = [];
-  const store = createRunStore(undefined, (job) => jobs.push(job));
+  const store = createRunStore((job) => jobs.push(job));
   let calls = 0;
   store.subscribe(() => calls++);
 
@@ -22,7 +22,7 @@ test("100 dispatches in one burst notify subscribers exactly once", () => {
 
 test("one delta notifies only its keyed subscriber", () => {
   const jobs: Array<() => void> = [];
-  const store = createRunStore(undefined, (job) => jobs.push(job));
+  const store = createRunStore((job) => jobs.push(job));
   store.dispatch({ type: "message_commit", message_id: "a", message: message("a") });
   store.dispatch({ type: "message_commit", message_id: "b", message: message("b") });
   jobs.shift()!();
@@ -44,14 +44,13 @@ test("one delta notifies only its keyed subscriber", () => {
   expect(b).toBe(0);
   expect(outline).toBe(0);
   expect(store.getOutline()).toBe(before.outline);
-  expect(store.getState().items).toBe(before.items);
   expect(store.getItem("message:a")).not.toBe(aItem);
   expect(store.getItem("message:b")).toBe(bItem);
 });
 
 test("outline changes only when membership changes", () => {
   const jobs: Array<() => void> = [];
-  const store = createRunStore(undefined, (job) => jobs.push(job));
+  const store = createRunStore((job) => jobs.push(job));
   const empty = store.getOutline();
   store.dispatch({ type: "message_delta", message_id: "a", delta: "a" });
   jobs.shift()!();
@@ -64,16 +63,16 @@ test("outline changes only when membership changes", () => {
   expect(store.getOutline()).toBe(added);
 });
 
-test("dispose drops subscribers, pending chunks, and rejects dispatch", () => {
+test("dispose publishes once, drops pending chunks, and rejects dispatch", () => {
   const jobs: Array<() => void> = [];
-  const store = createRunStore(undefined, (job) => jobs.push(job));
+  const store = createRunStore((job) => jobs.push(job));
   let calls = 0;
   store.subscribe("message:a", () => calls++);
   store.dispatch({ type: "message_delta", message_id: "a", delta: "queued" });
   store.dispose();
   jobs.shift()!();
 
-  expect(calls).toBe(0);
+  expect(calls).toBe(1);
   expect(store.getItem("message:a")).toBeUndefined();
   expect(() => store.dispatch({ type: "message_delta", message_id: "a", delta: "late" })).toThrow(
     "store is disposed",

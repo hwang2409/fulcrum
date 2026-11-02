@@ -12,7 +12,7 @@ test(
   () => {
     Bun.gc(true);
     const baseline = heapStats().heapSize;
-    const store = createRunStore(undefined, () => {});
+    const store = createRunStore(() => {});
 
     for (let i = 0; i < DELTAS; i++) {
       store.dispatch({

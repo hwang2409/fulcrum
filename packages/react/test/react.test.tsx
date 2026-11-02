@@ -26,7 +26,7 @@ const call = (id: string, name: string) => ({ id, name, arguments: {} });
 
 function setup(events: RunEvent[]) {
   const jobs: Array<() => void> = [];
-  const store = createRunStore(undefined, (job) => jobs.push(job));
+  const store = createRunStore((job) => jobs.push(job));
   const send = (...more: RunEvent[]) =>
     act(() => {
       more.forEach(store.dispatch);
@@ -89,7 +89,7 @@ test("a delta re-renders only the streaming item", async () => {
   expect(commits["message:b"]).toBe(before.commits["message:b"]!);
   expect(rows).toEqual(before.rows);
   expect(hostProps(q('[data-part="timeline"]'))).toBe(timelineProps);
-  expect(store.getState().items).toHaveLength(3);
+  expect(store.getOutline()).toHaveLength(3);
 });
 
 test("useRun applies a changed selector without a store update", () => {

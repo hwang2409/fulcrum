@@ -5,7 +5,6 @@ type Chunk = {
 };
 
 const chunks = new WeakMap<object, Chunk>();
-const text = new WeakMap<Chunk, string>();
 
 const chunkFor = (item: object, value: () => string) => {
   const chunk = chunks.get(item);
@@ -17,24 +16,13 @@ const chunkFor = (item: object, value: () => string) => {
 };
 
 function read(chunk: Chunk): string {
-  const cached = text.get(chunk);
-  if (cached !== undefined) return cached;
-
-  const suffix: string[] = [];
+  const values: string[] = [];
   let cursor: Chunk | undefined = chunk;
-  let prefix = "";
   while (cursor) {
-    const value = text.get(cursor);
-    if (value !== undefined) {
-      prefix = value;
-      break;
-    }
-    suffix.push(cursor.value);
+    values.push(cursor.value);
     cursor = cursor.previous;
   }
-  const value = prefix + suffix.reverse().join("");
-  text.set(chunk, value);
-  return value;
+  return values.reverse().join("");
 }
 
 export function appendText<T extends object>(
@@ -50,9 +38,13 @@ export function appendText<T extends object>(
     value: delta,
     length: (base?.length ?? 0) + delta.length,
   };
+  let materialized: string | undefined;
   Object.defineProperty(item, field, {
     enumerable: true,
-    get: () => read(chunk),
+    get() {
+      materialized ??= read(chunk);
+      return materialized;
+    },
   });
   chunks.set(item, chunk);
   return item;

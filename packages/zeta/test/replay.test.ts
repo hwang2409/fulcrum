@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { createRunStore, initialState, reduce, type RunState } from "@fulcrum/core";
+import { createRunStore, type RunItem } from "@fulcrum/core";
 import {
   createClient,
   fromZetaEvent,
@@ -14,6 +14,7 @@ interface Frame {
   method: "event";
   params: EventParams;
 }
+type Store = ReturnType<typeof createRunStore>;
 
 const fixtureDir = new URL("./fixtures/", import.meta.url);
 const fixtures = Object.fromEntries(
@@ -29,58 +30,36 @@ const fixtures = Object.fromEntries(
     ]),
 );
 
-const freshState = (): RunState => structuredClone(initialState);
-
 function replay(name: string) {
-  const sessions = new Map<string, RunState>();
+  const sessions = new Map<string, Store>();
   for (const frame of fixtures[name]) {
     const id = frame.params.session_id ?? "default";
-    let state = sessions.get(id) ?? freshState();
-    for (const event of fromZetaEvent(frame.params)) state = reduce(state, event);
-    sessions.set(id, state);
+    const store = sessions.get(id) ?? createRunStore(() => {});
+    sessions.set(id, store);
+    for (const event of fromZetaEvent(frame.params)) store.dispatch(event);
   }
   return sessions;
 }
 
-
-const materialize = (state: RunState) => structuredClone(state);
-
-const replayEveryFixture = (assertState: (state: RunState) => void) => {
+const replayEveryFixture = (assertStore: (store: Store) => void) => {
   for (const frames of Object.values(fixtures)) {
-    const stores = new Map<string, ReturnType<typeof createRunStore>>();
+    const stores = new Map<string, Store>();
     for (const frame of frames) {
       const id = frame.params.session_id ?? "default";
-      const store = stores.get(id) ?? createRunStore(freshState());
+      const store = stores.get(id) ?? createRunStore(() => {});
       stores.set(id, store);
       for (const event of fromZetaEvent(frame.params)) {
         store.dispatch(event);
-        assertState(store.getState());
+        store.getState();
+        assertStore(store);
       }
     }
   }
 };
 
-test("published snapshots never change", () => {
-  const snapshots: Array<{ state: RunState; clone: RunState }> = [];
-  replayEveryFixture((state) => snapshots.push({ state, clone: materialize(state) }));
-  for (const snapshot of snapshots) expect(materialize(snapshot.state)).toEqual(snapshot.clone);
-});
-
-test("timeline ids are unique and all resolve", () => {
-  replayEveryFixture((state) => {
-    expect(new Set(state.items).size).toBe(state.items.length);
-    for (const id of state.items) expect(state.itemsById[id]).toBeDefined();
-  });
-});
-
-test("approval and its tool execution stay distinct in the timeline", () => {
-  const state = replay("approval-then-tool.jsonl").get("approval-tool")!;
-  expect(state.items).toHaveLength(2);
-  expect(state.items.map((id) => state.itemsById[id].type)).toEqual(["approval", "tool"]);
-});
-
-const contentText = (state: RunState, itemId: string) => {
-  const item = state.itemsById[itemId];
+const items = (store: Store) =>
+  store.getOutline().map(({ id }) => store.getItem(id)!);
+const contentText = (item: RunItem | undefined) => {
   if (item?.type !== "message") return "";
   if (item.text !== undefined) return item.text;
   return item.message.content
@@ -88,12 +67,51 @@ const contentText = (state: RunState, itemId: string) => {
     .map((block) => String(block.text))
     .join("");
 };
-
-const eventsByType = (state: RunState, type: "error" | "notification" | "unknown") =>
-  state.items
-    .map((id) => state.itemsById[id])
+const eventsByType = (
+  store: Store,
+  type: "error" | "notification" | "unknown",
+) =>
+  items(store)
     .filter((item) => item.type === type)
-    .map((item) => item.event);
+    .map((item) => ("event" in item ? item.event : undefined))
+    .filter((event) => event !== undefined);
+
+test("published snapshots never change", () => {
+  const snapshots: Array<{
+    state: ReturnType<Store["getState"]>;
+    stateClone: ReturnType<Store["getState"]>;
+    entities: RunItem[];
+    entityClones: RunItem[];
+  }> = [];
+  replayEveryFixture((store) => {
+    const state = store.getState();
+    const entities = items(store);
+    snapshots.push({
+      state,
+      stateClone: structuredClone(state),
+      entities,
+      entityClones: structuredClone(entities),
+    });
+  });
+  for (const snapshot of snapshots) {
+    expect(structuredClone(snapshot.state)).toEqual(snapshot.stateClone);
+    expect(structuredClone(snapshot.entities)).toEqual(snapshot.entityClones);
+  }
+});
+
+test("timeline ids are unique and all resolve", () => {
+  replayEveryFixture((store) => {
+    const outline = store.getOutline();
+    expect(new Set(outline.map(({ id }) => id)).size).toBe(outline.length);
+    for (const { id } of outline) expect(store.getItem(id)).toBeDefined();
+  });
+});
+
+test("approval and its tool execution stay distinct in the timeline", () => {
+  const store = replay("approval-then-tool.jsonl").get("approval-tool")!;
+  expect(store.getOutline()).toHaveLength(2);
+  expect(items(store).map(({ type }) => type)).toEqual(["approval", "tool"]);
+});
 
 const deliberateUnknown = new Set([
   "memory_updated",
@@ -106,75 +124,72 @@ const deliberateUnknown = new Set([
 test("every event name in event_contract.py is mapped explicitly", () => {
   const frames = fixtures["all-events.jsonl"];
   expect(new Set(frames.map((frame) => frame.params.event))).toEqual(new Set(Object.keys(eventTypes)));
-
   for (const frame of frames) {
     const [event] = fromZetaEvent(frame.params);
     expect(event.type).toBe(eventTypes[frame.params.event]);
     if (event.type === "unknown") expect(deliberateUnknown.has(frame.params.event)).toBe(true);
   }
-
   expect(replay("all-events.jsonl").get("all")).toBeDefined();
 });
 
 test("simple streaming turn commits one assistant message", () => {
-  const state = replay("simple.jsonl").get("simple")!;
-  expect(state.items.filter((id) => state.itemsById[id]?.type === "message")).toHaveLength(1);
-  expect(contentText(state, state.items[0])).toBe("hi there");
-  expect(state.itemsById[state.items[0]].type).toBe("message");
-  const item = state.itemsById["message:assistant"];
-  expect(item.type === "message" ? item.text : undefined).toBeUndefined();
+  const store = replay("simple.jsonl").get("simple")!;
+  const messages = items(store).filter(({ type }) => type === "message");
+  expect(messages).toHaveLength(1);
+  expect(contentText(messages[0])).toBe("hi there");
+  const item = store.getItem("message:assistant");
+  expect(item?.type === "message" ? item.text : undefined).toBeUndefined();
 });
 
 test("two assistant turns keep two distinct messages in order", () => {
-  const state = replay("two-turns.jsonl").get("turns")!;
-  const messageIds = state.items.filter((id) => state.itemsById[id]?.type === "message");
-  expect(messageIds).toHaveLength(2);
-  expect(messageIds[0]).not.toBe(messageIds[1]);
-  expect(messageIds.map((id) => contentText(state, id))).toEqual(["one", "two"]);
+  const store = replay("two-turns.jsonl").get("turns")!;
+  const messages = items(store).filter(({ type }) => type === "message");
+  expect(messages).toHaveLength(2);
+  expect(messages[0]!.id).not.toBe(messages[1]!.id);
+  expect(messages.map(contentText)).toEqual(["one", "two"]);
 });
 
 test("tool call start/output/end with error result", () => {
-  const state = replay("tool.jsonl").get("tool")!;
-  expect(state.items).toEqual(["tool:tool-call-1"]);
-  const item = state.itemsById["tool:tool-call-1"];
-  expect(item.type === "tool" ? item.output : undefined).toBe("permission denied");
-  expect(item.type === "tool" ? item.is_error : undefined).toBe(true);
-  expect(item.type === "tool" ? item.result?.content : undefined).toBe("permission denied");
+  const store = replay("tool.jsonl").get("tool")!;
+  expect(store.getOutline()).toEqual([{ id: "tool:tool-call-1", kind: "tool" }]);
+  const item = store.getItem("tool:tool-call-1");
+  expect(item?.type === "tool" ? item.output : undefined).toBe("permission denied");
+  expect(item?.type === "tool" ? item.is_error : undefined).toBe(true);
+  expect(item?.type === "tool" ? item.result?.content : undefined).toBe("permission denied");
 });
 
 test("approval request then approval end", () => {
-  const state = replay("approval.jsonl").get("approval")!;
-  expect(state.items).toEqual(["approval:tool-call-1"]);
-  const item = state.itemsById["approval:tool-call-1"];
-  expect(item.type === "approval" && item.request.type === "approval_request" ? item.request.delegated : undefined).toBe(false);
-  expect(item.type === "approval" ? item.ended?.type : undefined).toBe("approval_end");
+  const store = replay("approval.jsonl").get("approval")!;
+  expect(store.getOutline()).toEqual([{ id: "approval:tool-call-1", kind: "approval" }]);
+  const item = store.getItem("approval:tool-call-1");
+  expect(item?.type === "approval" && item.request.type === "approval_request" ? item.request.delegated : undefined).toBe(false);
+  expect(item?.type === "approval" ? item.ended?.type : undefined).toBe("approval_end");
 });
 
 test("a delta after turn_aborted starts a new message", () => {
-  const state = replay("terminal.jsonl").get("aborted")!;
-  const messageIds = state.items.filter((id) => state.itemsById[id].type === "message");
-  expect(messageIds.map((id) => contentText(state, id))).toEqual(["old", "new"]);
-  expect(state.agent).toBe("running");
-  expect(state.turn).toBe("running");
-  const event = eventsByType(state, "error").at(-1);
+  const store = replay("terminal.jsonl").get("aborted")!;
+  const messages = items(store).filter(({ type }) => type === "message");
+  expect(messages.map(contentText)).toEqual(["old", "new"]);
+  expect(store.getState().agent).toBe("running");
+  expect(store.getState().turn).toBe("running");
+  const event = eventsByType(store, "error").at(-1);
   expect(event?.type === "error" ? event.error.code : undefined).toBe("turn_aborted");
 });
 
 test("a delta after a terminal error starts a new message", () => {
-  const state = replay("terminal.jsonl").get("max-turns")!;
-  const messageIds = state.items.filter((id) => state.itemsById[id].type === "message");
-  expect(messageIds.map((id) => contentText(state, id))).toEqual(["old", "new"]);
-  expect(state.agent).toBe("running");
-  expect(state.turn).toBe("running");
-  const event = eventsByType(state, "error").at(-1);
+  const store = replay("terminal.jsonl").get("max-turns")!;
+  const messages = items(store).filter(({ type }) => type === "message");
+  expect(messages.map(contentText)).toEqual(["old", "new"]);
+  expect(store.getState().agent).toBe("running");
+  expect(store.getState().turn).toBe("running");
+  const event = eventsByType(store, "error").at(-1);
   expect(event?.type === "error" ? event.error : undefined).toEqual({ code: "max_turns", message: "maximum turns reached: 1" });
 });
 
 test("reconnect replay of the same notification_id is deduped", () => {
-  const state = replay("notifications.jsonl").get("notify")!;
-  const receipts = eventsByType(state, "notification");
-  expect(receipts).toHaveLength(1);
-  expect(state.receipts["same-id"]).toBe(true);
+  const store = replay("notifications.jsonl").get("notify")!;
+  expect(eventsByType(store, "notification")).toHaveLength(1);
+  expect(store.getState().receipts["same-id"]).toBe(true);
 });
 
 test("two interleaved sessions do not touch each other's state", async () => {
@@ -187,13 +202,12 @@ test("two interleaved sessions do not touch each other's state", async () => {
   };
   const client = createClient(transport);
   for (const frame of fixtures["sessions.jsonl"]) receive(JSON.stringify(frame));
-
-  const alpha = client.stores.get("alpha")!.getState();
-  const beta = client.stores.get("beta")!.getState();
-  expect(alpha.items.map((id) => contentText(alpha, id))).toEqual(["alpha"]);
-  expect(beta.items.map((id) => contentText(beta, id))).toEqual(["beta"]);
-  expect(alpha).not.toBe(beta);
-  expect(alpha.itemsById).not.toBe(beta.itemsById);
+  const alpha = client.stores.get("alpha")!;
+  const beta = client.stores.get("beta")!;
+  expect(items(alpha).map(contentText)).toEqual(["alpha"]);
+  expect(items(beta).map(contentText)).toEqual(["beta"]);
+  expect(alpha.getState()).not.toBe(beta.getState());
+  expect(alpha.getItem("message:assistant")).not.toBe(beta.getItem("message:assistant"));
 });
 
 test("a store for a session without events receives later events", () => {
@@ -207,12 +221,12 @@ test("a store for a session without events receives later events", () => {
   const store = client.forSession("simple");
   receive(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: "simple", delta: "hi", kind: "assistant" } }));
   expect(client.forSession("simple")).toBe(store);
-  expect(store.getState().items).toHaveLength(1);
+  expect(store.getOutline()).toHaveLength(1);
 });
 
 test("unknown future event keeps the full wire payload", () => {
-  const state = replay("notifications.jsonl").get("notify")!;
-  const event = eventsByType(state, "unknown").find(
+  const store = replay("notifications.jsonl").get("notify")!;
+  const event = eventsByType(store, "unknown").find(
     (candidate) => candidate.type === "unknown" && candidate.name === "future_event",
   );
   expect(event?.type).toBe("unknown");
@@ -227,8 +241,8 @@ test("unknown future event keeps the full wire payload", () => {
 });
 
 test("memory_updated keeps its top-level message", () => {
-  const state = replay("notifications.jsonl").get("notify")!;
-  const event = eventsByType(state, "unknown").find(
+  const store = replay("notifications.jsonl").get("notify")!;
+  const event = eventsByType(store, "unknown").find(
     (candidate) => candidate.type === "unknown" && candidate.name === "memory_updated",
   );
   expect(event?.type).toBe("unknown");

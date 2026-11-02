@@ -8,53 +8,15 @@ import {
 
 export type Scheduler = (callback: () => void) => void;
 type Listener = () => void;
-type Cell = { version: number; item?: RunItem; previous?: Cell };
 
 const defaultScheduler: Scheduler = (callback) =>
   typeof requestAnimationFrame === "function"
     ? requestAnimationFrame(callback)
     : queueMicrotask(callback);
 
-function snapshot(
-  state: RunState,
-  version: number,
-  cells: Map<string, Cell>,
-): RunState {
-  let materialized: Record<string, RunItem> | undefined;
-  Object.defineProperty(state, "itemsById", {
-    enumerable: true,
-    get() {
-      if (materialized) return materialized;
-      materialized = {};
-      for (const { id } of state.outline) {
-        let cell = cells.get(id);
-        while (cell && cell.version > version) cell = cell.previous;
-        if (cell?.item) materialized[id] = cell.item;
-      }
-      return materialized;
-    },
-  });
-  return state;
-}
-
-export function createRunStore(
-  state: RunState = initialState,
-  scheduler: Scheduler = defaultScheduler,
-) {
-  let entities = new Map(Object.entries(state.itemsById));
-  let cells = new Map<string, Cell>();
-  for (const [id, item] of entities) cells.set(id, { version: 0, item });
-  let current = snapshot(
-    {
-      ...state,
-      outline:
-        state.outline ??
-        state.items.map((id) => ({ id, kind: state.itemsById[id].type })),
-    },
-    0,
-    cells,
-  );
-  let version = 0;
+export function createRunStore(scheduler: Scheduler = defaultScheduler) {
+  let entities = new Map<string, RunItem>();
+  let current: RunState = structuredClone(initialState);
   let pending: RunEvent[] = [];
   const listeners = new Set<Listener>();
   const outlineListeners = new Set<Listener>();
@@ -69,31 +31,20 @@ export function createRunStore(
     if (pending.length === 0 || disposed) return false;
     const events = pending;
     pending = [];
-    const changed = new Set<string>();
     const beforeOutline = current.outline;
-    const next = reduceAllWithEntities(current, events, {
+    current = reduceAllWithEntities(current, events, {
       get: (id) => entities.get(id),
       set: (item) => {
         entities.set(item.id, item);
-        changed.add(item.id);
+        changedItems.add(item.id);
       },
       delete: (id) => {
         entities.delete(id);
-        changed.add(id);
+        changedItems.add(id);
       },
     });
-    version += 1;
-    for (const id of changed) {
-      cells.set(id, {
-        version,
-        item: entities.get(id),
-        previous: cells.get(id),
-      });
-    }
-    current = snapshot(next, version, cells);
     stateChanged = true;
-    outlineChanged ||= next.outline !== beforeOutline;
-    for (const id of changed) changedItems.add(id);
+    outlineChanged ||= current.outline !== beforeOutline;
     return true;
   };
   const notify = () => {
@@ -119,10 +70,7 @@ export function createRunStore(
     set.add(listener);
     return () => {
       set.delete(listener);
-      if (
-        typeof idOrListener === "string" &&
-        set.size === 0
-      )
+      if (typeof idOrListener === "string" && set.size === 0)
         itemListeners.delete(idOrListener);
     };
   }
@@ -161,16 +109,19 @@ export function createRunStore(
       if (disposed) return;
       disposed = true;
       pending = [];
+      current = structuredClone(initialState);
+      entities = new Map();
+      listeners.forEach((listener) => listener());
+      outlineListeners.forEach((listener) => listener());
+      itemListeners.forEach((keyedListeners) =>
+        keyedListeners.forEach((listener) => listener()),
+      );
       listeners.clear();
       outlineListeners.clear();
       itemListeners.clear();
       changedItems.clear();
       stateChanged = false;
       outlineChanged = false;
-      entities.clear();
-      entities = new Map();
-      cells = new Map();
-      current = snapshot(structuredClone(initialState), 0, cells);
     },
   };
 }
