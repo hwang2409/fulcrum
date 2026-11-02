@@ -3,17 +3,10 @@ import { createRunStore } from "../packages/core/src/index.js";
 const absoluteBudget = Number(process.env.CI ? 250 : 50);
 const scalingBudget = 4;
 const runs = 5;
-const knownFail = {
-  realisticFlush: {
-    description: "3 events per display frame copies itemsById for every delta",
-    target: "scaling <= 4x, 5,000-item median <= 50 ms locally / 250 ms on CI",
-  },
-};
-
 type Measurement = { small: number; large: number; ratio: number };
 
 function run(seedCount: number, flushEvery: number) {
-  const store = createRunStore(undefined, () => {});
+  const store = createRunStore(() => {});
   for (let i = 0; i < seedCount; i++) {
     store.dispatch({ type: "message_commit", message_id: `seed-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
   }
@@ -25,14 +18,13 @@ function run(seedCount: number, flushEvery: number) {
     if (i % flushEvery === flushEvery - 1) store.getState();
   }
   const elapsed = performance.now() - start;
-  const state = store.getState();
-  const item = state.itemsById[streamId];
+  store.getState();
+  const item = store.getItem(streamId);
   if (item?.type !== "message" || item.text?.length !== 5_000_000) throw new Error("invalid stream result");
   return elapsed;
 }
 
 function collectRuns(flushEvery: number): Measurement[] {
-  // warm up the JIT before collecting measurements
   run(200, flushEvery);
   run(5_000, flushEvery);
   return Array.from({ length: runs }, () => {
@@ -52,13 +44,14 @@ const report = (label: string, values: Measurement[]) => {
   console.log(`${label}: 200 messages median ${smallMedian.toFixed(2)} ms`);
   console.log(`${label}: 5000 messages median ${largeMedian.toFixed(2)} ms (budget ${absoluteBudget} ms)`);
   console.log(`${label}: scaling median ${ratioMedian.toFixed(2)}x (budget ${scalingBudget}x)`);
-  return { smallMedian, largeMedian, ratioMedian, values };
+  return { largeMedian, ratioMedian };
 };
 
-const enforced = report("enforced 800-event flush", collectRuns(800));
-const realistic = report("known-fail 3-event flush", collectRuns(3));
-console.log(`known-fail allowlist: realisticFlush (measured ${realistic.ratioMedian.toFixed(2)}x, ${realistic.largeMedian.toFixed(2)} ms; target ${knownFail.realisticFlush.target}; ${knownFail.realisticFlush.description}; flip to enforced after #11)`);
-if (enforced.ratioMedian > scalingBudget || enforced.largeMedian > absoluteBudget) {
+const measurements = [
+  report("enforced 800-event flush", collectRuns(800)),
+  report("enforced 3-event flush", collectRuns(3)),
+];
+if (measurements.some(({ ratioMedian, largeMedian }) => ratioMedian > scalingBudget || largeMedian > absoluteBudget)) {
   console.error("enforced performance budget failed");
   process.exit(1);
 }

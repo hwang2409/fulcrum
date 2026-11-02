@@ -2,7 +2,7 @@
 
 ## packages
 
-- `@fulcrum/core`: agent-agnostic run events, normalized state reducer, and burst-coalescing store.
+- `@fulcrum/core`: agent-agnostic run events and a burst-coalescing run store.
 - `@fulcrum/zeta`: zeta serve wire types, adapter, JSON-RPC client, websocket transport, and authenticated `connectZeta`.
 - `@fulcrum/react`: react 19 hooks and headless timeline parts over `@fulcrum/core`. It does not depend on `@fulcrum/zeta`.
 - `apps/playground` (private): replays the zeta fixtures, runs a stress test, or connects to a live zeta server in a browser.
@@ -18,9 +18,9 @@ bun run dev
 
 open the live zeta panel and paste the discovery url from `$ZETA_HOME/run/serve.ws.json` (the dev helper can fill it in when available).
 
-## reducer and store
+## store
 
-`reduce(state, event)` accepts generic `RunEvent` values and returns normalized run state. `items` orders the canonical entities in `itemsById`; active assistant and tool text is stored as a plain string on its entity. `createRunStore()` batches reduction and subscriber notification through its scheduler while `getState()` flushes pending events for synchronous reads. `fromZetaEvent` maps wire events to generic events, and `connect(transport)` adds JSON-RPC request matching.
+`createRunStore()` owns one run. Dispatch generic `RunEvent` values, read ordered `{ id, kind }` entries with `getOutline()`, and read the current entity with `getItem(id)`. The store batches reduction and subscriber notification through its scheduler; synchronous reads flush pending events. Use keyed subscriptions for entity rows and `subscribeOutline()` for the ordered timeline. `fromZetaEvent` maps Zeta wire events to generic events, and `connect(transport)` adds JSON-RPC request matching.
 
 build with `bun install --frozen-lockfile`, `bunx tsc -b`, and `bun test`.
 
@@ -41,7 +41,7 @@ const renderers: Renderers = {
 </RunProvider>;
 ```
 
-- hooks: `useRun(selector)` (return a primitive or a reference from state), `useTimeline()` (the `items` ids), `useItem(id)`. They use `useSyncExternalStore`, so a text delta re-renders only the item that changed.
+- hooks: `useRun(selector)` (return a primitive or a reference from state), `useTimeline()` (stable ordered `{ id, kind }` entries), `useItem(id)`, and `useItemSelector(id, selector)`. They use `useSyncExternalStore`, so a text delta re-renders only the item that changed.
 - parts: `Timeline`, `Message`, `ToolCall`, `Approval`, and `Fallback` for other kinds. Parts have no styles. They take `className` and expose `data-part`, `data-kind`, `data-state` (`streaming`, `done`, `error`, `pending`), `data-role`, and `data-tool`. Text is plain text with `white-space: pre-wrap`.
 
 - playground: `bunx tsc -b`, then `bun run --cwd apps/playground dev`
@@ -54,7 +54,7 @@ const renderers: Renderers = {
 
 ## known limits
 
-- TODO: add session eviction and bounded notification receipts before using a client as a persistent multi-session shell.
+- TODO: add session eviction before using a client as a persistent multi-session shell.
 
 ## virtual
 

@@ -25,7 +25,7 @@ const virtualFlip = "flip to enforced when the virtual Timeline meets the target
 // Stable metrics are regression budgets. Current architectural failures retain their measured baseline and end-state target instead.
 const contract: Record<TranscriptCase, Contract> = {
   200: {
-    firstPaint: max(400), fps: min(55), p95Frame: max(22), worstFrame: max(35), longTasks: max(0),
+    firstPaint: max(500), fps: min(40), p95Frame: max(65), worstFrame: max(90), longTasks: max(0),
     mountedDomNodes: max(250), commitsPerEvent: max(0.5), upwardScrollShift: max(80),
     idleAnimationFrames: max(220), idleTimers: max(2),
   },

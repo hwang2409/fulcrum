@@ -1,0 +1,162 @@
+/* pebble: soft product UI. */
+:root {
+  --fulcrum-radius: 14px;
+  --fulcrum-gap: 14px;
+  --fulcrum-font: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fulcrum-mono: var(--fulcrum-font);
+  --pebble-ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+[data-part=timeline] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fulcrum-gap);
+  color: var(--fulcrum-fg);
+  background: var(--fulcrum-bg);
+  font: 14px/1.7 var(--fulcrum-font);
+  overflow-wrap: anywhere;
+}
+/* Skip off-screen paint; new rows rise in once. */
+[data-part=timeline] > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 3em;
+  animation: pebble-in 280ms var(--pebble-ease);
+}
+
+[data-part=item] { align-self: center; color: var(--fulcrum-muted); font-size: 12px; }
+/* Assistant text beside a mark; the user in a filled bubble. */
+[data-part=message] { position: relative; padding-left: 32px; text-wrap: pretty; }
+[data-part=message]::before {
+  content: "";
+  position: absolute;
+  inset: 3px auto auto 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--fulcrum-on-accent, var(--fulcrum-bg)) 60%, transparent), var(--fulcrum-accent) 65%);
+}
+[data-role=user],
+[data-kind=user] {
+  align-self: flex-end;
+  max-width: 78%;
+  padding: 9px 15px;
+  border-radius: 18px 18px 6px 18px;
+  background: var(--fulcrum-accent);
+  color: var(--fulcrum-on-accent, var(--fulcrum-bg));
+}
+[data-role=user]::before { content: none; }
+/* A dot breathes after streaming text. */
+[data-part=message][data-state=streaming]::after {
+  content: "\25CF";
+  display: inline-block;
+  margin-left: 4px;
+  color: var(--fulcrum-accent);
+  animation: pebble-pulse 1s var(--pebble-ease) infinite alternate;
+}
+
+[data-part=tool],
+[data-part=approval] {
+  --dot: var(--fulcrum-ok);
+  position: relative;
+  padding: 10px 14px;
+  overflow: hidden;
+  border-radius: var(--fulcrum-radius);
+  background: var(--fulcrum-surface);
+  font-size: 13px;
+  line-height: 1.6;
+}
+[data-part=tool-name] { padding-right: 88px; font-weight: 600; }
+/* Status pill in the state's color. */
+[data-part=tool]::before {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dot) 16%, transparent);
+  color: var(--dot);
+  font: 700 12px/22px var(--fulcrum-font);
+  content: "Done";
+}
+[data-part=tool-args] {
+  max-height: 6.4em; /* 4 lines */
+  overflow: auto;
+  color: var(--fulcrum-muted);
+}
+[data-part=tool-output] {
+  display: flex;
+  flex-direction: column-reverse; /* keeps the newest output in view */
+  max-height: 13em;
+  margin-top: 8px;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--fulcrum-bg);
+}
+[data-part=tool][data-state=streaming] { --dot: var(--fulcrum-accent); }
+[data-part=tool][data-state=streaming]::before { content: "Running"; }
+/* Sweep while running. */
+[data-part=tool][data-state=streaming]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--fulcrum-accent) 10%, transparent), transparent);
+  animation: pebble-sweep 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+[data-part=tool][data-state=error] { --dot: var(--fulcrum-danger); background: color-mix(in srgb, var(--fulcrum-danger) 10%, var(--fulcrum-bg)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fulcrum-danger) 40%, transparent); }
+[data-part=tool][data-state=error]::before { background: var(--dot); color: var(--fulcrum-bg); content: "Failed"; }
+[data-part=tool][data-state=canceled] { --dot: var(--fulcrum-muted); opacity: 0.7; }
+[data-part=tool][data-state=canceled]::before { content: "Canceled"; }
+
+[data-part=approval]::before { display: block; margin-bottom: 4px; color: var(--fulcrum-muted); font-size: 12px; content: "Approval resolved"; }
+/* Lifted, with a halo under the buttons: the run waits on you. */
+[data-part=approval][data-state=pending] {
+  padding: 14px 16px;
+  isolation: isolate;
+  background: var(--fulcrum-bg);
+  box-shadow: 0 0 0 2px var(--fulcrum-warn), 0 12px 32px -12px color-mix(in srgb, var(--fulcrum-warn) 70%, transparent);
+}
+[data-part=approval][data-state=pending]::before { color: var(--fulcrum-warn); font-weight: 700; content: "\25B2  Needs your approval"; }
+[data-part=approval][data-state=pending]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: color-mix(in srgb, var(--fulcrum-warn) 9%, transparent);
+  animation: pebble-halo 1.8s ease-in-out infinite alternate;
+}
+[data-part=approval] button {
+  min-height: 36px;
+  margin: 12px 8px 0 0;
+  padding: 0 18px;
+  border: 1px solid var(--fulcrum-muted);
+  border-radius: 999px;
+  background: var(--fulcrum-surface);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 160ms var(--pebble-ease);
+}
+[data-part=approval] button[data-action=approve] { border-color: var(--fulcrum-accent); background: var(--fulcrum-accent); color: var(--fulcrum-on-accent, var(--fulcrum-bg)); }
+[data-part=approval] button:active { transform: scale(0.96); }
+[data-part=approval] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
+
+[data-kind=error] {
+  align-self: stretch;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--fulcrum-danger) 10%, var(--fulcrum-bg));
+  color: var(--fulcrum-danger);
+  font-size: 13px;
+}
+
+@keyframes pebble-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes pebble-pulse { to { opacity: 0.35; transform: scale(0.7); } }
+@keyframes pebble-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@keyframes pebble-halo { from { opacity: 0; } }
+@media (pointer: coarse) { [data-part=approval] button { min-height: 44px; } }
+@media (prefers-reduced-motion: reduce) {
+  [data-part=timeline] > *, [data-part=timeline] ::before, [data-part=timeline] ::after { animation: none !important; }
+}

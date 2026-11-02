@@ -4,7 +4,7 @@ GlobalRegistrator.register();
 
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { act, Profiler, type ReactNode } from "react";
+import { act, Profiler, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
 import {
@@ -13,6 +13,9 @@ import {
   RunProvider,
   Timeline,
   ToolCall,
+  useItem,
+  useRun,
+  useTimeline,
   type Renderers,
 } from "../src/index.js";
 
@@ -23,7 +26,7 @@ const call = (id: string, name: string) => ({ id, name, arguments: {} });
 
 function setup(events: RunEvent[]) {
   const jobs: Array<() => void> = [];
-  const store = createRunStore(undefined, (job) => jobs.push(job));
+  const store = createRunStore((job) => jobs.push(job));
   const send = (...more: RunEvent[]) =>
     act(() => {
       more.forEach(store.dispatch);
@@ -86,7 +89,88 @@ test("a delta re-renders only the streaming item", async () => {
   expect(commits["message:b"]).toBe(before.commits["message:b"]!);
   expect(rows).toEqual(before.rows);
   expect(hostProps(q('[data-part="timeline"]'))).toBe(timelineProps);
-  expect(store.getState().items).toHaveLength(3);
+  expect(store.getOutline()).toHaveLength(3);
+});
+
+test("useRun applies a changed selector without a store update", () => {
+  const { store } = setup([{ type: "run_start" }]);
+  let selectTurn!: () => void;
+  const View = () => {
+    const [turn, setTurn] = useState(false);
+    selectTurn = () => setTurn(true);
+    const value = useRun(turn ? (state) => state.turn : (state) => state.agent);
+    return <span>{turn ? `turn=${value}` : `agent=${value}`}</span>;
+  };
+  mount(
+    <RunProvider store={store}>
+      <View />
+    </RunProvider>,
+  );
+
+  expect(container.textContent).toBe("agent=running");
+  act(selectTurn);
+  expect(container.textContent).toBe("turn=idle");
+});
+
+test("dispose publishes the terminal snapshot to mounted hooks", () => {
+  const { store } = setup([
+    { type: "message_delta", message_id: "m", delta: "x" },
+  ]);
+  const View = () => {
+    const outline = useTimeline();
+    const item = useItem("message:m");
+    return <span>{outline.length}:{item?.type === "message" ? item.text : "none"}</span>;
+  };
+  mount(
+    <RunProvider store={store}>
+      <View />
+    </RunProvider>,
+  );
+
+  expect(container.textContent).toBe("1:x");
+  act(() => store.dispose());
+  expect(store.getOutline()).toHaveLength(0);
+  expect(store.getItem("message:m")).toBeUndefined();
+  expect(container.textContent).toBe("0:none");
+});
+
+test("keyed hooks do not read unrelated items or the outline", () => {
+  const { store, send } = setup([
+    { type: "message_commit", message_id: "a", message: message("one") },
+    { type: "message_commit", message_id: "b", message: message("two") },
+  ]);
+  let aReads = 0;
+  let bReads = 0;
+  let outlineReads = 0;
+  const A = () => {
+    aReads++;
+    useItem("message:a");
+    return null;
+  };
+  const B = () => {
+    bReads++;
+    useItem("message:b");
+    return null;
+  };
+  const Outline = () => {
+    outlineReads++;
+    useTimeline();
+    return null;
+  };
+  mount(
+    <RunProvider store={store}>
+      <A />
+      <B />
+      <Outline />
+    </RunProvider>,
+  );
+  const before = [aReads, bReads, outlineReads];
+
+  send({ type: "message_delta", message_id: "a", delta: "+" });
+
+  expect(aReads).toBe(before[0]! + 1);
+  expect(bReads).toBe(before[1]);
+  expect(outlineReads).toBe(before[2]);
 });
 
 test("timeline renders items in order with renderer by kind and by tool name", () => {

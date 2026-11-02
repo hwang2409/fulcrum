@@ -18,6 +18,7 @@
         "react-dom": "^19",
       },
       "devDependencies": {
+        "@fontsource-variable/jetbrains-mono": "^5.3.0",
         "@types/node": "^22",
         "@types/react": "^19",
         "@types/react-dom": "^19",
@@ -54,6 +55,8 @@
     },
   },
   "packages": {
+    "@fontsource-variable/jetbrains-mono": ["@fontsource-variable/jetbrains-mono@5.3.0", "", {}, "sha512-F32xpS2NsGYoQi2ADSkKTgpJj7ozajsGgDJ8woTnqjmIB+dxDIqImjl4pXZVEExu8UFZ2ndhmX18EBS/hdz3Lw=="],
+
     "@fulcrum/core": ["@fulcrum/core@workspace:packages/core"],
 
     "@fulcrum/playground": ["@fulcrum/playground@workspace:apps/playground"],

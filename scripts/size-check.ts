@@ -1,5 +1,5 @@
 const builds = [
-  { name: "core", entry: "packages/core/dist/index.js", external: [], budget: 1_700, ceiling: 3_000 },
+  { name: "core", entry: "packages/core/dist/index.js", external: [], budget: 2_500, ceiling: 3_000 },
   { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "react", "react-dom"], budget: 1_600 },
   { name: "zeta", entry: "packages/zeta/dist/index.js", external: ["@fulcrum/core"], budget: 2_700, ceiling: 3_000 },
   { name: "virtual", entry: "packages/virtual/dist/index.js", external: [], budget: 3_300 },

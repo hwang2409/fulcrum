@@ -20,12 +20,12 @@ export function createClient(
     { resolve: (value: unknown) => void; reject: (reason: unknown) => void }
   >();
   const stores = new Map<string, ReturnType<typeof createRunStore>>();
-  const store = createRunStore(undefined, scheduler);
+  const store = createRunStore(scheduler);
   const forSession = (session?: string) => {
     if (!session) return store;
     let value = stores.get(session);
     if (!value) {
-      value = createRunStore(undefined, scheduler);
+      value = createRunStore(scheduler);
       stores.set(session, value);
     }
     return value;

@@ -3,7 +3,7 @@ import "./app.css";
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
-import { Approval, Message, RunProvider, Timeline, useItem, useRun, type Renderers } from "@fulcrum/react";
+import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
 import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
 import { replayStep } from "./replay";
@@ -117,7 +117,7 @@ function useReplay(mode: string, speed: number, run: number) {
 }
 
 function Readout() {
-  const items = useRun((state) => state.items.length);
+  const items = useTimeline().length;
   const [stats, setStats] = useState({ fps: 0, renders: 0, events: 0, longTasks: 0, heap: undefined as number | undefined });
   useEffect(() => {
     let frames = 0;
