@@ -93,6 +93,16 @@ describe("incremental tokenization", () => {
     highlighter.dispose();
   });
 
+  test("returns exactly the streamed text when an incomplete line follows complete ones", async () => {
+    const highlighter = createHighlighter({ worker: false });
+    const source = "--- a/run.ts\n+++ b/run.ts\n-const delay = 100;\n+const delay = 16;\n";
+    for (let length = 1; length <= source.length; length++) {
+      const code = source.slice(0, length);
+      expect(text((await highlighter(code, "diff", { id: "tail", version: length, state: length === source.length ? "done" : "streaming" }))!)).toBe(code);
+    }
+    highlighter.dispose();
+  });
+
   test("keeps an incomplete line plain until it is complete", async () => {
     const highlighter = createHighlighter({ worker: false });
     const partial = await highlighter("const value", "typescript", { id: "partial", version: 1, state: "streaming" });

@@ -83,7 +83,9 @@ export class TokenizerRuntime {
       this.sessions.set(context.id, session);
       this.evictSessions();
       if (completeLength === code.length) return tokens;
+      // The tail may merge into the last token, so that token is copied: the session keeps only finalized text.
       const output = [...tokens];
+      if (output.length) output[output.length - 1] = { ...output.at(-1)! };
       appendToken(output, code.slice(completeLength));
       return output;
     };

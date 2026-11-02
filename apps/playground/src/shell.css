@@ -31,7 +31,7 @@ code { font: inherit; color: var(--fulcrum-fg); }
   padding: 0 24px;
   border-bottom: 1px solid var(--fulcrum-border);
 }
-.brand { font-weight: 700; }
+.brand { display: flex; align-items: center; min-height: var(--shell-control); font-weight: 700; }
 .shell-bar nav { display: flex; gap: 16px; font-size: 13px; }
 .shell-bar nav a { display: flex; align-items: center; min-height: var(--shell-control); color: var(--fulcrum-muted); border-bottom: 2px solid transparent; }
 .shell-bar nav a:hover { color: var(--fulcrum-fg); }
@@ -44,7 +44,8 @@ code { font: inherit; color: var(--fulcrum-fg); }
 
 /* Page controls. */
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 24px; border-bottom: 1px solid var(--fulcrum-border); }
-.field { display: flex; align-items: center; gap: 8px; color: var(--fulcrum-muted); font-size: 13px; }
+.field { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--fulcrum-muted); font-size: 13px; }
+.field select { min-width: 0; max-width: 100%; }
 .field output { min-width: 3ch; color: var(--fulcrum-fg); }
 .group { display: flex; flex-wrap: wrap; gap: 8px; }
 :where(.shell-bar, .toolbar) :is(button, select, input:not([type="range"]), textarea) {
@@ -75,7 +76,8 @@ code { font: inherit; color: var(--fulcrum-fg); }
 .mode[data-state="waiting"]::before { background: var(--fulcrum-warn); }
 .mode span { color: var(--fulcrum-muted); font-weight: 400; }
 
-.scroll { flex: 1; min-height: 0; overflow: auto; padding: 16px 24px; }
+/* No vertical padding: the virtual Timeline measures from the scroll box's top edge, and padding would offset follow. */
+.scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 24px; }
 .scroll > [data-part="timeline"] { max-width: 760px; margin: 0 auto; }
 
 @keyframes shell-pulse { to { opacity: 0.25; } }
@@ -89,9 +91,12 @@ code { font: inherit; color: var(--fulcrum-fg); }
   .scroll [data-part] button { min-height: 44px; }
 }
 @media (max-width: 860px) {
-  .shell-bar { padding: 8px 16px; }
+  .shell-bar { gap: 0 16px; padding: 4px 16px 8px; }
+  .shell-bar nav { gap: 12px; }
   .theme { width: 100%; margin-left: 0; }
   .theme select { flex: 1; min-width: 0; }
   .toolbar, .caption, .status { padding-inline: 16px; }
-  .scroll { padding: 12px 8px; }
+  .field:has(select) { flex: 1 1 100%; }
+  .field:has(select) select { flex: 1; }
+  .scroll { padding: 0 8px; }
 }

@@ -142,11 +142,10 @@ function App() {
           </div>
         </div>
         <p className="caption">
-          @fulcrum/virtual keeps a {count.toLocaleString("en")}-row outline in one scroll box and mounts only the rows near the viewport.{" "}
-          <strong>Follow:</strong> at the bottom, press stream; new rows keep the bottom pinned.{" "}
-          <strong>Unseen:</strong> scroll up while streaming; <strong>jump to latest (n)</strong> counts new rows.{" "}
-          <strong>Anchoring:</strong> scroll to the middle, then prepend, insert above, or resize above; the top row you see must not move.{" "}
-          <strong>Focus:</strong> tab into a row, arrow up and down, scroll far away and back; focus stays.
+          @fulcrum/virtual holds {count.toLocaleString("en")} rows and mounts only those near the viewport.{" "}
+          <strong>Follow:</strong> at the bottom, press stream. <strong>Unseen:</strong> scroll up while streaming; jump to latest counts new rows.{" "}
+          <strong>Anchoring:</strong> mid-list, prepend, insert, or resize above; the top visible row must not move.{" "}
+          <strong>Focus:</strong> tab into a row, arrow keys, scroll away and back; focus stays.
         </p>
         <div className="status">
           <span className="mode" data-state={streaming ? "streaming" : "static"}>virtual<span>{streaming ? "streaming 4 rows/s" : "idle"}</span></span>

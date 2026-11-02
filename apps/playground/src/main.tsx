@@ -285,9 +285,9 @@ function App() {
           </div>
         </div>
         <p className="caption">
-          Replays loop with fresh ids, so the run keeps growing. <strong>Follow:</strong> stay at the bottom and new rows keep it pinned.{" "}
-          <strong>Unseen:</strong> scroll up; follow stops and <strong>jump to latest (n)</strong> counts new rows.{" "}
-          <strong>Focus:</strong> tab into a row, then arrow up and down. Resize and insert anchoring: the virtual page.
+          Replays loop with fresh ids; approvals pause them until answered. <strong>Unseen:</strong> scroll up and{" "}
+          <strong>jump to latest (n)</strong> counts new rows; at the bottom, follow keeps up. <strong>Focus:</strong> tab into a row, then
+          arrow keys. Anchoring: the virtual page.
         </p>
         <Status label={label} />
         <div className="scroll" ref={scroll}>

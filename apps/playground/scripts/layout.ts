@@ -1,4 +1,5 @@
-// Fails when the gallery scrolls sideways at any common width in any theme, when a pending approval's actions are hard
+// Fails when the gallery or another playground page scrolls sideways at any common width (the gallery in every theme), when a
+// playground page control has no accessible name or is under 44 px tall at touch widths (36 px elsewhere), when a pending approval's actions are hard
 // to read or to hit (text contrast below 4.5:1 on the real background, or under 44 px tall at touch widths, 36 px
 // elsewhere), when a theme's fg or muted text misses 4.5:1 on its bg, or when a state indicator is hard to see: every
 // rendered status word needs 4.5:1 and every state mark and state rail 3:1 against the background it is drawn on, and
@@ -136,6 +137,24 @@ try {
       else console.log(`ok   ${line}`);
       const minHeight = width <= touchWidth ? 44 : 36;
       for (const problem of await page.evaluate(pageProblems, minHeight)) failures.push(`${theme} @ ${width}: ${problem}`);
+    }
+    // The other playground pages share one shell: no sideways scroll, and every control is named and big enough to hit.
+    for (const path of ["/", "/virtual.html", "/highlight.html"]) {
+      await page.goto(`http://127.0.0.1:${port}${path}`);
+      await page.waitForSelector(".toolbar");
+      const problems = await page.evaluate((minHeight) => {
+        const found: string[] = [];
+        if (document.documentElement.scrollWidth > innerWidth) found.push(`scrollWidth ${document.documentElement.scrollWidth} > ${innerWidth}`);
+        for (const control of document.querySelectorAll<HTMLInputElement>(".shell-bar a, .shell-bar select, .toolbar :is(button, select, input)")) {
+          const name = control.getAttribute("aria-label") || [...(control.labels ?? [])].map((label) => label.textContent).join("") || control.textContent;
+          const label = `${control.tagName.toLowerCase()} "${name?.trim().slice(0, 24)}"`;
+          if (!name?.trim()) found.push(`${control.tagName.toLowerCase()} has no accessible name`);
+          if (control.getBoundingClientRect().height < minHeight) found.push(`${label} is ${Math.round(control.getBoundingClientRect().height)} px tall, needs ${minHeight} px`);
+        }
+        return found;
+      }, width <= touchWidth ? 44 : 36);
+      for (const problem of problems) failures.push(`${path} @ ${width}: ${problem}`);
+      if (!problems.length) console.log(`ok   ${path} @ ${width}`);
     }
     await page.close();
   }
