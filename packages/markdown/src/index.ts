@@ -715,18 +715,22 @@ function currentContainerChild(state: OpenContainerState) {
   return state.children.at(-1)!;
 }
 
+function publishContainerChild(state: OpenContainerState, child: ContainerChild | undefined) {
+  if (!child) return;
+  const rendered = child.document.render() as Block[];
+  if (child.item) {
+    setTight(rendered);
+    child.item.children = rendered;
+  } else if (state.block.type === "blockquote") state.block.children = rendered;
+}
+
 function publishContainer(state: OpenContainerState) {
-  for (const child of state.children) {
-    const rendered = child.document.render() as Block[];
-    if (child.item) {
-      setTight(rendered);
-      child.item.children = rendered;
-    } else if (state.block.type === "blockquote") state.block.children = rendered;
-  }
+  publishContainerChild(state, state.children.at(-1));
   return state.block;
 }
 
 function startListChild(state: OpenContainerState, match: RegExpExecArray) {
+  publishContainerChild(state, state.children.at(-1));
   const document = createStreamingDocumentWithWork(state.work);
   let content = match[4]!;
   const task = /^\[([ xX])\]\s+/.exec(content);
