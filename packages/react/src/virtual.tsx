@@ -59,6 +59,7 @@ export function useVirtualList<Id extends string>(
   const touchY = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ignoreScrollUntil = useRef(0);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
@@ -126,16 +127,15 @@ export function useVirtualList<Id extends string>(
     };
     const onScroll = () => {
       const before = engine.getSnapshot();
-      if (before.programmatic) {
-        lastScrollTop.current = container.scrollTop;
-        if (Math.abs(container.scrollTop - before.scrollTop) < 0.5)
-          engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
-        else container.scrollTop = before.scrollTop;
+      if (performance.now() < ignoreScrollUntil.current) {
+        container.scrollTop = before.scrollTop;
         return;
       }
-      if (container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+      const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
+      if (!correction && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
       lastScrollTop.current = container.scrollTop;
       engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
+      if (correction) return;
       if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
       scrollEndTimer.current = setTimeout(finishScroll, 150);
     };
@@ -219,6 +219,7 @@ export function useVirtualList<Id extends string>(
     const container = containerRef.current;
     if (!container) return;
     container.scrollTop = engine.scrollToEnd();
+    ignoreScrollUntil.current = performance.now() + 50;
   }, [engine]);
 
   const visibleSnapshot = resetPending
