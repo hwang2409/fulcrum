@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import type { ToolCall } from "@fulcrum/core";
 import type { ItemState } from "../parts.js";
 
@@ -170,21 +170,11 @@ export function Empty({ state, noun = "output" }: { state: ItemState; noun?: str
   return <p data-part="tool-empty">{text}</p>;
 }
 
-const argumentJson = new Map<string, { version: number; value: string }>();
-const json = (call: ToolCall, version: number) => {
-  const cached = argumentJson.get(call.id);
-  if (!cached || cached.version !== version) {
-    const value = JSON.stringify(call.arguments, null, 2);
-    argumentJson.set(call.id, { version, value });
-    return value;
-  }
-  return cached.value;
-};
-/** Raw arguments serialize only when visible or copied; copy always receives the complete value. */
+/** Raw arguments serialize only when visible or copied; the entity version invalidates the snapshot. */
 export function Arguments({ call, version, open }: { call: ToolCall; version: number; open?: boolean }) {
   const [expanded, setExpanded] = useState(!!open);
   const [limit, setLimit] = useState(MAX_DOM_CHARS);
-  const value = expanded ? json(call, version) : undefined;
+  const value = useMemo(() => expanded ? JSON.stringify(call.arguments, null, 2) : undefined, [call.id, version, expanded]);
   const bounded = value === undefined ? undefined : boundText(value, limit);
   const content = value === undefined ? null : <><pre data-part="tool-args">{bounded!.text}</pre>{bounded!.truncated ? <button type="button" data-action="show-more" onClick={() => setLimit((current) => current + MAX_DOM_CHARS)}>show more arguments</button> : null}<CopyButton label="arguments" value={value} /></>;
   return open ? <div data-part="tool-args-wrap">{content}</div> : (
