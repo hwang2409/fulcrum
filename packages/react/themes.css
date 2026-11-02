@@ -1,0 +1,387 @@
+/* @fulcrum/react themes. Load after styles.css and keep the themes you use.
+   Set data-fulcrum-theme="<name>" on <html> or on any subtree. With no attribute, github-light or github-dark follows the OS.
+   Each palette uses its official colors; the source is above each block. muted mixes fg into bg where a palette has no
+   secondary text color with 4.5:1 contrast. ok and warn mark state with no text, so they need 3:1 on bg; where a light
+   palette's own green or yellow misses that and it has no darker official shade, a little fg is mixed in. */
+
+/* gruvbox-dark: https://github.com/morhetz/gruvbox (README palette; syntax from colors/gruvbox.vim, except functions:
+   vim tells them from strings only by bold, so they take aqua as in https://github.com/jdinhify/vscode-theme-gruvbox) */
+[data-fulcrum-theme="gruvbox-dark"] {
+  color-scheme: dark;
+  --fulcrum-bg: #282828;
+  --fulcrum-fg: #ebdbb2;
+  --fulcrum-muted: #a89984;
+  --fulcrum-surface: #32302f;
+  --fulcrum-border: #504945;
+  --fulcrum-accent: #83a598;
+  --fulcrum-danger: #fb4934;
+  --fulcrum-ok: #b8bb26;
+  --fulcrum-warn: #fabd2f;
+  --fulcrum-tok-keyword: #fb4934;
+  --fulcrum-tok-string: #b8bb26;
+  --fulcrum-tok-number: #d3869b;
+  --fulcrum-tok-comment: #928374;
+  --fulcrum-tok-function: #8ec07c;
+  --fulcrum-tok-type: #fabd2f;
+  --fulcrum-tok-variable: #83a598;
+  --fulcrum-tok-constant: #d3869b;
+  --fulcrum-tok-operator: #fe8019;
+  --fulcrum-tok-punctuation: #a89984;
+  --fulcrum-tok-tag: #83a598;
+  --fulcrum-tok-attribute: #8ec07c;
+  --fulcrum-tok-regexp: #fe8019;
+  --fulcrum-tok-inserted: #b8bb26;
+  --fulcrum-tok-deleted: #fb4934;
+}
+
+/* gruvbox-light: https://github.com/morhetz/gruvbox (README palette, faded accents for light; syntax from colors/gruvbox.vim,
+   except functions in aqua as in https://github.com/jdinhify/vscode-theme-gruvbox) */
+[data-fulcrum-theme="gruvbox-light"] {
+  color-scheme: light;
+  --fulcrum-bg: #fbf1c7;
+  --fulcrum-fg: #3c3836;
+  --fulcrum-muted: #665c54;
+  --fulcrum-surface: #f2e5bc;
+  --fulcrum-border: #d5c4a1;
+  --fulcrum-accent: #076678;
+  --fulcrum-danger: #9d0006;
+  --fulcrum-ok: #79740e;
+  --fulcrum-warn: #b57614;
+  --fulcrum-tok-keyword: #9d0006;
+  --fulcrum-tok-string: #79740e;
+  --fulcrum-tok-number: #8f3f71;
+  --fulcrum-tok-comment: #928374;
+  --fulcrum-tok-function: #427b58;
+  --fulcrum-tok-type: #b57614;
+  --fulcrum-tok-variable: #076678;
+  --fulcrum-tok-constant: #8f3f71;
+  --fulcrum-tok-operator: #af3a03;
+  --fulcrum-tok-punctuation: #7c6f64;
+  --fulcrum-tok-tag: #076678;
+  --fulcrum-tok-attribute: #427b58;
+  --fulcrum-tok-regexp: #af3a03;
+  --fulcrum-tok-inserted: #79740e;
+  --fulcrum-tok-deleted: #9d0006;
+}
+
+/* dracula: https://spec.draculatheme.com (palette and syntax spec) */
+[data-fulcrum-theme="dracula"] {
+  color-scheme: dark;
+  --fulcrum-bg: #282a36;
+  --fulcrum-fg: #f8f8f2;
+  --fulcrum-muted: color-mix(in srgb, var(--fulcrum-fg) 72%, var(--fulcrum-bg));
+  --fulcrum-surface: #21222c;
+  --fulcrum-border: #44475a;
+  --fulcrum-accent: #bd93f9;
+  --fulcrum-danger: #ff5555;
+  --fulcrum-ok: #50fa7b;
+  --fulcrum-warn: #ffb86c;
+  --fulcrum-tok-keyword: #ff79c6;
+  --fulcrum-tok-string: #f1fa8c;
+  --fulcrum-tok-number: #bd93f9;
+  --fulcrum-tok-comment: #6272a4;
+  --fulcrum-tok-function: #50fa7b;
+  --fulcrum-tok-type: #8be9fd;
+  --fulcrum-tok-variable: #f8f8f2;
+  --fulcrum-tok-constant: #bd93f9;
+  --fulcrum-tok-operator: #ff79c6;
+  --fulcrum-tok-punctuation: #f8f8f2;
+  --fulcrum-tok-tag: #ff79c6;
+  --fulcrum-tok-attribute: #50fa7b;
+  --fulcrum-tok-regexp: #ff5555;
+  --fulcrum-tok-inserted: #50fa7b;
+  --fulcrum-tok-deleted: #ff5555;
+}
+
+/* nord: https://www.nordtheme.com/docs/colors-and-palettes (nord0-nord15; syntax from the nord-visual-studio-code theme) */
+[data-fulcrum-theme="nord"] {
+  color-scheme: dark;
+  --fulcrum-bg: #2e3440;
+  --fulcrum-fg: #d8dee9;
+  --fulcrum-muted: color-mix(in srgb, var(--fulcrum-fg) 72%, var(--fulcrum-bg));
+  --fulcrum-surface: #3b4252;
+  --fulcrum-border: #434c5e;
+  --fulcrum-accent: #88c0d0;
+  --fulcrum-danger: #bf616a;
+  --fulcrum-ok: #a3be8c;
+  --fulcrum-warn: #ebcb8b;
+  --fulcrum-tok-keyword: #81a1c1;
+  --fulcrum-tok-string: #a3be8c;
+  --fulcrum-tok-number: #b48ead;
+  --fulcrum-tok-comment: #616e88;
+  --fulcrum-tok-function: #88c0d0;
+  --fulcrum-tok-type: #8fbcbb;
+  --fulcrum-tok-variable: #d8dee9;
+  --fulcrum-tok-constant: #81a1c1;
+  --fulcrum-tok-operator: #81a1c1;
+  --fulcrum-tok-punctuation: #eceff4;
+  --fulcrum-tok-tag: #81a1c1;
+  --fulcrum-tok-attribute: #8fbcbb;
+  --fulcrum-tok-regexp: #ebcb8b;
+  --fulcrum-tok-inserted: #a3be8c;
+  --fulcrum-tok-deleted: #bf616a;
+}
+
+/* tokyo-night: https://github.com/enkia/tokyo-night-vscode-theme (Tokyo Night, night variant) */
+[data-fulcrum-theme="tokyo-night"] {
+  color-scheme: dark;
+  --fulcrum-bg: #1a1b26;
+  --fulcrum-fg: #c0caf5;
+  --fulcrum-muted: #a9b1d6;
+  --fulcrum-surface: #16161e;
+  --fulcrum-border: #292e42;
+  --fulcrum-accent: #7aa2f7;
+  --fulcrum-danger: #f7768e;
+  --fulcrum-ok: #9ece6a;
+  --fulcrum-warn: #e0af68;
+  --fulcrum-tok-keyword: #bb9af7;
+  --fulcrum-tok-string: #9ece6a;
+  --fulcrum-tok-number: #ff9e64;
+  --fulcrum-tok-comment: #565f89;
+  --fulcrum-tok-function: #7aa2f7;
+  --fulcrum-tok-type: #2ac3de;
+  --fulcrum-tok-variable: #c0caf5;
+  --fulcrum-tok-constant: #ff9e64;
+  --fulcrum-tok-operator: #89ddff;
+  --fulcrum-tok-punctuation: #89ddff;
+  --fulcrum-tok-tag: #f7768e;
+  --fulcrum-tok-attribute: #bb9af7;
+  --fulcrum-tok-regexp: #b4f9f8;
+  --fulcrum-tok-inserted: #9ece6a;
+  --fulcrum-tok-deleted: #f7768e;
+}
+
+/* catppuccin-mocha: https://github.com/catppuccin/palette (mocha; syntax from catppuccin/catppuccin docs/style-guide.md) */
+[data-fulcrum-theme="catppuccin-mocha"] {
+  color-scheme: dark;
+  --fulcrum-bg: #1e1e2e;
+  --fulcrum-fg: #cdd6f4;
+  --fulcrum-muted: #a6adc8;
+  --fulcrum-surface: #181825;
+  --fulcrum-border: #313244;
+  --fulcrum-accent: #89b4fa;
+  --fulcrum-danger: #f38ba8;
+  --fulcrum-ok: #a6e3a1;
+  --fulcrum-warn: #f9e2af;
+  --fulcrum-tok-keyword: #cba6f7;
+  --fulcrum-tok-string: #a6e3a1;
+  --fulcrum-tok-number: #fab387;
+  --fulcrum-tok-comment: #9399b2;
+  --fulcrum-tok-function: #89b4fa;
+  --fulcrum-tok-type: #f9e2af;
+  --fulcrum-tok-variable: #cdd6f4;
+  --fulcrum-tok-constant: #fab387;
+  --fulcrum-tok-operator: #89dceb;
+  --fulcrum-tok-punctuation: #9399b2;
+  --fulcrum-tok-tag: #89b4fa;
+  --fulcrum-tok-attribute: #f9e2af;
+  --fulcrum-tok-regexp: #f5c2e7;
+  --fulcrum-tok-inserted: #a6e3a1;
+  --fulcrum-tok-deleted: #f38ba8;
+}
+
+/* catppuccin-latte: https://github.com/catppuccin/palette (latte; syntax from catppuccin/catppuccin docs/style-guide.md) */
+[data-fulcrum-theme="catppuccin-latte"] {
+  color-scheme: light;
+  --fulcrum-bg: #eff1f5;
+  --fulcrum-fg: #4c4f69;
+  --fulcrum-muted: #5c5f77;
+  --fulcrum-surface: #e6e9ef;
+  --fulcrum-border: #ccd0da;
+  --fulcrum-accent: #1e66f5;
+  --fulcrum-danger: #d20f39;
+  --fulcrum-ok: color-mix(in srgb, var(--fulcrum-fg) 15%, #40a02b); /* green + text: 3.37:1 on base */
+  --fulcrum-warn: color-mix(in srgb, var(--fulcrum-fg) 35%, #df8e1d); /* yellow + text: 3.38:1 on base */
+  --fulcrum-tok-keyword: #8839ef;
+  --fulcrum-tok-string: #40a02b;
+  --fulcrum-tok-number: #fe640b;
+  --fulcrum-tok-comment: #7c7f93;
+  --fulcrum-tok-function: #1e66f5;
+  --fulcrum-tok-type: #df8e1d;
+  --fulcrum-tok-variable: #4c4f69;
+  --fulcrum-tok-constant: #fe640b;
+  --fulcrum-tok-operator: #04a5e5;
+  --fulcrum-tok-punctuation: #7c7f93;
+  --fulcrum-tok-tag: #1e66f5;
+  --fulcrum-tok-attribute: #df8e1d;
+  --fulcrum-tok-regexp: #ea76cb;
+  --fulcrum-tok-inserted: #40a02b;
+  --fulcrum-tok-deleted: #d20f39;
+}
+
+/* solarized-dark: https://ethanschoonover.com/solarized (base03-base3 and accents; syntax from vim-colors-solarized) */
+[data-fulcrum-theme="solarized-dark"] {
+  color-scheme: dark;
+  --fulcrum-bg: #002b36;
+  --fulcrum-fg: #93a1a1;
+  --fulcrum-muted: #839496;
+  --fulcrum-surface: #073642;
+  --fulcrum-border: #586e75;
+  --fulcrum-accent: #268bd2;
+  --fulcrum-danger: #dc322f;
+  --fulcrum-ok: #859900;
+  --fulcrum-warn: #b58900;
+  --fulcrum-tok-keyword: #859900;
+  --fulcrum-tok-string: #2aa198;
+  --fulcrum-tok-number: #2aa198;
+  --fulcrum-tok-comment: #586e75;
+  --fulcrum-tok-function: #268bd2;
+  --fulcrum-tok-type: #b58900;
+  --fulcrum-tok-variable: #268bd2;
+  --fulcrum-tok-constant: #2aa198;
+  --fulcrum-tok-operator: #859900;
+  --fulcrum-tok-punctuation: #839496;
+  --fulcrum-tok-tag: #268bd2;
+  --fulcrum-tok-attribute: #93a1a1;
+  --fulcrum-tok-regexp: #dc322f;
+  --fulcrum-tok-inserted: #859900;
+  --fulcrum-tok-deleted: #dc322f;
+}
+
+/* solarized-light: https://ethanschoonover.com/solarized (base03-base3 and accents; syntax from vim-colors-solarized) */
+[data-fulcrum-theme="solarized-light"] {
+  color-scheme: light;
+  --fulcrum-bg: #fdf6e3;
+  --fulcrum-fg: #073642;
+  --fulcrum-muted: #586e75;
+  --fulcrum-surface: #eee8d5;
+  --fulcrum-border: #93a1a1;
+  --fulcrum-accent: #268bd2;
+  --fulcrum-danger: #dc322f;
+  --fulcrum-ok: color-mix(in srgb, var(--fulcrum-fg) 10%, #859900); /* green + base02: 3.40:1 on base3 */
+  --fulcrum-warn: color-mix(in srgb, var(--fulcrum-fg) 10%, #b58900); /* yellow + base02: 3.40:1 on base3 */
+  --fulcrum-tok-keyword: #859900;
+  --fulcrum-tok-string: #2aa198;
+  --fulcrum-tok-number: #2aa198;
+  --fulcrum-tok-comment: #93a1a1;
+  --fulcrum-tok-function: #268bd2;
+  --fulcrum-tok-type: #b58900;
+  --fulcrum-tok-variable: #268bd2;
+  --fulcrum-tok-constant: #2aa198;
+  --fulcrum-tok-operator: #859900;
+  --fulcrum-tok-punctuation: #657b83;
+  --fulcrum-tok-tag: #268bd2;
+  --fulcrum-tok-attribute: #586e75;
+  --fulcrum-tok-regexp: #dc322f;
+  --fulcrum-tok-inserted: #859900;
+  --fulcrum-tok-deleted: #dc322f;
+}
+
+/* github-dark: https://github.com/primer/primitives (dark functional colors and prettylights syntax tokens) */
+[data-fulcrum-theme="github-dark"] {
+  color-scheme: dark;
+  --fulcrum-bg: #0d1117;
+  --fulcrum-fg: #e6edf3;
+  --fulcrum-muted: #8b949e;
+  --fulcrum-surface: #161b22;
+  --fulcrum-border: #30363d;
+  --fulcrum-accent: #4493f8;
+  --fulcrum-danger: #f85149;
+  --fulcrum-ok: #3fb950;
+  --fulcrum-warn: #d29922;
+  --fulcrum-tok-keyword: #ff7b72;
+  --fulcrum-tok-string: #a5d6ff;
+  --fulcrum-tok-number: #79c0ff;
+  --fulcrum-tok-comment: #8b949e;
+  --fulcrum-tok-function: #d2a8ff;
+  --fulcrum-tok-type: #ffa657;
+  --fulcrum-tok-variable: #ffa657;
+  --fulcrum-tok-constant: #79c0ff;
+  --fulcrum-tok-operator: #ff7b72;
+  --fulcrum-tok-punctuation: #e6edf3;
+  --fulcrum-tok-tag: #7ee787;
+  --fulcrum-tok-attribute: #79c0ff;
+  --fulcrum-tok-regexp: #7ee787;
+  --fulcrum-tok-inserted: #aff5b4;
+  --fulcrum-tok-deleted: #ffdcd7;
+}
+
+/* github-light: https://github.com/primer/primitives (light functional colors and prettylights syntax tokens) */
+:root:not([data-fulcrum-theme]),
+[data-fulcrum-theme="github-light"] {
+  color-scheme: light;
+  --fulcrum-bg: #ffffff;
+  --fulcrum-fg: #1f2328;
+  --fulcrum-muted: #59636e;
+  --fulcrum-surface: #f6f8fa;
+  --fulcrum-border: #d1d9e0;
+  --fulcrum-accent: #0969da;
+  --fulcrum-danger: #d1242f;
+  --fulcrum-ok: #1a7f37;
+  --fulcrum-warn: #9a6700;
+  --fulcrum-tok-keyword: #cf222e;
+  --fulcrum-tok-string: #0a3069;
+  --fulcrum-tok-number: #0550ae;
+  --fulcrum-tok-comment: #59636e;
+  --fulcrum-tok-function: #8250df;
+  --fulcrum-tok-type: #953800;
+  --fulcrum-tok-variable: #953800;
+  --fulcrum-tok-constant: #0550ae;
+  --fulcrum-tok-operator: #cf222e;
+  --fulcrum-tok-punctuation: #1f2328;
+  --fulcrum-tok-tag: #116329;
+  --fulcrum-tok-attribute: #0550ae;
+  --fulcrum-tok-regexp: #116329;
+  --fulcrum-tok-inserted: #116329;
+  --fulcrum-tok-deleted: #82071e;
+}
+
+/* one-dark: https://github.com/atom/atom/tree/master/packages/one-dark-syntax (styles/colors.less; ui from one-dark-ui) */
+[data-fulcrum-theme="one-dark"] {
+  color-scheme: dark;
+  --fulcrum-bg: #282c34;
+  --fulcrum-fg: #abb2bf;
+  --fulcrum-muted: #9da5b4;
+  --fulcrum-surface: #21252b;
+  --fulcrum-border: #3e4451;
+  --fulcrum-accent: #61afef;
+  --fulcrum-danger: #e06c75;
+  --fulcrum-ok: #98c379;
+  --fulcrum-warn: #e5c07b;
+  --fulcrum-tok-keyword: #c678dd;
+  --fulcrum-tok-string: #98c379;
+  --fulcrum-tok-number: #d19a66;
+  --fulcrum-tok-comment: #7f848e;
+  --fulcrum-tok-function: #61afef;
+  --fulcrum-tok-type: #e5c07b;
+  --fulcrum-tok-variable: #e06c75;
+  --fulcrum-tok-constant: #d19a66;
+  --fulcrum-tok-operator: #56b6c2;
+  --fulcrum-tok-punctuation: #abb2bf;
+  --fulcrum-tok-tag: #e06c75;
+  --fulcrum-tok-attribute: #d19a66;
+  --fulcrum-tok-regexp: #56b6c2;
+  --fulcrum-tok-inserted: #98c379;
+  --fulcrum-tok-deleted: #e06c75;
+}
+
+/* Default with no attribute: github-light above, github-dark when the OS prefers dark. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-fulcrum-theme]) {
+    color-scheme: dark;
+    --fulcrum-bg: #0d1117;
+    --fulcrum-fg: #e6edf3;
+    --fulcrum-muted: #8b949e;
+    --fulcrum-surface: #161b22;
+    --fulcrum-border: #30363d;
+    --fulcrum-accent: #4493f8;
+    --fulcrum-danger: #f85149;
+    --fulcrum-ok: #3fb950;
+    --fulcrum-warn: #d29922;
+    --fulcrum-tok-keyword: #ff7b72;
+    --fulcrum-tok-string: #a5d6ff;
+    --fulcrum-tok-number: #79c0ff;
+    --fulcrum-tok-comment: #8b949e;
+    --fulcrum-tok-function: #d2a8ff;
+    --fulcrum-tok-type: #ffa657;
+    --fulcrum-tok-variable: #ffa657;
+    --fulcrum-tok-constant: #79c0ff;
+    --fulcrum-tok-operator: #ff7b72;
+    --fulcrum-tok-punctuation: #e6edf3;
+    --fulcrum-tok-tag: #7ee787;
+    --fulcrum-tok-attribute: #79c0ff;
+    --fulcrum-tok-regexp: #7ee787;
+    --fulcrum-tok-inserted: #aff5b4;
+    --fulcrum-tok-deleted: #ffdcd7;
+  }
+}

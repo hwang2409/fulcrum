@@ -16,6 +16,14 @@ highlight.dispose();
 
 render typed fragments as text in `<span class="tok-<type>">` and untyped fragments as text nodes. import `@fulcrum/highlight/styles.css`; themes provide `--fulcrum-tok-<type>` variables. a strict csp only needs the static worker origin, for example `worker-src 'self'`. unknown languages return `null`.
 
+## bundlers
+
+the worker and each grammar load through static `new URL("...", import.meta.url)` references, so bundlers that understand that pattern emit them as separate lazy assets.
+
+- vite (and rollup with its standard asset handling): works with no configuration. grammars load only when a block in that language is highlighted.
+- esbuild: it keeps the urls but does not emit the files. copy `node_modules/@fulcrum/highlight/dist/worker.js`, `dist/chunks/`, and `dist/langs/` next to your bundle output (for example with an asset-copy plugin or a build step), keeping the same relative layout.
+- other bundlers: if the worker cannot load, highlighting falls back to sliced main-thread work and shows plain text first, so code is never lost.
+
 ## scope mapping
 
 textmate scopes map to this stable set, in precedence order: comments to `comment`; strings to `string`; regexp strings/constants to `regexp`; numeric constants to `number`; language, character, and named constants to `constant`; keywords and storage declarations to `keyword`; keyword operators to `operator`; function entities/support/variables to `function`; type, class, namespace, and support types to `type`; variables to `variable`; punctuation to `punctuation`; tag entities to `tag`; attribute and property-name support scopes to `attribute`; diff insertions to `inserted`; and diff deletions to `deleted`. unknown scopes remain unstyled. specific regexp, operator, constant, inserted, and deleted rules override broad rules.
