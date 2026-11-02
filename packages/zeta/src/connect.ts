@@ -22,6 +22,10 @@ const errorKinds: Record<number, ZetaErrorKind> = {
   [-32002]: "version_mismatch",
 };
 
+function isLoopbackWebSocketUrl(url: URL): boolean {
+  return ["ws:", "wss:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+}
+
 export interface ConnectZetaOptions {
   url: string;
   token: string;
@@ -62,7 +66,7 @@ export function parseZetaUrl(text: string): { url: string; token: string } | nul
   try {
     const parsed = new URL(text);
     const token = parsed.searchParams.get("token");
-    if (parsed.protocol !== "ws:" || parsed.hostname !== "127.0.0.1" || parsed.pathname !== "/" || !token)
+    if (!isLoopbackWebSocketUrl(parsed) || parsed.pathname !== "/" || !token)
       return null;
     parsed.searchParams.delete("token");
     return { url: parsed.toString(), token };
@@ -75,5 +79,10 @@ export function parseConnectFragment(hash: string): { url: string; token: string
   const params = new URLSearchParams(hash.replace(/^#/, ""));
   const url = params.get("ws");
   const token = params.get("token");
-  return url && token ? { url, token } : null;
+  if (!url || !token) return null;
+  try {
+    return isLoopbackWebSocketUrl(new URL(url)) ? { url, token } : null;
+  } catch {
+    return null;
+  }
 }

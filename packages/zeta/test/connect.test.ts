@@ -92,3 +92,22 @@ test("parseConnectFragment reads ws and token from the hash and rejects missing 
   expect(parseConnectFragment("#ws=ws://test/")).toBeNull();
   expect(parseConnectFragment("#token=abc")).toBeNull();
 });
+
+test("fragment with a non-loopback host is rejected", () => {
+  expect(parseConnectFragment("#ws=wss%3A%2F%2Fattacker.example%2F&token=abc")).toBeNull();
+});
+
+test("fragment with a non-ws scheme is rejected", () => {
+  expect(parseConnectFragment("#ws=https%3A%2F%2F127.0.0.1%2F&token=abc")).toBeNull();
+});
+
+test("pasted url with a non-loopback host is rejected", () => {
+  expect(parseZetaUrl("wss://attacker.example/?token=abc")).toBeNull();
+});
+
+test("loopback websocket hosts are accepted by both parsers", () => {
+  for (const host of ["127.0.0.1", "localhost", "[::1]"]) {
+    expect(parseZetaUrl(`wss://${host}/?token=abc`)).toEqual({ url: `wss://${host}/`, token: "abc" });
+    expect(parseConnectFragment(`#ws=${encodeURIComponent(`wss://${host}/`)}&token=abc`)).toEqual({ url: `wss://${host}/`, token: "abc" });
+  }
+});
