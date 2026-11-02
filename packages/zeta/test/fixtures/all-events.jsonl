@@ -1,9 +1,9 @@
-{"jsonrpc":"2.0","method":"event","params":{"event":"sub_agent_receipt","session_id":"all","data":{"notification_id":"n-1","agent_instance_id":"child"}}}
-{"jsonrpc":"2.0","method":"event","params":{"event":"child_idle","session_id":"all","data":{"notification_id":"n-2","agent_instance_id":"child"}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"sub_agent_receipt","session_id":"all","data":{"notification_id":"n-1","kind":"agent_completion","child_instance_id":"child","child_session_path":"/child","description":"worker","status":"completed","text":"done","summary":"done"}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"child_idle","session_id":"all","data":{"notification_id":"n-2","kind":"child_idle","child_instance_id":"child","child_session_path":"/child","description":"worker","status":"child_idle","text":"idle"}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"task_exit_notification","session_id":"all","data":{"notification_id":"n-3","task_id":"task"}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"project_inbox_notification","session_id":"all","data":{"notification_id":"n-4","project":"research"}}}
-{"jsonrpc":"2.0","method":"event","params":{"event":"child_question","session_id":"all","data":{"notification_id":"n-5","question_id":"q"}}}
-{"jsonrpc":"2.0","method":"event","params":{"event":"child_question_withdrawn","session_id":"all","data":{"notification_id":"n-6","question_id":"q"}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"child_question","session_id":"all","data":{"notification_id":"n-5","kind":"child_question","child_instance_id":"child","question_id":"q","question":"continue?","description":"child question","status":"pending","text":"question"}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"child_question_withdrawn","session_id":"all","data":{"notification_id":"n-6","kind":"child_question_withdrawn","child_instance_id":"child","question_id":"q","description":"child question","status":"withdrawn","text":"withdrawn"}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"memory_updated","session_id":"all","message":"saved","data":{}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"turn_aborted","session_id":"all","data":{"turn":1}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"usage","session_id":"all","usage":{"input_tokens":1,"output_tokens":2}}}
@@ -22,8 +22,8 @@
 {"jsonrpc":"2.0","method":"event","params":{"event":"tool_start","session_id":"all","tool_call":{"id":"tool-1","name":"read","arguments":{"path":"README.md"}},"data":{}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"tool_output","session_id":"all","tool_call":{"id":"tool-1","name":"read","arguments":{"path":"README.md"}},"output":"contents","data":{}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"tool_end","session_id":"all","tool_call":{"id":"tool-1","name":"read","arguments":{"path":"README.md"}},"tool_result":{"tool_call_id":"tool-1","content":"ok","is_error":false},"data":{}}}
-{"jsonrpc":"2.0","method":"event","params":{"event":"notification_by_kind","session_id":"all","data":{"notification_id":"n-7","kind":"agent_completion"}}}
-{"jsonrpc":"2.0","method":"event","params":{"event":"child_message_delivered","session_id":"all","data":{"notification_id":"n-8","message_id":"message"}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"notification_by_kind","session_id":"all","data":{"notification_id":"n-7","kind":"agent_completion","child_instance_id":"child","child_session_path":"/child","description":"worker","status":"error","text":"failed","summary":"failed"}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"child_message_delivered","session_id":"all","data":{"agent_instance_id":"child","child_session_id":"session","prompt_id":"prompt","child_label":"child","preview":"keep going"}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"account_limit","session_id":"all","data":{"limit":"daily"}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"account_state_unknown","session_id":"all","data":{}}}
 {"jsonrpc":"2.0","method":"event","params":{"event":"turn_end","session_id":"all","data":{"turn":1,"tool_calls":1}}}
