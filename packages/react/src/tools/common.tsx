@@ -102,14 +102,15 @@ export const plainOutput = (text: string) => (hasControls(text) ? parseAnsi(text
 /**
  * Tool output in the shared viewer, colored by what it structurally is: ANSI escape codes as theme colors, else the
  * given language, else JSON when the finished text parses as one JSON object or array. `pretty` indents compact JSON.
+ * Logs `follow` their newest line; a document (`follow={false}`) starts at its top.
  */
-export function Output({ text, id, stream, done = true, language, pretty = false }: { text: string; id: string; stream?: "stderr"; done?: boolean; language?: string; pretty?: boolean }) {
+export function Output({ text, id, stream, done = true, language, pretty = false, follow = true }: { text: string; id: string; stream?: "stderr"; done?: boolean; language?: string; pretty?: boolean; follow?: boolean }) {
   const ansi = useAnsi(text);
   const plain = ansi?.text ?? text;
   const json = useMemo(() => (!ansi?.spans.length && done && (!language || language === "json") ? jsonText(plain) : undefined), [ansi?.spans.length, done, language, plain]);
   const shown = json?.json && pretty ? json.text : plain;
   const format: TextFormat | undefined = ansi?.spans.length ? { spans: ansi.spans } : json?.json ? { language: "json" } : language ? { language } : undefined;
-  return <TextViewer text={shown} id={id} label={stream ?? "output"} appendOnly={shown === plain} follow stream={stream} format={format} done={done} />;
+  return <TextViewer text={shown} id={id} label={stream ?? "output"} appendOnly={shown === plain} follow={follow} stream={stream} format={format} done={done} />;
 }
 
 const Row = ({ number, children }: { number: number; children: ReactNode }) => (

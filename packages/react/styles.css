@@ -167,6 +167,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   background: var(--fulcrum-surface);
   color: var(--fulcrum-fg);
 }
+[data-part="tool-output"][data-anchor="start"] { flex-direction: column; }
 [data-part="tool-body"] > * + * { border-top: 1px solid var(--fulcrum-border); }
 /* Approvals show the request in full: it is what the user decides on. */
 [data-part="approval"] [data-part="tool-args"] { max-height: none; color: var(--fulcrum-fg); }
@@ -229,7 +230,6 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 :is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]):active { background: var(--fulcrum-border); }
 :is([data-part="tool"], [data-part="approval"]) button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 [data-part="tool-body"] button[data-action="open-viewer"] { display: block; width: 100%; padding: 0 12px; color: var(--fulcrum-accent); text-align: left; }
-[data-part="tool-body"] button[data-action="open-viewer"]::before { content: "+ "; }
 @media (pointer: coarse) { :is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]) { min-height: 44px; } }
 
 [data-part="approval-actions"] {

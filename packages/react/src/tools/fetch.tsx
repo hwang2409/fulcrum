@@ -23,7 +23,7 @@ export function FetchBody({ item, output, state }: ToolBodyProps) {
         {contentType ? <span data-part="fetch-type">{boundText(contentType.split(";")[0]!, 80).text}</span> : null}
         {title ? <span data-part="fetch-title">{boundText(title).text}</span> : null}
       </div>
-      {output ? <Output text={output} id={`${item.id}:body`} done={state !== "streaming"} language={bodyLanguage(url, contentType)} pretty /> : <Empty state={state} noun="response" />}
+      {output ? <Output text={output} id={`${item.id}:body`} done={state !== "streaming"} language={bodyLanguage(url, contentType)} pretty follow={false} /> : <Empty state={state} noun="response" />}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[url !== undefined ? ["url", url] : ["query", query], ["output", output]]}>
         {size !== undefined ? <span data-part="tool-size">{bytes(size)}</span> : null}
