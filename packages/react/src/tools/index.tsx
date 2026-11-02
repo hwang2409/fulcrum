@@ -16,7 +16,7 @@ export { ReadTool } from "./read.js";
 export { SearchTool } from "./search.js";
 export { ShellTool } from "./shell.js";
 export { WriteTool } from "./write.js";
-export { CappedText, type ToolCardProps, type ToolItem } from "./common.js";
+export type { ToolCardProps, ToolItem } from "./common.js";
 
 export const ToolBody = memo(function ToolBody({ id, onOpenRun }: ItemProps & { onOpenRun?: (childRunId: string) => void }) {
   const item = useItem(id);

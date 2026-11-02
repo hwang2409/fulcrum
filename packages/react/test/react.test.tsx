@@ -264,9 +264,15 @@ test("data-state reflects streaming, done, error, pending", () => {
 });
 
 test("react does not import @fulcrum/zeta", () => {
-  const dir = new URL("../src/", import.meta.url);
-  for (const name of readdirSync(dir))
-    expect(readFileSync(new URL(name, dir), "utf8")).not.toContain("@fulcrum/zeta");
+  const pending = [new URL("../src/", import.meta.url)];
+  while (pending.length) {
+    const dir = pending.pop()!;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = new URL(entry.name, dir);
+      if (entry.isDirectory()) pending.push(new URL(`${path.href}/`));
+      else expect(readFileSync(path, "utf8")).not.toContain("@fulcrum/zeta");
+    }
+  }
   const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
   expect(pkg).not.toContain("@fulcrum/zeta");
 });
