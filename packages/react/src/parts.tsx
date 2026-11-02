@@ -3,6 +3,13 @@ import type { RunItem } from "@fulcrum/core";
 import { useItem, useItemSelector, useTimeline } from "./hooks.js";
 
 export type ItemProps = { id: string; className?: string };
+export type MarkdownContentProps = { source: string; streaming: boolean };
+export type MessageProps = ItemProps & {
+  /** Markdown is enabled for assistant messages when a renderer is supplied. */
+  markdown?: ComponentType<MarkdownContentProps> | false;
+  /** Use `all` to render user-role messages as markdown too. */
+  markdownFor?: "assistant" | "all";
+};
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
 export type Renderers = Partial<Record<string, ComponentType<{ id: string }>>>;
 export type ItemState = "streaming" | "done" | "error" | "pending";
@@ -16,20 +23,28 @@ const messageText = (item: Extract<RunItem, { type: "message" }>) =>
     .map((block) => String(block.text))
     .join("");
 
-export const Message = memo(function Message({ id, className }: ItemProps) {
+export const Message = memo(function Message({
+  id,
+  className,
+  markdown: Markdown,
+  markdownFor = "assistant",
+}: MessageProps) {
   const item = useItem(id);
   if (item?.type !== "message") return null;
+  const text = messageText(item);
+  const rich = Markdown && (markdownFor === "all" || item.message.role === "assistant");
   return (
     <div
       className={className}
-      style={pre}
+      style={rich ? undefined : pre}
       data-part="message"
       data-kind="message"
       data-id={id}
       data-role={item.message.role}
       data-state={item.active ? "streaming" : "done"}
+      data-format={rich ? "markdown" : "text"}
     >
-      {messageText(item)}
+      {rich ? <Markdown source={text} streaming={item.active} /> : text}
     </div>
   );
 });

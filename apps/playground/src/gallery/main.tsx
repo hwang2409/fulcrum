@@ -8,7 +8,8 @@ import "./gallery.css";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore } from "@fulcrum/core";
-import { Approval, RunProvider, Timeline, type Renderers } from "@fulcrum/react";
+import { Markdown } from "@fulcrum/markdown/react";
+import { Approval, Message, RunProvider, Timeline, type Renderers } from "@fulcrum/react";
 import { demos, type Demo } from "./demos";
 
 type Act = (action: "approve" | "deny", requestId: string) => void;
@@ -17,7 +18,10 @@ function GalleryApproval({ id }: { id: string }) {
   const act = useContext(ActContext);
   return <Approval id={id} onApprove={(r) => act("approve", r)} onDeny={(r) => act("deny", r)} />;
 }
-const renderers: Renderers = { approval: GalleryApproval };
+const renderers: Renderers = {
+  message: ({ id }) => <Message id={id} markdown={Markdown} />,
+  approval: GalleryApproval,
+};
 
 const fresh = (demo: Demo) => {
   const store = createRunStore();

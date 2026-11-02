@@ -57,6 +57,14 @@ const q = (selector: string) => container.querySelector(selector) as HTMLElement
 const hostProps = (el: Element) =>
   (el as unknown as Record<string, unknown>)[Object.keys(el).find((key) => key.startsWith("__reactProps$"))!];
 
+test("streaming markdown keeps a finished block element mounted", () => {
+  mount(<Markdown source={"first\n\nsecond"} streaming />);
+  const first = q('[data-part="md-paragraph"]');
+  act(() => root!.render(<Markdown source={"first\n\nsecond grows"} streaming />));
+  expect(q('[data-part="md-paragraph"]')).toBe(first);
+  expect(container.querySelectorAll('[data-part="md-paragraph"]')[1]?.textContent).toBe("second grows");
+});
+
 test("Message composes assistant markdown while user and explicit plain modes stay text", () => {
   const { store } = setup([
     { type: "message_commit", message_id: "assistant", message: message("use `code`") },

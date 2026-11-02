@@ -8,7 +8,7 @@ import {
 } from "../src/index.js";
 import { Markdown } from "../src/react.js";
 
-const json = (blocks: readonly Block[]) => JSON.stringify(blocks);
+const json = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
 
 const conformance: Record<string, Array<[string, string]>> = {
   headings: [["# alpha", "<h1 data-part=\"md-heading\">alpha</h1>"], ["## beta", "<h2 data-part=\"md-heading\">beta</h2>"]],
@@ -46,7 +46,7 @@ test("renders gfm blocks, nested and task lists, and fenced code language", () =
   ].join("\n");
   const html = renderToStaticMarkup(<Markdown source={source} />);
   expect(html).toContain('<ul data-part="md-list">');
-  expect(html).toContain('type="checkbox" disabled="" checked=""');
+  expect(html).toContain('type="checkbox" disabled="" readOnly="" checked=""');
   expect(html).toContain('<ul data-part="md-list"><li data-part="md-list-item">nested</li></ul>');
   expect(html).toContain('<ol data-part="md-list">');
   expect(html).toContain('<table data-part="md-table">');
@@ -107,13 +107,29 @@ test("escapes html and removes unsafe hrefs", () => {
   expect(safe).toContain('href="mailto:a@b.co"');
 });
 
+test("fuzzed html and scheme fragments never become executable markup", () => {
+  let seed = 0x5eed;
+  const alphabet = "<>/='\\\" javascript:data:onerror scriptimg[]()abcdefghijklmnopqrstuvwxyz";
+  for (let sample = 0; sample < 200; sample++) {
+    let source = "";
+    for (let index = 0; index < 80; index++) {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      source += alphabet[seed % alphabet.length];
+    }
+    source += " [x](javascript:alert(1)) <img src=x onerror=alert(1)>";
+    const html = renderToStaticMarkup(<Markdown source={source} />);
+    expect(html).not.toMatch(/<(?:script|img)\b/i);
+    expect(html).not.toMatch(/href=\"(?:javascript|data):/i);
+  }
+});
+
 test("highlighter receives only complete lines and emits fixed token classes", async () => {
   const calls: string[] = [];
   const highlight = (code: string) => {
     calls.push(code);
     return [{ type: "keyword" as const, content: code }];
   };
-  renderToStaticMarkup(<Markdown source={'```ts\nconst a = 1;\npartial\n```'} highlight={highlight} />);
+  renderToStaticMarkup(<Markdown source={'```ts\nconst a = 1;\npartial'} streaming highlight={highlight} />);
   await Promise.resolve();
-  expect(calls).toEqual(["const a = 1;\npartial\n"]);
+  expect(calls).toEqual(["const a = 1;\n"]);
 });

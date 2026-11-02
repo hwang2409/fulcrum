@@ -3,6 +3,7 @@ const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external: [] },
   { name: "virtual", entry: "packages/virtual/dist/index.js", external: [] },
   { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "react", "react-dom"] },
+  { name: "markdown", entry: "packages/markdown/dist/react.js", external: ["react", "react-dom"] },
 ];
 let failed = false;
 const dir = await Bun.$`mktemp -d`.text();

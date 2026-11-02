@@ -3,6 +3,7 @@ import "./app.css";
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
+import { Markdown } from "@fulcrum/markdown/react";
 import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
 import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
@@ -34,7 +35,7 @@ let continueReplay = () => {};
 function CountedMessage({ id }: { id: string }) {
   useItem(id);
   messageRenders++;
-  return <Message id={id} />;
+  return <Message id={id} markdown={Markdown} />;
 }
 function LoggedApproval({ id }: { id: string }) {
   return (
@@ -188,7 +189,10 @@ function Live() {
   const store = client && session ? client.forSession(session) : createRunStore();
   const approve = (id: string) => void client?.request("approve", { session_id: session, request_id: id });
   const deny = (id: string) => void client?.request("deny", { session_id: session, request_id: id });
-  const renderers: Renderers = { approval: ({ id }) => <Approval id={id} onApprove={approve} onDeny={deny} /> };
+  const renderers: Renderers = {
+    message: ({ id }) => <Message id={id} markdown={Markdown} />,
+    approval: ({ id }) => <Approval id={id} onApprove={approve} onDeny={deny} />,
+  };
   return <div className="app live-app"><div className="bar"><strong>live zeta</strong><input aria-label="zeta websocket url" value={input} onChange={(e) => setInput(e.target.value)} placeholder="ws://127.0.0.1:8765/?token=..." /><button type="button" onClick={() => void connect()}>connect</button><select value={session ?? ""} onChange={(e) => setSession(e.target.value)}><option value="">session</option>{sessions.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>{error && <span role="alert">{error}</span>}</div><div className="scroll"><RunProvider store={store}><Timeline renderers={renderers} /></RunProvider></div>{client && session && <form className="composer" onSubmit={(e) => { e.preventDefault(); if (text.trim()) { void client.request("send", { session_id: session, text }); setText(""); } }}><textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="send a message" /><button type="submit">send</button></form>}</div>;
 }
 

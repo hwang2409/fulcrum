@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@fulcrum/core": "workspace:*",
+    "@fulcrum/markdown": "workspace:*",
     "@fulcrum/react": "workspace:*",
     "@fulcrum/zeta": "workspace:*",
     "react": "^19",
