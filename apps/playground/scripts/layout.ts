@@ -261,6 +261,22 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
   return { fixture, width, openMs, appendMs, bottomGap, appendGap, middleMoved: middleAfter > middleBefore, outerMiddleDelta, outerBoundaryDelta, longTasks, tokens, scroll };
 }
 
+// A large edit or search keeps its structure in the open viewer: language tokens, row kinds, and marks.
+async function checkStructuredViewer(page: Page, fixture: "edit" | "search") {
+  await page.goto(`http://127.0.0.1:${port}/gallery.html?viewerFixture=${fixture}`);
+  const button = page.getByRole("button", { name: /^open all/ });
+  await button.waitFor();
+  await button.click();
+  const viewer = page.locator('[data-part="text-viewer"]');
+  await viewer.waitFor();
+  await page.waitForTimeout(1_500);
+  const selectors = fixture === "edit"
+    ? { tokens: "[class^=tok-]", inserted: '[data-part="diff-line"][data-change="insert"]', deleted: '[data-part="diff-line"][data-change="delete"]', marks: 'mark[data-part="diff-word"]' }
+    : { tokens: "[class^=tok-]", heads: '[data-part="search-head"]', lines: '[data-part="line"][data-match]', marks: 'mark[data-part="search-match"]' };
+  const found = await viewer.evaluate((node, selectors) => Object.fromEntries(Object.entries(selectors).map(([name, selector]) => [name, node.querySelectorAll(selector).length])), selectors);
+  return Object.entries(found).filter(([, count]) => !count).map(([name]) => `viewer ${fixture}: no ${name} in the open viewer (${JSON.stringify(found)})`);
+}
+
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const failures: string[] = [];
 try {
@@ -414,6 +430,13 @@ try {
       if (measured.outerBoundaryDelta !== 0) failures.push(`viewer ${fixture} @ ${width}: boundary wheel moved outer page ${measured.outerBoundaryDelta}px`);
       await page.close();
     }
+  }
+  for (const fixture of ["edit", "search"] as const) {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+    const problems = await checkStructuredViewer(page, fixture);
+    failures.push(...problems);
+    if (!problems.length) console.log(`ok   viewer ${fixture}: tokens, row kinds, and marks`);
+    await page.close();
   }
 } finally {
   await browser?.close();

@@ -479,3 +479,17 @@ if (viewerFixture === "single" || viewerFixture === "lines" || viewerFixture ===
     events: [start(tool, view), out(tool, fixture)],
   });
 }
+// `edit` is a 40,000-line TypeScript diff and `search` 20,000 matches in 400 files: the viewer keeps their structure.
+if (viewerFixture === "edit" || viewerFixture === "search") {
+  const tool = call("viewer-check", viewerFixture === "edit" ? "edit" : "grep", {});
+  const diff = Array.from({ length: 10_000 }, (_, i) => `@@ -${i * 3 + 1},2 +${i * 3 + 1},2 @@\n const a${i} = 1;\n-let count = ${i};\n+let count = ${i + 1};\n`).join("");
+  const matches = Array.from({ length: 20_000 }, (_, i) => (i % 100 < 50 ? `src/f${(i / 50) | 0}.ts:${i}:  const todo = "TODO ${i}";` : `docs/n${(i / 50) | 0}.md:${i}:- FIXME **later** ${i}`)).join("\n");
+  const view: ToolView = viewerFixture === "edit" ? { kind: "edit", path: "src/huge.ts", diff } : { kind: "search", pattern: "TODO|FIXME" };
+  demos.splice(0, demos.length, {
+    id: "text-viewer-check",
+    part: "ToolCall",
+    title: `${viewerFixture} structured viewer check`,
+    description: "browser-only layout fixture: a large structured tool output keeps its rows in the viewer",
+    events: viewerFixture === "edit" ? [start(tool, view)] : [start(tool, view), out(tool, matches)],
+  });
+}

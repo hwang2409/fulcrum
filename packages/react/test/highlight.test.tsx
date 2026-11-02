@@ -57,15 +57,18 @@ test("each card asks for the language its content structurally has", () => {
     ...done("wr", "write", { kind: "write", path: "web/app.tsx", content: "export const A = 1;\n" }, "wrote"),
     ...done("fj", "fetch", { kind: "fetch", url: "https://api.example.com/v1/runs", status: 200, contentType: "application/json; charset=utf-8" }, '{"ok":true}'),
     ...done("fh", "fetch", { kind: "fetch", url: "https://example.com/", status: 200, contentType: "text/html" }, "<p>hi</p>"),
+    ...done("fo", "fetch", { kind: "fetch", url: "https://example.test/src/app.ts?raw=1", status: 200, contentType: "application/octet-stream" }, "const a = 1;\n"),
     ...done("ge", "custom", undefined, '[{"id":1}]', { id: 1 }),
     ...done("txt", "custom", undefined, "not json: {\"a\":1}"),
-  ], ["tool:sh", "tool:py", "tool:mk", "tool:wr", "tool:fj", "tool:fh", "tool:ge", "tool:txt"], highlight);
+  ], ["tool:sh", "tool:py", "tool:mk", "tool:wr", "tool:fj", "tool:fh", "tool:fo", "tool:ge", "tool:txt"], highlight);
   expect(languages(calls, "sh")).toEqual(["shell", undefined].filter(Boolean) as string[]);
   expect(languages(calls, "py")).toEqual(["python"]);
   expect(languages(calls, "mk")).toEqual(["makefile"]);
   expect(languages(calls, "wr")).toEqual(["tsx"]);
   expect(languages(calls, "fj")).toEqual(["json"]);
   expect(languages(calls, "fh")).toEqual(["html"]);
+  // A content type with no language falls back to the url's extension.
+  expect(languages(calls, "fo")).toEqual(["typescript"]);
   expect(languages(calls, "ge")).toEqual(["json"]);
   expect(languages(calls, "txt")).toEqual([]);
   // The shell command is highlighted in the header; compact JSON from a server is indented for reading.
@@ -129,6 +132,43 @@ test("the large viewer highlights only its mounted rows, never the whole text", 
   expect(viewerCalls.every((call) => call.code.length <= 2_000)).toBe(true);
   expect(q('[data-part="text-viewer-head"]').textContent).toContain(`${(text.length / line.length).toLocaleString("en-US")} lines`);
   if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+});
+
+// Opens the large viewer of the rendered card with a 320 px viewport.
+function openViewer() {
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 320 });
+  act(() => q('[data-action="open-viewer"]').click());
+  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+  return q('[data-part="text-viewer"]');
+}
+
+test("a large edit keeps its language, row kinds, and changed spans in the preview and the viewer", () => {
+  const { highlight, calls } = fakeHighlighter();
+  const hunks = Array.from({ length: 2_000 }, (_, i) => `@@ -${i * 3 + 1},2 +${i * 3 + 1},2 @@\n const a${i} = 1;\n-let count = ${i};\n+let count = ${i + 1};\n`).join("");
+  render(done("bigedit", "edit", { kind: "edit", path: "src/store.ts", diff: hunks }, "ok"), ["tool:bigedit"], highlight);
+  for (const scope of [q('[data-id="tool:bigedit"]'), openViewer()]) {
+    expect(scope.querySelector('[data-part="diff-line"][data-change="insert"] [data-part="diff-text"] .tok-keyword')).not.toBeNull();
+    expect(scope.querySelector('[data-part="diff-line"][data-change="delete"] mark[data-part="diff-word"]')).not.toBeNull();
+    expect(scope.querySelector('[data-part="diff-line"][data-change="insert"] mark[data-part="diff-word"]')).not.toBeNull();
+  }
+  expect(languages(calls, "bigedit")).toEqual(["typescript"]);
+  // Only mounted rows are highlighted.
+  expect(calls.reduce((sum, call) => sum + call.code.length, 0)).toBeLessThan(hunks.length / 4);
+});
+
+test("a large search keeps each file's language, its heads, and the match marks in the preview and the viewer", () => {
+  const { highlight, calls } = fakeHighlighter();
+  const lines = Array.from({ length: 4_000 }, (_, i) => (i % 2 ? `docs/n${i >> 4}.md:${i}:FIXME later ${i}` : `src/f${i >> 4}.ts:${i}:  // TODO: cap ${i}`)).join("\n");
+  render(done("bigsearch", "grep", { kind: "search", pattern: "TODO|FIXME" }, lines), ["tool:bigsearch"], highlight);
+  for (const scope of [q('[data-id="tool:bigsearch"]'), openViewer()]) {
+    expect(scope.querySelector('[data-part="search-head"] [data-part="search-path"]')).not.toBeNull();
+    expect(scope.querySelector('[data-part="line-text"] .tok-keyword')).not.toBeNull();
+    expect([...scope.querySelectorAll('mark[data-part="search-match"]')].slice(0, 2).map((mark) => mark.textContent)).toEqual(["TODO", "FIXME"]);
+  }
+  expect(languages(calls, "bigsearch")).toEqual(["typescript", "markdown"]);
+  expect(calls.reduce((sum, call) => sum + call.code.length, 0)).toBeLessThan(lines.length / 4);
+  expect(q('[data-part="search-total"]').textContent).toBe("4000 matches in 4000 files");
 });
 
 test("segmenting a 2M-character line with no newline stays linear", async () => {
