@@ -5,14 +5,14 @@ import { appendText } from "./stream.js";
 export const RECEIPT_LIMIT = 1_000;
 
 export interface OutlineItem {
-  id: string;
-  kind: RunItem["type"];
+  readonly id: string;
+  readonly kind: RunItem["type"];
 }
 
 export interface RunState {
   turns: string[];
   items: string[];
-  outline: OutlineItem[];
+  outline: readonly OutlineItem[];
   itemsById: Record<string, RunItem>;
   usage: Record<string, number>;
   agent: "idle" | "running";
