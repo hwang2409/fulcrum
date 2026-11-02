@@ -1,0 +1,188 @@
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+GlobalRegistrator.register();
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+import { afterAll, afterEach, expect, test } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
+import { act, Profiler, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { createRunStore, type RunEvent } from "@fulcrum/core";
+import {
+  Approval,
+  Message,
+  RunProvider,
+  Timeline,
+  ToolCall,
+  type Renderers,
+} from "../src/index.js";
+
+afterAll(() => GlobalRegistrator.unregister());
+
+const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+const call = (id: string, name: string) => ({ id, name, arguments: {} });
+
+function setup(events: RunEvent[]) {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore(undefined, (job) => jobs.push(job));
+  const send = (...more: RunEvent[]) =>
+    act(() => {
+      more.forEach(store.dispatch);
+      jobs.splice(0).forEach((job) => job());
+    });
+  events.forEach(store.dispatch);
+  jobs.splice(0).forEach((job) => job());
+  return { store, send };
+}
+
+let root: Root | undefined;
+let container: HTMLElement;
+afterEach(() => {
+  act(() => root?.unmount());
+  root = undefined;
+  container?.remove();
+});
+function mount(node: ReactNode) {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  act(() => root!.render(node));
+  return container;
+}
+const q = (selector: string) => container.querySelector(selector) as HTMLElement;
+// react-dom keeps the committed props object on each host node; a new object means the owner re-rendered.
+const hostProps = (el: Element) =>
+  (el as unknown as Record<string, unknown>)[Object.keys(el).find((key) => key.startsWith("__reactProps$"))!];
+
+test("a delta re-renders only the streaming item", async () => {
+  const { store, send } = setup([
+    { type: "message_commit", message_id: "a", message: message("one") },
+    { type: "message_commit", message_id: "b", message: message("two") },
+    { type: "message_delta", message_id: "c", delta: "x" },
+  ]);
+  const commits: Record<string, number> = {};
+  const rows: Record<string, number> = {};
+  const Counted = ({ id }: { id: string }) => {
+    rows[id] = (rows[id] ?? 0) + 1;
+    return (
+      <Profiler id={id} onRender={() => (commits[id] = (commits[id] ?? 0) + 1)}>
+        <Message id={id} />
+      </Profiler>
+    );
+  };
+  const renderers: Renderers = { message: Counted };
+  mount(
+    <RunProvider store={store}>
+      <Timeline renderers={renderers} />
+    </RunProvider>,
+  );
+  const timelineProps = hostProps(q('[data-part="timeline"]'));
+  const before = { commits: { ...commits }, rows: { ...rows } };
+
+  for (let i = 0; i < 5; i++) send({ type: "message_delta", message_id: "c", delta: "y" });
+
+  expect(q('[data-id="message:c"]').textContent).toBe("xyyyyy");
+  expect(commits["message:c"]).toBe(before.commits["message:c"]! + 5);
+  expect(commits["message:a"]).toBe(before.commits["message:a"]!);
+  expect(commits["message:b"]).toBe(before.commits["message:b"]!);
+  expect(rows).toEqual(before.rows);
+  expect(hostProps(q('[data-part="timeline"]'))).toBe(timelineProps);
+  expect(store.getState().items).toHaveLength(3);
+});
+
+test("timeline renders items in order with renderer by kind and by tool name", () => {
+  const { store } = setup([
+    { type: "message_commit", message_id: "a", message: message("hello") },
+    { type: "tool_start", tool_call: call("t1", "bash") },
+    { type: "tool_start", tool_call: call("t2", "read") },
+    { type: "message_commit", message_id: "b", message: message("bye") },
+  ]);
+  const renderers: Renderers = {
+    message: ({ id }) => <i data-r="message">{id}</i>,
+    tool: ({ id }) => <i data-r="tool">{id}</i>,
+    "tool:bash": ({ id }) => <i data-r="bash">{id}</i>,
+  };
+  mount(
+    <RunProvider store={store}>
+      <Timeline renderers={renderers} />
+    </RunProvider>,
+  );
+  const seen = [...container.querySelectorAll("[data-r]")].map(
+    (el) => `${el.getAttribute("data-r")}=${el.textContent}`,
+  );
+  expect(seen).toEqual(["message=message:a", "bash=tool:t1", "tool=tool:t2", "message=message:b"]);
+});
+
+test("unknown item kind uses the fallback renderer", () => {
+  const { store } = setup([
+    { type: "unknown", name: "future_event", data: {} },
+    { type: "user_message", text: "hi there", mode: "chat" },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <Timeline renderers={{ message: () => <i>never</i> }} />
+    </RunProvider>,
+  );
+  const items = [...container.querySelectorAll('[data-part="item"]')];
+  expect(items.map((el) => el.getAttribute("data-kind"))).toEqual(["unknown", "user"]);
+  expect(items[0]!.textContent).toBe("future_event");
+  expect(items[1]!.textContent).toBe("hi there");
+});
+
+test("approval calls onApprove and onDeny with the request id", () => {
+  const { store } = setup([
+    { type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false },
+  ]);
+  const calls: string[] = [];
+  mount(
+    <RunProvider store={store}>
+      <Approval
+        id="approval:r1"
+        className="mine"
+        onApprove={(id) => calls.push(`approve:${id}`)}
+        onDeny={(id) => calls.push(`deny:${id}`)}
+      />
+    </RunProvider>,
+  );
+  expect(q('[data-part="approval"]').className).toBe("mine");
+  act(() => q('[data-action="approve"]').click());
+  act(() => q('[data-action="deny"]').click());
+  expect(calls).toEqual(["approve:r1", "deny:r1"]);
+});
+
+test("data-state reflects streaming, done, error, pending", () => {
+  const { store, send } = setup([
+    { type: "message_delta", message_id: "m", delta: "hi" },
+    { type: "tool_start", tool_call: call("t1", "bash") },
+    { type: "approval_request", request_id: "r1", tool_call: call("t2", "bash"), delegated: false },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <Message id="message:m" />
+      <ToolCall id="tool:t1" />
+      <Approval id="approval:r1" />
+    </RunProvider>,
+  );
+  const state = (part: string) => q(`[data-part="${part}"]`).getAttribute("data-state");
+  expect([state("message"), state("tool"), state("approval")]).toEqual(["streaming", "streaming", "pending"]);
+  expect(q('[data-part="message"]').style.whiteSpace).toBe("pre-wrap");
+
+  send(
+    { type: "message_commit", message_id: "m", message: message("hi") },
+    {
+      type: "tool_end",
+      tool_call: call("t1", "bash"),
+      tool_result: { tool_call_id: "t1", content: "boom", is_error: true },
+    },
+    { type: "approval_end", request_id: "r1" },
+  );
+  expect([state("message"), state("tool"), state("approval")]).toEqual(["done", "error", "done"]);
+  expect(q('[data-part="tool"]').getAttribute("data-tool")).toBe("bash");
+});
+
+test("react does not import @fulcrum/zeta", () => {
+  const dir = new URL("../src/", import.meta.url);
+  for (const name of readdirSync(dir))
+    expect(readFileSync(new URL(name, dir), "utf8")).not.toContain("@fulcrum/zeta");
+  const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+  expect(pkg).not.toContain("@fulcrum/zeta");
+});
