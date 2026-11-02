@@ -44,7 +44,7 @@ export function SearchBody({ item, output, state }: ToolBodyProps) {
         </div>
       ) : <Output text={text} />}
       {groups ? <ShowAll window={window} expanded={expanded} expand={() => setExpanded(true)} noun="matches" /> : null}
-      {asking(state) ? <Arguments call={item.tool_call} /> : null}
+      {asking(state) ? <Arguments call={item.tool_call} version={item.version} /> : null}
       <Foot copy={[["pattern", item.view.pattern], ["output", text]]} />
     </>
   );

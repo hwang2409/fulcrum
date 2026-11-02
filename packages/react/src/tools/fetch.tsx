@@ -12,7 +12,7 @@ export function FetchBody({ item, output, state }: ToolBodyProps) {
         {title ? <span data-part="fetch-title">{boundText(title).text}</span> : null}
       </div>
       {output ? <Output text={output} /> : <Empty state={state} noun="response" />}
-      {asking(state) ? <Arguments call={item.tool_call} /> : null}
+      {asking(state) ? <Arguments call={item.tool_call} version={item.version} /> : null}
       <Foot copy={[url !== undefined ? ["url", url] : ["query", query], ["output", output]]}>
         {size !== undefined ? <span data-part="tool-size">{bytes(size)}</span> : null}
       </Foot>

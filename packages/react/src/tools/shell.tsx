@@ -19,7 +19,7 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
         </>
       ) : output ? <Output text={output} /> : null}
       {all ? null : <Empty state={state} />}
-      {asking(state) ? <Arguments call={item.tool_call} /> : null}
+      {asking(state) ? <Arguments call={item.tool_call} version={item.version} /> : null}
       <Foot copy={[["command", command], ["output", all]]}>
         {exitCode !== undefined ? <span data-part="tool-exit" data-exit-code={exitCode}>exit {exitCode}</span> : null}
         {cwd ? <span data-part="tool-cwd">{boundText(cwd).text}</span> : null}

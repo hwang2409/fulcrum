@@ -41,7 +41,7 @@ export function EditBody({ item, output, state }: ToolBodyProps) {
       </div>
       <ShowAll window={window} expanded={expanded} expand={() => setExpanded(true)} />
       {output ? <Output text={output} /> : null}
-      {asking(state) ? <Arguments call={item.tool_call} /> : null}
+      {asking(state) ? <Arguments call={item.tool_call} version={item.version} /> : null}
       <Foot copy={[["path", item.view.path], ["diff", diff]]} />
     </>
   );
