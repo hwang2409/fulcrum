@@ -280,7 +280,7 @@ export function reduceAllWithEntities(
           {
             id: itemId,
             type: "tool",
-            tool_call: prior?.tool_call ?? event.tool_call,
+            tool_call: prior?.tool_call.arguments === event.tool_call.arguments ? prior.tool_call : event.tool_call,
             view: event.view ?? prior?.view,
             output: "",
             version: (prior?.version ?? 0) + 1,

@@ -5,7 +5,7 @@
 // rendered status word needs 4.5:1 and every state mark and state rail 3:1 against the background it is drawn on, and
 // ok, warn, danger, and accent (running) need 3:1 on bg, when a capped output box cuts through a line, or when
 // the keyword, string, comment, function, and type token colors are not all distinct. Needs a production build (`bun run build`).
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 
@@ -41,7 +41,7 @@ function pageProblems(minHeight: number) {
   const cards = [...document.querySelectorAll<HTMLElement>("[data-part=approval][data-state=pending]")];
   if (!cards.length) return ["no pending approval on the page"];
   for (const card of cards) {
-  const buttons = [...card.querySelectorAll<HTMLButtonElement>("button")];
+  const buttons = [...card.querySelectorAll<HTMLButtonElement>("[data-part=approval-actions] button")];
   if (buttons.length !== 2) problems.push(`${card.dataset.id}: ${buttons.length} buttons, expected approve and deny`);
   for (const button of buttons) {
     const name = `${card.dataset.id} ${button.textContent?.trim() || "(unnamed button)"}`;
@@ -87,7 +87,7 @@ function pageProblems(minHeight: number) {
     }
   }
   // A capped output or arguments box must cut between lines at its scrolled edge, not through a line's glyphs.
-  for (const box of document.querySelectorAll<HTMLElement>("[data-part=tool-output], [data-part=tool-args]")) {
+  for (const box of document.querySelectorAll<HTMLElement>("[data-part=tool-output], [data-part=tool-args], [data-part=tool-lines], [data-part=tool-diff], [data-part=tool-matches]")) {
     if (box.scrollHeight <= box.clientHeight) continue;
     const style = getComputedStyle(box);
     const pad = parseFloat(style.flexDirection === "column-reverse" ? style.paddingBottom : style.paddingTop);
@@ -98,6 +98,59 @@ function pageProblems(minHeight: number) {
     if (!seen.has(state)) problems.push(`no ${state.replace(":", " in state ")} on the page to check`);
   }
   return problems;
+}
+
+type ViewerMeasurement = { fixture: string; width: number; openMs: number; appendMs: number; bottomGap: number; appendGap: number; middleMoved: boolean; outerMiddleDelta: number; outerBoundaryDelta: number };
+
+async function measureViewer(page: Page, width: number, fixture: "single" | "lines"): Promise<ViewerMeasurement> {
+  await page.goto(`http://127.0.0.1:${port}/gallery.html?viewerFixture=${fixture}`);
+  const button = page.getByRole("button", { name: /^open all/ });
+  await button.waitFor();
+  const openMs = await page.evaluate(() => new Promise<number>((resolve) => requestAnimationFrame(() => {
+    const root = document.querySelector('[data-part="tool-body"]')!;
+    const observer = new MutationObserver(() => {
+      if (!document.querySelector('[data-part="text-viewer"]')) return;
+      observer.disconnect();
+      resolve(performance.now() - started);
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    const started = performance.now();
+    (document.querySelector('[data-action="open-viewer"]') as HTMLButtonElement).click();
+  })));
+  const viewer = page.locator('[data-part="text-viewer"]');
+  await viewer.waitFor();
+  await page.waitForTimeout(1_000);
+  const bottomGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
+
+  await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight / 2; });
+  const middleBefore = await viewer.evaluate((node) => node.scrollTop);
+  await viewer.hover();
+  const outerMiddleBefore = await page.evaluate(() => scrollY);
+  await page.mouse.wheel(0, 120);
+  await page.waitForTimeout(50);
+  const middleAfter = await viewer.evaluate((node) => node.scrollTop);
+  const outerMiddleDelta = await page.evaluate((before) => scrollY - before, outerMiddleBefore);
+
+  await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+  await page.evaluate(() => { document.body.style.paddingBottom = "2000px"; scrollBy(0, 100); });
+  await viewer.hover();
+  const outerBoundaryBefore = await page.evaluate(() => scrollY);
+  await page.mouse.wheel(0, 300);
+  await page.waitForTimeout(50);
+  const outerBoundaryDelta = await page.evaluate((before) => scrollY - before, outerBoundaryBefore);
+
+  await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+  await page.waitForTimeout(100);
+  const appendMs = await page.evaluate(() => new Promise<number>((resolve) => requestAnimationFrame(() => {
+    const viewer = document.querySelector('[data-part="text-viewer"]')!;
+    const observer = new MutationObserver(() => { observer.disconnect(); resolve(performance.now() - started); });
+    observer.observe(viewer, { childList: true, subtree: true, characterData: true, attributes: true });
+    const started = performance.now();
+    (window as typeof window & { __appendViewerFixture: (delta: string) => void }).__appendViewerFixture("\nstreamed tail");
+  })));
+  await page.waitForTimeout(500);
+  const appendGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
+  return { fixture, width, openMs, appendMs, bottomGap, appendGap, middleMoved: middleAfter > middleBefore, outerMiddleDelta, outerBoundaryDelta };
 }
 
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -211,6 +264,20 @@ try {
       if (!problems.length) console.log(`ok   ${path} @ ${width}`);
     }
     await page.close();
+  }
+  for (const width of [390, 1440]) {
+    for (const fixture of ["single", "lines"] as const) {
+      const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
+      const measured = await measureViewer(page, width, fixture);
+      console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms, append ${measured.appendMs.toFixed(1)} ms, gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px`);
+      if (measured.openMs >= 16) failures.push(`viewer ${fixture} @ ${width}: open took ${measured.openMs.toFixed(1)} ms, needs <16 ms`);
+      if (measured.appendMs >= 16) failures.push(`viewer ${fixture} @ ${width}: append took ${measured.appendMs.toFixed(1)} ms, needs <16 ms`);
+      if (Math.abs(measured.bottomGap) > 1) failures.push(`viewer ${fixture} @ ${width}: initial bottom gap ${measured.bottomGap.toFixed(1)} px, needs <=1 px`);
+      if (Math.abs(measured.appendGap) > 1) failures.push(`viewer ${fixture} @ ${width}: append bottom gap ${measured.appendGap.toFixed(1)} px, needs <=1 px`);
+      if (!measured.middleMoved || measured.outerMiddleDelta !== 0) failures.push(`viewer ${fixture} @ ${width}: middle wheel did not stay inside viewer`);
+      if (measured.outerBoundaryDelta !== 0) failures.push(`viewer ${fixture} @ ${width}: boundary wheel moved outer page ${measured.outerBoundaryDelta}px`);
+      await page.close();
+    }
   }
 } finally {
   await browser?.close();
