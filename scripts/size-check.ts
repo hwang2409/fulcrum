@@ -2,7 +2,9 @@ const defaultBudget = Number(process.env.SIZE_BUDGET_BYTES ?? 5_000);
 const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external: [], budget: defaultBudget },
   { name: "virtual", entry: "packages/virtual/dist/index.js", external: [], budget: defaultBudget },
-  { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "@fulcrum/virtual", "react", "react-dom"], budget: 8_000 },
+  // react holds the virtual Timeline and the per-tool cards. Henry: "i dont really care about the size of fulcrum", so
+  // this budget only catches runaway growth.
+  { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "@fulcrum/virtual", "react", "react-dom"], budget: 12_000 },
 ];
 let failed = false;
 const dir = await Bun.$`mktemp -d`.text();
