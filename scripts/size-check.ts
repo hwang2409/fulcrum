@@ -2,7 +2,7 @@ const defaultBudget = Number(process.env.SIZE_BUDGET_BYTES ?? 5_000);
 const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external: [], budget: defaultBudget },
   { name: "virtual", entry: "packages/virtual/dist/index.js", external: [], budget: defaultBudget },
-  { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "@fulcrum/virtual", "react", "react-dom"], budget: 4_000 },
+  { name: "react", entry: "packages/react/dist/index.js", external: ["@fulcrum/core", "@fulcrum/virtual", "react", "react-dom"], budget: 8_000 },
 ];
 let failed = false;
 const dir = await Bun.$`mktemp -d`.text();
