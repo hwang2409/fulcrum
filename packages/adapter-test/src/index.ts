@@ -34,6 +34,10 @@ const identity = (event: RunEvent): string | undefined => {
     default: return undefined;
   }
 };
+const hasIdentity = (event: RunEvent) => [
+  "message_delta", "message_commit", "tool_start", "tool_input", "tool_output", "tool_end", "approval_request", "approval_end",
+].includes(event.type);
+const identities = (events: readonly RunEvent[]) => events.filter(hasIdentity).map(identity);
 const messageText = (item: RunItem) => item.type === "message"
   ? item.message.content.filter((part) => part.type === "text").map((part) => String(part.text ?? "")).join("") || item.text || ""
   : "";
@@ -114,11 +118,11 @@ export function runAdapterConformance(options: AdapterConformanceOptions): strin
   const replayFixtures = options.fixtures.filter((fixture) => fixture.scenario === "replay");
   const stores = new Map<string, Store>();
   const first = run(replayFixtures, new Map(), stores);
-  const firstIds = first.events.map(identity);
+  const firstIds = identities(first.events);
   require(firstIds.length > 0 && firstIds.every(Boolean), "replay", "event identity must be nonempty");
   const before = [...stores.values()].map((store) => store.getOutline().map(({ id }) => id));
   const second = run(replayFixtures, new Map(), stores);
-  const secondIds = second.events.map(identity);
+  const secondIds = identities(second.events);
   require(JSON.stringify(firstIds) === JSON.stringify(secondIds), "replay", "ids changed across reconnect replay");
   const after = [...stores.values()].map((store) => store.getOutline().map(({ id }) => id));
   require(JSON.stringify(before) === JSON.stringify(after), "replay", "reconnect replay changed outline membership");

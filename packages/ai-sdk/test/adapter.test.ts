@@ -39,3 +39,28 @@ test("preliminary tool output keeps the tool active", () => {
   expect(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "first", preliminary: true }).map(({ type }) => type)).toEqual(["tool_output"]);
   expect(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "final" }).map(({ type }) => type)).toEqual(["tool_output", "tool_end"]);
 });
+
+test("commits source and file parts without losing their typed fields", () => {
+  const adapter = createAiSdkAdapter();
+  adapter.decode({ type: "start", messageId: "assets" });
+  adapter.decode({ type: "source-url", sourceId: "source-1", url: "https://example.com", title: "Example", providerMetadata: { mock: { rank: 1 } } });
+  adapter.decode({ type: "source-document", sourceId: "source-2", mediaType: "application/pdf", title: "Guide", filename: "guide.pdf" });
+  adapter.decode({ type: "file", url: "data:image/png;base64,eA==", mediaType: "image/png" });
+  const commit = adapter.decode({ type: "finish" }).find((event) => event.type === "message_commit");
+  expect(commit?.type === "message_commit" ? commit.message.content : undefined).toEqual([
+    { type: "source", kind: "source", url: "https://example.com", title: "Example", meta: { sourceId: "source-1", providerMetadata: [{ mock: { rank: 1 } }] } },
+    { type: "source", kind: "source", mediaType: "application/pdf", title: "Guide", filename: "guide.pdf", meta: { sourceId: "source-2" } },
+    { type: "file", kind: "file", url: "data:image/png;base64,eA==", mediaType: "image/png" },
+  ]);
+});
+
+test("preserves block and tool protocol metadata in generic meta bags", () => {
+  const adapter = createAiSdkAdapter();
+  adapter.decode({ type: "start", messageId: "meta" });
+  adapter.decode({ type: "text-start", id: "text", providerMetadata: { mock: { trace: "t" } } });
+  adapter.decode({ type: "text-delta", id: "text", delta: "hello", providerMetadata: { mock: { trace: "delta" } } });
+  const [tool] = adapter.decode({ type: "tool-input-available", toolCallId: "call", toolName: "search", input: {}, providerExecuted: true, dynamic: true, title: "Search", providerMetadata: { mock: { trace: "tool" } } });
+  expect(tool?.type === "tool_start" ? tool.tool_call.meta : undefined).toEqual({ providerExecuted: true, dynamic: true, title: "Search", providerMetadata: [{ mock: { trace: "tool" } }] });
+  const commit = adapter.decode({ type: "finish" }).find((event) => event.type === "message_commit");
+  expect(commit?.type === "message_commit" ? commit.message.content[0]?.meta : undefined).toEqual({ providerMetadata: [{ mock: { trace: "t" } }, { mock: { trace: "delta" } }] });
+});
