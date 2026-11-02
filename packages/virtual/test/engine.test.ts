@@ -42,6 +42,17 @@ describe("prefix and range math", () => {
     const virtual = createVirtualizer({ estimateSize: () => 10 });
     expect(() => virtual.setOutline([{ id: "a", kind: "x" }, { id: "a", kind: "x" }])).toThrow("unique");
   });
+  test("owns outline item ids and kinds", () => {
+    const item = { id: "a", kind: "10" };
+    const virtual = createVirtualizer({ estimateSize: Number });
+    virtual.setOutline([item]);
+    virtual.setViewport({ scrollTop: 0, size: 10, source: "user" });
+    item.id = "b";
+    item.kind = "20";
+    expect(virtual.getSnapshot().rows[0]).toMatchObject({ id: "a", kind: "10" });
+    expect(() => virtual.measure("b", 5)).toThrow("outside the outline");
+    expect(() => virtual.measure("a", 5)).not.toThrow();
+  });
   test("updates a measured point and total", () => {
     const virtual = engine([10, 10, 10]);
     virtual.measure("row-1", 25);
@@ -233,11 +244,61 @@ describe("bottom and scroll semantics", () => {
     virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
     expect(virtual.getSnapshot()).toMatchObject({ programmatic: false, correctionEvent: false, pinned: true });
   });
+  test("a newer programmatic scroll supersedes an expected correction", () => {
+    const virtual = engine([30, 30], 10, 0);
+    virtual.setViewport({ scrollTop: 50, size: 10, source: "programmatic" });
+    const token = virtual.beforeMutation();
+    virtual.measure("row-0", 10);
+    expect(virtual.afterMutation(token)).toMatchObject({ scrollTop: 30, jump: -20 });
+    virtual.scrollToId("row-0");
+    virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
+    expect(virtual.getSnapshot()).toMatchObject({ pinned: true, programmatic: false, correctionEvent: false });
+    const append = virtual.beforeMutation();
+    virtual.setOutline([...items([10, 30]).outline, { id: "row-2", kind: "10:2" }]);
+    expect(virtual.afterMutation(append)).toMatchObject({ followedBottom: true, scrollTop: 40 });
+  });
+  test("seeded scroll ownership always follows a user-pinned bottom", () => {
+    let seed = 0x51a1e;
+    const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+    const virtual = engine([20, 20], 10, 30);
+    let count = 2;
+    for (let step = 0; step < 200; step++) {
+      const before = virtual.beforeMutation();
+      virtual.measure("row-0", 10 + Math.floor(random() * 20));
+      virtual.afterMutation(before);
+      virtual.scrollToId(random() < 0.5 ? "row-0" : `row-${count - 1}`);
+      if (random() < 0.5) virtual.flushPendingCorrection();
+      const bottom = virtual.getSnapshot().totalSize - 10;
+      virtual.setViewport({ scrollTop: bottom, size: 10, source: "user" });
+      expect(virtual.getSnapshot().pinned).toBe(true);
+      const append = virtual.beforeMutation();
+      const outline = Array.from({ length: ++count }, (_, index) => ({ id: `row-${index}`, kind: index === 0 ? "20:0" : `10:${index}` }));
+      virtual.setOutline(outline);
+      expect(virtual.afterMutation(append).followedBottom).toBe(true);
+    }
+  });
   test("shift mode keeps distance from the end on prepend", () => {
     const virtual = engine([10, 10, 10], 10, 5);
     const token = virtual.beforeMutation({ mode: "shift" });
     virtual.setOutline([{ id: "older", kind: "7" }, ...items([10, 10, 10]).outline]);
     expect(virtual.afterMutation(token)).toMatchObject({ scrollTop: 12, jump: 7 });
+  });
+});
+
+describe("observable snapshots", () => {
+  test("keeps the same snapshot reference until a mutation", () => {
+    const virtual = engine([10]);
+    const snapshot = virtual.getSnapshot();
+    expect(virtual.getSnapshot()).toBe(snapshot);
+    virtual.measure("row-0", 11);
+    expect(virtual.getSnapshot()).not.toBe(snapshot);
+    expect(virtual.getSnapshot()).toBe(virtual.getSnapshot());
+  });
+  test("replaces the snapshot for a notified mutation even when values match", () => {
+    const virtual = engine([10]);
+    const snapshot = virtual.getSnapshot();
+    virtual.setViewport({ scrollTop: 0, size: 100, source: "user" });
+    expect(virtual.getSnapshot()).not.toBe(snapshot);
   });
 });
 

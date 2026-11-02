@@ -1,4 +1,4 @@
-export type OutlineItem<Id extends string = string> = { id: Id; kind: string };
+export type OutlineItem<Id extends string = string> = { readonly id: Id; readonly kind: string };
 export type ScrollSource = "user" | "programmatic";
 
 export type VirtualCache<Id extends string = string> = {
@@ -130,6 +130,13 @@ const checkSize = (size: number): number => {
   return size;
 };
 
+const medianPositive = (samples: ReadonlyMap<string, number>): number | null => {
+  const values = [...samples.values()].filter((size) => size > 0).sort((a, b) => a - b);
+  if (values.length === 0) return null;
+  const middle = Math.floor(values.length / 2);
+  return values.length % 2 ? values[middle]! : (values[middle - 1]! + values[middle]!) / 2;
+};
+
 export function createVirtualizer<Id extends string = string>(options: VirtualOptions<Id>): Virtualizer<Id> {
   const overscan = options.overscan;
   const maxMounted = options.maxMounted ?? 200;
@@ -160,6 +167,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   let sequence = 0;
   const actions: VirtualAction[] = [];
   const listeners = new Set<() => void>();
+  let snapshot: VirtualSnapshot<Id> | null = null;
 
   const log = (type: VirtualAction["type"], detail: VirtualAction["detail"]): void => {
     sequence++;
@@ -168,27 +176,31 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     if (actions.length > 2_000) actions.splice(0, actions.length - 2_000);
     options.onAction?.(action);
   };
-  const changed = (): void => listeners.forEach((listener) => listener());
+  const changed = (): void => {
+    snapshot = null;
+    listeners.forEach((listener) => listener());
+  };
 
   const maxScroll = (): number => Math.max(0, sizes.total - viewportSize);
   const clampScroll = (value: number): number => Math.min(maxScroll(), Math.max(0, value));
   const effectiveScrollTop = (): number => scrollTop + pendingJump;
 
+  const applyKindEstimate = (kind: string, median: number): void => {
+    kindMedians.set(kind, median);
+    for (const index of indicesByKind.get(kind) ?? []) {
+      if (measured.has(outline[index]!.id)) continue;
+      const delta = median - sizes.values[index]!;
+      sizes.update(index, median);
+      if (index < rangeCursorIndex) rangeCursorStart += delta;
+    }
+  };
+
   const calibrateKindEstimates = (): void => {
     if (viewportSize <= 0 || totalMeasuredSize <= viewportSize) return;
     for (const [kind, samples] of measuredByKind) {
       if (kindMedians.has(kind)) continue;
-      const values = [...samples.values()].filter((size) => size > 0).sort((a, b) => a - b);
-      if (values.length === 0) continue;
-      const middle = Math.floor(values.length / 2);
-      const median = values.length % 2 ? values[middle]! : (values[middle - 1]! + values[middle]!) / 2;
-      kindMedians.set(kind, median);
-      for (const index of indicesByKind.get(kind) ?? []) {
-        if (measured.has(outline[index]!.id)) continue;
-        const delta = median - sizes.values[index]!;
-        sizes.update(index, median);
-        if (index < rangeCursorIndex) rangeCursorStart += delta;
-      }
+      const median = medianPositive(samples);
+      if (median !== null) applyKindEstimate(kind, median);
     }
   };
 
@@ -268,6 +280,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     viewportSize = viewport.size;
     calibrateKindEstimates();
     const isCorrection = viewport.source === "user" && expectedCorrectionScroll !== null && Math.abs(viewport.scrollTop - expectedCorrectionScroll) < 0.5;
+    if (viewport.source === "programmatic") expectedCorrectionScroll = null;
     scrollTop = clampScroll(viewport.scrollTop);
     correctionEvent = isCorrection;
     programmatic = viewport.source === "programmatic" || isCorrection;
@@ -280,12 +293,14 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
 
   return {
     setOutline(items) {
+      expectedCorrectionScroll = null;
       const cursorId = outline[rangeCursorIndex]?.id;
+      const ownedItems = items.map(({ id, kind }) => ({ id, kind }));
       const nextIndexes = new Map<Id, number>();
       const nextIndicesByKind = new Map<string, number[]>();
       measuredByKind.clear();
       totalMeasuredSize = 0;
-      const values = items.map((item, index) => {
+      const values = ownedItems.map((item, index) => {
         if (nextIndexes.has(item.id)) throw new Error("outline ids must be unique");
         nextIndexes.set(item.id, index);
         const kindIndices = nextIndicesByKind.get(item.kind) ?? [];
@@ -300,7 +315,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
         }
         return checkSize(measuredSize ?? kindMedians.get(item.kind) ?? options.estimateSize(item.kind));
       });
-      outline = [...items];
+      outline = ownedItems;
       indexes = nextIndexes;
       indicesByKind = nextIndicesByKind;
       sizes = new Fenwick(values);
@@ -312,6 +327,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     },
     setViewport,
     measure(id, size) {
+      expectedCorrectionScroll = null;
       checkSize(size);
       const index = indexes.get(id);
       if (index === undefined) throw new Error("cannot measure an id outside the outline");
@@ -330,6 +346,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       changed();
     },
     setLoaded(ids) {
+      expectedCorrectionScroll = null;
       loaded = new Set(ids);
       log("loaded", { count: loaded.size });
       changed();
@@ -341,6 +358,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       return { anchor, pinned, mode, distanceFromEnd: sizes.total - effectiveScrollTop() };
     },
     afterMutation(token, mutationOptions) {
+      expectedCorrectionScroll = null;
       const actualBefore = scrollTop;
       const logicalBefore = effectiveScrollTop();
       let requested = logicalBefore;
@@ -372,6 +390,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       return { scrollTop, correction, appliedCorrection, jump, pendingJump, followedBottom };
     },
     flushPendingCorrection() {
+      expectedCorrectionScroll = null;
       const before = scrollTop;
       const correction = pendingJump;
       scrollTop = clampScroll(scrollTop + pendingJump);
@@ -399,6 +418,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       return () => listeners.delete(listener);
     },
     getSnapshot() {
+      if (snapshot) return snapshot;
       const visible = visibleRange();
       const range = mountedRange(visible);
       const rows = outline.slice(range.start, range.end).map((item, offset): VirtualRow<Id> => {
@@ -407,7 +427,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       });
       const topSpacer = sizes.prefix(range.start);
       const bottomSpacer = sizes.total - sizes.prefix(range.end);
-      return {
+      snapshot = {
         totalSize: sizes.total,
         topSpacer,
         bottomSpacer,
@@ -423,6 +443,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
         jump,
         pendingJump,
       };
+      return snapshot;
     },
     getActions() {
       return [...actions];
