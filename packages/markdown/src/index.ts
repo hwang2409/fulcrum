@@ -396,6 +396,14 @@ const lineOffset = (source: string, line: number) => {
   return offset;
 };
 
+type OpenListState = {
+  ordered: boolean;
+  scannedOffset: number;
+  pending: string;
+  hasPendingItem: boolean;
+  block: ListBlock;
+};
+
 type OpenTableState = {
   header: string;
   delimiter: string;
@@ -416,6 +424,38 @@ type OpenFenceState = {
 
 const fenceCloser = (marker: string, line: string) => new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(line);
 
+function listItem(state: OpenListState, line: string) {
+  const match = /^ {0,3}(?:[-+*]|\d{1,9}[.)])\s+(.+)$/.exec(line);
+  if (match && !/[\\*_`~[\]<>]/.test(match[1]!))
+    return { children: [{ type: "paragraph", children: [{ type: "text", value: match[1]! }], tight: true }] } satisfies ListItem;
+  const block = parseStreamingMarkdown(line)[0]?.block;
+  return block?.type === "list" && block.ordered === state.ordered ? block.items[0] : undefined;
+}
+
+function appendListDelta(state: OpenListState, delta: string) {
+  if (state.hasPendingItem) {
+    state.block.items.pop();
+    state.hasPendingItem = false;
+  }
+  const lines = `${state.pending}${delta}`.split("\n");
+  state.pending = lines.pop()!;
+  for (const line of lines) {
+    if (!line.trim()) return false;
+    const item = listItem(state, line);
+    if (!item) return false;
+    state.block.items.push(item);
+  }
+  if (state.pending) {
+    const item = listItem(state, state.pending);
+    if (item) {
+      state.block.items.push(item);
+      state.hasPendingItem = true;
+    }
+  }
+  state.scannedOffset += delta.length;
+  return true;
+}
+
 function tableRow(state: OpenTableState, line: string) {
   const cells: string[] = [];
   let cell = "";
@@ -429,7 +469,9 @@ function tableRow(state: OpenTableState, line: string) {
   if (!cells[0]!.trim()) cells.shift();
   if (!cells.at(-1)!.trim()) cells.pop();
   return Array.from({ length: state.block.header.length }, (_, index) => {
-    const tokens = markdown.parseInline(cells[index]?.trim() ?? "", {});
+    const value = cells[index]?.trim() ?? "";
+    if (!/[\\*_`~[\]<>]/.test(value)) return value ? [{ type: "text", value } satisfies Inline] : [];
+    const tokens = markdown.parseInline(value, {});
     return inlineNodes(tokens[0]?.children ?? []);
   });
 }
@@ -481,10 +523,20 @@ export function createStreamingDocument(): StreamingDocument {
   let tailParses = 0;
   let fenceState: OpenFenceState | undefined;
   let tableState: OpenTableState | undefined;
+  let listState: OpenListState | undefined;
   const environment: Environment = {};
 
   const render = () => {
     if (source === renderedSource) return cached;
+    if (!finished && listState) {
+      const delta = source.slice(listState.scannedOffset);
+      if (appendListDelta(listState, delta)) {
+        cached = [...frozen, listState.block];
+        renderedSource = source;
+        return cached;
+      }
+      listState = undefined;
+    }
     if (!finished && tableState) {
       const delta = source.slice(tableState.scannedOffset);
       if (appendTableDelta(tableState, delta)) {
@@ -505,6 +557,20 @@ export function createStreamingDocument(): StreamingDocument {
     }
     const tail = source.slice(tailOffset);
     if (!finished) {
+      const list = /^( {0,3}(?:[-+*]|\d{1,9}[.)])\s+[^\n]+\n)/.exec(tail);
+      if (list) {
+        const initial = parseMarkdown(list[1]!)[0];
+        if (initial?.type === "list") {
+          const contentOffset = tailOffset + list[0].length;
+          listState = { ordered: initial.ordered, scannedOffset: contentOffset, pending: "", hasPendingItem: false, block: initial };
+          if (appendListDelta(listState, source.slice(contentOffset))) {
+            cached = [...frozen, initial];
+            renderedSource = source;
+            return cached;
+          }
+          listState = undefined;
+        }
+      }
       const table = /^([^\n]*\|[^\n]*)\n(\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*)\n/.exec(tail);
       if (table) {
         const initial = parseMarkdown(`${table[1]}\n${table[2]}`)[0];
