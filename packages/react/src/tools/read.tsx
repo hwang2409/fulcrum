@@ -1,15 +1,15 @@
-import type { ToolCardProps } from "./common.js";
-import { CappedText, CopyButton, EmptyOutput, ToolMeta, toolOutput } from "./common.js";
+import type { ToolBodyProps } from "../parts.js";
+import { Arguments, asking, Empty, Foot, NumberedLines } from "./common.js";
 
-export function ReadTool({ item }: ToolCardProps) {
+export function ReadBody({ item, output, state }: ToolBodyProps) {
   if (item.view?.kind !== "read") return null;
   const { path, range } = item.view;
-  const label = `${path}${range?.offset !== undefined ? `:${range.offset}${range.limit !== undefined ? `+${range.limit}` : ""}` : ""}`;
-  const output = toolOutput(item);
   return (
-    <section data-tool-view="read">
-      <header><code>{label}</code><CopyButton value={path} label="path" /><ToolMeta view={item.view} /></header>
-      {output ? <details><summary>content</summary><CappedText>{output}</CappedText></details> : <EmptyOutput item={item} noun="content" />}
-    </section>
+    <>
+      {asking(state) ? <pre data-part="tool-path">{path}</pre> : null}
+      {output ? (item.is_error ? <pre data-part="tool-output">{output}</pre> : <NumberedLines text={output} start={(range?.offset ?? 0) + 1} />) : <Empty state={state} noun="content" />}
+      {asking(state) ? <Arguments call={item.tool_call} /> : null}
+      <Foot copy={[["path", path], ["output", output]]} />
+    </>
   );
 }

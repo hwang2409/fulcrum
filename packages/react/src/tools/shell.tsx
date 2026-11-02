@@ -1,19 +1,29 @@
-import type { ToolCardProps } from "./common.js";
-import { CappedText, CopyButton, EmptyOutput, ToolMeta, toolOutput } from "./common.js";
+import type { ToolBodyProps } from "../parts.js";
+import { Arguments, asking, Empty, Foot, Output } from "./common.js";
 
-export function ShellTool({ item }: ToolCardProps) {
+// The header cuts long commands to one line; the body then repeats the command in full.
+const LONG_COMMAND = 72;
+
+export function ShellBody({ item, output, state }: ToolBodyProps) {
   if (item.view?.kind !== "shell") return null;
-  const output = toolOutput(item);
+  const { command, cwd, exitCode, stdout, stderr } = item.view;
+  const split = stdout !== undefined && stderr !== undefined;
+  const all = split ? stdout + stderr : output;
   return (
-    <section data-tool-view="shell">
-      <header>
-        <code>$ {item.view.command}</code>
-        <CopyButton value={item.view.command} label="command" />
-        {item.view.cwd ? <span data-part="tool-meta">{item.view.cwd}</span> : null}
-        <ToolMeta view={item.view} />
-      </header>
-      {output ? <CappedText>{output}</CappedText> : <EmptyOutput item={item} />}
-      {item.view.exitCode !== undefined ? <footer data-part="tool-exit" data-exit-code={item.view.exitCode}>exit {item.view.exitCode}</footer> : null}
-    </section>
+    <>
+      {asking(state) || command.length > LONG_COMMAND || command.includes("\n") ? <pre data-part="shell-command">{command}</pre> : null}
+      {split ? (
+        <>
+          {stdout ? <Output text={stdout} /> : null}
+          {stderr ? <Output text={stderr} stream="stderr" /> : null}
+        </>
+      ) : output ? <Output text={output} /> : null}
+      {all ? null : <Empty state={state} />}
+      {asking(state) ? <Arguments call={item.tool_call} /> : null}
+      <Foot copy={[["command", command], ["output", all]]}>
+        {exitCode !== undefined ? <span data-part="tool-exit" data-exit-code={exitCode}>exit {exitCode}</span> : null}
+        {cwd ? <span data-part="tool-cwd">{cwd}</span> : null}
+      </Foot>
+    </>
   );
 }

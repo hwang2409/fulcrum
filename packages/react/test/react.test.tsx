@@ -413,10 +413,14 @@ test("the default header summary reads each view kind, then falls back to the fi
   const views = [
     [{ kind: "shell", command: "bun test" }, "$ bun test"],
     [{ kind: "read", path: "a.ts" }, "a.ts"],
-    [{ kind: "edit", path: "b.ts", diff: "-a\n+b" }, "b.ts"],
+    [{ kind: "read", path: "src/a.ts", range: { offset: 0, limit: 40 } }, "src/a.ts:1-40"],
+    [{ kind: "read", path: "src/a.ts", range: { offset: 10 } }, "src/a.ts:11"],
+    [{ kind: "edit", path: "b.ts", diff: "--- a/b.ts\n+++ b/b.ts\n@@ -1,2 +1,4 @@\n-a\n+b\n+c\n+d\n e" }, "b.ts +3 -1"],
     [{ kind: "write", path: "c.ts" }, "c.ts"],
-    [{ kind: "search", pattern: "TODO", path: "src" }, "TODO in src"],
-    [{ kind: "fetch", url: "https://x.dev" }, "https://x.dev"],
+    [{ kind: "write", path: "c.ts", content: "one\ntwo\n" }, "c.ts +2"],
+    [{ kind: "search", pattern: "TODO", path: "packages/" }, '"TODO" packages/'],
+    [{ kind: "search", pattern: "TODO" }, '"TODO"'],
+    [{ kind: "fetch", url: "https://example.com/docs?q=1" }, "example.com/docs?q=1"],
     [{ kind: "fetch", query: "fulcrum" }, "fulcrum"],
     [undefined, "first"],
   ] as const;
@@ -425,6 +429,17 @@ test("the default header summary reads each view kind, then falls back to the fi
   );
   mount(<RunProvider store={store}>{views.map((_, i) => <ToolCall key={i} id={`tool:v${i}`} />)}</RunProvider>);
   expect(views.map((_, i) => q(`[data-id="tool:v${i}"] [data-part="tool-summary"]`).textContent)).toEqual(views.map(([, text]) => text));
+});
+
+test("the header status carries the view's duration next to the state word", () => {
+  const ls = { id: "t1", name: "bash", arguments: { command: "ls" } };
+  const { store } = setup([
+    { type: "tool_start", tool_call: ls, view: { kind: "shell", command: "ls" } },
+    { type: "tool_end", tool_call: ls, view: { kind: "shell", command: "ls", durationMs: 1250 }, tool_result: { tool_call_id: "t1", content: "", is_error: false } },
+  ]);
+  mount(<RunProvider store={store}><ToolCall id="tool:t1" /></RunProvider>);
+  expect(q('[data-part="tool-status"]').firstChild!.textContent).toBe("done");
+  expect(q('[data-part="tool-status"] [data-part="tool-duration"]').textContent).toBe("1.3 s");
 });
 
 test("data-state reflects streaming, done, error, pending", () => {

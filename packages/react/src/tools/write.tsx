@@ -1,18 +1,18 @@
-import type { ToolCardProps } from "./common.js";
-import { bytes, CappedText, CopyButton, EmptyOutput, ToolMeta, toolOutput } from "./common.js";
+import type { ToolBodyProps } from "../parts.js";
+import { Arguments, asking, bytes, Foot, NumberedLines, Output } from "./common.js";
 
-export function WriteTool({ item }: ToolCardProps) {
+export function WriteBody({ item, output, state }: ToolBodyProps) {
   if (item.view?.kind !== "write") return null;
-  const output = toolOutput(item);
+  const { path, content, bytes: size } = item.view;
   return (
-    <section data-tool-view="write">
-      <header>
-        <code>{item.view.path}</code>
-        <CopyButton value={item.view.path} label="path" />
-        {item.view.bytes !== undefined ? <span data-part="tool-meta">{bytes(item.view.bytes)}</span> : null}
-        <ToolMeta view={item.view} />
-      </header>
-      {output ? <CappedText>{output}</CappedText> : <EmptyOutput item={item} />}
-    </section>
+    <>
+      {asking(state) ? <pre data-part="tool-path">{path}</pre> : null}
+      {content ? <NumberedLines text={content} /> : null}
+      {output ? <Output text={output} /> : null}
+      {asking(state) ? <Arguments call={item.tool_call} /> : null}
+      <Foot copy={[["path", path], ["content", content]]}>
+        {size !== undefined ? <span data-part="tool-size">{bytes(size)}</span> : null}
+      </Foot>
+    </>
   );
 }

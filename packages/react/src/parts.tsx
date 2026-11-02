@@ -1,6 +1,8 @@
 import { memo, useId, useState, type ComponentType } from "react";
-import type { RunItem, ToolCall as ToolCallData } from "@fulcrum/core";
+import type { RunItem } from "@fulcrum/core";
 import { useItem, useItemSelector, useTimeline } from "./hooks.js";
+import { duration } from "./tools/common.js";
+import { ToolBody, toolSummary } from "./tools/index.js";
 
 export type ItemProps = { id: string; className?: string };
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
@@ -46,27 +48,12 @@ export type ToolBodyProps = { item: ToolItem; output: string; state: ItemState }
  * disclosure, and the approval actions; `body` renders only what goes inside `data-part="tool-body"`.
  */
 export type ToolViewProps = {
-  /** One-line header summary. Defaults to the view (`$ command` for shell), else the first string argument. */
+  /** One-line header summary. Defaults to `toolSummary`: the view (`$ command` for shell), else the first string argument. */
   summary?: (item: ToolItem) => string;
+  /** Defaults to `ToolBody`: the card for the item's view kind, or the generic card. */
   body?: ComponentType<ToolBodyProps>;
 };
 
-const defaultSummary = ({ view, tool_call }: ToolItem) => {
-  switch (view?.kind) {
-    case "shell": return `$ ${view.command}`;
-    case "read": case "edit": case "write": return view.path;
-    case "search": return view.path ? `${view.pattern} in ${view.path}` : view.pattern;
-    case "fetch": return view.url ?? view.query;
-  }
-  return firstArgument(tool_call);
-};
-// shortcut: the first string argument is the most telling one for common tools (command, path, pattern, url); adapters that set a view do better.
-const firstArgument = (call: ToolCallData) => {
-  const args = call.arguments ?? {};
-  const first = Object.values(args).find((value) => typeof value === "string");
-  return typeof first === "string" ? first : Object.keys(args).length ? JSON.stringify(args) : "";
-};
-const json = (args: unknown) => JSON.stringify(args, null, 2);
 const statusText: Record<ItemState, string> = {
   streaming: "running",
   done: "done",
@@ -77,29 +64,15 @@ const statusText: Record<ItemState, string> = {
 };
 
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
+  const ms = item.view?.durationMs;
   return (
     <>
       <span data-part="tool-name">{item.tool_call.name}</span>
-      <span data-part="tool-summary">{(summary ?? defaultSummary)(item)}</span>
-      <span data-part="tool-status">{status ?? statusText[state]}</span>
-    </>
-  );
-}
-
-// Output first; the raw JSON arguments stay behind their own collapsed disclosure.
-function GenericBody({ item: { tool_call: call }, output, state }: ToolBodyProps) {
-  const asking = state === "pending" || state === "submitting";
-  return (
-    <>
-      {output ? <pre data-part="tool-output">{output}</pre> : null}
-      {asking ? (
-        <pre data-part="tool-args">{json(call.arguments)}</pre>
-      ) : (
-        <details data-part="tool-args-details">
-          <summary>arguments</summary>
-          <pre data-part="tool-args">{json(call.arguments)}</pre>
-        </details>
-      )}
+      <span data-part="tool-summary">{(summary ?? toolSummary)(item)}</span>
+      <span data-part="tool-status">
+        {status ?? statusText[state]}
+        {ms !== undefined ? <span data-part="tool-duration">{duration(ms)}</span> : null}
+      </span>
     </>
   );
 }
@@ -120,7 +93,7 @@ const toolOutput = ({ output, result }: ToolItem) => {
 const toolState = (item: ToolItem): ItemState =>
   item.canceled ? "canceled" : item.is_error ? "error" : item.active ? "streaming" : "done";
 
-export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = GenericBody }: ItemProps & ToolViewProps) {
+export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = ToolBody }: ItemProps & ToolViewProps) {
   const item = useItem(id);
   const tool = item?.type === "tool" ? item : undefined;
   const [open] = useState(() => openByDefault(tool, tool ? toolOutput(tool) : ""));
@@ -156,7 +129,7 @@ export const Approval = memo(function Approval({
   onApprove,
   onDeny,
   summary,
-  body: Body = GenericBody,
+  body: Body = ToolBody,
 }: ItemProps & ToolViewProps & { onApprove?: Decide; onDeny?: Decide }) {
   const item = useItem(id);
   const [sending, setSending] = useState<"approve" | "deny">();
