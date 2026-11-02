@@ -4,7 +4,7 @@ GlobalRegistrator.register();
 
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { act, Profiler, useState, type ReactNode } from "react";
+import { act, Profiler, StrictMode, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
 import { Markdown } from "../../markdown/src/react.js";
@@ -57,41 +57,43 @@ const q = (selector: string) => container.querySelector(selector) as HTMLElement
 const hostProps = (el: Element) =>
   (el as unknown as Record<string, unknown>)[Object.keys(el).find((key) => key.startsWith("__reactProps$"))!];
 
-test("highlighting passes stable identity, versions, and grammar state for new complete lines only", async () => {
-  type Context = { id: string; version: number; state?: unknown };
-  type Result = { tokens: Array<{ type?: "keyword"; content: string }>; state: string };
+test("highlighting passes cumulative source with stable identity and monotonic versions", async () => {
+  type Context = { id: string; version: number; state: "streaming" | "done" };
+  type Token = { type?: "keyword"; text: string };
   const calls: Array<{ code: string; language: string | undefined; context: Context | undefined }> = [];
-  const resolves: Array<(result: Result) => void> = [];
+  const resolves: Array<(result: Token[]) => void> = [];
   const highlight = (code: string, language: string | undefined, context?: Context) => {
     calls.push({ code, language, context });
-    return new Promise<Result>((resolve) => resolves.push(resolve));
+    return new Promise<Token[]>((resolve) => resolves.push(resolve));
   };
   mount(<Markdown id="message:one" source={"```ts\na\n"} streaming highlight={highlight} />);
   act(() => root!.render(<Markdown id="message:one" source={"```ts\na\nb\npartial"} streaming highlight={highlight} />));
-  expect(calls).toEqual([{ code: "a\n", language: "ts", context: { id: "message:one:0", version: 1, state: undefined } }]);
+  expect(calls).toEqual([
+    { code: "a\n", language: "ts", context: { id: "message:one:0", version: 1, state: "streaming" } },
+    { code: "a\nb\npartial", language: "ts", context: { id: "message:one:0", version: 2, state: "streaming" } },
+  ]);
 
   await act(async () => {
-    resolves.shift()!({ tokens: [{ type: "keyword", content: "a\n" }], state: "after-a" });
+    resolves.shift()!([{ type: "keyword", text: "a\n" }]);
+    resolves.shift()!([{ type: "keyword", text: "a\nb\npartial" }]);
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  expect(calls[1]).toEqual({ code: "b\n", language: "ts", context: { id: "message:one:0", version: 2, state: "after-a" } });
-
-  await act(async () => {
-    resolves.shift()!({ tokens: [{ content: "b\n" }], state: "after-b" });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-  act(() => root!.render(<Markdown id="message:one" source={"```ts\na\nb\npartial"} highlight={highlight} />));
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-  expect(calls[2]).toEqual({ code: "partial", language: "ts", context: { id: "message:one:0", version: 3, state: "after-b" } });
-
-  await act(async () => {
-    resolves.shift()!({ tokens: [{ type: "keyword", content: "partial" }], state: "done" });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-  act(() => root!.render(<Markdown id="message:one" source={"```ts\na\nb\npartial"} highlight={highlight} />));
-  expect(calls).toHaveLength(3);
-  expect(container.querySelectorAll(".tok-keyword")).toHaveLength(2);
   expect(container.textContent).toBe("a\nb\npartial");
+  expect(container.querySelectorAll(".tok-keyword")).toHaveLength(1);
+
+  act(() => root!.render(<Markdown id="message:one" source={"```ts\na\nb\npartial\n```"} streaming highlight={highlight} />));
+  expect(calls[2]).toEqual({ code: "a\nb\npartial\n", language: "ts", context: { id: "message:one:0", version: 3, state: "done" } });
+});
+
+test("async highlighting commits in strict mode", async () => {
+  let resolve!: (tokens: Array<{ text: string; type?: "keyword" }>) => void;
+  const highlight = () => new Promise<Array<{ text: string; type?: "keyword" }>>((done) => { resolve = done; });
+  mount(<StrictMode><Markdown source={"```ts\nconst x = 1;\n```"} highlight={highlight} /></StrictMode>);
+  await act(async () => {
+    resolve([{ text: "const x = 1;\n", type: "keyword" }]);
+    await Promise.resolve();
+  });
+  expect(container.querySelector(".tok-keyword")?.textContent).toBe("const x = 1;\n");
 });
 
 test("streaming markdown keeps a finished block element mounted", () => {

@@ -1,0 +1,22 @@
+[
+  "# Build result\n\nThe build passes after moving `node:path` into the server config.\n\n- changed `vite.config.ts`\n- ran `bun test`\n- **42 tests passed**",
+  "## Root cause\n\n1. The browser loaded `node:path`.\n2. Vite followed the import from `defineConfig`.\n   - server code was not isolated\n   - the bundle failed\n\nUse [the Vite config guide](https://vite.dev/config/shared-options.html).",
+  "### Patch\n\n```ts\nexport default defineConfig(({ command }) => ({\n  resolve: command === \"serve\" ? { alias: {} } : {},\n}));\n```\n\nThis keeps the import in the config process.",
+  "The command returned:\n\n```sh\nbun test packages/core\n\n42 pass\n0 fail\n```\n\nNo files were changed.",
+  "| check | result | time |\n|:--|--:|--:|\n| typecheck | pass | 1.2s |\n| tests | pass | 3.4s |\n\nAll checks are green.",
+  "- [x] reproduce the issue\n- [x] patch the config\n- [ ] deploy\n\nDeployment was not requested.",
+  "> warning\n>\n> The token is expired. Refresh it before retrying.\n\nSee [auth docs](./docs/auth.md).",
+  "Use ``const value = `nested`;`` when the example itself contains a backtick. Then run `bun test`.",
+  "The API call `[items](https://api.example.com/v1/items_(archived))` uses parentheses in its path. Do not change it.",
+  "## Files\n\n- `src/main.ts`\n  - imports `config`\n  - calls `start()`\n- `src/config.ts`\n  1. reads env\n  2. validates values\n\nNo generated files changed.",
+  "The expression is ***important***, the old path is ~~deprecated~~, and `a_b` stays code.\n\n---\n\nContinue with the new path.",
+  "```json\n{\n  \"ok\": true,\n  \"items\": [1, 2, 3]\n}\n```\n\nThe response is valid JSON.",
+  "1. Install dependencies.\n2. Update the config.\n3. Verify:\n   ```sh\n   bunx tsc -b\n   bun test\n   ```\n4. Commit the result.",
+  "## Comparison\n\n| option | trade-off |\n| --- | --- |\n| `A` | fast | limited |\n| `B` | slower but complete |\n\nI recommend **B**.",
+  "Contact <dev@example.com> or open <https://example.com/issues/123>. The mirror is www.example.org/docs.",
+  "The raw value `<script>alert(1)</script>` is shown as text, not executed. The URL [bad](javascript:alert(1)) is disabled.",
+  "Paragraph one explains the diagnosis in enough detail for the operator.\n\nParagraph two gives the fix and mentions `src/index.ts`.\n\nParagraph three lists validation: **pass**.",
+  "- parent\n  - child one\n    - grandchild with `code`\n  - child two\n- sibling\n\nThe nesting describes the call graph.",
+  "# Release notes\n\n## Fixed\n\n- links with parentheses: [docs](https://example.com/a_(b))\n- inline code: ``x = `y` ``\n\n## Verified\n\n```\nbun test\n```",
+  "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move the import into the config's server block, or use `new"
+]

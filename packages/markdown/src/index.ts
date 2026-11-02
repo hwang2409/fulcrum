@@ -1,12 +1,14 @@
+import MarkdownIt, { type MarkdownToken } from "./vendor/markdown-it.mjs";
+
 export const tokenTypes = [
   "keyword", "string", "number", "comment", "function", "type", "variable",
   "constant", "operator", "punctuation", "tag", "attribute", "regexp", "inserted", "deleted",
 ] as const;
 
 export type TokenType = (typeof tokenTypes)[number];
-export type Token = { type?: TokenType; content: string };
-export type HighlightContext = { id: string; version: number; state?: unknown };
-export type HighlightResult = Token[] | { tokens: Token[]; state?: unknown } | null;
+export type Token = { text: string; type?: TokenType };
+export type HighlightContext = { id: string; version: number; state: "streaming" | "done" };
+export type HighlightResult = Token[] | null;
 export type Highlighter = (
   code: string,
   lang: string | undefined,
@@ -17,14 +19,16 @@ export type Inline =
   | { type: "text"; value: string }
   | { type: "code"; value: string }
   | { type: "break" }
-  | { type: "emphasis" | "strong" | "strike"; children: Inline[] }
-  | { type: "link"; href?: string; children: Inline[] }
-  | { type: "image"; src?: string; alt: string };
+  | { type: "emphasis"; children: Inline[] }
+  | { type: "strong"; children: Inline[] }
+  | { type: "strike"; children: Inline[] }
+  | { type: "link"; href?: string; title?: string; children: Inline[] }
+  | { type: "image"; src?: string; title?: string; alt: string };
 
-export type ListItem = { checked?: boolean; children: Inline[]; nested?: ListBlock };
+export type ListItem = { checked?: boolean; children: Block[] };
 export type ListBlock = { type: "list"; ordered: boolean; start?: number; items: ListItem[] };
 export type Block =
-  | { type: "paragraph"; children: Inline[] }
+  | { type: "paragraph"; children: Inline[]; tight?: boolean }
   | { type: "heading"; level: number; children: Inline[] }
   | { type: "code"; language?: string; value: string; open?: boolean }
   | ListBlock
@@ -32,7 +36,13 @@ export type Block =
   | { type: "table"; header: Inline[][]; rows: Inline[][][]; align: Array<"left" | "center" | "right" | undefined> }
   | { type: "rule" };
 
-const safeHref = (href: string) => {
+type ParsedBlock = { block: Block; map: [number, number]; closed: boolean };
+type Environment = { references?: Record<string, { href: string; title: string }> };
+
+const markdown = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
+
+const safeHref = (href: string | null) => {
+  if (href === null) return undefined;
   const value = href.trim();
   const normalized = value.replace(/[\u0000-\u0020]/g, "");
   if (/^(https?:|mailto:)/i.test(normalized)) return value;
@@ -40,355 +50,258 @@ const safeHref = (href: string) => {
   return undefined;
 };
 
-const decodeEntities = (value: string) => value.replace(
-  /&(?:#(x[\da-f]+|\d+)|amp|lt|gt|quot|apos);/gi,
-  (entity, numeric: string | undefined) => numeric
-    ? String.fromCodePoint(Number.parseInt(numeric.replace(/^x/i, ""), /^x/i.test(numeric) ? 16 : 10))
-    : ({ "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'" }[entity.toLowerCase()] ?? entity),
-);
+const attr = (token: MarkdownToken, name: string) => token.attrGet(name) ?? undefined;
 
-const pushText = (nodes: Inline[], value: string) => {
-  if (!value) return;
-  const decoded = decodeEntities(value);
-  const last = nodes.at(-1);
-  if (last?.type === "text") last.value += decoded;
-  else nodes.push({ type: "text", value: decoded });
-};
+function inlineNodes(tokens: MarkdownToken[]): Inline[] {
+  const root: Inline[] = [];
+  const stack: Array<{ kind: "emphasis" | "strong" | "strike" | "link"; node: Inline & { children: Inline[] } }> = [];
+  const target = () => stack.at(-1)?.node.children ?? root;
+  const pushText = (value: string) => {
+    if (!value) return;
+    const last = target().at(-1);
+    if (last?.type === "text") last.value += value;
+    else target().push({ type: "text", value });
+  };
 
-type References = Map<string, string>;
-const referenceKey = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
-
-export function parseInline(source: string, references: References = new Map()): Inline[] {
-  const nodes: Inline[] = [];
-  let index = 0;
-  while (index < source.length) {
-    if (source[index] === "\\" && index + 1 < source.length) {
-      pushText(nodes, source[index + 1]!);
-      index += 2;
-      continue;
+  for (const token of tokens) {
+    if (token.type === "text" || token.type === "html_inline") pushText(token.content);
+    else if (token.type === "softbreak") pushText("\n");
+    else if (token.type === "hardbreak") target().push({ type: "break" });
+    else if (token.type === "code_inline") target().push({ type: "code", value: token.content });
+    else if (token.type === "image") {
+      const text = (node: Inline): string => node.type === "text" || node.type === "code" ? node.value : "children" in node ? node.children.map(text).join("") : node.type === "image" ? node.alt : "";
+      const alt = inlineNodes(token.children ?? []).map(text).join("") || token.content;
+      target().push({ type: "image", src: safeHref(attr(token, "src") ?? null), title: attr(token, "title"), alt });
     }
-    if (source.startsWith("  \n", index)) {
-      nodes.push({ type: "break" });
+    else if (token.nesting === 1 && ["em_open", "strong_open", "s_open", "link_open"].includes(token.type)) {
+      const kind = token.type === "em_open" ? "emphasis" : token.type === "strong_open" ? "strong" : token.type === "s_open" ? "strike" : "link";
+      const node: Inline & { children: Inline[] } = kind === "link"
+        ? { type: "link", href: safeHref(attr(token, "href") ?? null), title: attr(token, "title"), children: [] }
+        : kind === "emphasis" ? { type: "emphasis", children: [] }
+          : kind === "strong" ? { type: "strong", children: [] }
+            : { type: "strike", children: [] };
+      target().push(node);
+      stack.push({ kind, node });
+    } else if (token.nesting === -1 && stack.length) stack.pop();
+  }
+  return root;
+}
+
+const tokenMap = (token: MarkdownToken): [number, number] => token.map ?? [0, 0];
+
+function convertBlocks(tokens: MarkdownToken[], start = 0, stop?: string): [ParsedBlock[], number] {
+  const blocks: ParsedBlock[] = [];
+  let index = start;
+  while (index < tokens.length) {
+    const token = tokens[index]!;
+    if (stop && token.type === stop) return [blocks, index + 1];
+
+    if (token.type === "paragraph_open" || token.type === "heading_open") {
+      const inline = tokens[index + 1]!;
+      const block: Block = token.type === "paragraph_open"
+        ? { type: "paragraph", children: inlineNodes(inline.children ?? []), tight: token.hidden || undefined }
+        : { type: "heading", level: Number(token.tag.slice(1)), children: inlineNodes(inline.children ?? []) };
+      blocks.push({ block, map: tokenMap(token), closed: true });
       index += 3;
       continue;
     }
-    if (source[index] === "\n") {
-      pushText(nodes, "\n");
+    if (token.type === "fence" || token.type === "code_block") {
+      const language = token.type === "fence" ? token.info.trim().split(/\s+/)[0] || undefined : undefined;
+      const lines = token.map?.[1] ?? 0;
+      const closed = token.type === "code_block" || lines > 0 && token.markup.length > 0 && token.content.endsWith("\n") && token.map !== null;
+      blocks.push({ block: { type: "code", language, value: token.content, open: !closed }, map: tokenMap(token), closed });
       index++;
       continue;
     }
-    if (source[index] === "`") {
-      const run = /^`+/.exec(source.slice(index))![0];
-      const end = source.indexOf(run, index + run.length);
-      if (end >= 0) {
-        let value = source.slice(index + run.length, end).replace(/\n/g, " ");
-        if (/^ .* $/.test(value) && !/^ +$/.test(value)) value = value.slice(1, -1);
-        nodes.push({ type: "code", value });
-        index = end + run.length;
-        continue;
-      }
-    }
-    const marker = source.startsWith("**", index)
-      ? "**"
-      : source.startsWith("__", index)
-        ? "__"
-        : source.startsWith("~~", index)
-          ? "~~"
-          : source[index] === "*" || source[index] === "_"
-            ? source[index]!
-            : undefined;
-    if (marker) {
-      const end = source.indexOf(marker, index + marker.length);
-      if (end > index + marker.length) {
-        nodes.push({
-          type: marker === "~~" ? "strike" : marker.length === 2 ? "strong" : "emphasis",
-          children: parseInline(source.slice(index + marker.length, end), references),
-        });
-        index = end + marker.length;
-        continue;
-      }
-    }
-    const image = source[index] === "!" && source[index + 1] === "[";
-    if (source[index] === "[" || image) {
-      const labelStart = index + (image ? 2 : 1);
-      const labelEnd = source.indexOf("]", labelStart);
-      if (labelEnd >= 0 && source[labelEnd + 1] === "(") {
-        const hrefEnd = source.indexOf(")", labelEnd + 2);
-        if (hrefEnd >= 0) {
-          const destination = source.slice(labelEnd + 2, hrefEnd).trim().replace(/^<|>$/g, "").split(/\s+[\"']/)[0]!;
-          const label = source.slice(labelStart, labelEnd);
-          if (image) nodes.push({ type: "image", src: safeHref(destination), alt: label });
-          else nodes.push({ type: "link", href: safeHref(destination), children: parseInline(label, references) });
-          index = hrefEnd + 1;
-          continue;
-        }
-      }
-      if (!image && labelEnd >= 0) {
-        const full = /^\[([^\]]*)\]/.exec(source.slice(labelEnd + 1));
-        const label = source.slice(labelStart, labelEnd);
-        const key = referenceKey(full ? full[1] || label : label);
-        const href = references.get(key);
-        if (href) {
-          nodes.push({ type: "link", href, children: parseInline(label, references) });
-          index = labelEnd + 1 + (full?.[0].length ?? 0);
-          continue;
-        }
-      }
-    }
-    if (source[index] === "<") {
-      const end = source.indexOf(">", index + 1);
-      if (end >= 0) {
-        const value = source.slice(index + 1, end);
-        const href = /^(?:https?:\/\/|mailto:)/i.test(value)
-          ? safeHref(value)
-          : /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value)
-            ? `mailto:${value}`
-            : undefined;
-        if (href) {
-          nodes.push({ type: "link", href, children: [{ type: "text", value: value.replace(/^mailto:/i, "") }] });
-          index = end + 1;
-          continue;
-        }
-      }
-    }
-    const entity = /^&(?:#(?:x[\da-f]+|\d+)|amp|lt|gt|quot|apos);/i.exec(source.slice(index));
-    if (entity) {
-      pushText(nodes, entity[0]);
-      index += entity[0].length;
-      continue;
-    }
-    const literal = /^(https?:\/\/[^\s<>]+|www\.[^\s<>]+|[\w.!#$%&'*+/=?^`{|}~-]+@[\w](?:[\w-]*[\w])?(?:\.[\w](?:[\w-]*[\w])?)+)/i.exec(source.slice(index));
-    if (literal) {
-      const value = literal[0].replace(/[.,!?;:]+$/, "");
-      const href = value.startsWith("www.") ? `http://${value}` : value.includes("@") && !value.includes("://") ? `mailto:${value}` : value;
-      nodes.push({ type: "link", href, children: [{ type: "text", value }] });
-      index += value.length;
-      continue;
-    }
-    pushText(nodes, source[index]!);
-    index++;
-  }
-  return nodes;
-}
-
-const tableCells = (line: string, references: References) => {
-  const source = line.trim().replace(/^\||\|$/g, "");
-  const cells: string[] = [];
-  let cell = "";
-  for (let index = 0; index < source.length; index++) {
-    if (source[index] === "\\" && source[index + 1] === "|") { cell += "|"; index++; }
-    else if (source[index] === "|") { cells.push(cell); cell = ""; }
-    else cell += source[index];
-  }
-  cells.push(cell);
-  return cells.map((value) => parseInline(value.trim(), references));
-};
-
-const beginsBlock = (lines: string[], index: number) => {
-  const line = lines[index] ?? "";
-  return /^(?: {0,3}(?:#{1,6}\s|>|```|~~~|(?:[-+*]|\d+[.)])\s)| {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$)/.test(line) ||
-    (line.includes("|") && /^\s*\|?\s*:?-{1,}:?/.test(lines[index + 1] ?? ""));
-};
-
-function parseList(lines: string[], start: number, references: References): [ListBlock, number] {
-  const first = /^(\s*)([-+*]|\d+[.)])\s+(.*)$/.exec(lines[start]!)!;
-  const indent = first[1]!.length;
-  const ordered = /^\d/.test(first[2]!);
-  const block: ListBlock = {
-    type: "list",
-    ordered,
-    start: ordered ? Number.parseInt(first[2]!, 10) : undefined,
-    items: [],
-  };
-  let index = start;
-  while (index < lines.length) {
-    const match = /^(\s*)([-+*]|\d+[.)])\s+(.*)$/.exec(lines[index]!);
-    if (!match || match[1]!.length !== indent || /^\d/.test(match[2]!) !== ordered) break;
-    let text = match[3]!;
-    const task = /^\[([ xX])\]\s+(.*)$/.exec(text);
-    const continuation: string[] = [];
-    while (index + 1 < lines.length && /^\s+\S/.test(lines[index + 1]!) && !/^\s*(?:[-+*]|\d+[.)])\s+/.test(lines[index + 1]!)) continuation.push(lines[++index]!.trim());
-    if (continuation.length) text += `\n${continuation.join("\n")}`;
-    const item: ListItem = { children: parseInline(task ? `${task[2]}${continuation.length ? `\n${continuation.join("\n")}` : ""}` : text, references) };
-    if (task) item.checked = task[1]!.toLowerCase() === "x";
-    index++;
-    const nested = /^(\s*)([-+*]|\d+[.)])\s+/.exec(lines[index] ?? "");
-    if (nested && nested[1]!.length > indent) {
-      [item.nested, index] = parseList(lines, index, references);
-    }
-    block.items.push(item);
-  }
-  return [block, index];
-}
-
-export function parseMarkdown(source: string, inheritedReferences?: References): Block[] {
-  const references = inheritedReferences ?? new Map<string, string>();
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
-  for (let index = 0; index < lines.length; index++) {
-    const definition = /^ {0,3}\[([^\]]+)\]:\s*(?:<([^>]+)>|(\S+))(?:\s+(?:[\"'(].*)?)?$/.exec(lines[index]!);
-    if (definition) {
-      const href = safeHref(definition[2] ?? definition[3]!);
-      if (href) references.set(referenceKey(definition[1]!), href);
-      lines[index] = "";
-    }
-  }
-  const blocks: Block[] = [];
-  let index = 0;
-  while (index < lines.length) {
-    const line = lines[index]!;
-    if (!line.trim()) { index++; continue; }
-    const fence = /^ {0,3}(```+|~~~+)\s*([^\s`]*)?.*$/.exec(line);
-    if (fence) {
-      const marker = fence[1]!;
-      const code: string[] = [];
-      index++;
-      while (index < lines.length && !new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(lines[index]!)) code.push(lines[index++]!);
-      const open = index === lines.length;
-      if (!open) index++;
-      blocks.push({ type: "code", language: fence[2] || undefined, value: code.join("\n"), open });
-      continue;
-    }
-    const heading = /^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+\s*)?$/.exec(line);
-    if (heading) {
-      blocks.push({ type: "heading", level: heading[1]!.length, children: parseInline(heading[2]!, references) });
+    if (token.type === "hr") {
+      blocks.push({ block: { type: "rule" }, map: tokenMap(token), closed: true });
       index++;
       continue;
     }
-    const setext = /^ {0,3}(=+|-+)\s*$/.exec(lines[index + 1] ?? "");
-    if (setext) {
-      blocks.push({ type: "heading", level: setext[1]![0] === "=" ? 1 : 2, children: parseInline(line.trim(), references) });
-      index += 2;
+    if (token.type === "blockquote_open") {
+      const [children, next] = convertBlocks(tokens, index + 1, "blockquote_close");
+      blocks.push({ block: { type: "blockquote", children: children.map(({ block }) => block) }, map: tokenMap(token), closed: true });
+      index = next;
       continue;
     }
-    if (/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line)) {
-      blocks.push({ type: "rule" }); index++; continue;
-    }
-    if (/^(?: {4}|\t)/.test(line)) {
-      const code: string[] = [];
-      while (index < lines.length && (/^(?: {4}|\t)/.test(lines[index]!) || !lines[index]!.trim())) code.push(lines[index++]!.replace(/^(?: {4}|\t)/, ""));
-      while (!code.at(-1)?.trim()) code.pop();
-      blocks.push({ type: "code", value: code.join("\n"), open: false });
+    if (token.type === "bullet_list_open" || token.type === "ordered_list_open") {
+      const close = token.type === "bullet_list_open" ? "bullet_list_close" : "ordered_list_close";
+      const items: ListItem[] = [];
+      index++;
+      while (index < tokens.length && tokens[index]!.type !== close) {
+        if (tokens[index]!.type !== "list_item_open") { index++; continue; }
+        const itemOpen = tokens[index++]!;
+        const [children, next] = convertBlocks(tokens, index, "list_item_close");
+        index = next;
+        const item: ListItem = { children: children.map(({ block }) => block) };
+        const first = item.children[0];
+        if (first?.type === "paragraph" && first.children[0]?.type === "text") {
+          const task = /^\[([ xX])\]\s+/.exec(first.children[0].value);
+          if (task) {
+            item.checked = task[1]!.toLowerCase() === "x";
+            first.children[0].value = first.children[0].value.slice(task[0].length);
+          }
+        }
+        items.push(item);
+        void itemOpen;
+      }
+      index++;
+      const ordered = token.type === "ordered_list_open";
+      const startValue = ordered ? Number(attr(token, "start") ?? "1") : undefined;
+      blocks.push({ block: { type: "list", ordered, start: startValue, items }, map: tokenMap(token), closed: true });
       continue;
     }
-    if (/^ {0,3}>/.test(line)) {
-      const quote: string[] = [];
-      while (index < lines.length && /^ {0,3}>/.test(lines[index]!)) quote.push(lines[index++]!.replace(/^ {0,3}> ?/, ""));
-      blocks.push({ type: "blockquote", children: parseMarkdown(quote.join("\n"), references) });
-      continue;
-    }
-    if (/^\s*(?:[-+*]|\d+[.)])\s+/.test(line)) {
-      const [list, next] = parseList(lines, index, references);
-      blocks.push(list); index = next; continue;
-    }
-    if (line.includes("|") && /^\s*\|?\s*:?-{1,}:?(?:\s*\|\s*:?-{1,}:?)+\s*\|?\s*$/.test(lines[index + 1] ?? "")) {
-      const header = tableCells(line, references);
-      const align = (lines[index + 1]!.trim().replace(/^\||\|$/g, "").split("|")).map((cell) => {
-        const value = cell.trim();
-        return value.startsWith(":") && value.endsWith(":") ? "center" : value.endsWith(":") ? "right" : value.startsWith(":") ? "left" : undefined;
-      });
-      index += 2;
+    if (token.type === "table_open") {
+      const tableMap = tokenMap(token);
+      const header: Inline[][] = [];
       const rows: Inline[][][] = [];
-      while (index < lines.length && lines[index]!.trim() && lines[index]!.includes("|")) rows.push(tableCells(lines[index++]!, references));
-      blocks.push({ type: "table", header, rows, align });
+      const align: Array<"left" | "center" | "right" | undefined> = [];
+      let row: Inline[][] | undefined;
+      let inHeader = false;
+      index++;
+      while (index < tokens.length && tokens[index]!.type !== "table_close") {
+        const current = tokens[index]!;
+        if (current.type === "thead_open") inHeader = true;
+        else if (current.type === "thead_close") inHeader = false;
+        else if (current.type === "tr_open") row = [];
+        else if (current.type === "tr_close" && row) {
+          if (inHeader) header.push(...row);
+          else rows.push(row);
+          row = undefined;
+        } else if ((current.type === "th_open" || current.type === "td_open") && row) {
+          const inline = tokens[index + 1];
+          row.push(inline?.type === "inline" ? inlineNodes(inline.children ?? []) : []);
+          if (current.type === "th_open") {
+            const style = attr(current, "style") ?? "";
+            align.push(style.includes("center") ? "center" : style.includes("right") ? "right" : style.includes("left") ? "left" : undefined);
+          }
+        }
+        index++;
+      }
+      index++;
+      blocks.push({ block: { type: "table", header, rows, align }, map: tableMap, closed: true });
       continue;
     }
-    const paragraph = [line];
     index++;
-    while (index < lines.length && lines[index]!.trim() && !beginsBlock(lines, index)) paragraph.push(lines[index++]!);
-    blocks.push({ type: "paragraph", children: parseInline(paragraph.join("\n"), references) });
   }
-  return blocks;
+  return [blocks, index];
 }
 
-const unescapedCount = (source: string, marker: string) => {
-  let count = 0;
-  for (let index = 0; index <= source.length - marker.length; index++) {
-    if (source.startsWith(marker, index) && source[index - 1] !== "\\") { count++; index += marker.length - 1; }
-  }
-  return count;
-};
+function parseDetailed(source: string, environment: Environment = {}): ParsedBlock[] {
+  const tokens = markdown.parse(source.replace(/\r\n?/g, "\n"), environment);
+  return convertBlocks(tokens)[0];
+}
 
-const unclosedFence = (source: string) => {
+export function parseMarkdown(source: string): Block[] {
+  return parseDetailed(source).map(({ block }) => block);
+}
+
+const openFence = (source: string) => {
   const lines = source.split("\n");
-  const fence = lines.find((line) => /^ {0,3}(```+|~~~+)/.test(line));
-  if (!fence) return undefined;
-  const marker = /^ {0,3}(```+|~~~+)/.exec(fence)![1]!;
-  const count = lines.filter((line) => new RegExp(`^ {0,3}${marker[0]}{${marker.length},}`).test(line)).length;
-  return count % 2 ? marker : undefined;
+  let marker: string | undefined;
+  for (const line of lines) {
+    if (!marker) marker = /^ {0,3}(`{3,}|~{3,})(?!.*`.*`)/.exec(line)?.[1];
+    else if (new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(line)) marker = undefined;
+  }
+  return marker;
 };
 
-/** Returns a render-only completion. The original stream is never changed. */
 export function repairMarkdown(source: string): string {
-  const marker = unclosedFence(source);
-  if (marker) return `${source}\n${marker}`;
-  let repaired = source;
-  const tickRuns = [...repaired.matchAll(/(?<!\\)(`+)/g)];
-  let openTicks: RegExpMatchArray | undefined;
-  for (const run of tickRuns) {
-    if (!openTicks) openTicks = run;
-    else if (openTicks[1]!.length === run[1]!.length) openTicks = undefined;
+  const fence = openFence(source);
+  if (fence) {
+    const opener = source.lastIndexOf(fence);
+    const contentStart = source.indexOf("\n", opener);
+    return contentStart < 0 || contentStart === source.length - 1 ? source.slice(0, opener) : source;
   }
-  if (openTicks) repaired += openTicks[1];
-  const openLink = repaired.lastIndexOf("](");
-  if (openLink > repaired.lastIndexOf(")")) repaired += ")";
-  else if (repaired.lastIndexOf("[") > repaired.lastIndexOf("]")) repaired += "]()";
-  for (const marker of ["**", "__", "~~", "*", "_"])
-    if (unescapedCount(repaired, marker) % 2) repaired += marker;
-  return repaired;
+  const runs = [...source.matchAll(/`+/g)];
+  const tick = runs.find((run, index) => !runs.slice(index + 1).some((later) => later[0].length === run[0].length));
+  if (tick?.index !== undefined) {
+    const content = source.slice(tick.index + tick[0].length);
+    if (!content) return source.slice(0, tick.index);
+    return `${source}${tick[0]}`;
+  }
+  const marker = /(\*\*|__|~~|\*|_)<?([^\n]*)$/.exec(source);
+  if (marker && !marker[2]) return source.slice(0, marker.index);
+  if (marker && marker[2] && !marker[2].includes(marker[1]!)) return `${source}${marker[1]}`;
+  if (/\[$/.test(source)) return source.slice(0, -1);
+  const link = /\[([^\]]+)\]\(([^)\s]+)$/.exec(source);
+  if (link) return `${source})`;
+  return source;
 }
 
 export interface StreamingDocument {
   readonly source: string;
-  readonly stats: Readonly<{ frozenParses: number; tailParses: number }>;
+  readonly stats: { readonly frozenParses: number; readonly tailParses: number };
   append(delta: string): void;
   finish(): void;
   render(): readonly Block[];
 }
 
+const lineOffset = (source: string, line: number) => {
+  let offset = 0;
+  for (let current = 0; current < line; current++) {
+    const next = source.indexOf("\n", offset);
+    if (next < 0) return source.length;
+    offset = next + 1;
+  }
+  return offset;
+};
+
 export function createStreamingDocument(): StreamingDocument {
   let source = "";
-  let tail = "";
+  let tailOffset = 0;
+  let frozen: Block[] = [];
+  let cached: readonly Block[] = [];
+  let renderedSource = "";
   let finished = false;
-  const frozen: Block[] = [];
-  const stats = { frozenParses: 0, tailParses: 0 };
-  let revision = 0;
-  let renderedRevision = -1;
-  let rendered: readonly Block[] = [];
+  let frozenParses = 0;
+  let tailParses = 0;
+  const environment: Environment = {};
 
-  const freeze = (all = false) => {
-    let end = all ? tail.length : tail.lastIndexOf("\n\n");
-    if (end < 0) return;
-    if (!all) end += 2;
-    const complete = tail.slice(0, end);
-    const parsed = parseMarkdown(complete);
-    frozen.push(...(all ? parsed.map((block) => block.type === "code" ? { ...block, open: false } : block) : parsed));
-    stats.frozenParses += parsed.length;
-    tail = tail.slice(end);
+  const render = () => {
+    if (source === renderedSource) return cached;
+    const tail = source.slice(tailOffset);
+    const fence = !finished && openFence(tail);
+    const parsed = parseDetailed(finished ? tail : repairMarkdown(tail), { references: environment.references ? { ...environment.references } : undefined });
+    const last = parsed.at(-1)?.block;
+    if (fence && last?.type === "code") last.open = true;
+    tailParses++;
+
+    let freezeCount = finished ? parsed.length : 0;
+    if (!finished) {
+      for (let index = 0; index < parsed.length - 1; index++) {
+        if (parsed[index + 1]!.map[0] > parsed[index]!.map[1]) freezeCount = index + 1;
+      }
+    }
+    if (!finished && !fence && parsed.length && parsed.at(-1)!.closed && parsed.at(-1)!.block.type === "code") freezeCount = parsed.length;
+    if (freezeCount) {
+      const endLine = parsed[freezeCount - 1]!.map[1];
+      const offset = freezeCount === parsed.length ? tail.length : lineOffset(tail, endLine);
+      if (offset > 0) {
+        const committed = tail.slice(0, offset);
+        const committedEnvironment: Environment = { references: environment.references ? { ...environment.references } : undefined };
+        const committedBlocks = parseDetailed(committed, committedEnvironment).map(({ block }) => block);
+        environment.references = committedEnvironment.references;
+        frozen = [...frozen, ...committedBlocks];
+        frozenParses++;
+        tailOffset += offset;
+        const open = source.slice(tailOffset);
+        const openBlocks = open ? parseMarkdown(finished ? open : repairMarkdown(open)) : [];
+        cached = [...frozen, ...openBlocks];
+        renderedSource = source;
+        return cached;
+      }
+    }
+    cached = [...frozen, ...parsed.map(({ block }) => block)];
+    renderedSource = source;
+    return cached;
   };
 
   return {
     get source() { return source; },
-    get stats() { return stats; },
-    append(delta) {
-      if (finished) throw new Error("cannot append to a finished markdown document");
-      if (!delta) return;
-      source += delta;
-      tail += delta;
-      freeze();
-      revision++;
-    },
-    finish() { if (!finished) { finished = true; freeze(true); revision++; } },
-    render() {
-      if (renderedRevision === revision) return rendered;
-      const open = tail ? parseMarkdown(finished ? tail : repairMarkdown(tail)) : [];
-      if (!finished && unclosedFence(tail)) {
-        const code = open.at(-1);
-        if (code?.type === "code") open[open.length - 1] = { ...code, open: true };
-      }
-      if (tail) stats.tailParses++;
-      rendered = [...frozen, ...open];
-      renderedRevision = revision;
-      return rendered;
-    },
+    get stats() { return { frozenParses, tailParses }; },
+    append(delta) { if (finished) throw new Error("cannot append to a finished markdown document"); source += delta; },
+    finish() { finished = true; renderedSource = ""; },
+    render,
   };
 }

@@ -7,6 +7,7 @@ import {
   type Block,
 } from "../src/index.js";
 import { Markdown } from "../src/react.js";
+import corpus from "./fixtures/agent-corpus.json";
 
 const json = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
 
@@ -52,7 +53,7 @@ test("renders gfm blocks, nested and task lists, and fenced code language", () =
   expect(html).toContain('<ul data-part="md-list"><li data-part="md-list-item">nested</li></ul>');
   expect(html).toContain('<ol data-part="md-list">');
   expect(html).toContain('<table data-part="md-table">');
-  expect(html).toContain('<pre data-part="md-code-block" data-language="ts"><code>const n = 1;</code></pre>');
+  expect(html).toContain('<pre data-part="md-code-block" data-language="ts"><code>const n = 1;\n</code></pre>');
 });
 
 test("covers gfm references, literal autolinks, images, escaped tables, and indented code", () => {
@@ -75,7 +76,7 @@ test("covers gfm references, literal autolinks, images, escaped tables, and inde
   expect(html).toContain('href="mailto:dev@example.com"');
   expect(html).toContain('data-part="md-image"');
   expect(html).toContain("a | b");
-  expect(html).toContain('<pre data-part="md-code-block"><code>const indented = true;</code></pre>');
+  expect(html).toContain('<pre data-part="md-code-block"><code>const indented = true;\n</code></pre>');
 });
 
 test("repairs every streaming prefix without changing the source", () => {
@@ -135,8 +136,7 @@ test("escapes html and removes unsafe hrefs", () => {
     const html = renderToStaticMarkup(<Markdown source={source} />);
     expect(html).not.toContain("<script");
     expect(html).not.toContain("<img");
-    expect(html).not.toContain("javascript:");
-    expect(html).not.toContain("data:text");
+    expect(html).not.toMatch(/href=\"(?:javascript|data):/i);
   }
   const safe = renderToStaticMarkup(<Markdown source="[a](/relative) [b](mailto:a@b.co)" />);
   expect(safe).toContain('href="/relative"');
@@ -159,13 +159,107 @@ test("fuzzed html and scheme fragments never become executable markup", () => {
   }
 });
 
-test("highlighter receives only complete lines and emits fixed token classes", async () => {
-  const calls: string[] = [];
-  const highlight = (code: string) => {
-    calls.push(code);
-    return [{ type: "keyword" as const, content: code }];
+test("renders the review's commonmark failures correctly", () => {
+  const source = [
+    "[docs](https://example.com/a_(b))",
+    "",
+    "***important***  ",
+    "hard break",
+    "",
+    "1. Verify:",
+    "   ```sh",
+    "   bun test",
+    "   ```",
+    "",
+    "   loose continuation",
+    "",
+    "![logo](/logo.png) [reference][docs]",
+    "",
+    "[docs]: https://example.com/reference",
+  ].join("\n");
+  const html = renderToStaticMarkup(<Markdown source={source} />);
+  expect(html).toContain('href="https://example.com/a_(b)"');
+  expect(html).toContain("<em data-part=\"md-emphasis\"><strong data-part=\"md-strong\">important</strong></em><br data-part=\"md-break\"/>");
+  expect(html).toContain('<pre data-part="md-code-block" data-language="sh"><code>bun test\n</code></pre>');
+  expect(html).toContain('<img data-part="md-image" src="/logo.png" alt="logo"/>');
+  expect(html).toContain('href="https://example.com/reference"');
+});
+
+test("does not freeze a blank line inside a fenced block", () => {
+  const source = "```sh\nline1\n\nline2\n```";
+  const document = createStreamingDocument();
+  for (const character of source) {
+    document.append(character);
+    document.render();
+  }
+  document.finish();
+  expect(json(document.render())).toBe(json(parseMarkdown(source)));
+  expect(document.render()).toHaveLength(1);
+  expect(document.render()[0]?.type).toBe("code");
+});
+
+test("the agent corpus has the expected shape 20/20", () => {
+  const expected = [
+    ["md-heading", "md-list", "md-code-inline", "md-strong"],
+    ["md-heading", "md-list", "md-code-inline", "md-link"],
+    ["md-heading", "md-code-block"],
+    ["md-code-block", "md-paragraph"],
+    ["md-table"],
+    ["checkbox"],
+    ["md-blockquote", "md-link"],
+    ["md-code-inline"],
+    ["md-code-inline", "https://api.example.com/v1/items_(archived)"],
+    ["md-list", "md-code-inline"],
+    ["md-emphasis", "md-strong", "md-strike", "md-rule"],
+    ["data-language=\"json\""],
+    ["data-language=\"sh\"", "md-list"],
+    ["md-table", "md-code-inline", "md-strong"],
+    ["mailto:dev@example.com", "http://www.example.org/docs"],
+    ["&lt;script&gt;", "bad"],
+    ["md-code-inline", "md-strong"],
+    ["md-list", "md-code-inline"],
+    ["href=\"https://example.com/a_(b)\"", "md-code-block"],
+    ["md-code-inline"],
+  ];
+  corpus.forEach((source, index) => {
+    const html = renderToStaticMarkup(<Markdown source={source} streaming={index === 19} />);
+    for (const part of expected[index]!) expect(html, `corpus reply ${index + 1}`).toContain(part);
+  });
+});
+
+test("every corpus character prefix streams once and finishes identically", () => {
+  for (const source of corpus) {
+    const document = createStreamingDocument();
+    for (const character of source) {
+      const parses = document.stats.tailParses;
+      document.append(character);
+      const current = document.render();
+      expect(document.stats.tailParses - parses).toBeLessThanOrEqual(1);
+      expect(current).toBe(document.render());
+    }
+    document.finish();
+    expect(json(document.render())).toBe(json(parseMarkdown(source)));
+  }
+  for (const delimiter of ["`", "**", "*", "_", "[", "```", "~~~"]) {
+    expect(createStreamingDocument().source).toBe("");
+    expect(renderToStaticMarkup(<Markdown source={delimiter} streaming />)).toBe("");
+  }
+});
+
+test("highlighter uses the shared cumulative source contract", async () => {
+  type SharedToken = { text: string; type?: "keyword" };
+  type SharedContext = { id: string; version: number; state: "streaming" | "done" };
+  type SharedHighlight = (code: string, language: string | undefined, context?: SharedContext) => SharedToken[] | Promise<SharedToken[]> | null;
+  const calls: Array<{ code: string; context?: SharedContext }> = [];
+  const highlight: SharedHighlight = (code, _language, context) => {
+    calls.push({ code, context });
+    return [{ type: "keyword", text: code }];
   };
-  renderToStaticMarkup(<Markdown source={'```ts\nconst a = 1;\npartial'} streaming highlight={highlight} />);
+  renderToStaticMarkup(<Markdown id="message:one" source={'```ts\nconst a = 1;\npartial'} streaming highlight={highlight} />);
+  renderToStaticMarkup(<Markdown id="message:one" source={'```ts\nconst a = 1;\npartial\n```'} highlight={highlight} />);
   await Promise.resolve();
-  expect(calls).toEqual(["const a = 1;\n"]);
+  expect(calls).toEqual([
+    { code: "const a = 1;\npartial", context: { id: "message:one:0", version: 1, state: "streaming" } },
+    { code: "const a = 1;\npartial\n", context: { id: "message:one:0", version: 1, state: "done" } },
+  ]);
 });

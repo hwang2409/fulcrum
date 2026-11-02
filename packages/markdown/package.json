@@ -3,15 +3,29 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "bun": "./src/index.ts", "import": "./dist/index.js" },
-    "./react": { "types": "./dist/react.d.ts", "bun": "./src/react.tsx", "import": "./dist/react.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "bun": "./src/react.tsx",
+      "import": "./dist/react.js"
+    }
   },
-  "files": ["dist"],
-  "scripts": { "build": "tsc -p ." },
-  "peerDependencies": { "react": ">=19" },
+  "files": ["dist", "MARKDOWN_IT_LICENSE.md"],
+  "scripts": {
+    "build": "tsc -p . && mkdir -p dist/vendor && cp src/vendor/markdown-it.mjs dist/vendor/markdown-it.mjs"
+  },
+  "peerDependencies": {
+    "react": ">=19"
+  },
   "devDependencies": {
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "happy-dom": "^21.0.4",
+    "markdown-it": "14.1.0",
     "react": "^19",
     "react-dom": "^19"
   }

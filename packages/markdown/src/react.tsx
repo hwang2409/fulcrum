@@ -2,7 +2,6 @@ import {
   Fragment,
   memo,
   useEffect,
-  useId,
   useRef,
   useState,
   type ReactNode,
@@ -12,7 +11,6 @@ import {
   parseMarkdown,
   type Block,
   type Highlighter,
-  type HighlightResult,
   type Inline,
   type ListBlock,
   type Token,
@@ -22,165 +20,105 @@ export interface MarkdownProps {
   source: string;
   streaming?: boolean;
   highlight?: Highlighter;
-  /** Stable message/document identity used to identify fenced code blocks. */
   id?: string;
 }
 
-const InlineView = ({ nodes }: { nodes: readonly Inline[] }) => (
-  <>
-    {nodes.map((node, index) => {
-      switch (node.type) {
-        case "text": return <Fragment key={index}>{node.value}</Fragment>;
-        case "break": return <br key={index} data-part="md-break" />;
-        case "code": return <code key={index} data-part="md-code-inline">{node.value}</code>;
-        case "emphasis": return <em key={index} data-part="md-emphasis"><InlineView nodes={node.children} /></em>;
-        case "strong": return <strong key={index} data-part="md-strong"><InlineView nodes={node.children} /></strong>;
-        case "strike": return <del key={index} data-part="md-strike"><InlineView nodes={node.children} /></del>;
-        case "link": return node.href
-          ? <a key={index} data-part="md-link" href={node.href}><InlineView nodes={node.children} /></a>
-          : <Fragment key={index}><InlineView nodes={node.children} /></Fragment>;
-        case "image": return node.src
-          ? <img key={index} data-part="md-image" src={node.src} alt={node.alt} />
-          : <Fragment key={index}>{node.alt}</Fragment>;
-      }
-    })}
-  </>
-);
+const InlineView = ({ nodes }: { nodes: Inline[] }): ReactNode => nodes.map((node, index) => {
+  const key = index;
+  if (node.type === "text") return <Fragment key={key}>{node.value}</Fragment>;
+  if (node.type === "code") return <code key={key} data-part="md-code-inline">{node.value}</code>;
+  if (node.type === "break") return <br key={key} data-part="md-break" />;
+  if (node.type === "emphasis") return <em key={key} data-part="md-emphasis"><InlineView nodes={node.children} /></em>;
+  if (node.type === "strong") return <strong key={key} data-part="md-strong"><InlineView nodes={node.children} /></strong>;
+  if (node.type === "strike") return <del key={key} data-part="md-strike"><InlineView nodes={node.children} /></del>;
+  if (node.type === "link") return node.href
+    ? <a key={key} data-part="md-link" href={node.href} title={node.title}><InlineView nodes={node.children} /></a>
+    : <Fragment key={key}><InlineView nodes={node.children} /></Fragment>;
+  return node.src
+    ? <img key={key} data-part="md-image" src={node.src} title={node.title} alt={node.alt} />
+    : <Fragment key={key}>{node.alt}</Fragment>;
+});
 
-const completeLines = (code: string, open: boolean) => {
-  if (!open) return code;
-  const end = code.lastIndexOf("\n");
-  return end < 0 ? "" : code.slice(0, end + 1);
-};
-
-const normalizeHighlight = (value: HighlightResult) =>
-  Array.isArray(value)
-    ? { tokens: value, state: undefined }
-    : value
-      ? { tokens: value.tokens, state: value.state }
-      : { tokens: null, state: undefined };
-
-function initialHighlight(
-  highlight: Highlighter | undefined,
-  code: string,
-  language: string | undefined,
-  id: string,
-) {
-  if (!highlight || !code) return { tokens: null as Token[] | null, state: undefined };
-  const value = highlight(code, language, { id, version: 1, state: undefined });
-  return value instanceof Promise
-    ? { tokens: null as Token[] | null, state: undefined, pending: value }
-    : normalizeHighlight(value);
-}
-
-const Tokens = ({ tokens }: { tokens: readonly Token[] }) => (
-  <>{tokens.map((token, index) => token.type
-    ? <span key={index} className={`tok-${token.type}`}>{token.content}</span>
-    : <Fragment key={index}>{token.content}</Fragment>)}</>
-);
+const TokenView = ({ tokens }: { tokens: Token[] }) => <>{tokens.map((token, index) => token.type
+  ? <span key={index} className={`tok-${token.type}`}>{token.text}</span>
+  : <Fragment key={index}>{token.text}</Fragment>)}</>;
 
 function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) {
-  const ready = completeLines(block.value, Boolean(block.open));
-  const initial = useRef<{
-    source: string;
-    tokens: Token[] | null;
-    state?: unknown;
-    pending?: Promise<HighlightResult>;
-  } | undefined>(undefined);
-  if (!initial.current) initial.current = { source: ready, ...initialHighlight(highlight, ready, block.language, id) };
-  const [result, setResult] = useState({ source: initial.current.source, tokens: initial.current.tokens });
-  const grammarState = useRef(initial.current.state);
-  const version = useRef(initial.current.source ? 1 : 0);
-  const processed = useRef(initial.current.source);
-  const queue = useRef(Promise.resolve());
-  const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
-  const initialQueued = useRef(false);
+  const version = useRef(0);
+  const previous = useRef("");
+  const mounted = useRef(false);
+  const request = useRef<{ key: string; result: ReturnType<Highlighter> } | undefined>(undefined);
+  const [tokens, setTokens] = useState<Token[] | null>(null);
+  const state = block.open ? "streaming" : "done";
+  if (previous.current !== block.value) {
+    previous.current = block.value;
+    version.current++;
+  }
+  const currentVersion = version.current;
+  const key = `${currentVersion}:${state}:${block.language ?? ""}`;
+  if (highlight && request.current?.key !== key) {
+    request.current = { key, result: highlight(block.value, block.language, { id, version: currentVersion, state }) };
+  }
+  const immediate = request.current?.result && !(request.current.result instanceof Promise) ? request.current.result : null;
+
   useEffect(() => {
-    if (!initial.current?.pending || initialQueued.current) return;
-    initialQueued.current = true;
-    queue.current = initial.current.pending.then((value) => {
-      const output = normalizeHighlight(value);
-      grammarState.current = output.state;
-      if (mounted.current) setResult({ source: initial.current!.source, tokens: output.tokens });
-    });
-  }, []);
-  useEffect(() => {
-    if (!highlight || ready.length <= processed.current.length) return;
-    const source = ready;
-    const suffix = source.slice(processed.current.length);
-    const nextVersion = ++version.current;
-    processed.current = source;
-    queue.current = queue.current.then(async () => {
-      const value = await highlight(suffix, block.language, { id, version: nextVersion, state: grammarState.current });
-      const output = normalizeHighlight(value);
-      grammarState.current = output.state;
-      if (mounted.current) setResult((prior) => ({
-        source,
-        tokens: output.tokens
-          ? [...(prior.tokens ?? (prior.source ? [{ content: prior.source }] : [])), ...output.tokens]
-          : prior.tokens
-            ? [...prior.tokens, { content: suffix }]
-            : null,
-      }));
-    });
-  }, [block.language, highlight, id, ready]);
-  const rest = block.value.slice(result.source.length);
-  return (
-    <pre data-part="md-code-block" data-language={block.language}>
-      <code>{result.tokens ? <Tokens tokens={result.tokens} /> : result.source}{rest}</code>
-    </pre>
-  );
+    mounted.current = true;
+    if (!highlight) { setTokens(null); return () => { mounted.current = false; }; }
+    const requestedVersion = currentVersion;
+    const result = request.current?.result;
+    if (result instanceof Promise) {
+      void result.then((next) => {
+        if (mounted.current && version.current === requestedVersion) setTokens(next);
+      });
+    } else setTokens(result ?? null);
+    return () => { mounted.current = false; };
+  }, [currentVersion, highlight, key]);
+
+  const shown = immediate ?? tokens;
+  return <pre data-part="md-code-block" data-language={block.language}><code>{shown ? <TokenView tokens={shown} /> : block.value}</code></pre>;
 }
 
-const ListView = ({ block, highlight }: { block: ListBlock; highlight?: Highlighter }) => {
-  const children = block.items.map((item, index) => (
+const ListView = ({ id, block, highlight }: { id: string; block: ListBlock; highlight?: Highlighter }) => {
+  const Tag = block.ordered ? "ol" : "ul";
+  return <Tag data-part="md-list" start={block.ordered && block.start !== 1 ? block.start : undefined}>{block.items.map((item, index) => (
     <li key={index} data-part="md-list-item">
-      {item.checked === undefined ? null : <input type="checkbox" disabled checked={item.checked} readOnly />}
-      <InlineView nodes={item.children} />
-      {item.nested ? <ListView block={item.nested} highlight={highlight} /> : null}
+      {item.checked !== undefined && <input type="checkbox" disabled readOnly checked={item.checked} />}
+      {item.children.map((child, childIndex) => <BlockView key={childIndex} id={`${id}:${index}:${childIndex}`} block={child} highlight={highlight} />)}
     </li>
-  ));
-  return block.ordered
-    ? <ol data-part="md-list" start={block.start === 1 ? undefined : block.start}>{children}</ol>
-    : <ul data-part="md-list">{children}</ul>;
+  ))}</Tag>;
 };
 
 const BlockView = memo(function BlockView({ id, block, highlight }: { id: string; block: Block; highlight?: Highlighter }): ReactNode {
-  switch (block.type) {
-    case "paragraph": return <p data-part="md-paragraph"><InlineView nodes={block.children} /></p>;
-    case "heading": {
-      const Tag = `h${block.level}` as "h1";
-      return <Tag data-part="md-heading"><InlineView nodes={block.children} /></Tag>;
-    }
-    case "rule": return <hr data-part="md-rule" />;
-    case "code": return <CodeBlock id={id} block={block} highlight={highlight} />;
-    case "list": return <ListView block={block} highlight={highlight} />;
-    case "blockquote": return <blockquote data-part="md-blockquote">{block.children.map((child, index) => <BlockView key={index} id={`${id}:${index}`} block={child} highlight={highlight} />)}</blockquote>;
-    case "table": return (
-      <table data-part="md-table">
-        <thead><tr>{block.header.map((cell, index) => <th key={index} style={block.align[index] ? { textAlign: block.align[index] } : undefined}><InlineView nodes={cell} /></th>)}</tr></thead>
-        <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, index) => <td key={index} style={block.align[index] ? { textAlign: block.align[index] } : undefined}><InlineView nodes={cell} /></td>)}</tr>)}</tbody>
-      </table>
-    );
+  if (block.type === "paragraph") return block.tight
+    ? <InlineView nodes={block.children} />
+    : <p data-part="md-paragraph"><InlineView nodes={block.children} /></p>;
+  if (block.type === "heading") {
+    const Tag = `h${block.level}` as "h1";
+    return <Tag data-part="md-heading"><InlineView nodes={block.children} /></Tag>;
   }
+  if (block.type === "code") return <CodeBlock id={id} block={block} highlight={highlight} />;
+  if (block.type === "list") return <ListView id={id} block={block} highlight={highlight} />;
+  if (block.type === "blockquote") return <blockquote data-part="md-blockquote">{block.children.map((child, index) => <BlockView key={index} id={`${id}:${index}`} block={child} highlight={highlight} />)}</blockquote>;
+  if (block.type === "rule") return <hr data-part="md-rule" />;
+  return <table data-part="md-table"><thead><tr>{block.header.map((cell, index) => <th key={index} align={block.align[index]}><InlineView nodes={cell} /></th>)}</tr></thead><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} align={block.align[cellIndex]}><InlineView nodes={cell} /></td>)}</tr>)}</tbody></table>;
 });
 
-/** Streaming mode preserves completed block objects; only its open tail receives a new object. */
 export const Markdown = memo(function Markdown({ source, streaming = false, highlight, id }: MarkdownProps) {
-  const generatedId = useId();
-  const documentId = id ?? generatedId;
+  const documentId = id ?? "markdown";
   const state = useRef<{ document: ReturnType<typeof createStreamingDocument>; length: number; finished: boolean } | undefined>(undefined);
   let blocks: readonly Block[];
-  if (!streaming && !state.current) {
+  if (!streaming) {
     blocks = parseMarkdown(source);
+    state.current = undefined;
   } else {
-    if (!state.current || source.length < state.current.length || state.current.finished && source.length !== state.current.length)
+    if (!state.current || source.length < state.current.length || !source.startsWith(state.current.document.source)) {
       state.current = { document: createStreamingDocument(), length: 0, finished: false };
+    }
     const current = state.current;
-    if (source.length > current.length) current.document.append(source.slice(current.length));
-    current.length = source.length;
-    if (!streaming && !current.finished) { current.document.finish(); current.finished = true; }
+    if (source.length > current.length) {
+      current.document.append(source.slice(current.length));
+      current.length = source.length;
+    }
     blocks = current.document.render();
   }
   return <>{blocks.map((block, index) => <BlockView key={index} id={`${documentId}:${index}`} block={block} highlight={highlight} />)}</>;
