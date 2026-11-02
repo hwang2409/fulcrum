@@ -44,6 +44,7 @@ test("one delta notifies only its keyed subscriber", () => {
   expect(b).toBe(0);
   expect(outline).toBe(0);
   expect(store.getOutline()).toBe(before.outline);
+  expect(store.getState().items).toBe(before.items);
   expect(store.getItem("message:a")).not.toBe(aItem);
   expect(store.getItem("message:b")).toBe(bItem);
 });

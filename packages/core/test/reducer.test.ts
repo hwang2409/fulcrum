@@ -137,7 +137,9 @@ test("state snapshots taken before a delta do not change after it", () => {
   expect(store.getState()).toBe(snapshot);
 
   store.dispatch({ type: "message_delta", delta: " after" });
+  const current = store.getState();
 
+  expect(itemText(current, "message:assistant")).toBe("before after");
   expect(itemText(snapshot, "message:assistant")).toBe("before");
 });
 
