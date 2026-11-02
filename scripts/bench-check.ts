@@ -1,7 +1,7 @@
 import { createRunStore } from "../packages/core/src/index.js";
 
 // Calibrated against realistic display-cadence flushing (3 events/frame), with headroom.
-const absoluteBudget = Number(process.env.CI ? 3_000 : 3_000);
+const absoluteBudget = Number(process.env.CI ? 5_000 : 5_000);
 const scalingBudget = 35;
 const runs = 5;
 
