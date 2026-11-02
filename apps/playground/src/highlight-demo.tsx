@@ -2,8 +2,11 @@ import "@fulcrum/highlight/styles.css";
 import "./fonts.css";
 import "./highlight-demo.css";
 import { createHighlighter, type Token } from "@fulcrum/highlight";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+
+const highlight = createHighlighter();
+window.addEventListener("pagehide", () => highlight.dispose(), { once: true });
 
 const examples = [
   ["typescript", "type Result = { ok: boolean };\nexport const result: Result = { ok: true };\n"],
@@ -13,7 +16,6 @@ const examples = [
 ] as const;
 
 function Block({ language, source, index }: { language: string; source: string; index: number }) {
-  const highlight = useMemo(() => createHighlighter(), []);
   const [code, setCode] = useState("");
   const [tokens, setTokens] = useState<Token[]>([]);
   useEffect(() => {
@@ -23,15 +25,15 @@ function Block({ language, source, index }: { language: string; source: string; 
       setCode(source.slice(0, length));
       if (length === source.length) clearInterval(timer);
     }, 70);
-    return () => { clearInterval(timer); highlight.dispose(); };
-  }, [highlight, source]);
+    return () => clearInterval(timer);
+  }, [source]);
   useEffect(() => {
     setTokens(code ? [{ text: code }] : []);
     const version = code.length;
     const result = highlight(code, language, { id: `demo-${index}`, version, state: code === source ? "done" : "streaming" });
     if (result && "then" in result) void result.then((next) => setTokens((current) => current.map((token) => token.text).join("").length === version ? next : current));
     else if (result) setTokens(result);
-  }, [code, highlight, index, language, source]);
+  }, [code, index, language, source]);
   return <figure><figcaption>{language}</figcaption><pre><code>{tokens.map((token, tokenIndex) => token.type ? <span className={`tok-${token.type}`} key={tokenIndex}>{token.text}</span> : token.text)}</code></pre></figure>;
 }
 
