@@ -6,7 +6,7 @@ import { createAiSdkAdapter } from "@fulcrum/ai-sdk";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
 import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
-import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
+import { connectZeta, discoverZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
 import { relabel, replayStep } from "./replay";
 import { Shell } from "./shell";
@@ -270,7 +270,7 @@ function Live() {
   const [sessions, setSessions] = useState<Array<{ id: string; name?: string }>>([]);
   const [error, setError] = useState("");
   const [text, setText] = useState("");
-  useEffect(() => { void fetch("/__fulcrum/zeta").then((response) => response.ok ? response.json() : null).then((value: { url: string; token: string } | null) => { if (value) setInput(`${value.url}?token=${encodeURIComponent(value.token)}`); }).catch(() => {}); }, []);
+  useEffect(() => { void discoverZeta().then((value) => { if (value) setInput(`${value.url}?token=${encodeURIComponent(value.token)}`); }).catch(() => {}); }, []);
   const connect = async () => {
     const parsed = parseZetaUrl(input);
     if (!parsed) { setError("paste a loopback websocket url with its token"); return; }

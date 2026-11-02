@@ -4,12 +4,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-
-/** What the page receives. `origins` is the server's `--ws-origin` allowlist, so a page can tell an origin it lacks. */
-export type Discovery = { url: string; token: string; origins: string[] };
-
-/** The discovery path the plugin serves; pages fetch it same-origin. */
-export const zetaDiscoveryPath = "/__fulcrum/zeta";
+import { zetaDiscoveryPath, type ZetaDiscovery } from "./connect.js";
 
 const alive = (pid: unknown) => {
   if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return true; // no pid to check: let the connect decide
@@ -21,7 +16,7 @@ const alive = (pid: unknown) => {
   }
 };
 
-/** Answers 200 with a `Discovery` only to same-origin loopback requests while the server process runs; otherwise 404. */
+/** Answers 200 with a `ZetaDiscovery` only to same-origin loopback requests while the server process runs; otherwise 404. */
 export function createZetaDiscoveryHandler(
   file = join(process.env.ZETA_HOME || join(homedir(), ".zeta"), "run", "serve.ws.json"),
   port: number | string | (() => number | undefined) = 5173,
@@ -41,7 +36,7 @@ export function createZetaDiscoveryHandler(
       // A crash leaves the file behind; a dead pid means the server is not running.
       if (!alive(data.pid)) throw new Error("stale discovery file");
       const allowed = Array.isArray(data.origins) ? data.origins.filter((origin): origin is string => typeof origin === "string") : [];
-      const body: Discovery = { url: `ws://127.0.0.1:${data.port}/`, token: data.token, origins: allowed };
+      const body: ZetaDiscovery = { url: `ws://127.0.0.1:${data.port}/`, token: data.token, origins: allowed };
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "no-store");

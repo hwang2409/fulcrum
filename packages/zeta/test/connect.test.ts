@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { connectZeta, parseConnectFragment, parseZetaUrl, type ZetaError } from "../src/index.js";
+import { connectZeta, discoverZeta, parseConnectFragment, parseZetaUrl, type ZetaError } from "../src/index.js";
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -146,5 +146,19 @@ test("loopback websocket hosts are accepted by both parsers", () => {
   for (const host of ["127.0.0.1", "localhost", "[::1]"]) {
     expect(parseZetaUrl(`wss://${host}/?token=abc`)).toEqual({ url: `wss://${host}/`, token: "abc" });
     expect(parseConnectFragment(`#ws=${encodeURIComponent(`wss://${host}/`)}&token=abc`)).toEqual({ url: `wss://${host}/`, token: "abc" });
+  }
+});
+
+test("discoverZeta returns null for 404 and keeps only string origins", async () => {
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => new Response(null, { status: 404 })) as unknown as typeof fetch;
+    expect(await discoverZeta()).toBeNull();
+    globalThis.fetch = (async () => Response.json({ url: "ws://127.0.0.1:1/", token: "t", origins: ["http://localhost:5180", 3] })) as unknown as typeof fetch;
+    expect(await discoverZeta()).toEqual({ url: "ws://127.0.0.1:1/", token: "t", origins: ["http://localhost:5180"] });
+    globalThis.fetch = (async () => Response.json({ url: 1 })) as unknown as typeof fetch;
+    await expect(discoverZeta()).rejects.toThrow("invalid body");
+  } finally {
+    globalThis.fetch = original;
   }
 });
