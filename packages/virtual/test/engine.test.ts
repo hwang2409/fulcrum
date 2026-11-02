@@ -135,7 +135,8 @@ describe("anchoring", () => {
     const virtual = engine([10, 10, 10], 10, 12);
     const token = virtual.beforeMutation();
     virtual.setOutline([items([10, 10, 10]).outline[0]!, items([10, 10, 10]).outline[2]!]);
-    virtual.afterMutation(token);
+    const result = virtual.afterMutation(token);
+    expect(result.appliedCorrection).toBe(-2);
     expect(virtual.beforeMutation().anchor?.id).toBe("row-2");
   });
   test("correction clamps at the scroll bounds", () => {
@@ -198,6 +199,18 @@ describe("structured action log and traces", () => {
     const actions = virtual.getActions();
     expect(actions).toHaveLength(2_000);
     expect(actions[0]!.sequence).toBeGreaterThan(1);
+  });
+  test("subscriptions stop after unsubscribe or destroy", () => {
+    const virtual = engine([10]);
+    let calls = 0;
+    const unsubscribe = virtual.subscribe(() => calls++);
+    virtual.measure("row-0", 11);
+    unsubscribe();
+    virtual.measure("row-0", 12);
+    virtual.subscribe(() => calls++);
+    virtual.destroy();
+    virtual.measure("row-0", 13);
+    expect(calls).toBe(1);
   });
   test("seeded random trace preserves every invariant", () => {
     let seed = 42;

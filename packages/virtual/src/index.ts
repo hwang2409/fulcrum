@@ -145,12 +145,16 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   const maxScroll = (): number => Math.max(0, sizes.total - viewportSize);
   const clampScroll = (value: number): number => Math.min(maxScroll(), Math.max(0, value));
 
+  const endAt = (offset: number): number => {
+    let end = sizes.lowerBound(offset);
+    if (end < outline.length && sizes.prefix(end) < offset) end++;
+    return end;
+  };
+
   const visibleRange = (): VirtualRange => {
     if (outline.length === 0 || viewportSize <= 0) return { start: 0, end: 0 };
     const start = sizes.lowerBound(scrollTop);
-    const bottom = scrollTop + viewportSize;
-    let end = sizes.lowerBound(bottom);
-    if (end < outline.length && sizes.prefix(end) < bottom) end++;
+    const end = endAt(scrollTop + viewportSize);
     return { start: Math.min(start, outline.length), end: Math.max(Math.min(end, outline.length), Math.min(start + 1, outline.length)) };
   };
 
@@ -158,7 +162,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     if (visible.end === 0) return visible;
     const buffer = overscan ?? viewportSize;
     let start = sizes.lowerBound(Math.max(0, scrollTop - buffer));
-    let end = sizes.lowerBound(scrollTop + viewportSize + buffer);
+    let end = endAt(scrollTop + viewportSize + buffer);
     end = Math.max(end, visible.end);
     const visibleCount = visible.end - visible.start;
     const limit = Math.max(maxMounted, visibleCount);
@@ -211,7 +215,6 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       outline = [...items];
       indexes = nextIndexes;
       sizes = new Fenwick(values);
-      scrollTop = clampScroll(scrollTop);
       log("outline", { count: outline.length, totalSize: sizes.total });
       changed();
     },
