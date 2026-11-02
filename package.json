@@ -1,0 +1,1 @@
+{"name":"@zeta-web/root","private":true,"workspaces":["packages/*"],"scripts":{"test":"bun test","typecheck":"tsc -b","check:zeta-events":"bun packages/zeta/scripts/check-events.ts"},"devDependencies":{"typescript":"^5.7.0"},"packageManager":"bun@1.3.13"}

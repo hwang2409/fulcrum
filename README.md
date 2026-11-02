@@ -1,3 +1,16 @@
-# zeta web
+# fulcrum core
 
-react components for rendering zeta agent runs in the browser.
+## packages
+
+- `@fulcrum/core`: agent-agnostic run events, normalized state reducer, and burst-coalescing store.
+- `@fulcrum/zeta`: zeta serve wire types, adapter, JSON-RPC client, and websocket transport.
+
+## reducer and store
+
+`reduce(state, event)` accepts generic `RunEvent` values and returns normalized run state. `items` orders the canonical entities in `itemsById`; active assistant and tool text is stored as a plain string on its entity. `createRunStore()` batches reduction and subscriber notification through its scheduler while `getState()` flushes pending events for synchronous reads. `fromZetaEvent` maps wire events to generic events, and `connect(transport)` adds JSON-RPC request matching.
+
+build with `bun install`, `bun test`, and `bunx tsc -b`.
+
+## known limits
+
+- TODO: add session eviction and bounded notification receipts before using a client as a persistent multi-session shell.

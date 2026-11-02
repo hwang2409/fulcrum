@@ -1,0 +1,10 @@
+{"jsonrpc":"2.0","method":"event","params":{"event":"agent_start","session_id":"turns","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"turn_start","session_id":"turns","data":{"turn":1}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","session_id":"turns","delta":"one","kind":"assistant"}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_message","session_id":"turns","message":{"role":"assistant","content":[{"type":"text","text":"one"}]}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"turn_end","session_id":"turns","data":{"turn":1,"tool_calls":0}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"turn_start","session_id":"turns","data":{"turn":2}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","session_id":"turns","delta":"two","kind":"assistant"}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_message","session_id":"turns","message":{"role":"assistant","content":[{"type":"text","text":"two"}]}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"turn_end","session_id":"turns","data":{"turn":2,"tool_calls":0}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"agent_end","session_id":"turns","data":{}}}

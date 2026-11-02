@@ -1,0 +1,3 @@
+{"jsonrpc":"2.0","method":"event","params":{"event":"tool_start","session_id":"tool","tool_call":{"id":"tool-call-1","name":"read","arguments":{"path":"README.md"}},"data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"tool_output","session_id":"tool","tool_call":{"id":"tool-call-1","name":"read","arguments":{"path":"README.md"}},"output":"permission denied","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"tool_end","session_id":"tool","tool_call":{"id":"tool-call-1","name":"read","arguments":{"path":"README.md"}},"tool_result":{"tool_call_id":"tool-call-1","content":"permission denied","is_error":true},"data":{}}}

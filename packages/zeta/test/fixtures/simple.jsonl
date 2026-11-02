@@ -1,0 +1,7 @@
+{"jsonrpc":"2.0","method":"event","params":{"event":"agent_start","session_id":"simple","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"turn_start","session_id":"simple","data":{"turn":1}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","session_id":"simple","delta":"hi ","kind":"assistant"}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_delta","session_id":"simple","delta":"there","kind":"assistant"}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"assistant_message","session_id":"simple","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"turn_end","session_id":"simple","data":{"turn":1,"tool_calls":0}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"agent_end","session_id":"simple","data":{}}}

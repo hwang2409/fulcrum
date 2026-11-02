@@ -1,0 +1,1 @@
+{"name":"@fulcrum/zeta","type":"module","dependencies":{"@fulcrum/core":"workspace:*"},"exports":{".":{"types":"./dist/index.d.ts","import":"./dist/index.js"}},"scripts":{"build":"tsc -p ."}}

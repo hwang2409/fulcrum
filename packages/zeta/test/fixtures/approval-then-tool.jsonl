@@ -1,0 +1,5 @@
+{"jsonrpc":"2.0","method":"event","params":{"event":"approval_request","session_id":"approval-tool","request_id":"tool-call-1","delegated":false,"tool_call":{"id":"tool-call-1","name":"bash","arguments":{"command":"ls"}}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"approval_end","session_id":"approval-tool","request_id":"tool-call-1","tool_call":{"id":"tool-call-1","name":"bash","arguments":{"command":"ls"}},"data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"tool_start","session_id":"approval-tool","tool_call":{"id":"tool-call-1","name":"bash","arguments":{"command":"ls"}},"data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"tool_output","session_id":"approval-tool","tool_call":{"id":"tool-call-1","name":"bash","arguments":{"command":"ls"}},"output":"README.md","data":{}}}
+{"jsonrpc":"2.0","method":"event","params":{"event":"tool_end","session_id":"approval-tool","tool_call":{"id":"tool-call-1","name":"bash","arguments":{"command":"ls"}},"tool_result":{"tool_call_id":"tool-call-1","content":"README.md","is_error":false},"data":{}}}
