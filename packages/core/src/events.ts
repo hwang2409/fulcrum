@@ -44,7 +44,8 @@ export type RunItem =
       id: string;
       type: "user" | "error" | "notification" | "unknown";
       event: RunEvent;
-    };
+    }
+  | { id: string; type: "sub_agent"; event: Extract<RunEvent, { type: "sub_agent" }> };
 export type RunEvent =
   | {
       type:
@@ -92,4 +93,5 @@ export type RunEvent =
       notification_id?: string;
       data?: Record<string, unknown>;
     }
-  | { type: "unknown"; name: string; data: Record<string, unknown> };
+  | { type: "unknown"; name: string; data: Record<string, unknown> }
+  | { type: "sub_agent"; child_id: string; status: string; summary?: string; data?: Record<string, unknown> };
