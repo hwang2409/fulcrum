@@ -1,42 +1,34 @@
-/* Gallery shell. Colors come from the active theme; type is JetBrains Mono everywhere.
-   The shell owns spacing, controls, and diagnostics; each direction owns how the parts and their states look. */
+/* Gallery shell, in the same language as the shipped styles: square corners, hairlines, color only for state.
+   Colors come from the active theme in @fulcrum/react/themes.css; type is JetBrains Mono everywhere. */
 :root {
-  --gallery-font: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --gallery-bar: 64px;
+  --gallery-font: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --gallery-bar: 56px;
   --gallery-control: 36px;
-  --gallery-line: color-mix(in srgb, var(--fulcrum-fg) 10%, transparent);
-  --gallery-line-strong: color-mix(in srgb, var(--fulcrum-fg) 20%, transparent);
-  --gallery-ease: cubic-bezier(0.2, 0, 0, 1);
 }
-* { box-sizing: border-box; }
+* { box-sizing: border-box; border-radius: 0; }
 html { scroll-padding-top: calc(var(--gallery-bar) + 24px); }
 body {
   margin: 0;
   background: var(--fulcrum-bg);
   color: var(--fulcrum-fg);
-  font: 15px/1.65 var(--gallery-font);
+  font: 14px/1.6 var(--gallery-font);
+  font-variant-ligatures: none;
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
-::selection { background: color-mix(in srgb, var(--fulcrum-accent) 28%, transparent); }
+::selection { background: var(--fulcrum-accent); color: var(--fulcrum-bg); }
 a { color: inherit; text-decoration: none; }
-code {
-  padding: 1px 6px;
-  border-radius: 6px;
-  background: var(--fulcrum-surface);
-  font: 500 0.92em var(--gallery-font);
-}
+.intro code { padding: 0 4px; border: 1px solid var(--fulcrum-border); background: var(--fulcrum-surface); font: 13px var(--gallery-font); }
 :focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 
 .gallery {
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: 224px minmax(0, 1fr);
   grid-template-rows: var(--gallery-bar) 1fr;
   min-height: 100vh;
 }
 
-/* Top bar: brand on the left, the two axes and the inspect toggle on the right. */
 .topbar {
   position: sticky;
   top: 0;
@@ -46,220 +38,83 @@ code {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px 24px;
+  gap: 8px 24px;
   min-width: 0;
   padding: 0 24px;
-  border-bottom: 1px solid var(--gallery-line);
+  border-bottom: 1px solid var(--fulcrum-border);
   background: var(--fulcrum-bg);
 }
-.brand { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; letter-spacing: -0.02em; }
-.brand-mark {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: conic-gradient(from 210deg, var(--fulcrum-accent), var(--fulcrum-ok), var(--fulcrum-warn), var(--fulcrum-accent));
-}
+.brand { display: flex; align-items: baseline; gap: 12px; font-size: 14px; font-weight: 700; }
 .brand-sub { color: var(--fulcrum-muted); font-weight: 400; }
-.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; min-width: 0; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-width: 0; }
 
-/* Shared control shape: segmented buttons, the inspect toggle, demo actions. */
-.segmented button,
+.theme { display: flex; align-items: center; gap: 8px; }
+.theme label { color: var(--fulcrum-muted); font-size: 13px; }
+.theme select,
 .inspect,
 .demo-actions button {
   min-height: var(--gallery-control);
-  padding: 0 14px;
-  border-radius: 9px;
+  padding: 0 12px;
+  border: 1px solid var(--fulcrum-border);
+  background: var(--fulcrum-bg);
+  color: var(--fulcrum-fg);
   font: 500 13px var(--gallery-font);
   cursor: pointer;
-  transition-property: color, background-color, border-color, transform;
-  transition-duration: 150ms;
 }
-.segmented button:active,
+.theme select { min-width: 22ch; }
+.theme select:hover,
+.inspect:hover,
+.demo-actions button:hover { border-color: var(--fulcrum-fg); }
 .inspect:active,
 .demo-actions button:active { transform: scale(0.96); }
+.inspect[aria-pressed="true"],
+.demo-actions button[aria-pressed="true"] { border-color: var(--fulcrum-fg); background: var(--fulcrum-fg); color: var(--fulcrum-bg); }
+/* The active palette: bg, fg, accent, ok, warn, danger, then syntax keyword, string, function. */
+.palette { display: flex; border: 1px solid var(--fulcrum-border); }
+.palette span { width: 12px; height: 20px; }
 
-.segmented {
-  display: inline-grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 1fr;
-  padding: 3px;
-  border: 1px solid var(--gallery-line);
-  border-radius: 12px;
-  background: var(--fulcrum-surface);
-}
-.segmented button { border: 0; background: transparent; color: var(--fulcrum-muted); }
-.segmented button:hover { color: var(--fulcrum-fg); }
-/* Inverted fill: the active direction reads from across the room. */
-.segmented button[aria-checked="true"] { background: var(--fulcrum-fg); color: var(--fulcrum-bg); font-weight: 700; }
-
-.swatches { display: flex; align-items: center; gap: 2px; }
-.swatches button {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: var(--gallery-control);
-  height: var(--gallery-control);
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  cursor: pointer;
-}
-.swatch {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--fulcrum-bg) 50%, var(--fulcrum-accent) 50%);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fulcrum-fg) 24%, transparent);
-  transition: transform 160ms var(--gallery-ease);
-}
-.swatches button:hover .swatch { transform: scale(1.1); }
-.swatches button:active .swatch { transform: scale(0.94); }
-.swatches button[aria-checked="true"] .swatch {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fulcrum-fg) 24%, transparent), 0 0 0 3px var(--fulcrum-bg), 0 0 0 5px var(--fulcrum-fg);
-}
-/* The name floats under the swatch on hover or keyboard focus. */
-.swatch-name {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 50%;
-  padding: 3px 9px;
-  border-radius: 7px;
-  background: var(--fulcrum-fg);
-  color: var(--fulcrum-bg);
-  font: 600 12px var(--gallery-font);
-  white-space: nowrap;
-  opacity: 0;
-  transform: translate(-50%, -4px);
-  transition-property: opacity, transform;
-  transition-duration: 140ms;
-  pointer-events: none;
-}
-.swatches button:hover .swatch-name,
-.swatches button:focus-visible .swatch-name { opacity: 1; transform: translate(-50%, 0); }
-.theme-name { min-width: 8ch; margin-left: 8px; font-size: 13px; font-weight: 600; }
-
-.inspect {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid var(--gallery-line-strong);
-  background: var(--fulcrum-bg);
-  color: var(--fulcrum-muted);
-}
-.inspect::before { content: ""; width: 8px; height: 8px; border: 1.5px solid currentColor; border-radius: 50%; }
-.inspect:hover { color: var(--fulcrum-fg); }
-.inspect[aria-pressed="true"] {
-  border-color: var(--fulcrum-accent);
-  background: color-mix(in srgb, var(--fulcrum-accent) 12%, var(--fulcrum-bg));
-  color: var(--fulcrum-accent);
-  font-weight: 700;
-}
-.inspect[aria-pressed="true"]::before { background: currentColor; }
-
-/* Side nav with the current demo marked. */
 .nav {
   position: sticky;
   top: var(--gallery-bar);
   height: calc(100vh - var(--gallery-bar));
   overflow: auto;
-  padding: 32px 14px 48px;
-  border-right: 1px solid var(--gallery-line);
-  font-size: 13.5px;
-}
-.nav-group { display: flex; flex-direction: column; gap: 2px; margin-bottom: 24px; }
-.nav-group a {
-  display: flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 0 12px;
-  border-radius: 8px;
-  color: var(--fulcrum-muted);
-  transition-property: color, background-color;
-  transition-duration: 120ms;
-}
-.nav-group a:hover { background: var(--fulcrum-surface); color: var(--fulcrum-fg); }
-.nav-group .nav-part { color: var(--fulcrum-fg); font-weight: 700; }
-.nav-group a[aria-current] { background: var(--fulcrum-surface); color: var(--fulcrum-fg); font-weight: 600; box-shadow: inset 3px 0 0 var(--fulcrum-accent); }
-
-.main { width: 100%; min-width: 0; max-width: 1000px; margin: 0 auto; padding: 72px 56px 180px; }
-.intro { margin-bottom: 24px; }
-.intro h1 { margin: 0 0 16px; font-size: 40px; line-height: 1.1; font-weight: 700; letter-spacing: -0.045em; text-wrap: balance; }
-.intro p { max-width: 64ch; margin: 0; color: var(--fulcrum-muted); text-wrap: pretty; }
-.intro p strong { color: var(--fulcrum-fg); }
-.intro .direction-note {
-  margin-top: 24px;
-  padding: 14px 18px;
-  border: 1px solid var(--gallery-line);
-  border-left: 3px solid var(--fulcrum-accent);
-  border-radius: 12px;
-  background: var(--fulcrum-surface);
-  color: var(--fulcrum-fg);
-  font-size: 14px;
-  animation: gallery-in 240ms var(--gallery-ease);
-}
-.direction-note strong { margin-right: 10px; color: var(--fulcrum-accent); }
-
-/* Sections open with a rule, a large name, and a count, so the page has a clear rhythm. */
-.part { padding-top: 56px; margin-top: 56px; border-top: 1px solid var(--gallery-line); }
-.part h2 { display: flex; align-items: center; gap: 12px; margin: 0 0 24px; font-size: 24px; font-weight: 700; letter-spacing: -0.03em; }
-.part h2 span {
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: var(--fulcrum-surface);
-  color: var(--fulcrum-muted);
+  padding: 24px 0 48px;
+  border-right: 1px solid var(--fulcrum-border);
   font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0;
 }
+.nav-group { display: flex; flex-direction: column; margin-bottom: 16px; }
+.nav-group a { display: flex; align-items: center; min-height: 30px; padding: 0 16px 0 22px; border-left: 2px solid transparent; color: var(--fulcrum-muted); }
+.nav-group a:hover { color: var(--fulcrum-fg); }
+.nav-group .nav-part { padding-left: 16px; color: var(--fulcrum-fg); font-weight: 700; }
+.nav-group a[aria-current] { border-left-color: var(--fulcrum-accent); color: var(--fulcrum-fg); }
 
-.demo {
-  margin-bottom: 20px;
-  border: 1px solid var(--gallery-line);
-  border-radius: 16px;
-  background: var(--fulcrum-bg);
-  transition: border-color 150ms;
-}
-.demo:hover { border-color: var(--gallery-line-strong); }
-.demo:target { border-color: var(--fulcrum-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--fulcrum-accent) 16%, transparent); }
-.demo-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 16px; padding: 20px 24px 0; }
+.main { width: 100%; min-width: 0; max-width: 960px; margin: 0 auto; padding: 48px 40px 160px; }
+.intro h1 { margin: 0 0 12px; font-size: 24px; line-height: 1.25; font-weight: 700; text-wrap: balance; }
+.intro p { max-width: 72ch; margin: 0; color: var(--fulcrum-muted); text-wrap: pretty; }
+.intro p strong { color: var(--fulcrum-fg); }
+
+.part { margin-top: 48px; }
+.part > h2 { display: flex; align-items: baseline; gap: 12px; margin: 0 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--fulcrum-border); font-size: 16px; font-weight: 700; }
+.part > h2 span { color: var(--fulcrum-muted); font-size: 13px; font-weight: 400; }
+
+.demo { margin-bottom: 16px; border: 1px solid var(--fulcrum-border); }
+.demo:target { border-color: var(--fulcrum-accent); }
+.demo-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 8px 16px; padding: 12px 16px; border-bottom: 1px solid var(--fulcrum-border); }
 .demo-head > div:first-child { flex: 1 1 260px; min-width: 0; }
-.demo-head h3 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.015em; }
-.demo-head h3 a:hover { color: var(--fulcrum-accent); }
-.demo-head p { margin: 4px 0 0; color: var(--fulcrum-muted); font-size: 13.5px; text-wrap: pretty; }
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 10px 2px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--fulcrum-ok) 14%, transparent);
-  color: var(--fulcrum-ok);
-  font-size: 12px;
-  font-weight: 600;
-}
-.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: gallery-pulse 1.2s ease-in-out infinite alternate; }
-.chip[data-paused] { background: var(--fulcrum-surface); color: var(--fulcrum-muted); }
-.chip[data-paused]::before { animation: none; }
+.demo-head h3 { display: flex; align-items: baseline; gap: 12px; margin: 0; font-size: 14px; font-weight: 700; }
+.demo-head h3 a:hover { text-decoration: underline 1px var(--fulcrum-accent); text-underline-offset: 3px; }
+.demo-head p { margin: 2px 0 0; color: var(--fulcrum-muted); font-size: 13px; text-wrap: pretty; }
+.live { display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-muted); font-size: 12px; font-weight: 400; }
+.live::before { content: ""; width: 7px; height: 7px; background: var(--fulcrum-accent); animation: gallery-pulse 1s infinite alternate; }
+.live[data-paused]::before { background: var(--fulcrum-muted); animation: none; }
 .demo-actions { display: flex; flex: none; gap: 8px; }
-.demo-actions button { border: 1px solid var(--gallery-line-strong); background: var(--fulcrum-bg); color: var(--fulcrum-fg); }
-.demo-actions button:hover { background: var(--fulcrum-surface); }
-.demo-body { min-width: 0; padding: 24px; }
-.demo-body > [data-part=timeline]:empty {
-  display: grid;
-  place-items: center;
-  min-height: 96px;
-  padding: 16px;
-  border: 1px dashed var(--gallery-line-strong);
-  border-radius: 12px;
-  text-align: center;
-}
+.demo-body { min-width: 0; padding: 16px; }
+.demo-body > [data-part=timeline]:empty { display: grid; place-items: center; min-height: 80px; border: 1px dashed var(--fulcrum-border); }
 .demo-body > [data-part=timeline]:empty::after { content: "No events yet. The timeline renders nothing until the first event."; color: var(--fulcrum-muted); font-size: 13px; }
 .demo-attrs {
   margin: 0;
-  padding: 14px 24px;
-  border-top: 1px dashed var(--gallery-line-strong);
-  border-radius: 0 0 15px 15px;
+  padding: 12px 16px;
+  border-top: 1px dashed var(--fulcrum-border);
   background: var(--fulcrum-surface);
   color: var(--fulcrum-muted);
   font: 12px/1.7 var(--gallery-font);
@@ -267,52 +122,32 @@ code {
   overflow-wrap: anywhere;
 }
 
-.toast { position: fixed; bottom: 28px; left: 50%; z-index: 20; transform: translateX(-50%); pointer-events: none; }
-.toast span {
-  display: block;
-  padding: 10px 18px;
-  border-radius: 999px;
-  background: var(--fulcrum-fg);
-  color: var(--fulcrum-bg);
-  font-size: 13px;
-  font-weight: 600;
-  box-shadow: 0 10px 30px -10px rgb(0 0 0 / 0.45);
-  animation: gallery-in 200ms var(--gallery-ease);
-}
+.toast { position: fixed; bottom: 24px; left: 50%; z-index: 20; transform: translateX(-50%); pointer-events: none; }
+.toast span { display: block; padding: 8px 16px; border: 1px solid var(--fulcrum-fg); background: var(--fulcrum-fg); color: var(--fulcrum-bg); font-size: 13px; font-weight: 600; animation: gallery-in 160ms cubic-bezier(0.2, 0, 0, 1); }
 
-@keyframes gallery-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } }
-@keyframes gallery-pulse { to { opacity: 0.35; } }
+@keyframes gallery-in { from { opacity: 0; transform: translateY(4px); } }
+@keyframes gallery-pulse { to { opacity: 0.25; } }
 
-/* Demo buttons are at least 36 px; the shipped styles.css sets no height. Directions set their own and win. */
-.demo-body button { min-height: 36px; }
-/* Touch widths: 44 px targets, including the approve and deny buttons inside every direction. */
+/* Touch widths: 44 px targets, including approve and deny. */
 @media (max-width: 860px), (pointer: coarse) {
   :root { --gallery-control: 44px; }
   .demo-body [data-part] button { min-height: 44px; }
 }
 @media (max-width: 860px) {
   .gallery { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
-  /* Not sticky here: three rows of controls would cover a fifth of a phone screen. */
-  .topbar { position: static; padding: 14px 16px; }
-  .controls, .segmented { width: 100%; }
-  .swatch-name { display: none; }
+  .topbar { position: static; padding: 12px 16px; }
+  .controls, .theme { width: 100%; }
+  .theme select { flex: 1; min-width: 0; }
   .nav { display: none; }
-  .main { padding: 36px 16px 112px; }
-  .intro h1 { font-size: 30px; }
-  .part { padding-top: 40px; margin-top: 40px; }
-  .part h2 { font-size: 20px; }
+  .main { padding: 32px 16px 96px; }
 }
-/* Phones: less card chrome, and long output scrolls inside its box instead of wrapping into short lines. */
 @media (max-width: 600px) {
-  .segmented button { padding: 0 6px; }
-  .main { padding: 28px 10px 96px; }
-  .demo { border-radius: 12px; }
-  .demo-head { padding: 16px 14px 0; }
-  .demo-body { padding: 16px 14px; }
-  .demo-attrs { padding: 12px 14px; border-radius: 0 0 11px 11px; }
-  .demo-body [data-part=tool-output] { white-space: pre !important; overflow-wrap: normal; }
+  .main { padding: 24px 8px 96px; }
+  .demo-head { padding: 12px; }
+  .demo-body { padding: 12px 8px; }
+  .demo-attrs { padding: 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .toast span, .direction-note, .chip::before { animation: none; }
-  .swatch, .swatch-name, .segmented button, .inspect, .demo-actions button { transition: none; }
+  .toast span, .live::before { animation: none; }
+  .inspect, .demo-actions button { transition: none; }
 }

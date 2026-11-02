@@ -78,14 +78,54 @@ test("all event paths replay through the store", () => {
     { type: "usage", usage: { input_tokens: 1 } },
     { type: "user_message", text: "hello", mode: "normal" },
     { type: "notification", notification_id: "receipt-1" },
+    { type: "sub_agent", childRunId: "child-1", status: "running", summary: "working" },
     { type: "unknown", name: "future", data: {} },
     { type: "error", error: { code: "failed", message: "failed" } },
     { type: "turn_end" },
     { type: "run_end" },
   ];
   const store = replay(events);
-  expect(store.getOutline()).toHaveLength(7);
+  expect(store.getOutline()).toHaveLength(8);
   expect(store.getState().agent).toBe("idle");
+});
+
+test("sub-agent lifecycle is monotonic for every status pair", () => {
+  const statuses = ["running", "waiting_approval", "waiting_input", "idle", "done", "error", "canceled"] as const;
+  const terminal = new Set(["done", "error", "canceled"]);
+
+  for (const before of statuses) {
+    for (const after of statuses) {
+      const store = replay([
+        { type: "sub_agent", childRunId: "child", status: before, urgency: before === "waiting_input" ? "input" : undefined },
+        { type: "sub_agent", childRunId: "child", status: after, urgency: after === "waiting_approval" ? "approval" : undefined },
+      ]);
+      const item = store.getItem("sub-agent:child");
+      expect(item?.type === "sub_agent" ? item.status : undefined).toBe(terminal.has(before) ? before : after);
+      expect(item?.type === "sub_agent" ? item.urgency : undefined).toBe(terminal.has(before) ? undefined : after === "waiting_approval" ? "approval" : undefined);
+
+      const stale = replay([
+        { type: "sub_agent", childRunId: "child", status: before, updatedAt: "2026-01-02T00:00:00Z" },
+        { type: "sub_agent", childRunId: "child", status: after, updatedAt: "2026-01-01T00:00:00Z" },
+      ]).getItem("sub-agent:child");
+      expect(stale?.type === "sub_agent" ? stale.status : undefined).toBe(before);
+    }
+  }
+});
+
+test("sub-agent lifecycle uses ordering metadata and clears resolved urgency", () => {
+  const store = replay([
+    { type: "sub_agent", childRunId: "child", status: "waiting_input", urgency: "input", updatedAt: "2026-01-02T00:00:00Z" },
+    { type: "sub_agent", childRunId: "child", status: "running", updatedAt: "2026-01-01T00:00:00Z" },
+  ]);
+  expect(store.getItem("sub-agent:child")).toMatchObject({ status: "waiting_input", urgency: "input" });
+
+  store.dispatch({ type: "sub_agent", childRunId: "child", status: "running", updatedAt: "2026-01-03T00:00:00Z" });
+  expect(store.getItem("sub-agent:child")).toMatchObject({ status: "running" });
+  expect(store.getItem("sub-agent:child")?.type === "sub_agent" ? store.getItem("sub-agent:child")?.urgency : undefined).toBeUndefined();
+
+  store.dispatch({ type: "sub_agent", childRunId: "sequenced", status: "idle", sequence: 2 });
+  store.dispatch({ type: "sub_agent", childRunId: "sequenced", status: "running", sequence: 1 });
+  expect(store.getItem("sub-agent:sequenced")).toMatchObject({ status: "idle", sequence: 2 });
 });
 
 test("delta changes only the streaming message identity", () => {

@@ -19,9 +19,13 @@ for (const target of builds) {
   console.log(`${target.name}: ${bytes} bytes gzipped (hard ceiling ${target.ceiling} bytes; accident alarm, not a regression budget)`);
   if (bytes > target.ceiling) failed = true;
 }
-const cssCeiling = 5_000;
-const css = await Bun.file("packages/react/styles.css").arrayBuffer();
-const cssBytes = Bun.gzipSync(css).byteLength;
-console.log(`css: ${cssBytes} bytes gzipped (hard ceiling ${cssCeiling} bytes; accident alarm, not a regression budget)`);
-if (cssBytes > cssCeiling) failed = true;
+const styles = [
+  { name: "react styles.css", file: "packages/react/styles.css", ceiling: 8_000 },
+  { name: "react themes.css", file: "packages/react/themes.css", ceiling: 6_000 },
+];
+for (const sheet of styles) {
+  const bytes = Bun.gzipSync(await Bun.file(sheet.file).arrayBuffer()).byteLength;
+  console.log(`${sheet.name}: ${bytes} bytes gzipped (hard ceiling ${sheet.ceiling} bytes; accident alarm, not a regression budget)`);
+  if (bytes > sheet.ceiling) failed = true;
+}
 if (failed) process.exit(1);

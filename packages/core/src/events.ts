@@ -13,11 +13,40 @@ export interface ToolCall {
   name: string;
   arguments: Record<string, unknown>;
 }
+export type ToolView = (
+  | { kind: "shell"; command: string; cwd?: string; exitCode?: number }
+  | { kind: "read"; path: string; range?: { offset?: number; limit?: number } }
+  | { kind: "edit"; path: string; diff: string }
+  | { kind: "write"; path: string; bytes?: number }
+  | { kind: "search"; pattern: string; path?: string; matches?: string[] }
+  | ({ kind: "fetch"; title?: string; bytes?: number } & ({ url: string; query?: never } | { query: string; url?: never }))
+) & { durationMs?: number };
 export interface ToolResult {
   tool_call_id: string;
   content: string;
   is_error: boolean;
   is_canceled?: boolean;
+}
+export type SubAgentStatus =
+  | "running"
+  | "waiting_approval"
+  | "waiting_input"
+  | "idle"
+  | "done"
+  | "error"
+  | "canceled";
+export type SubAgentUrgency = "approval" | "input" | "error";
+export interface SubAgentEvent {
+  type: "sub_agent";
+  childRunId: string;
+  status: SubAgentStatus;
+  summary?: string;
+  urgency?: SubAgentUrgency;
+  notificationId?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  endedAt?: string;
+  sequence?: number;
 }
 export type RunItem =
   | {
@@ -32,6 +61,7 @@ export type RunItem =
       id: string;
       type: "tool";
       tool_call: ToolCall;
+      view?: ToolView;
       output: string;
       version: number;
       active: boolean;
@@ -44,7 +74,8 @@ export type RunItem =
       id: string;
       type: "user" | "error" | "notification" | "unknown";
       event: RunEvent;
-    };
+    }
+  | ({ id: string } & SubAgentEvent);
 export type RunEvent =
   | {
       type:
@@ -59,23 +90,26 @@ export type RunEvent =
   | { type: "message_delta"; message_id?: string; delta: string; kind?: string }
   | { type: "retry" }
   | { type: "message_commit"; message_id?: string; message: Message }
-  | { type: "tool_start"; tool_call: ToolCall; data?: Record<string, unknown> }
+  | { type: "tool_start"; tool_call: ToolCall; view?: ToolView; data?: Record<string, unknown> }
   | {
       type: "tool_output";
       tool_call: ToolCall;
       output: string;
+      view?: ToolView;
       data?: Record<string, unknown>;
     }
   | {
       type: "tool_end";
       tool_call: ToolCall;
       tool_result?: ToolResult;
+      view?: ToolView;
       data?: Record<string, unknown>;
     }
   | {
       type: "approval_request";
       request_id: string;
       tool_call: ToolCall;
+      view?: ToolView;
       delegated: boolean;
     }
   | { type: "approval_end"; request_id: string; data?: Record<string, unknown> }
@@ -92,4 +126,5 @@ export type RunEvent =
       notification_id?: string;
       data?: Record<string, unknown>;
     }
-  | { type: "unknown"; name: string; data: Record<string, unknown> };
+  | { type: "unknown"; name: string; data: Record<string, unknown> }
+  | SubAgentEvent;

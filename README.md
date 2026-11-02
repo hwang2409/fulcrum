@@ -43,10 +43,21 @@ const renderers: Renderers = {
 
 - hooks: `useRun(selector)` (return a primitive or a reference from state), `useTimeline()` (stable ordered `{ id, kind }` entries), `useItem(id)`, and `useItemSelector(id, selector)`. They use `useSyncExternalStore`, so a text delta re-renders only the item that changed.
 - parts: `Timeline`, `Message`, `ToolCall`, `Approval`, and `Fallback` for other kinds. Parts have no styles. They take `className` and expose `data-part`, `data-kind`, `data-state` (`streaming`, `done`, `error`, `pending`), `data-role`, and `data-tool`. Text is plain text with `white-space: pre-wrap`.
+- tool body slot: `ToolCall` and `Approval` own the one header row (`tool-name`, `tool-summary`, `tool-status`), the disclosure, the state rail, and the approval actions. A per-tool card passes only what goes inside `data-part="tool-body"`, so it never draws a second header:
+
+  ```tsx
+  type ToolBodyProps = { item: ToolItem; output: string; state: ItemState };
+  type ToolViewProps = { summary?: (item: ToolItem) => string; body?: ComponentType<ToolBodyProps> };
+
+  const ShellBody = ({ output }: ToolBodyProps) => <pre data-part="tool-output">{output}</pre>;
+  const renderers: Renderers = { "tool:bash": ({ id }) => <ToolCall id={id} body={ShellBody} /> };
+  ```
+
+  `item` is the normalized core tool item, including the agent-neutral `item.view` hint when the adapter set one. `output` is the streamed output plus a final result that adds to it. Approvals pass the requested call, with the `view` an adapter may put on `approval_request`, as an active tool item with no output and state `pending` or `submitting`. With a view, the header summary reads from it (`$ command` for shell, the path for read, edit, and write, the pattern for search, the url or query for fetch) and the part sets `data-tool-view="<kind>"`. With no view, it shows the first string argument. `summary` overrides either.
 
 - playground: `bunx tsc -b`, then `bun run --cwd apps/playground dev`
 
-- styles: copy `packages/react/styles.css` into your app and edit the `--fulcrum-*` variables. It follows the OS light or dark mode (set `data-fulcrum-theme="light"` or `"dark"` on `<html>` to force one) and uses `content-visibility: auto` for long timelines.
+- styles: copy `packages/react/styles.css` (layout, states, markdown and code) and `packages/react/themes.css` (color) into your app and edit them. themes.css has 12 real palettes: gruvbox-dark, gruvbox-light, dracula, nord, tokyo-night, catppuccin-mocha, catppuccin-latte, solarized-dark, solarized-light, github-dark, github-light, one-dark. Set `data-fulcrum-theme="<name>"` on `<html>` or any subtree; with no attribute it follows the OS with github-light or github-dark. Each theme also sets `--fulcrum-tok-*` colors for `<span class="tok-<type>">` syntax tokens. The type is "JetBrains Mono" with monospace fallbacks; load the font yourself.
 - playground: `bunx tsc -b`, then `bun run --cwd apps/playground dev`.
 - gallery: every part in every state, no server or session. Run `bun run dev` in `apps/playground`, then open `/gallery.html`.
 - performance checks: `bun run bench:check` and `bun run size:check`; run the production browser stress report with `bun run stress`.
