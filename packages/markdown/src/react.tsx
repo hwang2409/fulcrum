@@ -2,6 +2,7 @@ import {
   Fragment,
   memo,
   useEffect,
+  useId,
   useRef,
   useState,
   type ReactNode,
@@ -11,6 +12,7 @@ import {
   parseMarkdown,
   type Block,
   type Highlighter,
+  type HighlightResult,
   type Inline,
   type ListBlock,
   type Token,
@@ -20,6 +22,8 @@ export interface MarkdownProps {
   source: string;
   streaming?: boolean;
   highlight?: Highlighter;
+  /** Stable message/document identity used to identify fenced code blocks. */
+  id?: string;
 }
 
 const InlineView = ({ nodes }: { nodes: readonly Inline[] }) => (
@@ -46,12 +50,24 @@ const completeLines = (code: string, open: boolean) => {
   return end < 0 ? "" : code.slice(0, end + 1);
 };
 
-function initialHighlight(highlight: Highlighter | undefined, code: string, language: string | undefined) {
-  if (!highlight || !code) return { tokens: null as Token[] | null };
-  const value = highlight(code, language);
+const normalizeHighlight = (value: HighlightResult) =>
+  Array.isArray(value)
+    ? { tokens: value, state: undefined }
+    : value
+      ? { tokens: value.tokens, state: value.state }
+      : { tokens: null, state: undefined };
+
+function initialHighlight(
+  highlight: Highlighter | undefined,
+  code: string,
+  language: string | undefined,
+  id: string,
+) {
+  if (!highlight || !code) return { tokens: null as Token[] | null, state: undefined };
+  const value = highlight(code, language, { id, version: 1, state: undefined });
   return value instanceof Promise
-    ? { tokens: null as Token[] | null, pending: value }
-    : { tokens: value };
+    ? { tokens: null as Token[] | null, state: undefined, pending: value }
+    : normalizeHighlight(value);
 }
 
 const Tokens = ({ tokens }: { tokens: readonly Token[] }) => (
@@ -60,15 +76,18 @@ const Tokens = ({ tokens }: { tokens: readonly Token[] }) => (
     : <Fragment key={index}>{token.content}</Fragment>)}</>
 );
 
-function CodeBlock({ block, highlight }: { block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) {
+function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) {
   const ready = completeLines(block.value, Boolean(block.open));
   const initial = useRef<{
     source: string;
     tokens: Token[] | null;
-    pending?: Promise<Token[]>;
+    state?: unknown;
+    pending?: Promise<HighlightResult>;
   } | undefined>(undefined);
-  if (!initial.current) initial.current = { source: ready, ...initialHighlight(highlight, ready, block.language) };
+  if (!initial.current) initial.current = { source: ready, ...initialHighlight(highlight, ready, block.language, id) };
   const [result, setResult] = useState({ source: initial.current.source, tokens: initial.current.tokens });
+  const grammarState = useRef(initial.current.state);
+  const version = useRef(initial.current.source ? 1 : 0);
   const processed = useRef(initial.current.source);
   const queue = useRef(Promise.resolve());
   const mounted = useRef(true);
@@ -77,23 +96,32 @@ function CodeBlock({ block, highlight }: { block: Extract<Block, { type: "code" 
   useEffect(() => {
     if (!initial.current?.pending || initialQueued.current) return;
     initialQueued.current = true;
-    queue.current = initial.current.pending.then((tokens) => {
-      if (mounted.current) setResult({ source: initial.current!.source, tokens });
+    queue.current = initial.current.pending.then((value) => {
+      const output = normalizeHighlight(value);
+      grammarState.current = output.state;
+      if (mounted.current) setResult({ source: initial.current!.source, tokens: output.tokens });
     });
   }, []);
   useEffect(() => {
     if (!highlight || ready.length <= processed.current.length) return;
     const source = ready;
     const suffix = source.slice(processed.current.length);
+    const nextVersion = ++version.current;
     processed.current = source;
     queue.current = queue.current.then(async () => {
-      const tokens = await highlight(suffix, block.language);
+      const value = await highlight(suffix, block.language, { id, version: nextVersion, state: grammarState.current });
+      const output = normalizeHighlight(value);
+      grammarState.current = output.state;
       if (mounted.current) setResult((prior) => ({
         source,
-        tokens: tokens ? [...(prior.tokens ?? []), ...tokens] : null,
+        tokens: output.tokens
+          ? [...(prior.tokens ?? (prior.source ? [{ content: prior.source }] : [])), ...output.tokens]
+          : prior.tokens
+            ? [...prior.tokens, { content: suffix }]
+            : null,
       }));
     });
-  }, [block.language, highlight, ready]);
+  }, [block.language, highlight, id, ready]);
   const rest = block.value.slice(result.source.length);
   return (
     <pre data-part="md-code-block" data-language={block.language}>
@@ -115,7 +143,7 @@ const ListView = ({ block, highlight }: { block: ListBlock; highlight?: Highligh
     : <ul data-part="md-list">{children}</ul>;
 };
 
-const BlockView = memo(function BlockView({ block, highlight }: { block: Block; highlight?: Highlighter }): ReactNode {
+const BlockView = memo(function BlockView({ id, block, highlight }: { id: string; block: Block; highlight?: Highlighter }): ReactNode {
   switch (block.type) {
     case "paragraph": return <p data-part="md-paragraph"><InlineView nodes={block.children} /></p>;
     case "heading": {
@@ -123,9 +151,9 @@ const BlockView = memo(function BlockView({ block, highlight }: { block: Block; 
       return <Tag data-part="md-heading"><InlineView nodes={block.children} /></Tag>;
     }
     case "rule": return <hr data-part="md-rule" />;
-    case "code": return <CodeBlock block={block} highlight={highlight} />;
+    case "code": return <CodeBlock id={id} block={block} highlight={highlight} />;
     case "list": return <ListView block={block} highlight={highlight} />;
-    case "blockquote": return <blockquote data-part="md-blockquote">{block.children.map((child, index) => <BlockView key={index} block={child} highlight={highlight} />)}</blockquote>;
+    case "blockquote": return <blockquote data-part="md-blockquote">{block.children.map((child, index) => <BlockView key={index} id={`${id}:${index}`} block={child} highlight={highlight} />)}</blockquote>;
     case "table": return (
       <table data-part="md-table">
         <thead><tr>{block.header.map((cell, index) => <th key={index} style={block.align[index] ? { textAlign: block.align[index] } : undefined}><InlineView nodes={cell} /></th>)}</tr></thead>
@@ -136,7 +164,9 @@ const BlockView = memo(function BlockView({ block, highlight }: { block: Block; 
 });
 
 /** Streaming mode preserves completed block objects; only its open tail receives a new object. */
-export const Markdown = memo(function Markdown({ source, streaming = false, highlight }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ source, streaming = false, highlight, id }: MarkdownProps) {
+  const generatedId = useId();
+  const documentId = id ?? generatedId;
   const state = useRef<{ document: ReturnType<typeof createStreamingDocument>; length: number; finished: boolean } | undefined>(undefined);
   let blocks: readonly Block[];
   if (!streaming && !state.current) {
@@ -150,5 +180,5 @@ export const Markdown = memo(function Markdown({ source, streaming = false, high
     if (!streaming && !current.finished) { current.document.finish(); current.finished = true; }
     blocks = current.document.render();
   }
-  return <>{blocks.map((block, index) => <BlockView key={index} block={block} highlight={highlight} />)}</>;
+  return <>{blocks.map((block, index) => <BlockView key={index} id={`${documentId}:${index}`} block={block} highlight={highlight} />)}</>;
 });

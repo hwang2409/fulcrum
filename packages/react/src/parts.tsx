@@ -3,7 +3,7 @@ import type { RunItem } from "@fulcrum/core";
 import { useItem, useItemSelector, useTimeline } from "./hooks.js";
 
 export type ItemProps = { id: string; className?: string };
-export type MarkdownContentProps = { source: string; streaming: boolean };
+export type MarkdownContentProps = { id: string; source: string; streaming: boolean };
 export type MessageProps = ItemProps & {
   /** Markdown is enabled for assistant messages when a renderer is supplied. */
   markdown?: ComponentType<MarkdownContentProps> | false;
@@ -44,7 +44,7 @@ export const Message = memo(function Message({
       data-state={item.active ? "streaming" : "done"}
       data-format={rich ? "markdown" : "text"}
     >
-      {rich ? <Markdown source={text} streaming={item.active} /> : text}
+      {rich ? <Markdown id={id} source={text} streaming={item.active} /> : text}
     </div>
   );
 });

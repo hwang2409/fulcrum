@@ -57,22 +57,39 @@ const q = (selector: string) => container.querySelector(selector) as HTMLElement
 const hostProps = (el: Element) =>
   (el as unknown as Record<string, unknown>)[Object.keys(el).find((key) => key.startsWith("__reactProps$"))!];
 
-test("async highlighting queues each new complete line once", async () => {
-  const calls: string[] = [];
-  const resolves: Array<(tokens: Array<{ type: "keyword"; content: string }>) => void> = [];
-  const highlight = (code: string) => {
-    calls.push(code);
-    return new Promise<Array<{ type: "keyword"; content: string }>>((resolve) => resolves.push(resolve));
+test("highlighting passes stable identity, versions, and grammar state for new complete lines only", async () => {
+  type Context = { id: string; version: number; state?: unknown };
+  type Result = { tokens: Array<{ type?: "keyword"; content: string }>; state: string };
+  const calls: Array<{ code: string; language: string | undefined; context: Context | undefined }> = [];
+  const resolves: Array<(result: Result) => void> = [];
+  const highlight = (code: string, language: string | undefined, context?: Context) => {
+    calls.push({ code, language, context });
+    return new Promise<Result>((resolve) => resolves.push(resolve));
   };
-  mount(<Markdown source={"```ts\na\n"} streaming highlight={highlight} />);
-  act(() => root!.render(<Markdown source={"```ts\na\nb\npartial"} streaming highlight={highlight} />));
-  expect(calls).toEqual(["a\n"]);
+  mount(<Markdown id="message:one" source={"```ts\na\n"} streaming highlight={highlight} />);
+  act(() => root!.render(<Markdown id="message:one" source={"```ts\na\nb\npartial"} streaming highlight={highlight} />));
+  expect(calls).toEqual([{ code: "a\n", language: "ts", context: { id: "message:one:0", version: 1, state: undefined } }]);
+
   await act(async () => {
-    resolves.shift()!([{ type: "keyword", content: "a\n" }]);
+    resolves.shift()!({ tokens: [{ type: "keyword", content: "a\n" }], state: "after-a" });
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  expect(calls).toEqual(["a\n", "b\n"]);
-  await act(async () => { resolves.shift()!([{ type: "keyword", content: "b\n" }]); await Promise.resolve(); });
+  expect(calls[1]).toEqual({ code: "b\n", language: "ts", context: { id: "message:one:0", version: 2, state: "after-a" } });
+
+  await act(async () => {
+    resolves.shift()!({ tokens: [{ content: "b\n" }], state: "after-b" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  act(() => root!.render(<Markdown id="message:one" source={"```ts\na\nb\npartial"} highlight={highlight} />));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(calls[2]).toEqual({ code: "partial", language: "ts", context: { id: "message:one:0", version: 3, state: "after-b" } });
+
+  await act(async () => {
+    resolves.shift()!({ tokens: [{ type: "keyword", content: "partial" }], state: "done" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  act(() => root!.render(<Markdown id="message:one" source={"```ts\na\nb\npartial"} highlight={highlight} />));
+  expect(calls).toHaveLength(3);
   expect(container.querySelectorAll(".tok-keyword")).toHaveLength(2);
   expect(container.textContent).toBe("a\nb\npartial");
 });

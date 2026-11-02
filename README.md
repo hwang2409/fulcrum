@@ -64,7 +64,7 @@ import { Message } from "@fulcrum/react";
 
 The streaming document freezes completed blocks and reparses only its open tail. `Markdown` renders headings, paragraphs, inline and fenced code, nested/task lists, emphasis, safe links, blockquotes, GFM tables, rules, and hard breaks. Raw HTML stays escaped. Link protocols are limited to HTTP(S), `mailto:`, and relative URLs.
 
-Code blocks accept `highlight(code, language)`. It returns `{ content, type? }[]` or a promise. Token classes are `tok-keyword`, `tok-string`, `tok-number`, `tok-comment`, `tok-function`, `tok-type`, `tok-variable`, `tok-constant`, `tok-operator`, `tok-punctuation`, `tok-tag`, `tok-attribute`, `tok-regexp`, `tok-inserted`, and `tok-deleted`.
+Code blocks accept `highlight(code, language, context?)`. Existing two-argument callbacks still work. `context` contains a stable block `id`, a monotonic complete-line `version`, and the opaque `state` returned by the prior call. Return a token array, `{ tokens, state? }`, a promise of either, or `null`. Tokens without a `type` render as plain text; styled token classes are `tok-keyword`, `tok-string`, `tok-number`, `tok-comment`, `tok-function`, `tok-type`, `tok-variable`, `tok-constant`, `tok-operator`, `tok-punctuation`, `tok-tag`, `tok-attribute`, `tok-regexp`, `tok-inserted`, and `tok-deleted`.
 
 The headless renderer has no visual styles. Its stable styling hooks are `data-part="md-paragraph"`, `md-heading`, `md-code-inline`, `md-code-block`, `md-list`, `md-list-item`, `md-emphasis`, `md-strong`, `md-strike`, `md-link`, `md-blockquote`, `md-table`, `md-rule`, and `md-break`. Code blocks also expose `data-language`.
 

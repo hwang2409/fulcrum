@@ -93,6 +93,9 @@ test("escapes html and removes unsafe hrefs", () => {
     "<img src=x onerror=alert(1)>",
     "[x](javascript:alert(1))",
     "[x](data:text/html,boom)",
+    "[x](java\tscript:alert(1))",
+    "[x](java\nscript:alert(1))",
+    "[x](//example.com/remote)",
     "<script>alert(1)</script>",
   ];
   for (const source of attacks) {

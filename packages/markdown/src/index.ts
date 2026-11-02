@@ -5,10 +5,13 @@ export const tokenTypes = [
 
 export type TokenType = (typeof tokenTypes)[number];
 export type Token = { type?: TokenType; content: string };
+export type HighlightContext = { id: string; version: number; state?: unknown };
+export type HighlightResult = Token[] | { tokens: Token[]; state?: unknown } | null;
 export type Highlighter = (
   code: string,
   lang: string | undefined,
-) => Token[] | Promise<Token[]> | null;
+  context?: HighlightContext,
+) => HighlightResult | Promise<HighlightResult>;
 
 export type Inline =
   | { type: "text"; value: string }
@@ -30,8 +33,9 @@ export type Block =
 
 const safeHref = (href: string) => {
   const value = href.trim();
-  if (/^(https?:|mailto:)/i.test(value)) return value;
-  if (!/^[a-z][a-z\d+.-]*:/i.test(value) && !value.startsWith("//")) return value;
+  const normalized = value.replace(/[\u0000-\u0020]/g, "");
+  if (/^(https?:|mailto:)/i.test(normalized)) return value;
+  if (!/^[a-z][a-z\d+.-]*:/i.test(normalized) && !/^[\\/]{2}/.test(normalized)) return value;
   return undefined;
 };
 
@@ -277,7 +281,7 @@ export function createStreamingDocument(): StreamingDocument {
     if (!all) end += 2;
     const complete = tail.slice(0, end);
     const parsed = parseMarkdown(complete);
-    frozen.push(...parsed);
+    frozen.push(...(all ? parsed.map((block) => block.type === "code" ? { ...block, open: false } : block) : parsed));
     stats.frozenParses += parsed.length;
     tail = tail.slice(end);
   };
