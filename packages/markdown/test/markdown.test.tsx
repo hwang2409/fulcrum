@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { Window } from "happy-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   createStreamingDocument,
@@ -10,6 +11,12 @@ import { Markdown } from "../src/react.js";
 import corpus from "./fixtures/agent-corpus.json";
 
 const json = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
+const window = new Window();
+const visibleText = (source: string, streaming = false) => {
+  const element = window.document.createElement("div");
+  element.innerHTML = renderToStaticMarkup(<Markdown source={source} streaming={streaming} />);
+  return element.textContent;
+};
 
 const conformance: Record<string, Array<[string, string]>> = {
   headings: [["# alpha", "<h1 data-part=\"md-heading\">alpha</h1>"], ["## beta", "<h2 data-part=\"md-heading\">beta</h2>"], ["setext\n===", "<h1 data-part=\"md-heading\">setext</h1>"]],
@@ -225,6 +232,17 @@ test("the agent corpus has the expected shape 20/20", () => {
     const html = renderToStaticMarkup(<Markdown source={source} streaming={index === 19} />);
     for (const part of expected[index]!) expect(html, `corpus reply ${index + 1}`).toContain(part);
   });
+});
+
+test("every streamed prefix only reveals final visible text", () => {
+  const exactExample = "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move the import into the config's server block, or use `new";
+  for (const source of [exactExample, ...corpus]) {
+    const finalText = visibleText(source);
+    for (let length = 0; length <= source.length; length++) {
+      const prefixText = visibleText(source.slice(0, length), true);
+      expect(finalText.startsWith(prefixText), `visible prefix ${length} of ${JSON.stringify(source)}`).toBe(true);
+    }
+  }
 });
 
 test("every corpus character prefix streams once and finishes identically", () => {
