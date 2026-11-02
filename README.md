@@ -3,7 +3,7 @@
 ## packages
 
 - `@fulcrum/core`: agent-agnostic run events, normalized state reducer, and burst-coalescing store.
-- `@fulcrum/zeta`: zeta serve wire types, adapter, JSON-RPC client, and websocket transport.
+- `@fulcrum/zeta`: zeta serve wire types, adapter, JSON-RPC client, websocket transport, and authenticated `connectZeta`.
 - `@fulcrum/react`: react 19 hooks and headless timeline parts over `@fulcrum/core`. It does not depend on `@fulcrum/zeta`.
 - `apps/playground` (private): replays the zeta fixtures, or a stress run, in a browser.
 
