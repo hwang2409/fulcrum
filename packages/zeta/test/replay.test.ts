@@ -7,6 +7,7 @@ import {
   type EventParams,
   type Transport,
 } from "../src/index.js";
+import { eventTypes } from "../src/event-types.js";
 
 interface Frame {
   jsonrpc: "2.0";
@@ -106,40 +107,6 @@ const eventsByType = (state: RunState, type: "error" | "notification" | "unknown
     .filter((item) => item.type === type)
     .map((item) => item.event);
 
-// Copied from /Users/henry/me/fun/zeta/src/zeta/server/event_contract.py.
-const eventTypes: Record<string, string> = {
-  sub_agent_receipt: "notification",
-  child_idle: "notification",
-  task_exit_notification: "notification",
-  project_inbox_notification: "notification",
-  child_question: "notification",
-  child_question_withdrawn: "notification",
-  memory_updated: "unknown",
-  turn_aborted: "error",
-  usage: "usage",
-  user_message: "user_message",
-  agent_start: "run_start",
-  turn_start: "turn_start",
-  compaction_start: "unknown",
-  compaction_end: "unknown",
-  message_start: "message_start",
-  assistant_delta: "message_delta",
-  assistant_message: "message_commit",
-  retry: "retry",
-  assistant_reset: "message_reset",
-  approval_request: "approval_request",
-  approval_end: "approval_end",
-  tool_start: "tool_start",
-  tool_output: "tool_output",
-  tool_end: "tool_end",
-  notification_by_kind: "notification",
-  child_message_delivered: "notification",
-  account_limit: "unknown",
-  account_state_unknown: "unknown",
-  turn_end: "turn_end",
-  agent_end: "run_end",
-  error: "error",
-};
 const deliberateUnknown = new Set([
   "memory_updated",
   "compaction_start",

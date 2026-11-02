@@ -60,6 +60,46 @@ const messageItemId = (id: string) => `message:${id}`;
 const toolItemId = (id: string) => `tool:${id}`;
 const approvalItemId = (id: string) => `approval:${id}`;
 
+interface StreamingState {
+  messages: RunState["messagesById"];
+  items: RunState["itemsById"];
+  messageId: string;
+  message: StreamedMessage;
+}
+const streamingStates = new WeakMap<RunState, StreamingState>();
+const publishMessageDelta = (
+  state: RunState,
+  id: string,
+  message: StreamedMessage,
+  item: RunItem,
+  isNew: boolean,
+): RunState => {
+  const prior = streamingStates.get(state);
+  const messages = prior?.messages ?? state.messagesById;
+  const itemsById = prior?.items ?? state.itemsById;
+  const next: RunState = {
+    turns: state.turns,
+    items: isNew ? [...state.items, item.id] : state.items,
+    get itemsById() {
+      return { ...itemsById, [item.id]: item };
+    },
+    get messagesById() {
+      return { ...messages, [id]: message };
+    },
+    toolCallsById: state.toolCallsById,
+    approvalsById: state.approvalsById,
+    usage: state.usage,
+    userMessages: state.userMessages,
+    agent: state.agent,
+    turn: state.turn,
+    receipts: state.receipts,
+    nextId: isNew ? state.nextId + 1 : state.nextId,
+    activeMessageId: id,
+  };
+  streamingStates.set(next, { messages, items: itemsById, messageId: id, message });
+  return next;
+};
+
 export function reduce(state: RunState, event: RunEvent): RunState {
   const candidate =
     event.type === "notification"
@@ -96,7 +136,11 @@ export function reduce(state: RunState, event: RunEvent): RunState {
         event.message_id ??
         next.activeMessageId ??
         (next.nextId === 1 ? "assistant" : `assistant-${next.nextId}`);
-      const old = next.messagesById[id];
+      const streaming = streamingStates.get(next);
+      const old =
+        streaming?.messageId === id
+          ? streaming.message
+          : next.messagesById[id];
       const continuing = next.activeMessageId === id;
       const message = appendStream(
         {
@@ -119,16 +163,7 @@ export function reduce(state: RunState, event: RunEvent): RunState {
         "chunks",
         message,
       );
-      const updated = {
-        ...next,
-        activeMessageId: id,
-        nextId: old ? next.nextId : next.nextId + 1,
-        messagesById: { ...next.messagesById, [id]: message },
-        itemsById: { ...next.itemsById, [itemId]: item },
-      };
-      return old
-        ? updated
-        : { ...updated, items: [...updated.items, itemId] };
+      return publishMessageDelta(next, id, message, item, !old);
     }
     case "message_commit": {
       const id =
