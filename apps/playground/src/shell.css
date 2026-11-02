@@ -65,7 +65,8 @@ code { font: inherit; color: var(--fulcrum-fg); }
 .toolbar input[type="range"]:disabled { cursor: not-allowed; }
 
 /* What the page shows and how to test it. */
-.caption { margin: 0; padding: 8px 24px; border-bottom: 1px solid var(--fulcrum-border); color: var(--fulcrum-muted); font-size: 12px; text-wrap: pretty; }
+.page-title { margin: 0; padding: 16px 24px 0; font-size: 20px; line-height: 1.2; }
+.caption { margin: 0; padding: 4px 24px 12px; border-bottom: 1px solid var(--fulcrum-border); color: var(--fulcrum-muted); font-size: 12px; text-wrap: pretty; }
 .caption strong { color: var(--fulcrum-fg); font-weight: 600; }
 
 /* Active mode and its live numbers, in one line. */
@@ -95,7 +96,7 @@ code { font: inherit; color: var(--fulcrum-fg); }
   .shell-bar nav { gap: 12px; }
   .theme { width: 100%; margin-left: 0; }
   .theme select { flex: 1; min-width: 0; }
-  .toolbar, .caption, .status { padding-inline: 16px; }
+  .page-title, .toolbar, .caption, .status { padding-inline: 16px; }
   .field:has(select) { flex: 1 1 100%; }
   .field:has(select) select { flex: 1; }
   .scroll { padding: 0 8px; }

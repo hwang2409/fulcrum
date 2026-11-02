@@ -121,6 +121,13 @@ function App() {
   return (
     <RunProvider store={store}>
       <Shell page="virtual">
+        <h1 className="page-title">virtual timeline</h1>
+        <p className="caption">
+          @fulcrum/virtual holds {count.toLocaleString("en")} rows and mounts only those near the viewport.{" "}
+          <strong>Follow:</strong> at the bottom, press stream. <strong>Unseen:</strong> scroll up while streaming; jump to latest counts new rows.{" "}
+          <strong>Anchoring:</strong> mid-list, prepend, insert, or resize above; the top visible row must not move.{" "}
+          <strong>Focus:</strong> tab into a row, arrow keys, scroll away and back; focus stays.
+        </p>
         <div className="toolbar">
           <label className="field">
             rows
@@ -141,12 +148,6 @@ function App() {
             <button type="button" aria-pressed={debug} onClick={toggleDebug}>debug overlay</button>
           </div>
         </div>
-        <p className="caption">
-          @fulcrum/virtual holds {count.toLocaleString("en")} rows and mounts only those near the viewport.{" "}
-          <strong>Follow:</strong> at the bottom, press stream. <strong>Unseen:</strong> scroll up while streaming; jump to latest counts new rows.{" "}
-          <strong>Anchoring:</strong> mid-list, prepend, insert, or resize above; the top visible row must not move.{" "}
-          <strong>Focus:</strong> tab into a row, arrow keys, scroll away and back; focus stays.
-        </p>
         <div className="status">
           <span className="mode" data-state={streaming ? "streaming" : "static"}>virtual<span>{streaming ? "streaming 4 rows/s" : "idle"}</span></span>
           <Stats scroll={scroll} />

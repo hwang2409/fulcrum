@@ -3,10 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "bun run --cwd ../../packages/highlight build",
     "dev": "vite",
+    "prebuild": "bun run --cwd ../../packages/highlight build",
     "build": "tsc -p . && vite build",
+    "smoke": "bun scripts/smoke.ts",
     "stress": "bun scripts/stress.ts",
-    "layout": "bun scripts/layout.ts", "test:virtual": "bun scripts/virtual-test.ts"
+    "layout": "bun scripts/layout.ts",
+    "test:virtual": "bun scripts/virtual-test.ts"
   },
   "dependencies": {
     "@fulcrum/core": "workspace:*",
