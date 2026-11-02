@@ -37,6 +37,12 @@ export function createClient(
         forSession(message.params.session_id).dispatch(event);
       return;
     }
+    if (message.id === null && message.error) {
+      const error = Object.assign(new Error(message.error.message), message.error);
+      pending.forEach((request) => request.reject(error));
+      pending.clear();
+      return;
+    }
     if (typeof message.id !== "number") return;
     const request = pending.get(message.id);
     if (!request) return;
@@ -84,6 +90,7 @@ export function createClient(
   return {
     store,
     stores,
+    forSession,
     request,
     hello,
     get features() {

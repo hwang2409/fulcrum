@@ -196,6 +196,20 @@ test("two interleaved sessions do not touch each other's state", async () => {
   expect(alpha.itemsById).not.toBe(beta.itemsById);
 });
 
+test("a store for a session without events receives later events", () => {
+  let receive!: (text: string) => void;
+  const transport: Transport = {
+    send() {},
+    onMessage(callback) { receive = callback; },
+    close() {},
+  };
+  const client = createClient(transport);
+  const store = client.forSession("simple");
+  receive(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: "simple", delta: "hi", kind: "assistant" } }));
+  expect(client.forSession("simple")).toBe(store);
+  expect(store.getState().items).toHaveLength(1);
+});
+
 test("unknown future event keeps the full wire payload", () => {
   const state = replay("notifications.jsonl").get("notify")!;
   const event = eventsByType(state, "unknown").find(

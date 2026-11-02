@@ -5,7 +5,18 @@
 - `@fulcrum/core`: agent-agnostic run events, normalized state reducer, and burst-coalescing store.
 - `@fulcrum/zeta`: zeta serve wire types, adapter, JSON-RPC client, websocket transport, and authenticated `connectZeta`.
 - `@fulcrum/react`: react 19 hooks and headless timeline parts over `@fulcrum/core`. It does not depend on `@fulcrum/zeta`.
-- `apps/playground` (private): replays the zeta fixtures, or a stress run, in a browser.
+- `apps/playground` (private): replays the zeta fixtures, runs a stress test, or connects to a live zeta server in a browser.
+
+## connect to zeta
+
+start a local websocket server with an origin allowlist, then start the playground:
+
+```sh
+zeta serve --ws 8765 --ws-origin http://localhost:5173
+bun run dev
+```
+
+open the live zeta panel and paste the discovery url from `$ZETA_HOME/run/serve.ws.json` (the dev helper can fill it in when available).
 
 ## reducer and store
 
