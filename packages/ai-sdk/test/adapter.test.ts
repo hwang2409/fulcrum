@@ -99,6 +99,51 @@ test("entity id encoding is injective and reversible", () => {
   }
 });
 
+test("pinned AI SDK accepts blank strings in every adapter-read wire field", () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["text id", { type: "text-start", id: "" }],
+    ["text delta", { type: "text-delta", id: "text", delta: "" }],
+    ["reasoning id", { type: "reasoning-start", id: " " }],
+    ["reasoning delta", { type: "reasoning-delta", id: "reasoning", delta: "\t\n" }],
+    ["source url sourceId", { type: "source-url", sourceId: "", url: "" }],
+    ["source url title", { type: "source-url", sourceId: "url", url: "url", title: "" }],
+    ["source document sourceId", { type: "source-document", sourceId: " ", mediaType: "" , title: "" }],
+    ["source document filename", { type: "source-document", sourceId: "doc", mediaType: "media", title: "title", filename: "" }],
+    ["file url and mediaType", { type: "file", url: "", mediaType: "" }],
+    ["tool input start ids and name", { type: "tool-input-start", toolCallId: "", toolName: "" }],
+    ["tool input delta", { type: "tool-input-delta", toolCallId: "delta", inputTextDelta: "" }],
+    ["tool input error fields", { type: "tool-input-error", toolCallId: "error", toolName: "", input: {}, errorText: "" }],
+    ["approval ids", { type: "tool-approval-request", toolCallId: "approval", approvalId: "" }],
+    ["tool output error", { type: "tool-output-error", toolCallId: "output-error", errorText: "" }],
+    ["lifecycle messageId", { type: "start", messageId: "" }],
+  ];
+  for (const [name, part] of cases) {
+    const adapter = createAiSdkAdapter({ streamKey: `blank-${name}` });
+    if (part.type === "text-delta") adapter.decode({ type: "text-start", id: part.id });
+    if (part.type === "reasoning-delta") adapter.decode({ type: "reasoning-start", id: part.id });
+    if (part.type === "tool-input-delta") adapter.decode({ type: "tool-input-start", toolCallId: part.toolCallId, toolName: "tool" });
+    expect(adapter.decode(part).some((event) => event.type === "error" && event.error.code === "adapter_invalid_payload"), name).toBe(false);
+  }
+});
+
+test("blank text and source ids preserve streamed content and sources", () => {
+  const adapter = createAiSdkAdapter({ streamKey: "blank-content" });
+  const events = [
+    { type: "text-start", id: "" },
+    { type: "text-delta", id: "", delta: "kept" },
+    { type: "text-end", id: "" },
+    { type: "source-url", sourceId: "", url: "https://example.com/blank" },
+    { type: "source-document", sourceId: " ", mediaType: "text/plain", title: "blank" },
+    { type: "finish", finishReason: "stop" },
+  ].flatMap((part) => adapter.decode(part));
+  const commit = events.find((event) => event.type === "message_commit");
+  expect(commit?.type === "message_commit" ? commit.message.content : undefined).toEqual([
+    { type: "text", text: "kept" },
+    { type: "source", kind: "source", url: "https://example.com/blank", meta: { sourceId: "" } },
+    { type: "source", kind: "source", mediaType: "text/plain", title: "blank", meta: { sourceId: " " } },
+  ]);
+});
+
 test("pinned AI SDK writer ids round trip to their original wire ids", () => {
   const decodeFixture = (sessionId: string) => {
     const adapter = createAiSdkAdapter({ streamKey: sessionId });
@@ -133,6 +178,22 @@ test("pinned AI SDK emits blank message ids without losing identity", async () =
     expect(commit?.type === "message_commit" ? decodeAiSdkEntityId(commit.message_id!) : undefined).toEqual({ source: "wire", kind: "message", id: messageId });
     expect(commit?.type === "message_commit" ? commit.message.metadata : undefined).toEqual({ wireId: messageId });
   }
+});
+
+test("pinned AI SDK preserves blank text and source part ids", async () => {
+  const model = new MockLanguageModelV3({
+    doStream: async () => ({ stream: simulateReadableStream({ chunks: [
+      { type: "text-start", id: "" },
+      { type: "text-delta", id: "", delta: "kept" },
+      { type: "text-end", id: "" },
+      { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } } },
+    ] as never[] }) }),
+  });
+  const parts: UIMessageChunk[] = [];
+  for await (const part of streamText({ model, prompt: "fixture" }).toUIMessageStream()) parts.push(part);
+  const adapter = createAiSdkAdapter({ streamKey: "blank-parts" });
+  const events = parts.flatMap((part) => adapter.decode(part));
+  expect(events.some((event) => event.type === "error" && event.error.code === "adapter_invalid_payload")).toBe(false);
 });
 
 test("blank tool and approval ids survive adapter and outbound decoding", () => {

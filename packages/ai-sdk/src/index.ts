@@ -16,6 +16,19 @@ const wireString = (value: unknown, name: string) => {
   if (typeof value !== "string") throw new Error(`${name} must be a string`);
   return value;
 };
+
+/*
+ * AI SDK 6.0.0 fields read here: type (known literal) -> matching part;
+ * id, sourceId, toolCallId, approvalId, messageId, delta, inputTextDelta,
+ * toolName, errorText, url, mediaType, title, filename -> SDK string,
+ * wireString (blank and whitespace are valid); data-* id -> optional SDK
+ * string, preserved in the unknown-part payload; input, output,
+ * messageMetadata, providerMetadata -> unknown, passed through;
+ * providerExecuted, dynamic, preliminary, transient -> optional boolean,
+ * passed through when present; finishReason -> optional SDK FinishReason,
+ * optionalString; usage -> object of finite numbers; streamKey and type
+ * validation are adapter-owned and remain nonblank.
+ */
 const optionalString = (value: unknown, name: string) => value === undefined ? undefined : string(value, name);
 const optionalWireString = (value: unknown, name: string) => value === undefined ? undefined : wireString(value, name);
 const serialized = (value: unknown) => typeof value === "string" ? value : JSON.stringify(value) ?? "null";
@@ -135,7 +148,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
 
   const decodeBlock = (part: Row, type: string): RunEvent[] => {
     const kind = type.startsWith("text-") ? "text" : "reasoning";
-    const id = string(part.id, "part.id");
+    const id = wireString(part.id, "part.id");
     if (type.endsWith("-start")) {
       messageId ??= syntheticId("message", ++messageNumber);
       const block: ContentBlock = { type: kind, text: "", ...(providerMeta(part) ? { meta: providerMeta(part) } : {}) };
@@ -147,24 +160,24 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     if (!state || state.kind !== kind) throw new Error(`${type} requires a matching start part`);
     if (part.providerMetadata !== undefined) state.block.meta = mergeMeta(state.block.meta as Record<string, unknown> | undefined, providerMeta(part)!);
     if (type.endsWith("-end")) return [];
-    const delta = string(part.delta, "part.delta");
+    const delta = wireString(part.delta, "part.delta");
     state.block.text = String(state.block.text) + delta;
     return [{ type: "message_delta", message_id: messageId, delta, kind }];
   };
 
   const decodeAsset = (part: Row, type: string): RunEvent[] => {
     if (type === "file") {
-      const block: ContentBlock = { type: "file", kind: "file", url: string(part.url, "part.url"), mediaType: string(part.mediaType, "part.mediaType"), ...(providerMeta(part) ? { meta: providerMeta(part) } : {}) };
+      const block: ContentBlock = { type: "file", kind: "file", url: wireString(part.url, "part.url"), mediaType: wireString(part.mediaType, "part.mediaType"), ...(providerMeta(part) ? { meta: providerMeta(part) } : {}) };
       content.push(block);
       return [];
     }
-    const sourceId = string(part.sourceId, "part.sourceId");
+    const sourceId = wireString(part.sourceId, "part.sourceId");
     const meta = defined({ sourceId, providerMetadata: part.providerMetadata === undefined ? undefined : [part.providerMetadata] });
     const block: ContentBlock = {
       type: "source", kind: "source",
-      ...(type === "source-url" ? { url: string(part.url, "part.url") } : { mediaType: string(part.mediaType, "part.mediaType") }),
-      ...(part.title === undefined ? {} : { title: string(part.title, "part.title") }),
-      ...(part.filename === undefined ? {} : { filename: string(part.filename, "part.filename") }),
+      ...(type === "source-url" ? { url: wireString(part.url, "part.url") } : { mediaType: wireString(part.mediaType, "part.mediaType") }),
+      ...(part.title === undefined ? {} : { title: wireString(part.title, "part.title") }),
+      ...(part.filename === undefined ? {} : { filename: wireString(part.filename, "part.filename") }),
       meta,
     };
     content.push(block);
@@ -176,23 +189,23 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     const id = wireId("tool", originalId);
     const meta = { ...toolMeta(part), wireId: originalId };
     if (type === "tool-input-start") {
-      const state = call(id, string(part.toolName, "part.toolName"), meta);
+      const state = call(id, wireString(part.toolName, "part.toolName"), meta);
       return [{ type: "tool_start", tool_call: state.call }];
     }
     if (type === "tool-input-delta") {
       const state = tools.get(id);
       if (!state) throw new Error("tool-input-delta requires tool-input-start");
-      const input = string(part.inputTextDelta, "part.inputTextDelta");
+      const input = wireString(part.inputTextDelta, "part.inputTextDelta");
       state.input += input;
       return [{ type: "tool_input", tool_call: state.call, input }];
     }
     if (type === "tool-input-available" || type === "tool-input-error") {
-      const name = string(part.toolName, "part.toolName");
+      const name = wireString(part.toolName, "part.toolName");
       const state = call(id, name, meta);
       state.call = { ...state.call, id, name, arguments: argumentsFrom(part.input) };
       tools.set(id, state);
       if (type === "tool-input-available") return [{ type: "tool_start", tool_call: state.call }];
-      const output = string(part.errorText, "part.errorText");
+      const output = wireString(part.errorText, "part.errorText");
       return [{ type: "tool_start", tool_call: state.call }, { type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: output, is_error: true } }];
     }
     if (type === "tool-approval-request") {
@@ -205,7 +218,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     if (type === "tool-output-denied")
       return [{ type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: "tool execution denied", is_error: true, is_canceled: true } }, ...approvalEnd(id)];
     const isError = type === "tool-output-error";
-    const output = isError ? string(part.errorText, "part.errorText") : serialized(part.output);
+    const output = isError ? wireString(part.errorText, "part.errorText") : serialized(part.output);
     if (!isError && part.preliminary === true) return [{ type: "tool_output", tool_call: state.call, output }];
     const result: ToolResult = { tool_call_id: id, content: output, is_error: isError };
     return [{ type: "tool_output", tool_call: state.call, output }, { type: "tool_end", tool_call: state.call, tool_result: result }, ...approvalEnd(id)];
@@ -225,7 +238,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
       return [...(event ? [event] : []), ...(value ? [{ type: "usage", usage: value } as RunEvent] : []), { type: "turn_end" }, { type: "run_end", data: defined({ finishReason: optionalString(part.finishReason, "part.finishReason"), messageMetadata: part.messageMetadata }) }];
     }
     if (type === "abort") return [{ type: "error", error: { code: "run_aborted", message: "run aborted" } }];
-    return [{ type: "error", error: { code: "ai_sdk_error", message: string(part.errorText, "part.errorText") } }];
+    return [{ type: "error", error: { code: "ai_sdk_error", message: wireString(part.errorText, "part.errorText") } }];
   };
 
   const decode = (value: unknown): RunEvent[] => {
