@@ -413,3 +413,57 @@ describe("structured action log and traces", () => {
     }
   });
 });
+
+describe("incremental outline updates", () => {
+  test("append and prepend hints stay equal to full rebuilds through random structural changes", () => {
+    let seed = 0x51f15e;
+    const random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32);
+    let serial = 0;
+    let outline: OutlineItem[] = [];
+    const incremental = createVirtualizer({ estimateSize: (kind) => Number(kind), overscan: 20 });
+    const rebuilt = createVirtualizer({ estimateSize: (kind) => Number(kind), overscan: 20 });
+    incremental.setViewport({ scrollTop: 0, size: 80, source: "user" });
+    rebuilt.setViewport({ scrollTop: 0, size: 80, source: "user" });
+    for (let step = 0; step < 300; step++) {
+      const count = 1 + Math.floor(random() * 4);
+      const added = Array.from({ length: count }, () => ({ id: `random-${serial++}`, kind: String(5 + Math.floor(random() * 40)) }));
+      const operation = Math.floor(random() * 5);
+      if (operation < 2) {
+        outline = [...outline, ...added];
+        incremental.setOutline(outline, { type: "append", count });
+      } else if (operation < 4) {
+        outline = [...added, ...outline];
+        incremental.setOutline(outline, { type: "prepend", count });
+      } else {
+        const kept = outline.filter(() => random() > 0.2);
+        outline = [...kept.slice(0, Math.floor(kept.length / 2)), ...added, ...kept.slice(Math.floor(kept.length / 2))];
+        incremental.setOutline(outline);
+      }
+      rebuilt.setOutline(outline);
+      const max = Math.max(0, rebuilt.getSnapshot().totalSize - 80);
+      const top = random() * max;
+      incremental.setViewport({ scrollTop: top, size: 80, source: "user" });
+      rebuilt.setViewport({ scrollTop: top, size: 80, source: "user" });
+      expect(incremental.getSnapshot()).toEqual(rebuilt.getSnapshot());
+    }
+  });
+
+  test("all-loaded mode follows incremental outline updates", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10 });
+    const outline = [{ id: "a", kind: "x" }];
+    virtual.setOutline(outline);
+    virtual.setLoaded("all");
+    virtual.setOutline([...outline, { id: "b", kind: "x" }], { type: "append", count: 1 });
+    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
+    expect(virtual.getSnapshot().rows.map((row) => row.loaded)).toEqual([true, true]);
+  });
+});
+
+test("explicit upward intent releases follow until the user reaches the exact bottom", () => {
+  const virtual = engine([100, 100], 10, 190);
+  virtual.setFollow(false);
+  virtual.setViewport({ scrollTop: 189, size: 10, source: "user" });
+  expect(virtual.getSnapshot().pinned).toBe(false);
+  virtual.setViewport({ scrollTop: 190, size: 10, source: "user" });
+  expect(virtual.getSnapshot().pinned).toBe(true);
+});

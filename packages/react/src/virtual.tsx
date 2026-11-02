@@ -9,14 +9,18 @@ import {
 import {
   createVirtualizer,
   type OutlineItem,
+  type OutlineUpdate,
   type VirtualAction,
   type VirtualOptions,
   type VirtualSnapshot,
 } from "@fulcrum/virtual";
 
+const isIOSWebKit = () => /iP(?:ad|hone|od)/.test(navigator.userAgent) && /WebKit/.test(navigator.userAgent);
+
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
   enabled?: boolean;
+  outlineUpdate?: OutlineUpdate | null;
 };
 
 export type VirtualListState<Id extends string> = {
@@ -48,24 +52,30 @@ export function useVirtualList<Id extends string>(
   const resizeFrame = useRef<number | null>(null);
   const pendingEntries = useRef(new Map<Id, number>());
   const touching = useRef(false);
+  const touchY = useRef<number | null>(null);
+  const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const unseenBase = useRef(outline.length);
+  const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
   const outlineLength = useRef(outline.length);
   outlineLength.current = outline.length;
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
 
   useLayoutEffect(() => {
-    const token = engine.beforeMutation();
-    engine.setOutline(outline);
-    engine.setLoaded(outline.map(({ id }) => id));
-    if (initial.current) initial.current = false;
-    else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current });
-    if (snapshot.pinned) unseenBase.current = outline.length;
+    if (appliedOutline.current !== outline) {
+      const token = engine.beforeMutation();
+      engine.setOutline(outline, options.outlineUpdate ?? undefined);
+      engine.setLoaded("all");
+      appliedOutline.current = outline;
+      if (initial.current) initial.current = false;
+      else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
+      if (snapshot.pinned) unseenBase.current = outline.length;
+    }
     wasEnabled.current = options.enabled !== false;
-  }, [engine, outline, options.enabled]);
+  }, [engine, outline, options.enabled, options.outlineUpdate, snapshot.pinned]);
 
   useLayoutEffect(() => {
     if (options.enabled === false || typeof ResizeObserver === "undefined") return;
@@ -77,6 +87,7 @@ export function useVirtualList<Id extends string>(
     const updateViewport = (source: "user" | "programmatic") =>
       engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
     updateViewport("user");
+    lastScrollTop.current = container.scrollTop;
 
     const flushMeasurements = () => {
       resizeFrame.current = null;
@@ -84,7 +95,7 @@ export function useVirtualList<Id extends string>(
       const token = engine.beforeMutation();
       for (const [id, size] of pendingEntries.current) engine.measure(id, size);
       pendingEntries.current.clear();
-      engine.afterMutation(token, { deferCorrection: touching.current });
+      engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
     };
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -103,6 +114,8 @@ export function useVirtualList<Id extends string>(
     };
     const onScroll = () => {
       const wasPinned = engine.getSnapshot().pinned;
+      if (container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+      lastScrollTop.current = container.scrollTop;
       engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
       const next = engine.getSnapshot();
       if (wasPinned && !next.pinned) unseenBase.current = outlineLength.current;
@@ -111,13 +124,29 @@ export function useVirtualList<Id extends string>(
       if (scrollEndTimer.current !== null) clearTimeout(scrollEndTimer.current);
       scrollEndTimer.current = setTimeout(finishScroll, 150);
     };
-    const onTouchStart = () => { touching.current = true; };
+    const onWheel = (event: WheelEvent) => { if (event.deltaY < 0) engine.setFollow(false); };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") engine.setFollow(false);
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      touching.current = true;
+      touchY.current = event.touches[0]?.clientY ?? null;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      const next = event.touches[0]?.clientY;
+      if (next !== undefined && touchY.current !== null && next > touchY.current) engine.setFollow(false);
+      touchY.current = next ?? null;
+    };
     const onTouchEnd = () => {
+      touchY.current = null;
       if (scrollEndTimer.current !== null) clearTimeout(scrollEndTimer.current);
       scrollEndTimer.current = setTimeout(finishScroll, 150);
     };
     container.addEventListener("scroll", onScroll, { passive: true });
+    container.addEventListener("wheel", onWheel, { passive: true });
+    container.addEventListener("keydown", onKeyDown);
     container.addEventListener("touchstart", onTouchStart, { passive: true });
+    container.addEventListener("touchmove", onTouchMove, { passive: true });
     container.addEventListener("touchend", onTouchEnd, { passive: true });
     container.addEventListener("touchcancel", onTouchEnd, { passive: true });
     const viewportObserver = new ResizeObserver(() => updateViewport("programmatic"));
@@ -127,7 +156,10 @@ export function useVirtualList<Id extends string>(
       viewportObserver.disconnect();
       observerRef.current = null;
       container.removeEventListener("scroll", onScroll);
+      container.removeEventListener("wheel", onWheel);
+      container.removeEventListener("keydown", onKeyDown);
       container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("touchend", onTouchEnd);
       container.removeEventListener("touchcancel", onTouchEnd);
       if (resizeFrame.current !== null) cancelAnimationFrame(resizeFrame.current);

@@ -8,6 +8,8 @@ import {
 
 export type Scheduler = (callback: () => void) => void;
 type Listener = () => void;
+export type OutlineChange = { readonly type: "append" | "prepend"; readonly count: number };
+export type OutlineSnapshot = { readonly items: readonly OutlineItem[]; readonly change: OutlineChange | null };
 
 const defaultScheduler: Scheduler = (callback) =>
   typeof requestAnimationFrame === "function"
@@ -25,6 +27,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   let disposed = false;
   let stateChanged = false;
   let outlineChanged = false;
+  let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
 
   const flush = () => {
@@ -44,7 +47,14 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       },
     });
     stateChanged = true;
-    outlineChanged ||= current.outline !== beforeOutline;
+    if (current.outline !== beforeOutline) {
+      const appended = !events.some(({ type }) => type === "message_reset") && current.outline.length >= beforeOutline.length;
+      outlineSnapshot = {
+        items: current.outline,
+        change: appended ? { type: "append", count: current.outline.length - beforeOutline.length } : null,
+      };
+      outlineChanged = true;
+    }
     return true;
   };
   const notify = () => {
@@ -88,6 +98,10 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       flush();
       return current.outline;
     },
+    getOutlineSnapshot(): OutlineSnapshot {
+      flush();
+      return outlineSnapshot;
+    },
     subscribe,
     subscribeOutline(listener: Listener) {
       outlineListeners.add(listener);
@@ -110,6 +124,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       disposed = true;
       pending = [];
       current = structuredClone(initialState);
+      outlineSnapshot = { items: current.outline, change: null };
       entities = new Map();
       listeners.forEach((listener) => listener());
       outlineListeners.forEach((listener) => listener());

@@ -302,3 +302,24 @@ test("react does not import @fulcrum/zeta", () => {
   const pkg = readFileSync(new URL("../package.json", import.meta.url), "utf8");
   expect(pkg).not.toContain("@fulcrum/zeta");
 });
+
+test("virtual timeline exposes full-set log semantics without announcing text updates", () => {
+  const events = Array.from({ length: 201 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: String(index),
+    message: message(String(index)),
+  }));
+  const { store } = setup(events);
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  mount(<RunProvider store={store}><Timeline /></RunProvider>);
+  const timeline = q('[data-part="timeline"]');
+  expect(timeline.getAttribute("role")).toBe("log");
+  expect(timeline.getAttribute("aria-label")).toBe("agent activity");
+  expect(timeline.getAttribute("aria-live")).toBe("polite");
+  expect(timeline.getAttribute("aria-relevant")).toBe("additions");
+  const row = q("[data-virtual-id]");
+  expect(row.getAttribute("aria-setsize")).toBe("201");
+  expect(Number(row.getAttribute("aria-posinset"))).toBeGreaterThan(0);
+  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+});

@@ -1,6 +1,6 @@
 import { memo, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
 import type { RunItem } from "@fulcrum/core";
-import { useItem, useItemSelector, useTimeline } from "./hooks.js";
+import { useItem, useItemSelector, useTimelineSnapshot } from "./hooks.js";
 import { useVirtualList } from "./virtual.js";
 
 export type ItemProps = { id: string; className?: string };
@@ -111,47 +111,52 @@ export type TimelineProps = {
   virtual?: boolean;
   /** Scroll viewport. When omitted, Timeline uses its direct parent. */
   scrollRef?: RefObject<HTMLElement | null>;
+  /** Accessible name for the chronological activity log. */
+  "aria-label"?: string;
 };
 
 /** Pass a stable `renderers` object (module scope or memoized) so appends do not re-render every row. */
-export const Timeline = memo(function Timeline({ renderers, className, virtual, scrollRef }: TimelineProps) {
-  const items = useTimeline();
+export const Timeline = memo(function Timeline({ renderers, className, virtual, scrollRef, "aria-label": ariaLabel = "agent activity" }: TimelineProps) {
+  const { items, change } = useTimelineSnapshot();
   const enabled = virtual ?? items.length > 200;
-  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled });
+  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change });
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const plainRef = useRef<HTMLDivElement>(null);
   const priorMode = useRef(enabled);
   const modeAnchor = useRef<{ id: string; offset: number } | null>(null);
   useLayoutEffect(() => {
     const container = scrollRef?.current ?? plainRef.current?.parentElement ?? null;
-    if (!container) return;
-    if (enabled) {
-      if (!priorMode.current && modeAnchor.current) list.scrollToId(modeAnchor.current.id, modeAnchor.current.offset);
-      if (list.snapshot.anchor) modeAnchor.current = { id: list.snapshot.anchor.id, offset: list.snapshot.anchor.offset };
-    } else {
-      if (priorMode.current && modeAnchor.current) {
-        const index = items.findIndex(({ id }) => id === modeAnchor.current!.id);
-        const row = index >= 0 ? plainRef.current!.children[index] as HTMLElement | undefined : undefined;
-        if (row) container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - modeAnchor.current.offset;
-      }
-      const capture = () => {
-        const top = container.getBoundingClientRect().top;
-        const children = [...(plainRef.current?.children ?? [])];
-        const index = children.findIndex((child) => child.getBoundingClientRect().bottom > top);
-        const row = index >= 0 ? children[index] as HTMLElement : undefined;
-        if (row) modeAnchor.current = { id: items[index]!.id, offset: row.getBoundingClientRect().top - top };
-      };
-      capture();
-      container.addEventListener("scroll", capture, { passive: true });
-      priorMode.current = enabled;
-      return () => container.removeEventListener("scroll", capture);
+    if (!container || priorMode.current === enabled) return;
+    if (enabled && modeAnchor.current) list.scrollToId(modeAnchor.current.id, modeAnchor.current.offset);
+    if (!enabled && modeAnchor.current) {
+      const index = items.findIndex(({ id }) => id === modeAnchor.current!.id);
+      const row = index >= 0 ? plainRef.current!.children[index] as HTMLElement | undefined : undefined;
+      if (row) container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - modeAnchor.current.offset;
     }
     priorMode.current = enabled;
-  }, [enabled, items, list.snapshot, scrollRef]);
+  }, [enabled, items, list, scrollRef]);
+  useLayoutEffect(() => {
+    if (enabled && list.snapshot.anchor) modeAnchor.current = { id: list.snapshot.anchor.id, offset: list.snapshot.anchor.offset };
+  }, [enabled, list.snapshot.anchor]);
+  useLayoutEffect(() => {
+    if (enabled) return;
+    const container = scrollRef?.current ?? plainRef.current?.parentElement ?? null;
+    if (!container) return;
+    const capture = () => {
+      const top = container.getBoundingClientRect().top;
+      const children = [...(plainRef.current?.children ?? [])];
+      const index = children.findIndex((child) => child.getBoundingClientRect().bottom > top);
+      const row = index >= 0 ? children[index] as HTMLElement : undefined;
+      if (row) modeAnchor.current = { id: items[index]!.id, offset: row.getBoundingClientRect().top - top };
+    };
+    capture();
+    container.addEventListener("scroll", capture, { passive: true });
+    return () => container.removeEventListener("scroll", capture);
+  }, [enabled, items, scrollRef]);
   const debug = typeof location !== "undefined" && new URLSearchParams(location.search).get("virtualDebug") === "1";
   if (!enabled) {
     return (
-      <div ref={plainRef} className={className} data-part="timeline" data-virtual="false">
+      <div ref={plainRef} className={className} data-part="timeline" data-virtual="false" role="log" aria-label={ariaLabel} aria-live="polite" aria-relevant="additions">
         {items.map(({ id }) => <Row key={id} id={id} renderers={renderers} />)}
       </div>
     );
@@ -169,6 +174,10 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
         data-part="timeline"
         data-virtual="true"
         data-unseen-count={list.unseenCount}
+        role="log"
+        aria-label={ariaLabel}
+        aria-live="polite"
+        aria-relevant="additions"
         style={{ ...virtualContainerStyle, height: list.snapshot.totalSize }}
         onFocusCapture={(event) => setFocusedId(event.target instanceof Element ? event.target.closest<HTMLElement>("[data-virtual-id]")?.dataset.virtualId ?? null : null)}
         onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedId(null); }}
@@ -179,7 +188,19 @@ export const Timeline = memo(function Timeline({ renderers, className, virtual, 
             ref={list.observeRow(row.id)}
             data-virtual-id={row.id}
             data-virtual-index={row.index}
-            style={{ ...virtualRowStyle, transform: `translateY(${row.start}px)`, opacity: row === retainedRow ? 0 : undefined, pointerEvents: row === retainedRow ? "none" : undefined }}
+            role="article"
+            aria-setsize={items.length}
+            aria-posinset={row.index + 1}
+            tabIndex={row === retainedRow ? -1 : 0}
+            onKeyDown={(event) => {
+              const nextIndex = event.key === "ArrowUp" ? row.index - 1 : event.key === "ArrowDown" ? row.index + 1 : event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : -1;
+              if (nextIndex < 0 || nextIndex >= items.length) return;
+              event.preventDefault();
+              const id = items[nextIndex]!.id;
+              list.scrollToId(id);
+              requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-virtual-id="${CSS.escape(id)}"]`)?.focus());
+            }}
+            style={{ ...virtualRowStyle, transform: `translateY(${row.start - list.snapshot.pendingJump}px)`, opacity: row === retainedRow ? 0 : undefined, pointerEvents: row === retainedRow ? "none" : undefined }}
           >
             <Row id={row.id} renderers={renderers} />
           </div>
