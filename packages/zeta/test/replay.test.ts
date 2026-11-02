@@ -186,9 +186,9 @@ test("a delta after a terminal error starts a new message", () => {
   expect(event?.type === "error" ? event.error : undefined).toEqual({ code: "max_turns", message: "maximum turns reached: 1" });
 });
 
-test("reconnect replay of the same notification_id is deduped", () => {
+test("reconnect replay of the same child notification_id is deduped", () => {
   const store = replay("notifications.jsonl").get("notify")!;
-  expect(eventsByType(store, "notification")).toHaveLength(1);
+  expect(items(store).filter((item) => item.type === "sub_agent")).toHaveLength(1);
   expect(store.getState().receipts["same-id"]).toBe(true);
 });
 
@@ -218,10 +218,13 @@ test("a store for a session without events receives later events", () => {
     close() {},
   };
   const client = createClient(transport);
-  const store = client.forSession("simple");
+  const held = client.forSession("simple");
   receive(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: "simple", delta: "hi", kind: "assistant" } }));
-  expect(client.forSession("simple")).toBe(store);
-  expect(store.getOutline()).toHaveLength(1);
+  const second = client.forSession("simple");
+  expect(second.store).toBe(held.store);
+  expect(held.store.getOutline()).toHaveLength(1);
+  second.release();
+  held.release();
 });
 
 test("unknown future event keeps the full wire payload", () => {

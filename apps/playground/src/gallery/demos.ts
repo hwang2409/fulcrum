@@ -1,7 +1,8 @@
-import type { RunEvent, ToolCall, ToolView } from "@fulcrum/core";
+import type { RunEvent, ToolCall } from "@fulcrum/core";
 
-/** `part` is the `@fulcrum/react` export the demo shows. `live` replays `events` in a loop, one event per `live` ms. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number };
+/** `part` is the `@fulcrum/react` export the demo shows. `live` replays `events` in a loop, one event per `live` ms.
+    `preview` renders a static markup fixture instead of a timeline. */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; preview?: "markdown" };
 
 const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({ id, name, arguments: args });
 const text = (role: string, value: string) => ({ role, content: [{ type: "text", text: value }] });
@@ -29,6 +30,9 @@ const grepLines = [
   "packages/zeta/src/client.ts:41: // TODO: retry with backoff\n",
 ];
 const bash = call("t-bash", "bash", { command: "bun test packages/core", timeout: 120 });
+const read = call("t-read", "read_file", { path: "apps/playground/vite.config.ts", limit: 40 });
+const config = 'import { defineConfig } from "vite";\nimport { resolve } from "node:path";\n\nexport default defineConfig({ build: { outDir: resolve("dist") } });\n';
+const build = call("t-build", "bash", { command: "bun run --cwd apps/playground build" });
 const edit = call("t-edit", "edit", {
   path: "packages/core/src/store.ts",
   old_string: "pending.push(event);",
@@ -40,71 +44,51 @@ const bigArgs = call("t-big", "write_file", {
   options: { overwrite: true, mode: "0644", encoding: "utf8" },
   rows: Array.from({ length: 24 }, (_, i) => ({ id: i, name: `row-${i}`, tags: ["alpha", "beta", "gamma"], score: i * 1.5 })),
 });
-const read = call("t-read", "read", { path: "packages/core/src/store.ts", offset: 40, limit: 12 });
-const fetch = call("t-fetch", "fetch", { url: "https://example.com/fulcrum" });
-const write = call("t-write", "write", { path: "notes/result.txt", content: "42 tests passed\n" });
-const custom = call("t-custom", "workspace.inspect", { path: "packages/core", depth: 2 });
-const views: Record<string, ToolView> = {
-  [bash.id]: { kind: "shell", command: "bun test packages/core", exitCode: 0 },
-  [read.id]: { kind: "read", path: "packages/core/src/store.ts", range: { offset: 40, limit: 12 } },
-  [edit.id]: { kind: "edit", path: "packages/core/src/store.ts", diff: "--- a/packages/core/src/store.ts\n+++ b/packages/core/src/store.ts\n@@\n-pending.push(event);\n+if (pending.length < MAX) pending.push(event);\n" },
-  [write.id]: { kind: "write", path: "notes/result.txt", bytes: 16 },
-  [grep.id]: { kind: "search", pattern: "TODO", path: "packages/", matches: grepLines.map((line) => line.trimEnd()) },
-  [fetch.id]: { kind: "fetch", url: "https://example.com/fulcrum", title: "Fulcrum", bytes: 1280 },
-};
 const testLines = Array.from(
   { length: 120 },
   (_, i) => `${String(i + 1).padStart(4, "0")}  ok  packages/core/test/reducer.test.ts > case ${i + 1} (${(i % 7) + 1}ms)\n`,
 );
-const start = (tool: ToolCall): RunEvent => ({ type: "tool_start", tool_call: tool, view: views[tool.id] });
-const output = (tool: ToolCall, value: string): RunEvent => ({ type: "tool_output", tool_call: tool, output: value, view: views[tool.id] });
+// Adapters attach the agent-neutral view; the shell view makes the header read `$ command`.
+const shellStart = (tool: ToolCall): RunEvent => ({
+  type: "tool_start",
+  tool_call: tool,
+  view: { kind: "shell", command: String(tool.arguments.command) },
+});
 const ok = (tool: ToolCall, content: string): RunEvent => ({
   type: "tool_end",
   tool_call: tool,
-  view: views[tool.id],
   tool_result: { tool_call_id: tool.id, content, is_error: false },
 });
-const cardDemos: Demo[] = [
-  ["ShellTool", bash, "bun test v1.3.13\n42 pass\n0 fail", "shell command"],
-  ["ReadTool", read, "export function createRunStore() {\n  // ...\n}", "file read"],
-  ["EditTool", edit, "1 replacement", "unified diff"],
-  ["WriteTool", write, "wrote notes/result.txt", "file write"],
-  ["SearchTool", grep, grepLines.join(""), "search matches"],
-  ["FetchTool", fetch, "Fulcrum is a component library for agent runs.", "fetched page"],
-  ["GenericTool", custom, "workspace ready", "unknown tool fallback"],
-  ["ToolBody", bash, "42 pass", "tool body dispatcher"],
-].map(([part, tool, content, title]) => ({
-  id: `card-${String(part).replace(/Tool$/, "").toLowerCase()}`,
-  part: String(part),
-  title: String(title),
-  description: `${part} uses the agent-neutral tool view hint.`,
-  events: [start(tool as ToolCall), ok(tool as ToolCall, String(content))],
-}));
 
 export const demos: Demo[] = [
   {
     id: "timeline-run",
     part: "Timeline",
     title: "realistic run",
-    description: "A user question, assistant messages, tools, a resolved approval, and the final answer.",
+    description: "A failing build, a file read, a search, a resolved approval, an edit, a passing test run, and the answer.",
     events: [
       { type: "run_start" },
       { type: "user_message", text: "Why does the playground build fail on CI?", mode: "default" },
       { type: "turn_start" },
-      ...stream("m1", "Let me search the packages for open TODOs first."),
-      start(grep),
-      ...grepLines.map((value) => output(grep, value)),
+      ...stream("m1", "I will reproduce the build first, then read the config it points at."),
+      shellStart(build),
+      { type: "tool_output", tool_call: build, output: "vite v8.3.5 building for production...\n" },
+      {
+        type: "tool_end",
+        tool_call: build,
+        tool_result: { tool_call_id: build.id, content: '[vite]: Rollup failed to resolve import "node:path" from "vite.config.ts".\nerror: script "build" exited with code 1', is_error: true },
+      },
+      { type: "tool_start", tool_call: read },
+      ok(read, config),
+      { type: "tool_start", tool_call: grep },
+      ...grepLines.map((output): RunEvent => ({ type: "tool_output", tool_call: grep, output })),
       ok(grep, grepLines.join("")),
       { type: "approval_request", request_id: "r-edit", tool_call: edit, delegated: false },
       { type: "approval_end", request_id: "r-edit" },
-      start(edit),
+      { type: "tool_start", tool_call: edit },
       ok(edit, "1 replacement"),
-      start(read),
-      ok(read, "export function createRunStore() {\n  // ...\n}"),
-      start(fetch),
-      ok(fetch, "Fulcrum is a component library for agent runs."),
-      start(bash),
-      output(bash, "bun test v1.3.13\n 42 pass\n 0 fail\n"),
+      shellStart(bash),
+      { type: "tool_output", tool_call: bash, output: "bun test v1.3.13\n 42 pass\n 0 fail\n" },
       ok(bash, ""),
       { type: "message_commit", message_id: "m2", message: text("assistant", answer) },
       { type: "turn_end" },
@@ -113,7 +97,6 @@ export const demos: Demo[] = [
     ],
   },
   { id: "timeline-empty", part: "Timeline", title: "empty", description: "No events yet: an empty container.", events: [] },
-  ...cardDemos,
   {
     id: "message-streaming",
     part: "Message",
@@ -144,13 +127,21 @@ export const demos: Demo[] = [
     events: [{ type: "message_commit", message_id: "m-long", message: text("assistant", longText) }],
   },
   {
+    id: "markdown-preview",
+    part: "Message",
+    title: "markdown and code (preview)",
+    description: "What an assistant message looks like once @fulcrum/markdown lands: static markup in @fulcrum/markdown's data-part contract with tok-* spans, styled by styles.css and the theme.",
+    events: [],
+    preview: "markdown",
+  },
+  {
     id: "tool-running",
     part: "ToolCall",
     title: "running",
     description: "Output streams in while the tool is active (data-state=\"streaming\").",
     events: [
-      start(bash),
-      ...testLines.slice(0, 24).map((value) => output(bash, value)),
+      shellStart(bash),
+      ...testLines.slice(0, 24).map((output): RunEvent => ({ type: "tool_output", tool_call: bash, output })),
       ok(bash, ""),
     ],
     live: 90,
@@ -159,8 +150,8 @@ export const demos: Demo[] = [
     id: "tool-done",
     part: "ToolCall",
     title: "done",
-    description: "A finished tool with its output.",
-    events: [start(grep), ok(grep, grepLines.join(""))],
+    description: "A finished generic tool: one header row, short output open below it, the arguments as JSON inside.",
+    events: [{ type: "tool_start", tool_call: grep }, ok(grep, grepLines.join(""))],
   },
   {
     id: "tool-error",
@@ -168,11 +159,10 @@ export const demos: Demo[] = [
     title: "error",
     description: "The tool result has is_error=true.",
     events: [
-      start(bash),
+      shellStart(bash),
       {
         type: "tool_end",
         tool_call: bash,
-        view: views[bash.id],
         tool_result: { tool_call_id: bash.id, content: "error: script \"test\" exited with code 1", is_error: true },
       },
     ],
@@ -181,14 +171,13 @@ export const demos: Demo[] = [
     id: "tool-canceled",
     part: "ToolCall",
     title: "canceled",
-    description: "The user canceled the tool. The part has no separate canceled state, so it shows as done.",
+    description: "The user canceled the tool (data-state=\"canceled\", from the core's normalized canceled flag).",
     events: [
-      start(bash),
-      output(bash, "bun test v1.3.13\n"),
+      shellStart(bash),
+      { type: "tool_output", tool_call: bash, output: "bun test v1.3.13\n" },
       {
         type: "tool_end",
         tool_call: bash,
-        view: views[bash.id],
         tool_result: { tool_call_id: bash.id, content: "canceled by user", is_error: false, is_canceled: true },
       },
     ],
@@ -197,15 +186,22 @@ export const demos: Demo[] = [
     id: "tool-large",
     part: "ToolCall",
     title: "large args and output",
-    description: "Large JSON arguments and about 9 KB of output; the output scrolls inside the part.",
+    description: "Large JSON arguments and about 9 KB of output. It starts collapsed to the header row; open it to scroll the output.",
     events: [{ type: "tool_start", tool_call: bigArgs }, ok(bigArgs, testLines.join(""))],
   },
   {
     id: "approval-pending",
     part: "Approval",
     title: "pending",
-    description: "Waiting for the user. Approve or deny resolves it and shows the action.",
-    events: [{ type: "approval_request", request_id: "r-deploy", tool_call: deploy, delegated: false }],
+    description: "A shell command waiting for the user. Approve or deny resolves it; a second click while sending is ignored.",
+    events: [{ type: "approval_request", request_id: "r-deploy", tool_call: deploy, view: { kind: "shell", command: String(deploy.arguments.command) }, delegated: false }],
+  },
+  {
+    id: "approval-generic",
+    part: "Approval",
+    title: "pending, generic tool",
+    description: "A non-shell tool: the full arguments are shown, never cut, so the user sees what they approve.",
+    events: [{ type: "approval_request", request_id: "r-edit-pending", tool_call: edit, delegated: false }],
   },
   {
     id: "approval-resolved",
