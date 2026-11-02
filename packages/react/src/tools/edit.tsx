@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useMemo, type CSSProperties, type ReactNode } from "react";
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import { MarkedTokens, tokenLines, useTokens } from "../highlight.js";
@@ -10,13 +10,13 @@ import type { Token } from "@fulcrum/highlight";
 const sign = { hunk: "", notice: "", context: " ", delete: "-", insert: "+" } as const;
 const tone = { hunk: undefined, notice: undefined, context: undefined, delete: "tok-deleted", insert: "tok-inserted" } as const;
 
-function Line({ row, tokens }: { row: DiffRow; tokens?: Token[] }) {
+function Line({ row, tokens, gutter }: { row: DiffRow; tokens?: Token[]; gutter: CSSProperties }) {
   const ranges: Array<[number, number]> = row.word && row.word[1] > row.word[0] ? [row.word] : [];
   let text: ReactNode = row.text;
   if (tokens) text = <MarkedTokens tokens={tokens} ranges={ranges} part="diff-word" />;
   else if (ranges.length) text = <>{row.text.slice(0, row.word![0])}<mark data-part="diff-word">{row.text.slice(...row.word!)}</mark>{row.text.slice(row.word![1])}</>;
   return (
-    <div data-part="diff-line" data-change={row.change}>
+    <div data-part="diff-line" data-change={row.change} style={gutter}>
       <span data-part="diff-gutter">{row.old ?? ""}</span>
       <span data-part="diff-gutter">{row.new ?? ""}</span>
       <span data-part="diff-sign" className={tone[row.change]}>{sign[row.change]}</span>
@@ -39,7 +39,7 @@ function sides(rows: DiffRow[]) {
 }
 
 /** Rows [start, end) of a diff, highlighted as their own block: every edit view draws its rows through this. */
-function DiffLines({ rows, start, end, language, id }: { rows: DiffRow[]; start: number; end: number; language?: string; id: string }) {
+function DiffLines({ rows, start, end, language, id, gutter }: { rows: DiffRow[]; start: number; end: number; language?: string; id: string; gutter: CSSProperties }) {
   const shown = useMemo(() => rows.slice(start, end), [rows, start, end]);
   const side = useMemo(() => sides(shown), [shown]);
   const oldTokens = useTokens(side.old, language, `${id}@${start}:old`);
@@ -48,7 +48,7 @@ function DiffLines({ rows, start, end, language, id }: { rows: DiffRow[]; start:
   const newLines = useMemo(() => newTokens && tokenLines(newTokens), [newTokens]);
   return shown.map((row, index) => {
     const lines = row.change === "delete" ? oldLines : newLines;
-    return <Line key={start + index} row={row} tokens={side.at[index]! >= 0 ? lines?.[side.at[index]!] : undefined} />;
+    return <Line key={start + index} row={row} tokens={side.at[index]! >= 0 ? lines?.[side.at[index]!] : undefined} gutter={gutter} />;
   });
 }
 
@@ -62,7 +62,11 @@ export function EditBody({ item, output, state }: ToolBodyProps) {
   const id = `${item.id}:diff`;
   const model = useMemo((): RowModel => {
     const rows = diffRows(diff).map(capped);
-    return { count: rows.length, part: "tool-diff", language, render: (start, end) => <DiffLines rows={rows} start={start} end={end} language={language} id={id} /> };
+    // Both number columns fit the largest line number, so every row (and every viewer group) aligns.
+    let last = 0;
+    for (const row of rows) last = Math.max(last, row.old ?? 0, row.new ?? 0);
+    const gutter = { "--diff-gutter": `${Math.max(4, String(last).length) + 1}ch` } as CSSProperties;
+    return { count: rows.length, part: "tool-diff", language, render: (start, end) => <DiffLines rows={rows} start={start} end={end} language={language} id={id} gutter={gutter} /> };
   }, [diff, language, id]);
   if (!view) return null;
   return (

@@ -274,7 +274,12 @@ async function checkStructuredViewer(page: Page, fixture: "edit" | "search") {
     ? { tokens: "[class^=tok-]", inserted: '[data-part="diff-line"][data-change="insert"]', deleted: '[data-part="diff-line"][data-change="delete"]', marks: 'mark[data-part="diff-word"]' }
     : { tokens: "[class^=tok-]", heads: '[data-part="search-head"]', lines: '[data-part="line"][data-match]', marks: 'mark[data-part="search-match"]' };
   const found = await viewer.evaluate((node, selectors) => Object.fromEntries(Object.entries(selectors).map(([name, selector]) => [name, node.querySelectorAll(selector).length])), selectors);
-  return Object.entries(found).filter(([, count]) => !count).map(([name]) => `viewer ${fixture}: no ${name} in the open viewer (${JSON.stringify(found)})`);
+  // Every fixture row is one short line: a taller row means a line-number column too narrow for 5-digit numbers.
+  const wrapped = await viewer.evaluate((node) => [...node.querySelectorAll('[data-part="diff-line"], [data-part="line"]')].filter((row) => row.getBoundingClientRect().height > 30).length);
+  return [
+    ...Object.entries(found).filter(([, count]) => !count).map(([name]) => `viewer ${fixture}: no ${name} in the open viewer (${JSON.stringify(found)})`),
+    ...(wrapped ? [`viewer ${fixture}: ${wrapped} rows wrap; line-number columns must fit the largest number`] : []),
+  ];
 }
 
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;

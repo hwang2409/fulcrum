@@ -361,7 +361,7 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-part="search-count"]::after { content: ")"; }
 
 /* Edit: a unified diff with old and new line numbers, a sign gutter, tinted rows, and the changed span marked. */
-[data-part="diff-line"] { display: grid; grid-template-columns: 5ch 5ch 2ch minmax(0, 1fr); }
+[data-part="diff-line"] { display: grid; grid-template-columns: var(--diff-gutter, 5ch) var(--diff-gutter, 5ch) 2ch minmax(0, 1fr); }
 [data-part="diff-gutter"] { padding-right: 1ch; color: var(--fulcrum-muted); text-align: right; user-select: none; }
 [data-part="diff-sign"] { text-align: center; user-select: none; }
 [data-part="diff-text"] { padding-right: 12px; white-space: pre-wrap; }

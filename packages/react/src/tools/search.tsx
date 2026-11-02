@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import { MarkedTokens, tokenLines, useTokens } from "../highlight.js";
@@ -50,12 +50,12 @@ export function matchRanges(text: string, pattern: string): Array<[number, numbe
 }
 
 /** Lines [from, to) of one file, highlighted as their own block; the head shows with the file's first line. */
-function File({ file, from, to, pattern, id }: { file: Group; from: number; to: number; pattern: string; id: string }) {
+function File({ file, from, to, pattern, id, gutter }: { file: Group; from: number; to: number; pattern: string; id: string; gutter: CSSProperties }) {
   const shown = useMemo(() => file.lines.slice(from, to), [file, from, to]);
   const tokens = useTokens(useMemo(() => shown.map((line) => line.text).join("\n"), [shown]), languageForPath(file.path), `${id}@${from}`);
   const lines = useMemo(() => tokens && tokenLines(tokens), [tokens]);
   return (
-    <div data-part="search-file">
+    <div data-part="search-file" style={gutter}>
       {from === 0 ? <div data-part="search-head"><span data-part="search-path">{file.path}</span><span data-part="search-count">{file.matches}</span></div> : null}
       {shown.map((line, j) => (
         <div key={from + j} data-part="line" data-match={line.match || undefined}>
@@ -71,7 +71,14 @@ function File({ file, from, to, pattern, id }: { file: Group; from: number; to: 
 function searchRows(groups: Group[], pattern: string, id: string): RowModel {
   const starts: number[] = [];
   let count = 0;
-  for (const file of groups) { starts.push(count); count += file.lines.length; }
+  let last = 0;
+  for (const file of groups) {
+    starts.push(count);
+    count += file.lines.length;
+    for (const line of file.lines) last = Math.max(last, line.number);
+  }
+  // The number column fits the largest line number of the whole result, so files and viewer groups align.
+  const gutter = { "--gutter": `${Math.max(4, String(last).length)}ch` } as CSSProperties;
   const render = (start: number, end: number) => {
     const out = [];
     let low = 0;
@@ -82,7 +89,7 @@ function searchRows(groups: Group[], pattern: string, id: string): RowModel {
     }
     for (let g = low; g < groups.length && starts[g]! < end; g++) {
       const from = Math.max(0, start - starts[g]!);
-      out.push(<File key={g} file={groups[g]!} from={from} to={Math.min(groups[g]!.lines.length, end - starts[g]!)} pattern={pattern} id={`${id}:file-${g}`} />);
+      out.push(<File key={g} file={groups[g]!} from={from} to={Math.min(groups[g]!.lines.length, end - starts[g]!)} pattern={pattern} id={`${id}:file-${g}`} gutter={gutter} />);
     }
     return out;
   };
