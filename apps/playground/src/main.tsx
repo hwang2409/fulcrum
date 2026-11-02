@@ -4,7 +4,7 @@ import "./app.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
-import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
+import { Approval, Message, RunProvider, Timeline, useItem, useRun, useTimeline, type Renderers } from "@fulcrum/react";
 import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
 import { replayStep } from "./replay";
@@ -33,6 +33,7 @@ let dispatched = 0;
 let lastAction = "";
 let continueReplay = () => {};
 function CountedMessage({ id }: { id: string }) {
+  useRun((state) => state);
   useItem(id);
   messageRenders++;
   return <Message id={id} />;
