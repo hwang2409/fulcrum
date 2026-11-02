@@ -64,13 +64,22 @@ const statusText: Record<ItemState, string> = {
   submitting: "sending", // Approval names the action instead: "approving" or "denying"
 };
 
+// Harness tool names are free strings; a blank one still needs a readable label.
+const isBlank = (name: string) => name.trim() === "";
+const toolLabel = (name: string) => (isBlank(name) ? "unnamed tool" : name);
+function ToolName({ name }: { name: string }) {
+  return isBlank(name)
+    ? <span data-part="tool-name" data-blank="">unnamed tool</span>
+    : <span data-part="tool-name">{name}</span>;
+}
+
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
   const ms = item.view?.durationMs;
   const rawSummary = (summary ?? toolSummary)(item);
   const oneLineSummary = rawSummary.replace(/\s+/g, " ").trim();
   return (
     <>
-      <span data-part="tool-name">{item.tool_call.name}</span>
+      <ToolName name={item.tool_call.name} />
       <span data-part="tool-summary">{boundText(oneLineSummary, MAX_SUMMARY_CHARS).text}</span>
       <span data-part="tool-status">
         {status ?? statusText[state]}
@@ -221,14 +230,14 @@ export const announcementForItem = (item: RunItem): string | null => {
     case "message": return item.active ? null : `${item.message.role} replied`;
     case "tool": {
       if (item.active) return null;
-      if (item.canceled) return `tool ${item.tool_call.name} canceled`;
+      if (item.canceled) return `tool ${toolLabel(item.tool_call.name)} canceled`;
       const result = item.result?.content ?? item.output;
       const exitCode = item.view?.kind === "shell" ? item.view.exitCode : undefined;
       const parsedCode = exitCode ?? result.match(/\b(?:exit(?:ed)?(?: with code)?|code)\s+(-?\d+)\b/i)?.[1];
-      return `tool ${item.tool_call.name} finished${parsedCode === undefined ? "" : `: exit ${parsedCode}`}`;
+      return `tool ${toolLabel(item.tool_call.name)} finished${parsedCode === undefined ? "" : `: exit ${parsedCode}`}`;
     }
     case "approval":
-      return !item.ended && item.request.type === "approval_request" ? `approval needed: ${item.request.tool_call.name}` : null;
+      return !item.ended && item.request.type === "approval_request" ? `approval needed: ${toolLabel(item.request.tool_call.name)}` : null;
     case "error": return item.event.type === "error" ? `error: ${item.event.error.message}` : null;
     case "notification": return "new notification";
     case "unknown": return "new activity";

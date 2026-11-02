@@ -58,11 +58,82 @@ interface EntityDraft {
   delete(id: string): void;
 }
 
+type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;
+type MessageCommit = Extract<RunEvent, { type: "message_commit" }>;
+const nextMessageId = (next: RunState, supplied?: string) => supplied ?? next.activeMessageId ?? (next.nextId === 1 ? "assistant" : `assistant-${next.nextId}`);
+const finishPriorMessage = (next: RunState, id: string, endActiveMessage: () => void) => {
+  if (next.activeMessageId && next.activeMessageId !== id) endActiveMessage();
+};
+const appendMessageOutline = (next: RunState, itemId: string) => {
+  next.outline = [...next.outline, { id: itemId, kind: "message" }];
+  next.nextId += 1;
+};
+const reduceMessageDelta = (
+  next: RunState,
+  event: MessageDelta,
+  getItem: EntityDraft["get"],
+  setItem: EntityDraft["set"],
+  endActiveMessage: () => void,
+) => {
+  const id = nextMessageId(next, event.message_id);
+  finishPriorMessage(next, id, endActiveMessage);
+  const itemId = messageItemId(id);
+  const old = getItem(itemId);
+  const continuing = next.activeMessageId === id;
+  const prior = old?.type === "message" ? old : undefined;
+  const streamedKind = event.kind && event.kind !== "assistant" && event.kind !== "text" ? event.kind : undefined;
+  const item = streamedKind
+    ? (() => {
+        const message = prior?.message ?? { role: "assistant", content: [] };
+        const content = message.content.map((block) => ({ ...block }));
+        const block = content.at(-1);
+        if (block?.type === streamedKind && typeof block.text === "string") block.text += event.delta;
+        else content.push({ type: streamedKind, text: event.delta });
+        return {
+          id: itemId,
+          type: "message" as const,
+          message: { ...message, content },
+          version: (prior?.version ?? 0) + 1,
+          active: true,
+          ...(prior?.text === undefined ? {} : { text: prior.text }),
+        };
+      })()
+    : appendText<RunItem>(
+        { id: itemId, type: "message", message: prior?.message ?? { role: "assistant", content: [] }, version: (prior?.version ?? 0) + 1, active: true },
+        continuing ? prior : undefined,
+        "text",
+        () => prior?.text ?? "",
+        event.delta,
+      );
+  setItem(item);
+  if (!prior) appendMessageOutline(next, itemId);
+  next.activeMessageId = id;
+};
+const reduceMessageCommit = (
+  next: RunState,
+  event: MessageCommit,
+  getItem: EntityDraft["get"],
+  setItem: EntityDraft["set"],
+  endActiveMessage: () => void,
+) => {
+  const id = nextMessageId(next, event.message_id);
+  finishPriorMessage(next, id, endActiveMessage);
+  const itemId = messageItemId(id);
+  const old = getItem(itemId);
+  const prior = old?.type === "message" ? old : undefined;
+  setItem({ id: itemId, type: "message", message: event.message, version: (prior?.version ?? 0) + 1, active: false });
+  if (!prior) appendMessageOutline(next, itemId);
+  next.activeMessageId = undefined;
+};
+
 export function reduceAllWithEntities(
   state: RunState,
   events: RunEvent[],
   entities: EntityDraft,
 ): RunState {
+  // An empty delta carries no text: it must not open a row or publish a new state.
+  const isEmptyDelta = (event: RunEvent) => event.type === "message_delta" && event.delta === "";
+  if (events.some(isEmptyDelta)) events = events.filter((event) => !isEmptyDelta(event));
   if (events.length === 0) return state;
 
   const next: RunState = {
@@ -151,62 +222,12 @@ export function reduceAllWithEntities(
         break;
       case "message_start":
         break;
-      case "message_delta": {
-        const id =
-          event.message_id ??
-          next.activeMessageId ??
-          (next.nextId === 1 ? "assistant" : `assistant-${next.nextId}`);
-        if (next.activeMessageId && next.activeMessageId !== id)
-          endActiveMessage();
-        const itemId = messageItemId(id);
-        const old = getItem(itemId);
-        const continuing = next.activeMessageId === id;
-        const prior = old?.type === "message" ? old : undefined;
-        const item = appendText<RunItem>(
-          {
-            id: itemId,
-            type: "message",
-            message: prior?.message ?? { role: "assistant", content: [] },
-            version: (prior?.version ?? 0) + 1,
-            active: true,
-          },
-          continuing ? prior : undefined,
-          "text",
-          () => prior?.text ?? "",
-          event.delta,
-        );
-        setItem(item);
-        if (!prior) {
-          next.outline = [...next.outline, { id: itemId, kind: "message" }];
-          next.nextId += 1;
-        }
-        next.activeMessageId = id;
+      case "message_delta":
+        reduceMessageDelta(next, event, getItem, setItem, endActiveMessage);
         break;
-      }
-      case "message_commit": {
-        const id =
-          event.message_id ??
-          next.activeMessageId ??
-          (next.nextId === 1 ? "assistant" : `assistant-${next.nextId}`);
-        if (next.activeMessageId && next.activeMessageId !== id)
-          endActiveMessage();
-        const itemId = messageItemId(id);
-        const old = getItem(itemId);
-        const prior = old?.type === "message" ? old : undefined;
-        setItem({
-          id: itemId,
-          type: "message",
-          message: event.message,
-          version: (prior?.version ?? 0) + 1,
-          active: false,
-        });
-        if (!prior) {
-          next.outline = [...next.outline, { id: itemId, kind: "message" }];
-          next.nextId += 1;
-        }
-        next.activeMessageId = undefined;
+      case "message_commit":
+        reduceMessageCommit(next, event, getItem, setItem, endActiveMessage);
         break;
-      }
       case "message_reset": {
         if (!next.activeMessageId) break;
         deleteItem(messageItemId(next.activeMessageId));
@@ -234,6 +255,19 @@ export function reduceAllWithEntities(
         if (exists) setItem(item);
         else appendItem(item);
         setToolActive(id, true);
+        break;
+      }
+      case "tool_input": {
+        const id = event.tool_call.id;
+        const itemId = toolItemId(id);
+        const old = getItem(itemId);
+        const prior = old?.type === "tool" ? old : undefined;
+        if (!prior) {
+          appendItem({ id: itemId, type: "tool", tool_call: event.tool_call, view: event.view, output: "", version: 1, active: true, is_error: false, canceled: false });
+          setToolActive(id, true);
+          break;
+        }
+        setItem({ ...prior, tool_call: event.tool_call, view: event.view ?? prior.view, version: prior.version + 1 });
         break;
       }
       case "tool_output": {

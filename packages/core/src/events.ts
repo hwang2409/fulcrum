@@ -2,6 +2,22 @@ export interface ContentBlock {
   type: string;
   [key: string]: unknown;
 }
+export interface SourceContentBlock extends ContentBlock {
+  type: "source";
+  kind: "source";
+  url?: string;
+  mediaType?: string;
+  title?: string;
+  filename?: string;
+}
+export interface FileContentBlock extends ContentBlock {
+  type: "file";
+  kind: "file";
+  url?: string;
+  mediaType?: string;
+  title?: string;
+  filename?: string;
+}
 export interface Message {
   role: string;
   content: ContentBlock[];
@@ -12,6 +28,7 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  meta?: Record<string, unknown>;
 }
 /**
  * The agent-neutral view of a tool call. Harness tool maps produce it; renderers pick a card by `kind`. No view means
@@ -97,6 +114,7 @@ export type RunEvent =
   | { type: "retry" }
   | { type: "message_commit"; message_id?: string; message: Message }
   | { type: "tool_start"; tool_call: ToolCall; view?: ToolView; data?: Record<string, unknown> }
+  | { type: "tool_input"; tool_call: ToolCall; input: string; view?: ToolView; data?: Record<string, unknown> }
   | {
       type: "tool_output";
       tool_call: ToolCall;
