@@ -3,6 +3,7 @@
   "private": true,
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
+    "build:packages": "for d in packages/*/; do [ -d \"$d/dist\" ] || rm -f \"$d\"*.tsbuildinfo; done; tsc -b && bun run --cwd packages/highlight build",
     "test": "bun test",
     "typecheck": "tsc -b",
     "check:zeta-events": "bun packages/zeta/scripts/check-events.ts",

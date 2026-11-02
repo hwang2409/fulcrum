@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
 import type { RunItem } from "@fulcrum/core";
-import { useItem, useItemSelector, useTimelineSnapshot } from "./hooks.js";
+import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { boundText, duration, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { ToolBody, toolSummary } from "./tools/index.js";
 import { useVirtualList } from "./virtual.js";
@@ -335,7 +335,7 @@ const virtualRowStyle: CSSProperties = { position: "absolute", insetInline: 0, d
 export type TimelineProps = {
   renderers?: Renderers;
   className?: string;
-  /** Defaults to virtual mode above 200 rows. */
+  /** Defaults to virtual mode above 200 rows. A replacement RunProvider store starts pinned to the bottom. */
   virtual?: boolean;
   /** Scroll viewport. When omitted, Timeline uses its direct parent. */
   scrollRef?: RefObject<HTMLElement | null>;
@@ -343,11 +343,32 @@ export type TimelineProps = {
   "aria-label"?: string;
 };
 
+const storeKeys = new WeakMap<object, number>();
+let nextStoreKey = 0;
+const keyForStore = (store: object) => {
+  let key = storeKeys.get(store);
+  if (key === undefined) { key = nextStoreKey++; storeKeys.set(store, key); }
+  return key;
+};
+
 /** Pass a stable `renderers` object (module scope or memoized) so appends do not re-render every row. */
-export const Timeline = memo(function Timeline({ renderers, className, virtual, scrollRef, "aria-label": ariaLabel = "agent activity" }: TimelineProps) {
+export const Timeline = memo(function Timeline(props: TimelineProps) {
+  const store = useRunStore();
+  return <TimelineForStore key={keyForStore(store)} {...props} store={store} />;
+});
+
+const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
   const { items, change } = useTimelineSnapshot();
   const enabled = virtual ?? items.length > 200;
-  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change });
+  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change, resetKey: store });
+  const initialScroll = useRef(enabled);
+  useLayoutEffect(() => {
+    if (!enabled) initialScroll.current = true;
+    else if (initialScroll.current && list.snapshot.totalSize > 0) {
+      initialScroll.current = false;
+      list.scrollToEnd();
+    }
+  }, [enabled, list.scrollToEnd, list.snapshot.totalSize]);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const plainRef = useRef<HTMLDivElement>(null);
   const priorMode = useRef(enabled);

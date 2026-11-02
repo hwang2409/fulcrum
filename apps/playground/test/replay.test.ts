@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { RunEvent } from "@fulcrum/core";
-import { replayStep } from "../src/replay";
+import { relabel, replayStep } from "../src/replay";
 
 const event = (type: RunEvent["type"]): RunEvent =>
   type === "approval_request"
@@ -31,4 +31,13 @@ test("pauses at an approval and does not count paused time", () => {
 
   expect(paused.budget).toBe(first.budget);
   expect(resumed.events).toHaveLength(3);
+});
+
+test("relabels every id on a later lap so a looped fixture adds new items", () => {
+  const request = event("approval_request");
+  const commit = event("message_commit");
+  expect(relabel(request, 0)).toBe(request);
+  expect(relabel(request, 2)).toMatchObject({ request_id: "r1~2", tool_call: { id: "t1~2" } });
+  expect(relabel(commit, 1)).toMatchObject({ message_id: "m1~1" });
+  expect(relabel({ type: "tool_end", tool_call: { id: "t1", name: "x", arguments: {} }, tool_result: { tool_call_id: "t1", content: "", is_error: false } }, 1)).toMatchObject({ tool_result: { tool_call_id: "t1~1" } });
 });

@@ -1,0 +1,4 @@
+/* Virtual page rows: one hairline-separated line each, id on the left and its height on the right. */
+.row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 12px; border-bottom: 1px solid var(--fulcrum-border); font-size: 13px; }
+.row span:last-child { color: var(--fulcrum-muted); }
+.scroll [data-virtual-id]:focus-visible { outline-offset: -2px; }

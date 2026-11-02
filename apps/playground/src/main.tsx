@@ -1,7 +1,4 @@
-import "@fulcrum/react/styles.css";
-import "@fulcrum/react/themes.css";
 import "@fulcrum/highlight/styles.css";
-import "./app.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, initialState, type RunEvent, type RunItem } from "@fulcrum/core";
@@ -11,7 +8,8 @@ import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
 import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
 import { connectZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
-import { replayStep } from "./replay";
+import { relabel, replayStep } from "./replay";
+import { Shell } from "./shell";
 
 const zetaFiles = import.meta.glob<string>("../../../packages/zeta/test/fixtures/*.jsonl", {
   query: "?raw",
@@ -53,10 +51,12 @@ const fixtures = Object.fromEntries(Object.entries(fixtureSources).flatMap(([sou
   Object.entries(sourceFixtures).map(([name, events]) => [`${source}:${name}`, events]),
 ));
 const STRESS = "stress";
-const HUGE = "huge";
+const STATIC = "static:";
 const STRESS_MESSAGES = Number(new URLSearchParams(location.search).get("stressMessages")) || 5000;
 const HUGE_MESSAGES = 100_000;
+const HUGE = `${STATIC}${HUGE_MESSAGES}`;
 const STRESS_RATE = 200;
+const REPLAY_STORE_LAPS = 8;
 const highlight = createHighlighter();
 const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
 addEventListener("pagehide", () => highlight.dispose(), { once: true });
@@ -65,13 +65,16 @@ addEventListener("pagehide", () => highlight.dispose(), { once: true });
 let messageRenders = 0;
 let dispatched = 0;
 let lastAction = "";
-let continueReplay = () => {};
-let nextStoreKey = 0;
-const storeKeys = new WeakMap<object, number>();
-const storeKey = (store: object) => {
-  if (!storeKeys.has(store)) storeKeys.set(store, nextStoreKey++);
-  return storeKeys.get(store)!;
+let lap = 0;
+type Phase = "streaming" | "waiting" | "static";
+let phase: Phase = "streaming";
+const phaseListeners = new Set<(phase: Phase) => void>();
+const setPhase = (next: Phase) => {
+  if (phase === next) return;
+  phase = next;
+  phaseListeners.forEach((listener) => listener(next));
 };
+let continueReplay = () => {};
 function CountedMessage({ id }: { id: string }) {
   useItem(id);
   messageRenders++;
@@ -120,8 +123,9 @@ function staticStore(count: number): ReturnType<typeof createRunStore> {
     return item;
   };
   const state = { ...structuredClone(initialState), outline };
+  const snapshot = { items: outline, change: { type: "append" as const, count: outline.length } };
   const subscribe = (() => () => {}) as ReturnType<typeof createRunStore>["subscribe"];
-  return { getState: () => state, getItem, getOutline: () => outline, getOutlineSnapshot: () => ({ items: outline, change: { type: "append", count: outline.length } }), subscribe, subscribeOutline: () => () => true, dispatch: () => {}, dispose: () => {} };
+  return { getState: () => state, getItem, getOutline: () => outline, getOutlineSnapshot: () => snapshot, subscribe, subscribeOutline: () => () => true, dispatch: () => {}, dispose: () => {} };
 }
 
 function useReplay(mode: string, speed: number, run: number) {
@@ -131,12 +135,15 @@ function useReplay(mode: string, speed: number, run: number) {
   rate.current = speed;
   useEffect(() => {
     const next = createRunStore();
+    let active = next;
     let nextEvent: () => RunEvent | undefined;
     let stress = false;
-    if (mode === HUGE) {
-      setStore(staticStore(HUGE_MESSAGES));
+    if (mode.startsWith(STATIC)) {
+      const fixed = staticStore(Number(mode.slice(STATIC.length)));
+      setStore(fixed);
       dispatched = 0;
-      return;
+      setPhase("static");
+      return () => fixed.dispose();
     }
     if (mode === STRESS) {
       for (let i = 0; i < STRESS_MESSAGES; i++)
@@ -148,12 +155,23 @@ function useReplay(mode: string, speed: number, run: number) {
       nextEvent = stressSource();
       stress = true;
     } else {
+      // Keep enough laps for follow testing, then rotate the store so an unattended replay stays bounded.
       const events = fixtures[mode] ?? [];
       let i = 0;
-      nextEvent = () => events[i++];
+      nextEvent = () => {
+        if (!events.length) return undefined;
+        lap = Math.floor(i / events.length);
+        if (lap > 0 && lap % REPLAY_STORE_LAPS === 0 && i % events.length === 0) {
+          active = createRunStore();
+          setStore(active);
+        }
+        return relabel(events[i++ % events.length]!, lap);
+      };
     }
     setStore(next);
     dispatched = 0;
+    lap = 0;
+    setPhase("streaming");
     let state = { budget: 0, paused: false, elapsed: 0, rate: rate.current };
     let last = performance.now();
     continueReplay = () => {
@@ -165,59 +183,83 @@ function useReplay(mode: string, speed: number, run: number) {
       last = now;
       const step = replayStep(nextEvent, state);
       state = { ...state, ...step };
+      setPhase(step.done ? "static" : step.paused ? "waiting" : "streaming");
       for (const event of step.events) {
-        next.dispatch(event);
+        active.dispatch(event);
         dispatched++;
       }
       if (step.done) clearInterval(timer);
     }, 16);
     return () => {
       clearInterval(timer);
+      active.dispose();
       continueReplay = () => {};
     };
   }, [mode, run]);
+  const committedStore = useRef(store);
+  useEffect(() => {
+    const retired = committedStore.current;
+    committedStore.current = store;
+    if (retired !== store) retired.dispose();
+  }, [store]);
   return store;
 }
 
-function Readout() {
+// The active mode and its live numbers. Sampled twice a second, so it never re-renders the timeline.
+function Status({ label }: { label: string }) {
   const items = useTimeline().length;
-  const [stats, setStats] = useState({ fps: 0, renders: 0, events: 0, longTasks: 0, heap: undefined as number | undefined });
+  const [activePhase, setActivePhase] = useState(phase);
+  const frames = useRef(0);
+  const [stats, setStats] = useState({ fps: 0, renders: 0, events: 0, longTasks: 0, heap: undefined as number | undefined, lap: 0 });
   useEffect(() => {
-    let frames = 0;
+    phaseListeners.add(setActivePhase);
+    return () => { phaseListeners.delete(setActivePhase); };
+  }, []);
+  useEffect(() => {
+    if (activePhase !== "streaming") { frames.current = 0; return; }
+    let raf = requestAnimationFrame(function tick() {
+      frames.current++;
+      raf = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [activePhase]);
+  useEffect(() => {
     let longTasks = 0;
     const observer = new PerformanceObserver((list) => {
       longTasks += list.getEntries().length;
     });
     observer.observe({ type: "longtask" });
-    let raf = requestAnimationFrame(function tick() {
-      frames++;
-      raf = requestAnimationFrame(tick);
-    });
     let start = performance.now();
     let renders = messageRenders;
     const timer = setInterval(() => {
       const seconds = (performance.now() - start) / 1000;
       setStats({
-        fps: Math.round(frames / seconds),
+        fps: Math.round(frames.current / seconds),
         renders: Math.round((messageRenders - renders) / seconds),
         events: dispatched,
         longTasks,
         heap: (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize,
+        lap,
       });
-      frames = 0;
+      frames.current = 0;
       renders = messageRenders;
       start = performance.now();
     }, 500);
     return () => {
-      cancelAnimationFrame(raf);
       clearInterval(timer);
       observer.disconnect();
     };
   }, []);
   return (
-    <span className="readout" data-testid="readout">
-      {stats.fps} fps · {stats.renders} message renders/s · {items} items · {stats.events} events · {stats.longTasks} long tasks{stats.heap === undefined ? "" : ` · ${Math.round(stats.heap / 1_000_000)} MB heap`}{lastAction && ` · ${lastAction}`}
-    </span>
+    <div className="status">
+      <span className="mode" data-state={activePhase}>
+        {label}
+        <span>{activePhase === "waiting" ? "waiting for approval" : activePhase === "static" ? "no events" : "streaming"}{stats.lap > 0 && ` · lap ${stats.lap + 1}`}</span>
+      </span>
+      <span data-testid="readout">
+        {stats.fps} fps · {stats.renders} message renders/s · {items} items · {stats.events} events · {stats.longTasks} long tasks{stats.heap === undefined ? "" : ` · ${Math.round(stats.heap / 1_000_000)} MB heap`}{lastAction && ` · ${lastAction}`}
+      </span>
+    </div>
   );
 }
 
@@ -258,7 +300,19 @@ function Live() {
     message: ({ id }) => <Message id={id} markdown={RichMarkdown} />,
     approval: ({ id }) => <Approval id={id} onApprove={approve} onDeny={deny} />,
   };
-  return <div className="app live-app"><div className="bar"><strong>live zeta</strong><input aria-label="zeta websocket url" value={input} onChange={(e) => setInput(e.target.value)} placeholder="ws://127.0.0.1:8765/?token=..." /><button type="button" onClick={() => void connect()}>connect</button><select value={session ?? ""} onChange={(e) => setSession(e.target.value)}><option value="">session</option>{sessions.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>{error && <span role="alert">{error}</span>}</div><div className="scroll"><RunProvider store={store}><Timeline renderers={renderers} /></RunProvider></div>{client && session && <form className="composer" onSubmit={(e) => { e.preventDefault(); if (text.trim()) { void client.request("send", { session_id: session, text }); setText(""); } }}><textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="send a message" /><button type="submit">send</button></form>}</div>;
+  return (
+    <Shell page="playground">
+      <div className="toolbar">
+        <strong>live zeta</strong>
+        <input aria-label="zeta websocket url" value={input} onChange={(e) => setInput(e.target.value)} placeholder="ws://127.0.0.1:8765/?token=..." />
+        <button type="button" onClick={() => void connect()}>connect</button>
+        <select aria-label="session" value={session ?? ""} onChange={(e) => setSession(e.target.value)}><option value="">session</option>{sessions.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>
+        {error && <span role="alert">{error}</span>}
+      </div>
+      <div className="scroll"><RunProvider store={store}><Timeline renderers={renderers} /></RunProvider></div>
+      {client && session && <form className="toolbar composer" onSubmit={(e) => { e.preventDefault(); if (text.trim()) { void client.request("send", { session_id: session, text }); setText(""); } }}><textarea aria-label="message" value={text} onChange={(e) => setText(e.target.value)} placeholder="send a message" /><button type="submit">send</button></form>}
+    </Shell>
+  );
 }
 
 function App() {
@@ -271,12 +325,13 @@ function App() {
   const store = useReplay(mode, speed, run);
   const scroll = useRef<HTMLDivElement>(null);
   if (import.meta.env.DEV && live) return <Live />;
+  const rate = mode === STRESS ? STRESS_RATE : speed;
+  const label = mode === STRESS ? "stress" : mode.startsWith(STATIC) ? "static" : "replay";
   return (
     <RunProvider store={store}>
-      <div className="app">
-        <div className="bar">
-          {import.meta.env.DEV && <button type="button" onClick={() => setLive(true)}>live zeta</button>}
-          <label>
+      <Shell page="playground">
+        <div className="toolbar">
+          <label className="field">
             source
             <select value={source} onChange={(e) => {
               const nextSource = e.target.value;
@@ -287,28 +342,36 @@ function App() {
               <option value="ai-sdk">ai-sdk</option>
             </select>
           </label>
-          <label>
+          <label className="field">
             replay
-            <select value={mode} onChange={(e) => setMode(e.target.value)}>
+            <select id="mode" value={mode} onChange={(e) => setMode(e.target.value)}>
               {Object.keys(fixtureSources[source] ?? {}).map((name) => (
                 <option key={name} value={`${source}:${name}`}>{name}</option>
               ))}
               {source === "zeta" && <option value={STRESS}>stress: {STRESS_MESSAGES} messages + {STRESS_RATE} deltas/s</option>}
-              {source === "zeta" && <option value={HUGE}>virtual: {HUGE_MESSAGES} messages</option>}
+              {source === "zeta" && <option value={HUGE}>static: {HUGE_MESSAGES.toLocaleString("en")} messages</option>}
             </select>
           </label>
-          <label>
-            events/s
-            <input type="range" min={1} max={200} value={speed} disabled={mode === STRESS} onChange={(e) => setSpeed(Number(e.target.value))} />
-            {mode === STRESS ? STRESS_RATE : speed}
-          </label>
-          <button type="button" onClick={() => setRun(run + 1)}>restart</button>
-          <Readout />
+          <span className="field">
+            <label htmlFor="rate">events/s</label>
+            <input id="rate" type="range" min={1} max={200} value={rate} disabled={mode === STRESS || mode.startsWith(STATIC)} aria-valuetext={`${rate} events per second`} onChange={(e) => setSpeed(Number(e.target.value))} />
+            <output htmlFor="rate">{mode.startsWith(STATIC) ? "-" : rate}</output>
+          </span>
+          <div className="group">
+            <button type="button" onClick={() => setRun(run + 1)}>restart</button>
+            {import.meta.env.DEV && <button type="button" onClick={() => setLive(true)}>live zeta</button>}
+          </div>
         </div>
+        <p className="caption">
+          Replays loop with fresh ids; approvals pause them until answered. <strong>Unseen:</strong> scroll up and{" "}
+          <strong>jump to latest (n)</strong> counts new rows; at the bottom, follow keeps up. <strong>Focus:</strong> tab into a row, then
+          arrow keys. Anchoring: the virtual page.
+        </p>
+        <Status label={label} />
         <div className="scroll" ref={scroll}>
-          <Timeline key={storeKey(store)} renderers={renderers} scrollRef={scroll} />
+          <Timeline virtual renderers={renderers} scrollRef={scroll} />
         </div>
-      </div>
+      </Shell>
     </RunProvider>
   );
 }
