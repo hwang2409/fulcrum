@@ -3,8 +3,9 @@ import { createRunStore } from "../packages/core/src/index.js";
 const absoluteBudget = Number(process.env.CI ? 250 : 50);
 const scalingBudget = 4;
 const runs = 5;
+type Measurement = { small: number; large: number; ratio: number };
 
-function run(seedCount: number) {
+function run(seedCount: number, flushEvery: number) {
   const store = createRunStore(() => {});
   for (let i = 0; i < seedCount; i++) {
     store.dispatch({ type: "message_commit", message_id: `seed-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
@@ -14,7 +15,7 @@ function run(seedCount: number) {
   const start = performance.now();
   for (let i = 0; i < 50_000; i++) {
     store.dispatch({ type: "message_delta", delta: "x".repeat(100) });
-    if (i % 800 === 799) store.getState();
+    if (i % flushEvery === flushEvery - 1) store.getState();
   }
   const elapsed = performance.now() - start;
   store.getState();
@@ -23,36 +24,34 @@ function run(seedCount: number) {
   return elapsed;
 }
 
-function collectRuns() {
-  // warm up the JIT before collecting measurements
-  run(200);
-  run(5_000);
-  const values = Array.from({ length: runs }, () => {
-    const small = run(200);
+function collectRuns(flushEvery: number): Measurement[] {
+  run(200, flushEvery);
+  run(5_000, flushEvery);
+  return Array.from({ length: runs }, () => {
+    const small = run(200, flushEvery);
     if (typeof Bun.gc === "function") Bun.gc(true);
-    const large = run(5_000);
+    const large = run(5_000, flushEvery);
     if (typeof Bun.gc === "function") Bun.gc(true);
-    return { small, large };
+    return { small, large, ratio: large / small };
   });
-  return values;
 }
 
-const values = collectRuns();
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(runs / 2)];
-const smallRuns = values.map(({ small }) => small);
-const largeRuns = values.map(({ large }) => large);
-const ratios = values.map(({ small, large }) => large / small);
-const smallMedian = median(smallRuns);
-const largeMedian = median(largeRuns);
-const ratioMedian = median(ratios);
-const failed = ratioMedian > scalingBudget || largeMedian > absoluteBudget;
+const report = (label: string, values: Measurement[]) => {
+  const smallMedian = median(values.map(({ small }) => small));
+  const largeMedian = median(values.map(({ large }) => large));
+  const ratioMedian = median(values.map(({ ratio }) => ratio));
+  console.log(`${label}: 200 messages median ${smallMedian.toFixed(2)} ms`);
+  console.log(`${label}: 5000 messages median ${largeMedian.toFixed(2)} ms (budget ${absoluteBudget} ms)`);
+  console.log(`${label}: scaling median ${ratioMedian.toFixed(2)}x (budget ${scalingBudget}x)`);
+  return { largeMedian, ratioMedian };
+};
 
-console.log(`200 messages: median ${smallMedian.toFixed(2)} ms`);
-console.log(`5000 messages: median ${largeMedian.toFixed(2)} ms (budget ${absoluteBudget} ms)`);
-console.log(`scaling: median ${ratioMedian.toFixed(2)}x (budget ${scalingBudget}x)`);
-if (failed) {
-  console.log(`200 runs: ${smallRuns.map((value) => value.toFixed(2)).join(", ")}`);
-  console.log(`5000 runs: ${largeRuns.map((value) => value.toFixed(2)).join(", ")}`);
-  console.log(`ratios: ${ratios.map((value) => value.toFixed(2)).join(", ")}`);
+const measurements = [
+  report("enforced 800-event flush", collectRuns(800)),
+  report("enforced 3-event flush", collectRuns(3)),
+];
+if (measurements.some(({ ratioMedian, largeMedian }) => ratioMedian > scalingBudget || largeMedian > absoluteBudget)) {
+  console.error("enforced performance budget failed");
   process.exit(1);
 }
