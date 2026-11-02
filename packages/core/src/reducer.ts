@@ -91,6 +91,8 @@ export function reduce(state: RunState, event: RunEvent): RunState {
       };
     case "turn_end":
       return { ...next, turn: "idle", activeMessageId: undefined };
+    case "message_start":
+      return next;
     case "message_delta": {
       const id =
         event.message_id ??
@@ -133,7 +135,6 @@ export function reduce(state: RunState, event: RunEvent): RunState {
       const old = next.messagesById[id];
       const message = {
         ...event.message,
-        chunks: old?.chunks,
         version: (old?.version ?? 0) + 1,
       };
       const updated = {
@@ -152,7 +153,6 @@ export function reduce(state: RunState, event: RunEvent): RunState {
                 type: "message" as const,
                 message,
                 version: message.version,
-                chunks: message.chunks,
               },
             },
           }
@@ -161,14 +161,22 @@ export function reduce(state: RunState, event: RunEvent): RunState {
             type: "message" as const,
             message,
             version: message.version,
-            chunks: message.chunks,
           });
     }
     case "message_reset": {
-      const messages = { ...next.messagesById };
-      for (const key of Object.keys(messages))
-        if (messages[key].chunks) delete messages[key];
-      return { ...next, messagesById: messages };
+      const id = next.activeMessageId;
+      if (!id) return next;
+      const messagesById = { ...next.messagesById };
+      const itemsById = { ...next.itemsById };
+      delete messagesById[id];
+      delete itemsById[id];
+      return {
+        ...next,
+        activeMessageId: undefined,
+        items: next.items.filter((itemId) => itemId !== id),
+        itemsById,
+        messagesById,
+      };
     }
     case "retry":
       return next;

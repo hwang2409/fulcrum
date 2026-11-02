@@ -10,6 +10,7 @@ import type { Transport } from "./transport.js";
 export function createClient(transport: Transport, scheduler?: Scheduler) {
   let nextId = 1;
   let handshaken = false;
+  let negotiatedFeatures: string[] = [];
   const pending = new Map<
     number,
     { resolve: (value: unknown) => void; reject: (reason: unknown) => void }
@@ -40,10 +41,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler) {
       request.reject(
         Object.assign(new Error(message.error.message), message.error),
       );
-    else {
-      if (message.id === 1) handshaken = true;
-      request.resolve(message.result);
-    }
+    else request.resolve(message.result);
   });
   const rejectPending = () => {
     const error = new Error("transport closed");
@@ -52,7 +50,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler) {
   };
   transport.onClose?.(rejectPending);
   const request = (method: string, params: Record<string, unknown> = {}) => {
-    if (!handshaken && method !== "hello" && transport.ready)
+    if (!handshaken && method !== "hello")
       return Promise.reject(new Error("hello required"));
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
@@ -65,20 +63,28 @@ export function createClient(transport: Transport, scheduler?: Scheduler) {
       }
     });
   };
-  const hello = (features?: string[]): Promise<HelloResult> => {
+  const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
     const send = () =>
       request("hello", {
         protocol_version: "1.0",
         client_version: "1.2",
-        ...(features ? { features } : {}),
+        ...(requestedFeatures ? { features: requestedFeatures } : {}),
       }) as Promise<HelloResult>;
-    return transport.ready ? transport.ready.then(send) : send();
+    const response = transport.ready ? transport.ready.then(send) : send();
+    return response.then((result) => {
+      handshaken = true;
+      negotiatedFeatures = result.capabilities?.features ?? [];
+      return result;
+    });
   };
   return {
     store,
     stores,
     request,
     hello,
+    get features() {
+      return negotiatedFeatures;
+    },
     close: () => {
       rejectPending();
       transport.close();
