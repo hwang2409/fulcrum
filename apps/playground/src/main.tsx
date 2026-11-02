@@ -34,6 +34,12 @@ let messageRenders = 0;
 let dispatched = 0;
 let lastAction = "";
 let continueReplay = () => {};
+let nextStoreKey = 0;
+const storeKeys = new WeakMap<object, number>();
+const storeKey = (store: object) => {
+  if (!storeKeys.has(store)) storeKeys.set(store, nextStoreKey++);
+  return storeKeys.get(store)!;
+};
 function CountedMessage({ id }: { id: string }) {
   useItem(id);
   messageRenders++;
@@ -252,7 +258,7 @@ function App() {
           <Readout />
         </div>
         <div className="scroll" ref={scroll}>
-          <Timeline key={mode} renderers={renderers} scrollRef={scroll} virtual={mode === STRESS ? false : undefined} />
+          <Timeline key={storeKey(store)} renderers={renderers} scrollRef={scroll} virtual={mode === STRESS ? false : undefined} />
         </div>
       </div>
     </RunProvider>
