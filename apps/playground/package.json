@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p . && vite build"
+    "build": "tsc -p . && vite build",
+    "stress": "bun scripts/stress.ts"
   },
   "dependencies": {
     "@fulcrum/core": "workspace:*",
@@ -18,6 +19,7 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "playwright": "^1.52.0",
     "vite": "^8.3.5"
   }
 }
