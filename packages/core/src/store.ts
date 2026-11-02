@@ -129,11 +129,6 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
       entities = new Map();
-      listeners.forEach((listener) => listener());
-      outlineListeners.forEach((listener) => listener());
-      itemListeners.forEach((keyedListeners) =>
-        keyedListeners.forEach((listener) => listener()),
-      );
       listeners.clear();
       outlineListeners.clear();
       itemListeners.clear();
