@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
 import { Approval, Message, RunProvider, Timeline, useItem, useRun, type Renderers } from "@fulcrum/react";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
+import { replayStep } from "./replay";
 
 const files = import.meta.glob<string>("../../../packages/zeta/test/fixtures/*.jsonl", {
   query: "?raw",
@@ -89,24 +90,22 @@ function useReplay(mode: string, speed: number, run: number) {
     }
     setStore(next);
     dispatched = 0;
-    let budget = 0;
-    let paused = false;
+    let state = { budget: 0, paused: false, elapsed: 0, rate: rate.current };
     let last = performance.now();
     continueReplay = () => {
-      paused = false;
+      state = { ...state, budget: 0, paused: false };
     };
     const timer = setInterval(() => {
-      if (paused) return;
       const now = performance.now();
-      budget += ((now - last) * (stress ? STRESS_RATE : rate.current)) / 1000;
+      state = { ...state, elapsed: now - last, rate: stress ? STRESS_RATE : rate.current };
       last = now;
-      for (; budget >= 1; budget--) {
-        const event = nextEvent();
-        if (!event) return clearInterval(timer);
+      const step = replayStep(nextEvent, state);
+      state = { ...state, ...step };
+      for (const event of step.events) {
         next.dispatch(event);
         dispatched++;
-        if (event.type === "approval_request") paused = true;
       }
+      if (step.done) clearInterval(timer);
     }, 16);
     return () => {
       clearInterval(timer);
