@@ -17,6 +17,7 @@ import {
   useItem,
   useRun,
   useTimeline,
+  useVirtualList,
   type Renderers,
   type RunStore,
   type ToolBodyProps,
@@ -523,6 +524,19 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
   ));
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
   expect(container.querySelectorAll('[data-part="message"]').length).toBeLessThanOrEqual(200);
+});
+
+test("useVirtualList resets its engine when the outline owner changes", () => {
+  const a = Array.from({ length: 201 }, (_, index) => ({ id: `a-${index}`, kind: "message" }));
+  const b = Array.from({ length: 201 }, (_, index) => ({ id: `b-${index}`, kind: "message" }));
+  const Harness = ({ outline, owner }: { outline: typeof a; owner: object }) => {
+    const list = useVirtualList(outline, { estimateSize: () => 20, outlineUpdate: { type: "append", count: outline.length }, resetKey: owner });
+    return <div><div ref={list.timelineRef}>{list.snapshot.rows.map((row) => <div key={row.id} data-virtual-id={row.id} />)}</div></div>;
+  };
+  const ownerA = {};
+  const ownerB = {};
+  mount(<Harness outline={a} owner={ownerA} />);
+  expect(() => act(() => root!.render(<Harness outline={b} owner={ownerB} />))).not.toThrow();
 });
 
 test("virtual Timeline resets and follows when its RunProvider store changes", () => {

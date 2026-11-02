@@ -104,6 +104,9 @@ async function measure(page: Page, messages: number): Promise<Record<string, num
     while (itemCount() < messages) await new Promise(requestAnimationFrame);
     const firstPaint = performance.now() - started;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
+    // Keep the calibrated commit gate on off-screen streaming; follow behavior has separate checks below.
+    scroll.scrollTop = 0;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const frames: number[] = [];
     let last = performance.now();
     let raf = 0;

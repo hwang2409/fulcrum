@@ -353,13 +353,13 @@ const keyForStore = (store: object) => {
 /** Pass a stable `renderers` object (module scope or memoized) so appends do not re-render every row. */
 export const Timeline = memo(function Timeline(props: TimelineProps) {
   const store = useRunStore();
-  return <TimelineForStore key={keyForStore(store)} {...props} />;
+  return <TimelineForStore key={keyForStore(store)} {...props} store={store} />;
 });
 
-const TimelineForStore = memo(function TimelineForStore({ renderers, className, virtual, scrollRef, "aria-label": ariaLabel = "agent activity" }: TimelineProps) {
+const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
   const { items, change } = useTimelineSnapshot();
   const enabled = virtual ?? items.length > 200;
-  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change });
+  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change, resetKey: store });
   useLayoutEffect(() => { if (enabled) list.scrollToEnd(); }, [enabled, list.scrollToEnd]);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const plainRef = useRef<HTMLDivElement>(null);

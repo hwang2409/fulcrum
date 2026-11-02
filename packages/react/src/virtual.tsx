@@ -21,6 +21,8 @@ export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
   enabled?: boolean;
   outlineUpdate?: OutlineUpdate | null;
+  /** Resets the virtual engine when the outline owner changes. */
+  resetKey?: unknown;
 };
 
 export type VirtualListState<Id extends string> = {
@@ -41,6 +43,8 @@ export function useVirtualList<Id extends string>(
   const engineRef = useRef<ReturnType<typeof createVirtualizer<Id>>>(undefined);
   if (!engineRef.current) engineRef.current = createVirtualizer(options);
   const engine = engineRef.current;
+  const appliedResetKey = useRef(options.resetKey);
+  const resetPending = appliedResetKey.current !== options.resetKey;
   const debug = typeof window !== "undefined" && location.search.includes("virtualDebug=1");
   if (debug) (window as typeof window & { __fulcrumVirtual?: typeof engine }).__fulcrumVirtual = engine;
   const containerRef = useRef<HTMLElement | null>(null);
@@ -62,16 +66,23 @@ export function useVirtualList<Id extends string>(
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
 
   useLayoutEffect(() => {
+    if (resetPending) {
+      appliedResetKey.current = options.resetKey;
+      appliedOutline.current = null;
+      initial.current = true;
+      wasEnabled.current = options.enabled !== false;
+      engine.reset();
+    }
     if (appliedOutline.current !== outline) {
-      const token = engine.beforeMutation();
-      engine.setOutline(outline, options.outlineUpdate ?? undefined);
-      engine.setLoaded("all");
       appliedOutline.current = outline;
+      const token = engine.beforeMutation();
+      engine.setOutline(outline, resetPending ? undefined : options.outlineUpdate ?? undefined);
+      engine.setLoaded("all");
       if (initial.current) initial.current = false;
       else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
     }
     wasEnabled.current = options.enabled !== false;
-  }, [engine, outline, options.enabled, options.outlineUpdate]);
+  }, [engine, outline, options.enabled, options.outlineUpdate, options.resetKey, resetPending]);
 
   useLayoutEffect(() => {
     if (options.enabled === false || typeof ResizeObserver === "undefined") return;
@@ -198,10 +209,13 @@ export function useVirtualList<Id extends string>(
     container.scrollTop = engine.scrollToEnd();
   }, [engine]);
 
+  const visibleSnapshot = resetPending
+    ? { ...snapshot, totalSize: 0, topSpacer: 0, bottomSpacer: 0, rows: [] }
+    : snapshot;
   return {
-    snapshot,
-    debug: debug && formatVirtualDebug(snapshot, engine.getActions()),
-    unseenCount: snapshot.unseenCount,
+    snapshot: visibleSnapshot,
+    debug: debug && formatVirtualDebug(visibleSnapshot, engine.getActions()),
+    unseenCount: visibleSnapshot.unseenCount,
     timelineRef,
     observeRow,
     scrollToId,
