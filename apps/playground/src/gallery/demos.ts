@@ -119,7 +119,7 @@ const ESC = "\x1b";
 const testOutput = [
   `${ESC}[1mbun test${ESC}[22m ${ESC}[2mv1.3.13${ESC}[22m`,
   "",
-  "packages/core/test/store.test.ts:",
+  `${ESC}[7m${ESC}[1m${ESC}[32m PASS ${ESC}[39m${ESC}[22m${ESC}[27m packages/core/test/store.test.ts:`, // inverse (SGR 7), as jest prints it
   `${ESC}[32m✓${ESC}[39m batches events per frame ${ESC}[2m[0.41ms]${ESC}[22m`,
   `${ESC}[32m✓${ESC}[39m flushes on read ${ESC}[2m[0.08ms]${ESC}[22m`,
   `${ESC}[32m✓${ESC}[39m unsubscribes ${ESC}[2m[0.03ms]${ESC}[22m`,
