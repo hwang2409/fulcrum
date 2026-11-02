@@ -3,7 +3,7 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    ".": { "types": "./dist/index.d.ts", "bun": "./src/index.ts", "import": "./dist/index.js" },
     "./styles.css": "./styles.css"
   },
   "files": ["dist", "styles.css"],

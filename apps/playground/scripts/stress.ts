@@ -7,6 +7,7 @@ const preview = spawn("bun", ["x", "vite", "preview", "--host", "127.0.0.1", "--
 const stop = () => preview.kill("SIGTERM");
 process.on("exit", stop);
 process.on("SIGINT", () => { stop(); process.exit(130); });
+let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
   for (let i = 0; i < 100; i++) {
     try { if ((await fetch("http://127.0.0.1:4173")).ok) break; } catch {}
@@ -14,7 +15,7 @@ try {
     if (i === 99) throw new Error("vite preview did not start");
     await Bun.sleep(100);
   }
-  const browser = await chromium.launch();
+  browser = await chromium.launch();
   const browserVersion = browser.version();
   const results = [];
   for (let run = 1; run <= runs; run++) {
@@ -77,7 +78,6 @@ try {
     results.push({ run, ...result });
     await page.close();
   }
-  await browser.close();
   console.log(`commit: ${Bun.env.GITHUB_SHA ?? (await Bun.$`git rev-parse HEAD`.text()).trim()}`);
   console.log(`browser: Chromium ${browserVersion}`);
   console.log("build: production (vite preview)");
@@ -85,6 +85,7 @@ try {
   const median = Object.fromEntries(numeric.map((key) => [key, [...results].map((result) => result[key]).sort((a, b) => a - b)[1]]));
   console.table([...results, { run: "median", ...median, anchoring: results.every((result) => result.anchoring) }]);
 } finally {
+  await browser?.close();
   stop();
   await once(preview, "exit").catch(() => {});
 }
