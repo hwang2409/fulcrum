@@ -251,13 +251,14 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="md-list-item"] > input[type="checkbox"] { margin: 0 1ch 0 0; vertical-align: -1px; accent-color: var(--fulcrum-accent); }
 [data-part="md-code-inline"] {
   padding: 0 4px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
   border: 1px solid var(--fulcrum-border);
   background: var(--fulcrum-surface);
   font: inherit;
   font-size: 13px;
 }
 [data-part="md-code-block"] {
-  position: relative;
   margin: 0 0 0.75em;
   padding: 12px;
   overflow-x: auto;
@@ -268,10 +269,11 @@ ul[data-part="md-list"] { list-style: "- "; }
   white-space: pre;
 }
 [data-part="md-code-block"] > code { padding: 0; border: 0; background: none; font: inherit; }
+/* The language as a caption line: a float would sit on top of long lines when the block scrolls. */
 [data-part="md-code-block"][data-language]::before {
   content: attr(data-language);
-  float: right;
-  margin: -4px -4px 0 12px;
+  display: block;
+  margin: -4px 0 8px;
   color: var(--fulcrum-muted);
   font-size: 12px;
 }
