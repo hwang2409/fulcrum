@@ -1,0 +1,1 @@
+{"compilerOptions":{"strict":true,"target":"ES2022","lib":["ES2022","DOM","WebWorker"],"module":"NodeNext","moduleResolution":"NodeNext","noEmit":true,"composite":true},"include":["src","test","bench"]}

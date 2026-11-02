@@ -1,0 +1,15 @@
+{
+  "name": "@fulcrum/highlight",
+  "version": "0.0.0",
+  "type": "module",
+  "files": ["dist", "styles.css", "THIRD_PARTY_NOTICES.md", "README.md"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "bun": "./src/index.ts", "import": "./dist/index.js" },
+    "./worker.js": "./dist/worker.js",
+    "./styles.css": "./styles.css"
+  },
+  "scripts": {
+    "build": "bun src/build.ts && tsc -p tsconfig.types.json",
+    "bench": "bun bench/highlight.ts"
+  }
+}
