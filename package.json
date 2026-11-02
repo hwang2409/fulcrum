@@ -8,11 +8,14 @@
     "check:zeta-events": "bun packages/zeta/scripts/check-events.ts",
     "bench:check": "bun scripts/bench-check.ts",
     "bench:highlight": "bun run --cwd packages/highlight bench",
+    "check:highlight-consumer": "bun scripts/highlight-consumer-check.ts",
+    "check:highlight-notices": "bun scripts/highlight-notices-check.ts",
     "size:check": "bun scripts/size-check.ts",
     "stress": "bun run --cwd apps/playground stress"
   },
   "devDependencies": {
     "@shikijs/engine-javascript": "4.6.0",
+    "@shikijs/langs": "4.6.0",
     "@shikijs/types": "4.6.0",
     "shiki": "4.6.0",
     "typescript": "^5.7.0"

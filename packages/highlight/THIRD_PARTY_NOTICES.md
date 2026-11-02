@@ -8,6 +8,28 @@
 |---|---:|---|
 | shiki, `@shikijs/core`, `@shikijs/primitive`, `@shikijs/types`, `@shikijs/engine-javascript`, `@shikijs/langs` | 4.6.0 | mit |
 | `@shikijs/vscode-textmate` | 10.1.0 | mit |
+| `oniguruma-to-es` | 4.3.6 | mit |
+| `oniguruma-parser` | 0.12.2 | mit |
+| `regex` | 6.1.0 | mit |
+| `regex-recursion` | 6.0.2 | mit |
+| `regex-utilities` | 2.3.0 | mit |
+| `ccount`, `character-entities-html4`, `character-entities-legacy`, `stringify-entities` | 2.0.1, 2.1.0, 3.0.0, 4.0.4 | mit |
+| `comma-separated-tokens`, `hast-util-whitespace`, `html-void-elements`, `space-separated-tokens`, `zwitch` | 2.0.3, 3.0.0, 3.0.0, 2.0.2, 2.0.4 | mit |
+| `hast-util-to-html`, `property-information` | 9.0.6, 7.2.0 | mit |
+
+copyright notices:
+
+- shiki: copyright (c) 2021 Pine Wu; copyright (c) 2023 Anthony Fu <https://github.com/antfu>
+- `@shikijs/vscode-textmate`: copyright (c) Microsoft Corporation
+- `oniguruma-to-es`: copyright (c) 2024-2026 Steven Levithan
+- `oniguruma-parser`: copyright (c) 2025-2026 Steven Levithan
+- `regex` and `regex-recursion`: copyright (c) 2025 Steven Levithan
+- `regex-utilities`: copyright (c) 2024 Steven Levithan
+- `ccount`, `character-entities-html4`, and `character-entities-legacy`: copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
+- `stringify-entities`: copyright (c) 2015 Titus Wormer <mailto:tituswormer@gmail.com>
+- `comma-separated-tokens`, `hast-util-whitespace`, `html-void-elements`, `space-separated-tokens`, and `zwitch`: copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
+- `hast-util-to-html`: copyright (c) Titus Wormer <tituswormer@gmail.com>
+- `property-information`: copyright (c) Titus Wormer <mailto:tituswormer@gmail.com>
 
 ## bundled grammars
 

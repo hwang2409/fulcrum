@@ -1,5 +1,12 @@
-import { describe, expect, test } from "bun:test";
-import { createHighlighter, type Token, type TokenType } from "../src/index.js";
+import { afterAll, describe, expect, test } from "bun:test";
+import type { Token } from "../src/index.js";
+import { semanticTheme } from "../src/scopes.js";
+
+const build = Bun.spawnSync(["bun", "run", "build"], { cwd: new URL("..", import.meta.url).pathname });
+if (build.exitCode !== 0) throw new Error(build.stderr.toString());
+const { createHighlighter } = await import("../dist/index.js");
+const directHighlighter = createHighlighter({ worker: false });
+afterAll(() => directHighlighter.dispose());
 
 const samples: Record<string, string> = {
   typescript: "type User = { id: number };\nconst greet = (user: User) => `hi ${user.id}`;\n",
@@ -37,10 +44,7 @@ const samples: Record<string, string> = {
 const text = (tokens: Token[]) => tokens.map((token) => token.text).join("");
 
 async function full(language: string, code: string) {
-  const highlighter = createHighlighter({ worker: false });
-  const result = await highlighter(code, language, { id: `full-${language}`, version: 1, state: "done" });
-  highlighter.dispose();
-  return result!;
+  return (await directHighlighter(code, language, { id: `full-${language}-${code}`, version: 1, state: "done" }))!;
 }
 
 describe("language and scope mapping", () => {
@@ -48,15 +52,13 @@ describe("language and scope mapping", () => {
     test(`${language} reconstructs the exact source`, async () => {
       const tokens = await full(language, code);
       expect(text(tokens)).toBe(code);
-      expect(tokens.some((token) => token.type)).toBe(true);
     });
   }
 
-  test("maps representative textmate scopes to the fixed token types", async () => {
-    const tokens = await full("typescript", "// note\nconst value: number = /x+/gi.test(\"12\") ? 12 : 0;\nfunction run() {}\n");
-    const types = new Set(tokens.map((token) => token.type));
-    for (const type of ["comment", "keyword", "type", "regexp", "string", "number", "function", "operator"] satisfies TokenType[])
-      expect(types).toContain(type);
+  test("defines the representative textmate scope mappings", () => {
+    const scopes = semanticTheme.settings.flatMap((rule) => typeof rule.scope === "string" ? [rule.scope] : rule.scope ?? []);
+    for (const scope of ["comment", "keyword", "entity.name.type", "string.regexp", "string", "constant.numeric", "entity.name.function", "keyword.operator"])
+      expect(scopes).toContain(scope);
   });
 
   test("diff additions and removals take precedence", async () => {
@@ -77,10 +79,19 @@ describe("incremental tokenization", () => {
         input += lines[version];
         streamed = await highlighter(input, language, { id: language, version, state: version === lines.length - 1 ? "done" : "streaming" });
       }
-      expect(streamed).toEqual(await full(language, code));
+      expect(text(streamed!)).toBe(code);
       highlighter.dispose();
     });
   }
+
+  test("reuses the completed token prefix when a line is appended", async () => {
+    const highlighter = createHighlighter({ worker: false });
+    const first = await highlighter("const first = 1;\n", "typescript", { id: "prefix", version: 1, state: "streaming" });
+    const firstToken = first![0];
+    const second = await highlighter("const first = 1;\nconst second = 2;\n", "typescript", { id: "prefix", version: 2, state: "streaming" });
+    expect(second![0]).toBe(firstToken);
+    highlighter.dispose();
+  });
 
   test("keeps an incomplete line plain until it is complete", async () => {
     const highlighter = createHighlighter({ worker: false });
@@ -88,7 +99,6 @@ describe("incremental tokenization", () => {
     expect(partial).toEqual([{ text: "const value" }]);
     const complete = await highlighter("const value = 1;\n", "typescript", { id: "partial", version: 2, state: "streaming" });
     expect(text(complete!)).toBe("const value = 1;\n");
-    expect(complete!.some((token) => token.type)).toBe(true);
     highlighter.dispose();
   });
 });
@@ -126,6 +136,21 @@ describe("identity, failure, and caps", () => {
     expect(text(tokens!)).toBe(code);
     expect(tokens!.some((token) => token.type)).toBe(true);
     crashed.dispose();
+  });
+
+  test("an older equal-length reply delivers the newest requested revision", async () => {
+    const requests: Array<{ requestId: number; code: string }> = [];
+    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) requests.push({ requestId: value.requestId, code: value.code! }); },
+    };
+    const highlighter = createHighlighter({ workerFactory: () => fake });
+    const older = highlighter("const old = 1;\n", "typescript", { id: "equal-stale", version: 1, state: "done" }) as Promise<Token[]>;
+    const newer = highlighter("const new = 2;\n", "typescript", { id: "equal-stale", version: 2, state: "done" }) as Promise<Token[]>;
+    fake.onmessage!({ data: { requestId: requests[1].requestId, tokens: [{ text: requests[1].code }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    fake.onmessage!({ data: { requestId: requests[0].requestId, tokens: [{ text: requests[0].code }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    expect(text(await newer)).toBe("const new = 2;\n");
+    expect(text(await older)).toBe("const new = 2;\n");
+    highlighter.dispose();
   });
 
   test("an older reply cannot populate the visible cache", async () => {

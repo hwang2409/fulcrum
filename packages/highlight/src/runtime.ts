@@ -7,6 +7,8 @@ const THEME = "fulcrum-semantic";
 const MAX_LINE = 20_000;
 const MAX_SESSIONS = 32;
 const MAX_SESSION_BYTES = 8 * 1024 * 1024;
+const MAX_SLICE_MS = 4;
+const TOKENIZE_TIME_LIMIT_MS = 10;
 type Session = { language: string; version: number; code: string; finalizedLength: number; tokens: Token[]; state?: GrammarState; used: number; bytes: number };
 
 function nextCompleteLength(code: string, done: boolean): number {
@@ -46,19 +48,13 @@ export class TokenizerRuntime {
     return highlighter;
   }
 
-  canTokenizeSync(language: string): boolean { return Boolean(this.highlighter && this.loaded.has(language)); }
-
-  tokenizeSync(code: string, language: string, context: HighlightContext): Token[] {
-    return this.tokenizeLoaded(code, language, context, false) as Token[];
-  }
-
   async tokenize(code: string, language: string, context: HighlightContext, cooperative = true): Promise<Token[]> {
     await this.ensureLanguage(language);
-    // The JavaScript engine compiles regular expressions lazily. Warm small first inputs so
-    // the 10 ms per-line safety limit measures matching, not one-time compilation.
-    if (!this.warmed.has(language) && code.length <= 4 * 1024) {
-      this.highlighter!.codeToTokensBase(code, { lang: language, theme: THEME, tokenizeTimeLimit: 0 });
+    if (!this.warmed.has(language)) {
+      const firstLine = sourceLines(code)[0] ?? "";
+      this.highlighter!.codeToTokensBase(firstLine, { lang: language, theme: THEME, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
       this.warmed.add(language);
+      if (cooperative) await yieldTask();
     }
     return this.tokenizeLoaded(code, language, context, cooperative) as Promise<Token[]>;
   }
@@ -70,7 +66,9 @@ export class TokenizerRuntime {
     session.used = ++this.clock;
     const completeLength = nextCompleteLength(code, context.state === "done");
     const start = append ? session.finalizedLength : 0;
+    const previousCodeLength = session.code.length;
     const prefix = append ? session.tokens : [];
+    const prefixTokenCount = prefix.length;
     const state = append ? session.state : undefined;
     const finish = (tokens: Token[], grammarState: GrammarState | undefined) => {
       session.language = language;
@@ -79,21 +77,18 @@ export class TokenizerRuntime {
       session.finalizedLength = completeLength;
       session.tokens = tokens;
       session.state = grammarState;
-      session.bytes = code.length * 2 + tokens.reduce((sum, token) => sum + token.text.length * 2 + 32, 0);
+      session.bytes = append
+        ? session.bytes + (code.length - previousCodeLength + completeLength - start) * 2 + (tokens.length - prefixTokenCount) * 32
+        : code.length * 2 + tokens.reduce((sum, token) => sum + token.text.length * 2 + 32, 0);
       this.sessions.set(context.id, session);
       this.evictSessions();
-      const output = tokens.map((token) => ({ ...token }));
-      if (completeLength < code.length) appendToken(output, code.slice(completeLength));
+      if (completeLength === code.length) return tokens;
+      const output = [...tokens];
+      appendToken(output, code.slice(completeLength));
       return output;
     };
-    if (!cooperative && !append && context.state === "done" && !sourceLines(code).some((line) => line.replace(/\n$/, "").length > MAX_LINE)) {
-      const result = this.highlighter!.codeToTokensBase(code, { lang: language, theme: THEME, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: 0 });
-      const tokens: Token[] = [];
-      this.appendShiki(tokens, result, code);
-      return finish(tokens, this.highlighter!.getLastGrammarState(result));
-    }
     const work = async () => {
-      let tokens = prefix.map((token) => ({ ...token }));
+      const tokens = prefix;
       let grammarState = state;
       let yieldStart = performance.now();
       for (const line of sourceLines(code.slice(start, completeLength))) {
@@ -101,11 +96,12 @@ export class TokenizerRuntime {
           appendToken(tokens, line);
           grammarState = undefined;
         } else {
-          const result = this.highlighter!.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: 0 });
-          this.appendShiki(tokens, result, line);
-          grammarState = this.highlighter!.getLastGrammarState(result);
+          const started = performance.now();
+          const result = this.highlighter!.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
+          if (performance.now() - started >= TOKENIZE_TIME_LIMIT_MS) { appendToken(tokens, line); grammarState = undefined; }
+          else { this.appendShiki(tokens, result, line); grammarState = this.highlighter!.getLastGrammarState(result); }
         }
-        if (cooperative && performance.now() - yieldStart >= 2) {
+        if (cooperative && performance.now() - yieldStart >= MAX_SLICE_MS) {
           await yieldTask();
           yieldStart = performance.now();
         }
@@ -113,14 +109,15 @@ export class TokenizerRuntime {
       return finish(tokens, grammarState);
     };
     if (cooperative) return work();
-    let tokens = prefix.map((token) => ({ ...token }));
+    const tokens = prefix;
     let grammarState = state;
     for (const line of sourceLines(code.slice(start, completeLength))) {
       if (line.replace(/\n$/, "").length > MAX_LINE) { appendToken(tokens, line); grammarState = undefined; }
       else {
-        const result = this.highlighter!.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: 0 });
-        this.appendShiki(tokens, result, line);
-        grammarState = this.highlighter!.getLastGrammarState(result);
+        const started = performance.now();
+        const result = this.highlighter!.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
+        if (performance.now() - started >= TOKENIZE_TIME_LIMIT_MS) { appendToken(tokens, line); grammarState = undefined; }
+        else { this.appendShiki(tokens, result, line); grammarState = this.highlighter!.getLastGrammarState(result); }
       }
     }
     return finish(tokens, grammarState);
@@ -149,7 +146,12 @@ export class TokenizerRuntime {
 }
 
 async function yieldTask(): Promise<void> {
-  const scheduler = (globalThis as { scheduler?: { postTask(callback: () => void): Promise<void> } }).scheduler;
-  if (scheduler?.postTask) await scheduler.postTask(() => {});
-  else await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const scheduler = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (scheduler?.yield) return scheduler.yield();
+  if (typeof MessageChannel === "undefined") return new Promise((resolve) => setTimeout(resolve, 0));
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+    channel.port2.postMessage(undefined);
+  });
 }

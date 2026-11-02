@@ -6,8 +6,6 @@ const MAX_BLOCK = 512 * 1024;
 const MAX_LINES = 10_000;
 const MAX_CACHE_BYTES = 8 * 1024 * 1024;
 const MAX_CACHE_BLOCKS = 64;
-const SYNC_BYTES = 4 * 1024;
-const SYNC_LINES = 40;
 type WorkerLike = { postMessage(value: WorkerRequest): void; terminate(): void; onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null };
 export type HighlighterOptions = { worker?: false; workerFactory?: () => WorkerLike };
 type Pending = { resolve: (tokens: Token[]) => void; timer: ReturnType<typeof setTimeout>; code: string; language: string; context: HighlightContext };
@@ -23,6 +21,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const pending = new Map<number, Pending>();
   const cache = new Map<string, CacheEntry>();
   const inflight = new Map<string, Promise<Token[]>>();
+  const inflightIds = new Map<string, string>();
+  const latestSettled = new Map<string, { key: string; tokens: Token[] }>();
   const versions = new Map<string, string[]>();
   const current = new Map<string, string>();
   const latestVersion = new Map<string, number>();
@@ -34,7 +34,6 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     const keys = versions.get(entry.id)?.filter((item) => item !== key) ?? [];
     if (keys.length) versions.set(entry.id, keys);
     else versions.delete(entry.id);
-    if (current.get(entry.id) === key) { current.delete(entry.id); latestVersion.delete(entry.id); }
   };
   const remember = (key: string, context: HighlightContext, code: string, tokens: Token[]) => {
     const weight = code.length * 2 + tokens.reduce((sum, token) => sum + token.text.length * 2 + 32, 0);
@@ -97,29 +96,38 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (hit) { hit.used = ++clock; return hit.tokens; }
     const active = inflight.get(key);
     if (active) return active;
-    if (actual.state === "done" && code.length <= SYNC_BYTES && (code.match(/\n/g)?.length ?? 0) <= SYNC_LINES && runtime?.canTokenizeSync(language)) {
-      const tokens = runtime.tokenizeSync(code, language, actual); remember(key, actual, code, tokens); return tokens;
-    }
     const target = getWorker();
     const result = target ? new Promise<Token[]>((resolve) => {
       const id = ++requestId;
-      const timer = setTimeout(() => { pending.delete(id); failWorker(); resolve(plain(code)); }, 2_000);
+      const timer = setTimeout(() => { pending.delete(id); failWorker(); resolve(plain(code)); }, 500);
       pending.set(id, { resolve, timer, code, language, context: actual });
       target.postMessage({ type: "highlight", requestId: id, code, language, context: actual });
     }) : fallback(code, language, actual);
-    const tracked = result.then((tokens) => {
+    const tracked = result.then((tokens): Token[] | Promise<Token[]> => {
       inflight.delete(key);
-      if (!disposed && current.get(actual.id) === key) remember(key, actual, code, tokens);
-      return tokens;
+      inflightIds.delete(key);
+      const currentKey = current.get(actual.id);
+      if (!disposed && currentKey === key) {
+        remember(key, actual, code, tokens);
+        if ([...inflightIds].some(([otherKey, id]) => id === actual.id && otherKey !== key)) latestSettled.set(actual.id, { key, tokens });
+        return tokens;
+      }
+      const settled = latestSettled.get(actual.id);
+      if (settled && settled.key === currentKey) {
+        if (![...inflightIds.values()].includes(actual.id)) latestSettled.delete(actual.id);
+        return settled.tokens;
+      }
+      return currentKey ? inflight.get(currentKey) ?? cache.get(currentKey)?.tokens ?? plain(code) : plain(code);
     });
     inflight.set(key, tracked);
+    inflightIds.set(key, actual.id);
     return tracked;
   }) as Highlight;
   highlight.dispose = () => {
     disposed = true;
     if (worker) { worker.postMessage({ type: "dispose" }); worker.terminate(); }
     for (const job of pending.values()) { clearTimeout(job.timer); job.resolve(plain(job.code)); }
-    pending.clear(); cache.clear(); inflight.clear(); versions.clear(); current.clear(); latestVersion.clear(); runtime?.dispose();
+    pending.clear(); cache.clear(); inflight.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); runtime?.dispose();
   };
   return highlight;
 }

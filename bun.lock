@@ -6,6 +6,7 @@
       "name": "@zeta-web/root",
       "devDependencies": {
         "@shikijs/engine-javascript": "4.6.0",
+        "@shikijs/langs": "4.6.0",
         "@shikijs/types": "4.6.0",
         "shiki": "4.6.0",
         "typescript": "^5.7.0",

@@ -31,7 +31,7 @@ function Block({ language, source, index }: { language: string; source: string; 
     setTokens(code ? [{ text: code }] : []);
     const version = code.length;
     const result = highlight(code, language, { id: `demo-${index}`, version, state: code === source ? "done" : "streaming" });
-    if (result && "then" in result) void result.then((next) => setTokens((current) => current.map((token) => token.text).join("").length === version ? next : current));
+    if (result && "then" in result) void result.then(setTokens);
     else if (result) setTokens(result);
   }, [code, index, language, source]);
   return <figure><figcaption>{language}</figcaption><pre><code>{tokens.map((token, tokenIndex) => token.type ? <span className={`tok-${token.type}`} key={tokenIndex}>{token.text}</span> : token.text)}</code></pre></figure>;
