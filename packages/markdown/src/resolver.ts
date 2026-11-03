@@ -171,7 +171,7 @@ function classifyLeaf(line: string): PendingClassification {
   if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return { content: "", kind: "fence", provisional: false, appendable: false };
   if (/[:-]/.test(content) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(content))
     return { content: "", kind: "empty", provisional: false, appendable: false };
-  if (/^[ \t]*(?:[|<]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
+  if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
     return { content: "", kind: "empty", provisional: false, appendable: false };
   const firstBracket = content.indexOf("[");
   const openBracket = content.lastIndexOf("[");

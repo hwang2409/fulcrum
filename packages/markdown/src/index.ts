@@ -1205,13 +1205,15 @@ export function createStreamingDocument(): StreamingDocument {
       if (previewBlocks && previewSource === source) return previewBlocks;
       const pending = resolver.pending.content;
       const classification = resolver.classifyPending(pending);
-      const overlay = cloneOpenPath(openRoots, Boolean(openParagraph || openCode));
+      const overlay = cloneOpenPath(openRoots, Boolean(openParagraph || openCode || openTable));
       if (classification.kind === "fence" && openCode && !openIndentedCode) {
         const disposition = resolver.pendingFenceDisposition;
         if (disposition === "closes") closeOpenCode(overlay);
         else if (disposition === "none" && classification.content) appendOpenCode(overlay, classification.content);
-      } else if (!(openTable && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment(), blockedReferences))) {
-        appendPendingParagraph(overlay, pendingPreview(), Boolean(openParagraph));
+      } else {
+        const startsBlock = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
+        if (!(openTable && !startsBlock && classification.kind === "paragraph" && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment(), blockedReferences)))
+          appendPendingParagraph(overlay, pendingPreview(), Boolean(openParagraph) && !startsBlock);
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];
