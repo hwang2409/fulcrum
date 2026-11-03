@@ -4,7 +4,8 @@ import { createEntityJournal, initialState, reduceAllWithEntities } from "../src
 const reduceWithMaps = (state: typeof initialState, events: Parameters<typeof reduceAllWithEntities>[1], entities = new Map<string, RunItem>(), aliases = new Map<string, string>(), commit = false) => {
   const transaction = createEntityJournal(entities, aliases);
   const next = reduceAllWithEntities(state, events, transaction.draft);
-  if (!commit) transaction.rollback();
+  if (commit) return next;
+  transaction.rollback();
   return next;
 };
 import {
