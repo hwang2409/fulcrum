@@ -610,7 +610,9 @@ function hideTableCandidatePipes(inlines: Inline[]) {
     if ("children" in inline) hideTableCandidatePipes(inline.children);
     if (inline.type !== "text") continue;
     const lineStart = inline.value.lastIndexOf("\n") + 1;
-    inline.value = inline.value.slice(0, lineStart) + inline.value.slice(lineStart).replace(/[ \t]*\|[ \t]*/g, "");
+    const line = inline.value.slice(lineStart).replace(/[ \t]*\|[ \t]*/g, "");
+    // A last line of only pipes may become a table header, so its line break waits too.
+    inline.value = (line || index < inlines.length - 1 ? inline.value.slice(0, lineStart) : inline.value.slice(0, Math.max(0, lineStart - 1))) + line;
     if (lineStart) return;
   }
 }
@@ -1203,7 +1205,7 @@ export function createStreamingDocument(): StreamingDocument {
     // Blanks at the end of the growing line may still sit before a cell pipe.
     const last = nodes.at(-1);
     if (streaming && last?.type === "text") last.value = last.value.replace(/[ \t]+$/, "");
-    return nodes;
+    return nodes.filter((node) => node.type !== "text" || node.value);
   };
 
   const pendingPreview = (): Inline[] => {

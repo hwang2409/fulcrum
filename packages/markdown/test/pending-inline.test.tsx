@@ -173,3 +173,16 @@ test("only the open paragraph's last line hides its table-candidate pipes", () =
   document.append("run a | b first\nthen more\nand | more");
   expect(visible(document.render())).toBe("run a | b first\nthen more\nandmore");
 });
+
+test("a line break before a table-candidate line never shows and then disappears", () => {
+  for (const source of [" line\n| \n| :--- | ---: |\n", "m\n|\n|-|\n", "v\n|| -", "v\n|\n|-|\n"]) {
+    const document = createStreamingDocument();
+    let previous = "";
+    for (const character of source) {
+      document.append(character);
+      const current = visible(document.render(), false);
+      expect(subsequence(previous, current), `${JSON.stringify(source)}: ${JSON.stringify(previous)} -> ${JSON.stringify(current)}`).toBe(true);
+      previous = current;
+    }
+  }
+});
