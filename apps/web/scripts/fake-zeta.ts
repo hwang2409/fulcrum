@@ -11,6 +11,7 @@ import type { ServerWebSocket } from "bun";
 type Json = Record<string, unknown>;
 export type Mode = "ok" | "busy" | "incompatible" | "slow";
 export type HistoryMode = "new" | "old";
+export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
 const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
 const meta = (id: string, minutesAgo: number, extra: Json = {}) => ({
@@ -99,7 +100,7 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
   e("agent_end");
 };
 
-export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new" }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows" }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
@@ -147,9 +148,9 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         const send = (event: Json) => { for (const each of sockets) each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); };
         if (method === "hello") {
           if (mode === "busy" || sockets.size > 1) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
-          if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.0", supported: ["2.0"] } } }); socket.close(); return; }
+          if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
-          return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging") ?? [] } } });
+          return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
         }
         if (method === "list_sessions") {
           const offset = Number(params.offset ?? 0);
@@ -173,7 +174,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
             delayedOpen = true;
             await wait(openDelay);
           }
-          const rows = histories[active!] ?? [];
+          const rows = (histories[active!] ?? []).filter((row) => approvalHistoryMode !== "not-advertised-without-rows" || (row.event !== "approval_request" && row.event !== "approval_end"));
           const offset = Number(params.offset ?? 0);
           reply({ result: { messages: rows.slice(offset, offset + 8), next_offset: offset + 8 < rows.length ? offset + 8 : null } });
           // The run starts once, after the first open of the active session finishes its history.

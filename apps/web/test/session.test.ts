@@ -5,7 +5,7 @@ import { ago, createSessions, sessionTitle, topLevel, type SessionMeta } from ".
 type Handler = (params: Record<string, unknown>) => unknown;
 
 /** A real zeta client over an in-memory transport; `handlers` answer requests by method. */
-async function server(handlers: Record<string, Handler>) {
+async function server(handlers: Record<string, Handler>, features = ["list_sessions_paging"]) {
   let deliver!: (text: string) => void;
   let close!: (code?: number) => void;
   const calls: Array<[string, Record<string, unknown>]> = [];
@@ -18,7 +18,7 @@ async function server(handlers: Record<string, Handler>) {
       calls.push([method, params]);
       queueMicrotask(() => {
         try {
-          const result = method === "hello" ? { protocol_version: "1.2", capabilities: { features: ["list_sessions_paging"] } } : handlers[method]!(params);
+          const result = method === "hello" ? { protocol_version: "1.2", capabilities: { features } } : handlers[method]!(params);
           deliver(JSON.stringify({ jsonrpc: "2.0", id, result }));
         } catch (error) {
           deliver(JSON.stringify({ jsonrpc: "2.0", id, error: error as object }));
@@ -40,6 +40,10 @@ const history: Record<string, unknown[]> = {
     { id: "b1", role: "user", content: [{ type: "text", text: "hello b" }], tool_result: null },
     { id: "b2", role: "assistant", content: [{ type: "text", text: "on it" }], tool_result: null },
   ],
+  c: [
+    { id: "c1", role: "assistant", content: [{ type: "tool_use", tool_call: { id: "tool-c", name: "bash", arguments: {} } }], tool_result: null },
+    { id: "c2", role: "tool_result", content: [{ type: "text", text: "done" }], tool_result: { tool_call_id: "tool-c", content: "done", is_error: false } },
+  ],
 };
 
 function source(client: ZetaClient | null) {
@@ -56,7 +60,7 @@ function handlers(active: string | null, extra: Record<string, Handler> = {}): R
   let current = active;
   return {
     list_sessions: () => ({ sessions, next_offset: null }),
-    status: () => ({ session: current ? meta(current, "x") : null, state: "idle", pending_approvals: current === "b" ? [{ request_id: "r1", tool_call: { id: "t9", name: "bash", arguments: { command: "rm -rf dist" } }, delegated: false }] : [] }),
+    status: () => ({ session: current ? meta(current, "x") : null, state: "idle", pending_approvals: current === "b" || current === "c" ? [{ request_id: "r1", tool_call: { id: "t9", name: "bash", arguments: { command: "rm -rf dist" } }, delegated: false }] : [] }),
     resume: (params) => { current = params.session_id as string; return { session: meta(current, "x") }; },
     session_history: (params) => {
       const rows = history[params.session_id as string] ?? [];
@@ -159,6 +163,20 @@ test("a dropped approval is not guessed when history has no tool rows", async ()
   const ended = view.state.open!.lease.store.getItem("approval:r1");
   expect(ended?.type).toBe("approval");
   expect(ended && "ended" in ended ? ended.ended : undefined).toBeUndefined();
+});
+
+test("advertised approval history does not infer connection lost", async () => {
+  const first = await server(handlers("c"), ["list_sessions_paging", "approval_history"]);
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  await tick();
+  connection.set(null);
+  const second = await server(handlers("c", { status: () => ({ session: meta("c", "x"), state: "idle", pending_approvals: [] }) }), ["list_sessions_paging", "approval_history"]);
+  connection.set(second.client);
+  await tick();
+  const approval = view.state.open!.lease.store.getItem("approval:r1");
+  expect(approval?.type).toBe("approval");
+  expect(approval && "ended" in approval ? approval.ended : undefined).toBeUndefined();
 });
 
 test("live events after the open land in the open store", async () => {

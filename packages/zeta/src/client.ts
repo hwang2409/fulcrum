@@ -18,6 +18,7 @@ const encoder = new TextEncoder();
 export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
   let nextId = 1;
   let handshaken = false;
+  let negotiatedProtocol = "1.0";
   let negotiatedFeatures: string[] = [];
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
@@ -159,10 +160,16 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     });
   };
   const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
-    const send = () => request("hello", { protocol_version: "1.0", client_version: "1.2", ...(requestedFeatures ? { features: requestedFeatures } : {}) }) as Promise<HelloResult>;
-    return (transport.ready ? transport.ready.then(send) : send()).then((result) => { handshaken = true; negotiatedFeatures = result.capabilities?.features ?? []; return result; });
+    const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", ...(requestedFeatures ? { features: requestedFeatures } : {}) }) as Promise<HelloResult>;
+    return (transport.ready ? transport.ready.then(send) : send()).then((result) => {
+      handshaken = true;
+      negotiatedProtocol = typeof result.protocol_version === "string" ? result.protocol_version : "1.0";
+      const features = result.capabilities?.features;
+      negotiatedFeatures = negotiatedProtocol !== "1.0" && Array.isArray(features) && features.every((feature): feature is string => typeof feature === "string") ? features : [];
+      return result;
+    });
   };
-  return { store, stores, forSession, replay, request, hello, onClose, get features() { return negotiatedFeatures; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
+  return { store, stores, forSession, replay, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }
