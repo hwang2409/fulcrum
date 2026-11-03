@@ -230,7 +230,9 @@ try {
       const focused = await page.evaluate(() => document.activeElement?.textContent ?? "");
       if (!focused.includes("check every theme")) throw new Error(`focus on "${focused}"`);
       await page.keyboard.press("Enter");
-      await page.getByRole("heading", { level: 1, name: /check every theme/ }).waitFor();
+      await page.locator("button.session", { hasText: "fix the flaky reconnect test" }).focus();
+      await page.locator('[data-run-ready="true"]').waitFor();
+      if (!(await page.evaluate(() => document.activeElement?.textContent?.includes("fix the flaky reconnect test")))) throw new Error("opening a run stole focus from the session list");
       await page.locator('[data-part="md-table"]').waitFor({ timeout: 5000 });
       await page.locator(".theme-button").focus();
       await page.keyboard.press("Enter");

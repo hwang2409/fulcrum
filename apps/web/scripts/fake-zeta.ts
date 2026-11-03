@@ -113,9 +113,11 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let turnStarted = false;
   let approvalAborted = false;
   let running = false;
+  let delayedOpen = false;
   const decisions: Json[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  const openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -162,10 +164,15 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         if (method === "resume") {
           if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = String(params.session_id);
+          delayedOpen = false;
           return reply({ result: { session: sessions.find((session) => session.session_id === active) } });
         }
         if (method === "session_history") {
           if (params.session_id !== active) return reply({ error: { code: -32003, message: "no active session" } });
+          if (openDelay > 0 && !delayedOpen) {
+            delayedOpen = true;
+            await wait(openDelay);
+          }
           const rows = histories[active!] ?? [];
           const offset = Number(params.offset ?? 0);
           reply({ result: { messages: rows.slice(offset, offset + 8), next_offset: offset + 8 < rows.length ? offset + 8 : null } });

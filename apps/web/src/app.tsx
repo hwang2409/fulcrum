@@ -59,10 +59,15 @@ export function App() {
   const [drawer, setDrawer] = useState(false);
   const menu = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef(false);
+  const runOpener = useRef<Element | null>(null);
   const closeDrawer = useCallback(() => { returnFocus.current = true; setDrawer(false); }, []);
   // After the render that drops `inert` from main, so the menu button can take focus again.
   useEffect(() => { if (!drawer && returnFocus.current) { returnFocus.current = false; menu.current?.focus(); } }, [drawer]);
-  const select = useCallback((id: string) => { sessions.select(id); setDrawer(false); }, [sessions]);
+  const select = useCallback((id: string) => {
+    runOpener.current = document.activeElement;
+    sessions.select(id);
+    setDrawer(false);
+  }, [sessions]);
   const current = view.sessions.find((session) => session.session_id === (view.open?.id ?? view.selected));
   useEffect(() => { document.title = current ? `${sessionTitle(current)} · zeta` : "zeta · fulcrum"; }, [current]);
 
@@ -85,7 +90,7 @@ export function App() {
           </button>
           <RunTitle session={current} view={view} />
         </header>
-        <Body state={state} view={view} connection={connection} sessions={sessions} onOpenDrawer={() => setDrawer(true)} />
+        <Body state={state} view={view} connection={connection} sessions={sessions} opener={runOpener} onOpenDrawer={() => setDrawer(true)} />
       </main>
     </div>
   );
@@ -205,13 +210,13 @@ function RefreshOnIdle({ sessions }: { sessions: Sessions }) {
   return null;
 }
 
-function Body({ state, view, connection, sessions, onOpenDrawer }: { state: ConnectionState; view: SessionsState; connection: Connection; sessions: Sessions; onOpenDrawer(): void }) {
+function Body({ state, view, connection, sessions, opener, onOpenDrawer }: { state: ConnectionState; view: SessionsState; connection: Connection; sessions: Sessions; opener: React.RefObject<Element | null>; onOpenDrawer(): void }) {
   const offline = state.phase !== "connected";
   if (view.open) {
     return (
       <>
         {offline ? <ConnectionNotice state={state} connection={connection} compact /> : null}
-        <Run client={offline ? null : connection.client} sessions={sessions} open={view.open} />
+        <Run client={offline ? null : connection.client} sessions={sessions} open={view.open} opener={opener} />
       </>
     );
   }
@@ -249,19 +254,21 @@ function Body({ state, view, connection, sessions, onOpenDrawer }: { state: Conn
   );
 }
 
-function Run({ client, sessions, open }: { client: ZetaClient | null; sessions: Sessions; open: NonNullable<SessionsState["open"]> }) {
+function Run({ client, sessions, open, opener }: { client: ZetaClient | null; sessions: Sessions; open: NonNullable<SessionsState["open"]>; opener: React.RefObject<Element | null> }) {
   const scroll = useRef<HTMLDivElement>(null);
   const decisions = useMemo(() => {
     if (!client || open.stale) return { disabledReason: "reconnecting — decisions are disabled until the server confirms this session" };
     const decide = (method: "approve" | "deny"): Decide => (request_id) => client.request(method, { request_id }, { timeoutMs: 15_000 });
     return { approve: decide("approve"), deny: decide("deny") };
   }, [client, open.stale]);
-  useLayoutEffect(() => { scroll.current?.focus({ preventScroll: true }); }, [open.lease.store]);
+  useLayoutEffect(() => {
+    if (document.activeElement === opener.current || document.activeElement === document.body) scroll.current?.focus({ preventScroll: true });
+  }, [open.lease.store, opener]);
   return (
     <Decisions.Provider value={decisions}>
       <RunProvider store={open.lease.store}>
         <RefreshOnIdle sessions={sessions} />
-        <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined}>
+        <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready="true">
           <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
         </div>
       </RunProvider>
