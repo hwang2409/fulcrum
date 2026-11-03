@@ -34,9 +34,26 @@ export type ComposerProps = ComposerCallbacks &
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error)) || "unknown error";
 
 /**
+ * The draft left after `sent` was accepted, given the draft `current` the user has now. Only the sent text leaves:
+ * what they appended stays exactly as typed (blank lines and indentation included), and a draft they edited inside
+ * the sent part stays whole, since none of it was sent as it reads now.
+ */
+export const unsentDraft = (current: string, sent: string) => (current.startsWith(sent) ? current.slice(sent.length) : current);
+
+/** Runs a callback as a promise, so a synchronous throw takes the rejection path too. */
+const attempt = (action: () => unknown) => new Promise<unknown>((resolve) => resolve(action()));
+
+type Pending = { sending: boolean; stopping: boolean; error?: string; steer: boolean; state: ComposerState };
+/** The status row: a live message while something is pending or failed, else the keyboard hint. */
+const statusLine = ({ sending, stopping, error, steer, state }: Pending) => ({
+  message: error ?? (stopping ? "stopping" : sending ? (steer ? "steering" : "sending") : ""),
+  hint: state === "running" ? "a turn is running · stop it or wait to send" : steer ? "enter to steer the running turn · shift+enter for a new line" : "enter to send · shift+enter for a new line",
+});
+
+/**
  * The message box under a run. Keyboard: Enter submits, Shift+Enter adds a newline, and Enter never submits during
  * IME composition. The draft clears only when `onSubmit` resolves, and only the part that was sent: text the user
- * appended while it was in flight stays, and a draft they rewrote stays whole. The field is never disabled, so focus
+ * appended while it was in flight stays exactly as typed, and a draft they rewrote stays whole (`unsentDraft`). The field is never disabled, so focus
  * and typing survive every state.
  */
 export function Composer({ state, reason, onSubmit, onStop, label = "message", placeholder, defaultValue = "", className }: ComposerProps) {
@@ -70,40 +87,21 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
     const sent = text;
     setSending(true);
     setError(undefined);
-    const done = () => { inFlight.current.submit = false; setSending(false); };
-    let result: Promise<unknown>;
-    try {
-      result = Promise.resolve(onSubmit(sent, { steer }));
-    } catch (thrown) {
-      result = Promise.reject(thrown);
-    }
-    result.then(
-      () => {
-        done();
-        setText((current) => (current === sent ? "" : current.startsWith(sent) ? current.slice(sent.length).replace(/^\s+/, "") : current));
-      },
-      (failure: unknown) => {
-        done();
-        setError({ kind: "submit", text: `could not ${steer ? "steer" : "send"}: ${errorText(failure)}` });
-      },
-    );
+    attempt(() => onSubmit(sent, { steer }))
+      .then(
+        () => setText((current) => unsentDraft(current, sent)),
+        (failure: unknown) => setError({ kind: "submit", text: `could not ${steer ? "steer" : "send"}: ${errorText(failure)}` }),
+      )
+      .finally(() => { inFlight.current.submit = false; setSending(false); });
   };
   const stop = () => {
     if (inFlight.current.stop || !onStop) return;
     inFlight.current.stop = true;
     setStopping(true);
     setError(undefined);
-    const done = () => { inFlight.current.stop = false; setStopping(false); };
-    let result: Promise<unknown>;
-    try {
-      result = Promise.resolve(onStop());
-    } catch (thrown) {
-      result = Promise.reject(thrown);
-    }
-    result.then(done, (failure: unknown) => {
-      done();
-      setError({ kind: "stop", text: `could not stop: ${errorText(failure)}` });
-    });
+    attempt(onStop)
+      .catch((failure: unknown) => setError({ kind: "stop", text: `could not stop: ${errorText(failure)}` }))
+      .finally(() => { inFlight.current.stop = false; setStopping(false); });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -116,8 +114,7 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
     submit();
   };
 
-  const message = error?.text ?? (stopping ? "stopping" : sending ? (steer ? "steering" : "sending") : "");
-  const hint = state === "running" ? "a turn is running · stop it or wait to send" : steer ? "enter to steer the running turn · shift+enter for a new line" : "enter to send · shift+enter for a new line";
+  const { message, hint } = statusLine({ sending, stopping, error: error?.text, steer, state });
   return (
     <form
       className={className}

@@ -6,6 +6,7 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Composer, type ComposerProps } from "../src/index.js";
+import { unsentDraft } from "../src/composer.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 
@@ -142,7 +143,27 @@ test("an accepted submit clears the draft once; text typed meanwhile after the s
   enter();
   type("first\nand more");
   await act(async () => { pending.resolve(); await pending.promise; });
-  expect(field().value).toBe("and more");
+  expect(field().value).toBe("\nand more");
+});
+
+test("an accepted submit keeps the exact unsent suffix, blank lines and indentation included", async () => {
+  const pending = deferred();
+  const { onSubmit } = calls(() => pending.promise);
+  mount(<Composer state="idle" onSubmit={onSubmit} />);
+  type("first");
+  enter();
+  type("first\n\n  indented");
+  await act(async () => { pending.resolve(); await pending.promise; });
+  expect(field().value).toBe("\n\n  indented");
+});
+
+test("unsentDraft removes exactly the sent prefix and never normalizes the rest", () => {
+  expect(unsentDraft("first", "first")).toBe("");
+  expect(unsentDraft("first\n\n  indented", "first")).toBe("\n\n  indented");
+  expect(unsentDraft("first  ", "first")).toBe("  ");
+  // A middle edit changes the sent prefix, so nothing of the draft was sent: it stays whole.
+  expect(unsentDraft("fi-rst and more", "first")).toBe("fi-rst and more");
+  expect(unsentDraft("", "first")).toBe("");
 });
 
 test("an accepted submit keeps a draft the user rewrote meanwhile", async () => {
