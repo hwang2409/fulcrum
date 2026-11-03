@@ -5,7 +5,7 @@ import type { ZetaClient } from "@fulcrum/zeta";
 
 // The live rows must remain buffered across every request in the open transaction.
 test("openSession keeps live events that overlap status and resume", async () => {
-  const store = createRunStore();
+  let store = createRunStore();
   let buffering: Array<{ type: "message_delta"; message_id: string; delta: string; kind: string }> | null = null;
   const client = {
     features: [],
@@ -22,6 +22,7 @@ test("openSession keeps live events that overlap status and resume", async () =>
       buffering = waiting;
       const history = await load();
       buffering = null;
+      store = createRunStore();
       for (const event of history) store.dispatch(event as never);
       for (const event of waiting) store.dispatch(event);
       return { store, release() {} };
