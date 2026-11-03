@@ -121,3 +121,22 @@ test("replay puts loaded history before live events that arrive while it loads, 
   expect(lease.store.getItem(lease.store.getOutline()[1]!.id)).toMatchObject({ text: "live more" });
   lease.release();
 });
+
+test("an echoed user_message gets the intent of the pending request with the same text, never another one", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello();
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2" } });
+  await hello;
+  client.request("send", { text: "one" }, { intent: "a" }).catch(() => {});
+  client.request("steer", { text: "two" }, { intent: "b" }).catch(() => {});
+  const echo = (text: string) => fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", text, mode: "send", data: {} } });
+  echo("two");
+  echo("three");
+  echo("one");
+  const ids = client.store.getOutline().filter((entry) => entry.kind === "user").map((entry) => entry.id);
+  expect(ids[0]).toBe("user:intent:b");
+  expect(ids[1]).not.toContain("intent");
+  expect(ids[2]).toBe("user:intent:a");
+  client.close();
+});

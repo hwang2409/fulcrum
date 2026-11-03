@@ -41,11 +41,15 @@ export function requestTokens(highlight: Highlight | undefined, { code, language
 /**
  * Tokens for `code` from the RunProvider's highlighter, or null while they are on their way (render the text plain).
  * Work runs in the highlighter's worker. While a longer streamed revision is pending, the last tokens stay on its prefix,
- * so colors never drop back to plain; tokens that do not spell `code` exactly are never shown.
+ * so colors never drop back to plain; tokens that do not spell `code` exactly are never shown. When the highlighter
+ * replaces this block's tokens (a block answered plain while its grammar was cold is now colored), the hook asks again:
+ * same text, new spans.
  */
 export function useTokens(code: string, language: string | undefined, id: string, done = true): Token[] | null {
   const highlight = useContext(HighlightContext);
-  const result = useMemo(() => requestTokens(highlight, { code, language, id, done }), [highlight, code, language, id, done]);
+  const [revision, setRevision] = useState(0);
+  useEffect(() => highlight?.subscribe(id, () => setRevision((value) => value + 1)), [highlight, id]);
+  const result = useMemo(() => requestTokens(highlight, { code, language, id, done }), [highlight, code, language, id, done, revision]);
   const [settled, setSettled] = useState<{ result: unknown; tokens: Token[] }>();
   const last = useRef<{ code: string; tokens: Token[] }>(undefined);
   useEffect(() => {

@@ -27,6 +27,7 @@ const InlineView = ({ nodes }: { nodes: Inline[] }): ReactNode => nodes.map((nod
   const key = index;
   if (node.type === "text") return <Fragment key={key}>{node.value}</Fragment>;
   if (node.type === "pending-reference") return <span key={key} data-part="md-reference-pending">{node.value}</span>;
+  if (node.type === "pending-text") return <span key={key} data-part="md-text-pending"><InlineView nodes={node.children} /></span>;
   if (node.type === "code") return <code key={key} data-part="md-code-inline">{node.value}</code>;
   if (node.type === "break") return <br key={key} data-part="md-break" />;
   if (node.type === "emphasis") return <em key={key} data-part="md-emphasis"><InlineView nodes={node.children} /></em>;
@@ -51,6 +52,9 @@ function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block,
   const request = useRef<{ id: number; key: string; result: ReturnType<Highlighter> } | undefined>(undefined);
   const nextRequestId = useRef(0);
   const [tokens, setTokens] = useState<Token[] | null>(null);
+  const [, setRevision] = useState(0);
+  // The highlighter replaced this block's tokens (answered plain while its grammar was cold, now colored): ask again.
+  useEffect(() => highlight?.subscribe(id, () => { request.current = undefined; setRevision((value) => value + 1); }), [highlight, id]);
   const state = block.open ? "streaming" : "done";
   if (previous.current !== block.value) {
     previous.current = block.value;

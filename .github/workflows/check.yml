@@ -21,6 +21,7 @@ jobs:
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground smoke
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
       - run: bun run --cwd apps/playground layout
+      - run: bun run --cwd apps/playground highlight:fallback
       - run: cd apps/web && bunx tsc -p . && bun run gate
       - if: always()
         uses: actions/upload-artifact@v4

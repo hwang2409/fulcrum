@@ -32,7 +32,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
   const maxSessions = options.maxSessions ?? 100;
-  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; intent?: string };
+  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; intent?: string; text?: unknown };
   const pending = new Map<number, Pending>();
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
@@ -119,7 +119,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;
-    const owner = [...pending.values()].find((request) => request.intent !== undefined);
+    // Fallback until zeta echoes delivery_id: the echo belongs to a pending request with an intent and the same text.
+    const owner = [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text);
     if (!owner) return event;
     const intent = owner.intent;
     owner.intent = undefined;
@@ -168,7 +169,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
       const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" })));
-      const item: Pending = { resolve, reject, intent: requestOptions.intent };
+      const item: Pending = { resolve, reject, intent: requestOptions.intent, text: requestOptions.intent === undefined ? undefined : params.text };
       pending.set(id, item);
       if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true });
       if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs);

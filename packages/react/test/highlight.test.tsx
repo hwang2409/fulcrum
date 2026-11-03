@@ -27,6 +27,7 @@ function fakeHighlighter() {
     return code.split(/(\s+)/).filter(Boolean).map((text): Token => (/\s/.test(text) ? { text } : { text, type: "keyword" }));
   }) as Highlight;
   highlight.dispose = () => {};
+  highlight.subscribe = () => () => {};
   return { highlight, calls };
 }
 
@@ -209,10 +210,18 @@ test("a large search keeps each file's language, its heads, and the match marks 
 
 test("segmenting a 2M-character line with no newline stays linear", async () => {
   const { segmentText } = await import("../src/tools/text-viewer.js");
-  const started = performance.now();
-  const segments = segmentText("x".repeat(2_000_000), 1);
+  const text = "x".repeat(2_000_000);
+  // Counted, not timed: each segment scans back at most half a segment for a newline, so the text is read at most once.
+  // lastIndexOf has no lower bound, so it would rescan the whole text per segment.
+  const original = { charCodeAt: String.prototype.charCodeAt, lastIndexOf: String.prototype.lastIndexOf };
+  const calls = { charCodeAt: 0, lastIndexOf: 0 };
+  String.prototype.charCodeAt = function (this: string, index: number) { calls.charCodeAt++; return original.charCodeAt.call(this, index); };
+  String.prototype.lastIndexOf = function (this: string, ...args: [string, number?]) { calls.lastIndexOf++; return original.lastIndexOf.apply(this, args); };
+  let segments;
+  try { segments = segmentText(text, 1); } finally { Object.assign(String.prototype, original); }
   expect(segments).toHaveLength(1_000);
-  expect(performance.now() - started).toBeLessThan(100);
+  expect(calls.charCodeAt).toBeLessThanOrEqual(text.length);
+  expect(calls.lastIndexOf).toBe(0);
 });
 
 // Every view kind, small and large, collapsed when it mounts.
@@ -286,6 +295,7 @@ test("two different same-length sources on one surface never show the first sour
     return tokens;
   }) as Highlight;
   highlight.dispose = () => {};
+  highlight.subscribe = () => () => {};
   const seen: string[] = [];
   function Probe({ code }: { code: string }) {
     const tokens = useTokens(code, "typescript", "surface:1");
@@ -298,4 +308,38 @@ test("two different same-length sources on one surface never show the first sour
   act(() => root!.render(<HighlightContext.Provider value={highlight}><Probe code="let a = 1;" /></HighlightContext.Provider>));
   act(() => root!.render(<HighlightContext.Provider value={highlight}><Probe code="var b = 2;" /></HighlightContext.Provider>));
   expect(seen.at(-1)).toBe("var b = 2;");
+});
+
+// A highlighter whose block can be updated later, as the worker does once a cold grammar is warm.
+function updatableHighlighter(first: Token[]) {
+  let tokens = first;
+  const listeners = new Map<string, Set<() => void>>();
+  const highlight = (() => tokens) as unknown as Highlight;
+  highlight.dispose = () => {};
+  highlight.subscribe = (id, listener) => {
+    const set = listeners.get(id) ?? new Set();
+    listeners.set(id, set.add(listener));
+    return () => set.delete(listener);
+  };
+  return { highlight, update: (id: string, next: Token[]) => { tokens = next; for (const listener of listeners.get(id) ?? []) listener(); } };
+}
+
+test("useTokens repaints a block when the highlighter updates it, with the same text", async () => {
+  const { useTokens, Tokens, HighlightContext: Provider } = await import("../src/highlight.js");
+  const code = "const a = 1;\nlet b = 2;\n";
+  const { highlight, update } = updatableHighlighter([{ text: code }]);
+  function Probe() {
+    const tokens = useTokens(code, "typescript", "surface:update");
+    return <pre>{tokens ? <Tokens tokens={tokens} /> : code}</pre>;
+  }
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  act(() => root!.render(<Provider.Provider value={highlight}><Probe /></Provider.Provider>));
+  expect(container.querySelectorAll("[class^=tok-]")).toHaveLength(0);
+  act(() => update("surface:other", [{ text: code, type: "string" }]));
+  expect(container.querySelectorAll("[class^=tok-]")).toHaveLength(0);
+  act(() => update("surface:update", [{ text: "const", type: "keyword" }, { text: " a = 1;\n" }, { text: "let", type: "keyword" }, { text: " b = 2;\n" }]));
+  expect([...container.querySelectorAll(".tok-keyword")].map((node) => node.textContent)).toEqual(["const", "let"]);
+  expect(container.textContent).toBe(code);
 });

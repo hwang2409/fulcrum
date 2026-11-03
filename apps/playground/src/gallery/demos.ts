@@ -213,8 +213,18 @@ const failedView = (tool: ToolCall): ToolView | undefined => {
 };
 
 const longCommand = "rg --json --hidden --glob '!node_modules' --glob '!dist' 'TODO|FIXME' packages apps scripts | jq -r 'select(.type == \"match\") | \"\\(.data.path.text):\\(.data.line_number)\"' | sort | uniq -c | sort -rn | head -50";
+const heredoc = "cat > scripts/release.sh <<'EOF'\n#!/usr/bin/env bash\nset -euo pipefail\nversion=\"$1\"\nbun install --frozen-lockfile\nbunx tsc -b\nbun test\nbun run build:packages\nfor pkg in packages/*/; do\n  (cd \"$pkg\" && npm version \"$version\" --no-git-tag-version)\ndone\ngit commit -am \"release $version\"\ngit tag \"v$version\"\nEOF\nchmod +x scripts/release.sh";
 const huge = Array.from({ length: 40_000 }, (_, i) => `[${String(i).padStart(5, "0")}] GET /api/runs/${i % 97} 200 ${(i * 7) % 300}ms ${"·".repeat(20)}\n`).join("");
 const twoHunks = "--- a/packages/react/src/parts.tsx\n+++ b/packages/react/src/parts.tsx\n@@ -12,4 +12,4 @@\n const pre = { whiteSpace: \"pre-wrap\" } as const;\n-const SHORT_OUTPUT_LINES = 8;\n+const SHORT_OUTPUT_LINES = 12;\n \n export const Message = memo(function Message({ id }) {\n@@ -88,3 +88,5 @@\n   const state = toolState(tool);\n+  // The body reads the view; the header stays shared.\n+  const output = toolOutput(tool);\n   return (\n";
+
+// One read per grammar family the token check covers beyond the cards above.
+const languageFiles: Array<[string, string]> = [
+  ["crates/runs/src/main.rs", 'use std::collections::HashMap;\n\nfn main() {\n    let mut counts: HashMap<&str, u32> = HashMap::new();\n    *counts.entry("runs").or_insert(0) += 1;\n    println!("{counts:?}");\n}\n'],
+  ["cmd/runs/main.go", 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfor i := 0; i < 3; i++ {\n\t\tfmt.Println("run", i)\n\t}\n}\n'],
+  ["db/schema.sql", "CREATE TABLE runs (\n  id INTEGER PRIMARY KEY,\n  status TEXT NOT NULL DEFAULT 'running'\n);\nSELECT status, count(*) FROM runs GROUP BY status;\n"],
+  ["Dockerfile", 'FROM oven/bun:1 AS build\nWORKDIR /app\nCOPY package.json bun.lock ./\nRUN bun install --frozen-lockfile\nCMD ["bun", "run", "start"]\n'],
+  ["scripts/deploy.sh", '#!/usr/bin/env bash\nset -euo pipefail\nfor host in web-1 web-2; do\n  rsync -a dist/ "$host:/srv/app"\ndone\necho "deployed $(date +%s)"\n'],
+];
 
 const run = calls("run");
 const build = call("run-build", "bash", { command: "bun run --cwd apps/playground build" });
@@ -375,10 +385,14 @@ export const demos: Demo[] = [
     id: "tool-long-command",
     part: "ToolCall",
     title: "shell, long command",
-    description: "The header cuts the command to one line; the body repeats it in full above the output.",
+    description: "The header cuts the command to one line (up to four on narrow screens); the body repeats it in full above the output, up to 8 lines, then a control shows the rest.",
     events: (() => {
       const tool = call("long", "bash", { command: longCommand });
-      return [start(tool), end(tool, "  14 packages/core/src/store.ts:12\n   9 packages/zeta/src/client.ts:41\n")];
+      const script = call("long-script", "bash", { command: heredoc });
+      return [
+        start(tool), end(tool, "  14 packages/core/src/store.ts:12\n   9 packages/zeta/src/client.ts:41\n"),
+        start(script), end(script, "wrote scripts/release.sh\n"),
+      ];
     })(),
   },
   {
@@ -411,6 +425,16 @@ export const demos: Demo[] = [
       const tool = call("diff", "apply_patch", { patch: twoHunks });
       return [start(tool, { kind: "edit", path: "packages/react/src/parts.tsx", diff: twoHunks }), end(tool, "applied 1 patch")];
     })(),
+  },
+  {
+    id: "tool-languages",
+    part: "ToolCall",
+    title: "read, more languages",
+    description: "Rust, Go, SQL, a Dockerfile, and a shell script, each colored from its first line.",
+    events: languageFiles.flatMap(([path, source], index) => {
+      const tool = call(`lang-${index}`, "read", { path });
+      return [start(tool), end(tool, source)];
+    }),
   },
   {
     id: "tool-websearch",

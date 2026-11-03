@@ -1,4 +1,4 @@
-export * from "./composer.js";
+export { Composer, type ComposerIntent, type ComposerProps, type ComposerState } from "./composer.js";
 export * from "./hooks.js";
 export * from "./parts.js";
 export * from "./run-navigation.js";

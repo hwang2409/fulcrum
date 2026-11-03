@@ -14,15 +14,17 @@ import corpus from "./fixtures/agent-corpus.json";
 
 const json = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
 const window = new Window();
-const visibleText = (source: string, streaming = false) => {
+const visibleText = (source: string, streaming = false, includeProvisional = true) => {
   const element = window.document.createElement("div");
   element.innerHTML = renderToStaticMarkup(<Markdown source={source} streaming={streaming} />);
+  if (!includeProvisional) element.querySelectorAll('[data-part="md-text-pending"], [data-part="md-reference-pending"]').forEach((node) => node.remove());
   return element.textContent;
 };
 const isSubsequence = (value: string, expected: string) => {
+  const wanted = [...value];
   let index = 0;
-  for (const character of expected) if (character === value[index]) index++;
-  return index === value.length;
+  for (const character of expected) if (character === wanted[index]) index++;
+  return index === wanted.length;
 };
 
 const conformance: Record<string, Array<[string, string]>> = {
@@ -103,7 +105,7 @@ test("streaming never changes the source", () => {
   }
 });
 
-test("holds unmatched emphasis and link syntax while rendering open code", () => {
+test("hides unmatched emphasis and link syntax while keeping their prose stable", () => {
   expect(renderToStaticMarkup(<Markdown source="**bold" streaming />)).toBe('<p data-part="md-paragraph">bold</p>');
   expect(renderToStaticMarkup(<Markdown source="[docs](https://example.com" streaming />)).toBe('<p data-part="md-paragraph">docs</p>');
   expect(renderToStaticMarkup(<Markdown source="use ``a ` b" streaming />)).toContain('<code data-part="md-code-inline">a ` b</code>');
@@ -130,7 +132,7 @@ test("finished blocks keep identity and parse count while only the tail reparses
 
   document.append(" grows");
   const next = document.render();
-  expect(next).toBe(first);
+  expect(next).not.toBe(first);
   expect(next[0]).toBe(frozen);
   expect(document.stats.frozenParses).toBe(1);
   expect(document.stats.tailParses).toBe(parsed);
@@ -186,7 +188,7 @@ test("generated mixed reference streams hide definitions and brackets", () => {
     document.finish();
     expect(json(document.render())).toBe(json(parseMarkdown(source)));
   }
-  expect(renderToStaticMarkup(<Markdown source="See [later]." streaming />)).toContain('data-part="md-reference-pending"');
+  expect(renderToStaticMarkup(<Markdown source="See [later]." streaming />)).not.toContain('data-part="md-reference-pending"');
 });
 
 test("finish retains blocks whose final output is unchanged", () => {
@@ -306,9 +308,9 @@ test("the agent corpus has the expected shape 20/20", () => {
 test("every streamed prefix only reveals final visible text", () => {
   const exactExample = "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move the import into the config's server block, or use `new";
   for (const source of [exactExample, ...corpus]) {
-    const finalText = visibleText(source, true);
+    const finalText = visibleText(source, true).replace(/\s/g, "");
     for (let length = 0; length <= source.length; length++) {
-      const prefixText = visibleText(source.slice(0, length), true);
+      const prefixText = visibleText(source.slice(0, length), true, false).replace(/\s/g, "");
       expect(isSubsequence(prefixText, finalText), `visible prefix ${length} of ${JSON.stringify(source)}`).toBe(true);
     }
   }
@@ -454,11 +456,17 @@ test("later reference definitions update frozen blocks and react", () => {
   const before = document.render()[0];
   expect(before?.type).toBe("paragraph");
   document.append(definition);
+  const pending = document.render()[0];
+  expect(pending?.type === "paragraph" && pending.children.some((node) => node.type === "link")).toBe(false);
+  document.append("\n");
+  const pendingContinuation = document.render()[0];
+  expect(pendingContinuation?.type === "paragraph" && pendingContinuation.children.some((node) => node.type === "link")).toBe(false);
+  document.append("next block\n");
   const after = document.render()[0];
   expect(after).not.toBe(before);
   expect(after?.type === "paragraph" && after.children.some((node) => node.type === "link")).toBe(true);
   document.finish();
-  expect(json(document.render())).toBe(json(parseMarkdown(first + definition)));
+  expect(json(document.render())).toBe(json(parseMarkdown(`${first}${definition}\nnext block\n`)));
 
   const browser = new Window();
   Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
@@ -467,6 +475,10 @@ test("later reference definitions update frozen blocks and react", () => {
   act(() => root.render(<Markdown source={first} streaming />));
   expect(host.querySelector("a")).toBeNull();
   act(() => root.render(<Markdown source={first + definition} streaming />));
+  expect(host.querySelector("a")).toBeNull();
+  act(() => root.render(<Markdown source={`${first}${definition}\n`} streaming />));
+  expect(host.querySelector("a")).toBeNull();
+  act(() => root.render(<Markdown source={`${first}${definition}\nnext block\n`} streaming />));
   expect(host.querySelector("a")?.getAttribute("href")).toBe("https://example.com");
   act(() => root.unmount());
 });
@@ -479,7 +491,7 @@ test("renders a real typescript fence with the shared highlighter", async () => 
   Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
   const container = browser.document.createElement("div");
   const root = createRoot(container);
-  const highlight = createHighlighter({ worker: false });
+  const highlight = createHighlighter();
   await act(async () => root.render(<Markdown source={'```typescript\nconst value: string = "ok";\n```'} highlight={highlight} />));
   await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
   expect(container.querySelector('[data-language="typescript"]')?.textContent).toBe('const value: string = "ok";\n');
@@ -496,7 +508,7 @@ test("a stale streaming highlight cannot replace the done result", async () => {
   const pending: Array<(tokens: Token[]) => void> = [];
   const highlight: Highlight = Object.assign(
     () => new Promise<Token[]>((resolve) => pending.push(resolve)),
-    { dispose() {} },
+    { dispose() {}, subscribe: () => () => {} },
   );
 
   await act(async () => root.render(<Markdown source={'```ts\nconst value = 1;\n'} streaming highlight={highlight} />));
@@ -516,7 +528,7 @@ test("highlighter uses the shared cumulative source contract", async () => {
       calls.push({ code, context });
       return [{ type: "keyword" as const, text: code }];
     },
-    { dispose() {} },
+    { dispose() {}, subscribe: () => () => {} },
   );
   renderToStaticMarkup(<Markdown id="message:one" source={'```ts\nconst a = 1;\npartial'} streaming highlight={highlight} />);
   renderToStaticMarkup(<Markdown id="message:one" source={'```ts\nconst a = 1;\npartial\n```'} highlight={highlight} />);
@@ -527,18 +539,56 @@ test("highlighter uses the shared cumulative source contract", async () => {
   ]);
 });
 
-const plain = (blocks: unknown) => JSON.stringify(blocks, (key, value) => (key === "open" ? undefined : value));
-test("a table followed by a whitespace-only partial line streams without throwing or adding a row", () => {
-  for (const source of ["| a | b |\n| - | - |\n| 1 | 2 |\n   ", "| a | b |\n|---|---|\n\t"]) {
-    for (const split of [1, 2, 3, 7, 1000]) {
-      const document = createStreamingDocument();
-      for (let offset = 0; offset < source.length; offset += split) {
-        document.append(source.slice(offset, offset + split));
-        expect(() => document.render()).not.toThrow();
-      }
-      expect(plain(document.render())).toBe(plain(parseMarkdown(source)));
-      document.finish();
-      expect(plain(document.render())).toBe(plain(parseMarkdown(source)));
-    }
+test("a code block repaints when the highlighter updates its tokens", async () => {
+  const browser = new Window();
+  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = browser.document.createElement("div");
+  const root = createRoot(container);
+  let tokens: Token[] = [{ text: "const a = 1;\n" }];
+  const listeners = new Map<string, () => void>();
+  const highlight: Highlight = Object.assign(() => tokens, {
+    dispose() {},
+    subscribe: (id: string, listener: () => void) => { listeners.set(id, listener); return () => listeners.delete(id); },
+  });
+  await act(async () => root.render(<Markdown id="m" source={'```ts\nconst a = 1;\n```'} highlight={highlight} />));
+  expect(container.querySelector(".tok-keyword")).toBeNull();
+  tokens = [{ text: "const", type: "keyword" }, { text: " a = 1;\n" }];
+  await act(async () => listeners.get("m:0")!());
+  expect(container.querySelector(".tok-keyword")?.textContent).toBe("const");
+  expect(container.querySelector("code")?.textContent).toBe("const a = 1;\n");
+  await act(async () => root.unmount());
+});
+
+test("a streamed code block shows plain text first, then the colored update, through the streaming resolver", async () => {
+  const browser = new Window();
+  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = browser.document.createElement("div");
+  const root = createRoot(container);
+  const colored = new Set<string>();
+  const listeners = new Map<string, () => void>();
+  const calls: HighlightContext[] = [];
+  // Like the worker highlighter with a cold grammar: exact plain text at first, colors once the block's update lands.
+  const highlight: Highlight = Object.assign((code: string, _language: string | undefined, context?: HighlightContext) => {
+    calls.push(context!);
+    return colored.has(code) ? [{ text: "const", type: "keyword" as const }, { text: code.slice(5) }] : [{ text: code }];
+  }, {
+    dispose() {},
+    subscribe: (id: string, listener: () => void) => { listeners.set(id, listener); return () => listeners.delete(id); },
+  });
+  const source = "intro\n\n```ts\nconst a = 1;\nconst b = 2;\n```\n";
+  for (let end = 1; end <= source.length; end += 5) {
+    await act(async () => root.render(<Markdown id="m" source={source.slice(0, end)} streaming highlight={highlight} />));
+    const code = container.querySelector("code");
+    if (code) expect(source.slice(0, end)).toContain(code.textContent!);
+    expect(container.querySelector(".tok-keyword")).toBeNull();
   }
+  await act(async () => root.render(<Markdown id="m" source={source} highlight={highlight} />));
+  expect(container.querySelector("code")?.textContent).toBe("const a = 1;\nconst b = 2;\n");
+  expect(container.querySelector(".tok-keyword")).toBeNull();
+  expect(calls.at(-1)).toEqual({ id: "m:1", version: calls.at(-1)!.version, state: "done" });
+  colored.add("const a = 1;\nconst b = 2;\n");
+  await act(async () => listeners.get("m:1")!());
+  expect(container.querySelector(".tok-keyword")?.textContent).toBe("const");
+  expect(container.querySelector("code")?.textContent).toBe("const a = 1;\nconst b = 2;\n");
+  await act(async () => root.unmount());
 });

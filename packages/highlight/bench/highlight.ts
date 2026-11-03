@@ -23,9 +23,16 @@ const percentile = (values: number[], fraction: number) => [...values].sort((a, 
 const text = (tokens: Token[]) => tokens.map((token) => token.text).join("");
 Bun.gc(true);
 const memoryBefore = process.memoryUsage().heapUsed;
-const memoryRuntime = new TokenizerRuntime();
+// A runtime answers plain until its grammar is warm (warm-up runs in the background, as in the worker).
+const warmRuntime = async (language: string) => {
+  const runtime = new TokenizerRuntime(() => {});
+  await runtime.tokenize("x\n", language, { id: "load", version: 0, state: "done" });
+  await runtime["warming"].get(language);
+  return runtime;
+};
+const memoryRuntime = await warmRuntime("typescript");
 const memoryCode = lines.typescript.repeat(2000);
-const memoryTokens = await memoryRuntime.tokenize(memoryCode, "typescript", { id: "memory", version: 1, state: "done" }, false);
+const memoryTokens = await memoryRuntime.tokenize(memoryCode, "typescript", { id: "memory", version: 1, state: "done" });
 Bun.gc(true);
 const memoryMiB = (process.memoryUsage().heapUsed - memoryBefore) / 1024 / 1024;
 if (text(memoryTokens) !== memoryCode) throw new Error("memory sample changed source");
@@ -34,10 +41,10 @@ memoryRuntime.dispose();
 console.log("language\tfull-1000-lines-ms\tincremental-p95-ms");
 for (const [language, line] of Object.entries(lines)) {
   const code = line.repeat(language === "makefile" ? 500 : 1000);
-  const highlighter = new TokenizerRuntime();
-  await highlighter.tokenize(line, language, { id: `warm-${language}`, version: 0, state: "done" }, false);
+  const highlighter = await warmRuntime(language);
+  await highlighter.tokenize(line, language, { id: `warm-${language}`, version: 0, state: "done" });
   const fullStart = performance.now();
-  const full = await highlighter.tokenize(code, language, { id: `full-${language}`, version: 1, state: "done" }, false);
+  const full = await highlighter.tokenize(code, language, { id: `full-${language}`, version: 1, state: "done" });
   const fullMs = performance.now() - fullStart;
   if (!full || text(full) !== code) throw new Error(`${language}: full tokenization changed source`);
   let streamed = "";
@@ -46,7 +53,7 @@ for (const [language, line] of Object.entries(lines)) {
   for (let index = 0; index < count; index++) {
     streamed += line;
     const start = performance.now();
-    const tokens = await highlighter.tokenize(streamed, language, { id: `stream-${language}`, version: index, state: index === count - 1 ? "done" : "streaming" }, false);
+    const tokens = await highlighter.tokenize(streamed, language, { id: `stream-${language}`, version: index, state: index === count - 1 ? "done" : "streaming" });
     increments.push(performance.now() - start);
     if (index === count - 1 && (!tokens || text(tokens) !== streamed)) throw new Error(`${language}: incremental tokenization changed source`);
   }
