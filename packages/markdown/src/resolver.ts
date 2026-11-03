@@ -9,11 +9,12 @@ export type ContainerFrame =
 export type OpenedContainer = Exclude<ContainerFrame, { kind: "document" }>;
 
 export type ResolvedLeaf = {
-  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code";
+  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code" | "atx-heading" | "setext-heading";
   content: string;
   path: readonly ContainerFrame[];
   marker?: string;
   language?: string;
+  level?: number;
 };
 
 export type LineResolution = {
@@ -239,6 +240,28 @@ export class MarkdownLineResolver {
     const leafPath = () => this.stack.map((frame) => ({ ...frame }));
     if (blank) return { continued: false, lazy: false, closedToDepth, opened };
     const content = line.slice(cursor.offset);
+    const setext = opened.length === 0 && this.openLeaf?.kind === "paragraph" && /^ {0,3}(=+|-+)\s*$/.exec(content);
+    if (setext) {
+      this.openLeaf = undefined;
+      return {
+        continued: false,
+        lazy: false,
+        closedToDepth,
+        opened,
+        leaf: { kind: "setext-heading", content: "", level: setext[1]![0] === "=" ? 1 : 2, path: leafPath() },
+      };
+    }
+    const atx = /^ {0,3}(#{1,6})(?:[ \t]+(.*?)[ \t]*|[ \t]*)$/.exec(content);
+    if (atx) {
+      this.openLeaf = undefined;
+      return {
+        continued: false,
+        lazy: false,
+        closedToDepth,
+        opened,
+        leaf: { kind: "atx-heading", content: (atx[2] ?? "").replace(/[ \t]+#+[ \t]*$/, ""), level: atx[1]!.length, path: leafPath() },
+      };
+    }
     const fence = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/.exec(content);
     if (fence && (fence[1]![0] !== "`" || !fence[2]!.includes("`"))) {
       this.openLeaf = { kind: "fence", marker: fence[1]! };
