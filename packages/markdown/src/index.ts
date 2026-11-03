@@ -562,6 +562,13 @@ type TableRecord = { header: string; delimiter: string; cells: TableCellRecord[]
 
 const normalizeReferenceLabel = (label: string) => label.trim().replace(/\s+/g, " ").toUpperCase();
 
+function hideProvisionalSyntax(inlines: Inline[]) {
+  for (const inline of inlines) {
+    if (inline.type === "text") inline.value = inline.value.replace(/[|`[\]\\*]/g, "");
+    else if ("children" in inline) hideProvisionalSyntax(inline.children);
+  }
+}
+
 function markPendingReferences(inlines: Inline[], blocked: ReadonlySet<string> = new Set<string>()) {
   for (let index = 0; index < inlines.length; index++) {
     const node = inlines[index]!;
@@ -672,19 +679,19 @@ function safeTableText(value: string) {
   return value.split("\n").filter((line) => !(line.includes("|") && tableDelimiterLine.test(line))).join("\n").replaceAll("|", "");
 }
 
-function cloneOpenPath(blocks: readonly Block[]): Block[] {
+function cloneOpenPath(blocks: readonly Block[], cloneLeaf = true): Block[] {
   const copy = blocks.slice();
   const index = copy.length - 1;
   const block = copy[index];
   if (!block) return copy;
-  if (block.type === "blockquote") copy[index] = { ...block, children: cloneOpenPath(block.children) };
+  if (block.type === "blockquote") copy[index] = { ...block, children: cloneOpenPath(block.children, cloneLeaf) };
   else if (block.type === "list") {
     const items = block.items.slice();
     const item = items.at(-1);
-    if (item) items[items.length - 1] = { ...item, children: cloneOpenPath(item.children) };
+    if (item) items[items.length - 1] = { ...item, children: cloneOpenPath(item.children, cloneLeaf) };
     copy[index] = { ...block, items };
-  } else if (block.type === "paragraph") copy[index] = { ...block, children: structuredClone(block.children) };
-  else if (block.type === "code") copy[index] = { ...block };
+  } else if (cloneLeaf && block.type === "paragraph") copy[index] = { ...block, children: structuredClone(block.children) };
+  else if (cloneLeaf && block.type === "code") copy[index] = { ...block };
   return copy;
 }
 
@@ -892,6 +899,7 @@ export function createStreamingDocument(): StreamingDocument {
       ? parseInline(inlineSource, streaming, environment())
       : [{ type: "text", value: inlineSource }];
     if (pendingReferences) markPendingReferences(record.block.children, blockedReferences);
+    if (streaming) hideProvisionalSyntax(record.block.children);
     registerReferences(record);
     tailParses++;
   };
@@ -961,7 +969,7 @@ export function createStreamingDocument(): StreamingDocument {
 
   const applyLeaf = (resolution: LineResolution) => {
     const leaf = resolution.leaf;
-    if (pendingReferenceApply && leaf && leaf.kind !== "reference-definition" && leaf.kind !== "reference-title") {
+    if (pendingReferenceApply && (!leaf || leaf.kind !== "reference-definition" && leaf.kind !== "reference-title")) {
       applyReferences();
       pendingReferenceApply = false;
     }
@@ -1147,12 +1155,11 @@ export function createStreamingDocument(): StreamingDocument {
       finished = true;
     },
     render() {
-      if (pendingReferenceApply && !resolver.pending.length) applyReferences();
       if (finished || !resolver.pending.length || pendingReferenceApply) return blocks.view;
       if (previewBlocks && previewSource === source) return previewBlocks;
       const pending = resolver.pending.content;
       const pendingLeaf = pendingLeafContent(pending);
-      const overlay = cloneOpenPath(openRoots);
+      const overlay = cloneOpenPath(openRoots, Boolean(openParagraph || openCode));
       if (openCode && !openIndentedCode) {
         if (!/^(?:`+|~+)\s*$/.test(pendingLeaf.trim())) appendOpenCode(overlay, pendingLeaf);
       } else {

@@ -49,7 +49,7 @@ test("task-list marker prefixes never retract visible text", () => {
 });
 
 test("a later reference definition updates a table cell", () => {
-  const source = "| check |\n| --- |\n| Use [shared]. |\n\n[shared]: https://example.com/docs\n";
+  const source = "| check |\n| --- |\n| Use [shared]. |\n\n[shared]: https://example.com/docs\n\n";
   const document = createStreamingDocument();
   document.append(source);
   expect(json(document.render())).toBe(json(parseMarkdown(source)));

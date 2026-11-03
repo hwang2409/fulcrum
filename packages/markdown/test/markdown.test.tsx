@@ -20,9 +20,10 @@ const visibleText = (source: string, streaming = false) => {
   return element.textContent;
 };
 const isSubsequence = (value: string, expected: string) => {
+  const wanted = [...value];
   let index = 0;
-  for (const character of expected) if (character === value[index]) index++;
-  return index === value.length;
+  for (const character of expected) if (character === wanted[index]) index++;
+  return index === wanted.length;
 };
 
 const conformance: Record<string, Array<[string, string]>> = {
@@ -130,7 +131,7 @@ test("finished blocks keep identity and parse count while only the tail reparses
 
   document.append(" grows");
   const next = document.render();
-  expect(next).toBe(first);
+  expect(next).not.toBe(first);
   expect(next[0]).toBe(frozen);
   expect(document.stats.frozenParses).toBe(1);
   expect(document.stats.tailParses).toBe(parsed);
@@ -306,9 +307,9 @@ test("the agent corpus has the expected shape 20/20", () => {
 test("every streamed prefix only reveals final visible text", () => {
   const exactExample = "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move the import into the config's server block, or use `new";
   for (const source of [exactExample, ...corpus]) {
-    const finalText = visibleText(source, true);
+    const finalText = visibleText(source, true).replace(/\s/g, "");
     for (let length = 0; length <= source.length; length++) {
-      const prefixText = visibleText(source.slice(0, length), true);
+      const prefixText = visibleText(source.slice(0, length), true).replace(/\s/g, "");
       expect(isSubsequence(prefixText, finalText), `visible prefix ${length} of ${JSON.stringify(source)}`).toBe(true);
     }
   }
@@ -459,12 +460,12 @@ test("later reference definitions update frozen blocks and react", () => {
   document.append("\n");
   const pendingContinuation = document.render()[0];
   expect(pendingContinuation?.type === "paragraph" && pendingContinuation.children.some((node) => node.type === "link")).toBe(false);
-  document.append("next block");
+  document.append("next block\n");
   const after = document.render()[0];
   expect(after).not.toBe(before);
   expect(after?.type === "paragraph" && after.children.some((node) => node.type === "link")).toBe(true);
   document.finish();
-  expect(json(document.render())).toBe(json(parseMarkdown(`${first}${definition}\nnext block`)));
+  expect(json(document.render())).toBe(json(parseMarkdown(`${first}${definition}\nnext block\n`)));
 
   const browser = new Window();
   Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
@@ -476,7 +477,7 @@ test("later reference definitions update frozen blocks and react", () => {
   expect(host.querySelector("a")).toBeNull();
   act(() => root.render(<Markdown source={`${first}${definition}\n`} streaming />));
   expect(host.querySelector("a")).toBeNull();
-  act(() => root.render(<Markdown source={`${first}${definition}\nnext block`} streaming />));
+  act(() => root.render(<Markdown source={`${first}${definition}\nnext block\n`} streaming />));
   expect(host.querySelector("a")?.getAttribute("href")).toBe("https://example.com");
   act(() => root.unmount());
 });

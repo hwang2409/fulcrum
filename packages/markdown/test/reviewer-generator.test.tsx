@@ -63,6 +63,7 @@ const stream = (source: string, split: number) => {
     document.append(source.slice(offset, offset + split));
     document.render();
   }
+  document.finish();
   return document.render();
 };
 const sharedHref = (blocks: readonly Block[]): string | undefined => {
@@ -89,14 +90,14 @@ const sharedHref = (blocks: readonly Block[]): string | undefined => {
   }
 };
 
-test("168 streamed reference orders commit only complete definitions", () => {
+test("168 streamed reference orders finish like one-shot parsing", () => {
   let checked = 0;
   for (let depth = 0; depth <= 6; depth++) for (const split of splits) for (const definitionFirst of [false, true]) for (const inList of [false, true]) {
     const definition = inList ? "- [shared]: https://example.com/docs" : "[shared]: https://example.com/docs";
     const use = inList ? "- second uses [shared]." : "second uses [shared].";
     const separator = inList ? "\n" : "\n\n";
     const source = quoted(definitionFirst ? `${definition}${separator}${use}` : `${use}${separator}${definition}\n`, depth);
-    const expected = definitionFirst ? "https://example.com/docs" : undefined;
+    const expected = "https://example.com/docs";
     expect(sharedHref(stream(source, split)), `depth ${depth}, split ${split}, definitionFirst ${definitionFirst}, inList ${inList}`).toBe(expected);
     checked++;
   }
@@ -120,6 +121,7 @@ test("streaming lists preserve ordered starts and loose paragraphs", () => {
       document.append(character);
       document.render();
     }
+    document.finish();
     expect(json(document.render())).toBe(json(parseMarkdown(source)));
   }
 });

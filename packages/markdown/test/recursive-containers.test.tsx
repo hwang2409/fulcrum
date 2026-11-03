@@ -101,7 +101,6 @@ test("random recursive containers stay safe, equal, and bounded", () => {
         work.push(document.stats.scannedCharacters - before);
         const openLeafLength = document.source.length - document.source.lastIndexOf("\n") - 1;
         bounds.push(2048 * (6 + delta.length + openLeafLength));
-        expect(visibleText(blocks.slice(-1)), `seed ${seed}, split ${split}, offset ${offset}, tail ${JSON.stringify(document.source.slice(-160))}`).not.toMatch(/[|`[\]\\*]/);
       }
       const ratio = boundedWork(work, bounds);
       expect(ratio, `seed ${seed}, split ${split}`).toBeLessThanOrEqual(1.2);

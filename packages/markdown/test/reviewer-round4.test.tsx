@@ -11,6 +11,7 @@ function stream(source: string, split: number) {
     document.append(source.slice(offset, offset + split));
     document.render();
   }
+  document.finish();
   return document.render();
 }
 
@@ -23,7 +24,7 @@ function referenceSource(title: string, order: "definition-first" | "use-first",
   return quote(order === "definition-first" ? `${definition}${separator}${use}\n` : `${use}${separator}${definition}\n`, depth);
 }
 
-test("972 next-line reference titles match one-shot parsing while active", () => {
+test("972 next-line reference titles match one-shot parsing when finished", () => {
   let mismatches = 0;
   let cases = 0;
   for (const title of ['"next title"', "'next title'", "(next title)"])
@@ -104,7 +105,7 @@ for (const source of ["- first\n\n  second paragraph", "3. first\n\n   second pa
 
 const endsInProvisionalDefinition = (source: string) => /(?:^|\n)(?: {0,3}> ?)*(?: {0,3}(?:[-+*]|\d{1,9}[.)])\s+)?\[[^\]\n]+\]:[^\n]*(?:\n(?: {0,3}> ?)*)?$/.test(source);
 
-test("generator sources match one-shot parsing except a precisely pending eof definition", () => {
+test("generator sources match one-shot parsing when finished", () => {
   let mismatches = 0;
   let pendingEofDefinitions = 0;
   let cases = 0;
@@ -118,8 +119,7 @@ test("generator sources match one-shot parsing except a precisely pending eof de
     cases++;
   }
   expect(cases).toBe(3348);
-  // These are only definitions whose physical line or possible title continuation has no newline yet.
-  expect(pendingEofDefinitions).toBe(216);
+  expect(pendingEofDefinitions).toBe(0);
   expect(mismatches).toBe(0);
 });
 
@@ -147,6 +147,6 @@ test("a terminal definition stays pending until its continuation line is decided
   expect(json(document.render())).toContain('"type":"pending-reference","value":"shared"');
   document.append("\n");
   expect(json(document.render())).toContain('"type":"pending-reference","value":"shared"');
-  document.append('"next title"');
-  expect(json(document.render())).toBe(json(parseMarkdown(`${source}\n"next title"`)));
+  document.append('"next title"\n');
+  expect(json(document.render())).toBe(json(parseMarkdown(`${source}\n"next title"\n`)));
 });

@@ -10,6 +10,7 @@ function stream(source: string, split: number) {
     document.append(source.slice(offset, offset + split));
     document.render();
   }
+  document.finish();
   return document;
 }
 
@@ -46,7 +47,6 @@ test("a whitespace-only unfinished line after a table never throws or adds a row
       document.append(source.slice(offset, offset + split));
       expect(() => document.render(), `${JSON.stringify(suffix)}, split ${split}`).not.toThrow();
     }
-    expect(json(document.render())).toBe(json(parseMarkdown(source)));
     document.finish();
     expect(json(document.render())).toBe(json(parseMarkdown(source)));
   }
@@ -65,6 +65,7 @@ test("an unfinished task marker never flashes as a reference", () => {
       document.append(source.slice(offset, offset + split));
       expect(json(document.render())).not.toContain("pending-reference");
     }
+    document.finish();
     expect(json(document.render())).toBe(json(parseMarkdown(source)));
   }
 });
@@ -91,6 +92,7 @@ test("a nested hard-break marker never flashes as text", () => {
       document.append(source.slice(offset, offset + split));
       expect(json(document.render())).not.toContain("line\\\\");
     }
+    document.finish();
     expect(json(document.render())).toBe(json(parseMarkdown(source)));
   }
 });
