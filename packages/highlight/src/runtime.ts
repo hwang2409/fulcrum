@@ -58,6 +58,7 @@ const WARM_SAMPLE = 'x = f("s", 1); // c';
 function warmSample(language: string): string {
   if (language === "html") return '<style>body { color: red; }</style>\n<script>const x = 1;</script>\n';
   if (language === "css") return '.card { color: red; }\n';
+  if (language === "typescript") return 'import type { RunEvent } from "./events.js";\nexport function createRunStore() {\n  let state: RunState = { items: [], itemsById: new Map() };\n  const pending: RunEvent[] = [];\n  return { dispatch(event: RunEvent) { pending.push(event); state = reduce(state, event); } };\n}\n';
   return WARM_SAMPLE;
 }
 type Provisional = { code: string; language: string; context: HighlightContext };
