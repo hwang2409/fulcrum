@@ -145,7 +145,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         const rebuilt = new Map<string, ReturnType<typeof previous.getItem>>();
         for (const { id: itemId } of lease.store.getOutline()) {
           const item = lease.store.getItem(itemId);
-          if (item?.type === "approval") rebuilt.set(item.request.request_id, item);
+          if (item?.type === "approval" && item.request.type === "approval_request") rebuilt.set(item.request.request_id, item);
         }
         for (const { id: itemId } of previous.getOutline()) {
           const item = previous.getItem(itemId);
