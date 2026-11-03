@@ -11,12 +11,14 @@
 // a[role=button] inside the parts must be a styled fulcrum control, with no browser-default appearance, ButtonFace
 // background, default border, or system font, at rest and under forced :hover, :focus, :focus-visible, and :active. The large-output viewer opens in <16 ms, follows the bottom, and highlights a
 // 1,000,000-line file with no long tasks; scrolling it under 4x CPU throttling is reported. Needs a production build
-// (`bun run build`). Collapsed tool bodies warm before they open (see warm-check.ts).
+// (`bun run build`). Collapsed tool bodies warm before they open (see warm-check.ts). Every highlighted box is
+// colored line by line against its fixture (see token-check.ts).
 import { chromium, type Page } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { checkSubAgents } from "./subagent-check.js";
 import { checkWarmBodies } from "./warm-check.js";
+import { checkLineTokens } from "./token-check.js";
 
 const widths = [390, 768, 1024, 1440];
 const touchWidth = 860; // the gallery's touch breakpoint
@@ -421,6 +423,10 @@ try {
       else console.log(`ok   ${line}`);
       const minHeight = width <= touchWidth ? 44 : 36;
       for (const problem of await page.evaluate(pageProblems, minHeight)) failures.push(`${theme} @ ${width}: ${problem}`);
+      // Each load starts a cold highlighter, so this also checks a grammar's first lines.
+      const plain = await checkLineTokens(page);
+      for (const problem of plain) failures.push(`${theme} @ ${width}: ${problem}`);
+      if (!plain.length) console.log(`ok   ${theme} @ ${width}: every highlighted box matches its line fixture`);
       // Control styling does not depend on the palette: one light and one dark theme at each width.
       if (theme === "github-light" || theme === "gruvbox-dark") for (const problem of await checkControls(page)) failures.push(`${theme} @ ${width}: ${problem}`);
     }
