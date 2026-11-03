@@ -300,7 +300,14 @@ try {
       await fake.start();
       await page.goto(`${origin}/?theme=tokyo-night`);
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
-      await page.locator('button.session[tabindex="0"]').focus();
+      await page.locator('[data-catalog-ready="true"]').waitFor({ timeout: 5000 });
+      fake.setOpenDelay(200);
+      await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+      const selected = page.locator(`button.session[data-status]`, { hasText: "fix the flaky reconnect test" });
+      await selected.focus();
+      await page.waitForTimeout(250);
+      if (!(await page.evaluate(() => document.activeElement?.textContent?.includes("fix the flaky reconnect test")))) throw new Error("run readiness stole focus from the selected session");
+      fake.setOpenDelay(0);
       await page.keyboard.press("ArrowDown");
       const focused = await page.evaluate(() => document.activeElement?.textContent ?? "");
       if (!focused.includes("check every theme")) throw new Error(`focus on "${focused}"`);
@@ -514,7 +521,7 @@ try {
       await mobile.getByRole("dialog", { name: "sessions" }).getByRole("button", { name: "new session" }).waitFor({ timeout: 2000 });
       await shoot(mobile, "drawer-390-gruvbox-dark");
       await auditThemes(mobile, "390 drawer", 44);
-      // A rejected new session (zeta refuses while a turn runs) keeps the drawer open and says why.
+      // A rejected new session keeps the modal focusable; Escape must close it even if Chromium moved focus to body.
       fake.setRejectCreate(true);
       await mobile.getByRole("dialog", { name: "sessions" }).getByRole("button", { name: "new session" }).click();
       await mobile.getByRole("dialog", { name: "sessions" }).getByRole("alert").filter({ hasText: "could not start a session" }).waitFor({ timeout: 3000 })

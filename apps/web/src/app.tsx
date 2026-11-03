@@ -145,7 +145,12 @@ function Sidebar({ state, view, sessions, onSelect, onCreate, open, onClose, foo
   useEffect(() => {
     if (!open) return;
     (list.current?.querySelector<HTMLElement>("[tabindex='0']") ?? list.current?.closest("aside")?.querySelector<HTMLElement>("button"))?.focus();
-  }, [open]);
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); onClose(); }
+    };
+    document.addEventListener("keydown", escape);
+    return () => document.removeEventListener("keydown", escape);
+  }, [open, onClose]);
   const onKey = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === "Escape" && open) { event.preventDefault(); onClose(); return; }
     const buttons = [...(list.current?.querySelectorAll<HTMLButtonElement>("button.session") ?? [])];
@@ -172,7 +177,7 @@ function Sidebar({ state, view, sessions, onSelect, onCreate, open, onClose, foo
         <button type="button" className="ghost" onClick={() => void sessions.refresh()} disabled={state.phase !== "connected"}>refresh</button>
         <NewSession state={state} view={view} onCreate={onCreate} className="accent" />
       </div>
-      <nav className="list" aria-label="sessions">
+      <nav className="list" aria-label="sessions" data-catalog-ready={view.listReady ? "true" : "false"}>
         {view.listError ? <p className="note" data-tone="danger">could not list sessions: {view.listError} <button type="button" className="ghost" onClick={() => void sessions.refresh()}>retry</button></p> : null}
         {view.createError ? <p className="note" data-tone="danger" role="alert">could not start a session: {view.createError}</p> : null}
         {view.listLoading ? <p className="note" role="status">{view.listSlow ? "still loading sessions…" : "loading sessions…"}</p> : null}
@@ -190,8 +195,9 @@ function Sidebar({ state, view, sessions, onSelect, onCreate, open, onClose, foo
 }
 
 function NewSession({ state, view, onCreate, className }: { state: ConnectionState; view: SessionsState; onCreate(): void; className: string }) {
+  const unavailable = state.phase !== "connected" || view.creating;
   return (
-    <button type="button" className={className} onClick={onCreate} disabled={state.phase !== "connected" || view.creating} aria-busy={view.creating || undefined}>
+    <button type="button" className={className} onClick={() => { if (!unavailable) onCreate(); }} aria-disabled={unavailable || undefined} aria-busy={view.creating || undefined}>
       {view.creating ? "starting…" : "new session"}
     </button>
   );
@@ -202,24 +208,25 @@ type RowStatus = "open" | "running" | "approval" | null;
 
 /** The open session's row follows its live run; other rows use the server's last `status`. */
 function SessionRow({ server, store, ...row }: RowProps & { server: SessionsState["server"]; store: SessionStore | null }) {
-  if (store) return <RunProvider store={store}><LiveRow {...row} /></RunProvider>;
   const live = server?.id === row.session.session_id;
-  return <Row {...row} status={!live ? null : server.approvals ? "approval" : server.state === "idle" ? "open" : "running"} />;
+  const status = !live ? null : server.approvals ? "approval" : server.state === "idle" ? "open" : "running";
+  return <Row {...row} status={status} store={store} />;
 }
 
-function LiveRow(row: RowProps) {
+function LiveStatus() {
   const status = useRunStatus();
-  return <Row {...row} status={status === "idle" ? "open" : status} />;
+  const value = status === "idle" ? "open" : status;
+  return <span className="state" data-status={value}>{value === "approval" ? "needs approval" : value}</span>;
 }
 
-function Row({ session, now, selected, focusable, onSelect, status }: RowProps & { status: RowStatus }) {
+function Row({ session, now, selected, focusable, onSelect, status, store }: RowProps & { status: RowStatus; store: SessionStore | null }) {
   return (
     <li>
       <button type="button" className="session" data-status={status ?? undefined} aria-current={selected ? "true" : undefined} tabIndex={focusable ? 0 : -1} onClick={() => onSelect(session.session_id)}>
         <span className="session-title">{sessionTitle(session)}</span>
         <span className="session-meta">
           <time dateTime={session.updated_at} title={new Date(session.updated_at).toLocaleString()}>{ago(session.updated_at, now)}</time>
-          {status ? <span className="state" data-status={status}>{status === "approval" ? "needs approval" : status}</span> : null}
+          {store ? <RunProvider store={store}><LiveStatus /></RunProvider> : status ? <span className="state" data-status={status}>{status === "approval" ? "needs approval" : status}</span> : null}
           {session.model ? <span className="model">{session.model}</span> : null}
         </span>
       </button>
@@ -331,7 +338,7 @@ function Run({ client, sessions, open, opener, focusComposer }: { client: ZetaCl
     if (focusComposer.current) {
       focusComposer.current = false;
       scroll.current?.parentElement?.querySelector<HTMLTextAreaElement>(".dock textarea")?.focus({ preventScroll: true });
-    } else if (document.activeElement === opener.current || document.activeElement === document.body) scroll.current?.focus({ preventScroll: true });
+    } else if (!opener.current?.closest("#sessions") && (document.activeElement === opener.current || document.activeElement === document.body)) scroll.current?.focus({ preventScroll: true });
   }, [open.lease.store, opener, focusComposer]);
   const [undelivered, setUndelivered] = useState<ReadonlySet<string>>(() => new Set());
   const onUndelivered = useCallback((intents: string[]) => {

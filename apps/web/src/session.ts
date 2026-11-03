@@ -89,6 +89,7 @@ export type SessionsState = {
   listError: string | null;
   listLoading: boolean;
   listSlow: boolean;
+  listReady: boolean;
   /** The server's own session from `status` and what it is doing. */
   server: { id: string | null; state: ServerStatus["state"]; approvals: number } | null;
   selected: string | null;
@@ -111,7 +112,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
  * opens are released.
  */
 export function createSessions(connection: Source, { selected = null, onSelect }: { selected?: string | null; onSelect?: (id: string) => void } = {}) {
-  let state: SessionsState = { sessions: [], nextOffset: null, listError: null, listLoading: false, listSlow: false, server: null, selected, open: null, opening: null, openError: null, creating: false, createError: null };
+  let state: SessionsState = { sessions: [], nextOffset: null, listError: null, listLoading: false, listSlow: false, listReady: false, server: null, selected, open: null, opening: null, openError: null, creating: false, createError: null };
   const listeners = new Set<() => void>();
   const set = (patch: Partial<SessionsState>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); };
   let client: ZetaClient | null = null;
@@ -124,13 +125,13 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     if (listInFlight) return listInFlight;
     const target = client;
     if (!target) return;
-    set({ listLoading: true, listSlow: false, listError: null });
+    set({ listLoading: true, listSlow: false, listError: null, listReady: false });
     listSlowTimer = setTimeout(() => { if (live(target)) set({ listSlow: true }); }, 5_000);
     listInFlight = (async () => {
       try {
         const list = await listSessions(target);
         if (!live(target)) return;
-        set({ sessions: list.sessions, nextOffset: list.nextOffset, listError: null, listLoading: false, listSlow: false });
+        set({ sessions: list.sessions, nextOffset: list.nextOffset, listError: null, listLoading: false, listSlow: false, listReady: true });
       } catch (error) {
         if (live(target)) set({ listLoading: false, listSlow: false, listError: message(error) });
       } finally {
@@ -190,6 +191,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       if (state.open) set({ open: { ...state.open, stale: true }, opening: null });
       return;
     }
+    set({ listReady: false, listError: null });
     void (async () => {
       const target = client!;
       try {

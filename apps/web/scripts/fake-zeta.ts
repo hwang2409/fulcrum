@@ -211,7 +211,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   const decisions: Json[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-  const openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
+  let openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
   const composer = composerMethods(wait, { get: () => running, set: (value) => { running = value; } });
 
   const server = Bun.serve({
@@ -333,6 +333,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     /** Hands out a token the server will refuse. */
     async wrongToken() { await write({ port: server.port, token: "stale-token", pid: process.pid, origins: allowed }); },
     setMode(next: Mode) { mode = next; },
+    setOpenDelay(ms: number) { openDelay = ms; },
     /** `true`: new_session fails the way real zeta does while a turn runs (`require_idle`). */
     setRejectCreate(next: boolean) { rejectCreate = next; },
     setHistoryMode(next: HistoryMode) { currentHistoryMode = next; },

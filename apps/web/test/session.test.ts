@@ -92,10 +92,12 @@ test("on connect opens the active session before requesting the catalog", async 
   await tick();
   expect(view.state.open?.id).toBe("b");
   expect(view.state.listLoading).toBe(true);
+  expect(view.state.listReady).toBe(false);
   expect(fake.calls.map(([method]) => method).filter((method) => method !== "hello")).toEqual(["status", "status", "session_history", "session_history", "status", "list_sessions"]);
   release();
   await tick();
   expect(view.state.listLoading).toBe(false);
+  expect(view.state.listReady).toBe(true);
   expect(view.state.sessions).toHaveLength(3);
 });
 
