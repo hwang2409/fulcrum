@@ -1,12 +1,12 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-GlobalRegistrator.register();
+GlobalRegistrator.register({ url: "http://localhost:3000/gallery.html" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type RunSource, type SubAgentEvent } from "@fulcrum/core";
-import { Approval, RunNavigator, RunProvider, Timeline, useRunNavigation, type Renderers } from "../src/index.js";
+import { Approval, RunNavigator, RunProvider, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunNavigatorProps } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 
@@ -76,7 +76,7 @@ const userScroll = (scroller: HTMLElement, top: number) => act(() => {
   scroller.dispatchEvent(new Event("scroll"));
 });
 
-beforeEach(() => history.replaceState(null, ""));
+beforeEach(() => history.replaceState(null, "", "/gallery.html"));
 
 test("the default timeline renders a sub-agent row with its facts, and with no navigator it has no drill-in", () => {
   const { store } = storeOf([
@@ -93,6 +93,74 @@ test("the default timeline renders a sub-agent row with its facts, and with no n
   expect(q('[data-part="sub-agent-status"]').textContent).toBe("done");
   expect(q('[data-part="sub-agent-meta"]').textContent).toBe("2m 14s · 7 tools");
   expect(q('[data-part="sub-agent-activity"]').textContent).toBe("$ bun test");
+});
+
+// IntersectionObserver as the browser reports it, driven by the test; and the 1 s intervals that are running.
+function fakeVisibility() {
+  const observers = new Set<{ callback: IntersectionObserverCallback; targets: Set<Element> }>();
+  const saved = globalThis.IntersectionObserver;
+  globalThis.IntersectionObserver = class {
+    entry = { callback: (() => {}) as IntersectionObserverCallback, targets: new Set<Element>() };
+    constructor(callback: IntersectionObserverCallback) { this.entry.callback = callback; observers.add(this.entry); }
+    observe(target: Element) { this.entry.targets.add(target); }
+    unobserve(target: Element) { this.entry.targets.delete(target); }
+    disconnect() { this.entry.targets.clear(); observers.delete(this.entry); }
+  } as unknown as typeof IntersectionObserver;
+  const timers = new Set<unknown>();
+  const [setTimer, clearTimer] = [globalThis.setInterval, globalThis.clearInterval];
+  globalThis.setInterval = ((run: () => void, ms?: number) => {
+    const timer = setTimer(run, ms);
+    if (ms === 1_000) timers.add(timer);
+    return timer;
+  }) as typeof setInterval;
+  globalThis.clearInterval = ((timer: ReturnType<typeof setInterval>) => { timers.delete(timer); clearTimer(timer); }) as typeof clearInterval;
+  let hidden = false;
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  restore.push(() => {
+    globalThis.IntersectionObserver = saved;
+    globalThis.setInterval = setTimer;
+    globalThis.clearInterval = clearTimer;
+    delete (document as { hidden?: boolean }).hidden;
+  });
+  return {
+    timers: () => timers.size,
+    show: (target: Element, isIntersecting: boolean) => act(() => observers.forEach((observer) => {
+      if (observer.targets.has(target)) observer.callback([{ target, isIntersecting } as IntersectionObserverEntry], observer as never);
+    })),
+    hide: (value: boolean) => act(() => { hidden = value; document.dispatchEvent(new Event("visibilitychange")); }),
+  };
+}
+
+test("the elapsed clock runs only while a live row is in view and the page is visible", () => {
+  const visibility = fakeVisibility();
+  const started = Date.now() - 5_000;
+  const { store } = storeOf([child("a", { task: "live", startedAt: new Date(started).toISOString() }), child("b", { task: "also live", startedAt: new Date(started).toISOString() })]);
+  mount(<RunProvider store={store}><Timeline virtual={false} /></RunProvider>);
+  const [a, b] = all('[data-part="sub-agent"]');
+  // Mounted, but outside the scroll viewport (an overscan row): no clock.
+  expect(visibility.timers()).toBe(0);
+  visibility.show(a!, true);
+  visibility.show(b!, true);
+  expect(visibility.timers()).toBe(1);
+  expect(a!.querySelector('[data-part="sub-agent-meta"]')!.textContent).toBe("5s");
+  visibility.show(a!, false);
+  expect(visibility.timers()).toBe(1);
+  visibility.show(b!, false);
+  expect(visibility.timers()).toBe(0);
+
+  visibility.show(a!, true);
+  visibility.hide(true);
+  expect(visibility.timers()).toBe(0);
+  // Back from a background tab, the row shows the real time at once, not the time it was hidden at.
+  const now = Date.now;
+  Date.now = () => started + 65_000;
+  restore.push(() => { Date.now = now; });
+  visibility.hide(false);
+  expect(visibility.timers()).toBe(1);
+  expect(a!.querySelector('[data-part="sub-agent-meta"]')!.textContent).toBe("1m 5s");
+  act(() => root!.unmount());
+  root = undefined;
+  expect(visibility.timers()).toBe(0);
 });
 
 test("each state reads in words, and a pending approval is a badge on the row", () => {
@@ -145,7 +213,7 @@ test("opening a row resolves the child through the source, nests, and releases w
   expect(q('[data-part="message"]').textContent).toBe("in-a1");
   expect([held.get("a"), held.get("a1")]).toEqual([1, 1]);
 
-  // The root crumb jumps two levels back through browser history.
+  // The root crumb jumps two levels back.
   act(() => q('[data-part="run-breadcrumb"] button').click());
   await frames();
   expect(crumbs()).toEqual(["root"]);
@@ -153,9 +221,16 @@ test("opening a row resolves the child through the source, nests, and releases w
   expect(document.activeElement).toBe(q('[data-part="sub-agent"]'));
 });
 
-test("Escape and browser back both return one level", async () => {
+test("Escape and the back button each return one level, and the default navigator never touches browser history", async () => {
   const runs = { a: storeOf([commit("in-a"), child("a1")]), a1: storeOf([]) };
   const { source } = fakeSource(runs);
+  const calls: string[] = [];
+  for (const name of ["pushState", "replaceState", "go", "back", "forward"] as const) {
+    const real = history[name];
+    history[name] = ((...args: unknown[]) => { calls.push(name); return (real as (...a: unknown[]) => unknown).apply(history, args); }) as never;
+    restore.push(() => { history[name] = real as never; });
+  }
+  const length = history.length;
   mount(<RunNavigator store={storeOf([child("a")]).store} source={source} virtual={false} />);
   act(() => q('[data-part="sub-agent"]').click());
   act(() => q('[data-part="sub-agent"]').click());
@@ -164,10 +239,221 @@ test("Escape and browser back both return one level", async () => {
   act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
   await frames();
   expect(all('[data-part="run-breadcrumb"] li')).toHaveLength(2);
-
-  act(() => history.back());
+  act(() => q('[data-part="run-back"]').click());
   await frames();
   expect(all('[data-part="run-breadcrumb"] li')).toHaveLength(1);
+  expect(calls).toEqual([]);
+  expect(history.length).toBe(length);
+});
+
+test("a controlled path renders what the app says and reports every move through onPathChange", async () => {
+  const runs = { a: storeOf([commit("in-a"), child("a1", { name: "tester" })]), a1: storeOf([commit("in-a1")]) };
+  const { source, held } = fakeSource(runs);
+  const root = storeOf([child("a", { name: "reviewer" })]).store;
+  const changes: Array<[readonly string[], boolean]> = [];
+  const props = (path: readonly string[]): RunNavigatorProps => ({ store: root, source, path, onPathChange: (next, { replace }) => changes.push([next, replace]), virtual: false });
+  mount(<RunNavigator {...props(["a"])} />);
+  expect(q('[data-part="message"]').textContent).toBe("in-a");
+  // The app owns the path: a click asks, and nothing moves until the app answers.
+  act(() => q('[data-part="sub-agent"]').click());
+  expect(changes).toEqual([[["a", "a1"], false]]);
+  expect(q('[data-part="message"]').textContent).toBe("in-a");
+  act(() => root!.render(<RunNavigator {...props(["a", "a1"])} />));
+  expect(q('[data-part="message"]').textContent).toBe("in-a1");
+  expect([held.get("a"), held.get("a1")]).toEqual([1, 1]);
+  // A new array with the same ids is the same path: no lease is taken again.
+  act(() => root!.render(<RunNavigator {...props(["a", "a1"])} />));
+  expect([held.get("a"), held.get("a1")]).toEqual([1, 1]);
+  act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  act(() => q('[data-part="run-back"]').click());
+  act(() => q('[data-part="run-breadcrumb"] button').click());
+  expect(changes.slice(1)).toEqual([[["a"], false], [["a"], false], [[], false]]);
+  act(() => root!.render(<RunNavigator {...props([])} />));
+  expect([held.get("a"), held.get("a1")]).toEqual([0, 0]);
+});
+
+test("a deep link to a run that cannot open falls back to its deepest valid ancestor, with a notice", async () => {
+  const runs = { a: storeOf([commit("in-a"), child("gone", { name: "migrator" })]) };
+  const { source, held } = fakeSource(runs);
+  const changes: Array<[readonly string[], boolean]> = [];
+  mount(<RunNavigator store={storeOf([child("a")]).store} source={source} path={["a", "gone", "deeper"]} onPathChange={(next, { replace }) => changes.push([next, replace])} virtual={false} />);
+  await frames(1);
+  expect(q('[data-part="message"]').textContent).toBe("in-a");
+  expect(changes).toEqual([[["a"], true]]);
+  expect(q('[data-part="run-notice"]').textContent).toBe("could not open migrator: started before child runs were recorded");
+  expect(held.get("a")).toBe(1);
+});
+
+// A source whose opens settle when the test says, in any order.
+function deferredSource(runs: Record<string, ReturnType<typeof storeOf>>) {
+  type Call = { runId: string; signal: AbortSignal; released: boolean; resolve(): void; reject(reason: Error): void };
+  const calls: Call[] = [];
+  const source: RunSource = {
+    open: (runId, { signal }) => new Promise((resolve, reject) => {
+      const call: Call = {
+        runId, signal, released: false, reject,
+        resolve: () => resolve({ store: runs[runId]!.store, release() { call.released = true; } }),
+      };
+      calls.push(call);
+    }),
+  };
+  const settle = (call: Call, how: "resolve" | "reject") => act(async () => {
+    if (how === "resolve") call.resolve();
+    else call.reject(new Error(`${call.runId} broke`));
+    await new Promise((done) => setTimeout(done, 0));
+  });
+  return { source, calls, settle };
+}
+
+test("only the latest open shows: a stale resolve is released at once, a stale failure never shows", async () => {
+  const runs = { a: storeOf([commit("in-a")]), b: storeOf([commit("in-b")]) };
+  const { source, calls, settle } = deferredSource(runs);
+  mount(<RunNavigator store={storeOf([child("a", { name: "first" }), child("b", { name: "second" })]).store} source={source} virtual={false} />);
+  const open = (runId: string) => act(() => q(`[data-part="sub-agent"][data-id="sub-agent:${runId}"]`).click());
+  open("a");
+  expect(q('[data-part="run-navigator"]').getAttribute("aria-busy")).toBe("true");
+  open("b");
+  const [a, b] = calls;
+  expect(a!.signal.aborted).toBe(true);
+  expect(b!.signal.aborted).toBe(false);
+  // The newer open lands first, then the older one: the older is released and never shown.
+  await settle(b!, "resolve");
+  expect(q('[data-part="message"]').textContent).toBe("in-b");
+  await settle(a!, "resolve");
+  expect(a!.released).toBe(true);
+  expect(q('[data-part="message"]').textContent).toBe("in-b");
+  expect(b!.released).toBe(false);
+  expect(q('[data-part="run-navigator"]').hasAttribute("aria-busy")).toBe(false);
+
+  // Back at the root: an older open fails after a newer one starts. Its error never shows.
+  act(() => q('[data-part="run-back"]').click());
+  expect(b!.released).toBe(true);
+  open("a");
+  open("b");
+  const [a2, b2] = calls.slice(2);
+  await settle(a2!, "reject");
+  expect(q('[data-part="run-notice"]').textContent).toBe("");
+  // The newer one failing does show.
+  await settle(b2!, "reject");
+  expect(q('[data-part="run-notice"]').textContent).toBe("could not open second: b broke");
+  expect(all('[data-part="run-breadcrumb"] li')).toHaveLength(1);
+});
+
+test("Escape cancels a pending open, and unmount aborts pending opens and releases late leases", async () => {
+  const runs = { a: storeOf([commit("in-a")]) };
+  const { source, calls, settle } = deferredSource(runs);
+  mount(<RunNavigator store={storeOf([child("a")]).store} source={source} virtual={false} />);
+  act(() => q('[data-part="sub-agent"]').click());
+  act(() => q('[data-part="sub-agent"]').dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  expect(calls[0]!.signal.aborted).toBe(true);
+  await settle(calls[0]!, "resolve");
+  expect(calls[0]!.released).toBe(true);
+  expect(all('[data-part="run-breadcrumb"] li')).toHaveLength(1);
+
+  act(() => q('[data-part="sub-agent"]').click());
+  act(() => root!.unmount());
+  root = undefined;
+  expect(calls[1]!.signal.aborted).toBe(true);
+  await settle(calls[1]!, "resolve");
+  expect(calls[1]!.released).toBe(true);
+});
+
+test("a new root store while drilled in returns to the root, releases the children, and says so", async () => {
+  const runs = { a: storeOf([commit("in-a")]) };
+  const { source, held } = fakeSource(runs);
+  const changes: Array<[readonly string[], boolean]> = [];
+  const onPathChange: RunNavigatorProps["onPathChange"] = (next, { replace }) => changes.push([next, replace]);
+  mount(<RunNavigator store={storeOf([child("a")]).store} source={source} label="root" onPathChange={onPathChange} virtual={false} />);
+  act(() => q('[data-part="sub-agent"]').click());
+  expect(held.get("a")).toBe(1);
+  act(() => root!.render(<RunNavigator store={storeOf([commit("new-root")]).store} source={source} label="root" onPathChange={onPathChange} virtual={false} />));
+  expect(all('[data-part="run-breadcrumb"] li')).toHaveLength(1);
+  expect(q('[data-part="message"]').textContent).toBe("new-root");
+  expect(held.get("a")).toBe(0);
+  expect(q('[data-part="run-notice"]').textContent).toBe("the run changed; back at root");
+  expect(changes).toEqual([[["a"], false], [[], true]]);
+
+  // A controlled path is the app's to reset: the child stays open under the new root until the app moves it.
+  const next = storeOf([child("a")]).store;
+  act(() => root!.render(<RunNavigator store={next} source={source} path={["a"]} virtual={false} />));
+  act(() => root!.render(<RunNavigator store={storeOf([]).store} source={source} path={["a"]} virtual={false} />));
+  expect(q('[data-part="message"]').textContent).toBe("in-a");
+  expect(held.get("a")).toBe(1);
+});
+
+function HistoryNavigator(props: Omit<RunNavigatorProps, "path" | "onPathChange">) {
+  return <RunNavigator {...props} {...useHistoryRunPath("run")} />;
+}
+
+test("useHistoryRunPath: opening pushes, browser back pops, reload and deep links reconcile, unmount leaves no ghosts", async () => {
+  const runs = { a: storeOf([commit("in-a"), child("a1", { name: "tester" })]), a1: storeOf([commit("in-a1")]) };
+  const { source, held } = fakeSource(runs);
+  const store = storeOf([child("a", { name: "reviewer" })]).store;
+  const crumbs = () => all('[data-part="run-breadcrumb"] li').length;
+  const runParams = () => new URL(location.href).searchParams.getAll("run");
+  history.replaceState({ app: 1 }, "", "/gallery.html?theme=dracula#demo");
+  const base = history.length;
+
+  mount(<HistoryNavigator store={store} source={source} virtual={false} />);
+  act(() => q('[data-part="sub-agent"]').click());
+  act(() => q('[data-part="sub-agent"]').click());
+  expect(crumbs()).toBe(3);
+  expect(runParams()).toEqual(["a", "a1"]);
+  expect(new URL(location.href).searchParams.get("theme")).toBe("dracula");
+  expect(location.hash).toBe("#demo");
+  expect(history.state.app).toBe(1);
+  expect(history.length).toBe(base + 2);
+  act(() => history.back());
+  await frames();
+  expect(crumbs()).toBe(2);
+  expect(runParams()).toEqual(["a"]);
+  // Escape pops the entry the hook pushed, so browser back is not left with a ghost.
+  act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  await frames();
+  expect(crumbs()).toBe(1);
+  expect(runParams()).toEqual([]);
+
+  // Unmounting while drilled in walks back over exactly the entries the hook pushed.
+  act(() => q('[data-part="sub-agent"]').click());
+  act(() => q('[data-part="sub-agent"]').click());
+  act(() => root!.unmount());
+  root = undefined;
+  await frames();
+  expect(runParams()).toEqual([]);
+  expect(history.state.app).toBe(1);
+  expect([held.get("a"), held.get("a1")]).toEqual([0, 0]);
+
+  // A deep link (no entries of ours behind it) opens the whole path; back replaces instead of leaving the page.
+  history.replaceState({ app: 1 }, "", "/gallery.html?run=a&run=a1");
+  const before = history.length;
+  mount(<HistoryNavigator store={store} source={source} virtual={false} />);
+  await frames(1);
+  expect(crumbs()).toBe(3);
+  expect(q('[data-part="message"]').textContent).toBe("in-a1");
+  act(() => q('[data-part="run-back"]').click());
+  await frames();
+  expect(crumbs()).toBe(2);
+  expect(runParams()).toEqual(["a"]);
+  expect(history.length).toBe(before);
+  // An entry someone else pushed is never stepped back over.
+  act(() => q('[data-part="sub-agent"]').click());
+  history.pushState({ ...history.state, other: true }, "", location.href);
+  act(() => q('[data-part="run-back"]').click());
+  await frames();
+  expect(history.state.other).toBe(true);
+  expect(runParams()).toEqual(["a"]);
+  act(() => root!.unmount());
+  root = undefined;
+
+  // A deep link to a run that is gone falls back, and the URL is corrected in place.
+  history.replaceState(null, "", "/gallery.html?run=a&run=nope");
+  const length = history.length;
+  mount(<HistoryNavigator store={store} source={source} virtual={false} />);
+  await frames(1);
+  expect(crumbs()).toBe(2);
+  expect(runParams()).toEqual(["a"]);
+  expect(history.length).toBe(length);
+  expect(q('[data-part="run-notice"]').textContent).toBe("could not open nope: started before child runs were recorded");
 });
 
 test("a pending approval in a child shows on the parent row and the breadcrumb, and resolves from inside the child", async () => {
@@ -242,7 +528,7 @@ test("back to a parent that was following resumes at its new bottom", async () =
   act(() => q('[data-part="sub-agent"]').click());
   await frames();
   parent.send(commit("while-away-1"), commit("while-away-2"));
-  act(() => history.back());
+  act(() => q('[data-part="run-back"]').click());
   await frames();
   const node = container.querySelector<HTMLElement>('[data-part="run-scroll"]')!;
   expect(node.scrollTop).toBe(node.scrollHeight - node.clientHeight);
