@@ -193,6 +193,8 @@ export type RunEvent =
       text: string;
       mode: string;
       attachments?: unknown[];
+      /** The server's durable identity for this accepted message, when client delivery IDs were negotiated. */
+      delivery_id?: string;
       /**
        * The client's identity for the user intent this message carries out. A later user message with the same intent
        * replaces the earlier row in place instead of adding one: a steer the harness dropped and the client resent as

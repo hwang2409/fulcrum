@@ -7,9 +7,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   /**
-   * The user intent this request carries out (`send`, `steer`). Zeta echoes an accepted message as `user_message`
-   * before it replies, without the delivery id, so the first `user_message` that arrives while this request is pending
-   * gets this `intent` (see `RunEvent`): a later message with the same intent then replaces that row instead of adding one.
+   * The user intent this request carries out (`send`, `steer`). On old servers, the first matching `user_message`
+   * echo receives this intent (see `RunEvent`). New servers match echoes by their negotiated delivery ID instead.
    */
   intent?: string;
 }
@@ -32,7 +31,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
   const maxSessions = options.maxSessions ?? 100;
-  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; intent?: string; text?: unknown };
+  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; intent?: string; text?: unknown; deliveryId?: string };
   const pending = new Map<number, Pending>();
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
@@ -119,12 +118,14 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;
-    // Fallback until zeta echoes delivery_id: the echo belongs to a pending request with an intent and the same text.
-    const owner = [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text);
+    const deliveryIds = negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_delivery_id");
+    const owner = deliveryIds
+      ? event.delivery_id === undefined ? undefined : [...pending.values()].find((request) => request.deliveryId === event.delivery_id)
+      : [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text);
     if (!owner) return event;
     const intent = owner.intent;
     owner.intent = undefined;
-    return { ...event, intent };
+    return { ...event, ...(intent === undefined ? {} : { intent }) };
   };
   const settle = (id: number, callback: (request: Pending) => void) => {
     const request = pending.get(id); if (!request) return;
@@ -169,7 +170,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
       const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" })));
-      const item: Pending = { resolve, reject, intent: requestOptions.intent, text: requestOptions.intent === undefined ? undefined : params.text };
+      const item: Pending = { resolve, reject, intent: requestOptions.intent, text: requestOptions.intent === undefined ? undefined : params.text, deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined };
       pending.set(id, item);
       if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true });
       if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs);

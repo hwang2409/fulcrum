@@ -414,7 +414,13 @@ export function reduceAllWithEntities(
         break;
       }
       case "user_message": {
-        const id = event.intent === undefined ? `user:${next.nextId++}` : `user:intent:${event.intent}`;
+        const intentId = event.intent === undefined ? undefined : `user:intent:${event.intent}`;
+        const deliveryId = event.delivery_id === undefined ? undefined : `user:delivery:${event.delivery_id}`;
+        const existingDelivery = deliveryId === undefined ? undefined : next.outline.find(({ id: itemId }) => {
+          const item = getItem(itemId);
+          return item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === event.delivery_id;
+        })?.id;
+        const id = intentId !== undefined && getItem(intentId) ? intentId : existingDelivery ?? intentId ?? deliveryId ?? `user:${next.nextId++}`;
         if (getItem(id)) setItem({ id, type: "user", event });
         else appendItem({ id, type: "user", event });
         break;

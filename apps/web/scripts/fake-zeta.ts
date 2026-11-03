@@ -153,10 +153,14 @@ function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): 
     if (method === "steer" && !running.get()) return { error: { code: -32005, message: "no turn is running for steering" } };
     const value = String(params.text ?? "");
     sent.push({ method, text: value, delivery_id: delivery });
-    send({ event: "user_message", session_id: active, text: value, mode: method, attachments: [] });
+    send({ event: "user_message", session_id: active, text: value, mode: method, attachments: [], ...(delivery ? { delivery_id: delivery } : {}) });
     const accepted = method === "send" ? { accepted: true, session_id: active } : { accepted: true };
     if (delivery) { deliveries.set(delivery, accepted); statuses.set(delivery, method === "steer" ? "queued" : "delivered"); }
-    if (method === "steer") { if (delivery) chat?.steers.push(delivery); return { result: accepted }; }
+    if (method === "steer") {
+      histories[active] = [...(histories[active] ?? []), { id: `steer-${sent.length}`, role: "user", content: [text(value)], delivery_id: delivery, tool_result: null }];
+      if (delivery) chat?.steers.push(delivery);
+      return { result: accepted };
+    }
     histories[active] = [...(histories[active] ?? []), { id: `sent-${sent.length}`, role: "user", content: [text(value)], tool_result: null }];
     // After the reply, as zeta starts the turn once the send is persisted.
     queueMicrotask(() => void chatTurn(active, send));
@@ -242,7 +246,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "busy" || sockets.size > 1) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
-          return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
+          return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
         }
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
