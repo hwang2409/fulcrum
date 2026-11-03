@@ -132,7 +132,9 @@ try {
     if (longTasks.length) failures.push(`${name}: a main-thread task reached 50 ms`);
     // The mount's gap also holds markdown's one-shot parse of the 440 kB message (about 11 ms at 4x), which runs in the
     // same task and is not this path's work: there only long tasks fail, and the gap is reported.
-    if (name !== "markdown" && result.maxProbeGap >= 50) failures.push(`${name}: the main thread was busy for ${result.maxProbeGap.toFixed(1)} ms`);
+    // The probe gap also holds runner scheduling jitter (one CI run measured 51.1 ms with no long task). The bug it
+    // guards froze the page for 5,388 ms, so the gap bound is 100 ms; real 50 ms tasks still fail through longTasks.
+    if (name !== "markdown" && result.maxProbeGap >= 100) failures.push(`${name}: the main thread was busy for ${result.maxProbeGap.toFixed(1)} ms`);
   }
   const { queue } = results;
   if (!queue.smallColored || !queue.bigColored) failures.push(`queue: both blocks must color (${JSON.stringify(queue)})`);
