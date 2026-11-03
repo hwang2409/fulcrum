@@ -29,6 +29,8 @@ export interface RunState {
   activeToolIds: Record<string, boolean>;
   /** Tool call id -> its approval's item id. */
   toolApprovals: Record<string, string>;
+  /** Durable message identities (for example delivery ids) to their stable user row. */
+  messageAliases: Record<string, string>;
 }
 
 export const initialState: RunState = {
@@ -42,6 +44,7 @@ export const initialState: RunState = {
   nextId: 1,
   activeToolIds: {},
   toolApprovals: {},
+  messageAliases: {},
 };
 
 const messageItemId = (id: string) => `message:${id}`;
@@ -174,6 +177,7 @@ export function reduceAllWithEntities(
     activeMessageId: state.activeMessageId,
     activeToolIds: state.activeToolIds,
     toolApprovals: state.toolApprovals,
+    messageAliases: state.messageAliases,
   };
   const getItem = (id: string) => entities.get(id);
   const setItem = (item: RunItem) => entities.set(item);

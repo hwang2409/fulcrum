@@ -148,3 +148,11 @@ test("stop is a session abort", async () => {
   expect(await stopTurn(client)).toEqual({ aborted: true });
   expect(calls).toEqual([["abort", {}]]);
 });
+
+test("accepted delivery without an echo reconciles one synthetic user event", async () => {
+  const { client } = await server(() => ok);
+  const events: unknown[] = [];
+  const delivery = createDelivery(ids(), (event) => events.push(event));
+  await delivery.submit(client, "hello", false);
+  expect(events).toEqual([{ type: "user_message", text: "hello", mode: "send", intent: "id-1", delivery_id: "id-1" }]);
+});

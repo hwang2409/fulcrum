@@ -198,3 +198,16 @@ test("random streams with early reads: every snapshot's edits rebuild its items 
     }
   }
 });
+
+test("live and history user messages join one row through original and replacement delivery ids", () => {
+  const liveFirst = createRunStore((flush) => flush());
+  liveFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-1" });
+  liveFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-2" });
+  liveFirst.dispatch({ type: "user_message", text: "go", mode: "send", delivery_id: "delivery-1" });
+  expect(liveFirst.getOutline().filter((item) => item.kind === "user")).toHaveLength(1);
+
+  const historyFirst = createRunStore((flush) => flush());
+  historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", delivery_id: "delivery-1" });
+  historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-2" });
+  expect(historyFirst.getOutline().filter((item) => item.kind === "user")).toHaveLength(1);
+});
