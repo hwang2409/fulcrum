@@ -17,6 +17,7 @@ import { chromium, type Page } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { checkComposer } from "./composer-check.js";
+import { checkStreams } from "./stream-check.js";
 import { checkSubAgents } from "./subagent-check.js";
 import { checkWarmBodies } from "./warm-check.js";
 import { checkLineTokens } from "./token-check.js";
@@ -309,6 +310,7 @@ try {
   failures.push(...await checkWarmBodies(browser, port));
   failures.push(...await checkSubAgents(browser, port));
   failures.push(...await checkComposer(browser, port));
+  failures.push(...await checkStreams(browser, port));
   const replay = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await replay.addInitScript(() => {
     const request = window.requestAnimationFrame.bind(window);

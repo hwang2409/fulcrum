@@ -48,6 +48,15 @@ const CodeBlock = ({ id, block, highlight }: { id: string; block: Extract<Block,
   ? <HighlightContext.Provider value={highlight}><div data-part="md-code-block" data-language={block.language} data-size="large"><CodeViewer text={block.value} language={block.language} id={id} done={!block.open} /></div></HighlightContext.Provider>
   : <InlineCodeBlock id={id} block={block} highlight={highlight} />;
 
+// Tokens for `code`: tokens of an older revision that spell a prefix of it keep their colors and get the rest as plain
+// text, so a block never shows fewer characters than its source (a closing fence waits on its done colors).
+function covering(tokens: Token[] | null, code: string): Token[] | null {
+  if (!tokens) return null;
+  const spelled = tokens.map((token) => token.text).join("");
+  if (spelled === code) return tokens;
+  return code.startsWith(spelled) ? [...tokens, { text: code.slice(spelled.length) }] : null;
+}
+
 function InlineCodeBlock({ id, block, highlight }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) {
   const version = useRef(0);
   const previous = useRef("");
@@ -84,7 +93,7 @@ function InlineCodeBlock({ id, block, highlight }: { id: string; block: Extract<
     return () => { mounted.current = false; };
   }, [currentVersion, highlight, key]);
 
-  const shown = immediate ?? tokens;
+  const shown = covering(immediate ?? tokens, block.value);
   return <pre data-part="md-code-block" data-language={block.language}><code>{shown ? <Tokens tokens={shown} /> : block.value}</code></pre>;
 }
 
