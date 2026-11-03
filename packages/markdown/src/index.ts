@@ -940,6 +940,7 @@ export function createStreamingDocument(): StreamingDocument {
   const updateTableCell = (record: TableCellRecord) => {
     unregister(record);
     const children = parseInline(record.source, false, environment());
+    markPendingReferences(children, blockedReferences);
     if (record.header) record.table.header[record.column] = children;
     else record.table.rows[record.row]![record.column] = children;
     registerReferences(record);
@@ -948,6 +949,8 @@ export function createStreamingDocument(): StreamingDocument {
 
   const createTableCell = (table: TableBlock, source: string, header: boolean, row: number, column: number) => {
     const record: TableCellRecord = { table, source, header, row, column, labels: new Set() };
+    const children = header ? table.header[column] : table.rows[row]?.[column];
+    if (children) markPendingReferences(children, blockedReferences);
     registerReferences(record);
     return record;
   };
