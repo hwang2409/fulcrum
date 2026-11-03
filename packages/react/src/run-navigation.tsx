@@ -123,6 +123,9 @@ export function RunNavigator({ store, source, runId, label = "run", renderers, h
     const target = focus.current;
     focus.current = null;
     if (!target) return;
+    // On a narrow bar the ancestry scrolls; keep the current run in view at its end.
+    const breadcrumb = crumbRef.current?.closest<HTMLElement>('[data-part="run-breadcrumb"]');
+    if (breadcrumb) breadcrumb.scrollLeft = breadcrumb.scrollWidth;
     if ("crumb" in target) return crumbRef.current?.focus({ preventScroll: true });
     let frame = 0;
     let tries = 0;
