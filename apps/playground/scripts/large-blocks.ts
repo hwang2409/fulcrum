@@ -63,27 +63,6 @@ const behind = await highlight(small.replace("0", "1"), "cpp", { id: "behind", v
 const behindMs = performance.now() - asked;
 const bigTokens = await big;
 results.queue = { ownMs: Math.round(ownMs), behindMs: Math.round(behindMs), smallColored: typed(behind), bigTokens: bigTokens.length, bigColored: typed(bigTokens), longTasks: [], maxLongTask: 0, maxProbeGap: 0 };
-// A fence under the whole-block cap (220 dense lines, 9,900 characters): its mounted ranges go to the worker first and
-// color, then the whole block is asked for; a small block asked for right after the mount still colors in time.
-const underRoot = createRoot(document.body.appendChild(document.createElement("div")));
-results.under = await measure(async () => {
-  const from = window.__posted.length;
-  const started = performance.now();
-  flushSync(() => underRoot.render(createElement(Markdown, { id: "under", source: "\`\`\`cpp\n" + line.repeat(220) + "\`\`\`\n", highlight })));
-  const asked = performance.now();
-  const smallTokens = await highlight(small.replace("0", "2"), "cpp", { id: "behind-under", version: 1, state: "done" });
-  const behindMs = performance.now() - asked;
-  const viewer = () => document.querySelector("[data-part=md-code-block][data-size=large]");
-  await until(() => viewer()?.querySelector("[class^=tok-]"));
-  const colorMs = performance.now() - started;
-  await until(() => window.__posted.slice(from).some((post) => post.id.endsWith(":whole") && window.__replied[post.requestId]), 10_000).catch(() => {});
-  const posts = window.__posted.slice(from).filter((post) => post.id.startsWith("under"));
-  const wholeAt = posts.findIndex((post) => post.id.endsWith(":whole"));
-  const whole = posts[wholeAt];
-  const firstRanges = posts.filter((post) => post.at < asked);
-  underRoot.unmount();
-  return { colorMs: Math.round(colorMs), behindMs: Math.round(behindMs), smallColored: typed(smallTokens), ranges: firstRanges.length, wholeAt, wholeAfterRanges: wholeAt >= firstRanges.length && firstRanges.length > 0, wholeMs: whole && window.__replied[whole.requestId] ? Math.round(window.__replied[whole.requestId] - whole.at) : null };
-});
 // The markdown fence, from mount until its first lines are colored, and then for one more second.
 const fence = "\`\`\`cpp\\n" + code + "\`\`\`\\n";
 const parsing = performance.now();
@@ -95,6 +74,26 @@ flushSync(() => root.render(createElement(Markdown, { id: "small", source: "\`\`
 await nextFrame();
 await nextFrame();
 const block = () => document.querySelector("[data-part=md-code-block]");
+// A fence under the whole-block cap (220 dense lines, 9,900 characters): its mounted ranges go to the worker first and
+// color, then the whole block is asked for; a small block asked for right after the mount still colors in time.
+const underRoot = createRoot(document.body.appendChild(document.createElement("div")));
+results.under = await measure(async () => {
+  const from = window.__posted.length;
+  const started = performance.now();
+  flushSync(() => underRoot.render(createElement(Markdown, { id: "under", source: "\`\`\`cpp\\n" + line.repeat(220) + "\`\`\`\\n", highlight })));
+  const asked = performance.now();
+  const smallTokens = await highlight(small.replace("0", "2"), "cpp", { id: "behind-under", version: 1, state: "done" });
+  const behindMs = performance.now() - asked;
+  const viewer = () => document.querySelector("[data-part=md-code-block][data-size=large]");
+  await until(() => viewer()?.querySelector("[class^=tok-]"));
+  const colorMs = performance.now() - started;
+  await until(() => window.__posted.slice(from).some((post) => post.id.endsWith(":whole") && window.__replied[post.requestId]), 10_000).catch(() => {});
+  const posts = window.__posted.slice(from).filter((post) => post.id.startsWith("under"));
+  const wholeAt = posts.findIndex((post) => post.id.endsWith(":whole"));
+  const whole = posts[wholeAt];
+  underRoot.unmount();
+  return { colorMs: Math.round(colorMs), behindMs: Math.round(behindMs), smallColored: typed(smallTokens), ranges: wholeAt, wholeAfterRanges: wholeAt > 0, wholeMs: whole && window.__replied[whole.requestId] ? Math.round(window.__replied[whole.requestId] - whole.at) : null };
+});
 results.markdown = await measure(async () => {
   const started = performance.now();
   flushSync(() => root.render(createElement(Markdown, { id: "large", source: fence, highlight })));
