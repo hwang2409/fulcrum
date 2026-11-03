@@ -365,9 +365,29 @@ export class MarkdownLineResolver {
     const marker = startsQuote ? undefined : listMarker(probe);
     const startsContainer = startsQuote || Boolean(marker);
     const startsInterruptingContainer = startsQuote || Boolean(marker && (!marker.ordered || /^1[.)]$/.test(marker.marker) || unmatched && this.stack.length > 1 || this.stack.some((frame) => frame.kind === "list" && frame.ordered)));
-    const unmatchedContent = cursor.line.slice(cursor.offset);
-    const startsBlock = startsInterruptingContainer || this.openLeaf?.kind === "paragraph" && (this.openLeaf.tableEligible && this.openLeaf.content.includes("|") && isTableDelimiter(unmatchedContent) || this.openLeaf.tableEligible && /^ {0,3}(?:=+|-+)\s*$/.test(unmatchedContent)) || /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/.test(unmatchedContent);
+    const startsBlock = startsInterruptingContainer || this.startsLeafBlock(cursor);
     return { marker, startsContainer, startsBlock };
+  }
+
+  /**
+   * Whether the unmatched content starts a heading, fence, thematic break, setext underline, or table delimiter.
+   * Every one of these begins with a character from a small set after the indent, so the first character is read
+   * before any regex runs: the growing line is checked on every delta, and a whole-line regex would make each
+   * continuation line quadratic.
+   */
+  private startsLeafBlock(cursor: Cursor) {
+    const { line, offset } = cursor;
+    let first = offset;
+    while (line.charCodeAt(first) === 32 || line.charCodeAt(first) === 9) first++;
+    const lead = line[first];
+    if (lead === undefined || !"#`~*-_=|:".includes(lead)) return false;
+    const unmatchedContent = line.slice(offset);
+    const leaf = this.openLeaf;
+    if (leaf?.kind === "paragraph" && leaf.tableEligible) {
+      if ("|-:".includes(lead) && leaf.content.includes("|") && isTableDelimiter(unmatchedContent)) return true;
+      if ("=-".includes(lead) && /^ {0,3}(?:=+|-+)\s*$/.test(unmatchedContent)) return true;
+    }
+    return /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/.test(unmatchedContent);
   }
 
   private matchContinuations(line: string) {
