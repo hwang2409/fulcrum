@@ -10,7 +10,11 @@ const inlineText = (nodes: readonly Inline[], provisional: boolean): string => n
   : node.type === "break" ? "\n"
   : inlineText(node.children, provisional)).join("");
 
-const paragraphs = (blocks: readonly Block[]) => blocks.map((block) => block.type === "paragraph" ? inlineText(block.children, false) : "");
+const paragraphs = (blocks: readonly Block[]): string[] => [...blocks].flatMap((block) =>
+  block.type === "paragraph" || block.type === "heading" ? [inlineText(block.children, false)]
+  : block.type === "blockquote" ? paragraphs(block.children)
+  : block.type === "list" ? block.items.flatMap((item) => paragraphs(item.children))
+  : []);
 
 function isSubsequence(needle: string, haystack: string) {
   let offset = 0;
@@ -58,6 +62,16 @@ test("a committed line keeps a stray closing bracket and a trailing reference la
 test("strict fuzz repro: a committed line keeps the bracket before a link-like word", () => {
   for (const split of splits)
     expect(paragraphs(streamed("d]https:/ [shared].\n", split).render()), `split ${split}`).toEqual(["d]https:/ shared."]);
+});
+
+test("a closed paragraph hides reference brackets that a later definition removes", () => {
+  for (const source of ["a\n[shared]: x\n\nnext\n\n[shared]: /u\n", "[s[shared].\n\nnext\n\n[shared]: /u\n"]) {
+    const final = paragraphs(parseMarkdown(source)).join(" ").replace(/\s+/g, " ").trim();
+    for (const split of splits) {
+      const active = paragraphs(streamed(source, split).render()).join(" ").replace(/\s+/g, " ").trim();
+      expect(isSubsequence(active, final), `${JSON.stringify(source)}, split ${split}: ${JSON.stringify(active)} vs ${JSON.stringify(final)}`).toBe(true);
+    }
+  }
 });
 
 test("committing a long rich line is linear in its length", () => {

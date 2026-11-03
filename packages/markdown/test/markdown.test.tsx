@@ -352,7 +352,8 @@ test("every corpus character prefix streams once and finishes identically", () =
       const parses = document.stats.tailParses;
       document.append(character);
       const current = document.render();
-      expect(document.stats.tailParses - parses).toBeLessThanOrEqual(1);
+      // One parse for the committed line, plus one final parse of the paragraph that line closes.
+      expect(document.stats.tailParses - parses).toBeLessThanOrEqual(2);
       expect(current).toBe(document.render());
     }
     document.finish();

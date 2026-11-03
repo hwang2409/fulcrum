@@ -87,4 +87,24 @@ for (const deltaSize of deltaSizes) for (const [name, source] of cases) {
 const millionByteParagraph = measure("a".repeat(1_000_000), 1_024);
 console.log(`1024 B  ${"1 MB soft-wrapped paragraph".padEnd(22)} p95 ${millionByteParagraph.p95.toFixed(3)} ms  p99 ${millionByteParagraph.p99.toFixed(3)} ms  max ${millionByteParagraph.max.toFixed(3)} ms  work ${millionByteParagraph.workRatio.toFixed(2)}x  max-work ${millionByteParagraph.maxWork}  max-copy ${millionByteParagraph.maxCopied}`);
 if (failsGate(millionByteParagraph) || millionByteParagraph.maxCopied > 1_024) failed = true;
+
+// The newline that commits a long rich line parses it once; quadratic scans took 6-8 s at 1 MB.
+const richUnit = "plain **strong** and *emphasis* with `code`. ";
+const commitTime = (length: number) => {
+  const samples = Array.from({ length: 3 }, () => {
+    const document = createStreamingDocument();
+    document.append(richUnit.repeat(Math.ceil(length / richUnit.length)).slice(0, length));
+    document.render();
+    const start = performance.now();
+    document.append("\n");
+    document.render();
+    return performance.now() - start;
+  });
+  return samples.sort((a, b) => a - b)[1]!;
+};
+const commits = [100_000, 200_000, 1_000_000].map((length) => [length, commitTime(length)] as const);
+for (const [length, time] of commits) console.log(`newline  ${`rich line commit ${length / 1000}k`.padEnd(22)} median ${time.toFixed(3)} ms`);
+const commitRatio = commits[2]![1] / Math.max(commits[0]![1], 0.1);
+console.log(`rich line commit growth 100k -> 1 MB: ${commitRatio.toFixed(1)}x (linear is ~10x)`);
+if (commitRatio > 25 || commits[2]![1] > 500) failed = true;
 if (failed) process.exit(1);
