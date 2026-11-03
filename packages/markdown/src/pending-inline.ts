@@ -183,7 +183,7 @@ export class PendingInline {
     return this.openers[0];
   }
 
-  /** Appends text to the line and returns its provisional suffix nodes. */
+  /** Appends text to the line and returns the nodes of its suffix, which later text may still restyle. */
   append(delta: string): Inline[] {
     this.content += delta;
     const cut = cutPoint(this.content, this.content.length - PENDING_INLINE_SUFFIX);
@@ -259,6 +259,6 @@ export class PendingInline {
     const nodes = this.parse(context + source, true);
     const first = nodes[0];
     if (context.startsWith("[") && first && (first.type === "link" && !first.children.length || first.type === "text" && !first.value)) nodes.shift();
-    return nodes.length ? [{ type: "pending-text", children: nodes }] : [];
+    return nodes;
   }
 }

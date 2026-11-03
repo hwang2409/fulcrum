@@ -351,9 +351,11 @@ function withoutOpenLink(source: string) {
   if (bracket < 0) return source;
   const rest = source.slice(bracket + 1);
   const close = rest.indexOf("]");
-  if (close < 0) return source.slice(0, bracket) + rest;
+  // The label of a trailing `[text][label` is never shown; plain open text stays visible.
+  const label = source[bracket - 1] === "]";
+  if (close < 0) return source.slice(0, bracket) + (label ? "" : rest);
   const destination = rest.slice(close + 1);
-  if (!destination) return source.slice(0, bracket) + rest.slice(0, close);
+  if (!destination) return source.slice(0, bracket) + (label ? "" : rest.slice(0, close));
   if (!destination.startsWith("(")) return source;
   let depth = 0;
   for (const character of destination) {
@@ -591,21 +593,23 @@ const normalizeReferenceLabel = (label: string) => label.trim().replace(/\s+/g, 
 // The open paragraph's last line can still become a table header, which turns its pipes into cell borders.
 function hideTableCandidatePipes(inlines: Inline[]) {
   for (const inline of inlines) {
-    if (inline.type === "text") inline.value = inline.value.replace(/\|/g, "");
+    if (inline.type === "text") inline.value = inline.value.replace(/[ \t]*\|[ \t]*/g, "");
     else if ("children" in inline) hideTableCandidatePipes(inline.children);
   }
 }
 
 // A `[label]` in text can still become a link while a later definition can arrive.
-function markPendingReferences(inlines: Inline[]) {
+// `labels`, when given, are the unresolved labels of the parsed source; escaped brackets are not among them.
+function markPendingReferences(inlines: Inline[], labels?: ReadonlySet<string>) {
   for (let index = 0; index < inlines.length; index++) {
     const node = inlines[index]!;
-    if ("children" in node) { markPendingReferences(node.children); continue; }
+    if ("children" in node) { markPendingReferences(node.children, labels); continue; }
     if (node.type !== "text" || !node.value.includes("[")) continue;
     const replacement: Inline[] = [];
     let offset = 0;
     for (const match of node.value.matchAll(/!?\[([^[\]\n]+)\](?:\[([^[\]\n]*)\])?/g)) {
       if (match.index === undefined || match.index > 0 && node.value[match.index - 1] === "\\") continue;
+      if (labels && !labels.has(normalizeReferenceLabel(match[2] || match[1]!))) continue;
       if (match.index > offset) replacement.push({ type: "text", value: node.value.slice(offset, match.index) });
       if (!match[0].startsWith("!")) replacement.push({ type: "text", value: match[1]! });
       offset = match.index + match[0].length;
@@ -617,13 +621,17 @@ function markPendingReferences(inlines: Inline[]) {
   }
 }
 
+// Labels of every unescaped `[label]` in `source`; parsed text has lost its escapes, so they are read here.
+const bracketLabels = (source: string) => new Set(Array.from(source.matchAll(/(?<!(?<!\\)(?:\\\\)*\\)\[([^[\]\n]+)\]/g), (match) => normalizeReferenceLabel(match[1]!)));
+
 function unresolvedReferenceLabels(source: string, references: Environment["references"]) {
   const labels = new Set<string>();
-  for (const match of source.matchAll(/!?\[([^\]\n]+)\]\[([^[\]\n]*)\]/g)) {
+  // A `[` after an odd number of backslashes is escaped and can never start a reference.
+  for (const match of source.matchAll(/(?<!(?<!\\)(?:\\\\)*\\)!?\[([^\]\n]+)\]\[([^[\]\n]*)\]/g)) {
     const label = normalizeReferenceLabel(match[2] || match[1]!);
     if (!references?.[label]) labels.add(label);
   }
-  for (const match of source.matchAll(/(?<!!)\[([^[\]\n]+)\](?![\[(])/g)) {
+  for (const match of source.matchAll(/(?<!!|(?<!\\)(?:\\\\)*\\)\[([^[\]\n]+)\](?![\[(])/g)) {
     const label = normalizeReferenceLabel(match[1]!);
     if (!references?.[label]) labels.add(label);
   }
@@ -932,7 +940,7 @@ export function createStreamingDocument(): StreamingDocument {
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment())
       : [{ type: "text", value: inlineSource }];
-    if (pendingReferences) markPendingReferences(record.block.children);
+    if (pendingReferences) markPendingReferences(record.block.children, bracketLabels(inlineSource));
     if (streaming) hideTableCandidatePipes(record.block.children);
     registerReferences(record);
     tailParses++;
@@ -1156,8 +1164,11 @@ export function createStreamingDocument(): StreamingDocument {
 
   const parsePending = (source: string, streaming: boolean) => {
     const nodes = parseInline(source, streaming, environment());
-    markPendingReferences(nodes);
+    markPendingReferences(nodes, bracketLabels(source));
     hideTableCandidatePipes(nodes);
+    // Blanks at the end of the growing line may still sit before a cell pipe.
+    const last = nodes.at(-1);
+    if (streaming && last?.type === "text") last.value = last.value.replace(/[ \t]+$/, "");
     return nodes;
   };
 

@@ -177,7 +177,7 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
     return EMPTY;
   // A growing `[label]` at the line start can still become a definition; labels end within 999 characters.
-  if (growing) return /^ {0,3}\[[^\]]{0,999}\]?[ \t]*$/.test(content) ? EMPTY : { content, kind: "paragraph", offset: line.length - content.length };
+  if (growing) return /^[ \t]*\[[^\]]{0,999}\]?[ \t]*$/.test(content) ? EMPTY : { content, kind: "paragraph", offset: line.length - content.length };
   // An open `[` may still close on a later line.
   const openBracket = content.lastIndexOf("[");
   if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
