@@ -4,7 +4,7 @@ import type { ItemState } from "../parts.js";
 import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
 import { hasControls, parseAnsi, type AnsiText } from "./ansi.js";
 import { jsonText } from "./json.js";
-import { needsTextViewer, TextViewer, useTextMetrics, viewerBlocks, type TextFormat } from "./text-viewer.js";
+import { CopyButton, needsTextViewer, TextViewer, useTextMetrics, viewerBlocks, type CopyValue, type TextFormat } from "./text-viewer.js";
 
 const JSON_FORMAT: TextFormat = { language: "json" };
 const HEAD_LINES = 40;
@@ -191,26 +191,6 @@ export function NumberedLines({ text, start = 1, id, language, done = true }: Nu
       {lines.map((line, index) => <Row key={index} number={start + index}>{tokenRows?.[index] ? <Tokens tokens={tokenRows[index]} /> : line}</Row>)}
     </div>
   );
-}
-
-export type CopyValue = string | (() => string);
-
-export function CopyButton({ value, label }: { value: CopyValue; label: string }) {
-  const [result, setResult] = useState<"copied" | "copy failed">();
-  useEffect(() => {
-    if (!result) return;
-    const timer = setTimeout(() => setResult(undefined), 1500);
-    return () => clearTimeout(timer);
-  }, [result]);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(typeof value === "function" ? value() : value);
-      setResult("copied");
-    } catch {
-      setResult("copy failed"); // no clipboard (insecure context) or permission denied
-    }
-  };
-  return <button type="button" data-action="copy" aria-label={`copy ${label}`} onClick={copy}>{result ?? `copy ${label}`}</button>;
 }
 
 /** The last row of every body: facts on the left (exit code, cwd, size), copy buttons on the right. */

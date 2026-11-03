@@ -591,6 +591,9 @@ ul[data-part="md-list"] { list-style: "- "; }
   white-space: pre;
 }
 [data-part="md-code-block"] > code { padding: 0; border: 0; background: none; font: inherit; }
+/* A large block is the shared code viewer (counts, copy, a scroll box); its rows bring their own padding. */
+[data-part="md-code-block"][data-size="large"] { padding: 0; white-space: normal; }
+[data-part="md-code-block"][data-size="large"]::before { margin: 0; padding: 4px 12px; }
 /* The language as a caption line: a float would sit on top of long lines when the block scrolls. */
 [data-part="md-code-block"][data-language]::before {
   content: attr(data-language);

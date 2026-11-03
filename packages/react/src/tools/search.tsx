@@ -101,6 +101,7 @@ function searchRows(groups: Group[], pattern: string, id: string): RowModel {
     part: "tool-matches",
     render: (start, end) => pieces(start, end, (g, from, to) => <File key={g} file={groups[g]!} from={from} to={to} pattern={pattern} id={`${id}:file-${g}`} gutter={gutter} />),
     blocks: (start, end) => pieces(start, end, (g, from, to) => fileBlock(groups[g]!, from, to, `${id}:file-${g}`)),
+    size: (index) => pieces(index, index + 1, (g, from) => groups[g]!.lines[from]!.text.length)[0]!,
   };
 }
 

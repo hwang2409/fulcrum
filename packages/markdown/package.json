@@ -19,6 +19,7 @@
   },
   "peerDependencies": {
     "@fulcrum/highlight": "*",
+    "@fulcrum/react": "*",
     "react": ">=19"
   },
   "peerDependenciesMeta": {
@@ -26,6 +27,7 @@
   },
   "devDependencies": {
     "@fulcrum/highlight": "workspace:*",
+    "@fulcrum/react": "workspace:*",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "happy-dom": "^21.0.4",

@@ -1,18 +1,22 @@
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Tokens, useTokens, type Block } from "../highlight.js";
 import { useVirtualList } from "../virtual.js";
 import { spansIn, type AnsiSpan } from "./ansi.js";
 
 const SEGMENT_CHARS = 2_000;
-const MAX_PREVIEW_CHARS = 50_000;
+// The most text drawn as one highlighted block (one react commit of its tokens). Measured in chromium with the page's
+// CPU throttled 4x (apps/playground/scripts/large-blocks.ts): INLINE_CHARS_MEASURED. Larger text goes through the virtual viewer.
+const INLINE_CHARS = 10_000;
+// A code block with more lines than this is a scrolling viewer rather than a page-long box.
+const INLINE_LINES = 200;
 const MAX_PREVIEW_LINES = 60;
-const HEAD_CHARS = 40_000;
-const TAIL_CHARS = 10_000;
+const HEAD_CHARS = INLINE_CHARS * 0.8;
+const TAIL_CHARS = INLINE_CHARS * 0.2;
 const ROW_HEIGHT = 21;
 const HEAD_ROWS = 40;
 const TAIL_ROWS = 20;
-// shortcut: structured rows are grouped by count, not characters; rows are capped at ROW_CHARS by their parsers, so a
-// group stays bounded. Group by characters if very long rows (minified files) become common.
+// A viewer group of structured rows ends at ROWS_PER_SEGMENT rows or SEGMENT_CHARS characters, whichever comes first
+// (a longer row is a group of its own): long rows (grep hits in minified files) would otherwise put 400 kB in one group.
 const ROWS_PER_SEGMENT = 40;
 const GRAPHEME_LOOKBACK = 128;
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -22,13 +26,32 @@ export type TextMetrics = { characters: number; lines: number };
 export type TextFormat = { language?: string; spans?: AnsiSpan[] };
 export type TextSegment = { id: string; kind: string; start: number };
 /** The longest structured row a parser keeps (diff lines, search lines); longer rows are cut with a notice. */
-export const ROW_CHARS = 10_000;
+export const ROW_CHARS = INLINE_CHARS;
 /**
  * Structured rows (diff lines, search results). `render(start, end)` draws rows [start, end) and highlights them as one
  * block: the compact view draws every row, the viewer only its mounted groups, through the same renderer. `part`
  * names the compact view's box.
  */
-export type RowModel = { count: number; part: string; language?: string; render: (start: number, end: number) => ReactNode; blocks: (start: number, end: number) => Block[] };
+export type RowModel = { count: number; part: string; language?: string; render: (start: number, end: number) => ReactNode; blocks: (start: number, end: number) => Block[]; size: (index: number) => number };
+
+// Rows [0, head) and [tail, count) of a closed large viewer: at most HEAD_ROWS and HEAD_CHARS, TAIL_ROWS and TAIL_CHARS,
+// and at least one row each. head >= tail: every row fits.
+function previewRows(rows: RowModel) {
+  let head = 0;
+  for (let chars = 0; head < rows.count && head < HEAD_ROWS && (!head || chars + rows.size(head) <= HEAD_CHARS); head++) chars += rows.size(head);
+  let tail = rows.count;
+  for (let chars = 0; tail > head && rows.count - tail < TAIL_ROWS && (tail === rows.count || chars + rows.size(tail - 1) <= TAIL_CHARS); tail--) chars += rows.size(tail - 1);
+  return { head, tail };
+}
+
+function rowGroups(rows: RowModel): TextSegment[] {
+  const groups: TextSegment[] = [];
+  for (let start = 0, end = 0; start < rows.count; start = end) {
+    for (let chars = 0; end < rows.count && end - start < ROWS_PER_SEGMENT && (end === start || chars + rows.size(end) <= SEGMENT_CHARS); end++) chars += rows.size(end);
+    groups.push({ id: `rows-${start}`, kind: String(end - start), start });
+  }
+  return groups;
+}
 
 const safeEnd = (text: string, end: number) => {
   if (end >= text.length) return text.length;
@@ -45,14 +68,12 @@ const safeEnd = (text: string, end: number) => {
   return boundary;
 };
 
+// Native searches, not a loop over every character: a 440 kB block took tens of ms per pass on a 4x-throttled page.
 export function textMetrics(text: string): TextMetrics {
-  let characters = 0;
   let newlines = 0;
-  for (const character of text) {
-    characters++;
-    if (character === "\n") newlines++;
-  }
-  return { characters, lines: text === "" ? 0 : newlines + (text.endsWith("\n") ? 0 : 1) };
+  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) newlines++;
+  const pairs = text.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g)?.length ?? 0; // one character each, as for...of counts
+  return { characters: text.length - pairs, lines: text === "" ? 0 : newlines + (text.endsWith("\n") ? 0 : 1) };
 }
 
 export function useTextMetrics(text: string, appendOnly = false): TextMetrics {
@@ -77,7 +98,15 @@ export function useTextMetrics(text: string, appendOnly = false): TextMetrics {
 }
 
 export const needsTextViewer = (text: string, metrics = textMetrics(text)) =>
-  text.length > MAX_PREVIEW_CHARS || metrics.lines > MAX_PREVIEW_LINES;
+  text.length > INLINE_CHARS || metrics.lines > MAX_PREVIEW_LINES;
+
+/** Whether a code block is too large to draw inline: CodeViewer draws it. Stops counting lines at the limit. */
+export function isLargeCode(text: string) {
+  if (text.length > INLINE_CHARS) return true;
+  let lines = 0;
+  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) if (++lines >= INLINE_LINES) return true;
+  return false;
+}
 
 // A segment ends after its last newline when that keeps at least half a segment, so rows start on a line (which the
 // highlighter needs) and a line is split only when it is longer than half a segment.
@@ -137,18 +166,18 @@ const styledBlock = (text: string, start: number, end: number, format: TextForma
   ({ code: text.slice(start, end), language: format?.spans ? undefined : format?.language, id: `${id}@${start}`, done });
 
 /** `text[start, end)` in its format. Each range is its own highlight block, so a viewer only highlights mounted rows. */
-export function Styled({ text, start = 0, end = text.length, format, id, done = true }: { text: string; start?: number; end?: number; format?: TextFormat; id: string; done?: boolean }) {
+export const Styled = memo(function Styled({ text, start = 0, end = text.length, format, id, done = true }: { text: string; start?: number; end?: number; format?: TextFormat; id: string; done?: boolean }) {
   const { code: slice, language, id: block } = styledBlock(text, start, end, format, id, done);
   const tokens = useTokens(slice, language, block, done);
   if (format?.spans) return <AnsiRun text={slice} spans={spansIn(format.spans, start, end)} />;
   return tokens ? <Tokens tokens={tokens} /> : <>{slice}</>;
-}
+});
 
 const count = (value: number) => value.toLocaleString("en-US");
 
-type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean };
+type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean };
 
-function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done }: ViewerProps) {
+function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy }: ViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(follow);
   const [atBottom, setAtBottom] = useState(follow);
@@ -197,6 +226,7 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
         <button type="button" data-action={atBottom ? "jump-top" : "jump-bottom"} onClick={() => jump(!atBottom)}>
           {atBottom ? "jump to top" : "jump to bottom"}
         </button>
+        {copy ? <CopyButton label={label} value={text} /> : null}
       </div>
       <div
         ref={scrollRef}
@@ -276,19 +306,17 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
   const large = needsTextViewer(text, metrics);
   // Segments are built only for an open viewer: text in fixed-size ranges that start on a line, rows in fixed groups.
   const textSegments = useSegments(open && !rows ? text : "", appendOnly, Math.max(1, Math.ceil(metrics.lines / Math.max(1, Math.ceil(text.length / SEGMENT_CHARS)))));
-  const rowCount = open && rows ? rows.count : 0;
-  const rowSegments = useMemo(() => Array.from({ length: Math.ceil(rowCount / ROWS_PER_SEGMENT) }, (_, index) => (
-    { id: `rows-${index * ROWS_PER_SEGMENT}`, kind: String(ROWS_PER_SEGMENT), start: index * ROWS_PER_SEGMENT }
-  )), [rowCount]);
+  const rowSegments = useMemo(() => open && rows ? rowGroups(rows) : [], [open, rows]);
   if (rows && !(large && open)) {
-    const cut = large && rows.count > HEAD_ROWS + TAIL_ROWS;
+    const { head, tail } = previewRows(rows);
+    const cut = large && head < tail;
     return (
       <>
         <div data-part={rows.part} data-language={rows.language}>
           {cut ? <>
-            {rows.render(0, HEAD_ROWS)}
+            {rows.render(0, head)}
             <div data-part="tool-gap">… {count(metrics.lines)} lines / {count(metrics.characters)} characters; open to view all …</div>
-            {rows.render(rows.count - TAIL_ROWS, rows.count)}
+            {rows.render(tail, rows.count)}
           </> : rows.render(0, rows.count)}
         </div>
         {large ? <OpenButton metrics={metrics} open={() => setOpen(true)} /> : null}
@@ -311,6 +339,38 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
   );
 }
 
+export type CopyValue = string | (() => string);
+
+export function CopyButton({ value, label }: { value: CopyValue; label: string }) {
+  const [result, setResult] = useState<"copied" | "copy failed">();
+  useEffect(() => {
+    if (!result) return;
+    const timer = setTimeout(() => setResult(undefined), 1500);
+    return () => clearTimeout(timer);
+  }, [result]);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(typeof value === "function" ? value() : value);
+      setResult("copied");
+    } catch {
+      setResult("copy failed"); // no clipboard (insecure context) or permission denied
+    }
+  };
+  return <button type="button" data-action="copy" aria-label={`copy ${label}`} onClick={copy}>{result ?? `copy ${label}`}</button>;
+}
+
+/**
+ * A code block over isLargeCode's limits: the virtual viewer, open at once, with a control that copies the whole text.
+ * Only mounted ranges are in the DOM, so find-in-page reaches the visible lines; each range is highlighted on its own,
+ * so the visible lines color without waiting for the whole block.
+ */
+export function CodeViewer({ text, language, id, done = true, label = "code" }: { text: string; language: string | undefined; id: string; done?: boolean; label?: string }) {
+  const metrics = useTextMetrics(text, !done);
+  const segments = useSegments(text, !done, Math.max(1, Math.ceil(metrics.lines / Math.max(1, Math.ceil(text.length / SEGMENT_CHARS)))));
+  const format = useMemo(() => language ? { language } : undefined, [language]);
+  return <VirtualText text={text} label={label} follow={false} metrics={metrics} segments={segments} format={format} id={id} done={done} copy />;
+}
+
 const OpenButton = ({ metrics, open }: { metrics: TextMetrics; open: () => void }) => (
   <button type="button" data-action="open-viewer" onClick={open}>
     open all {count(metrics.lines)} lines / {count(metrics.characters)} characters
@@ -323,7 +383,10 @@ const OpenButton = ({ metrics, open }: { metrics: TextMetrics; open: () => void 
  */
 export function viewerBlocks({ text, id, format, done = true, rows }: Pick<TextViewerProps, "text" | "id" | "format" | "done" | "rows">): Block[] {
   const large = needsTextViewer(text);
-  if (rows) return large && rows.count > HEAD_ROWS + TAIL_ROWS ? [...rows.blocks(0, HEAD_ROWS), ...rows.blocks(rows.count - TAIL_ROWS, rows.count)] : rows.blocks(0, rows.count);
+  if (rows) {
+    const { head, tail } = previewRows(rows);
+    return large && head < tail ? [...rows.blocks(0, head), ...rows.blocks(tail, rows.count)] : rows.blocks(0, rows.count);
+  }
   if (!large) return [styledBlock(text, 0, text.length, format, id, done)];
   const { headEnd, tailStart } = previewRanges(text);
   return [styledBlock(text, 0, headEnd, format, id, true), styledBlock(text, tailStart, text.length, format, id, done)];
