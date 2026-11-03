@@ -114,7 +114,11 @@ try {
     const probe = document.createElement("span");
     probe.style.color = "var(--fulcrum-accent)";
     box.append(probe);
-    const want = getComputedStyle(probe).color;
+    // as rgb(): a theme may declare its accent in another color space (computed as color(srgb ...))
+    const pixel = document.createElement("canvas").getContext("2d")!;
+    pixel.fillStyle = getComputedStyle(probe).color;
+    pixel.fillRect(0, 0, 1, 1);
+    const want = `rgb(${[...pixel.getImageData(0, 0, 1, 1).data.slice(0, 3)].join(", ")})`;
     probe.remove();
     const node = box.querySelector("[data-part=mermaid-diagram] .node rect, [data-part=mermaid-diagram] .node path")!;
     return { want, stroke: getComputedStyle(node).stroke, svg: box.querySelector("[data-part=mermaid-diagram] > svg")!.id };

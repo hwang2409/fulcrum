@@ -43,7 +43,6 @@ function mountRun(virtual: boolean, height = 600) {
   mount();
   return { scroller, store, root, mount, remove: () => { root.unmount(); scroller.remove(); } };
 }
-const rows = (scroller: HTMLElement) => [...scroller.querySelectorAll<HTMLElement>("[data-part=message]")];
 const svgsIn = (node: ParentNode) => node.querySelectorAll("[data-part=mermaid-diagram] > svg").length;
 
 /**
@@ -57,44 +56,65 @@ export async function swap(virtual: boolean, where: "bottom" | "above" | "below"
   for (let i = 0; i < 12; i++) run.store.dispatch(commit(`before-${i}`, `before ${i}\n\n${words(70)}`));
   const id = `diagram-${where}-${virtual}`;
   const code = flow();
+  const close = () => {
+    run.store.dispatch(delta(id, "```\n\nThat is the flow."));
+    run.store.dispatch(commit(id, `The flow:\n\n\`\`\`mermaid\n${code}\`\`\`\n\nThat is the flow.`));
+  };
   run.store.dispatch(delta(id, "The flow:\n\n```mermaid\n"));
-  if (where === "above") for (let i = 0; i < 6; i++) run.store.dispatch(commit(`after-${i}`, `after ${i}\n\n${words(70)}`));
+  // "above": rows under the diagram put it above the view. tool rows: another message would end this one, and a
+  // later delta would start its text again
+  if (where === "above") for (let i = 0; i < 8; i++) {
+    const call = { id: `after-${where}-${virtual}-${i}`, name: "bash", arguments: { command: `echo after ${i}` } };
+    run.store.dispatch({ type: "tool_start", tool_call: call });
+    run.store.dispatch({ type: "tool_end", tool_call: call, tool_result: { tool_call_id: call.id, content: `after ${i}\n${words(30)}`, is_error: false } });
+  }
   await afterPaint();
   const { scroller } = run;
   const box = () => scroller.querySelector<HTMLElement>("[data-part=mermaid]");
   if (where === "bottom") scroller.scrollTop = scroller.scrollHeight;
   for (const line of code.split(/(?<=\n)/)) { run.store.dispatch(delta(id, line)); await afterPaint(); if (where === "bottom") scroller.scrollTop = scroller.scrollHeight; }
   await afterPaint();
-  if (where === "above") {
-    // the diagram's bottom 300 px above the viewport: inside the render margin, out of view
-    const rect = box()!.getBoundingClientRect();
-    scroller.scrollTop += rect.bottom - scroller.getBoundingClientRect().top + 300;
-  }
-  if (where === "below") scroller.scrollTop = Math.max(0, box()!.offsetTop - scroller.clientHeight - 300);
+  // a virtual timeline mounts about a screen around the view: walk down, then up, until the diagram's row is mounted
+  for (const step of [1, -1]) for (let i = 0; i < 40 && !box(); i++) { scroller.scrollTop += step * scroller.clientHeight / 2; await afterPaint(); }
+  // "above": the diagram's bottom 300 px above the view; "below": its top 300 px under it (both inside the render
+  // margin). Measured on screen: offsetTop is a virtual row's, not the scroller's.
+  const view = scroller.getBoundingClientRect();
+  if (where === "above") scroller.scrollTop += box()!.getBoundingClientRect().bottom - view.top + 300;
+  if (where === "below") scroller.scrollTop -= view.bottom + 300 - box()!.getBoundingClientRect().top;
   await afterPaint();
   await afterPaint();
   const following = virtual && where === "bottom";
-  const anchor = following ? null : rows(scroller).find((row) => !row.contains(box()) && row.getBoundingClientRect().top >= scroller.getBoundingClientRect().top)!;
+  // the reading position: the top of the first row in view that is not the diagram's
+  const top = scroller.getBoundingClientRect().top;
+  const anchor = following ? null : [...scroller.querySelectorAll<HTMLElement>("[data-part=message], [data-part=tool]")]
+    .filter((node) => !node.contains(box()) && node.getBoundingClientRect().top >= top)
+    .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0]!;
   const position = () => following ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight : anchor!.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
   const start = position();
+  if (svgsIn(scroller)) throw new Error("the diagram drew before the samples started: the swap went unmeasured");
   let inserts = 0;
   const observer = new MutationObserver((records) => { for (const record of records) for (const node of record.addedNodes) if (node instanceof SVGSVGElement) inserts++; });
   observer.observe(scroller, { childList: true, subtree: true });
   const heights: number[] = [];
   const positions: number[] = [];
+  // One sample per painted frame, as painted: a 1 px element changes width every frame, and its observer (made after
+  // the timeline's, so it runs after the timeline's corrections) reads layout after this frame's resize work, before paint.
   let sampling = true;
-  const sample = async () => {
-    while (sampling) {
-      await afterPaint();
-      const current = box();
-      if (current) { const height = Math.round(current.getBoundingClientRect().height * 10) / 10; if (heights.at(-1) !== height) heights.push(height); }
-      positions.push(position());
-    }
-  };
-  const sampler = sample();
+  const tick = document.body.appendChild(document.createElement("div"));
+  tick.style.cssText = "position: fixed; top: 0; left: 0; height: 1px; width: 1px; visibility: hidden";
+  const painted = new ResizeObserver(() => {
+    const current = box();
+    if (current) { const height = Math.round(current.getBoundingClientRect().height * 10) / 10; if (heights.at(-1) !== height) heights.push(height); }
+    positions.push(position());
+  });
+  painted.observe(tick);
+  const sampler = (async () => {
+    for (let frame = 0; sampling; frame++) { tick.style.width = `${1 + (frame & 1)}px`; await new Promise(requestAnimationFrame); }
+    painted.disconnect();
+    tick.remove();
+  })();
   const closed = performance.now();
-  run.store.dispatch(delta(id, "```\n\nThat is the flow."));
-  run.store.dispatch(commit(id, `The flow:\n\n\`\`\`mermaid\n${code}\`\`\`\n\nThat is the flow.`));
+  close();
   await until(() => svgsIn(scroller) > 0);
   const drawnMs = performance.now() - closed;
   await sleep(500);
@@ -105,7 +125,10 @@ export async function swap(virtual: boolean, where: "bottom" | "above" | "below"
   observer.disconnect();
   const drift = Math.max(...positions.map((value) => Math.abs(value - start)));
   run.remove();
-  return { virtual, where, following, drawnMs: Math.round(drawnMs), inserts, heights, drift: Math.round(drift * 10) / 10, samples: positions.length };
+  // painted frames off the start position: one is a one-frame jump, all of them after the swap a lost position
+  const moved = positions.filter((value) => Math.abs(value - start) > 1).length;
+  const offsets = positions.map((value) => Math.round(value - start)).join(" ");
+  return { virtual, where, following, drawnMs: Math.round(drawnMs), inserts, heights, drift: Math.round(drift * 10) / 10, moved, ...(moved ? { offsets } : {}), samples: positions.length };
 }
 
 /** A diagram drawn once shows from the cache in the commit that mounts it again: no source frame, no render. */
@@ -132,10 +155,12 @@ export async function many() {
   const run = mountRun(false, 800);
   for (let i = 0; i < 50; i++) run.store.dispatch(commit(`many-${i}`, `diagram ${i}\n\n\`\`\`mermaid\n${flow()}\`\`\`\n\n${words(40)}`));
   run.scroller.scrollTop = 0;
-  await sleep(3000);
+  await afterPaint();
+  // near the view before any draw: a drawn diagram is taller than its source and pushes the others down
   const boxes = () => [...run.scroller.querySelectorAll<HTMLElement>("[data-part=mermaid]")];
   const top = run.scroller.getBoundingClientRect().top;
   const near = boxes().filter((box) => box.getBoundingClientRect().top - top < run.scroller.clientHeight + 800).length;
+  await sleep(3000);
   const drawnAtStart = svgsIn(run.scroller);
   const tasks: number[] = [];
   const longTasks = new PerformanceObserver((list) => tasks.push(...list.getEntries().map((entry) => entry.duration)));
@@ -196,7 +221,9 @@ export async function hostile() {
     if (svg.querySelectorAll("style").length !== 1) problems.push("sanitizeSvg: the safe style should stay, the @import one go");
     if (svg.querySelector("path[marker-end]")?.getAttribute("marker-end") !== "url(#m1_arrow)") problems.push("sanitizeSvg dropped an internal marker reference");
     if (svg.querySelector("text")?.textContent !== "link text") problems.push("sanitizeSvg dropped a link's text");
-    if ([...svg.querySelectorAll("use")].map((use) => use.getAttribute("href")).join() !== "#m1_arrow,") problems.push("sanitizeSvg: only #fragment use hrefs stay");
+    const uses = [...svg.querySelectorAll("use")].map((use) => use.getAttribute("href") ?? use.getAttribute("xlink:href") ?? "");
+    // dompurify drops <use> outright; were it kept, only a #fragment href may stay
+    if (uses.some((href) => href && !href.startsWith("#"))) problems.push(`sanitizeSvg kept an outside use href (${uses.join(", ")})`);
     if ([svg.getAttribute("width"), svg.getAttribute("height"), svg.style.maxWidth].join() !== "301,120,") problems.push("sanitizeSvg: the svg should take its viewBox size");
   }
   if (sanitizeSvg("<div>no svg</div>") || sanitizeSvg("<script>1</script>")) problems.push("sanitizeSvg returned an svg for markup with none");
