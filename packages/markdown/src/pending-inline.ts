@@ -7,7 +7,8 @@ export const PENDING_INLINE_SUFFIX = 256;
 type OpenerKind = "emphasis" | "code" | "bracket" | "angle";
 // A bracket moves through `dest`, `title`, `close`, or `ref` after its `]`; that syntax stays hidden.
 type LinkState = "text" | "dest" | "title" | "close" | "ref";
-type Opener = { index: number; end: number; kind: OpenerKind; marker: string; node: number; state: LinkState; hideFrom?: number; quote?: string };
+// `leadingSpace` marks a code span that an earlier line of the paragraph opened, and whether its content starts with a space.
+type Opener = { index: number; end: number; kind: OpenerKind; marker: string; node: number; state: LinkState; hideFrom?: number; quote?: string; leadingSpace?: boolean };
 
 const whitespace = (character: string | undefined) => character !== undefined && /\s/.test(character);
 const runLength = (source: string, index: number) => {
@@ -33,6 +34,8 @@ function suffixContext(opener: Opener | undefined) {
  */
 class OpenerScan {
   resolved?: Opener;
+  /** Where the closer of a resolved code span starts. */
+  closedAt = -1;
 
   constructor(private readonly source: string, private readonly openers: Opener[], private readonly existing: number) {}
 
@@ -111,7 +114,10 @@ class OpenerScan {
     const index = this.source.indexOf("`", from);
     if (index < 0 || index >= to) return to;
     const length = runLength(this.source, index);
-    if (length === opener.marker.length) this.resolve(this.openers.length - 1);
+    if (length === opener.marker.length) {
+      this.closedAt = index;
+      this.resolve(this.openers.length - 1);
+    }
     return index + length;
   }
 
@@ -157,9 +163,11 @@ function hideBrackets(nodes: Inline[]) {
   return nodes;
 }
 
+const plainText = (nodes: readonly Inline[]): string => nodes.map((node) => "value" in node ? node.value
+  : "children" in node ? plainText(node.children) : node.type === "image" ? node.alt : "").join("");
+
 export type InlineParser = (source: string, streaming: boolean) => Inline[];
 
-const rawKinds: ReadonlySet<OpenerKind> = new Set(["code", "angle"]);
 
 /** Cuts at a recent space so no construct, escape, or surrogate pair is split between stable chunks. */
 function cutPoint(source: string, target: number) {
@@ -189,7 +197,10 @@ export class PendingInline {
   private readonly openers: Opener[] = [];
   private suffixLength = 0;
 
-  constructor(private readonly parse: InlineParser) {}
+  /** `openCode` is the backtick run of a code span that an earlier line of the paragraph left open. */
+  constructor(private readonly parse: InlineParser, openCode?: { marker: string; leadingSpace: boolean }) {
+    if (openCode) this.openers.push({ index: 0, end: 0, kind: "code", node: 0, state: "text", ...openCode });
+  }
 
   get owner(): Readonly<Opener> | undefined {
     return this.openers[0];
@@ -206,6 +217,9 @@ export class PendingInline {
     const cut = cutPoint(this.content, this.content.length - PENDING_INLINE_SUFFIX);
     if (cut > this.emittedEnd) this.emitStable(cut);
     const suffix = hideBrackets(this.suffix());
+    // Blanks at the end of the growing line may still sit before a cell pipe.
+    const last = suffix.at(-1);
+    if (last?.type === "text") last.value = last.value.replace(/[ \t]+$/, "");
     for (const node of suffix) this.nodes.push(node);
     this.suffixLength = suffix.length;
     return suffix;
@@ -213,7 +227,7 @@ export class PendingInline {
 
   /** Final streaming nodes for the finished line, or undefined when `line` does not extend this line. */
   commit(line: string): Inline[] | undefined {
-    if (!line.startsWith(this.content)) return undefined;
+    if (!line.startsWith(this.content) || this.openers[0]?.leadingSpace !== undefined) return undefined;
     this.content = line;
     this.nodes.length -= this.suffixLength;
     this.suffixLength = 0;
@@ -243,6 +257,13 @@ export class PendingInline {
         this.emitSegments(from, cut, existing);
         break;
       }
+      if (resolved.leadingSpace !== undefined) {
+        // A span from an earlier line has no opener here to parse again from; its content is code up to the closer.
+        const end = scan.closedAt - (this.stripsEdgeSpace(resolved, scan.closedAt) ? 1 : 0);
+        for (const node of this.codeText(from, end, true)) this.nodes.push(node);
+        from = scan.closedAt + resolved.marker.length;
+        continue;
+      }
       this.nodes.length = resolved.node;
       from = resolved.index;
     }
@@ -264,16 +285,34 @@ export class PendingInline {
 
   private emitText(from: number, to: number, owner: Opener | undefined) {
     const end = owner?.hideFrom === undefined ? to : Math.min(to, owner.hideFrom);
-    if (owner?.kind === "code" && from === owner.end && this.content[from] === " " && this.stripsEdgeSpace(owner, this.codeCloser(owner.marker, to))) from++;
-    const nodes = owner && rawKinds.has(owner.kind) ? this.rawText(from, end, owner.kind) : this.parseText(from, end, false);
+    let nodes: Inline[];
+    if (owner?.kind === "code") {
+      const closer = this.codeCloser(owner.marker, to);
+      if (owner.leadingSpace === undefined && from === owner.end && this.content[from] === " " && this.stripsEdgeSpace(owner, closer)) from++;
+      nodes = this.codeText(from, end, closer >= 0);
+    } else nodes = owner?.kind === "angle" ? this.rawText(from, end) : this.parseText(from, end, false);
     for (const node of hideBrackets(nodes)) this.nodes.push(node);
   }
 
-  /** Content behind a code or autolink opener: code shows as a code span, as the suffix parse shows it once closed. */
-  private rawText(from: number, to: number, kind: OpenerKind): Inline[] {
+  private rawText(from: number, to: number): Inline[] {
     if (from >= to) return [];
     this.copiedCharacters += to - from;
-    return [{ type: kind === "code" ? "code" : "text", value: this.content.slice(from, to).replace(/\|/g, "") }];
+    return [{ type: "text", value: this.content.slice(from, to).replace(/\|/g, "") }];
+  }
+
+  /**
+   * Content behind a code opener as a code span: raw once its closer is known, and until then only the text it
+   * renders as markdown without brackets, which is what shows whether or not the span closes.
+   */
+  private codeText(from: number, to: number, closed: boolean): Inline[] {
+    if (from >= to) return [];
+    this.copiedCharacters += to - from;
+    return this.codeNode(this.content.slice(from, to), closed);
+  }
+
+  private codeNode(source: string, closed: boolean): Inline[] {
+    const value = (closed ? source : plainText(this.parse(source, true)).replace(/[[\]]/g, "")).replace(/\|/g, "");
+    return value ? [{ type: "code", value }] : [];
   }
 
   private parseText(from: number, to: number, streaming: boolean): Inline[] {
@@ -289,7 +328,7 @@ export class PendingInline {
     // Behind a link opener the suffix is parsed after that syntax, so its closer and the text after it already
     // follow the streaming rules they will have once stable.
     const top = this.openers.at(-1);
-    if (top && rawKinds.has(top.kind)) return this.rawSuffix(source, top);
+    if (top?.kind === "code" || top?.kind === "angle") return this.rawSuffix(source, top);
     const context = suffixContext(top);
     const nodes = this.parse(context + source, true);
     const first = nodes[0];
@@ -320,6 +359,7 @@ export class PendingInline {
    */
   private stripsEdgeSpace(opener: Opener, closer: number) {
     if (closer < 0) return true;
+    if (opener.leadingSpace !== undefined) return opener.leadingSpace && this.content[closer - 1] === " ";
     let text = opener.end;
     while (text < closer && this.content[text] === " ") text++;
     return text > opener.end && text < closer && this.content[closer - 1] === " ";
@@ -336,12 +376,14 @@ export class PendingInline {
       const closer = this.codeCloser(top.marker, this.emittedEnd);
       end = closer < 0 ? -1 : closer - this.emittedEnd;
     }
-    let body = (end < 0 ? source : source.slice(0, end)).replace(/\|/g, "");
-    if (top.kind === "code" && this.stripsEdgeSpace(top, end < 0 ? -1 : this.emittedEnd + end)) {
-      body = body.replace(/ $/, "");
-      if (this.emittedEnd === top.end) body = body.replace(/^ /, "");
+    let from = this.emittedEnd;
+    let to = end < 0 ? this.content.length : from + end;
+    if (top.kind === "code" && this.stripsEdgeSpace(top, end < 0 ? -1 : to)) {
+      if (this.content[to - 1] === " ") to--;
+      if (top.leadingSpace === undefined && from === top.end && this.content[from] === " ") from++;
     }
-    const nodes: Inline[] = body ? [{ type: top.kind === "code" ? "code" : "text", value: body }] : [];
+    const body = source.slice(from - this.emittedEnd, to - this.emittedEnd);
+    const nodes: Inline[] = top.kind === "code" ? this.codeNode(body, end >= 0) : body ? [{ type: "text", value: body.replace(/\|/g, "") }] : [];
     if (end >= 0) for (const node of this.parse(source.slice(end + closer), true)) nodes.push(node);
     return nodes;
   }

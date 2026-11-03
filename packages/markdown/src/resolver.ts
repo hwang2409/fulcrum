@@ -298,13 +298,8 @@ export class MarkdownLineResolver {
     const { cursor, matchedDepth, unmatched, blank } = this.matchContinuations(line);
     const continuedLeaf = this.continueOpenLeaf(cursor, unmatched);
     if (continuedLeaf) return continuedLeaf;
-    const probe: Cursor = { ...cursor };
-    const startsQuote = consumeQuote(probe);
-    const marker = startsQuote ? undefined : listMarker(probe);
-    const startsContainer = startsQuote || Boolean(marker);
-    const startsInterruptingContainer = startsQuote || Boolean(marker && (!marker.ordered || /^1[.)]$/.test(marker.marker) || unmatched && this.stack.length > 1 || this.stack.some((frame) => frame.kind === "list" && frame.ordered)));
+    const { marker, startsContainer, startsBlock } = this.lineStart(cursor, unmatched);
     const unmatchedContent = line.slice(cursor.offset);
-    const startsBlock = startsInterruptingContainer || this.openLeaf?.kind === "paragraph" && (this.openLeaf.tableEligible && this.openLeaf.content.includes("|") && isTableDelimiter(unmatchedContent) || this.openLeaf.tableEligible && /^ {0,3}(?:=+|-+)\s*$/.test(unmatchedContent)) || /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/.test(unmatchedContent);
     if (!unmatched && this.openLeaf?.kind === "table" && !blank && !startsContainer && !startsBlock) {
       return {
         continued: true,
@@ -354,6 +349,25 @@ export class MarkdownLineResolver {
       if (unmatched || blank) this.openLeaf = undefined;
     }
     return depth;
+  }
+
+  /** Whether the pending line, once it ends, continues the open paragraph: the read-only part of `resolveLine`. */
+  pendingContinuesParagraph(line = this.pendingLine.content) {
+    if (this.openLeaf?.kind !== "paragraph") return false;
+    const { cursor, unmatched, blank } = this.matchContinuations(line);
+    return !blank && !this.lineStart(cursor, unmatched).startsBlock;
+  }
+
+  /** The container or block that a line starts after its matched continuation markers. */
+  private lineStart(cursor: Cursor, unmatched: boolean) {
+    const probe: Cursor = { ...cursor };
+    const startsQuote = consumeQuote(probe);
+    const marker = startsQuote ? undefined : listMarker(probe);
+    const startsContainer = startsQuote || Boolean(marker);
+    const startsInterruptingContainer = startsQuote || Boolean(marker && (!marker.ordered || /^1[.)]$/.test(marker.marker) || unmatched && this.stack.length > 1 || this.stack.some((frame) => frame.kind === "list" && frame.ordered)));
+    const unmatchedContent = cursor.line.slice(cursor.offset);
+    const startsBlock = startsInterruptingContainer || this.openLeaf?.kind === "paragraph" && (this.openLeaf.tableEligible && this.openLeaf.content.includes("|") && isTableDelimiter(unmatchedContent) || this.openLeaf.tableEligible && /^ {0,3}(?:=+|-+)\s*$/.test(unmatchedContent)) || /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/.test(unmatchedContent);
+    return { marker, startsContainer, startsBlock };
   }
 
   private matchContinuations(line: string) {

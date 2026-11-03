@@ -459,7 +459,8 @@ function parseInline(source: string, streaming: boolean, environment: Environmen
   // An unclosed span may stay literal, so its preview shows only the text its content renders as markdown.
   if (safe.openCode) {
     const literal = inlineNodes(markdown.parseInline(withoutOpenSyntax(safe.openCode), environment)[0]?.children ?? []);
-    nodes.push({ type: "code", value: codeSpanValue(literal.map(inlineText).join("")) });
+    // Its brackets hide: as literal text they may still become a link or a reference.
+    nodes.push({ type: "code", value: codeSpanValue(literal.map(inlineText).join("")).replace(/[[\]]/g, "") });
   }
   return nodes;
 }
@@ -622,6 +623,8 @@ function hideTableCandidatePipes(inlines: Inline[]) {
     const inline = inlines[index]!;
     if (inline.type === "break") return;
     if ("children" in inline) hideTableCandidatePipes(inline.children);
+    // A header row splits cells before inline parsing, so a pipe inside a code span is a border too.
+    if (inline.type === "code") inline.value = inline.value.replace(/\|/g, "");
     if (inline.type !== "text") continue;
     const lineStart = inline.value.lastIndexOf("\n") + 1;
     const line = inline.value.slice(lineStart).replace(/[ \t]*\|[ \t]*/g, "");
@@ -890,6 +893,7 @@ export function createStreamingDocument(): StreamingDocument {
   // The growing line's inline nodes; `pendingInlineOffset` is where its content starts in the pending line.
   let pendingInline: PendingInline | undefined;
   let pendingInlineOffset = 0;
+  let pendingInlineContinues = false;
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
 
@@ -1217,9 +1221,6 @@ export function createStreamingDocument(): StreamingDocument {
     const nodes = parseInline(source, streaming, environment());
     markPendingReferences(nodes, bracketLabels(source));
     hideTableCandidatePipes(nodes);
-    // Blanks at the end of the growing line may still sit before a cell pipe.
-    const last = nodes.at(-1);
-    if (streaming && last?.type === "text") last.value = last.value.replace(/[ \t]+$/, "");
     return nodes.filter((node) => node.type !== "text" || node.value);
   };
 
@@ -1227,9 +1228,14 @@ export function createStreamingDocument(): StreamingDocument {
     const line = resolver.pending.content;
     const classification = resolver.classifyPending(line);
     if (classification.kind !== "paragraph") return [];
-    if (!pendingInline || pendingInlineOffset !== classification.offset) {
-      pendingInline = new PendingInline(parsePending);
+    const continues = resolver.pendingContinuesParagraph(line);
+    if (!pendingInline || pendingInlineOffset !== classification.offset || pendingInlineContinues !== continues) {
+      // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
+      const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
+      const after = open && openParagraph!.source[open.index + open.length];
+      pendingInline = new PendingInline(parsePending, open && { marker: "`".repeat(open.length), leadingSpace: after === undefined || /\s/.test(after) });
       pendingInlineOffset = classification.offset;
+      pendingInlineContinues = continues;
     }
     const copied = pendingInline.copiedCharacters;
     previewScannedCharacters += line.length - pendingInlineOffset - pendingInline.content.length;
