@@ -257,6 +257,16 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="approval-actions"] button:active { transform: scale(0.96); }
 [data-part="approval-actions"] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 [data-part="approval-actions"] button[aria-disabled="true"] { cursor: progress; text-decoration: none; transform: none; }
+/* Reconnecting approvals stay in the same styled system, but their disabled state is explicit in every theme. */
+[data-part="approval-actions"] button:disabled {
+  border-color: var(--fulcrum-muted);
+  background: var(--fulcrum-surface);
+  color: var(--fulcrum-muted);
+  cursor: not-allowed;
+  opacity: 1;
+}
+[data-part="approval-actions"] button[data-action="approve"]:disabled { background: var(--fulcrum-surface); color: var(--fulcrum-muted); }
+[data-part="approval-actions"] [role="status"] { flex: 1 1 100%; color: var(--fulcrum-fg); font-size: 12px; }
 @media (pointer: coarse) { [data-part="approval-actions"] button { min-height: 44px; } }
 
 [data-part="tool-duration"] { color: var(--fulcrum-tok-number); font-weight: 400; }

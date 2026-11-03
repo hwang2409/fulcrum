@@ -11,6 +11,17 @@ start: `make dev` installs, builds every package, and runs the playground (then 
 - `@fulcrum/markdown`: zero-dependency streaming markdown with a framework-free document core and an optional `@fulcrum/markdown/react` renderer.
 - `apps/playground` (private): replays the zeta fixtures, runs a stress test, or connects to a live zeta server in a browser.
 
+## zeta web client
+
+`apps/web` is a real zeta client built only on the public `@fulcrum/*` exports: a session list (a drawer at phone widths), the live run with markdown, highlighting, tool cards, and approvals, and the 12 themes. It finds the server through the dev-server handoff and reconnects by itself.
+
+```sh
+zeta serve --ws 8765 --ws-origin http://localhost:5180
+make web   # http://localhost:5180
+```
+
+The app shows a clear state when zeta is not running (with this command), refuses the origin or token, is in use by another client, or drops. Without zeta, `bun run --cwd apps/web fake-zeta` starts a scripted server and prints how to start the app against it. `bun run --cwd apps/web gate` is the browser gate (1440 and 390 px, every theme, every connection state). Library gaps the app found are in `apps/web/GAPS.md`.
+
 ## connect to zeta
 
 start a local websocket server with an origin allowlist, then start the playground:
@@ -65,7 +76,7 @@ const renderers: Renderers = {
 
 - styles: copy `packages/react/styles.css` (layout, states, markdown and code) and `packages/react/themes.css` (color) into your app and edit them. themes.css has 12 real palettes: gruvbox-dark, gruvbox-light, dracula, nord, tokyo-night, catppuccin-mocha, catppuccin-latte, solarized-dark, solarized-light, github-dark, github-light, one-dark. Set `data-fulcrum-theme="<name>"` on `<html>` or any subtree; with no attribute it follows the OS with github-light or github-dark. Each theme also sets `--fulcrum-tok-*` colors for `<span class="tok-<type>">` syntax tokens and the 16 `--fulcrum-ansi-*` terminal colors (its official terminal palette). Every text color reaches 4.5:1 on bg, surface, and the diff row tints in every theme (`packages/react/test/themes.test.ts`); where an official color misses that, it is mixed with the least black or white that reaches it. The type is "JetBrains Mono" with monospace fallbacks; load the font yourself.
 - gallery: every part in every state, no server or session. Run `make dev`, then open `/gallery.html`.
-- performance checks: `bun run bench:check` and `bun run size:check`; run the production browser stress report with `bun run stress`.
+- performance checks: `bun run bench:check` and `bun run size:check`; run the production browser stress report with `bun run stress`. CI's stress gate runs the base and the candidate on the same runner and fails at a 1.20x median slowdown; it catches one large regression, not several small ones that add up (see `apps/playground/scripts/stress-ab.ts`).
 
 
 ## markdown

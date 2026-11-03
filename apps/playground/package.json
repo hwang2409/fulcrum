@@ -9,6 +9,7 @@
     "build": "tsc -p . && vite build",
     "smoke": "bun scripts/smoke.ts",
     "stress": "bun scripts/stress.ts",
+    "stress:ab": "bun scripts/stress-ab.ts",
     "layout": "bun scripts/layout.ts",
     "test:virtual": "bun scripts/virtual-test.ts"
   },

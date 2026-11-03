@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type ViteDevServer } from "vite";
-import { zetaDiscoveryPlugin } from "../src/zeta-helper";
+import { zetaDiscoveryPlugin } from "@fulcrum/zeta/discovery";
 
 let server: ViteDevServer;
 let base: string;
@@ -34,7 +34,7 @@ const sameOrigin = () => ({ "Sec-Fetch-Site": "same-origin", Origin: base });
 test("works on the actually bound port with no CORS headers", async () => {
   const response = await request(sameOrigin());
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ url: "ws://127.0.0.1:8765/", token: "secret" });
+  expect(await response.json()).toEqual({ url: "ws://127.0.0.1:8765/", token: "secret", origins: [] });
   expect([...response.headers.keys()].filter((key) => key.startsWith("access-control-"))).toEqual([]);
 });
 

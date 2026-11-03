@@ -95,3 +95,18 @@ export function parseConnectFragment(hash: string): { url: string; token: string
   const token = fragmentToken || parsed.token;
   return token ? { url: parsed.url, token } : null;
 }
+
+/** What a dev-server discovery handoff returns. `origins` is the server's `--ws-origin` allowlist. */
+export type ZetaDiscovery = { url: string; token: string; origins: string[] };
+/** The same-origin path `zetaDiscoveryPlugin` from `@fulcrum/zeta/discovery` serves. */
+export const zetaDiscoveryPath = "/__fulcrum/zeta";
+
+/** Asks the page's own dev server for the running `zeta serve --ws`; `null` when no server runs (404). */
+export async function discoverZeta(path = zetaDiscoveryPath): Promise<ZetaDiscovery | null> {
+  const response = await fetch(path, { cache: "no-store" });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`zeta discovery failed (${response.status})`);
+  const value = (await response.json()) as Partial<ZetaDiscovery>;
+  if (typeof value.url !== "string" || typeof value.token !== "string") throw new Error("zeta discovery returned an invalid body");
+  return { url: value.url, token: value.token, origins: Array.isArray(value.origins) ? value.origins.filter((origin) => typeof origin === "string") : [] };
+}
