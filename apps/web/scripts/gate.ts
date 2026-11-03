@@ -278,6 +278,11 @@ try {
       // resends it as the next message, which starts a new turn.
       for (let i = 0; i < 100 && fake.sent.length < 3; i++) await Bun.sleep(100);
       await composer.and(page.locator('[data-state="steerable"]')).waitFor({ timeout: 5000 });
+      // One message the user wrote is one row: the steer's row became the resent message, it was not added again.
+      const steerRows = page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: "also check the windows path" });
+      await Bun.sleep(300);
+      if ((await steerRows.count()) !== 1) throw new Error(`the resent steer shows in ${await steerRows.count()} rows`);
+      await shoot(page, "composer-resent-steer-1440-tokyo-night");
       await composer.locator('[data-part="composer-stop"]').click();
       await composer.and(page.locator('[data-state="idle"]')).waitFor({ timeout: 5000 });
       await page.locator('[data-part="timeline"]').getByText("turn aborted").first().waitFor({ timeout: 3000 });
