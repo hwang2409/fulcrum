@@ -30,6 +30,8 @@ export interface RunState {
   activeToolIds: Record<string, boolean>;
   /** Tool call id -> its approval's item id. */
   toolApprovals: Record<string, string>;
+  /** committed item data for rebuilding indexes after a failed reduction */
+  items: Record<string, RunItem>;
 }
 
 export const initialState: RunState = {
@@ -43,6 +45,7 @@ export const initialState: RunState = {
   nextId: 1,
   activeToolIds: {},
   toolApprovals: {},
+  items: {},
 };
 
 const messageItemId = (id: string) => `message:${id}`;
@@ -74,51 +77,18 @@ export interface EntityDraft {
 }
 type SpliceOutline = (index: number, deleteCount: number, items: readonly OutlineItem[]) => void;
 
-type JournalEntry = { map: Map<string, unknown>; key: string; had: boolean; value: unknown };
-
-export function createEntityJournal(entities: Map<string, RunItem>, aliases: Map<string, string>) {
-  const journal: JournalEntry[] = [];
+export function createEntityDraft(entities: Map<string, RunItem>, aliases: Map<string, string>) {
   const edits: OutlineSplice[] = [];
   const changed = new Set<string>();
-  const write = <T>(map: Map<string, T>, key: string, value: T | undefined) => {
-    const had = map.has(key);
-    const prior = map.get(key);
-    if (had === (value !== undefined) && prior === value) return false;
-    const index = journal.length;
-    const entry = journal[index] ?? { map: map as Map<string, unknown>, key, had, value: prior };
-    if (!journal[index]) journal.push(entry);
-    entry.map = map as Map<string, unknown>;
-    entry.key = key;
-    entry.had = had;
-    entry.value = prior;
-    if (value === undefined) map.delete(key);
-    else map.set(key, value);
-    return true;
-  };
   const draft: EntityDraft = {
     get: (id) => entities.get(id),
-    set: (item) => { if (write(entities, item.id, item)) changed.add(item.id); },
-    delete: (id) => { if (write(entities, id, undefined)) changed.add(id); },
+    set: (item) => { if (entities.get(item.id) !== item) { entities.set(item.id, item); changed.add(item.id); } },
+    delete: (id) => { if (entities.delete(id)) changed.add(id); },
     splice: (edit) => edits.push(edit),
     getMessageAlias: (key) => aliases.get(key),
-    setMessageAlias: (key, id) => { write(aliases, key, id); },
+    setMessageAlias: (key, id) => { if (aliases.get(key) !== id) aliases.set(key, id); },
   };
-  return {
-    draft,
-    edits,
-    changed,
-    reset() { journal.length = 0; edits.length = 0; changed.clear(); },
-    rollback() {
-      for (let i = journal.length - 1; i >= 0; i--) {
-        const { map, key, had, value } = journal[i];
-        if (had) map.set(key, value);
-        else map.delete(key);
-      }
-      journal.length = 0;
-      edits.length = 0;
-      changed.clear();
-    },
-  };
+  return { draft, edits, changed, reset() { edits.length = 0; changed.clear(); } };
 }
 
 type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;
@@ -245,11 +215,17 @@ export function reduceAllWithEntities(
     activeMessageId: state.activeMessageId,
     activeToolIds: state.activeToolIds,
     toolApprovals: state.toolApprovals,
+    items: state.items,
   };
   const getMessageAlias = entities.getMessageAlias;
   const setMessageAlias = entities.setMessageAlias;
   const getItem = (id: string) => entities.get(id);
-  const setItem = (item: RunItem) => entities.set(item);
+  let ownItems = false;
+  const setItem = (item: RunItem) => {
+    entities.set(item);
+    if (!ownItems) next.items = { ...next.items }, ownItems = true;
+    next.items[item.id] = item;
+  };
   // The first edit copies the outline; later edits in the same batch write that copy in place.
   let ownOutline = false;
   const spliceOutline: SpliceOutline = (index, deleteCount, items) => {
@@ -264,6 +240,8 @@ export function reduceAllWithEntities(
   };
   const deleteItem = (id: string) => {
     entities.delete(id);
+    if (!ownItems) next.items = { ...next.items }, ownItems = true;
+    delete next.items[id];
     const index = outlineIndex(next.outline, id);
     if (index >= 0) spliceOutline(index, 1, []);
   };

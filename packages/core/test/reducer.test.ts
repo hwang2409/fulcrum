@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { createEntityJournal, initialState, reduceAllWithEntities } from "../src/reducer.js";
+import { createEntityDraft, initialState, reduceAllWithEntities } from "../src/reducer.js";
 
 const reduceWithMaps = (state: typeof initialState, events: Parameters<typeof reduceAllWithEntities>[1], entities = new Map<string, RunItem>(), aliases = new Map<string, string>(), commit = false) => {
-  const transaction = createEntityJournal(entities, aliases);
+  const transaction = createEntityDraft(entities, aliases);
   const next = reduceAllWithEntities(state, events, transaction.draft);
   if (commit) return next;
-  transaction.rollback();
+  entities.clear();
+  aliases.clear();
   return next;
 };
 import {

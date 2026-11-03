@@ -249,6 +249,28 @@ test("stores do not share delivery aliases through initialState", () => {
   expect(second.getOutline()).toEqual([{ id: "user:delivery:same", kind: "user" }]);
 });
 
+test("a failed reduction rebuilds indexes like a fresh replay", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "first" });
+  jobs.shift()!();
+  let failed = true;
+  const event = { type: "user_message", text: "second", mode: "send", get delivery_id() { if (failed) { failed = false; throw new Error("boom"); } return "second"; } } as RunEvent;
+  store.dispatch(event);
+  expect(() => jobs.shift()!()).toThrow("boom");
+  store.dispatch(event);
+  jobs.shift()!();
+  const replay = createRunStore(() => {});
+  replay.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "first" });
+  replay.getState();
+  replay.dispatch({ type: "user_message", text: "second", mode: "send", delivery_id: "second" });
+  replay.getState();
+  expect(store.getOutline()).toEqual(replay.getOutline());
+  for (const row of replay.getOutline()) expect(store.getItem(row.id)).toEqual(replay.getItem(row.id));
+  expect(store.hasMessageDelivery("first")).toBe(replay.hasMessageDelivery("first"));
+  expect(store.hasMessageDelivery("second")).toBe(replay.hasMessageDelivery("second"));
+});
+
 test("a failed batch does not publish entity or delivery indexes", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((flush) => jobs.push(flush));

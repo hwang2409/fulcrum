@@ -1,7 +1,7 @@
 import type { RunEvent, RunItem } from "./events.js";
 import {
   initialState,
-  createEntityJournal,
+  createEntityDraft,
   reduceAllWithEntities,
   type OutlineItem,
   type OutlineSplice,
@@ -72,10 +72,26 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   let outlineChanged = false;
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
-  const transaction = createEntityJournal(entities, messageAliases);
+  const transaction = createEntityDraft(entities, messageAliases);
+  let indexesDirty = false;
+  const rebuildIndexes = () => {
+    entities.clear();
+    messageAliases.clear();
+    for (const item of Object.values(current.items)) {
+      entities.set(item.id, item);
+      if (item.type === "user" && item.event.type === "user_message") {
+        const { delivery_id: delivery, intent } = item.event;
+        if (delivery !== undefined) messageAliases.set(`delivery:${delivery}`, item.id);
+        if (intent !== undefined) messageAliases.set(`user:intent:${intent}`, item.id);
+      }
+    }
+    indexesDirty = false;
+  };
+  const ensureIndexes = () => { if (indexesDirty) rebuildIndexes(); };
 
   const flush = () => {
     if (pending.length === 0 || disposed || flushing || notifying) return false;
+    ensureIndexes();
     flushing = true;
     const events = pending;
     pending = [];
@@ -85,11 +101,12 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
     try {
       next = reduceAllWithEntities(current, events, transaction.draft);
     } catch (error) {
-      transaction.rollback();
+      indexesDirty = true;
+      transaction.reset();
       flushing = false;
       throw error;
     }
-    if (disposed) { transaction.rollback(); flushing = false; return false; }
+    if (disposed) { indexesDirty = true; transaction.reset(); flushing = false; return false; }
     for (const id of transaction.changed) changedItems.add(id);
     current = next;
     stateChanged = true;
@@ -139,22 +156,27 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   return {
     getState() {
       if (!notifying) flush();
+      ensureIndexes();
       return current;
     },
     getItem(id: string) {
       if (!notifying) flush();
+      ensureIndexes();
       return entities.get(id);
     },
     getOutline(): readonly OutlineItem[] {
       if (!notifying) flush();
+      ensureIndexes();
       return current.outline;
     },
     getOutlineSnapshot(): OutlineSnapshot {
       if (!notifying) flush();
+      ensureIndexes();
       return outlineSnapshot;
     },
     hasMessageDelivery(deliveryId: string) {
       if (!notifying) flush();
+      ensureIndexes();
       return messageAliases.has(`delivery:${deliveryId}`);
     },
     subscribe,
@@ -189,8 +211,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       pending = [];
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
-      transaction.rollback();
-      entities = new Map();
+      transaction.reset();
+      entities.clear();
       messageAliases.clear();
       listeners.clear();
       outlineListeners.clear();
