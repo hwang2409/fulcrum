@@ -8,7 +8,7 @@ start: `make dev` installs, builds every package, and runs the playground (then 
 - `@fulcrum/core`: agent-agnostic run events and a burst-coalescing run store.
 - `@fulcrum/zeta`: zeta serve wire types, adapter, JSON-RPC client, websocket transport, and authenticated `connectZeta`.
 - `@fulcrum/react`: react 19 hooks and headless timeline parts over `@fulcrum/core`. It does not depend on `@fulcrum/zeta`.
-- `@fulcrum/markdown`: zero-dependency streaming markdown with a framework-free document core and an optional `@fulcrum/markdown/react` renderer.
+- `@fulcrum/markdown`: streaming markdown with a framework-free, dependency-free document core and an optional `@fulcrum/markdown/react` renderer (peer: `@fulcrum/react`, which draws its code blocks).
 - `apps/playground` (private): replays the zeta fixtures, runs a stress test, or connects to a live zeta server in a browser.
 
 ## zeta web client
@@ -117,6 +117,8 @@ import { Message } from "@fulcrum/react";
 The streaming document freezes completed blocks, table rows, and list items. Open fences and plain paragraphs consume only appended text. `Markdown` covers CommonMark and GFM message content: ATX/setext headings, paragraphs, inline/indented/fenced code, nested/task lists, emphasis, reference and literal links, images, blockquotes, tables, rules, entities, and hard breaks. Raw HTML stays escaped. Link and image protocols are limited to HTTP(S), `mailto:`, and relative URLs.
 
 Code blocks accept the `Highlight` returned by `createHighlighter()` from `@fulcrum/highlight`. The shared callback receives `(code, language, { id, version, state })` and returns tokens immediately or in a promise. `state` is `streaming` or `done`; stale async results are ignored. Tokens without a `type` render as plain text; styled token classes are `tok-keyword`, `tok-string`, `tok-number`, `tok-comment`, `tok-function`, `tok-type`, `tok-variable`, `tok-constant`, `tok-operator`, `tok-punctuation`, `tok-tag`, `tok-attribute`, `tok-regexp`, `tok-inserted`, and `tok-deleted`. Copy `@fulcrum/react/styles.css` and `@fulcrum/react/themes.css`; also copy `@fulcrum/highlight/styles.css` when code highlighting is enabled. Regenerate the vendored parser with `bun run vendor:markdown-it`.
+
+A fenced block over 40 lines, or with more tokens than one commit should draw, is the same bounded virtual viewer the tool cards use, at the height of 40 lines: it colors its visible 500-character ranges first, then the whole block in the background, so a comment or string that crosses a range edge settles to the right colors. A streaming fence follows its newest line. Only the visible window is mounted, so browser find-in-page reaches only the visible lines; the copy control copies the whole block.
 
 The headless renderer has no visual styles. Its stable styling hooks are `data-part="md-paragraph"`, `md-heading`, `md-code-inline`, `md-code-block`, `md-list`, `md-list-item`, `md-emphasis`, `md-strong`, `md-strike`, `md-link`, `md-image`, `md-blockquote`, `md-table`, `md-rule`, and `md-break`. Code blocks also expose `data-language`.
 

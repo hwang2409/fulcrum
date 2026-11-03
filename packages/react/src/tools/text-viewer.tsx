@@ -7,8 +7,10 @@ import { spansIn, type AnsiSpan } from "./ansi.js";
 const SEGMENT_CHARS = 2_000;
 // A code viewer's ranges are smaller: each scrolled-in range is one react commit of its tokens, and dense code reaches
 // about 1,400 spans per 2,000 characters (a 57-97 ms gap per fast-scrolled frame on a CI runner, 38-46 ms with 500).
-// The tool viewer keeps 2,000: four times the ranges made opening a 1,000,000-line output take 17 ms instead of 3.
+// Plain and ANSI text keeps 2,000: four times the ranges made opening a 1,000,000-line output take 17 ms instead of 3.
 const CODE_SEGMENT_CHARS = 500;
+/** The one range rule: highlighted text in 500-character ranges, plain and ANSI text in 2,000. */
+const rangeChars = (language: string | undefined) => language ? CODE_SEGMENT_CHARS : SEGMENT_CHARS;
 // The most text drawn as one highlighted block (one react commit of its tokens); larger text goes through the virtual
 // viewer. Measured in chromium with the page's CPU throttled 4x (apps/playground/scripts/large-blocks.ts): about 1,900
 // token spans cost one 50 ms frame. Real code has about 0.18 spans per character: 9,900 characters of typescript (157
@@ -383,7 +385,8 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
   const metrics = suppliedMetrics ?? measuredMetrics;
   const large = needsTextViewer(text, metrics);
   // Segments are built only for an open viewer: text in fixed-size ranges that start on a line, rows in fixed groups.
-  const textSegments = useSegments(open && !rows ? text : "", appendOnly, segmentLines(text, metrics));
+  const size = rangeChars(format?.language);
+  const textSegments = useSegments(open && !rows ? text : "", appendOnly, segmentLines(text, metrics, size), size);
   const rowSegments = useMemo(() => open && rows ? rowGroups(rows) : [], [open, rows]);
   const cap = useCap(rows ? rows.count : text);
   if (rows && !(large && open)) {
@@ -452,7 +455,8 @@ export function CopyButton({ value, label }: { value: CopyValue; label: string }
  */
 export function CodeViewer({ text, language, id, done = true, label = "code", seed }: { text: string; language: string | undefined; id: string; done?: boolean; label?: string; seed?: Token[] | null }) {
   const metrics = useTextMetrics(text, !done);
-  const segments = useSegments(text, !done, segmentLines(text, metrics, CODE_SEGMENT_CHARS), CODE_SEGMENT_CHARS);
+  const size = rangeChars(language);
+  const segments = useSegments(text, !done, segmentLines(text, metrics, size), size);
   const format = useMemo(() => language ? { language } : undefined, [language]);
   // A block still streaming in follows its newest line, as the timeline follows the run; a finished one starts at its top.
   return <VirtualText text={text} label={label} follow={!done} metrics={metrics} segments={segments} format={format} id={id} done={done} copy seed={seed} />;

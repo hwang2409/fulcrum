@@ -24,6 +24,8 @@ import { flushSync } from "react-dom";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown } from "@fulcrum/markdown/react";
 import { parseMarkdown } from "@fulcrum/markdown";
+import { createRunStore } from "@fulcrum/core";
+import { RunProvider, ToolCall } from "@fulcrum/react";
 const line = "A<B<C,D>,E<F>>::g(h++,--i,j+=k,l?m:n); // x\\n";
 const code = "int first_marker = 1;\\n" + line.repeat(${lines} - 2) + "int last_marker = 2;\\n";
 const bigCode = line.repeat(9_999);
@@ -93,6 +95,31 @@ if (viewer) results.scroll = await measure(async () => {
   viewer.scrollTop = 0;
   return { worstFrame: Math.round(worstFrame) };
 });
+// An opened read viewer of the same file, scrolled a page per frame: highlighted ranges by the same rule as the fence.
+root.render(null);
+await nextFrame();
+const store = createRunStore();
+const call = { id: "r", name: "read", arguments: { path: "a.cpp" } };
+store.dispatch({ type: "tool_start", tool_call: call, view: { kind: "read", path: "a.cpp" } });
+store.dispatch({ type: "tool_end", tool_call: call, tool_result: { tool_call_id: "r", content: code, is_error: false } });
+await nextFrame(); // the store applies events on the next frame
+flushSync(() => root.render(createElement(RunProvider, { store, highlight }, createElement(ToolCall, { id: "tool:r" }))));
+const card = document.querySelector("[data-id='tool:r']");
+if (card.tagName === "DETAILS" && !card.open) { card.open = true; card.dispatchEvent(new Event("toggle")); }
+await nextFrame();
+results.read = await measure(async () => {
+  flushSync(() => document.querySelector("[data-id='tool:r'] [data-action=open-viewer]").click());
+  const readViewer = document.querySelector("[data-id='tool:r'] [data-part=text-viewer]");
+  await until(() => readViewer.querySelector("[class^=tok-]"));
+  for (let frame = 0; frame < 120; frame++) {
+    readViewer.scrollTop += readViewer.clientHeight;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  return { rows: readViewer.querySelectorAll("[data-part=text-viewer-row]").length, colored: !!readViewer.querySelector("[class^=tok-]") };
+});
+root.render(createElement(Markdown, { id: "large", source: fence, highlight }));
+await nextFrame();
+await nextFrame();
 window.__code = code;
 window.__results = results;
 </script>`);
