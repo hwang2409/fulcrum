@@ -83,9 +83,9 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const weigh = (code: string, tokens: Token[]) => code.length * 2 + tokens.reduce((sum, token) => sum + token.text.length * 2 + 32, 0);
   const remember = (key: string, context: HighlightContext, code: string, tokens: Token[], completion: Completion = { status: context.state === "done" ? "complete" : "pending" }) => {
     cache.set(key, { tokens, weight: weigh(code, tokens), used: ++clock, done: context.state === "done", id: context.id, code, completion });
-    notify(context, completion);
     const queued = pendingUpdates.get(key);
     if (queued) { pendingUpdates.delete(key); update(queued.context, queued.language, queued.tokens); }
+    notify(context, completion);
     const keys = [...(versions.get(context.id) ?? []).filter((item) => item !== key), key];
     while (keys.length > 2) cache.delete(keys.shift()!);
     versions.set(context.id, keys);
@@ -174,8 +174,10 @@ export function createController(options: HighlighterOptions = {}): Highlight {
             pending.delete(data.requestId);
             if (sameBlock(busyWith, job.context)) busyWith = null;
             // An error for one block (the worker is alive) leaves that block plain.
-            if ("completion" in data) notify(job.context, data.completion);
-            else if ((data as { provisional?: boolean }).provisional) completions.set(revision(job.context), { status: "pending" });
+            if ("completion" in data) {
+              if (data.completion.status === "unavailable") notify(job.context, data.completion);
+              else completions.set(revision(job.context), data.completion);
+            } else if ((data as { provisional?: boolean }).provisional) completions.set(revision(job.context), { status: "pending" });
             job.resolve(tokens ?? plain(job.code));
           }
         }
