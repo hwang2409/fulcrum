@@ -195,7 +195,7 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
 
 type Decide = (requestId: string) => void | Promise<unknown>;
 
-const approvalStatus = (reason: string) => ({ controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" } as Record<string, string>)[reason] ?? (reason ? "ended" : "resolved");
+const approvalStatus = (reason: string) => ({ controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" } as Record<string, string>)[reason] ?? "ended";
 
 const ApprovalButton = ({ action, handler, sending, disabledReason, decide }: { action: "approve" | "deny"; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: "approve" | "deny", handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler || sending} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{action}</button> : null;
 

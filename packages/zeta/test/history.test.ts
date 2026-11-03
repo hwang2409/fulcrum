@@ -28,6 +28,24 @@ test("a repeated page replaces messages by id instead of adding rows", () => {
   expect(store.getOutline()).toHaveLength(1);
 });
 
+test("maps approval lifecycle history rows through the live adapter", () => {
+  const events = fromZetaHistory([
+    { id: "a1", role: "system", event: "approval_request", request_id: "r1", tool_call: { id: "t1", name: "bash", arguments: {} }, delegated: false },
+    { id: "a2", role: "system", event: "approval_end", request_id: "r1", data: { decision: "abort", reason: "timeout" } },
+  ]);
+  expect(events).toEqual([
+    { type: "approval_request", request_id: "r1", tool_call: { id: "t1", name: "bash", arguments: {} }, delegated: false },
+    { type: "approval_end", request_id: "r1", data: { decision: "abort", reason: "timeout" } },
+  ]);
+});
+
+test("history and live approval events share one reducer item", () => {
+  const store = createRunStore((flush) => flush());
+  const request = { type: "approval_request" as const, request_id: "r1", tool_call: { id: "t1", name: "bash", arguments: {} }, delegated: false };
+  for (const event of [...fromZetaHistory([{ id: "a1", role: "system", event: "approval_request", ...request }]), request]) store.dispatch(event);
+  expect(store.getOutline()).toEqual([{ id: "approval:r1", kind: "approval" }]);
+});
+
 test("one invalid row becomes an error and the rest still map", () => {
   const events = fromZetaHistory([{ id: "x", role: "assistant", content: "nope" }, rows[0]]);
   expect(events.map((event) => event.type)).toEqual(["error", "user_message"]);

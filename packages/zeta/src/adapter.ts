@@ -285,6 +285,7 @@ const text = (content: unknown[]) =>
 
 const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
   const row = object(value, "history row");
+  if (row.event === "approval_request" || row.event === "approval_end") return fromZetaEvent(row);
   const id = string(row.id, "history row id");
   const role = string(row.role, "history row role");
   if (!Array.isArray(row.content)) throw new Error("history row content must be an array");

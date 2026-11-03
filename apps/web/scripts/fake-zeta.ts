@@ -10,6 +10,7 @@ import type { ServerWebSocket } from "bun";
 
 type Json = Record<string, unknown>;
 export type Mode = "ok" | "busy" | "incompatible" | "slow";
+export type HistoryMode = "new" | "old";
 
 const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
 const meta = (id: string, minutesAgo: number, extra: Json = {}) => ({
@@ -55,7 +56,7 @@ const histories: Record<string, Json[]> = {
 };
 
 /** The live turn that runs when the active session opens: prose, code, a shell call, an approval, then a summary. */
-const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "deny" | "abort">, wait: (ms: number) => Promise<void>, done: () => void) => async () => {
+const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "deny" | "abort">, wait: (ms: number) => Promise<void>, done: () => void, historyMode: HistoryMode) => async () => {
   // Committed rows also land in history, as in zeta, so a reconnect rebuilds what the live stream showed.
   const history = histories[ACTIVE]!;
   const row = (id: string, role: string, content: Json[], toolResult: Json | null = null) => history.push({ id, role, content, tool_result: toolResult });
@@ -80,9 +81,11 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
   row("r3", "assistant", [toolUse("live-2", "bash")]);
   const approval = ask();
   e("approval_request", { request_id: "approval-1", tool_call: clean, delegated: false });
+  if (historyMode === "new") history.push({ id: "approval-request-1", role: "system", event: "approval_request", request_id: "approval-1", tool_call: clean, delegated: false });
   const decision = await approval;
   if (decision === "abort") return done();
   e("approval_end", { request_id: "approval-1", data: { decision } });
+  if (historyMode === "new") history.push({ id: "approval-end-1", role: "system", event: "approval_end", request_id: "approval-1", tool_call: clean, data: { decision } });
   if (decision === "approve") {
     e("tool_start", { tool_call: clean, data: {} });
     row("r4", "tool_result", [text("")], result("live-2", "built 9 packages in 2.1s\n"));
@@ -96,13 +99,14 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
   e("agent_end");
 };
 
-export async function startFakeZeta({ origins, port = 0, live = true }: { origins: string[]; port?: number; live?: boolean }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new" }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
   let token = crypto.randomUUID();
   let mode: Mode = "ok";
   let liveEnabled = live;
+  let currentHistoryMode = historyMode;
   let allowed = origins;
   let active: string | null = ACTIVE;
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
@@ -132,6 +136,7 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
         running = false;
         histories[ACTIVE]!.push({ id: `drop-${Date.now()}`, role: "tool_result", content: [text("")], tool_result: result("live-2", "connection lost", { is_canceled: true }) });
         sockets.delete(socket);
+        if (currentHistoryMode === "new") histories[ACTIVE]!.push({ id: `approval-end-drop-${Date.now()}`, role: "system", event: "approval_end", request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, data: { decision: "abort", reason: "controller_disconnected" } });
         resolve("abort");
       },
       async message(socket, raw) {
@@ -169,7 +174,7 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
             turnStarted = true;
             running = true;
             const ask = () => new Promise<"approve" | "deny" | "abort">((resolve) => { decide = (decision) => { decide = null; resolve(decision); }; });
-            setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; })(), 300);
+            setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; }, currentHistoryMode)(), 300);
           }
           return;
         }
@@ -196,6 +201,7 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
     async stop() { allowed = []; await rm(discovery, { force: true }); this.drop(); },
     async start() {
       allowed = origins;
+      histories[ACTIVE] = histories[ACTIVE]!.filter((row) => row.event !== "approval_request" && row.event !== "approval_end");
       token = crypto.randomUUID();
       if (!decide) { turnStarted = false; approvalAborted = false; running = false; }
       await write({ port: server.port, token, pid: process.pid, origins: allowed });
@@ -205,6 +211,7 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
     /** Hands out a token the server will refuse. */
     async wrongToken() { await write({ port: server.port, token: "stale-token", pid: process.pid, origins: allowed }); },
     setMode(next: Mode) { mode = next; },
+    setHistoryMode(next: HistoryMode) { currentHistoryMode = next; },
     setLive(next: boolean) { liveEnabled = next; },
     async close() { this.drop(); server.stop(true); await rm(home, { recursive: true, force: true }); },
   };
