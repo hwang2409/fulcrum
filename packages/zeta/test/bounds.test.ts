@@ -30,7 +30,7 @@ const fields: Record<string, string[]> = {
   approval_end: ["event", "data", "request_id", "data.agent_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   tool_start: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments"],
   tool_output: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "output"],
-  tool_end: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "tool_result", "tool_result.tool_call_id", "tool_result.content", "tool_result.is_error", "tool_result.is_canceled", "tool_result.structured_content", "tool_result.structured_content.exit_code", "tool_result.structured_content.stdout", "tool_result.structured_content.stderr"],
+  tool_end: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "tool_result", "tool_result.tool_call_id", "tool_result.content", "tool_result.is_error", "tool_result.is_canceled", "tool_result.structured_content", "tool_result.structured_content.exit_code", "tool_result.structured_content.stdout", "tool_result.structured_content.stderr", "tool_result.content_blocks", "tool_result.content_blocks.0", "tool_result.content_blocks.0.type", "tool_result.content_blocks.0.data", "tool_result.content_blocks.0.mimeType", "tool_result.content_blocks.0.path", "tool_result.content_blocks.0.size", "tool_result.content_blocks.0.caption", "tool_result.content_blocks.0.width", "tool_result.content_blocks.0.height"],
   notification_by_kind: ["event", "data", "data.kind", "data.child_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   child_message_delivered: ["event", "data", "data.agent_instance_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   account_limit: ["event", "data"],
@@ -79,6 +79,9 @@ const assertCoreShape = (events: ReturnType<typeof fromZetaEvent>) => {
   }
 };
 
+// A 4x3 png from a real zeta read (fixtures/zeta-images.json).
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAE0lEQVR4nGO8PlORAQaY4Cx0DgA7RwGXzCXxUwAAAABJRU5ErkJggg==";
+
 test("every consumed field is decoded or becomes a typed adapter error", () => {
   const baseByName = Object.fromEntries(allEvents.map((event) => [event.event, event]));
   baseByName.assistant_message = {
@@ -88,7 +91,7 @@ test("every consumed field is decoded or becomes a typed adapter error", () => {
       content: [
         { type: "text", text: "hello" },
         { type: "thinking", text: "think", signature: "signed" },
-        { type: "image", data: "aGVsbG8=", mimeType: "image/png", path: "/tmp/shot.png", size: 5 },
+        { type: "image", data: PNG, mimeType: "image/png", path: "/tmp/shot.png", size: 76 },
         { type: "redacted_thinking", data: "redacted" },
         { type: "tool_use", tool_call: { id: "tool-2", name: "read", arguments: {} } },
       ],
@@ -100,7 +103,7 @@ test("every consumed field is decoded or becomes a typed adapter error", () => {
   baseByName.tool_end = {
     ...baseByName.tool_end,
     tool_call: { id: "tool-1", name: "bash", arguments: { command: "ls" } },
-    tool_result: { tool_call_id: "tool-1", content: "ok", is_error: false, is_canceled: false, structured_content: { exit_code: 0, stdout: "ok", stderr: "" } },
+    tool_result: { tool_call_id: "tool-1", content: "ok", is_error: false, is_canceled: false, structured_content: { exit_code: 0, stdout: "ok", stderr: "" }, content_blocks: [{ type: "image", data: PNG, mimeType: "image/png", path: "/tmp/shot.png", size: 76, caption: "shot", width: 4, height: 3 }] },
   };
   baseByName.approval_request = { ...baseByName.approval_request, agent_instance_id: "child" };
   baseByName.error = { ...baseByName.error, data: { agent_instance_id: "child" } };

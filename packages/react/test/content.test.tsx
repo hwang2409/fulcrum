@@ -5,9 +5,9 @@ GlobalRegistrator.register();
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { createRunStore, MAX_DATA_IMAGE_CHARS, type ContentBlock, type RunEvent } from "@fulcrum/core";
+import { createRunStore, MAX_URL_CHARS, type ContentBlock, type RunEvent } from "@fulcrum/core";
 import { Markdown } from "../../markdown/src/react.js";
-import { Message, RunProvider, type BlockRenderers, type ContentBlockProps } from "../src/index.js";
+import { Message, RunProvider, ToolCall, type BlockRenderers, type ContentBlockProps } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 
@@ -137,7 +137,7 @@ test("sources and files show names, types, and sizes, and link only http, https,
 
 test("images reserve their box, open on click, and refuse unsafe or oversized data", () => {
   const opened: ContentBlock[] = [];
-  const big = `data:image/png;base64,${"A".repeat(MAX_DATA_IMAGE_CHARS)}`;
+  const big = `data:image/png;base64,${"A".repeat(MAX_URL_CHARS)}`;
   render([commit([
     { type: "image", url: PNG, alt: "a red dot", width: 800, height: 400, mediaType: "image/png", size: 68 },
     { type: "image", url: "data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+", filename: "x.svg" },
@@ -207,4 +207,20 @@ test("a host renderer replaces one block type and gets the stable block props", 
   expect(order()).toEqual(["md-paragraph", "host-source"]);
   expect(seen.at(-1)).toMatchObject({ id: "message:m#1", streaming: false, block: { title: "Example" } });
   expect(typeof seen.at(-1)!.markdown).toBe("object");
+});
+
+test("a tool result's image blocks show under its output, and the card opens for them", () => {
+  const call = { id: "t1", name: "read", arguments: { path: "chart.png" } };
+  const { store } = setup([
+    { type: "tool_start", tool_call: call },
+    { type: "tool_end", tool_call: call, tool_result: { tool_call_id: "t1", content: "x".repeat(2000), is_error: false, blocks: [{ type: "image", url: PNG, alt: "revenue by quarter", width: 640, height: 480, mediaType: "image/png" }] } },
+  ]);
+  mount(<RunProvider store={store}><ToolCall id="tool:t1" /></RunProvider>);
+  // Long output alone keeps a finished card closed; an image opens it.
+  expect((q('[data-part="tool"]') as HTMLDetailsElement).open).toBe(true);
+  const body = q('[data-part="tool-body"]');
+  expect(body.lastElementChild?.getAttribute("data-part")).toBe("tool-blocks");
+  const image = q('[data-part="tool-blocks"] [data-part="image"]');
+  expect(image.dataset.size).toBe("known");
+  expect(image.querySelector("img")?.getAttribute("alt")).toBe("revenue by quarter");
 });

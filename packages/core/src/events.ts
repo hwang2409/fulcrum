@@ -81,6 +81,8 @@ export interface ToolResult {
   content: string;
   is_error: boolean;
   is_canceled?: boolean;
+  /** What the result carries beside its text, such as images, in order. Renderers show them under the output. */
+  blocks?: ContentBlock[];
 }
 export type SubAgentStatus =
   | "running"

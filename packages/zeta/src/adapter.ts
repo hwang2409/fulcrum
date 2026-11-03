@@ -1,6 +1,7 @@
 import type {
   ApprovalDecision,
   ContentBlock,
+  ImageContentBlock,
   Message,
   RunEvent,
   SubAgentEvent,
@@ -50,6 +51,24 @@ const deltaKind = (kind: string | undefined) => kind === undefined || kind === "
 const basename = (path: string) => path.split(/[\\/]/).pop() || undefined;
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const positive = (value: unknown): value is number => finite(value) && value > 0;
+// zeta's message ImageContent (protocol/types.py): base64 data, mimeType, and an optional path and byte size.
+const image = (input: Record<string, unknown>, at: string): ImageContentBlock => {
+  const mediaType = string(input.mimeType, `${at}.mimeType`);
+  const filename = input.path === undefined || input.path === null ? undefined : basename(string(input.path, `${at}.path`));
+  return {
+    type: "image",
+    url: `data:${mediaType};base64,${string(input.data, `${at}.data`)}`,
+    mediaType,
+    ...(filename ? { filename } : {}),
+    ...(finite(input.size) ? { size: input.size } : {}),
+  };
+};
+// A tool's ToolImageBlock adds an optional caption and pixel size to the message image's fields.
+const toolImage = (input: Record<string, unknown>, at: string): ImageContentBlock => ({
+  ...image(input, at),
+  ...(typeof input.caption === "string" && input.caption.trim() ? { alt: input.caption } : {}),
+  ...(positive(input.width) && positive(input.height) ? { width: input.width, height: input.height } : {}),
+});
 // zeta's block types map onto fulcrum's: thinking is reasoning, an image's base64 data becomes a data URL.
 const contentBlock = (value: unknown, index: number): ContentBlock => {
   const input = object(value, `message.content[${index}]`);
@@ -62,19 +81,8 @@ const contentBlock = (value: unknown, index: number): ContentBlock => {
         text: typeof input.text === "string" ? input.text : (() => { throw new Error(`message.content[${index}].text must be a string`); })(),
         ...(input.signature === undefined ? {} : { signature: string(input.signature, `message.content[${index}].signature`) }),
       };
-    case "image": {
-      const mediaType = string(input.mimeType, `message.content[${index}].mimeType`);
-      const filename = input.path === undefined || input.path === null ? undefined : basename(string(input.path, `message.content[${index}].path`));
-      return {
-        type,
-        url: `data:${mediaType};base64,${string(input.data, `message.content[${index}].data`)}`,
-        mediaType,
-        ...(filename ? { filename } : {}),
-        ...(typeof input.caption === "string" && input.caption.trim() ? { alt: input.caption } : {}),
-        ...(positive(input.width) && positive(input.height) ? { width: input.width, height: input.height } : {}),
-        ...(finite(input.size) ? { size: input.size } : {}),
-      };
-    }
+    case "image":
+      return image(input, `message.content[${index}]`);
     // History replaces an image with its name and size (server/ergonomics.py), so it shows as a file without a link.
     case "attachment":
       return { type: "file", filename: string(input.name, `message.content[${index}].name`), ...(finite(input.size) ? { size: input.size } : {}) };
@@ -90,11 +98,18 @@ const contentBlock = (value: unknown, index: number): ContentBlock => {
 
 const toolResult = (value: unknown): ToolResult => {
   const input = object(value, "tool_result");
+  if (input.content_blocks !== undefined && input.content_blocks !== null && !Array.isArray(input.content_blocks)) throw new Error("tool_result.content_blocks must be an array");
+  // Only images: zeta already flattens text and resource blocks into `content`. History sends `content_blocks: []`.
+  const blocks = ((input.content_blocks ?? []) as unknown[]).flatMap((block, index) => {
+    const at = `tool_result.content_blocks[${index}]`;
+    return object(block, at).type === "image" ? [toolImage(block as Record<string, unknown>, at)] : [];
+  });
   return {
     tool_call_id: string(input.tool_call_id, "tool_result.tool_call_id"),
     content: typeof input.content === "string" ? input.content : (() => { throw new Error("tool_result.content must be a string"); })(),
     is_error: boolean(input.is_error, "tool_result.is_error"),
     ...(input.is_canceled === undefined ? {} : { is_canceled: boolean(input.is_canceled, "tool_result.is_canceled") }),
+    ...(blocks.length ? { blocks } : {}),
   };
 };
 

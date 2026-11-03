@@ -1,6 +1,6 @@
 export * from "./events.js";
 export * from "./tool-map.js";
-export { MAX_DATA_IMAGE_CHARS, safeUrl } from "./url.js";
+export { MAX_URL_CHARS, safeUrl } from "./url.js";
 export {
   RECEIPT_LIMIT,
   initialState,

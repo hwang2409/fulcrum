@@ -66,7 +66,7 @@ const renderers: Renderers = {
   const renderers: Renderers = { message: ({ id }) => <Message id={id} markdown={Markdown} blocks={blocks} onOpen={openInPanel} /> };
   ```
 
-  Every URL goes through `safeUrl` from `@fulcrum/core`: links are http, https, mailto, or relative; images may also be inline png, jpeg, gif, webp, avif, or bmp `data:` URLs up to `MAX_DATA_IMAGE_CHARS`. Addresses never become labels, titles, or data attributes.
+  Every URL goes through `safeUrl` from `@fulcrum/core`: links are http, https, mailto, or relative; images may also be inline png, jpeg, gif, webp, avif, or bmp `data:` URLs. Any URL longer than `MAX_URL_CHARS` (8 MiB) is refused before any other work. Addresses never become labels, titles, or data attributes.
 - tool body slot: `ToolCall` and `Approval` own the one header row (`tool-name`, `tool-summary`, `tool-status`), the disclosure, the state rail, and the approval actions. A per-tool card passes only what goes inside `data-part="tool-body"`, so it never draws a second header:
 
   ```tsx

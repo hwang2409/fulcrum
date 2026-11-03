@@ -90,6 +90,26 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
   );
 });
 
+// The redacted case has nothing to open: the provider sent the reasoning encrypted.
+const redacted = (
+  <div data-part="reasoning" data-state="redacted">
+    <div data-part="reasoning-header"><span data-part="reasoning-name">reasoning</span><span data-part="reasoning-status">redacted by the provider</span></div>
+  </div>
+);
+const newestLine = (text: string) => text.slice(-400).split("\n").filter((line) => line.trim()).at(-1)?.trim() ?? "";
+const wordCount = (text: string) => text.split(/\s+/).filter(Boolean).length;
+
+/** True once a block this component saw stream has finished. History (mounted finished) never turns it on. */
+function useFinishedAfterStreaming(streaming: boolean) {
+  const [finished, setFinished] = useState(false);
+  const streamed = useRef(streaming);
+  useEffect(() => {
+    if (streamed.current && !streaming) setFinished(true);
+    streamed.current ||= streaming;
+  }, [streaming]);
+  return finished;
+}
+
 /**
  * Reasoning: a named disclosure, closed by default. While it streams the header says "thinking" and shows the newest
  * words; its body renders only while open. A screen reader hears "reasoning finished" once, when a block it saw stream
@@ -97,27 +117,19 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
  */
 export const ReasoningBlock = memo(function ReasoningBlock({ block, id, streaming, markdown: Markdown }: ContentBlockProps) {
   const [open, setOpen] = useState(false);
-  const [sawStreaming, setSawStreaming] = useState(streaming);
-  if (streaming && !sawStreaming) setSawStreaming(true);
+  const finished = useFinishedAfterStreaming(streaming);
   const text = typeof block.text === "string" ? block.text : "";
-  if (block.redacted === true) {
-    return (
-      <div data-part="reasoning" data-state="redacted">
-        <div data-part="reasoning-header"><span data-part="reasoning-name">reasoning</span><span data-part="reasoning-status">redacted by the provider</span></div>
-      </div>
-    );
-  }
+  if (block.redacted === true) return redacted;
   if (!streaming && text.trim() === "") return null;
-  const words = streaming ? 0 : text.split(/\s+/).filter(Boolean).length;
-  const newest = streaming ? text.slice(-400).split("\n").filter((line) => line.trim()).at(-1)?.trim() ?? "" : "";
+  const words = streaming ? 0 : wordCount(text);
   return (
     <>
-      <span data-part="reasoning-live" role="status" style={hidden}>{sawStreaming && !streaming ? "reasoning finished" : ""}</span>
+      <span data-part="reasoning-live" role="status" style={hidden}>{finished ? "reasoning finished" : ""}</span>
       <details data-part="reasoning" data-state={streaming ? "streaming" : "done"} onToggle={(event) => setOpen(event.currentTarget.open)}>
         <summary data-part="reasoning-header">
           <span data-part="reasoning-name">reasoning</span>
           <span data-part="reasoning-status">{streaming ? "thinking" : `${words} ${words === 1 ? "word" : "words"}`}</span>
-          {streaming && !open ? <span data-part="reasoning-preview" aria-hidden="true"><span>{newest}</span></span> : null}
+          {streaming && !open ? <span data-part="reasoning-preview" aria-hidden="true"><span>{newestLine(text)}</span></span> : null}
         </summary>
         {open ? <div data-part="reasoning-body" style={Markdown ? undefined : pre}>{Markdown ? <Markdown id={id} source={text} streaming={streaming} /> : text}</div> : null}
       </details>
@@ -262,3 +274,15 @@ export const UnknownBlock = memo(function UnknownBlock({ block, id }: ContentBlo
 });
 
 const defaultBlocks: BlockRenderers = { reasoning: ReasoningBlock, source: SourceBlock, file: FileBlock, image: ImageBlock };
+
+/** A tool result's blocks (`ToolResult.blocks`: images, ...), in order, under the tool's output. */
+export function ToolResultBlocks({ id, blocks }: { id: string; blocks: readonly ContentBlock[] }) {
+  return (
+    <div data-part="tool-blocks">
+      {blocks.map((block, index) => {
+        const Block = own(defaultBlocks, block.type) ?? UnknownBlock;
+        return <Block key={index} block={block} id={`${id}:block-${index}`} streaming={false} />;
+      })}
+    </div>
+  );
+}

@@ -680,6 +680,8 @@ a[data-action="open"] { display: inline-flex; align-items: center; min-height: 3
 a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--fulcrum-fg); }
 [data-part="file"] button[data-action="open"] { color: var(--fulcrum-accent); }
 
+[data-part="tool-blocks"] { padding: 10px 12px; }
+[data-part="tool-blocks"] > :last-child { margin-bottom: 0; }
 [data-part="image"] { display: flex; flex-direction: column; gap: 6px; max-width: 100%; }
 /* The box is reserved before the image loads: its own size when known (width and aspect-ratio inline), else a fixed
    4:3 frame the image fits inside. */

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createRunStore, MAX_DATA_IMAGE_CHARS, safeUrl, type RunEvent } from "../src/index.js";
+import { createRunStore, MAX_URL_CHARS, safeUrl, type RunEvent } from "../src/index.js";
 
 const replay = (events: RunEvent[]) => {
   const store = createRunStore((flush) => flush());
@@ -62,8 +62,11 @@ test("safeUrl allows inline raster images under the size cap only", () => {
   expect(safeUrl("https://example.com/a.png", "image")).toBe("https://example.com/a.png");
   for (const url of ["data:image/svg+xml;base64,PHN2Zz4=", "data:image/svg+xml,<svg onload=alert(1)>", "data:text/html;base64,PHNjcmlwdD4=", "data:image/png,raw", "data:image/png;base64,<script>", "javascript:alert(1)"])
     expect(safeUrl(url, "image")).toBeUndefined();
-  const big = "data:image/png;base64," + "A".repeat(MAX_DATA_IMAGE_CHARS);
-  expect(safeUrl(big, "image")).toBeUndefined();
+  const prefix = "data:image/png;base64,";
+  expect(safeUrl(prefix + "A".repeat(MAX_URL_CHARS - prefix.length), "image")).toBeDefined();
+  expect(safeUrl(prefix + "A".repeat(MAX_URL_CHARS - prefix.length + 1), "image")).toBeUndefined();
+  // The cap reads the raw length before any other work: padding is not trimmed away first.
+  expect(safeUrl(" ".repeat(MAX_URL_CHARS) + "a.png", "image")).toBeUndefined();
 });
 
 test("a stream that restarts a finished message replaces its blocks instead of appending to them", () => {

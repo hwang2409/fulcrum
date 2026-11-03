@@ -9,7 +9,7 @@ import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
 import { SubAgent, subAgentLabel, subAgentStatusText } from "./sub-agent.js";
 import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
-import { Message } from "./content.js";
+import { Message, ToolResultBlocks } from "./content.js";
 
 export type ItemProps = { id: string; className?: string };
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
@@ -129,7 +129,7 @@ const SHORT_OUTPUT_LINES = 8;
    answer ("1 replacement", "42 pass"). Long or empty output starts collapsed so the header row carries the run.
    Set once at mount, so the user's own toggle is never overridden while output streams in. */
 const openByDefault = (item: ToolItem | undefined, output: string) =>
-  !item || item.active || (!denied(item) && (item.is_error || (output !== "" && output.length < 1200 && output.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1)));
+  !item || item.active || (!denied(item) && (item.is_error || !!item.result?.blocks?.length || (output !== "" && output.length < 1200 && output.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1)));
 
 // A call its approval denied never ran: the header's "denied" is its status, and the harness's note stays closed.
 const denied = (item: ToolItem) => item.approval?.type === "approval_end" && item.approval.decision === "deny";
@@ -179,6 +179,7 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
       </summary>
       {bodyMounted ? <div data-part="tool-body">
         <Body item={tool} output={output} state={state} />
+        {tool.result?.blocks?.length ? <ToolResultBlocks id={id} blocks={tool.result.blocks} /> : null}
       </div> : null}
     </details>
   );
