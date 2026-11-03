@@ -39,7 +39,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   let requestId = 0;
   let unavailable = false;
   let busyWith: HighlightContext | null = null; // the block the worker last said it works on
-  let parts: Token[] = []; // a long reply's tokens so far (protocol.ts)
+  const parts = new Map<number, Token[]>(); // long results' tokens so far, by result (`of`, protocol.ts)
   let owesAck: WorkerLike | undefined; // the worker waits for this page to ack its last part, in the next frame
   const crashes: number[] = [];
   const poisoned = new Set<string>(); // revisions (`revision()`) that went silent: plain for this controller's life
@@ -96,14 +96,14 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   };
   // Any message from the worker proves it alive: the silence clock starts again while work is pending.
   const heard = () => { clearTimeout(watchdog); watchdog = pending.size ? setTimeout(onSilence, WORKER_SILENCE_MS) : undefined; };
-  const stop = () => { clearTimeout(watchdog); watchdog = undefined; worker?.terminate(); worker = undefined; busyWith = null; parts = []; owesAck = undefined; };
+  const stop = () => { clearTimeout(watchdog); watchdog = undefined; worker?.terminate(); worker = undefined; busyWith = null; parts.clear(); owesAck = undefined; };
   // One part per frame: the next part's message task cannot run back to back with this one (protocol.ts).
   const ackNextFrame = (from: WorkerLike) => {
     owesAck = from;
     const run = () => { if (owesAck !== from || worker !== from) return; owesAck = undefined; from.postMessage({ type: "ack" }); heard(); };
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(run); else setTimeout(run, 16);
   };
-  const joined = (last: Token[]) => { if (!parts.length) return last; const tokens = parts; parts = []; for (const token of last) tokens.push(token); return tokens; };
+  const joined = (of: number, last: Token[]) => { const tokens = parts.get(of); if (!tokens) return last; parts.delete(of); for (const token of last) tokens.push(token); return tokens; };
   const giveUp = () => {
     stop();
     unavailable = true;
@@ -145,10 +145,10 @@ export function createController(options: HighlighterOptions = {}): Highlight {
         if (worker !== next || disposed) return;
         const data = event.data;
         if ("progress" in data) busyWith = data.progress;
-        else if ("part" in data) { for (const token of data.part) parts.push(token); ackNextFrame(next); }
-        else if ("update" in data) { if (sameBlock(busyWith, data.update)) busyWith = null; update(data.update, data.language, joined(data.tokens)); }
+        else if ("part" in data) { const tokens = parts.get(data.of); if (tokens) for (const token of data.part) tokens.push(token); else parts.set(data.of, data.part); ackNextFrame(next); }
+        else if ("update" in data) { if (sameBlock(busyWith, data.update)) busyWith = null; update(data.update, data.language, joined(data.of, data.tokens)); }
         else {
-          const tokens = "tokens" in data ? joined(data.tokens) : undefined; // joined even for a request no longer pending
+          const tokens = "tokens" in data ? joined(data.of, data.tokens) : undefined; // joined even for a request no longer pending
           const job = pending.get(data.requestId);
           if (job) {
             pending.delete(data.requestId);
