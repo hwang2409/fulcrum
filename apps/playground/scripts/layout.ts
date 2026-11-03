@@ -5,10 +5,11 @@
 // rendered status word needs 4.5:1 and every state mark and state rail 3:1 against the background it is drawn on, and
 // ok, warn, danger, and accent (running) need 3:1 on bg, when a capped output box cuts through a line, or when
 // the keyword, string, comment, function, and type token colors are not all distinct. Every visible text inside the
-// parts (syntax tokens, ANSI spans, labels drawn by ::before/::after) must reach 4.5:1 on the background it is drawn on,
-// in every theme. Every button, summary, and a[role=button] inside the parts must be a styled fulcrum control, with no
-// browser-default appearance, ButtonFace background, default border, or system font, at rest and under forced :hover,
-// :focus, :focus-visible, and :active. The large-output viewer opens in <16 ms, follows the bottom, and highlights a
+// parts (labels drawn by ::before/::after too) must reach 4.5:1 on the background it is drawn on, in every theme; only text
+// inside a .tok-* code span or an ANSI color span, or on an ANSI background, must reach 3:1, the floor for official
+// palette colors (packages/react/themes.css). Tool facts (paths, numbers, counts) are UI text at 4.5:1. Every button, summary, and
+// a[role=button] inside the parts must be a styled fulcrum control, with no browser-default appearance, ButtonFace
+// background, default border, or system font, at rest and under forced :hover, :focus, :focus-visible, and :active. The large-output viewer opens in <16 ms, follows the bottom, and highlights a
 // 1,000,000-line file with no long tasks; scrolling it under 4x CPU throttling is reported. Needs a production build
 // (`bun run build`). Collapsed tool bodies warm before they open (see warm-check.ts).
 import { chromium, type Page } from "playwright";
@@ -103,6 +104,14 @@ function pageProblems(minHeight: number) {
     if (Math.abs(lines - Math.round(lines)) > 0.05) problems.push(`${box.dataset.part} in ${box.closest<HTMLElement>("[data-id]")?.dataset.id} shows ${lines.toFixed(2)} lines, cuts through a line`);
   }
   // Every visible text in the parts, and the text labels drawn by ::before and ::after, at 4.5:1 on what is behind it.
+  // Only code gets 3:1, by class, never by color: text inside a highlighter token span (.tok-*) or an ANSI color span,
+  // or bg-colored text on an ANSI background (.ansi-has-bg). Tool facts and every other UI text stay at 4.5:1.
+  const ansiColors = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"].flatMap((name) => [name, `bright-${name}`]);
+  const code = [
+    ...["keyword", "string", "number", "comment", "function", "type", "variable", "constant", "operator", "punctuation", "tag", "attribute", "regexp", "inserted", "deleted"].map((name) => `.tok-${name}`),
+    ...ansiColors.flatMap((name) => [`.ansi-${name}`, `.ansi-text-${name}`]),
+    ".ansi-has-bg",
+  ].join(", ");
   const styles = new Map<Element, CSSStyleDeclaration>();
   const style = (node: Element) => styles.get(node) ?? styles.set(node, getComputedStyle(node)).get(node)!;
   const opacityOf = (node: Element | null) => {
@@ -114,10 +123,11 @@ function pageProblems(minHeight: number) {
   const checkText = (node: HTMLElement, color: string, sample: string) => {
     const [r, g, b, a] = rgba(color);
     const ratio = contrastOn(`rgba(${r}, ${g}, ${b}, ${a! * opacityOf(node)})`, backgroundOf(node));
-    if (ratio >= 4.5) return;
+    const min = node.closest(code) ? 3 : 4.5;
+    if (ratio >= min) return;
     const where = node.closest<HTMLElement>("[data-part]");
     const key = `${where?.dataset.part}.${node.className || node.tagName.toLowerCase()} ${color}`;
-    if (!textProblems.has(key)) textProblems.set(key, `text "${sample.trim().slice(0, 24)}" (${key}) is ${ratio.toFixed(2)}:1, needs 4.5:1`);
+    if (!textProblems.has(key)) textProblems.set(key, `text "${sample.trim().slice(0, 24)}" (${key}) is ${ratio.toFixed(2)}:1, needs ${min}:1`);
   };
   for (const timeline of document.querySelectorAll<HTMLElement>('[data-part="timeline"], [data-part="run-bar"]')) {
     const walker = document.createTreeWalker(timeline, NodeFilter.SHOW_TEXT);
@@ -385,6 +395,16 @@ try {
     for (const theme of themes) {
       await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}`);
       await page.waitForSelector('[data-part="tool"]');
+      // Code highlighting arrives after the highlighter loads; without this wait the text audit sees almost no syntax
+      // spans. Wait for the first keyword span, then for the span count to hold still for 1 s.
+      const highlighted = await page.waitForSelector('[data-part="timeline"] .tok-keyword', { timeout: 30_000 }).then(() => true, () => false);
+      if (!highlighted) failures.push(`${theme} @ ${width}: no .tok-keyword span after 30 s; syntax highlighting did not arrive`);
+      for (let last = -1, still = 0, i = 0; still < 4 && i < 80; i++) {
+        const spans = await page.locator('[data-part="timeline"] [class*="tok-"]').count();
+        still = spans === last ? still + 1 : 0;
+        last = spans;
+        await page.waitForTimeout(250);
+      }
       // Names the widest element that pokes past the viewport, so a failure points at its cause.
       const result = await page.evaluate(() => {
         const viewport = innerWidth;
