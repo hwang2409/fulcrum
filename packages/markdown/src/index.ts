@@ -970,28 +970,7 @@ export function createStreamingDocument(): StreamingDocument {
     }
   };
 
-  const applyLeaf = (resolution: LineResolution) => {
-    const leaf = resolution.leaf;
-    if (pendingReferenceApply && (!leaf || leaf.kind !== "reference-definition" && leaf.kind !== "reference-title")) {
-      applyReferences();
-      pendingReferenceApply = false;
-    }
-    if (!leaf) {
-      for (const frame of frames) if (frame.kind === "list") pendingLooseLists.add(frame.block);
-      openParagraph = undefined;
-      if (frames.length === 1) freezeRoots();
-      return;
-    }
-    if (leaf.kind === "paragraph") {
-      for (const match of leaf.content.matchAll(/\[([^\]\n]+)\]:/g)) blockedReferences.add(normalizeReferenceLabel(match[1]!));
-      if (resolution.continued && openParagraph) {
-        appendParagraphLine(openParagraph, leaf.content);
-      } else openParagraph = createParagraph(leaf.content);
-      openCode = undefined;
-      openIndentedCode = false;
-      openTable = undefined;
-      return;
-    }
+  const applyHeadingOrRule = (leaf: NonNullable<LineResolution["leaf"]>) => {
     if (leaf.kind === "atx-heading") {
       appendBlock({ type: "heading", level: leaf.level!, children: parseInline(leaf.content, false, environment()) });
     } else if (leaf.kind === "setext-heading") {
@@ -1002,7 +981,13 @@ export function createStreamingDocument(): StreamingDocument {
         children[children.length - 1] = { type: "heading", level: leaf.level!, children: paragraph.children };
       }
     } else if (leaf.kind === "thematic-break") appendBlock({ type: "rule" });
-    else if (leaf.kind === "fence-open") {
+    else return false;
+    return true;
+  };
+
+  const applyCodeLeaf = (resolution: LineResolution) => {
+    const leaf = resolution.leaf!;
+    if (leaf.kind === "fence-open") {
       openCode = { type: "code", language: leaf.language, value: "", open: true };
       openIndentedCode = false;
       appendBlock(openCode);
@@ -1020,7 +1005,12 @@ export function createStreamingDocument(): StreamingDocument {
         appendBlock(openCode);
       }
       openCode.value += `${leaf.content}\n`;
-    } else if (leaf.kind === "table-delimiter") {
+    } else return false;
+    return true;
+  };
+
+  const applyTableLeaf = (leaf: NonNullable<LineResolution["leaf"]>) => {
+    if (leaf.kind === "table-delimiter") {
       const children = currentChildren(frames);
       const paragraph = children.at(-1);
       if (paragraph?.type === "paragraph") {
@@ -1028,7 +1018,7 @@ export function createStreamingDocument(): StreamingDocument {
         unregister(record);
         const headerCells = tableCells(record.source);
         const delimiterCells = tableCells(leaf.content);
-        const table: Extract<Block, { type: "table" }> = {
+        const table: TableBlock = {
           type: "table",
           header: headerCells.map((cell) => parseInline(cell.trim(), false, environment())),
           rows: [],
@@ -1052,7 +1042,12 @@ export function createStreamingDocument(): StreamingDocument {
       const tableRecord = tables.get(openTable)!;
       for (let column = 0; column < openTable.header.length; column++)
         tableRecord.cells.push(createTableCell(openTable, cells[column]?.trim() ?? "", false, row, column));
-    } else if (leaf.kind === "html-open") openParagraph = createParagraph(leaf.content);
+    } else return false;
+    return true;
+  };
+
+  const applyMetadataLeaf = (leaf: NonNullable<LineResolution["leaf"]>) => {
+    if (leaf.kind === "html-open") openParagraph = createParagraph(leaf.content);
     else if ((leaf.kind === "html-line" || leaf.kind === "html-close") && openParagraph) {
       appendParagraphLine(openParagraph, leaf.content);
       if (leaf.kind === "html-close") openParagraph = undefined;
@@ -1061,11 +1056,35 @@ export function createStreamingDocument(): StreamingDocument {
       if (label) blockedReferences.delete(normalizeReferenceLabel(label));
       pendingReferenceApply = !hasInlineReferenceTitle(leaf.content);
       if (!pendingReferenceApply) applyReferences();
-    }
-    else if (leaf.kind === "reference-title") {
+    } else if (leaf.kind === "reference-title") {
+      applyReferences();
+      pendingReferenceApply = false;
+    } else return false;
+    return true;
+  };
+
+  const applyLeaf = (resolution: LineResolution) => {
+    const leaf = resolution.leaf;
+    if (pendingReferenceApply && (!leaf || leaf.kind !== "reference-definition" && leaf.kind !== "reference-title")) {
       applyReferences();
       pendingReferenceApply = false;
     }
+    if (!leaf) {
+      for (const frame of frames) if (frame.kind === "list") pendingLooseLists.add(frame.block);
+      openParagraph = undefined;
+      if (frames.length === 1) freezeRoots();
+      return;
+    }
+    if (leaf.kind === "paragraph") {
+      for (const match of leaf.content.matchAll(/\[([^\]\n]+)\]:/g)) blockedReferences.add(normalizeReferenceLabel(match[1]!));
+      if (resolution.continued && openParagraph) appendParagraphLine(openParagraph, leaf.content);
+      else openParagraph = createParagraph(leaf.content);
+      openCode = undefined;
+      openIndentedCode = false;
+      openTable = undefined;
+      return;
+    }
+    applyHeadingOrRule(leaf) || applyCodeLeaf(resolution) || applyTableLeaf(leaf) || applyMetadataLeaf(leaf);
     if (leaf.kind !== "html-open" && leaf.kind !== "html-line") openParagraph = undefined;
   };
 
@@ -1161,7 +1180,7 @@ export function createStreamingDocument(): StreamingDocument {
       if (finished || !resolver.pending.length || pendingReferenceApply) return blocks.view;
       if (previewBlocks && previewSource === source) return previewBlocks;
       const pending = resolver.pending.content;
-      const pendingLeaf = pendingLeafContent(pending);
+      const pendingLeaf = openCode ? resolver.pendingLeafContent : pendingLeafContent(pending);
       const overlay = cloneOpenPath(openRoots, Boolean(openParagraph || openCode));
       if (openCode && !openIndentedCode) {
         if (!/^(?:`+|~+)\s*$/.test(pendingLeaf.trim())) appendOpenCode(overlay, pendingLeaf);

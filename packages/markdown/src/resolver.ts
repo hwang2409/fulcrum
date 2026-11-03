@@ -184,6 +184,16 @@ export class MarkdownLineResolver {
     return { content: this.pendingLine.content, length: this.pendingLine.length, scan: this.pendingLine.scan };
   }
 
+  get pendingLeafContent() {
+    const cursor: Cursor = { line: this.pendingLine.content, offset: 0, column: 0 };
+    for (const frame of this.stack.slice(1)) {
+      if (frame.kind === "quote") {
+        if (!consumeQuote(cursor)) break;
+      } else if (frame.kind === "item" && !consumeItemIndent(cursor, frame.contentIndent)) break;
+    }
+    return cursor.line.slice(cursor.offset);
+  }
+
   append(delta: string): LineResolution[] {
     const resolved: LineResolution[] = [];
     let offset = 0;
