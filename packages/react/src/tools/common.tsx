@@ -122,16 +122,23 @@ export function memoText<T>(compute: (text: string) => T): (text: string) => T {
 const ansiOf = memoText((text) => (hasControls(text) ? parseAnsi(text) : undefined));
 const jsonOf = memoText(jsonText);
 
-/** Append-only terminal text with its escape codes applied; undefined while the text has no control characters. */
+/** Terminal text with its escape codes applied; undefined while the text has no control characters. */
 function useAnsi(text: string): AnsiText | undefined {
-  const cache = useRef<{ source: string; parsed?: AnsiText }>({ source: "" });
+  // `owned`: parsed is this hook's own copy. parseAnsi extends its prior's spans in place, so a memoized (shared) result
+  // is copied once before it is extended; extending it in place corrupted the next replay of the same text.
+  const cache = useRef<{ source: string; parsed?: AnsiText; owned: boolean }>({ source: "", owned: false });
   const prior = cache.current;
   if (text === prior.source) return prior.parsed;
-  const appended = text.length > prior.source.length && prior.source.length > 0;
-  const delta = appended ? text.slice(prior.source.length) : text;
-  const base = appended ? prior.parsed : undefined;
-  const parsed = !appended ? ansiOf(text) : !base && !hasControls(delta) ? undefined : parseAnsi(delta, base ?? parseAnsi(prior.source));
-  cache.current = { source: text, parsed };
+  // Text that does not extend the previous text (a replay, a reconnect, a reset store) is parsed from the start.
+  const appended = prior.source.length > 0 && text.length > prior.source.length && text.startsWith(prior.source);
+  const delta = text.slice(prior.source.length);
+  let parsed: AnsiText | undefined;
+  if (!appended) parsed = ansiOf(text);
+  else if (prior.parsed || hasControls(delta)) {
+    const base = prior.parsed ? (prior.owned ? prior.parsed : { ...prior.parsed, spans: [...prior.parsed.spans] }) : parseAnsi(prior.source);
+    parsed = parseAnsi(delta, base);
+  }
+  cache.current = { source: text, parsed, owned: appended && parsed !== undefined };
   return parsed;
 }
 

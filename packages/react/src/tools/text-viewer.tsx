@@ -101,7 +101,7 @@ export function useTextMetrics(text: string, appendOnly = false): TextMetrics {
   const prior = cache.current;
   if (text === prior.text) return prior.metrics;
   let metrics: TextMetrics;
-  if (appendOnly && text.length >= prior.text.length) {
+  if (appendOnly && text.startsWith(prior.text)) {
     const delta = text.slice(prior.text.length);
     const deltaMetrics = textMetrics(delta);
     const joinsSurrogatePair = prior.text.length > 0 && delta.length > 0
@@ -154,7 +154,7 @@ function useSegments(text: string, appendOnly: boolean, estimatedLines: number, 
   const cache = useRef<{ text: string; segments: TextSegment[] }>({ text: "", segments: [] });
   const prior = cache.current;
   if (text === prior.text) return prior.segments;
-  const canAppend = appendOnly && prior.text.length > 0 && text.length >= prior.text.length;
+  const canAppend = appendOnly && prior.text.length > 0 && text.startsWith(prior.text);
   let segments: TextSegment[];
   if (canAppend) {
     segments = prior.segments;
@@ -173,9 +173,9 @@ const AnsiRun = ({ text, spans }: { text: string; spans: AnsiSpan[] }) => {
   if (!spans.length) return <>{text}</>;
   const out: ReactNode[] = [];
   let at = 0;
-  for (const span of spans) {
+  for (const [index, span] of spans.entries()) {
     if (span.start > at) out.push(text.slice(at, span.start));
-    out.push(<span key={span.start} className={span.style}>{text.slice(span.start, span.end)}</span>);
+    out.push(<span key={index} className={span.style}>{text.slice(span.start, span.end)}</span>);
     at = span.end;
   }
   if (at < text.length) out.push(text.slice(at));

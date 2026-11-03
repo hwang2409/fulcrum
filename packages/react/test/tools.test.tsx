@@ -435,3 +435,28 @@ test("a command that fits its clamp has no show control", () => {
   expect(q('[data-part="shell-command"]')).not.toBeNull();
   expect(q('[data-action="show-command"]')).toBeNull();
 });
+
+test("output restarted into the same tool id (a replay, a reconnect, a demo loop) shows each line once", () => {
+  const errors: unknown[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args); };
+  try {
+    const tool_call = { id: "r", name: "bash", arguments: { command: "bun test" } };
+    const lines = Array.from({ length: 24 }, (_, i) => `\x1b[32mok\x1b[0m case ${i + 1}\n`);
+    const store = () => createRunStore((flush) => flush());
+    let current = store();
+    const view = () => <RunProvider store={current}><ToolCall id="tool:r" /></RunProvider>;
+    for (let loop = 0; loop < 3; loop++) {
+      current = store();
+      current.dispatch({ type: "tool_start", tool_call, view: { kind: "shell", command: "bun test" } });
+      if (loop) act(() => root!.render(view()));
+      else mount(view());
+      openCard("tool:r");
+      for (const line of lines) act(() => current.dispatch({ type: "tool_output", tool_call, output: line }));
+      expect(q('[data-part="tool-output"]').textContent).toBe(lines.map((line) => line.replace(/\x1b\[\d+m/g, "")).join(""));
+    }
+    expect(errors).toEqual([]);
+  } finally {
+    console.error = original;
+  }
+});
