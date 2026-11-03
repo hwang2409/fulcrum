@@ -9,7 +9,7 @@ import { createRoot } from "react-dom/client";
 import { createRunStore, type RunSource } from "@fulcrum/core";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
-import { Approval, Message, RunNavigator, RunProvider, Timeline, useRunNavigation, type Renderers, type RunLocation } from "@fulcrum/react";
+import { Approval, Message, RunNavigator, RunProvider, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunLocation } from "@fulcrum/react";
 import { demos, type Demo } from "./demos";
 
 const highlight = createHighlighter();
@@ -83,8 +83,12 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
   const start = (isPaused: boolean) => (demo.live && isPaused ? (demo.runs ? steps(demo) : demo.events.length - 1) : 0);
   const index = useRef(start(reducedMotion));
   const body = useRef<HTMLDivElement>(null);
+  // The open sub-agent path lives in the URL (?<demo id>=<run id>), so reload, links, and browser back work.
+  const runPath = useHistoryRunPath(demo.id);
 
   const reset = () => {
+    // New stores are new runs: start at the root.
+    runPath.onPathChange([], { replace: false });
     index.current = start(paused);
     setTouched(false);
     setStores(fresh(demo, paused));
@@ -165,7 +169,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
       <div className="demo-body" ref={body}>
         <ActContext.Provider value={act}>
           {demo.runs ? (
-            <RunNavigator key={generation} store={store} source={source} highlight={highlight} renderers={renderers} label="run" />
+            <RunNavigator key={generation} store={store} source={source} {...runPath} highlight={highlight} renderers={renderers} label="run" />
           ) : (
             <RunProvider key={generation} store={store} highlight={highlight}>
               <Timeline renderers={renderers} />
@@ -234,7 +238,7 @@ function Gallery() {
     else url.searchParams.set("theme", theme);
     if (inspect) url.searchParams.set("inspect", "1");
     else url.searchParams.delete("inspect");
-    history.replaceState(history.state, "", url); // keeps a RunNavigator's depth for browser back
+    history.replaceState(history.state, "", url); // keeps the run paths useHistoryRunPath saved
   }, [theme, inspect]);
   // The page renders after load, so the browser cannot jump to a #demo link by itself.
   useEffect(() => { document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(); }, []);
@@ -281,7 +285,7 @@ function Gallery() {
         <select
           value={active}
           onChange={(event) => {
-            history.replaceState(null, "", `#${event.target.value}`);
+            history.replaceState(history.state, "", `#${event.target.value}`);
             document.getElementById(event.target.value)?.scrollIntoView();
           }}
         >

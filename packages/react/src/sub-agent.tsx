@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useSyncExternalStore } from "react";
+import { createContext, memo, useCallback, useContext, useRef, useSyncExternalStore } from "react";
 import type { RunItem, SubAgentStatus } from "@fulcrum/core";
 import { useItem } from "./hooks.js";
 import { boundText, MAX_SUMMARY_CHARS } from "./tools/common.js";
@@ -7,7 +7,7 @@ type SubAgentItem = Extract<RunItem, { type: "sub_agent" }>;
 
 /** What a sub-agent row needs from the run navigator around it. With none, rows show without a drill-in. */
 export type SubAgentNavigation = {
-  open(item: SubAgentItem, label: string): void;
+  open(runId: string): void;
   /** Why this child cannot open, or undefined when it can. */
   unavailable(runId: string): string | undefined;
 };
@@ -26,30 +26,65 @@ const terminal = new Set<SubAgentStatus>(["done", "error", "canceled"]);
 const line = (text: string) => boundText(text.replace(/\s+/g, " ").trim(), MAX_SUMMARY_CHARS).text;
 export const subAgentLabel = (item: SubAgentItem) => line(item.name ?? item.task ?? item.summary ?? "sub-agent");
 
-// One shared 1 Hz clock, running only while a mounted live row reads it.
-const clockListeners = new Set<() => void>();
+// One shared 1 Hz clock. It ticks only while a live row is on screen (inside every clipping scroll box, so virtual
+// overscan rows do not count) and the page is visible. A row coming into view, or the page coming back, reads the
+// time at once instead of waiting for the next tick.
+const liveRows = new Map<Element, () => void>();
+const visibleRows = new Set<() => void>();
+let rowObserver: IntersectionObserver | undefined;
 let clockTimer: ReturnType<typeof setInterval> | undefined;
 let clockNow = Date.now();
-const subscribeClock = (listener: () => void) => {
-  clockListeners.add(listener);
-  if (!clockTimer) {
-    clockNow = Date.now();
-    clockTimer = setInterval(() => {
-      clockNow = Date.now();
-      clockListeners.forEach((notify) => notify());
-    }, 1_000);
+const tick = () => {
+  clockNow = Date.now();
+  visibleRows.forEach((notify) => notify());
+};
+const syncClock = () => {
+  const run = visibleRows.size > 0 && !document.hidden;
+  if (run && !clockTimer) {
+    tick();
+    clockTimer = setInterval(tick, 1_000);
+  } else if (!run && clockTimer) {
+    clearInterval(clockTimer);
+    clockTimer = undefined;
   }
-  return () => {
-    clockListeners.delete(listener);
-    if (clockListeners.size === 0) {
-      clearInterval(clockTimer);
-      clockTimer = undefined;
+};
+const onRowsSeen = (entries: IntersectionObserverEntry[]) => {
+  for (const entry of entries) {
+    const notify = liveRows.get(entry.target);
+    if (!notify) continue;
+    if (!entry.isIntersecting) visibleRows.delete(notify);
+    else if (!visibleRows.has(notify)) {
+      visibleRows.add(notify);
+      if (clockTimer) notify();
     }
+  }
+  syncClock();
+};
+const watchRow = (row: Element, notify: () => void) => {
+  if (!liveRows.size) document.addEventListener("visibilitychange", syncClock);
+  liveRows.set(row, notify);
+  // Without IntersectionObserver (old engines), every live row counts as on screen.
+  if (typeof IntersectionObserver === "undefined") onRowsSeen([{ target: row, isIntersecting: true } as IntersectionObserverEntry]);
+  else (rowObserver ??= new IntersectionObserver(onRowsSeen)).observe(row);
+  return () => {
+    liveRows.delete(row);
+    visibleRows.delete(notify);
+    rowObserver?.unobserve(row);
+    if (!liveRows.size) {
+      rowObserver?.disconnect();
+      rowObserver = undefined;
+      document.removeEventListener("visibilitychange", syncClock);
+    }
+    syncClock();
   };
 };
 const noClock = () => () => {};
 const readClock = () => clockNow;
-const useNow = (live: boolean) => useSyncExternalStore(live ? subscribeClock : noClock, readClock, readClock);
+/** The shared clock while `row` (an element ref) is live; `element` changes when the row's element is replaced. */
+const useNow = (live: boolean, row: { current: Element | null }, element: string) => {
+  const subscribe = useCallback((notify: () => void) => (row.current ? watchRow(row.current, notify) : noClock()), [row, element]);
+  return useSyncExternalStore(live ? subscribe : noClock, readClock, readClock);
+};
 
 const elapsedText = (ms: number) => {
   const seconds = Math.max(0, Math.floor(ms / 1_000));
@@ -72,7 +107,10 @@ export const SubAgent = memo(function SubAgent({ id, className }: { id: string; 
   const started = item?.type === "sub_agent" ? time(item.startedAt) : undefined;
   const ended = item?.type === "sub_agent" ? time(item.endedAt) : undefined;
   const live = item?.type === "sub_agent" && started !== undefined && ended === undefined && !terminal.has(item.status);
-  const now = useNow(live);
+  const reason = item?.type !== "sub_agent" ? undefined : navigation ? navigation.unavailable(item.childRunId) : "details unavailable";
+  const element = useRef<HTMLElement | null>(null);
+  const setElement = useCallback((node: HTMLElement | null) => { element.current = node; }, []);
+  const now = useNow(live, element, reason ? "div" : "button");
   if (item?.type !== "sub_agent") return null;
   const status = subAgentStatusText[item.status];
   const name = item.name ? line(item.name) : undefined;
@@ -82,7 +120,6 @@ export const SubAgent = memo(function SubAgent({ id, className }: { id: string; 
   const tools = item.toolCount === undefined ? undefined : `${item.toolCount} ${item.toolCount === 1 ? "tool" : "tools"}`;
   const meta = [elapsed, tools].filter(Boolean).join(" · ");
   const activity = item.latestActivity ?? (terminal.has(item.status) ? item.summary : undefined);
-  const reason = navigation ? navigation.unavailable(item.childRunId) : "details unavailable";
   const content = (
     <>
       <span data-part="sub-agent-head">
@@ -98,11 +135,13 @@ export const SubAgent = memo(function SubAgent({ id, className }: { id: string; 
       </span>
     </>
   );
-  const attributes = { className, "data-part": "sub-agent", "data-kind": "sub_agent", "data-id": id, "data-state": item.status, "data-urgency": item.urgency };
-  if (reason) return <div {...attributes} data-available="false">{content}</div>;
+  // The row is one fixed-height strip that ellipsizes; the title and the accessible name carry the full text.
+  const title = [name, task, meta, activity && line(activity), reason && line(reason)].filter(Boolean).join("\n");
+  const attributes = { className, title, "data-part": "sub-agent", "data-kind": "sub_agent", "data-id": id, "data-state": item.status, "data-urgency": item.urgency };
+  if (reason) return <div {...attributes} ref={setElement} data-available="false">{content}</div>;
   const label = `open ${name ? `${name} sub-agent` : "sub-agent"}: ${[task, status, elapsed, tools].filter(Boolean).join(", ")}`;
   return (
-    <button type="button" {...attributes} aria-label={label} onClick={() => navigation!.open(item, subAgentLabel(item))}>
+    <button type="button" {...attributes} ref={setElement} aria-label={label} onClick={() => navigation!.open(item.childRunId)}>
       {content}
     </button>
   );

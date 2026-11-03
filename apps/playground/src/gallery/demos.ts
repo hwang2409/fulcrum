@@ -248,8 +248,9 @@ const subAgentStates: RunEvent[] = [
   agent("st-error", "error", { name: "fixer", task: "fix the flaky transport test", startedAt: "2026-11-02T10:00:00Z", endedAt: "2026-11-02T10:01:09Z", toolCount: 5, summary: "bun test: 2 failing in transport.test.ts" }),
   agent("st-canceled", "canceled", { name: "migrator", task: "rename the sessions table", startedAt: "2026-11-02T10:00:00Z", endedAt: "2026-11-02T10:00:12Z", toolCount: 1, summary: "canceled by the parent" }),
   agent("st-old", "done", { name: "docs", task: "update docs/auth.md", toolCount: 4, summary: "updated 3 sections" }),
+  agent("st-long", "running", { name: "dependency-upgrade-coordinator", task: "upgrade every workspace package to the latest minor version, run the full test suite after each one, and roll back any upgrade that breaks a test or the bundle size budget", startedAt: ago(1_260), toolCount: 143, latestActivity: "$ bun update --latest @types/node typescript vite playwright @happy-dom/global-registrator && bun test && bun run size:check" }),
 ];
-const stateRuns = Object.fromEntries(["st-run", "st-approve", "st-input", "st-idle", "st-done", "st-error", "st-canceled"].map((id) => [id, [note(`${id}-note`, `The ${id.slice(3)} child run's own transcript opens here.`)]]));
+const stateRuns = Object.fromEntries(["st-run", "st-approve", "st-input", "st-idle", "st-done", "st-error", "st-canceled", "st-long"].map((id) => [id, [note(`${id}-note`, `The ${id.slice(3)} child run's own transcript opens here.`)]]));
 
 export const demos: Demo[] = [
   {

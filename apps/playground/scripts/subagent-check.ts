@@ -3,7 +3,11 @@
 // keep their place, and focus moves to the breadcrumb. Approving inside a grandchild clears the waiting badge on every
 // level. Escape and browser back each return one level, to the exact scroll position the parent was left at, with
 // focus back on the row that opened it. In every theme, the run bar's text (crumbs, back, the waiting badge) reaches
-// 4.5:1 and its state marks 3:1 on the background they are drawn on.
+// 4.5:1 and its state marks 3:1 on the background they are drawn on. The open path lives in the URL: reload and a
+// deep link reopen it, and a run that cannot open falls back to its parent with a notice. The elapsed clock runs only
+// while a live row is really on screen (not a virtual overscan row, not a hidden page). At 200% zoom and at the 320 px
+// reflow width every row keeps its 56 px and no text is cut vertically or spills; long text ends in an ellipsis and
+// stays whole in the row's title and accessible name.
 import type { Browser, Page } from "playwright";
 
 const ROW = 56;
@@ -131,6 +135,10 @@ export async function checkSubAgents(browser: Browser, port: number): Promise<st
     await page.close();
   }
 
+  failures.push(...await checkPathInUrl(browser, port));
+  failures.push(...await checkClock(browser, port));
+  failures.push(...await checkZoom(browser, port));
+
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   for (const theme of themes) {
     await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#run-navigator-nested`);
@@ -142,5 +150,148 @@ export async function checkSubAgents(browser: Browser, port: number): Promise<st
     if (!problems.length) console.log(`ok   ${theme}: run bar contrast`);
   }
   await page.close();
+  return failures;
+}
+
+async function checkPathInUrl(browser: Browser, port: number): Promise<string[]> {
+  const failures: string[] = [];
+  const at = "sub-agent path in the url";
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  await page.goto(`http://127.0.0.1:${port}/gallery.html#run-navigator-nested`);
+  await page.waitForSelector('#run-navigator-nested [data-part="sub-agent"]');
+  await openRow(page, "reviewer");
+  await openRow(page, "tester");
+  const url = new URL(page.url());
+  if (url.searchParams.getAll("run-navigator-nested").join(">") !== "reviewer>tester") failures.push(`${at}: url is ${page.url()} after opening reviewer > tester`);
+  await page.reload();
+  await page.waitForSelector('#run-navigator-nested [data-part="run-crumb"][aria-current="page"]');
+  await page.waitForTimeout(300);
+  if ((await crumbs(page)) !== 3) failures.push(`${at}: reload shows ${await crumbs(page)} crumbs, expected 3`);
+  await page.goBack();
+  await page.waitForTimeout(300);
+  if ((await crumbs(page)) !== 2) failures.push(`${at}: browser back after reload shows ${await crumbs(page)} crumbs, expected 2`);
+  await page.goto(`http://127.0.0.1:${port}/gallery.html?run-navigator-nested=reviewer&run-navigator-nested=docs-old#run-navigator-nested`);
+  await page.waitForSelector('#run-navigator-nested [data-part="run-notice"]:not(:empty)');
+  const notice = await nav(page).locator('[data-part="run-notice"]').textContent();
+  const fellBack = new URL(page.url()).searchParams.getAll("run-navigator-nested");
+  if ((await crumbs(page)) !== 2 || fellBack.join(">") !== "reviewer" || !notice?.startsWith("could not open"))
+    failures.push(`${at}: a deep link to a run that cannot open shows ${await crumbs(page)} crumbs, url path ${fellBack.join(">")}, notice "${notice}"`);
+  if (!failures.length) console.log(`ok   ${at}: reload reopens reviewer > tester, back pops one level, a bad deep link falls back with "${notice}"`);
+  await page.close();
+  return failures;
+}
+
+// Counts the running 1 s intervals in the page (the only 1 s interval is the sub-agent clock; demos replay faster).
+const countIntervals = () => {
+  const active = new Set<number>();
+  const [set, clear] = [window.setInterval.bind(window), window.clearInterval.bind(window)];
+  window.setInterval = ((run: TimerHandler, ms?: number, ...rest: unknown[]) => {
+    const timer = set(run, ms, ...rest);
+    if (ms === 1_000) active.add(timer);
+    return timer;
+  }) as typeof setInterval;
+  window.clearInterval = (timer?: number) => {
+    if (timer !== undefined) active.delete(timer);
+    clear(timer);
+  };
+  (window as unknown as { clocks(): number }).clocks = () => active.size;
+};
+
+async function checkClock(browser: Browser, port: number): Promise<string[]> {
+  const failures: string[] = [];
+  const at = "sub-agent clock";
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  await page.addInitScript(countIntervals);
+  await page.goto(`http://127.0.0.1:${port}/gallery.html`);
+  await page.waitForSelector('#subagent-states [data-part="sub-agent"]');
+  const clocks = async () => {
+    await page.waitForTimeout(250);
+    return page.evaluate(() => (window as unknown as { clocks(): number }).clocks());
+  };
+  const expect = async (what: string, want: number) => {
+    const got = await clocks();
+    if (got !== want) failures.push(`${at}: ${what}: ${got} clock intervals running, expected ${want}`);
+  };
+  await expect("live rows mounted far below the window", 0);
+  await page.locator("#subagent-states").scrollIntoViewIfNeeded();
+  await expect("live rows in view", 1);
+  const hide = (hidden: boolean) => page.evaluate((hidden) => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, hidden);
+  await hide(true);
+  await expect("page hidden", 0);
+  await hide(false);
+  await expect("page visible again", 1);
+
+  // A live row that is mounted (virtual overscan) but outside its scroll box, with every other live row off screen.
+  const setup = await page.evaluate(() => {
+    const card = document.getElementById("run-navigator-nested")!;
+    const navigator = card.querySelector<HTMLElement>('[data-part="run-navigator"]')!;
+    navigator.style.height = "240px";
+    card.scrollIntoView({ block: "start" });
+    const scroller = navigator.querySelector<HTMLElement>('[data-part="run-scroll"]')!;
+    const row = scroller.querySelector<HTMLElement>('[data-part="sub-agent"][data-id="sub-agent:reviewer"]')!;
+    scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().bottom - 24;
+    return new Promise<string>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+      const box = scroller.getBoundingClientRect();
+      const mounted = scroller.querySelector('[data-part="sub-agent"][data-id="sub-agent:reviewer"]');
+      const rect = mounted?.getBoundingClientRect();
+      const live = [...document.querySelectorAll<HTMLElement>('[data-part="sub-agent"]')].filter((node) => !["done", "error", "canceled"].includes(node.dataset.state!));
+      const onScreen = live.filter((node) => {
+        const r = node.getBoundingClientRect();
+        const clip = node.closest('[data-part="run-scroll"]')?.getBoundingClientRect();
+        return r.bottom > 0 && r.top < innerHeight && (!clip || (r.bottom > clip.top && r.top < clip.bottom));
+      });
+      if (!rect) resolve("the reviewer row is not mounted below the scroll box, so this is not an overscan case");
+      else if (rect.top < box.bottom) resolve(`the reviewer row is not below the scroll box (${rect.top} < ${box.bottom})`);
+      else if (onScreen.length) resolve(`${onScreen.length} live rows still on screen: ${onScreen.map((node) => node.dataset.id).join(", ")}`);
+      else resolve("");
+    })));
+  });
+  if (setup) failures.push(`${at}: overscan setup: ${setup}`);
+  else await expect("only an overscan live row mounted", 0);
+  if (!failures.length) console.log(`ok   ${at}: 0 intervals off screen, 1 in view, 0 hidden, 1 visible again, 0 with only an overscan row`);
+  await page.close();
+  return failures;
+}
+
+// Runs in the page: every row's text inside its 56 px box, long text ellipsized, and the whole text in title and name.
+function rowProblems() {
+  const problems: string[] = [];
+  for (const row of document.querySelectorAll<HTMLElement>('#subagent-states [data-part="sub-agent"]')) {
+    const id = row.dataset.id;
+    const box = row.getBoundingClientRect();
+    if (Math.abs(box.height - 56) > 0.5) problems.push(`${id} is ${box.height} px tall`);
+    for (const part of row.querySelectorAll<HTMLElement>('[data-part^="sub-agent-"]')) {
+      if (part.dataset.part === "sub-agent-head" || part.dataset.part === "sub-agent-line" || !part.getClientRects().length) continue;
+      const r = part.getBoundingClientRect();
+      if (r.top < box.top - 0.5 || r.bottom > box.bottom + 0.5) problems.push(`${id} ${part.dataset.part} is cut vertically (${r.top}-${r.bottom} in ${box.top}-${box.bottom})`);
+      if (r.right > box.right + 0.5 && r.width > 0) problems.push(`${id} ${part.dataset.part} spills past the row (${r.right} > ${box.right})`);
+      if (part.scrollWidth > part.clientWidth + 1 && getComputedStyle(part).textOverflow !== "ellipsis") problems.push(`${id} ${part.dataset.part} is cut with no ellipsis`);
+    }
+    const task = row.querySelector('[data-part="sub-agent-task"]')?.textContent ?? "";
+    if (!row.title.includes(task)) problems.push(`${id} title does not hold the whole task`);
+    if (row.tagName === "BUTTON" && !row.getAttribute("aria-label")?.includes(task)) problems.push(`${id} accessible name does not hold the whole task`);
+  }
+  const long = document.querySelector<HTMLElement>('#subagent-states [data-id="sub-agent:st-long"] [data-part="sub-agent-task"]');
+  if (!long || long.scrollWidth <= long.clientWidth) problems.push("the long row's task is not truncated, so the ellipsis case is not exercised");
+  return problems;
+}
+
+async function checkZoom(browser: Browser, port: number): Promise<string[]> {
+  const failures: string[] = [];
+  // 200% zoom of a 1440 x 900 window is a 720 x 450 CSS px viewport at 2 device pixels per CSS px; 320 is the reflow width.
+  for (const [width, height] of [[720, 450], [320, 640]] as const) {
+    const at = `sub-agent rows at ${width} css px, 2x`;
+    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2, reducedMotion: "reduce" });
+    await page.goto(`http://127.0.0.1:${port}/gallery.html#subagent-states`);
+    await page.waitForSelector('#subagent-states [data-part="sub-agent"]');
+    await page.waitForTimeout(200);
+    const problems = await page.evaluate(rowProblems);
+    for (const problem of problems) failures.push(`${at}: ${problem}`);
+    if (!problems.length) console.log(`ok   ${at}: every row 56 px, no text cut or spilling, long text ellipsized and whole in title and name`);
+    await page.close();
+  }
   return failures;
 }

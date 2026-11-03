@@ -1,39 +1,52 @@
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import type { RunItem, RunLease, RunSource, SubAgentStatus } from "@fulcrum/core";
+import type { RunLease, RunSource, SubAgentStatus } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { RunProvider, type RunStore } from "./hooks.js";
 import { Timeline, type Renderers, type TimelineViewport } from "./parts.js";
-import { SubAgentContext, subAgentStatusText, type SubAgentNavigation } from "./sub-agent.js";
+import { SubAgentContext, subAgentLabel, subAgentStatusText, type SubAgentNavigation } from "./sub-agent.js";
 
 /** One run on the open path. The root has the `runId` the host gave it, if any. */
 export type RunLocation = { readonly runId?: string; readonly label: string };
 export type RunNavigation = { readonly path: readonly RunLocation[]; back(): void };
+/** `replace` is true when the navigator corrects the path (a run that cannot open, a new root), not a user move. */
+export type RunPathChange = { readonly replace: boolean };
 
-type Entry = RunLocation & {
-  store: RunStore;
-  lease?: RunLease;
-  /** The sub-agent row this run was opened from, in the previous entry's store. */
-  opener?: string;
-  viewport?: TimelineViewport;
-};
+/** A child run on the path whose lease this navigator holds. */
+type Held = { readonly runId: string; readonly source: RunSource; readonly store: RunStore; readonly lease: RunLease };
+type Opened = Held | { readonly reason: unknown };
 
 const RunNavigationContext = createContext<RunNavigation | null>(null);
 /** The open run path inside a `RunNavigator` (the last entry is the run on screen), or null outside one. */
 export const useRunNavigation = () => useContext(RunNavigationContext);
 
-// Each navigator keeps its depth in history.state under its own id, so browser back pops one level.
-const HISTORY_KEY = "fulcrumRuns";
+// The navigator the user last touched, so Escape on the page body (focus lost to an unmounted control) goes back there.
 let lastNavigator: string | undefined;
-type HistoryDepths = Record<string, number>;
-const historyDepth = (id: string) => (history.state?.[HISTORY_KEY] as HistoryDepths | undefined)?.[id] ?? 0;
-const pushDepth = (id: string, depth: number) =>
-  history.pushState({ ...history.state, [HISTORY_KEY]: { ...history.state?.[HISTORY_KEY], [id]: depth } }, "");
+
+const rowId = (runId: string) => `sub-agent:${runId}`;
+const labelIn = (store: RunStore, runId: string) => {
+  const item = store.getItem(rowId(runId));
+  return item?.type === "sub_agent" ? subAgentLabel(item) : runId;
+};
+/** How many of `held` are the start of `ids`, opened from `source`. */
+const heldDepth = (held: readonly Held[], ids: readonly string[], source: RunSource) => {
+  let depth = 0;
+  while (depth < held.length && depth < ids.length && held[depth]!.runId === ids[depth] && held[depth]!.source === source) depth++;
+  return depth;
+};
 
 export type RunNavigatorProps = {
   /** The root run's store. */
   store: RunStore;
   /** Resolves a child run id to its store. Rows whose run it cannot open show why instead of a drill-in. */
   source: RunSource;
+  /**
+   * The open child run ids below the root, outermost first; `[]` is the root. Pass it to control navigation (for
+   * browser history, use `useHistoryRunPath`). Without it the path lives in this component only and starts at the root
+   * whenever `store` changes. A controlled path is the app's: when it swaps `store`, it sets the path too.
+   */
+  path?: readonly string[];
+  /** Every move: a row opened, back, Escape, a crumb, or a correction (`replace`). Controlled paths must apply it. */
+  onPathChange?(path: readonly string[], change: RunPathChange): void;
   runId?: string;
   /** The root's breadcrumb label. */
   label?: string;
@@ -48,149 +61,244 @@ export type RunNavigatorProps = {
 
 /**
  * One timeline for a run and its sub-agents. Opening a sub-agent row swaps in the child's store under a breadcrumb;
- * back (the button, Escape, or browser back) returns to the exact reading position and follow mode left behind.
+ * back (the button, Escape, or a crumb) returns to the exact reading position and follow mode left behind. It never
+ * touches browser history itself.
  */
-export function RunNavigator({ store, source, runId, label = "run", renderers, highlight, virtual = true, className, children: barExtra }: RunNavigatorProps) {
+export function RunNavigator({ store, source, path, onPathChange, runId, label = "run", renderers, highlight, virtual = true, className, children: barExtra }: RunNavigatorProps) {
   const id = useId();
-  const [children, setChildren] = useState<readonly Entry[]>([]);
-  const childrenRef = useRef(children);
-  childrenRef.current = children;
-  const rootRef = useRef<Entry>({ runId, label, store });
-  if (rootRef.current.store !== store) rootRef.current = { runId, label, store };
-  else Object.assign(rootRef.current, { runId, label });
-  const path = useMemo(() => [rootRef.current, ...children], [children, runId, label, store]);
-  const current = path.at(-1)!;
-  const [error, setError] = useState<string>();
-  const focus = useRef<{ crumb: true } | { row: string } | null>(null);
-  const crumbRef = useRef<HTMLSpanElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const mounted = useRef(true);
-
-  const truncate = useCallback((depth: number) => {
-    const dropped = childrenRef.current.slice(depth);
-    if (!dropped.length) return;
-    dropped.forEach((entry) => entry.lease?.release());
-    focus.current = { row: dropped[0]!.opener! };
-    setChildren(childrenRef.current.slice(0, depth));
+  const [own, setOwn] = useState<{ store: RunStore; path: readonly string[] }>(() => ({ store, path: [] }));
+  const [notice, setNotice] = useState<{ text: string; error?: true }>({ text: "" });
+  const [resets, setResets] = useState(0);
+  // The path whose open failed, so it does not read as still opening when the app keeps it.
+  const [failed, setFailed] = useState<string>();
+  if (path === undefined && own.store !== store) {
+    // An uncontrolled navigator's children belonged to the old root.
+    if (own.path.length) {
+      setNotice({ text: `the run changed; back at ${label}` });
+      setResets((count) => count + 1);
+    }
+    setOwn({ store, path: [] });
+  }
+  const ids = path ?? own.path;
+  const key = JSON.stringify(ids);
+  const latest = useRef({ store, runId, controlled: path !== undefined, onPathChange });
+  latest.current = { store, runId, controlled: path !== undefined, onPathChange };
+  // Set by this navigator's own moves, so focus follows them even from a control that is about to unmount.
+  const intent = useRef(false);
+  const navigate = useCallback((next: readonly string[], replace = false) => {
+    const { store, controlled, onPathChange } = latest.current;
+    if (!replace) {
+      intent.current = true;
+      setNotice({ text: "" });
+      setFailed(undefined);
+    }
+    if (!controlled) setOwn({ store, path: next });
+    onPathChange?.(next, { replace });
   }, []);
-  const back = useCallback((depth = childrenRef.current.length - 1) => {
-    const now = childrenRef.current.length;
-    if (depth < 0 || depth >= now) return;
-    // Only walk browser history over entries this navigator pushed; otherwise drop the levels directly.
-    if (historyDepth(id) === now) history.go(depth - now);
-    else truncate(depth);
-  }, [id, truncate]);
+  useLayoutEffect(() => {
+    if (resets) latest.current.onPathChange?.([], { replace: true });
+  }, [resets]);
 
-  useEffect(() => {
-    mounted.current = true;
-    const onPop = (event: PopStateEvent) => {
-      const depth = (event.state?.[HISTORY_KEY] as HistoryDepths | undefined)?.[id] ?? 0;
-      if (depth < childrenRef.current.length) truncate(depth);
-    };
-    addEventListener("popstate", onPop);
-    return () => {
-      mounted.current = false;
-      removeEventListener("popstate", onPop);
-    };
-  }, [id, truncate]);
-  useEffect(() => () => childrenRef.current.forEach((entry) => entry.lease?.release()), []);
+  // Saved reading positions by path, so a run viewed before reopens where it was left. A new root starts fresh.
+  const viewports = useRef({ store, byPath: new Map<string, TimelineViewport>() });
+  if (viewports.current.store !== store) viewports.current = { store, byPath: new Map() };
 
-  const navigation = useMemo<SubAgentNavigation>(() => ({
-    unavailable: (childRunId) => source.unavailable?.(childRunId) ?? (path.some((entry) => entry.runId === childRunId) ? "already open above" : undefined),
-    open(item, childLabel) {
-      if (navigation.unavailable(item.childRunId)) return;
-      const depth = childrenRef.current.length;
-      const push = (lease: RunLease) => {
-        if (!mounted.current || childrenRef.current.length !== depth) return lease.release();
-        setError(undefined);
-        pushDepth(id, depth + 1);
-        focus.current = { crumb: true };
-        setChildren([...childrenRef.current, { runId: item.childRunId, label: childLabel, store: lease.store, lease, opener: item.id }]);
+  const [held, setHeld] = useState<readonly Held[]>([]);
+  const heldRef = useRef(held);
+  const depth = heldDepth(held, ids, source);
+  const view = useMemo(() => held.slice(0, depth), [held, depth]);
+  const viewKey = JSON.stringify(view.map((entry) => entry.runId));
+  const pending = depth < ids.length && failed !== key;
+
+  // Hold a lease for every run on the path: release what left it, open what is new. Each pass owns its opens; a newer
+  // path aborts them, and anything they return after that is released at once and never shown.
+  useLayoutEffect(() => {
+    const ids = JSON.parse(key) as string[];
+    const commit = (next: readonly Held[]) => {
+      heldRef.current = next;
+      setHeld(next);
+    };
+    const current = heldRef.current;
+    const keep = heldDepth(current, ids, source);
+    const kept = current.slice(0, keep);
+    if (keep < current.length) {
+      current.slice(keep).forEach((entry) => entry.lease.release());
+      commit(kept);
+    }
+    const missing = ids.slice(keep);
+    if (!missing.length) return;
+    // The first run that cannot open ends the path; the runs before it open together.
+    const results: Array<Opened | undefined> = [];
+    for (const [index, childId] of missing.entries()) {
+      const above = childId === latest.current.runId || ids.indexOf(childId) < keep + index;
+      const reason = above ? "already open above" : source.unavailable?.(childId);
+      results.push(reason ? { reason } : undefined);
+      if (reason) break;
+    }
+    const controllers = results.map(() => new AbortController());
+    let done = false;
+    const settle = () => {
+      if (done) return;
+      const stop = results.findIndex((result) => result && "reason" in result);
+      const end = stop < 0 ? results.length : stop;
+      if (results.slice(0, end).some((result) => !result)) return;
+      done = true;
+      controllers.slice(end + 1).forEach((controller) => controller.abort());
+      results.slice(end + 1).forEach((result) => result && "lease" in result && result.lease.release());
+      const next = [...kept, ...(results.slice(0, end) as Held[])];
+      commit(next);
+      if (stop < 0) return;
+      const parent = next.at(-1)?.store ?? latest.current.store;
+      const reason = (results[stop] as { reason: unknown }).reason;
+      setNotice({ text: `could not open ${labelIn(parent, missing[stop]!)}: ${reason instanceof Error ? reason.message : String(reason)}`, error: true });
+      setFailed(key);
+      intent.current = false;
+      navigate(ids.slice(0, next.length), true);
+    };
+    results.forEach((result, index) => {
+      if (result) return;
+      const { signal } = controllers[index]!;
+      const take = (lease: RunLease) => {
+        if (signal.aborted) return lease.release();
+        results[index] = { runId: missing[index]!, source, store: lease.store, lease };
+        settle();
       };
-      const fail = (reason: unknown) => setError(`could not open ${childLabel}: ${reason instanceof Error ? reason.message : String(reason)}`);
+      const fail = (reason: unknown) => {
+        if (signal.aborted) return;
+        results[index] = { reason };
+        settle();
+      };
       try {
-        const lease = source.open(item.childRunId);
-        if ("then" in lease) lease.then(push, fail);
-        else push(lease);
+        const opened = source.open(missing[index]!, { signal });
+        if ("then" in opened) opened.then(take, fail);
+        else take(opened);
       } catch (reason) {
         fail(reason);
       }
-    },
-  }), [id, path, source]);
+    });
+    settle();
+    return () => {
+      if (done) return;
+      done = true;
+      controllers.forEach((controller) => controller.abort());
+      results.forEach((result) => result && "lease" in result && result.lease.release());
+    };
+  }, [key, source, navigate]);
+  useEffect(() => () => {
+    heldRef.current.forEach((entry) => entry.lease.release());
+    heldRef.current = [];
+  }, []);
+
+  const viewIds = useMemo(() => view.map((entry) => entry.runId), [view]);
+  // Back: cancel an open still on its way, else go up one level.
+  const back = useCallback(() => {
+    if (pending) navigate(viewIds);
+    else if (viewIds.length) navigate(viewIds.slice(0, -1));
+  }, [navigate, pending, viewIds]);
+  const navigation = useMemo<SubAgentNavigation>(() => ({
+    unavailable: (childRunId) => (childRunId === runId || viewIds.includes(childRunId) ? "already open above" : source.unavailable?.(childRunId)),
+    open: (childRunId) => navigate([...viewIds, childRunId]),
+  }), [navigate, runId, source, viewIds]);
 
   // Focus follows the move: the breadcrumb after opening, the opening row after back (once the restored rows mount).
+  // A path the app changed (browser back, a deep link) moves focus only if it was in this navigator.
+  const rootElement = useRef<HTMLDivElement>(null);
+  const crumbRef = useRef<HTMLSpanElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const shown = useRef<readonly string[]>([]);
   useLayoutEffect(() => {
-    const target = focus.current;
-    focus.current = null;
-    if (!target) return;
+    const before = shown.current;
+    shown.current = viewIds;
+    if (JSON.stringify(before) === viewKey) return;
+    const active = document.activeElement;
+    const here = intent.current || rootElement.current?.contains(active) || ((!active || active === document.body) && lastNavigator === id);
+    intent.current = false;
+    if (!here) return;
     // On a narrow bar the ancestry scrolls; keep the current run in view at its end.
-    const breadcrumb = crumbRef.current?.closest<HTMLElement>('[data-part="run-breadcrumb"]');
+    const breadcrumb = rootElement.current?.querySelector<HTMLElement>('[data-part="run-breadcrumb"]');
     if (breadcrumb) breadcrumb.scrollLeft = breadcrumb.scrollWidth;
-    if ("crumb" in target) return crumbRef.current?.focus({ preventScroll: true });
+    const left = before[viewIds.length];
+    if (viewIds.length >= before.length || !left) return crumbRef.current?.focus({ preventScroll: true });
     let frame = 0;
     let tries = 0;
     const find = () => {
-      const row = scrollRef.current?.querySelector<HTMLElement>(`[data-part="sub-agent"][data-id="${CSS.escape(target.row)}"]`);
+      const row = scrollRef.current?.querySelector<HTMLElement>(`[data-part="sub-agent"][data-id="${CSS.escape(rowId(left))}"]`);
       if (row) row.focus({ preventScroll: true });
       else if (++tries < 5) frame = requestAnimationFrame(find);
     };
     find();
     return () => cancelAnimationFrame(frame);
-  }, [children]);
+  }, [viewKey]);
 
   // Escape goes back from inside the navigator, or from the page body when this was the last navigator used (an
   // approval's buttons unmount once it resolves, which drops focus to the body).
-  const rootElement = useRef<HTMLDivElement>(null);
-  const depth = children.length;
+  const canGoBack = viewIds.length > 0 || pending;
   useEffect(() => {
-    if (!depth) return;
+    if (!canGoBack) return;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      const active = document.activeElement;
-      const here = rootElement.current?.contains(active) || ((!active || active === document.body) && lastNavigator === id);
+      const target = event.target as Node | null;
+      const onBody = !target || target === document || target === document.body || target === document.documentElement;
+      const here = rootElement.current?.contains(target) || (onBody && lastNavigator === id);
       if (event.key !== "Escape" || event.defaultPrevented || !here) return;
       event.preventDefault();
       back();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [back, depth, id]);
-  const context = useMemo<RunNavigation>(() => ({ path: path.map(({ runId, label }) => ({ runId, label })), back: () => back() }), [path, back]);
-  const parent = path.at(-2);
+  }, [back, canGoBack, id]);
+
+  const stores = [store, ...view.map((entry) => entry.store)];
+  const currentLabel = useRowLabel(stores.at(-2), viewIds.at(-1), label);
+  const parentLabel = useRowLabel(stores.at(-3), viewIds.at(-2), label);
+  const context = useMemo<RunNavigation>(() => ({
+    path: [{ runId, label }, ...view.map((entry, index) => ({ runId: entry.runId, label: labelIn(index ? view[index - 1]!.store : store, entry.runId) }))],
+    back,
+  }), [back, label, runId, store, view]);
+  const viewport = viewports.current.byPath;
 
   return (
-    <div ref={rootElement} className={className} data-part="run-navigator" data-depth={depth} onFocusCapture={() => { lastNavigator = id; }} onPointerDownCapture={() => { lastNavigator = id; }}>
+    <div
+      ref={rootElement}
+      className={className}
+      data-part="run-navigator"
+      data-depth={view.length}
+      aria-busy={pending || undefined}
+      onFocusCapture={() => { lastNavigator = id; }}
+      onPointerDownCapture={() => { lastNavigator = id; }}
+    >
       <div data-part="run-bar">
-        {parent ? <button type="button" data-part="run-back" aria-label={`back to ${parent.label}`} onClick={() => back()}>back</button> : null}
+        {view.length ? <button type="button" data-part="run-back" aria-label={`back to ${parentLabel}`} onClick={back}>back</button> : null}
         <nav data-part="run-breadcrumb" aria-label="run path">
           <ol>
-            {path.map((entry, index) => {
+            {stores.map((_, index) => {
               const content = index > 0
-                ? <RunStatus store={path[index - 1]!.store} id={entry.opener!} label={entry.label} />
-                : <span data-part="run-label">{entry.label}</span>;
+                ? <RunStatus store={stores[index - 1]!} runId={viewIds[index - 1]!} />
+                : <span data-part="run-label">{label}</span>;
               return (
                 <li key={index}>
-                  {entry === current
+                  {index === view.length
                     ? <span data-part="run-crumb" aria-current="page" tabIndex={-1} ref={crumbRef}>{content}</span>
-                    : <button type="button" data-part="run-crumb" onClick={() => back(index)}>{content}</button>}
+                    : <button type="button" data-part="run-crumb" onClick={() => navigate(viewIds.slice(0, index))}>{content}</button>}
                 </li>
               );
             })}
           </ol>
         </nav>
-        {error ? <span data-part="run-error" role="alert">{error}</span> : null}
+        {/* Always mounted, so screen readers announce what appears in it. */}
+        <span data-part="run-notice" role="status" data-tone={notice.error ? "error" : undefined} title={notice.text || undefined}>{notice.text}</span>
         {barExtra}
       </div>
       <div data-part="run-scroll" ref={scrollRef}>
         <RunNavigationContext.Provider value={context}>
           <SubAgentContext.Provider value={navigation}>
-            <RunProvider store={current.store} highlight={highlight}>
+            <RunProvider store={stores.at(-1)!} highlight={highlight}>
               <Timeline
                 renderers={renderers}
                 virtual={virtual}
                 scrollRef={scrollRef}
-                aria-label={`${current.label} activity`}
-                initialViewport={current.viewport}
-                onViewport={(viewport) => { current.viewport = viewport; }}
+                aria-label={`${currentLabel} activity`}
+                initialViewport={viewport.get(viewKey)}
+                onViewport={(next) => { viewport.set(viewKey, next); }}
               />
             </RunProvider>
           </SubAgentContext.Provider>
@@ -200,21 +308,26 @@ export function RunNavigator({ store, source, runId, label = "run", renderers, h
   );
 }
 
-const statusOf = (item: RunItem | undefined) => (item?.type === "sub_agent" ? item : undefined);
+const noRow = () => () => {};
+/** A child's label from its row in the parent (it can change as the row fills in), or `fallback` for the root. */
+function useRowLabel(store: RunStore | undefined, runId: string | undefined, fallback: string) {
+  const subscribe = useCallback((listener: () => void) => (store && runId ? store.subscribe(rowId(runId), listener) : noRow()), [store, runId]);
+  const read = () => (store && runId ? labelIn(store, runId) : fallback);
+  return useSyncExternalStore(subscribe, read, read);
+}
 
 /** A child's crumb: its state mark (read from its row in the parent), its label, and a badge while it needs the user. */
-function RunStatus({ store, id, label }: { store: RunStore; id: string; label: string }) {
+function RunStatus({ store, runId }: { store: RunStore; runId: string }) {
   const read = () => {
-    const item = statusOf(store.getItem(id));
-    return item ? `${item.status}|${item.urgency ?? ""}` : "";
+    const item = store.getItem(rowId(runId));
+    return item?.type === "sub_agent" ? `${item.status}|${item.urgency ?? ""}|${subAgentLabel(item)}` : `||${runId}`;
   };
-  const subscribe = useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]);
-  const value = useSyncExternalStore(subscribe, read, read);
-  const [status, urgency] = value ? value.split("|") as [SubAgentStatus, string] : [];
+  const subscribe = useCallback((listener: () => void) => store.subscribe(rowId(runId), listener), [store, runId]);
+  const [status, urgency, ...label] = useSyncExternalStore(subscribe, read, read).split("|") as [SubAgentStatus | "", string, ...string[]];
   return (
     <>
       {status ? <span data-part="run-state" data-state={status} title={subAgentStatusText[status]} /> : null}
-      <span data-part="run-label">{label}</span>
+      <span data-part="run-label">{label.join("|")}</span>
       {urgency === "approval" || urgency === "input" ? <span data-part="run-urgency" data-urgency={urgency}>needs {urgency}</span> : null}
     </>
   );

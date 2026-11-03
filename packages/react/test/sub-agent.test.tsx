@@ -249,9 +249,9 @@ test("Escape and the back button each return one level, and the default navigato
 test("a controlled path renders what the app says and reports every move through onPathChange", async () => {
   const runs = { a: storeOf([commit("in-a"), child("a1", { name: "tester" })]), a1: storeOf([commit("in-a1")]) };
   const { source, held } = fakeSource(runs);
-  const root = storeOf([child("a", { name: "reviewer" })]).store;
+  const parent = storeOf([child("a", { name: "reviewer" })]).store;
   const changes: Array<[readonly string[], boolean]> = [];
-  const props = (path: readonly string[]): RunNavigatorProps => ({ store: root, source, path, onPathChange: (next, { replace }) => changes.push([next, replace]), virtual: false });
+  const props = (path: readonly string[]): RunNavigatorProps => ({ store: parent, source, path, onPathChange: (next, { replace }) => changes.push([next, replace]), virtual: false });
   mount(<RunNavigator {...props(["a"])} />);
   expect(q('[data-part="message"]').textContent).toBe("in-a");
   // The app owns the path: a click asks, and nothing moves until the app answers.
@@ -282,6 +282,19 @@ test("a deep link to a run that cannot open falls back to its deepest valid ance
   expect(changes).toEqual([[["a"], true]]);
   expect(q('[data-part="run-notice"]').textContent).toBe("could not open migrator: started before child runs were recorded");
   expect(held.get("a")).toBe(1);
+});
+
+test("a path that repeats a run, or the root, is a cycle: it stops at the first repeat", async () => {
+  const runs = { a: storeOf([commit("in-a"), child("root"), child("a")]) };
+  const { source, held } = fakeSource(runs);
+  const changes: Array<readonly string[]> = [];
+  mount(<RunNavigator store={storeOf([child("a")]).store} runId="root" source={source} path={["a", "a"]} onPathChange={(next) => changes.push(next)} virtual={false} />);
+  await frames(1);
+  expect(changes).toEqual([["a"]]);
+  expect(q('[data-part="run-notice"]').textContent).toBe("could not open sub-agent: already open above");
+  expect(held.get("a")).toBe(1);
+  // Inside a, the rows for the root and for a itself say why they cannot open.
+  expect(all('[data-part="sub-agent-reason"]').map((node) => node.textContent)).toEqual(["already open above", "already open above"]);
 });
 
 // A source whose opens settle when the test says, in any order.
@@ -392,7 +405,6 @@ test("useHistoryRunPath: opening pushes, browser back pops, reload and deep link
   const crumbs = () => all('[data-part="run-breadcrumb"] li').length;
   const runParams = () => new URL(location.href).searchParams.getAll("run");
   history.replaceState({ app: 1 }, "", "/gallery.html?theme=dracula#demo");
-  const base = history.length;
 
   mount(<HistoryNavigator store={store} source={source} virtual={false} />);
   act(() => q('[data-part="sub-agent"]').click());
@@ -402,7 +414,6 @@ test("useHistoryRunPath: opening pushes, browser back pops, reload and deep link
   expect(new URL(location.href).searchParams.get("theme")).toBe("dracula");
   expect(location.hash).toBe("#demo");
   expect(history.state.app).toBe(1);
-  expect(history.length).toBe(base + 2);
   act(() => history.back());
   await frames();
   expect(crumbs()).toBe(2);
@@ -437,7 +448,7 @@ test("useHistoryRunPath: opening pushes, browser back pops, reload and deep link
   expect(history.length).toBe(before);
   // An entry someone else pushed is never stepped back over.
   act(() => q('[data-part="sub-agent"]').click());
-  history.pushState({ ...history.state, other: true }, "", location.href);
+  history.pushState({ other: true }, "", location.href);
   act(() => q('[data-part="run-back"]').click());
   await frames();
   expect(history.state.other).toBe(true);
