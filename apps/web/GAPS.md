@@ -18,6 +18,8 @@ missing, why the app needs it, and the proposed API.
 
 ## open gaps
 
+- approval_reconnect: not negotiated yet; slice after zeta grace design ships (design-serve-approval-grace.md)
+
 ### 1. reconnect with backoff is app code (`@fulcrum/zeta`)
 - **missing:** `connectZeta` connects once. It does not retry, it has no backoff, and it does not reconnect after a drop.
 - **why:** every zeta web client needs the same state machine: connecting, connected, not running, auth failed, busy, dropped. `apps/web/src/connection.ts` implements it, with tests.

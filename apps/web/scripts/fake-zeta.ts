@@ -108,7 +108,6 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
   let turnStarted = false;
   let approvalAborted = false;
-  let approvalReconnect = false;
   let running = false;
   const decisions: Json[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
@@ -127,7 +126,6 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
       open(socket) { sockets.add(socket); },
       close(socket) {
         if (!decide || approvalAborted) { sockets.delete(socket); return; }
-        if (approvalReconnect) { sockets.delete(socket); return; }
         approvalAborted = true;
         const resolve = decide;
         decide = null;
@@ -207,7 +205,6 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
     /** Hands out a token the server will refuse. */
     async wrongToken() { await write({ port: server.port, token: "stale-token", pid: process.pid, origins: allowed }); },
     setMode(next: Mode) { mode = next; },
-    setApprovalReconnect(enabled: boolean) { approvalReconnect = enabled; },
     setLive(next: boolean) { liveEnabled = next; },
     async close() { this.drop(); server.stop(true); await rm(home, { recursive: true, force: true }); },
   };

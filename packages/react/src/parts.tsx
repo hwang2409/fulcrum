@@ -193,6 +193,35 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
 
 type Decide = (requestId: string) => void | Promise<unknown>;
 
+const approvalStatus = (pending: boolean, sending: "approve" | "deny" | undefined, reason: string) => {
+  if (!pending) return ({ controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" } as Record<string, string>)[reason] ?? (reason ? "ended" : "resolved");
+  return sending ? (sending === "approve" ? "approving" : "denying") : undefined;
+};
+
+const ApprovalActions = memo(function ApprovalActions({
+  sending,
+  onApprove,
+  onDeny,
+  disabledReason,
+  decide,
+}: {
+  sending: "approve" | "deny" | undefined;
+  onApprove?: Decide;
+  onDeny?: Decide;
+  disabledReason?: string;
+  decide: (action: "approve" | "deny", handler: Decide) => () => void;
+}) {
+  if (!onApprove && !onDeny && !disabledReason) return null;
+  const disabled = Boolean(sending);
+  return (
+    <div data-part="approval-actions">
+      {onApprove || disabledReason ? <button type="button" data-action="approve" disabled={!onApprove || disabled} aria-disabled={!onApprove || disabled ? true : undefined} onClick={onApprove ? decide("approve", onApprove) : undefined}>approve</button> : null}
+      {onDeny || disabledReason ? <button type="button" data-action="deny" disabled={!onDeny || disabled} aria-disabled={!onDeny || disabled ? true : undefined} onClick={onDeny ? decide("deny", onDeny) : undefined}>deny</button> : null}
+      {disabledReason ? <span role="status">{disabledReason}</span> : null}
+    </div>
+  );
+});
+
 export const Approval = memo(function Approval({
   id,
   className,
@@ -223,7 +252,7 @@ export const Approval = memo(function Approval({
     }
   };
   const endReason = item.ended && "data" in item.ended ? String(item.ended.data?.reason ?? "") : "";
-  const status = !pending ? ({ controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" } as Record<string, string>)[endReason] ?? (endReason ? "ended" : "resolved") : sending ? (sending === "approve" ? "approving" : "denying") : undefined;
+  const status = approvalStatus(pending, sending, endReason);
   return (
     <div
       className={className}
@@ -245,13 +274,7 @@ export const Approval = memo(function Approval({
           <div data-part="tool-body">
             <Body item={requested} output="" state={state} />
           </div>
-          {onApprove || onDeny || disabledReason ? (
-            <div data-part="approval-actions">
-              {onApprove || disabledReason ? <button type="button" data-action="approve" disabled={!onApprove || Boolean(sending)} aria-disabled={!onApprove || Boolean(sending) ? true : undefined} onClick={onApprove ? decide("approve", onApprove) : undefined}>approve</button> : null}
-              {onDeny || disabledReason ? <button type="button" data-action="deny" disabled={!onDeny || Boolean(sending)} aria-disabled={!onDeny || Boolean(sending) ? true : undefined} onClick={onDeny ? decide("deny", onDeny) : undefined}>deny</button> : null}
-              {disabledReason ? <span role="status">{disabledReason}</span> : null}
-            </div>
-          ) : null}
+          <ApprovalActions sending={sending} onApprove={onApprove} onDeny={onDeny} disabledReason={disabledReason} decide={decide} />
         </>
       ) : null}
     </div>

@@ -17,7 +17,7 @@ export type SessionMeta = {
 export type ServerStatus = {
   session: SessionMeta | null;
   state: "idle" | "running" | "tool";
-  pending_approvals: Array<{ request_id: string; tool_call: unknown; delegated: boolean; agent_instance_id?: string; resolution_pending?: boolean }>;
+  pending_approvals: Array<{ request_id: string; tool_call: unknown; delegated: boolean; agent_instance_id?: string }>;
 };
 
 export const PAGE_SIZE = 100;
