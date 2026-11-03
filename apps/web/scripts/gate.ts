@@ -136,7 +136,9 @@ try {
         await page.getByRole("heading", { name: title }).waitFor({ timeout: 5000 });
         if (command) {
           const shown = await page.locator(".panel .command code").textContent();
-          if (shown !== `zeta serve --ws 8765 --ws-origin ${origin}`) throw new Error(`command is "${shown}"`);
+          // The port of the server the page found; zeta's default 8765 when it never found one.
+          const port = name === "not-running" ? 8765 : fake.port;
+          if (shown !== `zeta serve --ws ${port} --ws-origin ${origin}`) throw new Error(`command is "${shown}"`);
           await page.locator('.panel .command code [class*="tok-"]').first().waitFor({ timeout: 3000 }).catch(() => { throw new Error("the command is not highlighted"); });
         }
         if (name !== "incompatible" && name !== "connecting") await page.getByRole("button", { name: "retry now" }).waitFor();
@@ -180,6 +182,8 @@ try {
       await header.filter({ hasText: "waiting for approval" }).waitFor({ timeout: 3000 }).catch(async () => { throw new Error(`the run header says "${await header.textContent()}" while an approval waits`); });
       const [mark, warn] = await header.evaluate((node) => [getComputedStyle(node, "::before").backgroundColor, (() => { const probe = document.createElement("span"); probe.style.color = "var(--fulcrum-warn)"; node.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()]);
       if (mark !== warn) throw new Error(`the header mark is ${mark}, not the warn color ${warn}`);
+      const row = await page.locator("button.session[aria-current] .state").textContent();
+      if (row !== "needs approval") throw new Error(`the session row says "${row}" while an approval waits`);
       await shoot(page, "connected-approval-1440-tokyo-night");
       await fake.start();
       fake.drop();
@@ -217,6 +221,11 @@ try {
       await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
       await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor();
       await page.locator('[data-part="timeline"] [data-part="md-code-block"] [class*="tok-"]').first().waitFor({ timeout: 5000 });
+      // A reopened bash card shows its output as the live card does: no raw "stdout:"/"stderr:" labels from zeta's text.
+      const reopened = page.locator('[data-part="timeline"] [data-part="tool"]', { hasText: "bun test v1.3.13" });
+      await reopened.waitFor({ timeout: 5000 });
+      if (await reopened.getAttribute("data-tool-view") !== "shell") throw new Error("the reopened bash call is not a shell card");
+      if (/\bstdout:|\bstderr:/.test(await reopened.innerText())) throw new Error("the reopened bash card shows zeta's raw stdout:/stderr: labels");
       await page.locator('[data-part="jump-to-latest"]').waitFor({ state: "detached", timeout: 1000 }).catch(() => {});
     });
     await check("desktop layout, controls, and contrast in all 12 themes", () => auditThemes(page, "1440", 36));

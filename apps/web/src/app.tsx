@@ -1,9 +1,9 @@
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
-import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvider, Timeline, useItemSelector, useRun, type Renderers } from "@fulcrum/react";
-import type { ZetaClient } from "@fulcrum/zeta";
+import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvider, Timeline, useItemSelector, useRun, useRunStore, useTimeline, type Renderers } from "@fulcrum/react";
+import type { SessionStore, ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
-import { createConnection, type Connection, type ConnectionState } from "./connection";
+import { createConnection, serveCommand, type Connection, type ConnectionState } from "./connection";
 import { createDelivery } from "./delivery";
 import { ago, createSessions, sessionTitle, topLevel, type SessionMeta, type Sessions, type SessionsState } from "./session";
 import { ThemePicker, useTheme } from "./theme";
@@ -11,9 +11,6 @@ import { ThemePicker, useTheme } from "./theme";
 const highlight = createHighlighter();
 addEventListener("pagehide", () => highlight.dispose(), { once: true });
 const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
-
-/** The command that starts a server this page may connect to. The origin is exact: localhost and 127.0.0.1 differ. */
-export const serveCommand = (origin: string) => `zeta serve --ws 8765 --ws-origin ${origin}`;
 
 // Renderers stay module-level so appends never re-render every row; approvals reach the live client through context.
 type Decide = (requestId: string) => Promise<unknown>;
@@ -75,6 +72,8 @@ export function App() {
   const menu = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef(false);
   const runOpener = useRef<Element | null>(null);
+  // A session the user just started opens with the composer focused, ready to type.
+  const focusComposer = useRef(false);
   const closeDrawer = useCallback(() => { returnFocus.current = true; setDrawer(false); }, []);
   // After the render that drops `inert` from main, so the menu button can take focus again.
   useEffect(() => { if (!drawer && returnFocus.current) { returnFocus.current = false; menu.current?.focus(); } }, [drawer]);
@@ -82,6 +81,11 @@ export function App() {
     runOpener.current = document.activeElement;
     sessions.select(id);
     setDrawer(false);
+  }, [sessions]);
+  const create = useCallback(() => {
+    focusComposer.current = true;
+    setDrawer(false);
+    void sessions.create();
   }, [sessions]);
   const current = view.sessions.find((session) => session.session_id === (view.open?.id ?? view.selected));
   useEffect(() => { document.title = current ? `${sessionTitle(current)} · zeta` : "zeta · fulcrum"; }, [current]);
@@ -94,6 +98,7 @@ export function App() {
           view={view}
           sessions={sessions}
           onSelect={select}
+          onCreate={create}
           open={drawer}
           onClose={closeDrawer}
           footer={<ThemePicker theme={theme} onChange={setTheme} />}
@@ -106,7 +111,7 @@ export function App() {
             </button>
             <RunTitle session={current} view={view} />
           </header>
-          <Body state={state} view={view} connection={connection} sessions={sessions} opener={runOpener} onOpenDrawer={() => setDrawer(true)} />
+          <Body state={state} view={view} connection={connection} sessions={sessions} opener={runOpener} focusComposer={focusComposer} onCreate={create} onOpenDrawer={() => setDrawer(true)} />
         </main>
       </div>
     </HighlightContext>
@@ -125,8 +130,8 @@ function ConnectionBadge({ state }: { state: ConnectionState }) {
   return <span className="badge" data-tone={tone} role="status">{word}</span>;
 }
 
-function Sidebar({ state, view, sessions, onSelect, open, onClose, footer }: {
-  state: ConnectionState; view: SessionsState; sessions: Sessions; onSelect(id: string): void; open: boolean; onClose(): void; footer: ReactNode;
+function Sidebar({ state, view, sessions, onSelect, onCreate, open, onClose, footer }: {
+  state: ConnectionState; view: SessionsState; sessions: Sessions; onSelect(id: string): void; onCreate(): void; open: boolean; onClose(): void; footer: ReactNode;
 }) {
   const list = useRef<HTMLUListElement>(null);
   const rows = useMemo(() => topLevel(view.sessions), [view.sessions]);
@@ -160,13 +165,15 @@ function Sidebar({ state, view, sessions, onSelect, open, onClose, footer }: {
         <h2>sessions</h2>
         <span className="count">{rows.length ? rows.length : ""}</span>
         <button type="button" className="ghost" onClick={() => void sessions.refresh()} disabled={state.phase !== "connected"}>refresh</button>
+        <NewSession state={state} view={view} onCreate={onCreate} className="accent" />
       </div>
       <nav className="list" aria-label="sessions">
         {view.listError ? <p className="note" data-tone="danger">could not list sessions: {view.listError}</p> : null}
-        {state.phase === "connected" && !rows.length && !view.listError ? <p className="note">no sessions yet. start one in zeta.</p> : null}
+        {view.createError ? <p className="note" data-tone="danger" role="alert">could not start a session: {view.createError}</p> : null}
+        {state.phase === "connected" && !rows.length && !view.listError ? <p className="note">no sessions yet. start one with new session.</p> : null}
         <ul ref={list}>
           {rows.map((session) => (
-            <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} server={state.phase === "connected" ? view.server : null} onSelect={onSelect} />
+            <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} server={state.phase === "connected" ? view.server : null} store={state.phase === "connected" && view.open?.id === session.session_id && !view.open.stale ? view.open.lease.store : null} onSelect={onSelect} />
           ))}
         </ul>
         {view.nextOffset !== null ? <button type="button" className="ghost more" onClick={() => void sessions.loadMore()}>load more sessions</button> : null}
@@ -176,14 +183,33 @@ function Sidebar({ state, view, sessions, onSelect, open, onClose, footer }: {
   );
 }
 
-function SessionRow({ session, now, selected, focusable, server, onSelect }: {
-  session: SessionMeta; now: number; selected: boolean; focusable: boolean; server: SessionsState["server"]; onSelect(id: string): void;
-}) {
-  const live = server?.id === session.session_id;
-  const status = !live ? null : server.approvals ? "approval" : server.state === "idle" ? "open" : "running";
+function NewSession({ state, view, onCreate, className }: { state: ConnectionState; view: SessionsState; onCreate(): void; className: string }) {
+  return (
+    <button type="button" className={className} onClick={onCreate} disabled={state.phase !== "connected" || view.creating} aria-busy={view.creating || undefined}>
+      {view.creating ? "starting…" : "new session"}
+    </button>
+  );
+}
+
+type RowProps = { session: SessionMeta; now: number; selected: boolean; focusable: boolean; onSelect(id: string): void };
+type RowStatus = "open" | "running" | "approval" | null;
+
+/** The open session's row follows its live run; other rows use the server's last `status`. */
+function SessionRow({ server, store, ...row }: RowProps & { server: SessionsState["server"]; store: SessionStore | null }) {
+  if (store) return <RunProvider store={store}><LiveRow {...row} /></RunProvider>;
+  const live = server?.id === row.session.session_id;
+  return <Row {...row} status={!live ? null : server.approvals ? "approval" : server.state === "idle" ? "open" : "running"} />;
+}
+
+function LiveRow(row: RowProps) {
+  const status = useRunStatus();
+  return <Row {...row} status={status === "idle" ? "open" : status} />;
+}
+
+function Row({ session, now, selected, focusable, onSelect, status }: RowProps & { status: RowStatus }) {
   return (
     <li>
-      <button type="button" className="session" aria-current={selected ? "true" : undefined} tabIndex={focusable ? 0 : -1} onClick={() => onSelect(session.session_id)}>
+      <button type="button" className="session" data-status={status ?? undefined} aria-current={selected ? "true" : undefined} tabIndex={focusable ? 0 : -1} onClick={() => onSelect(session.session_id)}>
         <span className="session-title">{sessionTitle(session)}</span>
         <span className="session-meta">
           <time dateTime={session.updated_at} title={new Date(session.updated_at).toLocaleString()}>{ago(session.updated_at, now)}</time>
@@ -211,9 +237,19 @@ function RunTitle({ session, view }: { session: SessionMeta | undefined; view: S
   );
 }
 
+/** A run blocked on an approval is waiting for the user, not running. Approvals are few, so this reads only them. */
+function useRunStatus(): "idle" | "running" | "approval" {
+  const store = useRunStore();
+  return useRun(useCallback((state: ReturnType<typeof store.getState>) => {
+    if (state.agent !== "running") return "idle";
+    const waiting = Object.values(state.toolApprovals).some((id) => { const item = store.getItem(id); return item?.type === "approval" && !item.ended; });
+    return waiting ? "approval" : "running";
+  }, [store]));
+}
+
 function RunStatus() {
-  const agent = useRun((state) => state.agent);
-  return <span className="state" data-status={agent === "running" ? "running" : "idle"}>{agent === "running" ? "running" : "idle"}</span>;
+  const status = useRunStatus();
+  return <span className="state" data-status={status}>{status === "approval" ? "waiting for approval" : status}</span>;
 }
 
 /** Refreshes the list when a run ends, so times and titles stay current without polling. */
@@ -227,13 +263,15 @@ function RefreshOnIdle({ sessions }: { sessions: Sessions }) {
   return null;
 }
 
-function Body({ state, view, connection, sessions, opener, onOpenDrawer }: { state: ConnectionState; view: SessionsState; connection: Connection; sessions: Sessions; opener: React.RefObject<Element | null>; onOpenDrawer(): void }) {
+function Body({ state, view, connection, sessions, opener, focusComposer, onCreate, onOpenDrawer }: {
+  state: ConnectionState; view: SessionsState; connection: Connection; sessions: Sessions; opener: React.RefObject<Element | null>; focusComposer: React.RefObject<boolean>; onCreate(): void; onOpenDrawer(): void;
+}) {
   const offline = state.phase !== "connected";
   if (view.open) {
     return (
       <>
         {offline ? <ConnectionNotice state={state} connection={connection} compact /> : null}
-        <Run client={offline ? null : connection.client} sessions={sessions} open={view.open} opener={opener} />
+        <Run client={offline ? null : connection.client} sessions={sessions} open={view.open} opener={opener} focusComposer={focusComposer} />
       </>
     );
   }
@@ -263,15 +301,20 @@ function Body({ state, view, connection, sessions, opener, onOpenDrawer }: { sta
       </Panel>
     );
   }
+  const any = view.sessions.length > 0;
   return (
-    <Panel title="choose a session">
-      <p>{view.sessions.length ? "pick a session from the list to follow its run." : "this zeta has no sessions yet."}</p>
-      <div className="actions only-narrow"><button type="button" className="primary" onClick={onOpenDrawer}>show sessions</button></div>
+    <Panel title={any ? "choose a session" : "start a session"} tone="busy">
+      <p>{any ? "pick a session from the list to follow its run, or start a new one." : "this zeta has no sessions yet. start one, then write to zeta below."}</p>
+      {view.createError ? <p className="mono" role="alert">could not start a session: {view.createError}</p> : null}
+      <div className="actions">
+        <NewSession state={state} view={view} onCreate={onCreate} className="primary" />
+        {any ? <button type="button" className="ghost only-narrow" onClick={onOpenDrawer}>show sessions</button> : null}
+      </div>
     </Panel>
   );
 }
 
-function Run({ client, sessions, open, opener }: { client: ZetaClient | null; sessions: Sessions; open: NonNullable<SessionsState["open"]>; opener: React.RefObject<Element | null> }) {
+function Run({ client, sessions, open, opener, focusComposer }: { client: ZetaClient | null; sessions: Sessions; open: NonNullable<SessionsState["open"]>; opener: React.RefObject<Element | null>; focusComposer: React.RefObject<boolean> }) {
   const scroll = useRef<HTMLDivElement>(null);
   const decisions = useMemo(() => {
     if (!client || open.stale) return { disabledReason: "reconnecting — decisions are disabled until the server confirms this session" };
@@ -279,8 +322,11 @@ function Run({ client, sessions, open, opener }: { client: ZetaClient | null; se
     return { approve: decide("approve"), deny: decide("deny") };
   }, [client, open.stale]);
   useLayoutEffect(() => {
-    if (document.activeElement === opener.current || document.activeElement === document.body) scroll.current?.focus({ preventScroll: true });
-  }, [open.lease.store, opener]);
+    if (focusComposer.current) {
+      focusComposer.current = false;
+      scroll.current?.parentElement?.querySelector<HTMLTextAreaElement>(".dock textarea")?.focus({ preventScroll: true });
+    } else if (document.activeElement === opener.current || document.activeElement === document.body) scroll.current?.focus({ preventScroll: true });
+  }, [open.lease.store, opener, focusComposer]);
   const [undelivered, setUndelivered] = useState<ReadonlySet<string>>(() => new Set());
   const onUndelivered = useCallback((intents: string[]) => {
     if (intents.length) setUndelivered((current) => new Set([...current, ...intents]));
@@ -292,12 +338,24 @@ function Run({ client, sessions, open, opener }: { client: ZetaClient | null; se
           <RefreshOnIdle sessions={sessions} />
           <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready="true">
             <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
+            <EmptyRun />
           </div>
           <RunComposer key={open.id} client={open.stale ? null : client} onUndelivered={onUndelivered} />
         </RunProvider>
       </Undelivered>
     </Decisions.Provider>
   );
+}
+
+/** A session with no rows yet says what to do instead of showing a blank run. */
+function EmptyRun() {
+  const empty = useTimeline().length === 0;
+  return empty ? (
+    <div className="empty-run" role="note">
+      <h2>empty session</h2>
+      <p>no messages yet. write to zeta below to start a run.</p>
+    </div>
+  ) : null;
 }
 
 const offline = () => Promise.reject(new Error("not connected to zeta serve"));
@@ -349,7 +407,7 @@ function Copy({ value }: { value: string }) {
 
 function ConnectionNotice({ state, connection, compact = false }: { state: ConnectionState; connection: Connection; compact?: boolean }) {
   const wait = useCountdown("retryAt" in state ? state.retryAt : null);
-  const command = serveCommand(location.origin);
+  const command = serveCommand(location.origin, connection.port);
   const retry = wait === null ? null : (
     <div className="actions">
       <span className="wait" aria-live="off">{wait > 0 ? `retrying in ${wait}s` : "retrying"}</span>

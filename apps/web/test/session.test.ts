@@ -193,6 +193,7 @@ test("create starts a session with new_session, lists it, and opens it without r
   const created = meta("new-1", "2026-11-04T10:00:00Z", { name: "", cwd: "/tmp/project", model: "qwen3.6:35b" });
   const fake = await server(handlers(null, {
     new_session: () => { current = created.session_id; return { session: created }; },
+    list_sessions: () => ({ sessions: current ? [created, ...sessions] : sessions, next_offset: null }),
     status: () => ({ session: current ? created : null, state: "idle", pending_approvals: [] }),
     session_history: () => ({ messages: [], next_offset: null }),
   }));
