@@ -74,6 +74,7 @@ function diffModel(diff: string, language: string | undefined, id: string): RowM
     language,
     render: (start, end) => <DiffLines rows={rows} start={start} end={end} language={language} id={id} gutter={gutter} />,
     blocks: (start, end) => sideBlocks(sides(rows.slice(start, end)), language, id, start),
+    size: (index) => rows[index]!.text.length,
   };
 }
 

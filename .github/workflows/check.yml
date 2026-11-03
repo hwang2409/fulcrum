@@ -22,6 +22,10 @@ jobs:
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
       - run: bun run --cwd apps/playground layout
       - run: bun run --cwd apps/playground highlight:fallback
+      # The runner's CPU is about half as fast as a developer laptop (the 440 kB markdown parse in this gate: 22 ms here,
+      # 10-12 ms there, both at 4x), so 2x here is about the laptop's 4x.
+      - run: bun run --cwd apps/playground large-blocks
+        env: { CPU_THROTTLE: 2 }
       - run: cd apps/web && bunx tsc -p . && bun run gate
       - if: always()
         uses: actions/upload-artifact@v4

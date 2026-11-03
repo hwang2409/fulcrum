@@ -416,12 +416,28 @@ describe("worker liveness and restarts", () => {
     const long = highlighter("abc", "cpp", block("parts"));
     const short = highlighter("d", "cpp", block("short"));
     const [first, second] = workers[0].posted;
-    workers[0].send({ part: [{ text: "a", type: "keyword" }] });
-    workers[0].send({ part: [{ text: "b" }] });
-    workers[0].send({ requestId: first.requestId, tokens: [{ text: "c", type: "string" }], provisional: false });
-    workers[0].send({ requestId: second.requestId, tokens: [{ text: "d" }], provisional: false });
+    workers[0].send({ part: [{ text: "a", type: "keyword" }], of: 1 });
+    workers[0].send({ part: [{ text: "b" }], of: 1 });
+    workers[0].send({ requestId: first.requestId, tokens: [{ text: "c", type: "string" }], provisional: false, of: 1 });
+    workers[0].send({ requestId: second.requestId, tokens: [{ text: "d" }], provisional: false, of: 2 });
     expect(await long).toEqual([{ text: "a", type: "keyword" }, { text: "b" }, { text: "c", type: "string" }]);
     expect(await short).toEqual([{ text: "d" }]);
+    highlighter.dispose();
+  }));
+
+  test("parts of two results may interleave: each joins only its own parts", withFakeTimers(async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const one = highlighter("abc", "cpp", block("one"));
+    const two = highlighter("xyz", "cpp", block("two"));
+    const [first, second] = workers[0].posted;
+    workers[0].send({ part: [{ text: "a", type: "keyword" }], of: 1 });
+    workers[0].send({ part: [{ text: "x" }], of: 2 });
+    workers[0].send({ part: [{ text: "b" }], of: 1 });
+    workers[0].send({ requestId: second.requestId, tokens: [{ text: "yz", type: "string" }], provisional: false, of: 2 });
+    workers[0].send({ requestId: first.requestId, tokens: [{ text: "c" }], provisional: false, of: 1 });
+    expect(await two).toEqual([{ text: "x" }, { text: "yz", type: "string" }]);
+    expect(await one).toEqual([{ text: "a", type: "keyword" }, { text: "b" }, { text: "c" }]);
     highlighter.dispose();
   }));
 
@@ -436,7 +452,7 @@ describe("worker liveness and restarts", () => {
       const worker = workers[0];
       const acks = () => (worker.posted as unknown[]).filter((value) => (value as { type?: string }).type === "ack").length;
       worker.send({ progress: worker.posted[0].context });
-      worker.send({ part: [{ text: "a", type: "keyword" }] });
+      worker.send({ part: [{ text: "a", type: "keyword" }], of: 1 });
       expect(acks()).toBe(0); // not in the message's own task
       jest.advanceTimersByTime(30_000); // a hidden tab runs no frames: the worker waits on the page, it is not hung
       expect(workers.length).toBe(1);
@@ -445,10 +461,10 @@ describe("worker liveness and restarts", () => {
       expect(acks()).toBe(1);
       run();
       expect(acks()).toBe(1); // one ack per part, never more
-      worker.send({ part: [{ text: "b" }] });
+      worker.send({ part: [{ text: "b" }], of: 1 });
       run();
       expect(acks()).toBe(2);
-      worker.send({ requestId: worker.posted[0].requestId, tokens: [{ text: "c" }], provisional: false });
+      worker.send({ requestId: worker.posted[0].requestId, tokens: [{ text: "c" }], provisional: false, of: 1 });
       expect(await long).toEqual([{ text: "a", type: "keyword" }, { text: "b" }, { text: "c" }]);
       expect(frames.length).toBe(0);
       highlighter.dispose();
@@ -499,6 +515,34 @@ test("the worker sends the next part of a long result only after the page acks t
   expect(acked).toBeGreaterThan(1);
   const final = messages.at(-1)!;
   expect(text([...messages.flatMap((message) => (message.part ?? []) as Token[]), ...(final.tokens as Token[])])).toBe(code);
+  worker.terminate();
+}, 30_000);
+
+test("a small reply waits behind at most one part of a long result", async () => {
+  const worker = new Worker(new URL("../dist/worker.js", import.meta.url), { type: "module" });
+  const messages: Array<Record<string, unknown>> = [];
+  worker.onmessage = (event) => { if (!("progress" in event.data)) messages.push(event.data); };
+  const until = async (done: () => boolean) => { for (let wait = 0; !done(); wait++) { if (wait > 3_000) throw new Error("timed out"); await Bun.sleep(10); } };
+  const code = "[1, 2, 3, 4, 5, 6],\n".repeat(10_000); // several parts
+  // In a fresh worker json is cold: the reply is plain at once, and the colors come as an update, in parts.
+  worker.postMessage({ type: "highlight", requestId: 1, code, language: "json", context: { id: "long", version: 1, state: "done" } });
+  await until(() => messages.some((message) => "part" in message));
+  const of = messages.at(-1)!.of;
+  const seen = messages.length;
+  worker.postMessage({ type: "highlight", requestId: 2, code: "[1]\n", language: "json", context: { id: "small", version: 1, state: "done" } });
+  await Bun.sleep(200);
+  expect(messages.length).toBe(seen); // the page has not acked the part: nothing else is sent, the small reply included
+  worker.postMessage({ type: "ack" });
+  await until(() => messages.length > seen);
+  expect(messages[seen]).toMatchObject({ requestId: 2 }); // the small reply goes before the long result's next part
+  expect(messages[seen]!.of).not.toBe(of);
+  while (!("update" in messages.at(-1)!)) {
+    const count = messages.length;
+    worker.postMessage({ type: "ack" });
+    await until(() => messages.length > count);
+  }
+  const long = messages.filter((message) => message.of === of);
+  expect(text(long.flatMap((message) => (message.part ?? message.tokens) as Token[]))).toBe(code);
   worker.terminate();
 }, 30_000);
 

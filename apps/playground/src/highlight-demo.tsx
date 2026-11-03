@@ -1,6 +1,7 @@
 import "@fulcrum/highlight/styles.css";
 import "./highlight-demo.css";
 import { createHighlighter, type Token } from "@fulcrum/highlight";
+import { Tokens } from "@fulcrum/react/code";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Shell } from "./shell";
@@ -34,7 +35,7 @@ function Block({ id, language, source }: { id: string; language: string; source:
     if (result && "then" in result) void result.then(setTokens);
     else if (result) setTokens(result);
   }, [code, id, language, source]);
-  return <figure><figcaption>{language}</figcaption><pre><code>{tokens.map((token, tokenIndex) => token.type ? <span className={`tok-${token.type}`} key={tokenIndex}>{token.text}</span> : token.text)}</code></pre></figure>;
+  return <figure><figcaption>{language}</figcaption><pre><code><Tokens tokens={tokens} /></code></pre></figure>;
 }
 
 function Demo() {

@@ -343,6 +343,13 @@ export const demos: Demo[] = [
     events: [{ type: "message_commit", message_id: "markdown-done", message: text("assistant", markdownDemo) }],
   },
   {
+    id: "markdown-large",
+    part: "Message",
+    title: "markdown, a large code block",
+    description: "A fence over 200 lines or 10,000 characters is the shared code viewer: a scroll box that mounts and highlights only its visible rows, with a line count and a copy control for the whole text.",
+    events: [{ type: "message_commit", message_id: "markdown-large", message: text("assistant", "The whole generated table:\n\n```ts\n" + Array.from({ length: 400 }, (_, i) => `export const value${i} = compute(${i}, "item-${i}"); // row ${i}`).join("\n") + "\n```\n") }],
+  },
+  {
     id: "tool-running",
     part: "ToolCall",
     title: "shell, streaming",

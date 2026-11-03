@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { ToolBodyProps } from "../parts.js";
 import { Code, type Block } from "../highlight.js";
 import { Arguments, asking, boundText, Empty, Foot, Output, outputBlocks, plainOutput } from "./common.js";
+import { CodeViewer, isLargeCode } from "./text-viewer.js";
 
 // The header cuts long commands to one line (a few on narrow screens); the body then repeats the command in full.
 const LONG_COMMAND = 72;
@@ -45,8 +46,12 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
   );
 }
 
-/** The command, clamped to a few lines by styles.css; a longer one gets a control that shows the rest. */
+/** The command, clamped to a few lines by styles.css; a longer one gets a control that shows the rest. A large one is a viewer. */
 function Command({ text, id }: { text: string; id: string }) {
+  return isLargeCode(text) ? <CodeViewer text={text} language="shell" id={id} label="command" /> : <ClampedCommand text={text} id={id} />;
+}
+
+function ClampedCommand({ text, id }: { text: string; id: string }) {
   const ref = useRef<HTMLPreElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [clamped, setClamped] = useState(false);
