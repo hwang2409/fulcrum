@@ -168,12 +168,17 @@ try {
       fake.drop();
       await page.getByText(/connection lost|reconnecting/).first().waitFor({ timeout: 3000 });
       if (!(await page.locator(".scroll[data-stale=true]").count())) throw new Error("old view was not marked stale");
+      const staleApproval = page.locator('[data-part="approval"][data-state="pending"]');
+      await staleApproval.getByRole("button", { name: "approve" }).waitFor();
+      await staleApproval.getByRole("button", { name: "deny" }).waitFor();
+      if (!(await staleApproval.getByRole("button", { name: "approve" }).isDisabled()) || !(await staleApproval.getByRole("button", { name: "deny" }).isDisabled())) throw new Error("stale approval buttons were not disabled");
+      await staleApproval.getByText(/decisions are disabled/).waitFor();
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
       await page.locator(".notice").waitFor({ state: "detached" });
       const rebuilt = page.locator('[data-part="approval"][data-id="approval:approval-1"]');
       await rebuilt.waitFor({ timeout: 5000 });
       if (await rebuilt.getByRole("button", { name: "approve" }).count() || await rebuilt.getByRole("button", { name: "deny" }).count()) throw new Error("aborted approval kept decision buttons");
-      if (await rebuilt.getByText("aborted", { exact: true }).count() !== 1) throw new Error("approval did not show aborted");
+      if (await rebuilt.getByText("connection lost", { exact: true }).count() !== 1) throw new Error("approval did not show connection lost");
       if (await page.locator('[data-part="approval"]').count() !== 1) throw new Error("duplicate approval rows after reconnect");
       if (await page.locator('[data-tone="danger"]').count()) throw new Error("reconnect showed an app error");
       if (fake.decisions.length) throw new Error("server received a decision for the aborted approval");
@@ -212,7 +217,7 @@ try {
       await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
       const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));
       if (new Set(ids).size !== ids.length) throw new Error("duplicate rows after reconnect");
-      if (await page.locator('[data-part="approval"][data-state="pending"]').count()) throw new Error("an aborted approval came back as pending");
+      if (await page.locator('[data-part="approval"][data-state="pending"]').count()) throw new Error("a dropped approval came back as pending");
     });
 
     await check("keyboard: arrows move through sessions, Enter opens one, the theme picker works", async () => {

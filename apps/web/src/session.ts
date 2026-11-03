@@ -17,7 +17,7 @@ export type SessionMeta = {
 export type ServerStatus = {
   session: SessionMeta | null;
   state: "idle" | "running" | "tool";
-  pending_approvals: Array<{ request_id: string; tool_call: unknown; delegated: boolean; agent_instance_id?: string }>;
+  pending_approvals: Array<{ request_id: string; tool_call: unknown; delegated: boolean; agent_instance_id?: string; resolution_pending?: boolean }>;
 };
 
 export const PAGE_SIZE = 100;
@@ -142,12 +142,19 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       const lease = await openSession(target, id, (messages) => { if (mine === openGeneration) set({ opening: { id, messages } }); });
       if (mine !== openGeneration || !live(target)) return lease.release();
       if (previous) {
+        const rebuilt = new Map<string, ReturnType<typeof previous.getItem>>();
+        for (const { id: itemId } of lease.store.getOutline()) {
+          const item = lease.store.getItem(itemId);
+          if (item?.type === "approval") rebuilt.set(item.request.request_id, item);
+        }
         for (const { id: itemId } of previous.getOutline()) {
           const item = previous.getItem(itemId);
-          if (item?.type === "approval" && item.ended) {
-            lease.store.dispatch(item.request);
-            lease.store.dispatch(item.ended);
-          }
+          if (item?.type !== "approval" || item.request.type !== "approval_request") continue;
+          const current = rebuilt.get(item.request.request_id);
+          if (current) continue;
+          lease.store.dispatch(item.request);
+          if (item.ended) lease.store.dispatch(item.ended);
+          else lease.store.dispatch({ type: "approval_end", request_id: item.request.request_id, data: { reason: "connection_lost" } });
         }
       }
       state.open?.lease.release();
@@ -164,14 +171,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     client = connection.client;
     if (!client) {
       openGeneration++;
-      if (state.open) {
-        for (const { id } of state.open.lease.store.getOutline()) {
-          const item = state.open.lease.store.getItem(id);
-          if (item?.type === "approval" && !item.ended && item.request.type === "approval_request")
-            state.open.lease.store.dispatch({ type: "approval_end", request_id: item.request.request_id, data: { reason: "client_disconnected" } });
-        }
-        set({ open: { ...state.open, stale: true }, opening: null });
-      }
+      if (state.open) set({ open: { ...state.open, stale: true }, opening: null });
       return;
     }
     void (async () => {

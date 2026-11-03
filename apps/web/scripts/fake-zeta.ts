@@ -108,6 +108,7 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
   let turnStarted = false;
   let approvalAborted = false;
+  let approvalReconnect = false;
   let running = false;
   const decisions: Json[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
@@ -126,14 +127,12 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
       open(socket) { sockets.add(socket); },
       close(socket) {
         if (!decide || approvalAborted) { sockets.delete(socket); return; }
+        if (approvalReconnect) { sockets.delete(socket); return; }
         approvalAborted = true;
         const resolve = decide;
         decide = null;
         running = false;
-        for (const each of sockets) {
-          each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "approval_end", session_id: ACTIVE, request_id: "approval-1", data: { reason: "client_disconnected" } } }));
-          each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "turn_aborted", session_id: ACTIVE, message: "turn aborted" } }));
-        }
+        histories[ACTIVE]!.push({ id: `drop-${Date.now()}`, role: "tool_result", content: [text("")], tool_result: result("live-2", "connection lost", { is_canceled: true }) });
         sockets.delete(socket);
         resolve("abort");
       },
@@ -208,6 +207,7 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
     /** Hands out a token the server will refuse. */
     async wrongToken() { await write({ port: server.port, token: "stale-token", pid: process.pid, origins: allowed }); },
     setMode(next: Mode) { mode = next; },
+    setApprovalReconnect(enabled: boolean) { approvalReconnect = enabled; },
     setLive(next: boolean) { liveEnabled = next; },
     async close() { this.drop(); server.stop(true); await rm(home, { recursive: true, force: true }); },
   };

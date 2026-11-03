@@ -159,7 +159,8 @@ export const Approval = memo(function Approval({
   onDeny,
   summary,
   body: Body = ToolBody,
-}: ItemProps & ToolViewProps & { onApprove?: Decide; onDeny?: Decide }) {
+  disabledReason,
+}: ItemProps & ToolViewProps & { onApprove?: Decide; onDeny?: Decide; disabledReason?: string }) {
   const item = useItem(id);
   const [sending, setSending] = useState<"approve" | "deny">();
   const labelId = useId();
@@ -180,7 +181,8 @@ export const Approval = memo(function Approval({
       throw error;
     }
   };
-  const status = !pending ? ((item.ended && "data" in item.ended && item.ended.data?.reason === "client_disconnected") ? "aborted" : "resolved") : sending ? (sending === "approve" ? "approving" : "denying") : undefined;
+  const endReason = item.ended && "data" in item.ended ? String(item.ended.data?.reason ?? "") : "";
+  const status = !pending ? ({ controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" } as Record<string, string>)[endReason] ?? (endReason ? "ended" : "resolved") : sending ? (sending === "approve" ? "approving" : "denying") : undefined;
   return (
     <div
       className={className}
@@ -202,18 +204,11 @@ export const Approval = memo(function Approval({
           <div data-part="tool-body">
             <Body item={requested} output="" state={state} />
           </div>
-          {onApprove || onDeny ? (
+          {onApprove || onDeny || disabledReason ? (
             <div data-part="approval-actions">
-              {onApprove ? (
-                <button type="button" data-action="approve" aria-disabled={sending ? true : undefined} onClick={decide("approve", onApprove)}>
-                  approve
-                </button>
-              ) : null}
-              {onDeny ? (
-                <button type="button" data-action="deny" aria-disabled={sending ? true : undefined} onClick={decide("deny", onDeny)}>
-                  deny
-                </button>
-              ) : null}
+              <button type="button" data-action="approve" disabled={!onApprove || Boolean(sending)} onClick={onApprove ? decide("approve", onApprove) : undefined}>approve</button>
+              <button type="button" data-action="deny" disabled={!onDeny || Boolean(sending)} onClick={onDeny ? decide("deny", onDeny) : undefined}>deny</button>
+              {disabledReason ? <span role="status">{disabledReason}</span> : null}
             </div>
           ) : null}
         </>

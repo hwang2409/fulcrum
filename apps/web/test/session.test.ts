@@ -141,6 +141,24 @@ test("a drop keeps the old transcript as stale; the reconnect rebuilds it on a f
   expect(view.state.open).toMatchObject({ id: "b", stale: false });
   expect(view.state.open!.lease.store).not.toBe(before);
   expect(kinds(view.state)).toEqual(["user", "message", "approval"]);
+  const pending = view.state.open!.lease.store.getItem("approval:r1");
+  expect(pending?.type).toBe("approval");
+  expect(pending && "ended" in pending ? pending.ended : undefined).toBeUndefined();
+});
+
+test("a dropped approval becomes connection lost only after reconnect proves it is absent", async () => {
+  const first = await server(handlers("b"));
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  await tick();
+  connection.set(null);
+  expect(view.state.open!.lease.store.getItem("approval:r1")).toMatchObject({ type: "approval" });
+  const second = await server(handlers("b", { status: () => ({ session: meta("b", "x"), state: "idle", pending_approvals: [] }) }));
+  connection.set(second.client);
+  await tick();
+  const ended = view.state.open!.lease.store.getItem("approval:r1");
+  expect(ended?.type).toBe("approval");
+  expect(ended && "ended" in ended ? ended.ended : undefined).toMatchObject({ type: "approval_end", data: { reason: "connection_lost" } });
 });
 
 test("live events after the open land in the open store", async () => {

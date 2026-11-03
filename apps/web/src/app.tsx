@@ -16,10 +16,10 @@ export const serveCommand = (origin: string) => `zeta serve --ws 8765 --ws-origi
 
 // Renderers stay module-level so appends never re-render every row; approvals reach the live client through context.
 type Decide = (requestId: string) => Promise<unknown>;
-const Decisions = createContext<{ approve: Decide; deny: Decide } | null>(null);
+const Decisions = createContext<{ approve?: Decide; deny?: Decide; disabledReason?: string } | null>(null);
 function ZetaApproval({ id }: { id: string }) {
   const decide = useContext(Decisions);
-  return <Approval id={id} onApprove={decide?.approve} onDeny={decide?.deny} />;
+  return <Approval id={id} onApprove={decide?.approve} onDeny={decide?.deny} disabledReason={decide?.disabledReason} />;
 }
 const renderers: Renderers = {
   message: ({ id }) => <Message id={id} markdown={RichMarkdown} />,
@@ -252,10 +252,10 @@ function Body({ state, view, connection, sessions, onOpenDrawer }: { state: Conn
 function Run({ client, sessions, open }: { client: ZetaClient | null; sessions: Sessions; open: NonNullable<SessionsState["open"]> }) {
   const scroll = useRef<HTMLDivElement>(null);
   const decisions = useMemo(() => {
-    const decide = (method: "approve" | "deny"): Decide => (request_id) =>
-      client ? client.request(method, { request_id }, { timeoutMs: 15_000 }) : Promise.reject(new Error("not connected"));
+    if (!client || open.stale) return { disabledReason: "reconnecting — decisions are disabled until the server confirms this session" };
+    const decide = (method: "approve" | "deny"): Decide => (request_id) => client.request(method, { request_id }, { timeoutMs: 15_000 });
     return { approve: decide("approve"), deny: decide("deny") };
-  }, [client]);
+  }, [client, open.stale]);
   useLayoutEffect(() => { scroll.current?.focus({ preventScroll: true }); }, [open.lease.store]);
   return (
     <Decisions.Provider value={decisions}>
