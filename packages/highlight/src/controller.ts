@@ -254,7 +254,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   highlight.awaitCompletion = (id, version) => {
     const key = `${id}\0${version}`;
     const known = completions.get(key);
-    if (known) return Promise.resolve({ version, ...known });
+    if (known && known.status !== "pending") return Promise.resolve({ version, ...known });
     return new Promise((resolve) => { const set = completionWaiters.get(key) ?? new Set(); set.add(resolve); completionWaiters.set(key, set); });
   };
   highlight.dispose = () => {
