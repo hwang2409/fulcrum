@@ -206,7 +206,7 @@ export const ImageBlock = memo(function ImageBlock({ block, onOpen }: ContentBlo
           <img src={src} alt={label(name)} width={width} height={height} loading="lazy" decoding="async" onError={() => setFailed(true)} />
         </button>
       ) : (
-        <div data-part="image-placeholder" style={box}>{!src ? "image not shown: unsupported address" : "image failed to load"}</div>
+        <div data-part="image-placeholder" style={src ? box : undefined}>{!src ? "image not shown: unsupported address" : "image failed to load"}</div>
       )}
       <figcaption data-part="image-caption">
         <span data-part="block-label">image</span>
@@ -251,8 +251,10 @@ export const UnknownBlock = memo(function UnknownBlock({ block, id }: ContentBlo
       <div data-part="block-unknown-header">
         <span data-part="block-label">unsupported block</span>
         <span data-part="block-type">{type}</span>
-        <button type="button" data-action="show" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "hide json" : "show json"}</button>
-        <CopyButton label="json" value={() => json(block)} />
+        <span data-part="block-actions">
+          <button type="button" data-action="show" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "hide json" : "show json"}</button>
+          <CopyButton label="json" value={() => json(block)} />
+        </span>
       </div>
       {value !== undefined ? <TextViewer text={value} id={`${id}:json`} label="json" part="tool-args" format={JSON_FORMAT} /> : null}
     </div>

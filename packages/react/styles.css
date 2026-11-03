@@ -699,6 +699,8 @@ a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--f
 [data-part="image-open"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 [data-part="image-open"] > img { display: block; width: 100%; height: 100%; object-fit: contain; }
 [data-part="image-placeholder"] { display: flex; align-items: center; justify-content: center; padding: 12px; color: var(--fulcrum-muted); font-size: 12px; text-align: center; }
+/* An image that will never load needs no reserved box: one line says why. */
+[data-part="image"][data-state="blocked"] [data-part="image-placeholder"] { width: auto; height: auto; aspect-ratio: auto; justify-content: flex-start; padding: 6px 12px; }
 [data-part="image"][data-state="error"] [data-part="image-placeholder"] { color: var(--fulcrum-danger); }
 [data-part="image-caption"] { font-size: 12px; }
 [data-part="image-dialog"] {
@@ -715,9 +717,10 @@ a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--f
 [data-part="image-dialog"] > button { display: block; width: 100%; border-top: 1px solid var(--fulcrum-border); }
 
 [data-part="block-unknown"] { border: 1px solid var(--fulcrum-border); border-left: 2px solid var(--fulcrum-warn); }
-[data-part="block-unknown-header"] { align-items: center; min-height: 34px; padding: 0 0 0 10px; }
+[data-part="block-unknown-header"] { flex-wrap: wrap; align-items: center; row-gap: 0; min-height: 34px; padding: 0 0 0 10px; }
+[data-part="block-actions"] { display: flex; margin-left: auto; white-space: nowrap; }
+[data-part="block-unknown-header"] > :is([data-part="block-label"], [data-part="block-type"]) { line-height: 32px; }
 [data-part="block-unknown-header"] > [data-part="block-label"] { color: var(--fulcrum-warn); }
-[data-part="block-unknown-header"] > [data-action="show"] { margin-left: auto; }
 [data-part="block-unknown"] > [data-part="tool-args"] { border-top: 1px solid var(--fulcrum-border); }
 
 @media (max-width: 480px) {
