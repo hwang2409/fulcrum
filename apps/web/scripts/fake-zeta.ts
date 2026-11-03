@@ -157,7 +157,6 @@ function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): 
     const accepted = method === "send" ? { accepted: true, session_id: active } : { accepted: true };
     if (delivery) { deliveries.set(delivery, accepted); statuses.set(delivery, method === "steer" ? "queued" : "delivered"); }
     if (method === "steer") {
-      histories[active] = [...(histories[active] ?? []), { id: `steer-${sent.length}`, role: "user", content: [text(value)], delivery_id: delivery, tool_result: null }];
       if (delivery) chat?.steers.push(delivery);
       return { result: accepted };
     }

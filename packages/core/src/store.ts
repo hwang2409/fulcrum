@@ -56,6 +56,7 @@ const mergeSplices = (base: readonly OutlineSplice[], edits: readonly OutlineSpl
 
 export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   let entities = new Map<string, RunItem>();
+  const messageAliases = new Map<string, string>();
   let current: RunState = structuredClone(initialState);
   let pending: RunEvent[] = [];
   const listeners = new Set<Listener>();
@@ -85,6 +86,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
         changedItems.add(id);
       },
       splice: (edit) => edits.push(edit),
+      getMessageAlias: (key) => messageAliases.get(key),
+      setMessageAlias: (key, id) => messageAliases.set(key, id),
     });
     stateChanged = true;
     if (current.outline !== beforeOutline) {
@@ -141,6 +144,10 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       flush();
       return outlineSnapshot;
     },
+    hasMessageDelivery(deliveryId: string) {
+      flush();
+      return messageAliases.has(`delivery:${deliveryId}`);
+    },
     subscribe,
     subscribeOutline(listener: Listener) {
       outlineListeners.add(listener);
@@ -165,6 +172,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
       entities = new Map();
+      messageAliases.clear();
       listeners.clear();
       outlineListeners.clear();
       itemListeners.clear();

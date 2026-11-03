@@ -162,9 +162,11 @@ test("dispose stops notifications, drops pending chunks, and rejects dispatch", 
 test("published state snapshots do not change after a later delivery", () => {
   const store = createRunStore((flush) => flush());
   store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "one" });
-  const snapshot = structuredClone(store.getState());
+  const before = store.getState();
+  const snapshot = structuredClone(before);
   store.dispatch({ type: "user_message", text: "second", mode: "send", delivery_id: "two" });
-  expect(store.getState()).toEqual(expect.objectContaining(snapshot));
+  store.getState();
+  expect(before).toEqual(snapshot);
   expect(snapshot.outline).toHaveLength(1);
 });
 
@@ -259,6 +261,8 @@ test("delivery-id reconciliation reads a constant number of entities in a 100k-r
   reduceAllWithEntities(state, [{ type: "user_message", text: "go", mode: "send", delivery_id: "target" }], {
     get(id) { reads++; return entities.get(id); },
     set() {}, delete() {}, splice() {},
+    getMessageAlias() { return undefined; },
+    setMessageAlias() {},
   });
   expect(reads).toBeLessThan(10);
 });

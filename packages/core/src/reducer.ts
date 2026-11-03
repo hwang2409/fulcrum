@@ -30,8 +30,6 @@ export interface RunState {
   activeToolIds: Record<string, boolean>;
   /** Tool call id -> its approval's item id. */
   toolApprovals: Record<string, string>;
-  /** Durable message identities (for example delivery ids) to their stable user row. */
-  messageAliases: ReadonlyMap<string, string>;
 }
 
 export const initialState: RunState = {
@@ -45,7 +43,6 @@ export const initialState: RunState = {
   nextId: 1,
   activeToolIds: {},
   toolApprovals: {},
-  messageAliases: new Map(),
 };
 
 const messageItemId = (id: string) => `message:${id}`;
@@ -72,6 +69,8 @@ interface EntityDraft {
   delete(id: string): void;
   /** Called once per outline edit, in order, as the reducer makes it. */
   splice(splice: OutlineSplice): void;
+  getMessageAlias(key: string): string | undefined;
+  setMessageAlias(key: string, id: string): void;
 }
 type SpliceOutline = (index: number, deleteCount: number, items: readonly OutlineItem[]) => void;
 
@@ -178,11 +177,9 @@ export function reduceAllWithEntities(
     activeMessageId: state.activeMessageId,
     activeToolIds: state.activeToolIds,
     toolApprovals: state.toolApprovals,
-    messageAliases: state.messageAliases,
   };
-  const setMessageAlias = (key: string, id: string) => {
-    (next.messageAliases as Map<string, string>).set(key, id);
-  };
+  const getMessageAlias = entities.getMessageAlias;
+  const setMessageAlias = entities.setMessageAlias;
   const getItem = (id: string) => entities.get(id);
   const setItem = (item: RunItem) => entities.set(item);
   // The first edit copies the outline; later edits in the same batch write that copy in place.
@@ -425,10 +422,14 @@ export function reduceAllWithEntities(
         const intentId = event.intent === undefined ? undefined : `user:intent:${event.intent}`;
         const deliveryId = event.delivery_id === undefined ? undefined : messageAlias(event.delivery_id);
         const deliveryItemId = event.delivery_id === undefined ? undefined : `user:delivery:${event.delivery_id}`;
-        const id = (deliveryId && next.messageAliases.get(deliveryId)) || (intentId && getItem(intentId) ? intentId : undefined) || intentId || deliveryItemId || `user:${next.nextId++}`;
+        const id = (deliveryId && getMessageAlias(deliveryId)) ||
+          (intentId && getMessageAlias(intentId)) ||
+          (intentId && getItem(intentId) ? intentId : undefined) ||
+          intentId || deliveryItemId || `user:${next.nextId++}`;
         if (getItem(id)) setItem({ id, type: "user", event });
         else appendItem({ id, type: "user", event });
-        if (deliveryId && next.messageAliases.get(deliveryId) !== id) setMessageAlias(deliveryId, id);
+        if (deliveryId && getMessageAlias(deliveryId) !== id) setMessageAlias(deliveryId, id);
+        if (intentId && getMessageAlias(intentId) !== id) setMessageAlias(intentId, id);
         break;
       }
       case "error": {
