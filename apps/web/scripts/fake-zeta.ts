@@ -1,6 +1,6 @@
 // A scripted `zeta serve --ws` for the browser gate and for trying the app without a real zeta. It speaks the subset
-// of protocol 1.2 the app uses (hello, list_sessions, status, resume, session_history, approve, deny, send, steer,
-// abort, with the delivery_id and user_message_event features), checks the
+// of protocol 1.2 the app uses (hello, list_sessions, new_session, status, resume, session_history, approve, deny,
+// send, steer, abort, with the delivery_id and user_message_event features), checks the
 // token and Origin like the real upgrade, and writes the discovery file under its own ZETA_HOME, never ~/.zeta.
 //
 // Manual use: `bun scripts/fake-zeta.ts`, then start vite with the printed ZETA_HOME.
@@ -22,7 +22,7 @@ const meta = (id: string, minutesAgo: number, extra: Json = {}) => ({
 
 export const ACTIVE = "s-reconnect";
 export const LONG = "s-long";
-const sessions = [
+const seeded = [
   meta(ACTIVE, 2, { name: "fix the flaky reconnect test in packages/zeta" }),
   meta("s-themes", 45, { first_message_preview: "check every theme's muted text against 4.5:1 on the surface color" }),
   meta(LONG, 60 * 5, { first_message_preview: "profile the virtual timeline with 400 rows of history" }),
@@ -193,6 +193,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let currentHistoryMode = historyMode;
   let allowed = origins;
   let active: string | null = ACTIVE;
+  let sessions = [...seeded];
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
   let turnStarted = false;
   let approvalAborted = false;
@@ -235,6 +236,15 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
           return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
+        }
+        if (method === "new_session") {
+          // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
+          if (running) return reply({ error: { code: -32004, message: "a turn is already running" } });
+          const created = meta(`s-new-${sessions.length}`, 0, { created_at: at(0), cwd: "/Users/dev/me/fun/fulcrum", retained_tail: 8, compaction_budget: 262144, override_audit: [], context_files: [], skill_catalog: [], agent_catalog: [], plan_mode: false, project_id: null, tool_allow: null, tool_deny: [] });
+          sessions.unshift(created);
+          histories[created.session_id] = [];
+          active = created.session_id;
+          return reply({ result: { session: created } });
         }
         if (method === "list_sessions") {
           const offset = Number(params.offset ?? 0);
@@ -310,6 +320,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     setMode(next: Mode) { mode = next; },
     setHistoryMode(next: HistoryMode) { currentHistoryMode = next; },
     setLive(next: boolean) { liveEnabled = next; },
+    /** `true`: a fresh zeta home, with no sessions and no server session. `false`: the seeded sessions again. */
+    setEmpty(empty: boolean) { sessions = empty ? [] : [...seeded]; active = empty ? null : ACTIVE; },
     async close() { this.drop(); server.stop(true); await rm(home, { recursive: true, force: true }); },
   };
 }

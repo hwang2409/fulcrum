@@ -67,3 +67,30 @@ test("zeta's allow/deny/abort decisions reach fulcrum as its one vocabulary, liv
   for (const inherited of ["constructor", "toString", "__proto__"])
     expect(fromZetaEvent({ event: "approval_end", session_id: "s", request_id: "r", data: { decision: inherited } })[0]).not.toHaveProperty("decision");
 });
+
+// A real `session_history` response from zeta e3195058 (`zeta serve`, ollama qwen3.6:35b, fresh ZETA_HOME): two bash
+// calls, both approved. History empties tool_use arguments and drops structured_content; bash's result text is
+// "stdout:\n" + stdout + "\nstderr:\n" + stderr (src/zeta/tools/bash/__init__.py), and is_error is set by a nonzero exit.
+test("reopened bash cards get the live view: command from the approval, split stdout/stderr, exit 0 when it passed", async () => {
+  const rows = await Bun.file(new URL("./fixtures/history-bash.json", import.meta.url)).json();
+  const store = createRunStore((flush) => flush());
+  for (const event of fromZetaHistory(rows)) store.dispatch(event);
+  const tools = store.getOutline().filter((entry) => entry.kind === "tool").map(({ id }) => store.getItem(id));
+  expect(tools.map((item) => item?.type === "tool" ? item.view : undefined)).toEqual([
+    { kind: "shell", command: "printf 'alpha\\nbeta\\n'; echo warn-line >&2", stdout: "alpha\nbeta\n", stderr: "warn-line\n", exitCode: 0 },
+    // A failed call's exit code is not in history (zeta keeps only is_error), so none is guessed.
+    { kind: "shell", command: "ls /nonexistent-dir-xyz", stdout: "", stderr: "ls: /nonexistent-dir-xyz: No such file or directory\n" },
+  ]);
+});
+
+test("bash text that is not zeta's stdout/stderr shape stays raw output", () => {
+  const call = { id: "t1", name: "bash", arguments: { command: "sleep 9" } };
+  for (const content of ["tool execution canceled", "[timed out after 1s; process group killed]\nstdout:\n\nstderr:\n", "stdout:\nonly"]) {
+    const [end] = fromZetaHistory([
+      { id: "a", role: "assistant", content: [{ type: "tool_use", tool_call: call }], tool_result: null },
+      { id: "r", role: "tool_result", content: [], tool_result: { tool_call_id: "t1", content, is_error: true, content_blocks: [], structured_content: null } },
+    ]).slice(-1);
+    expect(end).toMatchObject({ type: "tool_end", view: { kind: "shell", command: "sleep 9" } });
+    expect((end as { view: object }).view).not.toHaveProperty("stdout");
+  }
+});
