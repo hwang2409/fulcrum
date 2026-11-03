@@ -193,7 +193,9 @@ test("a pending approval in a child shows on the parent row and the breadcrumb, 
   act(() => q('[data-action="approve"]').click());
   expect(decided).toEqual(["a:r1"]);
   expect(container.querySelector('[data-part="run-urgency"]')).toBeNull();
-  act(() => history.back());
+  // The resolved approval's buttons are gone, so focus fell to the body; Escape there still goes back.
+  (document.activeElement as HTMLElement | null)?.blur();
+  act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
   await frames();
   expect(q('[data-part="sub-agent"]').dataset.urgency).toBeUndefined();
 });

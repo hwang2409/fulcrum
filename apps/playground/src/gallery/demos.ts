@@ -1,8 +1,12 @@
-import { resolveToolView, type RunEvent, type ToolCall, type ToolView } from "@fulcrum/core";
+import { resolveToolView, type RunEvent, type SubAgentEvent, type ToolCall, type ToolView } from "@fulcrum/core";
 import { zetaTools } from "@fulcrum/zeta";
 
-/** `part` is the `@fulcrum/react` export the demo shows. `live` replays `events` in a loop, one event per `live` ms. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number };
+/**
+ * `part` is the `@fulcrum/react` export the demo shows. `live` replays `events` in a loop, one event per `live` ms.
+ * `runs` are child runs by id, shown in a RunNavigator: a sub-agent row whose run is missing here is unavailable. A
+ * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
+ */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]> };
 
 const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({ id, name, arguments: args });
 const text = (role: string, value: string) => ({ role, content: [{ type: "text", text: value }] });
@@ -222,6 +226,31 @@ const bigArgs = call("ap-big", "write_file", {
   rows: Array.from({ length: 24 }, (_, i) => ({ id: i, name: `row-${i}`, tags: ["alpha", "beta", "gamma"], score: i * 1.5 })),
 });
 
+// Sub-agents. Elapsed times count from page load, so a running row reads like a live one.
+const ago = (seconds: number) => new Date(Date.now() - seconds * 1_000).toISOString();
+const agent = (childRunId: string, status: SubAgentEvent["status"], facts: Omit<SubAgentEvent, "type" | "childRunId" | "status"> = {}): RunEvent => ({ type: "sub_agent", childRunId, status, ...facts });
+const note = (id: string, value: string): RunEvent => ({ type: "message_commit", message_id: id, message: text("assistant", value) });
+const navTree = call("nav-tree", "bash", { command: "tree src/auth test/auth" });
+const navRead = call("nav-read", "read", { path: "src/auth/session.ts" });
+const reviewerRg = call("rv-rg", "bash", { command: "rg -n 'refresh_token' src/auth" });
+const reviewerRead = call("rv-read", "read", { path: "src/auth/session.ts" });
+const testerRead = call("ts-read", "read", { path: "test/auth/session.test.ts" });
+const testerRun = call("ts-run", "bash", { command: "rm -rf .cache && bun test test/auth" });
+const researcherFetch = call("rs-fetch", "fetch", { url: "https://datatracker.ietf.org/doc/html/rfc6819" });
+const researcherSearch = call("rs-search", "websearch", { query: "refresh token rotation reuse detection" });
+const sessionSource = 'export async function refresh(token: string) {\n  const session = await store.get(token);\n  if (!session) {\n    log.warn("refresh failed", { token });\n    throw new AuthError("expired");\n  }\n  return rotate(session);\n}\n';
+const subAgentStates: RunEvent[] = [
+  agent("st-run", "running", { name: "reviewer", task: "audit src/auth for token leaks", startedAt: ago(134), toolCount: 7, latestActivity: "$ bun test test/auth" }),
+  agent("st-approve", "waiting_approval", { urgency: "approval", name: "deployer", task: "ship the preview build", startedAt: ago(48), toolCount: 3, latestActivity: "wants to run: vercel deploy --prebuilt" }),
+  agent("st-input", "waiting_input", { urgency: "input", name: "planner", task: "pick a cache strategy", startedAt: ago(301), toolCount: 2, latestActivity: "asked: keep redis, or move to sqlite?" }),
+  agent("st-idle", "idle", { name: "watcher", task: "watch CI for flaky tests", startedAt: ago(4_000), toolCount: 18, latestActivity: "no new failures in the last 3 runs" }),
+  agent("st-done", "done", { name: "researcher", task: "find prior art for refresh-token rotation", startedAt: "2026-11-02T10:00:00Z", endedAt: "2026-11-02T10:03:41Z", toolCount: 12, summary: "3 sources agree: rotate on every use, revoke the family on reuse" }),
+  agent("st-error", "error", { name: "fixer", task: "fix the flaky transport test", startedAt: "2026-11-02T10:00:00Z", endedAt: "2026-11-02T10:01:09Z", toolCount: 5, summary: "bun test: 2 failing in transport.test.ts" }),
+  agent("st-canceled", "canceled", { name: "migrator", task: "rename the sessions table", startedAt: "2026-11-02T10:00:00Z", endedAt: "2026-11-02T10:00:12Z", toolCount: 1, summary: "canceled by the parent" }),
+  agent("st-old", "done", { name: "docs", task: "update docs/auth.md", toolCount: 4, summary: "updated 3 sections" }),
+];
+const stateRuns = Object.fromEntries(["st-run", "st-approve", "st-input", "st-idle", "st-done", "st-error", "st-canceled"].map((id) => [id, [note(`${id}-note`, `The ${id.slice(3)} child run's own transcript opens here.`)]]));
+
 export const demos: Demo[] = [
   {
     id: "timeline-run",
@@ -433,6 +462,69 @@ export const demos: Demo[] = [
     title: "resolved",
     description: "After approval_end the buttons go away and data-state is \"done\".",
     events: [ask("r-done", calls("ap").edit), { type: "approval_end", request_id: "r-done" }],
+  },
+  {
+    id: "subagent-states",
+    part: "SubAgent",
+    title: "every state",
+    description: "One fixed-height row per child run: state, name, task, elapsed time, tool count, and the latest activity. Waiting on you is a warn badge. Click a row (or Enter) to open its run; \"docs\" started before child runs were recorded, so it says why it cannot open.",
+    events: subAgentStates,
+    runs: stateRuns,
+  },
+  {
+    id: "run-navigator-nested",
+    part: "RunNavigator",
+    title: "nested drill-in, streaming",
+    description: "A run with three sub-agents streaming in step. Open reviewer, then its tester, and approve or deny there: the badge clears on every level. Back, Escape, or browser back return to where you were reading.",
+    live: 450,
+    events: [
+      { type: "user_message", text: "Audit the auth module for token leaks and check how others rotate refresh tokens.", mode: "default" },
+      start(navTree),
+      end(navTree, "src/auth\n├── rotate.ts\n├── session.ts\n└── tokens.ts\ntest/auth\n└── session.test.ts\n", { view: { kind: "shell", command: String(navTree.arguments.command), exitCode: 0, durationMs: 12 } }),
+      start(navRead),
+      end(navRead, sessionSource),
+      ...stream("nav-m1", "I will split this: a reviewer audits src/auth, a researcher reads prior art, and the docs agent from yesterday stays as it was."),
+      agent("docs-old", "done", { name: "docs", task: "update docs/auth.md", toolCount: 4, summary: "updated 3 sections" }),
+      agent("reviewer", "running", { name: "reviewer", task: "audit src/auth for token leaks", startedAt: ago(95), toolCount: 0, latestActivity: "starting" }),
+      agent("researcher", "running", { name: "researcher", task: "find prior art for refresh-token rotation", startedAt: ago(95), toolCount: 0, latestActivity: "starting" }),
+      agent("reviewer", "running", { toolCount: 1, latestActivity: "$ rg -n 'refresh_token' src/auth" }),
+      agent("researcher", "running", { toolCount: 1, latestActivity: "fetch datatracker.ietf.org/doc/html/rfc6819" }),
+      agent("reviewer", "running", { toolCount: 2, latestActivity: "read src/auth/session.ts" }),
+      agent("researcher", "running", { toolCount: 2, latestActivity: "search \"refresh token rotation reuse detection\"" }),
+      agent("reviewer", "running", { latestActivity: "found a leak: the refresh token is logged on failure" }),
+      agent("researcher", "done", { endedAt: ago(20), summary: "rotate on every use; revoke the whole family on reuse" }),
+      agent("reviewer", "running", { latestActivity: "started tester to confirm the fix" }),
+      agent("reviewer", "waiting_approval", { urgency: "approval", latestActivity: "tester needs approval: rm -rf .cache && bun test test/auth" }),
+      ...stream("nav-m2", "The researcher is done. The reviewer's tester is waiting for your approval before it runs the auth tests."),
+    ],
+    runs: {
+      reviewer: [
+        { type: "user_message", text: "Audit src/auth for token leaks.", mode: "default" },
+        start(reviewerRg),
+        end(reviewerRg, "src/auth/session.ts:4:    log.warn(\"refresh failed\", { token });\nsrc/auth/rotate.ts:12:  return { refresh_token: next };\n", { view: { kind: "shell", command: String(reviewerRg.arguments.command), exitCode: 0, durationMs: 41 } }),
+        start(reviewerRead),
+        end(reviewerRead, sessionSource),
+        ...stream("rv-m1", "Line 4 logs the raw refresh token when a refresh fails. I will drop it from the log and start a tester to confirm nothing else depends on it."),
+        agent("tester", "running", { name: "tester", task: "run the auth tests after the fix", startedAt: ago(60), toolCount: 0, latestActivity: "starting" }),
+        agent("tester", "running", { toolCount: 1, latestActivity: "read test/auth/session.test.ts" }),
+        agent("tester", "waiting_approval", { urgency: "approval", toolCount: 2, latestActivity: "wants to run: rm -rf .cache && bun test test/auth" }),
+      ],
+      tester: [
+        { type: "user_message", text: "Run the auth tests after the fix.", mode: "default" },
+        ...stream("ts-m1", "Reading the session tests first, then a clean run."),
+        start(testerRead),
+        end(testerRead, 'import { refresh } from "../../src/auth/session";\n\ntest("refresh rotates", async () => {\n  expect(await refresh("t1")).not.toBe("t1");\n});\n'),
+        { type: "approval_request", request_id: "r-tester", tool_call: testerRun, view: viewOf(testerRun), delegated: true },
+      ],
+      researcher: [
+        { type: "user_message", text: "Find prior art for refresh-token rotation.", mode: "default" },
+        start(researcherFetch),
+        end(researcherFetch, "OAuth 2.0 Threat Model and Security Considerations\n5.2.2.3. Refresh Token Rotation: the authorization server issues a new refresh token with every access token refresh response."),
+        start(researcherSearch),
+        end(researcherSearch, "1. Refresh token rotation - auth0.com/docs\n2. Reuse detection - datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics"),
+        ...stream("rs-m1", "All three sources agree: **rotate on every use**, and when an old token is reused, revoke the whole token family."),
+      ],
+    },
   },
   {
     id: "fallback-user",

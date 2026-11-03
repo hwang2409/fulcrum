@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { RunItem, RunLease, RunSource, SubAgentStatus } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { RunProvider, type RunStore } from "./hooks.js";
@@ -23,6 +23,7 @@ export const useRunNavigation = () => useContext(RunNavigationContext);
 
 // Each navigator keeps its depth in history.state under its own id, so browser back pops one level.
 const HISTORY_KEY = "fulcrumRuns";
+let lastNavigator: string | undefined;
 type HistoryDepths = Record<string, number>;
 const historyDepth = (id: string) => (history.state?.[HISTORY_KEY] as HistoryDepths | undefined)?.[id] ?? 0;
 const pushDepth = (id: string, depth: number) =>
@@ -134,27 +135,40 @@ export function RunNavigator({ store, source, runId, label = "run", renderers, h
     return () => cancelAnimationFrame(frame);
   }, [children]);
 
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key !== "Escape" || event.defaultPrevented || !childrenRef.current.length) return;
-    event.preventDefault();
-    back();
-  };
+  // Escape goes back from inside the navigator, or from the page body when this was the last navigator used (an
+  // approval's buttons unmount once it resolves, which drops focus to the body).
+  const rootElement = useRef<HTMLDivElement>(null);
+  const depth = children.length;
+  useEffect(() => {
+    if (!depth) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const active = document.activeElement;
+      const here = rootElement.current?.contains(active) || ((!active || active === document.body) && lastNavigator === id);
+      if (event.key !== "Escape" || event.defaultPrevented || !here) return;
+      event.preventDefault();
+      back();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [back, depth, id]);
   const context = useMemo<RunNavigation>(() => ({ path: path.map(({ runId, label }) => ({ runId, label })), back: () => back() }), [path, back]);
   const parent = path.at(-2);
 
   return (
-    <div className={className} data-part="run-navigator" data-depth={children.length} onKeyDown={onKeyDown}>
+    <div ref={rootElement} className={className} data-part="run-navigator" data-depth={depth} onFocusCapture={() => { lastNavigator = id; }} onPointerDownCapture={() => { lastNavigator = id; }}>
       <div data-part="run-bar">
         {parent ? <button type="button" data-part="run-back" aria-label={`back to ${parent.label}`} onClick={() => back()}>back</button> : null}
         <nav data-part="run-breadcrumb" aria-label="run path">
           <ol>
             {path.map((entry, index) => {
-              const status = index > 0 ? <RunStatus store={path[index - 1]!.store} id={entry.opener!} /> : null;
+              const content = index > 0
+                ? <RunStatus store={path[index - 1]!.store} id={entry.opener!} label={entry.label} />
+                : <span data-part="run-label">{entry.label}</span>;
               return (
                 <li key={index}>
                   {entry === current
-                    ? <span data-part="run-crumb" aria-current="page" tabIndex={-1} ref={crumbRef}>{status}<span data-part="run-label">{entry.label}</span></span>
-                    : <button type="button" data-part="run-crumb" onClick={() => back(index)}>{status}<span data-part="run-label">{entry.label}</span></button>}
+                    ? <span data-part="run-crumb" aria-current="page" tabIndex={-1} ref={crumbRef}>{content}</span>
+                    : <button type="button" data-part="run-crumb" onClick={() => back(index)}>{content}</button>}
                 </li>
               );
             })}
@@ -185,19 +199,19 @@ export function RunNavigator({ store, source, runId, label = "run", renderers, h
 
 const statusOf = (item: RunItem | undefined) => (item?.type === "sub_agent" ? item : undefined);
 
-/** A run's state mark in the breadcrumb, read from its row in the parent, plus a badge while it needs the user. */
-function RunStatus({ store, id }: { store: RunStore; id: string }) {
+/** A child's crumb: its state mark (read from its row in the parent), its label, and a badge while it needs the user. */
+function RunStatus({ store, id, label }: { store: RunStore; id: string; label: string }) {
   const read = () => {
     const item = statusOf(store.getItem(id));
     return item ? `${item.status}|${item.urgency ?? ""}` : "";
   };
   const subscribe = useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]);
   const value = useSyncExternalStore(subscribe, read, read);
-  if (!value) return null;
-  const [status, urgency] = value.split("|") as [SubAgentStatus, string];
+  const [status, urgency] = value ? value.split("|") as [SubAgentStatus, string] : [];
   return (
     <>
-      <span data-part="run-state" data-state={status} title={subAgentStatusText[status]} />
+      {status ? <span data-part="run-state" data-state={status} title={subAgentStatusText[status]} /> : null}
+      <span data-part="run-label">{label}</span>
       {urgency === "approval" || urgency === "input" ? <span data-part="run-urgency" data-urgency={urgency}>needs {urgency}</span> : null}
     </>
   );

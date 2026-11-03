@@ -511,6 +511,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     },
     setFollow(follow) {
       pinned = follow;
+      jump = 0; // a follow change moves nothing: a stale jump would make the adapter undo the user's scroll
       if (follow) unseenIds.clear();
       log("viewport", { scrollTop, size: viewportSize, programmatic: false, pinned });
       changed();
