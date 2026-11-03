@@ -15,23 +15,33 @@ const progress = (context: HighlightContext | null) => {
   progressOf = context; progressAt = now;
   scope.postMessage({ progress: context });
 };
-// Messages from one worker arrive in order, so the page joins the parts to the reply or update that follows them. Every
-// token message goes through one queue, so another reply cannot land between the parts of a paced one (protocol.ts).
-let outbox = Promise.resolve();
-let acked: (() => void) | undefined;
-const send = <T extends WorkerResponse & { tokens: Token[] }>(message: T) => {
-  outbox = outbox.then(async () => {
-    const last = Math.max(0, Math.ceil(message.tokens.length / TOKENS_PER_MESSAGE) - 1) * TOKENS_PER_MESSAGE;
-    for (let start = 0; start < last; start += TOKENS_PER_MESSAGE) {
-      scope.postMessage({ part: message.tokens.slice(start, start + TOKENS_PER_MESSAGE) });
-      await new Promise<void>((resolve) => { acked = resolve; });
+// Every token message goes through one paced queue (protocol.ts). A result over TOKENS_PER_MESSAGE tokens goes out as
+// parts addressed by its message id (`of`), and after a part nothing is sent until the page acks it. The next message
+// always comes from the result with the fewest tokens left, so a small reply waits behind at most one part of a large one.
+type Result = { requestId: number; tokens: Token[]; provisional: boolean } | { update: HighlightContext; language: string; tokens: Token[] };
+type Outgoing = { of: number; message: Result; at: number };
+const queue: Outgoing[] = [];
+let sent = 0;
+let waiting = false; // a part is out and not yet acked
+const left = (entry: Outgoing) => entry.message.tokens.length - entry.at;
+const pump = () => {
+  while (!waiting && queue.length) {
+    const next = queue.reduce((best, entry) => left(entry) < left(best) ? entry : best);
+    const { of, message, at } = next;
+    if (left(next) > TOKENS_PER_MESSAGE) {
+      scope.postMessage({ part: message.tokens.slice(at, at + TOKENS_PER_MESSAGE), of });
+      next.at += TOKENS_PER_MESSAGE;
+      waiting = true;
+    } else {
+      queue.splice(queue.indexOf(next), 1);
+      scope.postMessage({ ...message, tokens: at ? message.tokens.slice(at) : message.tokens, of });
     }
-    scope.postMessage(last ? { ...message, tokens: message.tokens.slice(last) } : message);
-  });
+  }
 };
+const send = (message: Result) => { queue.push({ of: ++sent, message, at: 0 }); pump(); };
 const runtime = new TokenizerRuntime((update, language, tokens) => send({ update, language, tokens }), progress);
 scope.onmessage = async (event) => {
-  if (event.data.type === "ack") { acked?.(); acked = undefined; return; }
+  if (event.data.type === "ack") { waiting = false; pump(); return; }
   if (event.data.type === "dispose") { runtime.dispose(); scope.close(); return; }
   const { requestId, code, language, context } = event.data;
   try {

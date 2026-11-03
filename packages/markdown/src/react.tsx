@@ -15,6 +15,7 @@ import {
   type ListBlock,
   type Token,
 } from "./index.js";
+import { CodeViewer, HighlightContext, isLargeCode, Tokens } from "@fulcrum/react/code";
 
 export interface MarkdownProps {
   source: string;
@@ -41,11 +42,13 @@ const InlineView = ({ nodes }: { nodes: Inline[] }): ReactNode => nodes.map((nod
     : <Fragment key={key}>{node.alt}</Fragment>;
 });
 
-const TokenView = ({ tokens }: { tokens: Token[] }) => <>{tokens.map((token, index) => token.type
-  ? <span key={index} className={`tok-${token.type}`}>{token.text}</span>
-  : <Fragment key={index}>{token.text}</Fragment>)}</>;
+// A large block is the shared bounded viewer: one react commit of every token of a 330k-token block froze the page
+// for seconds. Each mounted range of it is highlighted on its own, through the same highlighter.
+const CodeBlock = ({ id, block, highlight }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) => isLargeCode(block.value)
+  ? <HighlightContext.Provider value={highlight}><div data-part="md-code-block" data-language={block.language} data-size="large"><CodeViewer text={block.value} language={block.language} id={id} done={!block.open} /></div></HighlightContext.Provider>
+  : <InlineCodeBlock id={id} block={block} highlight={highlight} />;
 
-function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) {
+function InlineCodeBlock({ id, block, highlight }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) {
   const version = useRef(0);
   const previous = useRef("");
   const mounted = useRef(false);
@@ -82,7 +85,7 @@ function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block,
   }, [currentVersion, highlight, key]);
 
   const shown = immediate ?? tokens;
-  return <pre data-part="md-code-block" data-language={block.language}><code>{shown ? <TokenView tokens={shown} /> : block.value}</code></pre>;
+  return <pre data-part="md-code-block" data-language={block.language}><code>{shown ? <Tokens tokens={shown} /> : block.value}</code></pre>;
 }
 
 const ListView = ({ id, block, highlight }: { id: string; block: ListBlock; highlight?: Highlighter }) => {

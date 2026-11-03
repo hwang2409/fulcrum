@@ -4,6 +4,7 @@
   "sideEffects": false,
   "exports": {
     ".": { "types": "./dist/index.d.ts", "bun": "./src/index.ts", "import": "./dist/index.js" },
+    "./code": { "types": "./dist/code.d.ts", "bun": "./src/code.ts", "import": "./dist/code.js" },
     "./styles.css": "./styles.css",
     "./themes.css": "./themes.css"
   },
