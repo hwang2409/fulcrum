@@ -794,13 +794,27 @@ describe("grammar warm-up and regex caches", () => {
     expect(typedPerLine(updates[0]!.tokens).slice(0, 6)).toEqual([true, true, false, true, true, true]);
     expect(runtime.willUpdate({ id: "cold", version: 1, state: "done" })).toBe(false);
 
-    // Once warm, a line over the limit is really slow: it stays plain, final, and is never re-sent.
+    // A slow clock may delay tokenization, but it must never change the final grammar result.
     const slow = await withClock(50, () => runtime.tokenize("[2]\n", "typescript", { id: "slow", version: 1, state: "done" }));
-    expect(slow).toEqual([{ text: "[2]\n" }]);
+    expect(slow.some((token) => token.type)).toBe(true);
+    expect(text(slow)).toBe("[2]\n");
     expect(runtime.willUpdate({ id: "slow", version: 1, state: "done" })).toBe(false);
     expect(runtime["provisional"].size).toBe(0);
     runtime.dispose();
   }, 60_000);
+
+  test("completion is observable for the exact block revision", async () => {
+    const notices: Array<{ version: number; status: string }> = [];
+    const highlighter = createHighlighter();
+    const stop = highlighter.subscribe("completion", (notice) => notices.push(notice));
+    const context = { id: "completion", version: 1, state: "done" as const };
+    await highlighter("const value = 1;\n", "typescript", context);
+    const completion = await highlighter.awaitCompletion(context.id, context.version);
+    expect(completion).toEqual({ version: 1, status: "complete" });
+    expect(notices).toContainEqual({ version: 1, status: "complete" });
+    stop();
+    highlighter.dispose();
+  });
 
   test("the dynamic regex cache stays at its cap over 200 documents, and dispose frees every regex", async () => {
     const { MAX_DYNAMIC_REGEXES } = await import("../dist/runtime.js");
