@@ -309,6 +309,8 @@ test("a resolved approval folds into its tool's row, in the same place live and 
     expect(ids(store)[1]).toBe(`tool:${toolCall.id}`);
     expect(store.getItem(`tool:${toolCall.id}`)).toMatchObject({ approval: { type: "approval_end", decision: "approve" } });
   }
+  // Folded calls drop their approval link: later output of a chatty call does not search the outline again.
+  for (const store of [live, reloaded]) expect(store.getState().toolApprovals).toEqual({});
   // A pending approval keeps its own row (it carries the actions) even when the call already has a card.
   const pending = replay([{ type: "tool_start", tool_call: toolCall }, request]);
   expect(ids(pending)).toEqual([`tool:${toolCall.id}`, "approval:approval-1"]);

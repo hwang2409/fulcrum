@@ -176,8 +176,10 @@ export function reduceAllWithEntities(
     const tool = getItem(toolItemId(toolId));
     if (approval?.type !== "approval" || !approval.ended || tool?.type !== "tool") return;
     if (tool.approval !== approval.ended) setItem({ ...tool, approval: approval.ended, version: tool.version + 1 });
-    const at = next.outline.findIndex((entry) => entry.id === approvalId);
-    if (at === -1) return;
+    // Folded once: later events of the call (a chatty command's output) skip the outline search.
+    next.toolApprovals = { ...next.toolApprovals };
+    delete next.toolApprovals[toolId];
+    if (!next.outline.some((entry) => entry.id === approvalId)) return;
     const outline = next.outline.filter((entry) => entry.id !== tool.id);
     outline.splice(outline.findIndex((entry) => entry.id === approvalId), 1, { id: tool.id, kind: "tool" });
     next.outline = outline;

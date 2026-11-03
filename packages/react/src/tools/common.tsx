@@ -44,6 +44,10 @@ export function boundText(value: string, limit = MAX_DOM_CHARS): BoundedText {
 }
 
 export const asking = (state: ItemState) => state === "pending" || state === "submitting";
+// The header cuts a summary longer than this to one line (a few on narrow screens); a pending body repeats what the
+// header shows (a command, a path) only then, so a short one is said once.
+const HEADER_CHARS = 72;
+export const cutByHeader = (text: string) => text.length > HEADER_CHARS || text.includes("\n");
 export const splitLines = (text: string) => (text === "" ? [] : (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n"));
 export const lineCount = (text: string) => {
   if (text === "") return 0;

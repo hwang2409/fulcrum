@@ -825,6 +825,20 @@ test("the user's own stop is a neutral stopped row; a real error stays an error"
   ]);
 });
 
+test("the jump to approval sits inside the timeline (its content column), virtual or not", () => {
+  for (const virtual of [false, true]) {
+    const store = createRunStore((flush) => flush());
+    store.dispatch({ type: "approval_request", request_id: "p", tool_call: { id: "r", name: "read", arguments: { path: "README.md" } }, view: { kind: "read", path: "README.md" }, delegated: false });
+    mount(<RunProvider store={store}><Timeline virtual={virtual} /></RunProvider>);
+    const link = q('[data-part="jump-to-approval"]');
+    expect(link.parentElement?.dataset.part).toBe("timeline");
+    expect(link.parentElement?.firstElementChild).toBe(link);
+    act(() => root?.unmount());
+    root = undefined;
+    container.remove();
+  }
+});
+
 test("with a pending approval, the timeline's first tab stop jumps to it and focuses its first action", async () => {
   const store = createRunStore((flush) => flush());
   for (let i = 0; i < 5; i++) {

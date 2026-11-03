@@ -3,6 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type ApprovalDecision, type RunEvent, type ToolView } from "@fulcrum/core";
@@ -483,12 +484,62 @@ test("a resolved approval says how it ended, and a folded one marks its tool car
   expect(status("tool:ran-call")).toBe("approveddone");
 });
 
+test("an approval's decision word is colored by styles.css: approved ok, denied danger, other endings muted", () => {
+  const style = document.createElement("style");
+  style.textContent = ":root { --fulcrum-ok: rgb(0, 128, 0); --fulcrum-danger: rgb(255, 0, 0); --fulcrum-muted: rgb(128, 128, 128); }" + readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+  document.head.append(style);
+  try {
+    const call = (id: string) => ({ id, name: "bash", arguments: { command: "ls" } });
+    const ask = (id: string): RunEvent => ({ type: "approval_request", request_id: id, tool_call: call(`${id}-call`), delegated: false });
+    render([
+      ask("yes"), { type: "approval_end", request_id: "yes", decision: "approve" },
+      ask("no"), { type: "approval_end", request_id: "no", decision: "deny" },
+      ask("abort"), { type: "approval_end", request_id: "abort", decision: "abort" },
+      ask("ran"), { type: "approval_end", request_id: "ran", decision: "approve" }, { type: "tool_start", tool_call: call("ran-call") },
+    ], ["approval:yes", "approval:no", "approval:abort", "tool:ran-call"]);
+    const color = (selector: string) => getComputedStyle(q(selector)).color;
+    expect(color('[data-id="approval:yes"] [data-part="tool-status"]')).toBe("rgb(0, 128, 0)");
+    expect(color('[data-id="approval:no"] [data-part="tool-status"]')).toBe("rgb(255, 0, 0)");
+    expect(color('[data-id="approval:abort"] [data-part="tool-status"]')).toBe("rgb(128, 128, 128)");
+    expect(color('[data-id="tool:ran-call"] [data-part="tool-approval"]')).toBe("rgb(0, 128, 0)");
+  } finally {
+    style.remove();
+  }
+});
+
+test("a denied call, replayed from history, says denied once and keeps the harness's note closed", () => {
+  const tool_call = { id: "bash-3", name: "bash", arguments: { command: "rm -rf packages/core/dist" } };
+  // zeta's history: the call, its error result (src/zeta/tools/registry.py "tool execution denied"), then the approval.
+  render([
+    { type: "tool_start", tool_call, view: { kind: "shell", command: "rm -rf packages/core/dist" } },
+    { type: "tool_end", tool_call, tool_result: { tool_call_id: "bash-3", content: "tool execution denied", is_error: true } },
+    { type: "approval_request", request_id: "bash-3", tool_call, delegated: false },
+    { type: "approval_end", request_id: "bash-3", decision: "deny" },
+  ], ["tool:bash-3"]);
+  expect(q('[data-id="tool:bash-3"] [data-part="tool-status"]').textContent).toBe("denied");
+  expect((q('[data-id="tool:bash-3"]') as HTMLDetailsElement).open).toBe(false);
+});
+
 test("a pending approval shows a short command once, and a footer without facts has no empty left side", () => {
   const tool_call = { id: "s1", name: "bash", arguments: { command: "rm -rf dist" } };
   render([{ type: "approval_request", request_id: "s1", tool_call, view: { kind: "shell", command: "rm -rf dist" }, delegated: false }], ["approval:s1"]);
   expect(q('[data-id="approval:s1"] [data-part="tool-summary"]').textContent).toBe("$ rm -rf dist");
   expect(q('[data-id="approval:s1"] [data-part="shell-command"]')).toBeNull();
   expect(q('[data-id="approval:s1"] [data-part="tool-foot"] [data-part="tool-meta"]')).toBeNull();
+});
+
+test("a pending read, write, or search shows a short path once, and a long one also in the body", () => {
+  const long = `packages/${"deep/".repeat(16)}README.md`;
+  const ask = (id: string, name: string, view: ToolView): RunEvent => ({ type: "approval_request", request_id: id, tool_call: { id, name, arguments: {} }, view, delegated: false });
+  render([
+    ask("r", "read", { kind: "read", path: "README.md" }),
+    ask("w", "write", { kind: "write", path: "notes.md", content: "a\n" }),
+    ask("s", "grep", { kind: "search", pattern: "TODO", path: "src" }),
+    ask("long", "read", { kind: "read", path: long }),
+  ], ["approval:r", "approval:w", "approval:s", "approval:long"]);
+  for (const id of ["r", "w", "s"]) expect(q(`[data-id="approval:${id}"] [data-part="tool-path"]`)).toBeNull();
+  expect(q('[data-id="approval:r"] [data-part="tool-summary"]').textContent).toBe("README.md");
+  expect(q('[data-id="approval:long"] [data-part="tool-path"]').textContent).toBe(long);
 });
 
 test("a generic tool's summary is colored, and a list argument reads as a count and its first item", () => {

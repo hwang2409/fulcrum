@@ -21,7 +21,7 @@
 [data-part="timeline"] {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--fulcrum-gap, 12px);
   color: var(--fulcrum-fg);
   background: var(--fulcrum-bg);
   font: 14px/1.6 var(--fulcrum-font);
@@ -60,16 +60,19 @@
 }
 [data-part="jump-to-latest"]:hover { text-decoration: underline; text-underline-offset: 3px; }
 [data-part="jump-to-latest"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
-/* A skip link: the timeline's first tab stop while an approval waits. It takes no space (a negative bottom margin), so
-   showing it on focus never moves the rows; hidden from sight, not from screen readers, until focused. */
+/* A skip link: the timeline's first tab stop while an approval waits, in the timeline's own column. Hidden from sight,
+   not from screen readers, it takes no space until focused; focused, it takes its own band at the top, so it covers no
+   row there (a plain timeline's rows flow down; a virtual one's rows, placed by the engine, are shifted while it is). */
 [data-part="jump-to-approval"] {
   position: sticky;
   inset-block-start: 8px;
   z-index: 2;
   display: block;
+  align-self: flex-start;
+  width: fit-content;
   max-width: 100%;
   height: 36px;
-  margin-bottom: -36px;
+  margin-bottom: calc(-36px - var(--fulcrum-gap, 12px));
   padding: 0 12px;
   overflow: hidden;
   appearance: none;
@@ -83,6 +86,8 @@
   cursor: pointer;
 }
 [data-part="jump-to-approval"]:not(:focus) { clip-path: inset(50%); }
+[data-part="jump-to-approval"]:focus { margin-bottom: 0; }
+[data-part="timeline"]:has(> [data-part="jump-to-approval"]:focus) > [data-virtual-id] { translate: 0 calc(36px + var(--fulcrum-gap, 12px)); }
 [data-part="jump-to-approval"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 
 /* Messages: plain prose, no bubbles. The user's turn is a surface band with a prompt mark. */
@@ -238,8 +243,8 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 
 [data-part="approval"][data-state="done"] { --mark: var(--fulcrum-muted); }
 /* A resolved approval says its decision in color: approved in ok, denied in danger; other endings stay muted. */
-[data-decision="approve"] { --mark: var(--fulcrum-ok); }
-[data-decision="deny"] { --mark: var(--fulcrum-danger); }
+[data-part="approval"][data-decision="approve"], [data-part="tool-approval"][data-decision="approve"] { --mark: var(--fulcrum-ok); }
+[data-part="approval"][data-decision="deny"], [data-part="tool-approval"][data-decision="deny"] { --mark: var(--fulcrum-danger); }
 [data-part="approval"][data-decision] > [data-part="tool-header"] > [data-part="tool-status"], [data-part="tool-approval"][data-decision] { color: var(--mark); }
 /* A call's folded approval sits before its state mark: "approved ■ done". */
 [data-part="tool-approval"] { order: -1; color: var(--fulcrum-muted); }

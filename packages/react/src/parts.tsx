@@ -152,7 +152,7 @@ function Header({ item, state, status, summary }: { item: ToolItem; state: ItemS
       <span data-part="tool-summary">{summary ? oneLine(summary(item)) : <ViewSummary item={item} />}</span>
       <span data-part="tool-status">
         {approval ? <span data-part="tool-approval" data-decision={approval.decision || undefined}>{approval.text}</span> : null}
-        {status ?? statusText[state]}
+        {approval?.decision === "deny" ? null : status ?? statusText[state]}
         {ms !== undefined ? <span data-part="tool-duration">{duration(ms)}</span> : null}
       </span>
     </>
@@ -164,7 +164,10 @@ const SHORT_OUTPUT_LINES = 8;
    answer ("1 replacement", "42 pass"). Long or empty output starts collapsed so the header row carries the run.
    Set once at mount, so the user's own toggle is never overridden while output streams in. */
 const openByDefault = (item: ToolItem | undefined, output: string) =>
-  !item || item.active || item.is_error || (output !== "" && output.length < 1200 && output.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1);
+  !item || item.active || (!denied(item) && (item.is_error || (output !== "" && output.length < 1200 && output.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1)));
+
+// A call its approval denied never ran: the header's "denied" is its status, and the harness's note stays closed.
+const denied = (item: ToolItem) => item.approval?.type === "approval_end" && item.approval.decision === "deny";
 
 // Streamed output, then the final result when it adds something (an error message, a cancel reason).
 const toolOutput = ({ output, result }: ToolItem) => {
@@ -547,12 +550,12 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
   if (!enabled) {
     return (
       <>
-        <ApprovalSkip items={items} reveal={(id) => {
-          const card = plainRef.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`) ?? null;
-          card?.scrollIntoView({ block: "nearest" });
-          return card;
-        }} />
         <div ref={plainRef} className={className} data-part="timeline" data-virtual="false" role="log" aria-label={ariaLabel} aria-live="off">
+          <ApprovalSkip items={items} reveal={(id) => {
+            const card = plainRef.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`) ?? null;
+            card?.scrollIntoView({ block: "nearest" });
+            return card;
+          }} />
           {items.map(({ id }) => <Row key={id} id={id} renderers={renderers} />)}
         </div>
         <LiveAnnouncer items={items} change={change} />
@@ -566,11 +569,6 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
   const retainedRow = retained >= 0 ? { ...items[retained]!, index: retained, start: -10_000, size: 0, loaded: true } : null;
   return (
     <>
-      <ApprovalSkip items={items} reveal={(id) => {
-        list.scrollToId(id);
-        // The row mounts on the next frame once scrolled into the window.
-        return new Promise((resolve) => requestAnimationFrame(() => resolve(document.querySelector<HTMLElement>(`[data-virtual-id="${CSS.escape(id)}"] [data-id="${CSS.escape(id)}"]`))));
-      }} />
       <div
         ref={list.timelineRef}
         className={className}
@@ -584,6 +582,11 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
         onFocusCapture={(event) => setFocusedId(event.target instanceof Element ? event.target.closest<HTMLElement>("[data-virtual-id]")?.dataset.virtualId ?? null : null)}
         onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedId(null); }}
       >
+        <ApprovalSkip items={items} reveal={(id) => {
+          list.scrollToId(id);
+          // The row mounts on the next frame once scrolled into the window.
+          return new Promise((resolve) => requestAnimationFrame(() => resolve(document.querySelector<HTMLElement>(`[data-virtual-id="${CSS.escape(id)}"] [data-id="${CSS.escape(id)}"]`))));
+        }} />
         {[...mounted, ...(retainedRow ? [retainedRow] : [])].map((row) => (
           <div
             key={row.id}
