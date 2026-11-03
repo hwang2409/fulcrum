@@ -8,7 +8,7 @@ const { createHighlighter } = await import("../dist/index.js");
 // Unit tests never depend on how fast this machine is: the clock stands still unless a test moves it, so no line is ever
 // over the time limit by chance. Only a real worker (its own clock) runs on real time.
 Object.defineProperty(performance, "now", { configurable: true, value: () => 0 });
-const { TokenizerRuntime } = await import("../dist/runtime.js");
+const { TokenizerRuntime, MAX_RESIDENT_LANGUAGES } = await import("../dist/runtime.js");
 // Every tokenize call on this (the main) thread. The page's thread must never tokenize: a test asserts this stays 0.
 let mainThreadTokenizes = 0;
 const tokenizeOnMainThread = TokenizerRuntime.prototype.tokenize;
@@ -220,6 +220,33 @@ describe("incremental tokenization", () => {
   // In the worker a grammar is warmed in the background; once warm, a document compiles no regex: warm-up compiled each
   // pattern in every form textmate compiles it (anchor variants, `\z` rewritten). Regression: cpp's anchor variants were
   // missed, and its first line then compiled 51 patterns in one scanner build that cannot yield (272 ms in Chromium).
+  test("prioritizes the fifteenth of thirty demanded languages", async () => {
+    const languages = ["csharp", "powershell", "dart", "scala", "clojure", "elixir", "haskell", "ocaml", "zig", "nix", "terraform", "vue", "svelte", "astro", "julia", "solidity", "graphql", "prisma", "sql", "toml", "dotenv", "dockerfile", "makefile", "cmake", "nginx", "csv", "latex", "log", "rust", "typescript"];
+    const realNow = Object.getOwnPropertyDescriptor(performance, "now")!;
+    Object.defineProperty(performance, "now", { configurable: true, value: () => Date.now() });
+    const started = Date.now();
+    let colored = false;
+    const runtime = new TokenizerRuntime((context, language, tokens) => { if (context.id === "demand-14" && language === "julia" && tokens.some((token) => token.type)) colored = true; });
+    await Promise.all(languages.map((language, index) => runtime.tokenize("function greet() { return 1; }\n", language, { id: `demand-${index}`, version: 1, state: "done" })));
+    while (!colored && Date.now() - started < 30_000) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(colored).toBe(true);
+    expect(Date.now() - started).toBeLessThan(30_000);
+    runtime.dispose();
+    Object.defineProperty(performance, "now", realNow);
+  }, 60_000);
+
+  test("recycles before grammar residency exceeds its finite budget", async () => {
+    const runtime = new TokenizerRuntime(() => {});
+    const languages = ["abap", "ada", "angular-html", "apache", "apex", "apl", "applescript", "ara", "asciidoc", "asm", "astro", "awk", "ballerina", "bat", "beancount", "berry", "bibtex", "bicep", "bird2", "blade", "bsl", "c", "c3", "cadence", "cairo", "chapel", "clarity", "clojure", "cmake", "cobol", "codeowners", "codeql", "coffee"];
+    expect(languages.length).toBeGreaterThan(MAX_RESIDENT_LANGUAGES);
+    for (const [index, language] of languages.entries()) {
+      await runtime.tokenize("x\n", language, { id: `budget-${index}`, version: 1, state: "done" });
+      await runtime["warming"].get(language);
+    }
+    expect(runtime.shouldRecycle()).toBe(true);
+    runtime.dispose();
+  }, 60_000);
+
   test("after warm-up a document compiles no regex", async () => {
     const documents = [["cpp", "#include <vector>\nstd::vector<int> values;\nint main() { return values.size(); }\n"], ["typescript", viteConfig]] as const;
     for (const [language, source] of documents) {
