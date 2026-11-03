@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createRunStore } from "../src/index.js";
+import { createRunStore, type OutlineSnapshot } from "../src/index.js";
 
 const message = (text: string) => ({
   role: "assistant",
@@ -63,39 +63,63 @@ test("outline changes only when membership changes", () => {
   expect(store.getOutline()).toBe(added);
 });
 
-test("outline snapshots describe batched appends and structural deletion", () => {
+const ids = (items: readonly { id: string }[]) => items.map(({ id }) => id);
+// Applies a change the way a view does, so a test checks that the edits rebuild `items` exactly.
+const applyChange = (snapshot: OutlineSnapshot) => {
+  const items = [...snapshot.change!.from];
+  for (const { index, deleteCount, items: inserted } of snapshot.change!.splices) items.splice(index, deleteCount, ...inserted);
+  expect(items).toEqual([...snapshot.items]);
+  return snapshot.change!.splices;
+};
+
+test("outline snapshots describe batched appends and deletion as edits from the last notified outline", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));
+  expect(store.getOutlineSnapshot().change).toBeNull();
+  const empty = store.getOutline();
   store.dispatch({ type: "message_commit", message_id: "a", message: message("a") });
   store.dispatch({ type: "message_commit", message_id: "b", message: message("b") });
   jobs.shift()!();
-  expect(store.getOutlineSnapshot()).toMatchObject({ change: { type: "append", count: 2 } });
+  expect(store.getOutlineSnapshot().change!.from).toBe(empty);
+  expect(applyChange(store.getOutlineSnapshot())).toEqual([{ index: 0, deleteCount: 0, items: [{ id: "message:a", kind: "message" }, { id: "message:b", kind: "message" }] }]);
 
+  // A read between two dispatches flushes early; the notification still carries one edit list from the notified outline.
+  const notified = store.getOutline();
   store.dispatch({ type: "message_commit", message_id: "forced-a", message: message("a") });
-  store.getOutline();
+  const early = store.getOutlineSnapshot();
   store.dispatch({ type: "message_commit", message_id: "forced-b", message: message("b") });
-  expect(store.getOutlineSnapshot()).toMatchObject({ change: { type: "append", count: 2 } });
+  const late = store.getOutlineSnapshot();
+  expect(late.change!.from).toBe(notified);
+  expect(applyChange(late)).toEqual([{ index: 2, deleteCount: 0, items: [{ id: "message:forced-a", kind: "message" }, { id: "message:forced-b", kind: "message" }] }]);
+  // The early snapshot is published: extending the change must not edit it.
+  expect(applyChange(early)).toEqual([{ index: 2, deleteCount: 0, items: [{ id: "message:forced-a", kind: "message" }] }]);
   jobs.shift()!();
 
   store.dispatch({ type: "message_delta", message_id: "c", delta: "c" });
   jobs.shift()!();
   store.dispatch({ type: "message_reset" });
   jobs.shift()!();
-  expect(store.getOutlineSnapshot()).toMatchObject({ change: null });
+  expect(applyChange(store.getOutlineSnapshot())).toEqual([{ index: 4, deleteCount: 1, items: [] }]);
+  // A row opened and reset in one frame is no edit at all.
+  store.dispatch({ type: "message_delta", message_id: "d", delta: "d" });
+  store.dispatch({ type: "message_reset" });
+  jobs.shift()!();
+  expect(applyChange(store.getOutlineSnapshot())).toEqual([]);
 });
 
-test("an outline rewritten in place is a full change, even when its length holds or grows in the same frame", () => {
+test("an approval folding into its tool row is one replace in place, even with an append in the same frame", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));
   const read = { id: "read-1", name: "read", arguments: { path: "README.md" } };
+  store.dispatch({ type: "user_message", text: "go", mode: "normal" });
   store.dispatch({ type: "approval_request", request_id: "read-1", tool_call: read, delegated: false });
   store.dispatch({ type: "approval_end", request_id: "read-1", decision: "approve" });
+  store.dispatch({ type: "message_commit", message_id: "m", message: message("m") });
   jobs.shift()!();
-  // The tool's row takes the approval's place: same length, a new entry at index 0.
+  // The tool's row takes the approval's place.
   store.dispatch({ type: "tool_start", tool_call: read });
   jobs.shift()!();
-  expect(store.getOutlineSnapshot()).toMatchObject({ items: [{ id: "tool:read-1" }], change: null });
-  // A fold and an append in one frame are still not an append.
+  expect(applyChange(store.getOutlineSnapshot())).toEqual([{ index: 1, deleteCount: 1, items: [{ id: "tool:read-1", kind: "tool" }] }]);
   const bash = { id: "bash-2", name: "bash", arguments: { command: "ls" } };
   store.dispatch({ type: "approval_request", request_id: "bash-2", tool_call: bash, delegated: false });
   jobs.shift()!();
@@ -103,8 +127,20 @@ test("an outline rewritten in place is a full change, even when its length holds
   store.dispatch({ type: "tool_start", tool_call: bash });
   store.dispatch({ type: "message_commit", message_id: "after", message: message("after") });
   jobs.shift()!();
-  expect(store.getOutlineSnapshot()).toMatchObject({ change: null });
-  expect(store.getOutline().map(({ id }) => id)).toEqual(["tool:read-1", "tool:bash-2", "message:after"]);
+  expect(applyChange(store.getOutlineSnapshot())).toEqual([
+    { index: 3, deleteCount: 1, items: [{ id: "tool:bash-2", kind: "tool" }, { id: "message:after", kind: "message" }] },
+  ]);
+  expect(ids(store.getOutline())).toEqual(["user:1", "tool:read-1", "message:m", "tool:bash-2", "message:after"]);
+  // The tool row came first (a replayed history): the approval's row goes, the tool row stays where it is.
+  const write = { id: "write-3", name: "write", arguments: { path: "a" } };
+  store.dispatch({ type: "tool_start", tool_call: write });
+  store.dispatch({ type: "message_commit", message_id: "between", message: message("between") });
+  store.dispatch({ type: "approval_request", request_id: "write-3", tool_call: write, delegated: false });
+  jobs.shift()!();
+  store.dispatch({ type: "approval_end", request_id: "write-3", decision: "approve" });
+  jobs.shift()!();
+  expect(applyChange(store.getOutlineSnapshot())).toEqual([{ index: 7, deleteCount: 1, items: [] }]);
+  expect(ids(store.getOutline()).slice(5)).toEqual(["tool:write-3", "message:between"]);
 });
 
 test("dispose stops notifications, drops pending chunks, and rejects dispatch", () => {
@@ -139,4 +175,26 @@ test("one user intent is one row: a dropped steer resent as a new message replac
   store.dispatch({ type: "user_message", text: "again", mode: "send" });
   store.dispatch({ type: "user_message", text: "again", mode: "send" });
   expect(store.getOutline().filter((entry) => entry.kind === "user")).toHaveLength(4);
+});
+
+test("random streams with early reads: every snapshot's edits rebuild its items from its base", () => {
+  let seed = 7;
+  const random = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+  for (let run = 0; run < 50; run++) {
+    const jobs: Array<() => void> = [];
+    const store = createRunStore((job) => jobs.push(job));
+    let calls = 0;
+    for (let step = 0; step < 200; step++) {
+      const call = { id: `c${random(calls + 1)}`, name: "bash", arguments: {} };
+      const choice = random(8);
+      if (choice === 0) calls++, store.dispatch({ type: "approval_request", request_id: `c${calls}`, tool_call: { ...call, id: `c${calls}` }, delegated: false });
+      else if (choice === 1) store.dispatch({ type: "approval_end", request_id: call.id, decision: "approve" });
+      else if (choice === 2) store.dispatch({ type: "tool_start", tool_call: call });
+      else if (choice === 3) store.dispatch({ type: "message_delta", delta: "x" });
+      else if (choice === 4) store.dispatch({ type: "message_reset" });
+      else if (choice === 5) store.dispatch({ type: "user_message", text: "u", mode: "normal" });
+      else if (choice === 6) applyChange(store.getOutlineSnapshot());
+      else jobs.splice(0).forEach((job) => job()), store.getOutlineSnapshot().change && applyChange(store.getOutlineSnapshot());
+    }
+  }
 });
