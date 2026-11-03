@@ -48,6 +48,8 @@ const tool = (value: unknown): ToolCall => {
 // zeta streams text as "assistant" and reasoning as "thinking".
 const deltaKind = (kind: string | undefined) => kind === undefined || kind === "assistant" ? "text" : kind === "thinking" ? "reasoning" : kind;
 const basename = (path: string) => path.split(/[\\/]/).pop() || undefined;
+const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const positive = (value: unknown): value is number => finite(value) && value > 0;
 // zeta's block types map onto fulcrum's: thinking is reasoning, an image's base64 data becomes a data URL.
 const contentBlock = (value: unknown, index: number): ContentBlock => {
   const input = object(value, `message.content[${index}]`);
@@ -68,15 +70,21 @@ const contentBlock = (value: unknown, index: number): ContentBlock => {
         url: `data:${mediaType};base64,${string(input.data, `message.content[${index}].data`)}`,
         mediaType,
         ...(filename ? { filename } : {}),
-        ...(typeof input.size === "number" && Number.isFinite(input.size) ? { size: input.size } : {}),
+        ...(typeof input.caption === "string" && input.caption.trim() ? { alt: input.caption } : {}),
+        ...(positive(input.width) && positive(input.height) ? { width: input.width, height: input.height } : {}),
+        ...(finite(input.size) ? { size: input.size } : {}),
       };
     }
+    // History replaces an image with its name and size (server/ergonomics.py), so it shows as a file without a link.
+    case "attachment":
+      return { type: "file", filename: string(input.name, `message.content[${index}].name`), ...(finite(input.size) ? { size: input.size } : {}) };
     case "redacted_thinking":
       return { type: "reasoning", text: "", redacted: true, data: string(input.data, `message.content[${index}].data`) };
     case "tool_use":
       return { type, tool_call: tool(input.tool_call) };
     default:
-      throw new Error(`message.content[${index}].type is unsupported`);
+      // A block type this adapter does not know yet renders as the lossless unsupported block.
+      return { ...input, type };
   }
 };
 
@@ -336,10 +344,10 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] =>
     const attachments = content.filter((block) => (block as { type?: unknown } | null)?.type === "attachment");
     events.push({ type: "user_message", text: text(content), mode: "send", ...(attachments.length ? { attachments } : {}) });
   } else if (role === "assistant") {
-    // History keeps text and thinking; tool_use blocks become tool rows. An empty thinking header carries nothing to show.
+    // History keeps text, thinking, and image stubs; tool_use blocks become tool rows. An empty thinking header carries nothing to show.
     const shown = content.filter((block) => {
       const type = (block as { type?: unknown } | null)?.type;
-      return (type === "text" || type === "thinking") && (block as { text?: unknown }).text !== "";
+      return type === "attachment" || ((type === "text" || type === "thinking") && (block as { text?: unknown }).text !== "");
     });
     if (shown.length) events.push({ type: "message_commit", message_id: id, message: message({ role, content: shown }) });
     for (const block of content) {
