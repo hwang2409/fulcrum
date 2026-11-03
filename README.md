@@ -35,7 +35,7 @@ open the live zeta panel and paste the discovery url from `$ZETA_HOME/run/serve.
 
 ## store
 
-`createRunStore()` owns one run. Dispatch generic `RunEvent` values, read ordered `{ id, kind }` entries with `getOutline()`, and read the current entity with `getItem(id)`. The store batches reduction and subscriber notification through its scheduler; synchronous reads flush pending events. Use keyed subscriptions for entity rows and `subscribeOutline()` for the ordered timeline. `fromZetaEvent` maps Zeta wire events to generic events, and `connect(transport)` adds JSON-RPC request matching.
+`createRunStore()` owns one run. Dispatch generic `RunEvent` values, read ordered `{ id, kind }` entries with `getOutline()`, and read the current entity with `getItem(id)`. The store batches reduction and subscriber notification through its scheduler; synchronous reads flush pending events. Use keyed subscriptions for entity rows and `subscribeOutline()` for the ordered timeline. `fromZetaEvent` maps Zeta wire events to generic events, and `connect(transport)` adds JSON-RPC request matching. A `user_message` may carry an `intent`, the client's id for what the user asked: a later user message with the same intent replaces that row in place, so a message the harness dropped and the client resent shows once.
 
 build with `bun install --frozen-lockfile`, `bunx tsc -b`, and `bun test`.
 
@@ -85,6 +85,18 @@ const renderers: Renderers = {
   ```tsx
   <RunNavigator store={rootStore} source={source} {...useHistoryRunPath("run")} />
   ```
+
+- composer: `Composer` is the message box under a run. It imports no transport; the host maps its callbacks to the harness:
+
+  ```tsx
+  <Composer
+    state={running ? (canSteer ? "steerable" : "running") : "idle"} // or state="read-only" reason="observing"
+    onSubmit={(text, { steer }) => (steer ? harness.steer(text) : harness.send(text))} // a promise
+    onStop={() => harness.abort()}
+  />
+  ```
+
+  The rules: Enter submits, Shift+Enter adds a newline, and Enter never submits during IME composition (`isComposing` or keyCode 229). A blank draft does not submit, and nothing calls `onSubmit` again while its promise is pending. A rejected promise keeps the draft and shows `could not send: <message>` in a polite status line; Enter or the button retries. A resolved one clears only what was sent: text appended meanwhile stays exactly as typed (blank lines and indentation included), and a draft edited inside the sent part stays whole. The action reads `send` when idle and `steer` in `steerable`. In `running` (the harness cannot take input mid-turn) the action is disabled and the draft waits; nothing is queued. Stop shows only while a turn runs, with `stopping` and `could not stop: <message>` states. `read-only` hides the field and every action and shows `reason`; the draft survives the switch. The field is never disabled, so focus stays in it; it grows to ten lines, then scrolls, and the status line has a fixed height, so an error never moves the layout. `defaultValue` sets the first draft; give the composer a `key` per conversation.
 
 - playground: `make dev` rebuilds every workspace package plus the highlight bundle before it starts every playground page, so a fresh clone cannot use missing or stale `dist` output.
 

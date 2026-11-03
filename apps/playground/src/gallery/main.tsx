@@ -10,6 +10,7 @@ import { createRunStore, type RunSource } from "@fulcrum/core";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
 import { Approval, Message, RunNavigator, RunProvider, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunLocation } from "@fulcrum/react";
+import { ComposerCard, composerDemos } from "./composer-demos";
 import { demos, type Demo } from "./demos";
 
 const highlight = createHighlighter();
@@ -182,7 +183,9 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
   );
 }
 
-const parts = [...new Set(demos.map((demo) => demo.part))];
+// Every card in page order: the run parts, then the composer that sits under a run.
+const cards = [...demos, ...composerDemos];
+const parts = [...new Set(cards.map((demo) => demo.part))];
 
 const paletteVars = ["bg", "fg", "accent", "ok", "warn", "danger", "tok-keyword", "tok-string", "tok-function"];
 
@@ -229,7 +232,7 @@ function Gallery() {
   const [theme, setTheme] = useState(() => param("theme", themeNames, AUTO));
   const [inspect, setInspect] = useState(() => new URLSearchParams(location.search).get("inspect") === "1");
   const [message, setMessage] = useState<{ text: string; key: number }>();
-  const active = useActive(demos.map((demo) => demo.id));
+  const active = useActive(cards.map((demo) => demo.id));
   useLayoutEffect(() => {
     if (theme === AUTO) delete document.documentElement.dataset.fulcrumTheme;
     else document.documentElement.dataset.fulcrumTheme = theme;
@@ -269,7 +272,7 @@ function Gallery() {
             <a className="nav-part" href={`#${part}`}>
               {part}
             </a>
-            {demos
+            {cards
               .filter((demo) => demo.part === part)
               .map((demo) => (
                 <a key={demo.id} href={`#${demo.id}`} aria-current={demo.id === active ? "location" : undefined}>
@@ -291,7 +294,7 @@ function Gallery() {
         >
           {parts.map((part) => (
             <optgroup key={part} label={part}>
-              {demos.filter((demo) => demo.part === part).map((demo) => <option key={demo.id} value={demo.id}>{demo.title}</option>)}
+              {cards.filter((demo) => demo.part === part).map((demo) => <option key={demo.id} value={demo.id}>{demo.title}</option>)}
             </optgroup>
           ))}
         </select>
@@ -308,13 +311,13 @@ function Gallery() {
         {parts.map((part) => (
           <section key={part} id={part} className="part">
             <h2>
-              &lt;{part} /&gt;<span>{demos.filter((demo) => demo.part === part).length}</span>
+              &lt;{part} /&gt;<span>{cards.filter((demo) => demo.part === part).length}</span>
             </h2>
-            {demos
+            {cards
               .filter((demo) => demo.part === part)
-              .map((demo) => (
-                <DemoCard key={demo.id} demo={demo} toast={toast} inspect={inspect} />
-              ))}
+              .map((demo) => "events" in demo
+                ? <DemoCard key={demo.id} demo={demo} toast={toast} inspect={inspect} />
+                : <ComposerCard key={demo.id} demo={demo} toast={toast} />)}
           </section>
         ))}
       </main>

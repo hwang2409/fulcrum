@@ -99,3 +99,21 @@ test("dispose stops notifications, drops pending chunks, and rejects dispatch", 
     "store is disposed",
   );
 });
+
+test("one user intent is one row: a dropped steer resent as a new message replaces its row in place", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "user_message", text: "run the tests", mode: "send", intent: "a" });
+  store.dispatch({ type: "message_commit", message_id: "m1", message: message("working") });
+  store.dispatch({ type: "user_message", text: "also windows", mode: "steer", intent: "b" });
+  store.dispatch({ type: "message_commit", message_id: "m2", message: message("done") });
+  const before = store.getOutline().map((entry) => entry.id);
+  store.dispatch({ type: "user_message", text: "also windows", mode: "send", intent: "b" });
+  const outline = store.getOutline();
+  expect(outline.map((entry) => entry.id)).toEqual(before);
+  const users = outline.filter((entry) => entry.kind === "user").map((entry) => store.getItem(entry.id));
+  expect(users.map((item) => item?.type === "user" && item.event.type === "user_message" && [item.event.text, item.event.mode])).toEqual([["run the tests", "send"], ["also windows", "send"]]);
+  // Without an intent every message is its own row.
+  store.dispatch({ type: "user_message", text: "again", mode: "send" });
+  store.dispatch({ type: "user_message", text: "again", mode: "send" });
+  expect(store.getOutline().filter((entry) => entry.kind === "user")).toHaveLength(4);
+});
