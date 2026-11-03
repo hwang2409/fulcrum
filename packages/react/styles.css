@@ -657,6 +657,8 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="md-code-block"][data-size="large"] { padding: 0; white-space: normal; }
 /* As tall as the most lines an inline block shows (INLINE_LINES), so a fence that becomes the viewer keeps its height. */
 [data-part="md-code-block"][data-size="large"] [data-part="text-viewer"] { max-height: calc(40 * 1.55em); max-height: 40lh; }
+/* A wrapped code line hangs 2ch past the start of its line, as tool bodies keep their text column. */
+[data-part="md-code-block"][data-size="large"] [data-part="text-viewer-row"] { text-indent: 2ch hanging each-line; }
 /* The language as a caption line: a float would sit on top of long lines when the block scrolls. */
 [data-part="md-code-block"][data-language]::before {
   content: attr(data-language);
