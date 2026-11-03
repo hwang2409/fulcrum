@@ -314,13 +314,13 @@ function safeBlockPass(source: string, work?: ParserWork) {
   }
   const lineStart = source.lastIndexOf("\n") + 1;
   const line = source.slice(lineStart);
+  if (/^ {4}(?:>|[-+*]|\d{1,9}[.)]?|#{1,6}|`{1,3}|~{1,3})?$/.test(line)) return source.slice(0, lineStart);
   if (/^ {0,3}[-+*]\s+\[[ xX]?\]?\s*$/.test(line)) return source.slice(0, lineStart);
-  if (/^ {0,3}(?:[-*_]\s*)+$/.test(line)) return source.slice(0, lineStart);
-  if (/^ {0,3}-+\s*$/.test(line)) return source.slice(0, lineStart);
+  if (/^ {0,3}(?:[-*_]\s*)+$/.test(line) && (line.match(/[-*_]/g)?.length ?? 0) < 3) return source.slice(0, lineStart);
   if (/^ {0,3}\[[^\]\n]*(?:\]|$)(?::[^\n]*)?$/.test(line)) return source.slice(0, lineStart);
-  if (/^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)]?)\s*$/.test(line)) return source.slice(0, lineStart);
+  if (/^ {0,3}(?:#{1,6}|[-+*]|\d{1,9}[.)]?)\s*$/.test(line)) return source.slice(0, lineStart);
   if (/^ {0,3}(?:`{1,2}(?!`)|~{1,2}(?!~))[^\n]*$/.test(line)) return source.slice(0, lineStart);
-  if (/[:-]/.test(line) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(line)) return source.slice(0, lineStart);
+  if (line.includes("|") && /[:-]/.test(line) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(line)) return source.slice(0, lineStart);
   return source;
 }
 
@@ -398,8 +398,10 @@ type SafeInlineContent = { source: string; openCode?: string };
 
 // This is the only entry point for rendering unfinished inline markdown.
 function withoutTrailingLookahead(source: string) {
-  const backslashes = /\\+$/.exec(source)?.[0].length ?? 0;
-  if (backslashes % 2) return source.slice(0, -1);
+  const newlines = /\n*$/.exec(source)![0];
+  const content = source.slice(0, source.length - newlines.length);
+  const backslashes = /\\+$/.exec(content)?.[0].length ?? 0;
+  if (backslashes % 2) return content.slice(0, -1) + newlines;
   const entity = /&(?:#(?:x[0-9a-f]*|[0-9]*)?|[a-z][a-z0-9]*)?$/i.exec(source);
   return entity ? source.slice(0, entity.index) : source;
 }
@@ -750,7 +752,9 @@ function markPendingReferenceBlocks(blocks: Block[], work?: ParserWork) {
   }
 }
 
-const listMarker = /^( {0,3})([-+*]|\d{1,9}[.)])(\s+)(.*)$/;
+const listMarker = /^( {0,3})([-+*]|\d{1,9}[.)])([ \t]+)(.*)$/;
+const emptyListMarker = /^( {0,3})([-+*]|\d{1,9}[.)])()()$/;
+const completedListMarker = (line: string) => listMarker.exec(line) ?? emptyListMarker.exec(line);
 
 function setListTightness(block: ListBlock, tight: boolean, work?: ParserWork) {
   scanned(work, block.items.length);
@@ -793,13 +797,51 @@ function startListChild(state: OpenContainerState, match: RegExpExecArray, newli
   const document = createStreamingDocumentWithContext(state.context);
   let content = match[4]!;
   const task = /^\[([ xX])\]\s+/.exec(content);
-  const item: ListItem = { checked: task ? task[1]!.toLowerCase() === "x" : undefined, children: [] };
-  if (task) content = content.slice(task[0].length);
-  state.contentIndent = match[1]!.length + match[2]!.length + match[3]!.length;
+  const item: ListItem = { children: [] };
+  if (task) {
+    item.checked = task[1]!.toLowerCase() === "x";
+    content = content.slice(task[0].length);
+  }
+  state.contentIndent = match[1]!.length + match[2]!.length + (match[3]!.length || 1);
   state.items!.push(item);
   state.child = { document, item };
   if (content) document.append(content);
   if (newline) document.append("\n");
+}
+
+function blocksEndInParagraph(blocks: readonly Block[]): boolean {
+  const block = blocks.at(-1);
+  if (block?.type === "paragraph") return true;
+  if (block?.type === "blockquote") return blocksEndInParagraph(block.children);
+  if (block?.type === "list") return blocksEndInParagraph(block.items.at(-1)?.children ?? []);
+  return false;
+}
+
+function containerChildEndsInParagraph(state: OpenContainerState) {
+  return blocksEndInParagraph(currentContainerChild(state).document.render() as readonly Block[]);
+}
+
+function lineStartsParentBlock(line: string) {
+  const content = line.trimStart();
+  return /^(?:#{1,6}(?:\s|$)|>|`{3,}|~{3,}|(?:[-+*]|\d{1,9}[.)])(?:\s+|$))/.test(content)
+    || /^(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(content)
+    || /^(?: {4}|\t)(?:>|[-+*]|\d{1,9}[.)]?|#{1,6}|`{1,3}|~{1,3})?$/.test(line);
+}
+
+function quoteLazyContinuation(state: OpenContainerState, line: string) {
+  return !state.previousBlank && containerChildEndsInParagraph(state) && !lineStartsParentBlock(line);
+}
+
+function quoteLazyContent(line: string) {
+  if (/^ {0,3}=+\s*$/.test(line)) return line.replace("=", "\\=");
+  return line.startsWith("    ") ? line.slice(4) : line;
+}
+
+function couldBecomeQuoteParentBlock(line: string) {
+  if (/^\s*$/.test(line)) return true;
+  const content = line.trimStart();
+  return /^(?:#{1,6}|>|`{1,2}|~{1,2}|[-+*]|\d{1,9}[.)]?|=+|(?:[-*_](?:\s*[-*_]){1,2})\s*)$/.test(content)
+    || /^<[^>]*$/.test(content);
 }
 
 function appendQuoteLine(state: OpenContainerState, line: string) {
@@ -809,17 +851,17 @@ function appendQuoteLine(state: OpenContainerState, line: string) {
     state.previousBlank = !marker[1]!.trim();
     return true;
   }
-  if (!line.trim() || state.previousBlank) return false;
-  currentContainerChild(state).document.append(`${line}\n`);
+  if (!line.trim() || !quoteLazyContinuation(state, line)) return false;
+  currentContainerChild(state).document.append(`${quoteLazyContent(line)}\n`);
   return true;
 }
 
 function appendListLine(state: OpenContainerState, line: string) {
-  const marker = listMarker.exec(line);
+  const marker = completedListMarker(line);
   if (marker && /^\d/.test(marker[2]!) === state.ordered) {
     if (state.previousBlank) markListLoose(state);
     startListChild(state, marker);
-    state.previousBlank = false;
+    state.previousBlank = !marker[4]!.trim();
     return true;
   }
   if (!line.trim()) {
@@ -834,8 +876,8 @@ function appendListLine(state: OpenContainerState, line: string) {
     state.previousBlank = false;
     return true;
   }
-  if (state.previousBlank) return false;
-  currentContainerChild(state).document.append(`${line}\n`);
+  if (state.previousBlank || !containerChildEndsInParagraph(state) || lineStartsParentBlock(line)) return false;
+  currentContainerChild(state).document.append(`${quoteLazyContent(line)}\n`);
   return true;
 }
 
@@ -847,18 +889,27 @@ function previewQuoteContent(state: OpenContainerState, line: string) {
   const marker = /^ {0,3}> ?(.*)$/.exec(line);
   if (marker) return marker[1]!;
   if (!line.trim() || /^ {0,3}>?$/.test(line)) return;
-  return state.previousBlank ? false : line;
+  if (/^ {0,3}=+$/.test(line)) return quoteLazyContent(line);
+  if (couldBecomeQuoteParentBlock(line)) return;
+  return quoteLazyContinuation(state, line) ? quoteLazyContent(line) : false;
 }
 
 function previewListContent(state: OpenContainerState, line: string) {
   const marker = listMarker.exec(line);
   if (marker && /^\d/.test(marker[2]!) === state.ordered) {
+    if (/^\[[ xX]?\]?$/.test(marker[4]!)) return;
     if (!state.pendingStarted) {
       if (state.previousBlank) markListLoose(state);
       startListChild(state, marker, false);
       state.pendingForwarded = marker[4]!.length;
       state.pendingStarted = true;
       return;
+    }
+    const task = /^\[([ xX])\]\s+/.exec(marker[4]!);
+    const child = currentContainerChild(state);
+    if (task && state.pendingForwarded === 0 && child.item && !child.document.source) {
+      child.item.checked = task[1]!.toLowerCase() === "x";
+      state.pendingForwarded = task[0].length;
     }
     return marker[4]!;
   }
@@ -868,7 +919,9 @@ function previewListContent(state: OpenContainerState, line: string) {
     if (state.previousBlank) markListLoose(state);
     return line.slice(indent);
   }
-  return state.previousBlank ? false : line;
+  if (lineStartsParentBlock(line)) return false;
+  if (couldBecomeQuoteParentBlock(line)) return;
+  return state.previousBlank || !containerChildEndsInParagraph(state) ? false : quoteLazyContent(line);
 }
 
 function previewContainerLine(state: OpenContainerState, line: string) {
@@ -882,6 +935,12 @@ function previewContainerLine(state: OpenContainerState, line: string) {
   return true;
 }
 
+function containerLineBlank(state: OpenContainerState, line: string) {
+  if (state.kind === "quote") return !line.replace(/^ {0,3}> ?/, "").trim();
+  const marker = completedListMarker(line);
+  return marker && /^\d/.test(marker[2]!) === state.ordered ? !marker[4]!.trim() : !line.trim();
+}
+
 function appendContainerDelta(state: OpenContainerState, delta: string) {
   scanned(state.work, (state.pending.length + delta.length) * 2);
   const lines = `${state.pending}${delta}`.split("\n");
@@ -890,7 +949,7 @@ function appendContainerDelta(state: OpenContainerState, delta: string) {
     if (state.pendingStarted) {
       previewContainerLine(state, line);
       currentContainerChild(state).document.append("\n");
-      state.previousBlank = !line.replace(/^ {0,3}> ?/, "").trim();
+      state.previousBlank = containerLineBlank(state, line);
     } else if (!appendContainerLine(state, line)) return false;
     state.scannedOffset += line.length + 1;
     state.pendingForwarded = 0;
@@ -912,7 +971,7 @@ function tableRow(state: OpenTableState, line: string, streaming: boolean) {
   }
   cells.push(cell);
   if (!cells[0]!.trim()) cells.shift();
-  if (!cells.at(-1)!.trim()) cells.pop();
+  if (cells.length && !cells.at(-1)!.trim()) cells.pop();
   return Array.from({ length: state.block.header.length }, (_, index) => {
     const value = cells[index]?.trim() ?? "";
     if (!streaming && !/[\\*_`~[\]<>]/.test(value)) return value ? [{ type: "text", value } satisfies Inline] : [];
@@ -939,7 +998,7 @@ function appendTableDelta(state: OpenTableState, delta: string) {
     const row = tableRow(state, line, false);
     if (row) state.block.rows.push(row);
   }
-  if (state.pending) {
+  if (state.pending.trim()) {
     const row = tableRow(state, state.pending, true);
     if (row) {
       state.block.rows.push(row);
@@ -952,10 +1011,17 @@ function appendTableDelta(state: OpenTableState, delta: string) {
 
 function appendFenceDelta(state: OpenFenceState, delta: string) {
   scanned(state.work, (state.pending.length + delta.length) * 2);
+  const previousPendingLength = state.pending.length;
   const lines = `${state.pending}${delta}`.split("\n");
   state.pending = lines.pop()!;
+  let consumed = 0;
   for (const line of lines) {
-    if (fenceCloser(state.marker, line)) return false;
+    consumed += line.length + 1;
+    if (fenceCloser(state.marker, line)) {
+      state.scannedOffset += Math.max(0, Math.min(delta.length, consumed - previousPendingLength));
+      state.block.open = false;
+      return false;
+    }
     state.value += `${line}\n`;
   }
   if (fenceCloser(state.marker, state.pending)) return false;
@@ -1025,6 +1091,11 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
     tailSource = tailSource.slice(offset).replace(/^\n+/, "");
   };
 
+  const paragraphShouldCommit = (state: OpenParagraphState, delta: string) => {
+    if (delta.includes("\n\n")) return true;
+    return (state.pendingNewline === "\n" || delta.startsWith("\n")) && /^(?:\n)? {0,3}>/.test(delta);
+  };
+
   const continueOpenBlock = () => {
     if (finished || !openState) return;
     const state = openState;
@@ -1035,7 +1106,7 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
       : appendFenceDelta(state.value, unrendered) && openSnapshot(state.value.block);
     if (continued) return continued;
     if (state.kind === "container") commitOpenContainer(state.value);
-    else if (state.kind !== "fence" && !(state.kind === "paragraph" && (!state.value.pendingNewline || !unrendered.includes("\n\n")))) commitOpenPrefix(state.value.scannedOffset);
+    else if ((state.kind !== "fence" && (state.kind !== "paragraph" || paragraphShouldCommit(state.value, unrendered))) || (state.kind === "fence" && !state.value.block.open)) commitOpenPrefix(state.value.scannedOffset);
     openState = undefined;
   };
 
@@ -1064,7 +1135,7 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
 
   const startList = (tail: string) => {
     const firstLine = tail.slice(0, tail.indexOf("\n") < 0 ? tail.length : tail.indexOf("\n"));
-    const match = listMarker.exec(firstLine);
+    const match = listMarker.exec(firstLine) ?? (tail.includes("\n") ? emptyListMarker.exec(firstLine) : null);
     if (!match) return;
     const ordered = /^\d/.test(match[2]!);
     const items = new ListItemBuffer([]);
@@ -1090,7 +1161,7 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
   };
 
   const startTable = (tail: string) => {
-    const match = /^([^\n]*\|[^\n]*)\n(\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*)\n/.exec(tail);
+    const match = /^([^\n]*\|[^\n]*)\n([^\n]*)\n/.exec(tail);
     if (!match) return;
     const initial = parseDetailed(`${match[1]}\n${match[2]}`, {}, work)[0]?.block;
     if (initial?.type !== "table") return;
@@ -1115,12 +1186,13 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
     const state: OpenFenceState = { work, marker: opener[1]!, language: block.language, scannedOffset: contentOffset, value: "", pending: "", block };
     openState = { kind: "fence", value: state };
     if (appendFenceDelta(state, tailSource.slice(contentOffset))) return openSnapshot(block);
+    if (!block.open) commitOpenPrefix(state.scannedOffset);
     openState = undefined;
   };
 
   const startParagraph = (tail: string) => {
     const paragraph = tail.replace(/^\n+/, "");
-    if (!/\s/.test(paragraph) || /[\n]{2}|[\\*_`~[\]<>&|!=#-]/.test(paragraph) || /^ {0,3}(?:[-*_]\s*)+$/.test(paragraph) || /^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)])(?:\s|$)/.test(paragraph)) return;
+    if (!paragraph.trim() || !/\s/.test(paragraph) || /[\n]{2}|[\\*_`~[\]<>&|!=#-]/.test(paragraph) || /^ {0,3}(?:[-*_]\s*)+$/.test(paragraph) || /^ {0,3}\d{1,9}$/.test(paragraph) || /^ {0,3}(?:#{1,6}|>|[-+*]|\d{1,9}[.)])(?:\s|$)/.test(paragraph)) return;
     const pendingNewline = paragraph.endsWith("\n") ? "\n" : "";
     const text: Extract<Inline, { type: "text" }> = { type: "text", value: pendingNewline ? paragraph.slice(0, -1) : paragraph };
     const block: Extract<Block, { type: "paragraph" }> = { type: "paragraph", children: [text] };
@@ -1220,6 +1292,10 @@ function createStreamingDocumentWithContext(context: DocumentContext): InternalS
     if (source === renderedSource) return cached as Block[];
     const continued = continueOpenBlock();
     if (continued) return publishOpen([continued]);
+    if (!openState && tailSource.startsWith("\n")) {
+      tailSource = tailSource.replace(/^\n+/, "");
+      unrendered = tailSource;
+    }
     const tail = tailSource;
     if (!finished) {
       const started = startOpenBlock(tail);
