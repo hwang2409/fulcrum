@@ -34,6 +34,8 @@ const refusal = (result: Accepted) => new Error(result.status === "dropped" ? "t
 export function createDelivery(newId: () => string = () => `web-${crypto.randomUUID()}`) {
   let unsettled: Message | null = null;
   let steers: Message[] = [];
+  // The user's stop of the running turn: resolves to whether it ended the turn (it failed, or found no turn: false).
+  let stopping: Promise<boolean> | null = null;
   const request = async (client: ZetaClient, method: Method, { text, id, intent }: Message) => {
     try {
       return (await client.request(method, { text, ...(id ? { delivery_id: id } : {}) }, { timeoutMs: 15_000, intent })) as Accepted;
@@ -74,13 +76,22 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
       unsettled = null;
       if (result.accepted === false) throw refusal(result);
     },
+    /** Stops the running turn (zeta's default session-scope abort); `turnEnded` then knows the user ended it. */
+    stop(client: ZetaClient) {
+      const request = stopTurn(client);
+      stopping = request.then((result) => (result as { aborted?: boolean } | null)?.aborted !== false, () => false);
+      return request;
+    },
     /**
-     * Call when the running turn ends. Resends the steers it dropped, unless the user stopped it: then they stay
-     * dropped, and their intents are returned so the view can mark those rows as not delivered.
+     * Call when the running turn ends. Resends the steers it dropped, unless the user's stop ended it: then they stay
+     * dropped, and their intents are returned so the view can mark those rows as not delivered. A stop that failed or
+     * found no turn is not a stop: the turn ended on its own, so its dropped steers are resent.
      */
-    async turnEnded(client: ZetaClient, { stopped }: { stopped: boolean }) {
+    async turnEnded(client: ZetaClient) {
       const ended = steers;
       steers = [];
+      const stopped = await (stopping ?? false);
+      stopping = null;
       const undelivered: string[] = [];
       // A query that fails (a dropped socket) leaves its steer unmarked, the safe side; the others still count.
       const statuses = await Promise.allSettled(ended.map((message) => dropped(client, message.id!)));
