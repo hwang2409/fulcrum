@@ -426,6 +426,8 @@ div[data-part="text-viewer-row"] { padding: 0; }
   color: var(--fulcrum-fg);
 }
 [data-part="item"][data-kind="error"]::before { content: "error  "; color: var(--fulcrum-danger); font-weight: 700; white-space: pre; }
+/* The user's own stop: the canceled mark (an empty square), no alarm. */
+[data-part="item"][data-kind="stopped"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; transform: translateY(-1px); }
 [data-part="item"][data-kind="notification"]::before,
 [data-part="item"][data-kind="unknown"]::before { content: "· "; }
 

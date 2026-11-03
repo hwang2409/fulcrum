@@ -257,7 +257,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
         return childRunId ? [event, subAgent({ ...data, child_instance_id: childRunId, summary: event.error.message }, "error", "error")] : [event];
       }
-      case "turn_aborted": return [{ type: "error", error: { code: "turn_aborted", message: optionalString(wire.message, "message") ?? "turn aborted" } }];
+      case "turn_aborted": return [{ type: "error", error: { code: "aborted", message: optionalString(wire.message, "message") ?? "turn aborted" } }];
       case "child_message_delivered": {
         const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
         return childRunId

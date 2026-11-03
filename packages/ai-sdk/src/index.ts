@@ -239,7 +239,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
       const event = commit();
       return [...(event ? [event] : []), ...(value ? [{ type: "usage", usage: value } as RunEvent] : []), { type: "turn_end" }, { type: "run_end", data: defined({ finishReason: optionalString(part.finishReason, "part.finishReason"), messageMetadata: part.messageMetadata }) }];
     }
-    if (type === "abort") return [{ type: "error", error: { code: "run_aborted", message: "run aborted" } }];
+    if (type === "abort") return [{ type: "error", error: { code: "aborted", message: "run aborted" } }];
     return [{ type: "error", error: { code: "ai_sdk_error", message: wireString(part.errorText, "part.errorText") } }];
   };
 

@@ -302,9 +302,12 @@ const itemLabel = (item: RunItem) => {
 export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
   const item = useItem(id);
   if (!item) return null;
+  // An "aborted" error is the user's own stop: a neutral row, not a failure.
+  const stopped = item.type === "error" && item.event.type === "error" && item.event.error.code === "aborted";
+  const kind = stopped ? "stopped" : item.type;
   return (
-    <div className={className} style={pre} data-part="item" data-kind={item.type} data-id={id} data-state={item.type === "error" ? "error" : "done"}>
-      {itemLabel(item)}
+    <div className={className} style={pre} data-part="item" data-kind={kind} data-id={id} data-state={stopped ? "stopped" : item.type === "error" ? "error" : "done"}>
+      {stopped ? "stopped" : itemLabel(item)}
     </div>
   );
 });
@@ -324,7 +327,7 @@ export const announcementForItem = (item: RunItem): string | null => {
     }
     case "approval":
       return !item.ended && item.request.type === "approval_request" ? `approval needed: ${toolLabel(item.request.tool_call.name)}` : null;
-    case "error": return item.event.type === "error" ? `error: ${item.event.error.message}` : null;
+    case "error": return item.event.type !== "error" ? null : item.event.error.code === "aborted" ? "stopped" : `error: ${item.event.error.message}`;
     case "notification": return "new notification";
     case "unknown": return "new activity";
     case "sub_agent": return ["done", "error", "canceled"].includes(item.status) || item.urgency ? `sub-agent ${subAgentLabel(item)} ${subAgentStatusText[item.status]}` : null;

@@ -812,3 +812,15 @@ test("a blank tool name renders a readable fallback label", () => {
   expect(name.textContent).toBe("unnamed tool");
   expect(name.getAttribute("data-blank")).toBe("");
 });
+
+test("the user's own stop is a neutral stopped row; a real error stays an error", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "error", error: { code: "aborted", message: "turn aborted" } });
+  store.dispatch({ type: "error", error: { code: "provider_error", message: "rate limited" } });
+  mount(<RunProvider store={store}><Timeline /></RunProvider>);
+  const rows = [...container.querySelectorAll<HTMLElement>('[data-part="item"]')];
+  expect(rows.map((row) => [row.dataset.kind, row.dataset.state, row.textContent])).toEqual([
+    ["stopped", "stopped", "stopped"],
+    ["error", "error", "rate limited"],
+  ]);
+});

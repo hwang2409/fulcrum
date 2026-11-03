@@ -161,6 +161,7 @@ export type RunEvent =
        */
       intent?: string;
     }
+  /** `code: "aborted"` means the user stopped the run (a stop, not a failure); parts show it as a neutral "stopped". */
   | { type: "error"; error: { code: string; message: string } }
   | {
       type: "notification";

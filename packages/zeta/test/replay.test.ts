@@ -173,7 +173,7 @@ test("a delta after turn_aborted starts a new message", () => {
   expect(store.getState().agent).toBe("running");
   expect(store.getState().turn).toBe("running");
   const event = eventsByType(store, "error").at(-1);
-  expect(event?.type === "error" ? event.error.code : undefined).toBe("turn_aborted");
+  expect(event?.type === "error" ? event.error.code : undefined).toBe("aborted");
 });
 
 test("a delta after a terminal error starts a new message", () => {
