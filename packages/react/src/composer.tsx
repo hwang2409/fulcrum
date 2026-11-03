@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 /** What the user asked for when they submitted: steering a running turn, or a new message. */
 export type ComposerIntent = { readonly steer: boolean };
@@ -24,8 +24,8 @@ type ComposerCallbacks = {
  * - `steerable`: a turn runs and the harness accepts input into it; submit steers.
  * - `running`: a turn runs and the harness cannot take input until it ends. Submit is disabled (nothing is queued:
  *   the draft stays, and the user sends it once the turn ends or after stopping it).
- * - `read-only`: this view cannot act (an observer, a lost connection). The field and actions are hidden and `reason`
- *   says why; the draft is kept for when the state changes back.
+ * - `read-only`: this view cannot act (an observer, a lost connection). The actions are hidden and `reason` says why;
+ *   a draft stays on screen, read-only, and is kept for when the state changes back.
  */
 export type ComposerState = "idle" | "running" | "steerable" | "read-only";
 export type ComposerProps = ComposerCallbacks &
@@ -72,10 +72,21 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
   useLayoutEffect(() => {
     if (!running) setError((current) => (current?.kind === "stop" ? undefined : current));
   }, [running]);
+  // The stop button goes away when the turn ends; if it had focus, focus moves to the field, not to the page. React
+  // runs this cleanup before it removes the button, while the button still holds focus. Stable, so it runs only then.
+  const stopRef = useCallback((button: HTMLButtonElement | null) => {
+    if (!button) return;
+    return () => { if (document.activeElement === button) input.current?.focus({ preventScroll: true }); };
+  }, []);
 
   if (state === "read-only")
     return (
       <div className={className} data-part="composer" data-state="read-only" role="group" aria-label={label}>
+        {text ? (
+          <div data-part="composer-field" data-value={text}>
+            <textarea rows={1} value={text} readOnly aria-label={`${label} (draft, read-only)`} />
+          </div>
+        ) : null}
         <p data-part="composer-reason">{reason}</p>
       </div>
     );
@@ -110,7 +121,8 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
   };
   const onFormSubmit = (event: FormEvent) => {
     event.preventDefault();
-    input.current?.focus();
+    // The click moved focus to the button; give it back to the field without scrolling the page to it.
+    input.current?.focus({ preventScroll: true });
     submit();
   };
 
@@ -144,7 +156,7 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
           <span data-part="composer-message" id={`${id}-message`} role="status">{message}</span>
         </p>
         {running && onStop ? (
-          <button type="button" data-part="composer-stop" data-action="stop" aria-label="stop the running turn" aria-disabled={stopping || undefined} onClick={stop}>
+          <button ref={stopRef} type="button" data-part="composer-stop" data-action="stop" aria-label="stop the running turn" aria-disabled={stopping || undefined} onClick={stop}>
             {stopping ? "stopping" : "stop"}
           </button>
         ) : null}
