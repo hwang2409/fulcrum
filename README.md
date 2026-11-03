@@ -35,7 +35,7 @@ open the live zeta panel and paste the discovery url from `$ZETA_HOME/run/serve.
 
 ## store
 
-`createRunStore()` owns one run. Dispatch generic `RunEvent` values, read ordered `{ id, kind }` entries with `getOutline()`, and read the current entity with `getItem(id)`. The store batches reduction and subscriber notification through its scheduler; synchronous reads flush pending events. Use keyed subscriptions for entity rows and `subscribeOutline()` for the ordered timeline. `fromZetaEvent` maps Zeta wire events to generic events, and `connect(transport)` adds JSON-RPC request matching.
+`createRunStore()` owns one run. Dispatch generic `RunEvent` values, read ordered `{ id, kind }` entries with `getOutline()`, and read the current entity with `getItem(id)`. The store batches reduction and subscriber notification through its scheduler; synchronous reads flush pending events. Use keyed subscriptions for entity rows and `subscribeOutline()` for the ordered timeline. `fromZetaEvent` maps Zeta wire events to generic events, and `connect(transport)` adds JSON-RPC request matching. A `user_message` may carry an `intent`, the client's id for what the user asked: a later user message with the same intent replaces that row in place, so a message the harness dropped and the client resent shows once.
 
 build with `bun install --frozen-lockfile`, `bunx tsc -b`, and `bun test`.
 

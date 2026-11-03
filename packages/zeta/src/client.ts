@@ -3,7 +3,16 @@ import { fromZetaEvent } from "./adapter.js";
 import type { HelloResult, RpcError, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
 
-export interface RequestOptions { signal?: AbortSignal; timeoutMs?: number }
+export interface RequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  /**
+   * The user intent this request carries out (`send`, `steer`). Zeta echoes an accepted message as `user_message`
+   * before it replies, without the delivery id, so the first `user_message` that arrives while this request is pending
+   * gets this `intent` (see `RunEvent`): a later message with the same intent then replaces that row instead of adding one.
+   */
+  intent?: string;
+}
 /** maxSessions limits only event-created stores; held view stores can exceed it. */
 export interface ClientOptions { maxPendingRequests?: number; maxFrameSize?: number; maxSessions?: number }
 export type SessionStore = ReturnType<typeof createRunStore>;
@@ -23,7 +32,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
   const maxSessions = options.maxSessions ?? 100;
-  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout> };
+  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; intent?: string };
   const pending = new Map<number, Pending>();
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
@@ -108,6 +117,14 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     for (const event of waiting) lease.store.dispatch(event);
     return lease;
   };
+  const stampIntent = (event: RunEvent): RunEvent => {
+    if (event.type !== "user_message") return event;
+    const owner = [...pending.values()].find((request) => request.intent !== undefined);
+    if (!owner) return event;
+    const intent = owner.intent;
+    owner.intent = undefined;
+    return { ...event, intent };
+  };
   const settle = (id: number, callback: (request: Pending) => void) => {
     const request = pending.get(id); if (!request) return;
     pending.delete(id); if (request.timer) clearTimeout(request.timer); callback(request);
@@ -120,7 +137,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const message = value as TransportMessage;
     if (message.method === "event") {
       if (!message.params || typeof message.params !== "object") { store.dispatch(adapterError("event params are invalid")); return; }
-      const events = fromZetaEvent(message.params);
+      const events = fromZetaEvent(message.params).map(stampIntent);
       const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
       const waiting = session === undefined ? undefined : buffers.get(session);
       if (waiting) { waiting.push(...events); return; }
@@ -151,7 +168,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
       const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" })));
-      const item: Pending = { resolve, reject };
+      const item: Pending = { resolve, reject, intent: requestOptions.intent };
       pending.set(id, item);
       if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true });
       if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs);

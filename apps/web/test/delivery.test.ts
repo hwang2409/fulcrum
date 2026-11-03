@@ -15,7 +15,13 @@ async function server(answer: (method: string, params: Record<string, unknown>) 
     send(text) {
       const { id, method, params } = JSON.parse(text);
       if (method !== "hello") calls.push([method, params]);
-      queueMicrotask(() => deliver(JSON.stringify({ jsonrpc: "2.0", id, ...(method === "hello" ? { result: { protocol_version: "1.2", capabilities: { features } } } : answer(method, params)) })));
+      queueMicrotask(() => {
+        // As zeta does, an accepted send or steer is echoed to the session before the reply.
+        const reply = method === "hello" ? { result: { protocol_version: "1.2", capabilities: { features } } } : answer(method, params);
+        if ((method === "send" || method === "steer") && (reply.result as { accepted?: boolean } | undefined)?.accepted)
+          deliver(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: params.text, mode: method, attachments: [] } }));
+        deliver(JSON.stringify({ jsonrpc: "2.0", id, ...reply }));
+      });
     },
   };
   const client = createClient(transport, (flush) => flush());
@@ -90,6 +96,17 @@ test("a steer the turn dropped at its end is resent as a new message, in order; 
   calls.length = 0;
   await delivery.turnEnded(client, { stopped: false });
   expect(calls).toEqual([]);
+});
+
+test("a dropped steer and its resend are one user row, which becomes the sent message in place", async () => {
+  const { client } = await server((method, params) => (method === "delivery_status" ? { result: { delivery_id: params.delivery_id, status: "dropped" } } : ok));
+  const delivery = createDelivery(ids());
+  await delivery.submit(client, "run the tests", false);
+  await delivery.submit(client, "also windows", true);
+  await delivery.turnEnded(client, { stopped: false });
+  const { store } = client.forSession("s");
+  const users = store.getOutline().filter((entry) => entry.kind === "user").map((entry) => store.getItem(entry.id));
+  expect(users.map((item) => item?.type === "user" && item.event.type === "user_message" && `${item.event.mode}:${item.event.text}`)).toEqual(["send:run the tests", "send:also windows"]);
 });
 
 test("after a stop, dropped steers stay dropped", async () => {
