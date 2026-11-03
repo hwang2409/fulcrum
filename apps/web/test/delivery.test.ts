@@ -89,8 +89,8 @@ test("a steer the turn dropped at its end is resent as a new message, in order; 
   expect(calls).toEqual([
     ["delivery_status", { delivery_id: "id-1" }],
     ["delivery_status", { delivery_id: "id-2" }],
+    ["delivery_status", { delivery_id: "id-3" }], // the turn has ended: every status is final, so they are read at once
     ["send", { text: "then this", delivery_id: "id-4" }],
-    ["delivery_status", { delivery_id: "id-3" }],
     ["send", { text: "and this", delivery_id: "id-5" }],
   ]);
   calls.length = 0;
@@ -118,6 +118,15 @@ test("after a stop, dropped steers stay dropped and are reported by intent; deli
   calls.length = 0;
   expect(await delivery.turnEnded(client, { stopped: true })).toEqual(["id-1"]);
   expect(calls).toEqual([["delivery_status", { delivery_id: "id-1" }], ["delivery_status", { delivery_id: "id-2" }]]);
+});
+
+test("one failed delivery_status query keeps the marks the other queries found", async () => {
+  const { client } = await server((method, params) => method !== "delivery_status" ? ok
+    : params.delivery_id === "id-1" ? { error: { code: -32003, message: "socket dropped" } } : { result: { status: "dropped" } });
+  const delivery = createDelivery(ids());
+  await delivery.submit(client, "first", true);
+  await delivery.submit(client, "second", true);
+  expect(await delivery.turnEnded(client, { stopped: true })).toEqual(["id-2"]);
 });
 
 test("stop is a session abort", async () => {

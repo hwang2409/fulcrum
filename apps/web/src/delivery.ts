@@ -82,8 +82,11 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
       const ended = steers;
       steers = [];
       const undelivered: string[] = [];
-      for (const message of ended) {
-        if (!(await dropped(client, message.id!))) continue;
+      // A query that fails (a dropped socket) leaves its steer unmarked, the safe side; the others still count.
+      const statuses = await Promise.allSettled(ended.map((message) => dropped(client, message.id!)));
+      for (const [index, message] of ended.entries()) {
+        const status = statuses[index]!;
+        if (status.status === "rejected" || !status.value) continue;
         if (stopped) { undelivered.push(message.intent); continue; }
         const result = await deliver(client, "send", { ...message, id: newId() });
         if (result.accepted === false) throw refusal(result);
