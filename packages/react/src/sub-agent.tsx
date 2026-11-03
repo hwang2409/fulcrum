@@ -80,10 +80,10 @@ const watchRow = (row: Element, notify: () => void) => {
 };
 const noClock = () => () => {};
 const readClock = () => clockNow;
-/** The shared clock while `row` (an element ref) is live; `element` changes when the row's element is replaced. */
-const useNow = (live: boolean, row: { current: Element | null }, element: string) => {
+/** Subscribes `row` (an element ref) to the shared clock while live; `element` changes when the row's element is replaced. */
+const useClock = (live: boolean, row: { current: Element | null }, element: string) => {
   const subscribe = useCallback((notify: () => void) => (row.current ? watchRow(row.current, notify) : noClock()), [row, element]);
-  return useSyncExternalStore(live ? subscribe : noClock, readClock, readClock);
+  useSyncExternalStore(live ? subscribe : noClock, readClock, readClock);
 };
 
 const elapsedText = (ms: number) => {
@@ -97,52 +97,78 @@ const time = (value?: string) => {
   return Number.isNaN(parsed) ? undefined : parsed;
 };
 
+/** Everything a sub-agent row shows, derived from its item alone. `label` is the accessible name of the open button. */
+export type SubAgentRowModel = {
+  /** Running with a start time and no end: the elapsed time ticks. */
+  readonly live: boolean;
+  /** The state in words: the row's badge. */
+  readonly status: string;
+  readonly name?: string;
+  readonly task?: string;
+  /** Elapsed time and tool count, as "2m 14s · 7 tools". */
+  readonly meta?: string;
+  readonly activity?: string;
+  /** Why the row cannot open; undefined when it can. */
+  readonly reason?: string;
+  readonly canOpen: boolean;
+  /** The full text, one fact a line, for the title tooltip (the row itself ellipsizes). */
+  readonly title: string;
+  readonly label: string;
+};
+
+/** Derives a sub-agent row from its item, the navigator around it (none: no drill-in), and the clock's time in ms. */
+export function subAgentRow(item: SubAgentItem, navigation: SubAgentNavigation | null, now: number): SubAgentRowModel {
+  const started = time(item.startedAt);
+  const ended = time(item.endedAt);
+  const live = started !== undefined && ended === undefined && !terminal.has(item.status);
+  const reason = navigation ? navigation.unavailable(item.childRunId) : "details unavailable";
+  const status = subAgentStatusText[item.status];
+  const name = item.name ? line(item.name) : undefined;
+  const task = line(item.task ?? item.summary ?? (name ? "" : "sub-agent")) || undefined;
+  const until = ended ?? (live ? now : time(item.updatedAt));
+  const elapsed = started === undefined || until === undefined ? undefined : elapsedText(until - started);
+  const tools = item.toolCount === undefined ? undefined : `${item.toolCount} ${item.toolCount === 1 ? "tool" : "tools"}`;
+  const meta = [elapsed, tools].filter(Boolean).join(" · ") || undefined;
+  const latest = item.latestActivity ?? (terminal.has(item.status) ? item.summary : undefined);
+  const activity = latest ? line(latest) : undefined;
+  const why = reason ? line(reason) : undefined;
+  return {
+    live, status, name, task, meta, activity, reason: why, canOpen: !why,
+    title: [name, task, meta, activity, why].filter(Boolean).join("\n"),
+    label: `open ${name ? `${name} sub-agent` : "sub-agent"}: ${[task, status, elapsed, tools].filter(Boolean).join(", ")}`,
+  };
+}
+
 /**
  * The compact, fixed-height row for a child run. Inside a `RunNavigator` whose source can open the run, the whole row
- * is one button that opens it; otherwise it shows the reason in place of the drill-in.
+ * is one button that opens it; otherwise it shows the reason in place of the drill-in. `subAgentRow` derives its text.
  */
 export const SubAgent = memo(function SubAgent({ id, className }: { id: string; className?: string }) {
   const item = useItem(id);
   const navigation = useContext(SubAgentContext);
-  const started = item?.type === "sub_agent" ? time(item.startedAt) : undefined;
-  const ended = item?.type === "sub_agent" ? time(item.endedAt) : undefined;
-  const live = item?.type === "sub_agent" && started !== undefined && ended === undefined && !terminal.has(item.status);
-  const reason = item?.type !== "sub_agent" ? undefined : navigation ? navigation.unavailable(item.childRunId) : "details unavailable";
   const element = useRef<HTMLElement | null>(null);
   const setElement = useCallback((node: HTMLElement | null) => { element.current = node; }, []);
-  const now = useNow(live, element, reason ? "div" : "button");
-  if (item?.type !== "sub_agent") return null;
-  const status = subAgentStatusText[item.status];
-  const name = item.name ? line(item.name) : undefined;
-  const task = line(item.task ?? item.summary ?? (name ? "" : "sub-agent"));
-  const until = ended ?? (live ? now : time(item.updatedAt));
-  const elapsed = started === undefined || until === undefined ? undefined : elapsedText(until - started);
-  const tools = item.toolCount === undefined ? undefined : `${item.toolCount} ${item.toolCount === 1 ? "tool" : "tools"}`;
-  const meta = [elapsed, tools].filter(Boolean).join(" · ");
-  const activity = item.latestActivity ?? (terminal.has(item.status) ? item.summary : undefined);
+  const row = item?.type === "sub_agent" ? subAgentRow(item, navigation, clockNow) : undefined;
+  // Re-renders this row on each tick while it is live and on screen; `clockNow` above is the tick's time.
+  useClock(!!row?.live, element, row?.canOpen ? "button" : "div");
+  if (!row || item?.type !== "sub_agent") return null;
   const content = (
     <>
       <span data-part="sub-agent-head">
-        <span data-part="sub-agent-status">{status}</span>
-        {name ? <span data-part="sub-agent-name">{name}</span> : null}
-        {task ? <span data-part="sub-agent-task">{task}</span> : null}
-        {meta ? <span data-part="sub-agent-meta">{meta}</span> : null}
-        {reason ? null : <span data-part="sub-agent-open" aria-hidden="true">open</span>}
+        <span data-part="sub-agent-status">{row.status}</span>
+        {row.name ? <span data-part="sub-agent-name">{row.name}</span> : null}
+        {row.task ? <span data-part="sub-agent-task">{row.task}</span> : null}
+        {row.meta ? <span data-part="sub-agent-meta">{row.meta}</span> : null}
+        {row.canOpen ? <span data-part="sub-agent-open" aria-hidden="true">open</span> : null}
       </span>
       <span data-part="sub-agent-line">
-        {reason ? <span data-part="sub-agent-reason">{line(reason)}</span> : null}
-        {activity ? <span data-part="sub-agent-activity">{line(activity)}</span> : null}
+        {row.reason ? <span data-part="sub-agent-reason">{row.reason}</span> : null}
+        {row.activity ? <span data-part="sub-agent-activity">{row.activity}</span> : null}
       </span>
     </>
   );
-  // The row is one fixed-height strip that ellipsizes; the title and the accessible name carry the full text.
-  const title = [name, task, meta, activity && line(activity), reason && line(reason)].filter(Boolean).join("\n");
-  const attributes = { className, title, "data-part": "sub-agent", "data-kind": "sub_agent", "data-id": id, "data-state": item.status, "data-urgency": item.urgency };
-  if (reason) return <div {...attributes} ref={setElement} data-available="false">{content}</div>;
-  const label = `open ${name ? `${name} sub-agent` : "sub-agent"}: ${[task, status, elapsed, tools].filter(Boolean).join(", ")}`;
-  return (
-    <button type="button" {...attributes} ref={setElement} aria-label={label} onClick={() => navigation!.open(item.childRunId)}>
-      {content}
-    </button>
-  );
+  const attributes = { className, title: row.title, ref: setElement, "data-part": "sub-agent", "data-kind": "sub_agent", "data-id": id, "data-state": item.status, "data-urgency": item.urgency };
+  return row.canOpen
+    ? <button type="button" {...attributes} aria-label={row.label} onClick={() => navigation!.open(item.childRunId)}>{content}</button>
+    : <div {...attributes} data-available="false">{content}</div>;
 });

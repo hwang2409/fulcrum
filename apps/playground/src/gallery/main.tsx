@@ -87,8 +87,8 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
   const runPath = useHistoryRunPath(demo.id);
 
   const reset = () => {
-    // New stores are new runs: start at the root.
-    runPath.onPathChange([], { replace: false });
+    // New stores are new runs: the navigator corrects the URL to the root in place.
+    runPath.onPathChange([], { replace: true });
     index.current = start(paused);
     setTouched(false);
     setStores(fresh(demo, paused));
@@ -238,7 +238,7 @@ function Gallery() {
     else url.searchParams.set("theme", theme);
     if (inspect) url.searchParams.set("inspect", "1");
     else url.searchParams.delete("inspect");
-    history.replaceState(history.state, "", url); // keeps the run paths useHistoryRunPath saved
+    history.replaceState(history.state, "", url); // keeps the run paths in the URL
   }, [theme, inspect]);
   // The page renders after load, so the browser cannot jump to a #demo link by itself.
   useEffect(() => { document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(); }, []);
@@ -325,4 +325,7 @@ function Gallery() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<Gallery />);
+const root = createRoot(document.getElementById("root")!);
+root.render(<Gallery />);
+// The layout check unmounts the gallery, as a host router leaving the page would, to prove that leaves history alone.
+(window as { unmountGallery?: () => void }).unmountGallery = () => root.unmount();

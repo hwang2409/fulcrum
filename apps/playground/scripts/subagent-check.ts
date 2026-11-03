@@ -1,7 +1,7 @@
 // Sub-agent rows and drill-in, in the gallery's sub-agent demos. Every row is exactly 56 px (68 px with the row gap,
 // the virtual timeline's estimate), whatever its state. Opening a row moves no layout: the run bar and the scroll box
 // keep their place, and focus moves to the breadcrumb. Approving inside a grandchild clears the waiting badge on every
-// level. Escape and browser back each return one level, to the exact scroll position the parent was left at, with
+// level. Browser back and Escape each return one level, to the exact scroll position the parent was left at, with
 // focus back on the row that opened it. In every theme, the run bar's text (crumbs, back, the waiting badge) reaches
 // 4.5:1 and its state marks 3:1 on the background they are drawn on. The open path lives in the URL: reload and a
 // deep link reopen it, and a run that cannot open falls back to its parent with a notice. The elapsed clock runs only
@@ -116,26 +116,27 @@ export async function checkSubAgents(browser: Browser, port: number): Promise<st
     const after = await nav(page).locator('[data-part="run-urgency"]').count();
     if (badges !== 2 || after !== 0) failures.push(`${at}: waiting badges in the breadcrumb went ${badges} -> ${after} on approve, expected 2 -> 0`);
 
-    await page.keyboard.press("Escape");
-    await page.waitForTimeout(250);
-    if ((await crumbs(page)) !== 2) failures.push(`${at}: Escape left ${await crumbs(page)} crumbs, expected 2`);
     await page.goBack();
+    await page.waitForTimeout(250);
+    if ((await crumbs(page)) !== 2) failures.push(`${at}: browser back left ${await crumbs(page)} crumbs, expected 2`);
+    await page.keyboard.press("Escape");
     await page.waitForTimeout(400);
     const back = await scroller.evaluate((node) => ({ scrollTop: node.scrollTop, row: node.querySelector('[data-id="sub-agent:reviewer"]')?.getBoundingClientRect().top ?? Number.NaN }));
     const backFocus = await focused(page);
     const urgency = await nav(page).locator('[data-id="sub-agent:reviewer"]').getAttribute("data-urgency");
-    if ((await crumbs(page)) !== 1 || !page.url().includes("gallery.html")) failures.push(`${at}: browser back left ${await crumbs(page)} crumbs at ${page.url()}`);
+    if ((await crumbs(page)) !== 1 || !page.url().includes("gallery.html")) failures.push(`${at}: Escape left ${await crumbs(page)} crumbs at ${page.url()}`);
     if (Math.abs(back.scrollTop - parent.scrollTop) > 1 || Math.abs(back.row - parent.row) > 1)
       failures.push(`${at}: back did not restore the parent: scrollTop ${parent.scrollTop} -> ${back.scrollTop}, row top ${parent.row} -> ${back.row}`);
     if (JSON.stringify(await rects(page)) !== JSON.stringify(before)) failures.push(`${at}: layout moved on back`);
     if (backFocus !== "row sub-agent:reviewer") failures.push(`${at}: focus after back is on ${backFocus}, expected the reviewer row`);
     if (urgency) failures.push(`${at}: the reviewer row still says ${urgency} after the approval`);
     if (errors.length) failures.push(`${at}: page errors: ${errors.join("; ")}`);
-    if (!failures.some((failure) => failure.startsWith(at))) console.log(`ok   ${at}: drill-in, approve, Escape, browser back restore scroll ${back.scrollTop} and focus with no layout move`);
+    if (!failures.some((failure) => failure.startsWith(at))) console.log(`ok   ${at}: drill-in, approve, browser back, Escape restore scroll ${back.scrollTop} and focus with no layout move`);
     await page.close();
   }
 
   failures.push(...await checkPathInUrl(browser, port));
+  for (const navigationApi of [true, false]) failures.push(...await checkHostRouter(browser, port, navigationApi));
   failures.push(...await checkClock(browser, port));
   failures.push(...await checkZoom(browser, port));
 
@@ -177,6 +178,45 @@ async function checkPathInUrl(browser: Browser, port: number): Promise<string[]>
   if ((await crumbs(page)) !== 2 || fellBack.join(">") !== "reviewer" || !notice?.startsWith("could not open"))
     failures.push(`${at}: a deep link to a run that cannot open shows ${await crumbs(page)} crumbs, url path ${fellBack.join(">")}, notice "${notice}"`);
   if (!failures.length) console.log(`ok   ${at}: reload reopens reviewer > tester, back pops one level, a bad deep link falls back with "${notice}"`);
+  await page.close();
+  return failures;
+}
+
+// The history helper never moves through the history list. A host router that opens its next route (keeping the query
+// and merging history state) and then unmounts the page keeps its URL; a hash entry made after opening a run does not
+// stop back from closing it. Checked with the Navigation API and with it removed.
+async function checkHostRouter(browser: Browser, port: number, navigationApi: boolean): Promise<string[]> {
+  const failures: string[] = [];
+  const at = `sub-agent history under a host router (${navigationApi ? "with" : "without"} window.navigation)`;
+  const key = "run-navigator-nested";
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  if (!navigationApi) await page.addInitScript(() => Object.defineProperty(window, "navigation", { configurable: true, value: undefined }));
+  await page.goto(`http://127.0.0.1:${port}/gallery.html#${key}`);
+  await page.waitForSelector(`#${key} [data-part="sub-agent"]`);
+  if (await page.evaluate(() => "navigation" in window && !!(window as { navigation?: unknown }).navigation) !== navigationApi)
+    failures.push(`${at}: window.navigation is not ${navigationApi ? "present" : "removed"}`);
+
+  await openRow(page, "reviewer");
+  await page.evaluate(() => { location.hash = "section"; });
+  await page.waitForTimeout(150);
+  await nav(page).locator('[data-part="run-back"]').click();
+  await page.waitForTimeout(250);
+  const closed = new URL(page.url());
+  if ((await crumbs(page)) !== 1 || closed.searchParams.getAll(key).length || closed.hash !== "#section")
+    failures.push(`${at}: back after a hash entry shows ${await crumbs(page)} crumbs at ${page.url()}, expected the root at #section`);
+
+  await openRow(page, "reviewer");
+  const routed = await page.evaluate((key) => {
+    history.pushState({ ...history.state, router: "b" }, "", `/route-b?${key}=reviewer`);
+    const length = history.length;
+    (window as { unmountGallery?: () => void }).unmountGallery!();
+    return length;
+  }, key);
+  await page.waitForTimeout(400);
+  const after = await page.evaluate(() => ({ url: location.pathname + location.search, length: history.length, router: (history.state as { router?: string } | null)?.router }));
+  if (after.url !== `/route-b?${key}=reviewer` || after.length !== routed || after.router !== "b")
+    failures.push(`${at}: unmounting after the router moved left ${JSON.stringify(after)}, expected /route-b?${key}=reviewer with ${routed} entries`);
+  if (!failures.length) console.log(`ok   ${at}: back closes the run past a hash entry, unmount keeps the router's /route-b`);
   await page.close();
   return failures;
 }

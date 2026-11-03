@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type RunSource, type SubAgentEvent } from "@fulcrum/core";
-import { Approval, RunNavigator, RunProvider, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunNavigatorProps } from "../src/index.js";
+import { Approval, RunNavigator, RunProvider, subAgentRow, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunNavigatorProps } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 
@@ -93,6 +93,35 @@ test("the default timeline renders a sub-agent row with its facts, and with no n
   expect(q('[data-part="sub-agent-status"]').textContent).toBe("done");
   expect(q('[data-part="sub-agent-meta"]').textContent).toBe("2m 14s · 7 tools");
   expect(q('[data-part="sub-agent-activity"]').textContent).toBe("$ bun test");
+});
+
+test("subAgentRow derives the badge, text, accessible name, and drill-in from the item alone", () => {
+  const item = (more: Partial<SubAgentEvent>) => {
+    const { store } = storeOf([child("a", more)]);
+    return store.getItem("sub-agent:a") as Parameters<typeof subAgentRow>[0];
+  };
+  const opens = { open() {}, unavailable: () => undefined };
+  const t0 = Date.parse("2026-01-01T00:00:00Z");
+  const done = subAgentRow(item({ name: "reviewer", task: "audit\n  auth", status: "done", toolCount: 1, summary: "all green", startedAt: "2026-01-01T00:00:00Z", endedAt: "2026-01-01T01:02:03Z" }), opens, 0);
+  expect(done).toEqual({
+    live: false, status: "done", name: "reviewer", task: "audit auth", meta: "1h 2m · 1 tool", activity: "all green", reason: undefined, canOpen: true,
+    title: "reviewer\naudit auth\n1h 2m · 1 tool\nall green", label: "open reviewer sub-agent: audit auth, done, 1h 2m, 1 tool",
+  });
+  // Live: the elapsed time comes from the clock, and a summary is not shown as activity until the run ends.
+  const live = subAgentRow(item({ startedAt: "2026-01-01T00:00:00Z", summary: "half way" }), opens, t0 + 75_000);
+  expect([live.live, live.meta, live.task, live.activity, live.label]).toEqual([true, "1m 15s", "half way", undefined, "open sub-agent: half way, running, 1m 15s"]);
+  // Not live without a start time, or once terminal; a terminal row with no end time stops at its last update.
+  expect(subAgentRow(item({}), opens, t0).live).toBe(false);
+  expect(subAgentRow(item({ status: "error", startedAt: "2026-01-01T00:00:00Z" }), opens, t0 + 9_000)).toMatchObject({ live: false, status: "failed", meta: undefined });
+  expect(subAgentRow(item({ status: "canceled", startedAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:09Z" }), opens, t0 + 99_000)).toMatchObject({ live: false, meta: "9s" });
+  expect(subAgentRow(item({ status: "idle", startedAt: "2026-01-01T00:00:00Z" }), opens, t0 + 3_000)).toMatchObject({ live: true, meta: "3s" });
+  expect(subAgentRow(item({ startedAt: "not a date" }), opens, t0)).toMatchObject({ live: false, meta: undefined });
+  // A name with no task has no task line; nothing at all reads "sub-agent".
+  expect(subAgentRow(item({ name: "tester" }), opens, 0)).toMatchObject({ name: "tester", task: undefined });
+  expect(subAgentRow(item({}), opens, 0)).toMatchObject({ name: undefined, task: "sub-agent" });
+  // No navigator, or one that cannot open the child: no drill-in, and the reason is the second line.
+  expect(subAgentRow(item({ name: "old" }), null, 0)).toMatchObject({ canOpen: false, reason: "details unavailable", title: "old\ndetails unavailable" });
+  expect(subAgentRow(item({}), { open() {}, unavailable: () => "gone" }, 0)).toMatchObject({ canOpen: false, reason: "gone" });
 });
 
 // IntersectionObserver as the browser reports it, driven by the test; and the 1 s intervals that are running.
