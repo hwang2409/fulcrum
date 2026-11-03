@@ -1,6 +1,10 @@
 import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Highlight, Token } from "@fulcrum/highlight";
 
+/**
+ * The highlighter that `Code`, the tool cards, and markdown code blocks color through. `RunProvider` sets it from its
+ * `highlight` prop; provide it directly to color `Code` outside a run. Undefined: text stays plain.
+ */
 export const HighlightContext = createContext<Highlight | undefined>(undefined);
 
 const spelled = new WeakMap<Token[], string>();
