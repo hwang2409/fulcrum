@@ -22,9 +22,10 @@ function visible(blocks: readonly Block[], provisional = true): string {
           : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => text(cell, provisional)).join("") : "").join("");
 }
 
-// Line-edge spaces are syntax (as in fuzz.ts); markers may later become styles, so frame checks compare letters and digits only.
+// Line-edge spaces are syntax (as in fuzz.ts). Frame checks keep punctuation and drop only emphasis and code markers,
+// which may later become styles; a line break may become a space when a code span closes over it.
 const edges = (value: string) => value.replace(/(^|\n)[ \t]+/g, "$1").replace(/[ \t]+(?=\n|$)/g, "");
-const unmarked = (value: string) => value.replace(/[^\p{L}\p{N}]/gu, "");
+const unmarked = (value: string) => value.replace(/[*_`~]/g, "").replace(/\n/g, " ");
 
 const subsequence = (needle: string, haystack: string) => {
   let cursor = 0;
@@ -185,4 +186,25 @@ test("a line break before a table-candidate line never shows and then disappears
       previous = current;
     }
   }
+});
+
+test("a cut inside an autolink or a long open bracket never shows its opener at the cut", () => {
+  const prose = "The streaming parser keeps each frame stable. ".repeat(7);
+  for (const source of [
+    `${prose}see <https://github.com/anthropics/claude-code/blob/main/packages/foo/src/some/really/long/path/file.ts> for details and more words after it`,
+    `see [note ${"word ".repeat(80)}and [docs](https://e.com) here] end`,
+    `<https://e.com/${"p".repeat(30)}> ${"word ".repeat(60)}`,
+    `see <https://e.com/${"a".repeat(300)}> ${"tail ".repeat(60)}`,
+  ]) for (const size of [1, 7]) stream(source, fixed(size));
+});
+
+test("a cut at the line start never splits an intraword underscore", () => {
+  const source = `snake_case ${"i".repeat(300)} _em_ done`;
+  for (const size of [1, 7]) stream(source, fixed(size), (blocks, received) => {
+    if (received >= "snake_case".length) expect(visible(blocks).slice(0, 10), `${received}`).toBe("snake_case");
+  });
+});
+
+test("pipes in a growing-line code span stay hidden when an earlier line has an open backtick", () => {
+  for (const size of [1, 4, 16]) stream("x\nopen `code\nuse `a | b` in shell\nmore\n", fixed(size));
 });
