@@ -31,7 +31,7 @@ export interface RunState {
   /** Tool call id -> its approval's item id. */
   toolApprovals: Record<string, string>;
   /** Durable message identities (for example delivery ids) to their stable user row. */
-  messageAliases: Record<string, string>;
+  messageAliases: ReadonlyMap<string, string>;
 }
 
 export const initialState: RunState = {
@@ -45,7 +45,7 @@ export const initialState: RunState = {
   nextId: 1,
   activeToolIds: {},
   toolApprovals: {},
-  messageAliases: {},
+  messageAliases: new Map(),
 };
 
 const messageItemId = (id: string) => `message:${id}`;
@@ -179,6 +179,9 @@ export function reduceAllWithEntities(
     activeToolIds: state.activeToolIds,
     toolApprovals: state.toolApprovals,
     messageAliases: state.messageAliases,
+  };
+  const setMessageAlias = (key: string, id: string) => {
+    (next.messageAliases as Map<string, string>).set(key, id);
   };
   const getItem = (id: string) => entities.get(id);
   const setItem = (item: RunItem) => entities.set(item);
@@ -422,12 +425,10 @@ export function reduceAllWithEntities(
         const intentId = event.intent === undefined ? undefined : `user:intent:${event.intent}`;
         const deliveryId = event.delivery_id === undefined ? undefined : messageAlias(event.delivery_id);
         const deliveryItemId = event.delivery_id === undefined ? undefined : `user:delivery:${event.delivery_id}`;
-        const id = (deliveryId && next.messageAliases[deliveryId]) || (intentId && getItem(intentId) ? intentId : undefined) || intentId || deliveryItemId || `user:${next.nextId++}`;
+        const id = (deliveryId && next.messageAliases.get(deliveryId)) || (intentId && getItem(intentId) ? intentId : undefined) || intentId || deliveryItemId || `user:${next.nextId++}`;
         if (getItem(id)) setItem({ id, type: "user", event });
         else appendItem({ id, type: "user", event });
-        if (deliveryId && next.messageAliases[deliveryId] !== id) {
-          next.messageAliases = { ...next.messageAliases, [deliveryId]: id };
-        }
+        if (deliveryId && next.messageAliases.get(deliveryId) !== id) setMessageAlias(deliveryId, id);
         break;
       }
       case "error": {

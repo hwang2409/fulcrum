@@ -371,7 +371,7 @@ function RunComposer({ client, onUndelivered }: { client: ZetaClient | null; onU
   const store = useRunStore();
   const delivery = useMemo(() => createDelivery(undefined, (event) => {
     const deliveryId = event.type === "user_message" && event.delivery_id;
-    if (deliveryId && !store.getState().messageAliases[`delivery:${deliveryId}`]) store.dispatch(event);
+    if (deliveryId && !store.getState().messageAliases.get(`delivery:${deliveryId}`)) store.dispatch(event);
   }), [store]);
   const wasRunning = useRef(running);
   useEffect(() => {
