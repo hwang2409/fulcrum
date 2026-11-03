@@ -114,7 +114,7 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
  * text-only reply that streams for about 2.5 s, long enough to steer and to stop. As in zeta, an accepted message is
  * echoed as `user_message` before the reply, and a steer is persisted only once a turn takes it.
  */
-function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): boolean; set(value: boolean): void }) {
+export function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): boolean; set(value: boolean): void }) {
   const sent: Json[] = [];
   const deliveries = new Map<string, Json>();
   const statuses = new Map<string, "queued" | "delivered" | "dropped">();
@@ -180,6 +180,7 @@ function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): 
   return {
     /** Every accepted send and steer, in order. */
     sent,
+    get history() { return histories[ACTIVE] ?? []; },
     get aborts() { return aborts; },
     /** The reply body for a composer method, or undefined for any other method. */
     handle(method: string, params: Json, active: string | null, send: Send): Json | undefined {

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createClient, type Transport } from "@fulcrum/zeta";
 import { createDelivery, stopTurn } from "../src/delivery";
+import { composerMethods } from "../scripts/fake-zeta";
 
 type Reply = { result?: unknown; error?: { code: number; message: string; data?: unknown } };
 
@@ -30,6 +31,17 @@ async function server(answer: (method: string, params: Record<string, unknown>) 
 }
 const ids = () => { let n = 0; return () => `id-${++n}`; };
 const ok = { result: { accepted: true } };
+
+test("fake reconnect history does not replay a steer dropped at turn end", async () => {
+  let active = false;
+  const fake = composerMethods(async () => {}, { get: () => active, set: (value) => { active = value; } });
+  const before = fake.history.length;
+  fake.handle("send", { text: "start", delivery_id: "fake-send" }, "s-reconnect", () => {});
+  active = true;
+  fake.handle("steer", { text: "drop me", delivery_id: "fake-steer" }, "s-reconnect", () => {});
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(fake.history.slice(before).some((row) => JSON.stringify(row).includes("drop me"))).toBe(false);
+});
 
 test("send and steer go to their methods with a delivery id when the feature is negotiated", async () => {
   const { client, calls } = await server(() => ok);

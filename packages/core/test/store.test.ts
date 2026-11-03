@@ -161,6 +161,23 @@ test("serializes dispatches that re-enter during a reduction", () => {
   expect(store.hasMessageDelivery("nested")).toBe(true);
 });
 
+test("queues subscriber dispatches until after the current notification", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  let calls = 0;
+  store.subscribe(() => {
+    calls++;
+    if (calls === 1) store.dispatch({ type: "user_message", text: "second", mode: "send", delivery_id: "second" });
+  });
+  store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "first" });
+  jobs.shift()!();
+  expect(calls).toBe(2);
+  expect(store.getOutline()).toEqual([
+    { id: "user:delivery:first", kind: "user" },
+    { id: "user:delivery:second", kind: "user" },
+  ]);
+});
+
 test("does not publish a reduction when disposed during the reduction", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));

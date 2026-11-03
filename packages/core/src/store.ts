@@ -64,19 +64,31 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   const outlineListeners = new Set<Listener>();
   const itemListeners = new Map<string, Set<Listener>>();
   let queued = false;
+  let running = false;
+  let flushing = false;
   let disposed = false;
   let stateChanged = false;
   let outlineChanged = false;
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
+  const transaction = createEntityDraft(entities, messageAliases);
 
   const flush = () => {
-    if (pending.length === 0 || disposed) return false;
+    if (pending.length === 0 || disposed || flushing) return false;
+    flushing = true;
     const events = pending;
     pending = [];
     const beforeOutline = current.outline;
-    const transaction = createEntityDraft(entities, messageAliases);
-    const next = reduceAllWithEntities(current, events, transaction.draft);
+    transaction.reset();
+    let next: RunState;
+    try {
+      next = reduceAllWithEntities(current, events, transaction.draft);
+    } catch (error) {
+      transaction.reset();
+      flushing = false;
+      throw error;
+    }
+    if (disposed) { transaction.reset(); flushing = false; return false; }
     transaction.commit();
     for (const id of transaction.changed) changedItems.add(id);
     current = next;
@@ -87,6 +99,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       outlineSnapshot = { items: current.outline, change: prior && { from: prior.from, splices: mergeSplices(prior.splices, transaction.edits) } };
       outlineChanged = true;
     }
+    transaction.reset();
+    flushing = false;
     return true;
   };
   const notify = () => {
@@ -150,8 +164,17 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
         queued = true;
         scheduler(() => {
           queued = false;
-          flush();
-          notify();
+          if (running) return;
+          running = true;
+          try {
+            do {
+              flush();
+              notify();
+
+            } while (pending.length > 0 && !disposed);
+          } finally {
+            running = false;
+          }
         });
       }
     },

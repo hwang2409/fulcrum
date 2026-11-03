@@ -77,20 +77,27 @@ type SpliceOutline = (index: number, deleteCount: number, items: readonly Outlin
 export function createEntityDraft(entities: Map<string, RunItem>, aliases: Map<string, string>) {
   const entityChanges = new Map<string, RunItem | undefined>();
   const aliasChanges = new Map<string, string | undefined>();
+  const deletedEntities = new Set<string>();
   const edits: OutlineSplice[] = [];
   const changed = new Set<string>();
   const draft: EntityDraft = {
-    get: (id) => entityChanges.has(id) ? entityChanges.get(id) : entities.get(id),
-    set: (item) => { entityChanges.set(item.id, item); changed.add(item.id); },
-    delete: (id) => { entityChanges.set(id, undefined); changed.add(id); },
+    get: (id) => {
+      if (entityChanges.size === 0) return entities.get(id);
+      if (deletedEntities.has(id)) return undefined;
+      const item = entityChanges.get(id);
+      return item ?? entities.get(id);
+    },
+    set: (item) => { entityChanges.set(item.id, item); deletedEntities.delete(item.id); changed.add(item.id); },
+    delete: (id) => { entityChanges.set(id, undefined); deletedEntities.add(id); changed.add(id); },
     splice: (edit) => edits.push(edit),
-    getMessageAlias: (key) => aliasChanges.has(key) ? aliasChanges.get(key) : aliases.get(key),
+    getMessageAlias: (key) => aliasChanges.size === 0 ? aliases.get(key) : aliasChanges.has(key) ? aliasChanges.get(key) : aliases.get(key),
     setMessageAlias: (key, id) => aliasChanges.set(key, id),
   };
   return {
     draft,
     edits,
     changed,
+    reset() { entityChanges.clear(); aliasChanges.clear(); deletedEntities.clear(); edits.length = 0; changed.clear(); },
     commit() {
       for (const [id, item] of entityChanges) {
         if (item === undefined) entities.delete(id);
