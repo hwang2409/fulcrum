@@ -10,7 +10,7 @@ const SEGMENT_CHARS = 2_000;
 // lines, 1,636 spans) committed with no long task and a 44-63 ms worst gap. The densest code (0.72 spans per character)
 // at this cap costs about 175 ms at 4x, about 45 ms unthrottled.
 const INLINE_CHARS = 10_000;
-// A code block with more lines than this is a scrolling viewer rather than a page-long box.
+// A code block of this many lines or more is a scrolling viewer rather than a page-long box.
 const INLINE_LINES = 200;
 const MAX_PREVIEW_LINES = 60;
 const HEAD_CHARS = INLINE_CHARS * 0.8;
