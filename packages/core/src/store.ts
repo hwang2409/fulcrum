@@ -5,6 +5,7 @@ import {
   reduceAllWithEntities,
   type OutlineItem,
   type OutlineSplice,
+  type CommittedItems,
   type RunState,
 } from "./reducer.js";
 
@@ -77,7 +78,15 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   const rebuildIndexes = () => {
     entities.clear();
     messageAliases.clear();
-    for (const item of Object.values(current.items)) {
+    const rows = new Map<string, RunItem>();
+    const seen = new Set<string>();
+    for (let layer: CommittedItems | undefined = current.items; layer; layer = layer.base) {
+      for (const [id, item] of layer.changes) if (!seen.has(id)) {
+        seen.add(id);
+        if (item) rows.set(id, item);
+      }
+    }
+    for (const item of rows.values()) {
       entities.set(item.id, item);
       if (item.type === "user" && item.event.type === "user_message") {
         const { delivery_id: delivery, intent } = item.event;

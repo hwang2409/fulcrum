@@ -17,6 +17,11 @@ export interface OutlineSplice {
   readonly items: readonly OutlineItem[];
 }
 
+export interface CommittedItems {
+  readonly base?: CommittedItems;
+  readonly changes: ReadonlyMap<string, RunItem | undefined>;
+}
+
 export interface RunState {
   turns: string[];
   outline: readonly OutlineItem[];
@@ -31,7 +36,7 @@ export interface RunState {
   /** Tool call id -> its approval's item id. */
   toolApprovals: Record<string, string>;
   /** committed item data for rebuilding indexes after a failed reduction */
-  items: Record<string, RunItem>;
+  items: CommittedItems;
 }
 
 export const initialState: RunState = {
@@ -45,7 +50,7 @@ export const initialState: RunState = {
   nextId: 1,
   activeToolIds: {},
   toolApprovals: {},
-  items: {},
+  items: { changes: new Map() },
 };
 
 const messageItemId = (id: string) => `message:${id}`;
@@ -220,11 +225,11 @@ export function reduceAllWithEntities(
   const getMessageAlias = entities.getMessageAlias;
   const setMessageAlias = entities.setMessageAlias;
   const getItem = (id: string) => entities.get(id);
-  let ownItems = false;
+  let itemChanges: Map<string, RunItem | undefined> | undefined;
   const setItem = (item: RunItem) => {
     entities.set(item);
-    if (!ownItems) next.items = { ...next.items }, ownItems = true;
-    next.items[item.id] = item;
+    (itemChanges ??= new Map()).set(item.id, item);
+    if (next.items === state.items) next.items = { base: state.items, changes: itemChanges };
   };
   // The first edit copies the outline; later edits in the same batch write that copy in place.
   let ownOutline = false;
@@ -240,8 +245,8 @@ export function reduceAllWithEntities(
   };
   const deleteItem = (id: string) => {
     entities.delete(id);
-    if (!ownItems) next.items = { ...next.items }, ownItems = true;
-    delete next.items[id];
+    (itemChanges ??= new Map()).set(id, undefined);
+    if (next.items === state.items) next.items = { base: state.items, changes: itemChanges };
     const index = outlineIndex(next.outline, id);
     if (index >= 0) spliceOutline(index, 1, []);
   };
