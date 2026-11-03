@@ -1,5 +1,5 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Tokens, useTokens, type Block } from "../highlight.js";
+import { memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { HighlightContext, requestTokens, Tokens, useTokens, type Block } from "../highlight.js";
 import type { Token } from "@fulcrum/highlight";
 import { useVirtualList } from "../virtual.js";
 import { spansIn, type AnsiSpan } from "./ansi.js";
@@ -193,9 +193,14 @@ const AnsiRun = ({ text, spans }: { text: string; spans: AnsiSpan[] }) => {
 
 // The most text a viewer also asks for as one whole block, in the background: a construct longer than a range (a block
 // comment, a docstring, a template string) is colored from the grammar's real state, not restarted at each range edge.
-// The visible ranges color first; the whole block's tokens replace them when they arrive (about 3 MB held at the cap).
-// shortcut: a block over WHOLE_CHARS keeps range-local colors; upgrade by carrying grammar state across range requests.
-const WHOLE_CHARS = 100_000;
+// The whole request goes out only once the mounted ranges have colored, and the worker cannot split it, so the cap
+// bounds what it holds up: at 10,000 characters one request took 50 ms for the densest cpp line (the large-blocks
+// fixture), 10 ms for tsx, 3.5 ms for python, 1 ms for json (V8, median of 3; 100,000 was 479 / 98 / 25 / 8 ms).
+// shortcut: a block over WHOLE_CHARS keeps range-local colors; upgrade by carrying grammar state across range requests
+// (the worker keeps a session per block already; it needs delta replies so each slice does not resend the prefix).
+const WHOLE_CHARS = 10_000;
+// The highlighter answers a block over this many lines as plain text (packages/highlight/src/controller.ts MAX_LINES).
+const WHOLE_LINES = 10_000;
 type WholeTokens = { tokens: Token[]; starts: number[]; length: number };
 
 const indexed = (tokens: Token[]): WholeTokens => {
@@ -206,11 +211,24 @@ const indexed = (tokens: Token[]): WholeTokens => {
 };
 
 // The whole block's tokens once they arrive; until then `seed` (tokens an inline block already had for a prefix of the
-// text), so a block that becomes a viewer keeps its colors.
-function useWholeTokens(text: string, format: TextFormat | undefined, id: string, done: boolean, seed?: Token[] | null): WholeTokens | null {
-  const language = done && !format?.spans && text.length <= WHOLE_CHARS ? format?.language : undefined;
-  const tokens = useTokens(language ? text : "", language, `${id}:whole`);
-  const whole = useMemo(() => tokens && indexed(tokens), [tokens]);
+// text), so a block that becomes a viewer keeps its colors. `ranges`: the mounted rows' blocks, which color first; the
+// whole block is asked for once they have, and never when the viewer unmounts or its text changes before then.
+function useWholeTokens(text: string, lines: number, format: TextFormat | undefined, id: string, done: boolean, ranges: Block[], seed?: Token[] | null): WholeTokens | null {
+  const highlight = useContext(HighlightContext);
+  const language = done && !format?.spans && text.length <= WHOLE_CHARS && lines <= WHOLE_LINES ? format?.language : undefined;
+  const [asked, setAsked] = useState<string>();
+  const mounted = useRef(ranges);
+  mounted.current = ranges;
+  const hasRanges = ranges.length > 0;
+  useEffect(() => {
+    if (!language || !hasRanges) return;
+    let live = true;
+    void Promise.all(mounted.current.map((block) => requestTokens(highlight, block))).then(() => { if (live) setAsked(text); });
+    return () => { live = false; };
+  }, [highlight, language, text, hasRanges]);
+  const tokens = useTokens(language && asked === text ? text : "", language, `${id}:whole`);
+  // One untyped token is the highlighter's plain answer (no worker, or over its limits): the ranges' colors stay.
+  const whole = useMemo(() => tokens && !(tokens.length === 1 && !tokens[0]!.type) ? indexed(tokens) : null, [tokens]);
   const seeded = useMemo(() => {
     const prefix = seed && indexed(seed);
     return prefix && text.startsWith(seed!.map((token) => token.text).join("")) ? prefix : null;
@@ -257,7 +275,6 @@ const count = (value: number) => counts.format(value);
 type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean; seed?: Token[] | null };
 
 function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy, seed }: ViewerProps) {
-  const whole = useWholeTokens(rows ? "" : text, format, id, done, seed);
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(follow);
   const [atBottom, setAtBottom] = useState(follow);
@@ -275,6 +292,11 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
     enabled: true,
     outlineUpdate: update,
   });
+  const ranges = list.snapshot.rows.map((row) => {
+    const last = row.index === segments.length - 1;
+    return { start: segments[row.index]!.start, end: segments[row.index + 1]?.start ?? (rows ? rows.count : text.length), done: done || !last };
+  });
+  const whole = useWholeTokens(rows ? "" : text, metrics.lines, format, id, done, rows ? [] : ranges.map(({ start, end, done }) => styledBlock(text, start, end, format, id, done)), seed);
   useLayoutEffect(() => {
     if (follow && following.current) list.scrollToEnd();
     else if (text.length > seenLength.current) setNewOutput(true);
@@ -324,10 +346,8 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
         onTouchMove={(event) => event.stopPropagation()}
       >
         <div ref={list.timelineRef} data-part="text-viewer-content" style={{ height: list.snapshot.totalSize }}>
-          {list.snapshot.rows.map((row) => {
-            const start = segments[row.index]!.start;
-            const last = row.index === segments.length - 1;
-            const end = segments[row.index + 1]?.start ?? (rows ? rows.count : text.length);
+          {list.snapshot.rows.map((row, index) => {
+            const { start, end, done: rangeDone } = ranges[index]!;
             const Row = rows ? "div" : "pre";
             return (
               <Row
@@ -336,7 +356,7 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
                 data-part="text-viewer-row"
                 data-language={rows?.language}
                 style={{ position: "absolute", insetInline: 0, transform: `translateY(${row.start}px)` } as CSSProperties}
-              >{rows ? rows.render(start, end) : <Styled text={text} start={start} end={end} format={format} id={id} done={done || !last} whole={whole} />}</Row>
+              >{rows ? rows.render(start, end) : <Styled text={text} start={start} end={end} format={format} id={id} done={rangeDone} whole={whole} />}</Row>
             );
           })}
         </div>

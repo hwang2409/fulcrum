@@ -3,7 +3,9 @@
 // and scroll a page per frame with no main-thread task of 50 ms or more (and, while it scrolls, no 50 ms gap between
 // 5 ms probes); its first visible lines must color without waiting for the whole block; the bounded view must scroll by
 // keyboard, copy the whole text, and let find-in-page reach its visible lines. A small block asked for while a
-// 330k-token result is still being delivered must color within two frames of the time it takes on its own. LINES sets
+// 330k-token result is still being delivered must color within two frames of the time it takes on its own. A fence
+// under the whole-block cap must send its mounted ranges to the worker before its whole block, and a small block asked
+// for right after it mounts must still color in time. LINES sets
 // the fence size (to measure the inline path, or a base without the bounded view). Runs vite's dev server with
 // production react.
 import { chromium } from "playwright";
@@ -61,6 +63,27 @@ const behind = await highlight(small.replace("0", "1"), "cpp", { id: "behind", v
 const behindMs = performance.now() - asked;
 const bigTokens = await big;
 results.queue = { ownMs: Math.round(ownMs), behindMs: Math.round(behindMs), smallColored: typed(behind), bigTokens: bigTokens.length, bigColored: typed(bigTokens), longTasks: [], maxLongTask: 0, maxProbeGap: 0 };
+// A fence under the whole-block cap (220 dense lines, 9,900 characters): its mounted ranges go to the worker first and
+// color, then the whole block is asked for; a small block asked for right after the mount still colors in time.
+const underRoot = createRoot(document.body.appendChild(document.createElement("div")));
+results.under = await measure(async () => {
+  const from = window.__posted.length;
+  const started = performance.now();
+  flushSync(() => underRoot.render(createElement(Markdown, { id: "under", source: "\`\`\`cpp\n" + line.repeat(220) + "\`\`\`\n", highlight })));
+  const asked = performance.now();
+  const smallTokens = await highlight(small.replace("0", "2"), "cpp", { id: "behind-under", version: 1, state: "done" });
+  const behindMs = performance.now() - asked;
+  const viewer = () => document.querySelector("[data-part=md-code-block][data-size=large]");
+  await until(() => viewer()?.querySelector("[class^=tok-]"));
+  const colorMs = performance.now() - started;
+  await until(() => window.__posted.slice(from).some((post) => post.id.endsWith(":whole") && window.__replied[post.requestId]), 10_000).catch(() => {});
+  const posts = window.__posted.slice(from).filter((post) => post.id.startsWith("under"));
+  const wholeAt = posts.findIndex((post) => post.id.endsWith(":whole"));
+  const whole = posts[wholeAt];
+  const firstRanges = posts.filter((post) => post.at < asked);
+  underRoot.unmount();
+  return { colorMs: Math.round(colorMs), behindMs: Math.round(behindMs), smallColored: typed(smallTokens), ranges: firstRanges.length, wholeAt, wholeAfterRanges: wholeAt >= firstRanges.length && firstRanges.length > 0, wholeMs: whole && window.__replied[whole.requestId] ? Math.round(window.__replied[whole.requestId] - whole.at) : null };
+});
 // The markdown fence, from mount until its first lines are colored, and then for one more second.
 const fence = "\`\`\`cpp\\n" + code + "\`\`\`\\n";
 const parsing = performance.now();
@@ -146,11 +169,25 @@ try {
     Object.defineProperty(window, "Worker", { value: class extends Native {
       constructor(...args: ConstructorParameters<typeof Worker>) {
         super(...args);
-        this.addEventListener("message", (event) => { if (event.data && "part" in event.data) scope.__parts++; });
+        this.addEventListener("message", (event) => {
+          if (event.data && "part" in event.data) scope.__parts++;
+          if (event.data && "requestId" in event.data) (window as typeof window & { __replied: Record<number, number> }).__replied[event.data.requestId] ??= performance.now();
+        });
       }
     } });
   });
   page.on("pageerror", (error) => failures.push(error.message));
+  // Every highlight request the page posts to the worker, in order, and when each reply arrived.
+  await page.addInitScript(() => {
+    const scope = window as typeof window & { __posted: Array<{ id: string; requestId: number; at: number }>; __replied: Record<number, number> };
+    scope.__posted = [];
+    scope.__replied = {};
+    const post = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (this: Worker, data: { type?: string; requestId: number; context: { id: string } }, ...rest: [never]) {
+      if (data?.type === "highlight") scope.__posted.push({ id: data.context.id, requestId: data.requestId, at: performance.now() });
+      return post.call(this, data, ...rest);
+    } as typeof post;
+  });
   await page.goto(`http://127.0.0.1:${port}/.large-blocks-test.html`);
   const results = await page.waitForFunction(() => (window as typeof window & { __results?: unknown }).__results, undefined, { timeout: 240_000 })
     .then((handle) => handle.jsonValue()).catch((error) => { throw new Error([...failures, String(error)].join("\n")); }) as Record<string, Measured>;
@@ -170,6 +207,10 @@ try {
   // The regression this guards is the small block waiting for the whole large one: 325-335 ms on main before the fix.
   // Two or three frames of scheduling (34-50 ms) are noise on a loaded CI runner, so the bound sits well between them.
   if ((queue.behindMs as number) > (queue.ownMs as number) + 100) failures.push(`queue: the small block took ${queue.behindMs} ms behind the large one, ${queue.ownMs} ms on its own`);
+  const { under } = results;
+  if (!under.wholeAfterRanges) failures.push(`under the cap: the whole block was asked for before the mounted ranges (${JSON.stringify(under)})`);
+  if (under.wholeMs === null) failures.push("under the cap: the whole block was never asked for or never answered");
+  if (!under.smallColored || (under.behindMs as number) > (queue.ownMs as number) + 100) failures.push(`under the cap: a small block took ${under.behindMs} ms behind the fence, ${queue.ownMs} ms on its own`);
   // The bounded view: keyboard scrolling, whole-text copy, find-in-page.
   const viewer = page.locator("[data-part=md-code-block] [data-part=text-viewer]");
   if (!(await viewer.count())) failures.push("markdown: the large fence has no bounded viewer");
