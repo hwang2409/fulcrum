@@ -37,7 +37,7 @@ function error(socket: FakeWebSocket, code: number) {
   const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "secret", features: ["projects"] });
   const socket = await open();
   expect(socket.url).toBe("ws://127.0.0.1:8765/?token=secret");
-  expect(JSON.parse(socket.sent[0])).toMatchObject({ method: "hello", params: { protocol_version: "1.0", client_version: "1.2", features: ["projects"] } });
+  expect(JSON.parse(socket.sent[0])).toMatchObject({ method: "hello", params: { protocol_version: "1.2", client_version: "1.2", features: ["projects"] } });
   expect(socket.sent[0]).not.toContain("secret");
   reply(socket, { protocol_version: "1.0" });
   await expect(connecting).resolves.toHaveProperty("request");

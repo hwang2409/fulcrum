@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 
 type Json = Record<string, unknown>;
-export type Mode = "ok" | "busy" | "incompatible" | "slow";
+export type Mode = "ok" | "old" | "busy" | "incompatible" | "slow";
 export type HistoryMode = "new" | "old";
 export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
@@ -148,8 +148,9 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         const send = (event: Json) => { for (const each of sockets) each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); };
         if (method === "hello") {
           if (mode === "busy" || sockets.size > 1) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
-          if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.0", supported: ["2.0"] } } }); socket.close(); return; }
+          if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
+          if (mode === "old") return reply({ result: { protocol_version: "1.0", server: "fake-zeta" } });
           return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
         }
         if (method === "list_sessions") {
