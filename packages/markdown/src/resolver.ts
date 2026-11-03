@@ -9,7 +9,7 @@ export type ContainerFrame =
 export type OpenedContainer = Exclude<ContainerFrame, { kind: "document" }>;
 
 export type ResolvedLeaf = {
-  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code" | "atx-heading" | "setext-heading" | "thematic-break" | "table-delimiter" | "table-row" | "html-open" | "html-line" | "html-close";
+  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code" | "atx-heading" | "setext-heading" | "thematic-break" | "table-delimiter" | "table-row" | "html-open" | "html-line" | "html-close" | "reference-definition" | "reference-title";
   content: string;
   path: readonly ContainerFrame[];
   marker?: string;
@@ -45,6 +45,8 @@ type MutablePendingLine = {
 };
 
 type Cursor = { line: string; offset: number; column: number };
+
+export type ReferenceDefinition = { href: string; title: string };
 
 type Marker = {
   ordered: boolean;
@@ -137,6 +139,21 @@ function consumeItemIndent(cursor: Cursor, width: number) {
 
 const isBlank = (line: string, offset = 0) => /^[ \t]*$/.test(line.slice(offset));
 const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
+const normalizeReference = (label: string) => label.trim().replace(/\s+/g, " ").toUpperCase();
+
+function referenceDefinition(line: string) {
+  const match = /^ {0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))(?:[ \t]+(?:"([^"]*)"|'([^']*)'|\(([^)]*)\)))?[ \t]*$/.exec(line);
+  if (!match) return undefined;
+  return {
+    label: normalizeReference(match[1]!),
+    value: { href: match[2] ?? match[3]!, title: match[4] ?? match[5] ?? match[6] ?? "" },
+  };
+}
+
+function referenceTitle(line: string) {
+  return /^ {0,3}(?:"([^"]*)"|'([^']*)'|\(([^)]*)\))[ \t]*$/.exec(line)?.slice(1).find((value) => value !== undefined);
+}
+
 function htmlBlockEnd(line: string) {
   if (/^ {0,3}<!--/.test(line)) return /-->/;
   if (/^ {0,3}<\?/.test(line)) return /\?>/;
@@ -152,6 +169,12 @@ export class MarkdownLineResolver {
   private stack: ContainerFrame[] = [{ kind: "document" }];
   private openLeaf?: { kind: "paragraph" } | { kind: "fence"; marker: string } | { kind: "indented-code" } | { kind: "table" } | { kind: "html"; end: RegExp };
   private pendingLine: MutablePendingLine = freshPending();
+  private readonly referenceIndex = new Map<string, ReferenceDefinition>();
+  private pendingReferenceTitle?: { label: string };
+
+  get references(): ReadonlyMap<string, ReferenceDefinition> {
+    return this.referenceIndex;
+  }
 
   get pending(): PendingLine {
     return { pieces: this.pendingLine.pieces, length: this.pendingLine.length, scan: this.pendingLine.scan };
@@ -270,8 +293,41 @@ export class MarkdownLineResolver {
     }
 
     const leafPath = () => this.stack.map((frame) => ({ ...frame }));
-    if (blank) return { continued: false, lazy: false, closedToDepth, opened };
+    if (blank) {
+      this.pendingReferenceTitle = undefined;
+      return { continued: false, lazy: false, closedToDepth, opened };
+    }
     const content = line.slice(cursor.offset);
+    if (this.pendingReferenceTitle) {
+      const title = referenceTitle(content);
+      if (title !== undefined) {
+        const reference = this.referenceIndex.get(this.pendingReferenceTitle.label)!;
+        reference.title = title;
+        this.pendingReferenceTitle = undefined;
+        this.openLeaf = undefined;
+        return {
+          continued: false,
+          lazy: false,
+          closedToDepth,
+          opened,
+          leaf: { kind: "reference-title", content, path: leafPath() },
+        };
+      }
+      this.pendingReferenceTitle = undefined;
+    }
+    const definition = referenceDefinition(content);
+    if (definition) {
+      this.referenceIndex.set(definition.label, definition.value);
+      if (!definition.value.title) this.pendingReferenceTitle = { label: definition.label };
+      this.openLeaf = undefined;
+      return {
+        continued: false,
+        lazy: false,
+        closedToDepth,
+        opened,
+        leaf: { kind: "reference-definition", content, path: leafPath() },
+      };
+    }
     const htmlEnd = htmlBlockEnd(content);
     if (htmlEnd) {
       if (!htmlEnd.test(content.replace(/^.*?(?:<!--|<\?|<!\[CDATA\[|<[a-z][^>]*>)/i, "")))
