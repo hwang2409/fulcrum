@@ -71,6 +71,11 @@ function covering(tokens: Token[] | null, code: string): Token[] | null {
   return code.startsWith(spelled) ? [...tokens, { text: code.slice(spelled.length) }] : null;
 }
 
+function keepColors(previous: Token[] | null, candidate: Token[] | null, code: string): Token[] | null {
+  if (!candidate || !previous || candidate.some((token) => token.type) || !previous.some((token) => token.type)) return candidate;
+  return covering(previous, code) ?? candidate;
+}
+
 // One component for a fence's whole life, so the tokens it has carry over when it becomes the viewer (over isLargeCode's
 // limits, or with more than INLINE_SPANS tokens): its colors never blink and the commit stays bounded.
 function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) {
@@ -94,23 +99,26 @@ function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block,
   if (highlight && !large && request.current?.key !== key) {
     request.current = { id: ++nextRequestId.current, key, result: highlight(block.value, block.language, { id, version: currentVersion, state }) };
   }
+  const requestId = request.current?.id;
   const immediate = request.current?.result && !(request.current.result instanceof Promise) ? request.current.result : null;
 
   useEffect(() => {
     mounted.current = true;
     if (!highlight) { setTokens(null); return () => { mounted.current = false; }; }
     const requestedVersion = currentVersion;
-    const requestedId = request.current?.id;
+    const requestedId = requestId;
     const result = request.current?.result;
     if (result instanceof Promise) {
       void result.then((next) => {
-        if (mounted.current && version.current === requestedVersion && request.current?.id === requestedId) setTokens(next);
+        if (mounted.current && version.current === requestedVersion && request.current?.id === requestedId) {
+          setTokens((previous) => keepColors(previous, next, block.value));
+        }
       });
-    } else setTokens(result ?? null);
+    } else setTokens((previous) => keepColors(previous, result ?? null, block.value));
     return () => { mounted.current = false; };
-  }, [currentVersion, highlight, key]);
+  }, [currentVersion, highlight, key, requestId]);
 
-  const latest = immediate ?? tokens;
+  const latest = keepColors(tokens, immediate, block.value) ?? tokens;
   const shown = covering(latest, block.value);
   if (large || (shown && shown.length > INLINE_SPANS)) return <LargeCodeBlock id={id} block={block} highlight={highlight} seed={latest} />;
   return <pre data-part="md-code-block" data-language={block.language}><code>{shown ? <Tokens tokens={shown} /> : block.value}</code></pre>;

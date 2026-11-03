@@ -9,6 +9,8 @@ import type { Browser } from "playwright";
 export async function checkStreams(browser: Browser, port: number): Promise<string[]> {
   const failures: string[] = [];
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const throttle = Number(process.env.CPU_THROTTLE ?? 4);
+  if (throttle > 1) await (await page.context().newCDPSession(page)).send("Emulation.setCPUThrottlingRate", { rate: throttle });
   const errors: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text().slice(0, 160)); });
   page.on("pageerror", (error) => errors.push(error.message));
