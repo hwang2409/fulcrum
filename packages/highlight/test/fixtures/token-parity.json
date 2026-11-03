@@ -1,0 +1,359 @@
+{
+  "legacy": {
+    "tsx": {
+      "source": "type Props = { name: string };\nexport const View = ({ name }: Props) => <main className=\"card\">{name}</main>;\n",
+      "lines": [
+        [
+          {
+            "text": "type Props = { name: string };"
+          }
+        ],
+        [
+          {
+            "text": "export const View = ({ name }: Props) => <main className=\"card\">{name}</main>;"
+          }
+        ],
+        []
+      ]
+    },
+    "typescript": {
+      "source": "type User = { id: number };\nconst greet = (user: User) => `hi ${user.id}`;\n",
+      "lines": [
+        [
+          {
+            "text": "type User = { id: number };"
+          }
+        ],
+        [
+          {
+            "text": "const greet = (user: User) => `hi ${user.id}`;"
+          }
+        ],
+        []
+      ]
+    },
+    "html": {
+      "source": "<style>.card { color: red; }</style>\n<script>const answer = 42;</script>\n<article data-id=\"1\">hello</article>\n",
+      "lines": [
+        [
+          {
+            "text": "<style>.card { color: red; }</style>"
+          }
+        ],
+        [
+          {
+            "text": "<script>const answer = 42;</script>"
+          }
+        ],
+        [
+          {
+            "text": "<article data-id=\"1\">hello</article>"
+          }
+        ],
+        []
+      ]
+    },
+    "javascript": {
+      "source": "function add(a, b) { return a + b; }\n",
+      "lines": [
+        [
+          {
+            "text": "function add(a, b) { return a + b; }"
+          }
+        ],
+        []
+      ]
+    },
+    "python": {
+      "source": "def greet(name: str):\n    return f\"hello {name}\"\n",
+      "lines": [
+        [
+          {
+            "text": "def greet(name: str):"
+          }
+        ],
+        [
+          {
+            "text": "    return f\"hello {name}\""
+          }
+        ],
+        []
+      ]
+    },
+    "rust": {
+      "source": "fn main() { let value: u32 = 42; }\n",
+      "lines": [
+        [
+          {
+            "text": "fn main() { let value: u32 = 42; }"
+          }
+        ],
+        []
+      ]
+    },
+    "json": {
+      "source": "{\n  \"ok\": true\n}\n",
+      "lines": [
+        [
+          {
+            "text": "{"
+          }
+        ],
+        [
+          {
+            "text": "  \"ok\": true"
+          }
+        ],
+        [
+          {
+            "text": "}"
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "newReference": {
+    "vue": {
+      "source": "<template><button @click=\"count++\">{{ count }}</button></template>\n<script setup>const count = ref(0);</script>\n",
+      "lines": [
+        [
+          {
+            "text": "<",
+            "type": "punctuation"
+          },
+          {
+            "text": "template",
+            "type": "tag"
+          },
+          {
+            "text": "><",
+            "type": "punctuation"
+          },
+          {
+            "text": "button",
+            "type": "tag"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "@click",
+            "type": "attribute"
+          },
+          {
+            "text": "=",
+            "type": "punctuation"
+          },
+          {
+            "text": "\"",
+            "type": "punctuation"
+          },
+          {
+            "text": "count++",
+            "type": "string"
+          },
+          {
+            "text": "\"",
+            "type": "punctuation"
+          },
+          {
+            "text": ">",
+            "type": "punctuation"
+          },
+          {
+            "text": "{{ count }}"
+          },
+          {
+            "text": "</",
+            "type": "punctuation"
+          },
+          {
+            "text": "button",
+            "type": "tag"
+          },
+          {
+            "text": "></",
+            "type": "punctuation"
+          },
+          {
+            "text": "template",
+            "type": "tag"
+          },
+          {
+            "text": ">",
+            "type": "punctuation"
+          },
+          {
+            "text": "<",
+            "type": "punctuation"
+          },
+          {
+            "text": "script",
+            "type": "tag"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "setup",
+            "type": "attribute"
+          },
+          {
+            "text": ">",
+            "type": "punctuation"
+          },
+          {
+            "text": "const count = ref(0);</script>",
+            "type": "keyword"
+          }
+        ]
+      ]
+    },
+    "svelte": {
+      "source": "<script>let count = 0;</script>\n<button on:click={() => count++}>{count}</button>\n",
+      "lines": [
+        [
+          {
+            "text": "<",
+            "type": "punctuation"
+          },
+          {
+            "text": "script",
+            "type": "tag"
+          },
+          {
+            "text": ">",
+            "type": "punctuation"
+          },
+          {
+            "text": "let",
+            "type": "keyword"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "count",
+            "type": "variable"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "=",
+            "type": "operator"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "0;</script>",
+            "type": "number"
+          },
+          {
+            "text": "<",
+            "type": "punctuation"
+          },
+          {
+            "text": "button",
+            "type": "tag"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "on",
+            "type": "attribute"
+          },
+          {
+            "text": ":",
+            "type": "punctuation"
+          },
+          {
+            "text": "click",
+            "type": "attribute"
+          },
+          {
+            "text": "=",
+            "type": "operator"
+          },
+          {
+            "text": "{()",
+            "type": "punctuation"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "=>",
+            "type": "keyword"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "count",
+            "type": "variable"
+          },
+          {
+            "text": "++",
+            "type": "operator"
+          },
+          {
+            "text": "}>{",
+            "type": "punctuation"
+          },
+          {
+            "text": "count",
+            "type": "variable"
+          },
+          {
+            "text": "}</",
+            "type": "punctuation"
+          },
+          {
+            "text": "button",
+            "type": "tag"
+          },
+          {
+            "text": ">",
+            "type": "punctuation"
+          }
+        ]
+      ]
+    },
+    "julia": {
+      "source": "function greet(name)\n  println(\"hello $name\")\nend\n",
+      "lines": [
+        [
+          {
+            "text": "function",
+            "type": "keyword"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "greet(name)",
+            "type": "function"
+          },
+          {
+            "text": "  "
+          },
+          {
+            "text": "println",
+            "type": "function"
+          },
+          {
+            "text": "(\"hello $name\")"
+          },
+          {
+            "text": "end",
+            "type": "keyword"
+          }
+        ]
+      ]
+    }
+  }
+}
