@@ -15,6 +15,7 @@ jobs:
       - run: bun test
       - run: bun scripts/highlight-token-parity.ts check
       - name: check resolver contract against base
+        if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
