@@ -64,4 +64,6 @@ test("zeta's allow/deny/abort decisions reach fulcrum as its one vocabulary, liv
   }
   // "ask" is not an ending; an unknown value has no decision rather than a guessed one.
   expect(fromZetaEvent({ event: "approval_end", session_id: "s", request_id: "r", data: { decision: "ask" } })[0]).not.toHaveProperty("decision");
+  for (const inherited of ["constructor", "toString", "__proto__"])
+    expect(fromZetaEvent({ event: "approval_end", session_id: "s", request_id: "r", data: { decision: inherited } })[0]).not.toHaveProperty("decision");
 });

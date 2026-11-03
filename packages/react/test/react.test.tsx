@@ -877,3 +877,28 @@ test("virtual Timeline shows the folded tool card live when an approval folds in
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
   }
 });
+
+test("an approved call that folds into its tool row is still announced when it finishes", async () => {
+  const { store, send } = setup([]);
+  mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
+  const live = q('[data-part="timeline-live"]');
+  send({ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false });
+  await waitForAnnouncement();
+  expect(live.textContent).toBe("approval needed: bash");
+  send({ type: "approval_end", request_id: "r1", decision: "approve" }, { type: "tool_start", tool_call: call("t1", "bash") });
+  send({ type: "tool_end", tool_call: call("t1", "bash"), tool_result: { tool_call_id: "t1", content: "ok", is_error: false } });
+  await waitForAnnouncement();
+  expect(live.textContent).toBe("tool bash finished");
+});
+
+test("a store swap to a finished session announces nothing", async () => {
+  const first = setup([]);
+  const second = setup([
+    { type: "tool_start", tool_call: call("t9", "read") },
+    { type: "tool_end", tool_call: call("t9", "read"), tool_result: { tool_call_id: "t9", content: "x", is_error: false } },
+  ]);
+  mount(<RunProvider store={first.store}><Timeline virtual /></RunProvider>);
+  act(() => root!.render(<RunProvider store={second.store}><Timeline virtual /></RunProvider>));
+  await waitForAnnouncement();
+  expect(q('[data-part="timeline-live"]').textContent).toBe("");
+});

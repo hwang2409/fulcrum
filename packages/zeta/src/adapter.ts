@@ -202,7 +202,7 @@ const finishedView = (call: ToolCall, result: unknown) => {
 };
 
 // zeta's terminal approval decisions (src/zeta/core/approval.py `ApprovalDecision`, plus "abort"); "ask" is not an ending.
-const zetaDecisions: Record<string, ApprovalDecision> = { allow: "approve", deny: "deny", abort: "abort" };
+const zetaDecisions: ReadonlyMap<unknown, ApprovalDecision> = new Map([["allow", "approve"], ["deny", "deny"], ["abort", "abort"]]);
 
 export function fromZetaEvent(value: unknown): RunEvent[] {
   try {
@@ -240,7 +240,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         return childRunId ? [approval, subAgent({ ...data, child_instance_id: childRunId, description: `approval for ${approval.tool_call.name}` }, "waiting_approval", "approval")] : [approval];
       }
       case "approval_end": {
-        const decision = zetaDecisions[String(data.decision)];
+        const decision = zetaDecisions.get(data.decision);
         const approval: RunEvent = { type: "approval_end", request_id: string(wire.request_id, "request_id"), ...(decision ? { decision } : {}), data };
         const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
         if (!childRunId) return [approval];

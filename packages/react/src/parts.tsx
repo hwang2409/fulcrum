@@ -407,10 +407,14 @@ function ApprovalSkip({ items, reveal }: { items: readonly { id: string; kind?: 
   return <button type="button" data-part="jump-to-approval" onClick={() => void jump()}>jump to approval: {view?.kind === "shell" ? "" : `${toolLabel(tool_call.name)} `}{oneLine(summary)}</button>;
 }
 
+const silent = (item: RunItem | undefined) => !item || announcementForItem(item) === null;
+
 function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; change: { type: "append" | "prepend"; count: number } | null }) {
   const initialized = useRef(false);
   const pending = useRef<string[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const store = useRunStore();
+  const previous = useRef<ReadonlySet<string>>(new Set());
   const [watched, setWatched] = useState<readonly string[]>([]);
   const [text, setText] = useState("");
   const announce = useCallback((id: string, next: string) => {
@@ -425,14 +429,23 @@ function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; ch
     }, 1_000);
   }, []);
   useLayoutEffect(() => {
+    const present = new Set(items.map(({ id }) => id));
+    const before = previous.current;
+    previous.current = present;
     if (!initialized.current) {
       initialized.current = true;
       return;
     }
-    const present = new Set(items.map(({ id }) => id));
-    const appended = change?.type === "append" && change.count > 0 ? items.slice(-change.count).map(({ id }) => id) : [];
-    setWatched((current) => [...new Set([...current.filter((id) => present.has(id)), ...appended])]);
-  }, [change, items]);
+    // An append announces its rows. A rewrite in place (an approval folding into its tool row, a store swap) arrives as a
+    // full change: watch only rows that are new and still have nothing to say, so they speak when they finish and a
+    // swapped-in finished session stays silent.
+    const added = change?.type === "append" && change.count > 0
+      ? items.slice(-change.count).map(({ id }) => id)
+      : change === null
+        ? items.map(({ id }) => id).filter((id) => !before.has(id) && silent(store.getItem(id)))
+        : [];
+    setWatched((current) => [...new Set([...current.filter((id) => present.has(id)), ...added])]);
+  }, [change, items, store]);
   useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current); }, []);
   return (
     <>
