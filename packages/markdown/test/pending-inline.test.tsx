@@ -40,7 +40,7 @@ function stream(source: string, sizes: (step: number) => number, onFrame?: (bloc
   for (let offset = 0, step = 0; offset < source.length; step++) {
     const size = Math.max(1, sizes(step));
     document.append(source.slice(offset, offset + size));
-    offset += size;
+    offset = Math.min(source.length, offset + size);
     const blocks = document.render();
     const current = visible(blocks);
     if (!subsequence(unmarked(previous), unmarked(current))) throw new Error(`text vanished at ${offset}: ${JSON.stringify(previous.slice(-80))} -> ${JSON.stringify(current.slice(-80))}`);
@@ -101,7 +101,8 @@ test("300 unique-word rich lines never duplicate, reorder, or drop a word", () =
 test("closers at and around the suffix budget never leak or drop their owner", () => {
   for (const length of [255, 256, 257, 258]) {
     const body = "a".repeat(length);
-    for (const source of [`lead **${body}** tail`, `lead \`${body}\` tail`, `lead [${body}](https://e.com) tail`, `see <https://e.com/${body}> tail`]) {
+    const tail = " tail".repeat(120);
+    for (const source of [`lead **${body}**${tail}`, `lead \`${body}\`${tail}`, `lead [${body}](https://e.com)${tail}`, `see <https://e.com/${body}>${tail}`]) {
       for (const size of [1, 13, 1_024]) stream(source, fixed(size), (blocks, received) => {
         const stable = visible(blocks, false);
         expect(stable.length, `${source.slice(0, 12)} ${length} at ${received}`).toBeGreaterThanOrEqual(received - SUFFIX - 30);

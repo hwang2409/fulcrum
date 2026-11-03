@@ -422,8 +422,10 @@ function withoutTrailingLookahead(source: string) {
   return entity ? source.slice(0, entity.index) : source;
 }
 
+const withoutOpenSyntax = (source: string) => withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(withoutOpenAngle(source))));
+
 function safeInlineContent(source: string): SafeInlineContent {
-  source = withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(withoutOpenAngle(source))));
+  source = withoutOpenSyntax(source);
   const opener = unmatchedCodeSpan(source);
   if (!opener) return { source };
   let content = source.slice(opener.index + opener.length);
@@ -436,7 +438,11 @@ function parseInline(source: string, streaming: boolean, environment: Environmen
   const safe = streaming ? safeInlineContent(source) : { source };
   const tokens = markdown.parseInline(safe.source, environment);
   const nodes = inlineNodes(tokens[0]?.children ?? []);
-  if (safe.openCode) nodes.push({ type: "code", value: codeSpanValue(safe.openCode) });
+  // An unclosed span may stay literal, so its preview shows only the text its content renders as markdown.
+  if (safe.openCode) {
+    const literal = inlineNodes(markdown.parseInline(withoutOpenSyntax(safe.openCode), environment)[0]?.children ?? []);
+    nodes.push({ type: "code", value: codeSpanValue(literal.map(inlineText).join("")) });
+  }
   return nodes;
 }
 
