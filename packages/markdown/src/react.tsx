@@ -124,7 +124,8 @@ const BlockView = memo(function BlockView({ id, block, highlight }: { id: string
   if (block.type === "blockquote") return <blockquote data-part="md-blockquote">{block.children.map((child, index) => <BlockView key={index} id={`${id}:${index}`} block={child} highlight={highlight} />)}</blockquote>;
   if (block.type === "rule") return <hr data-part="md-rule" />;
   return <table data-part="md-table"><thead><tr>{block.header.map((cell, index) => <th key={index} align={block.align[index]}><InlineView nodes={cell} /></th>)}</tr></thead><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} align={block.align[cellIndex]}><InlineView nodes={cell} /></td>)}</tr>)}</tbody></table>;
-});
+// An open block can be the same object, grown in place (a fence after a whole-line delta): it always re-renders.
+}, (prior, next) => prior.block === next.block && !(next.block.type === "code" && next.block.open) && prior.id === next.id && prior.highlight === next.highlight);
 
 export const Markdown = memo(function Markdown({ source, streaming = false, highlight, id }: MarkdownProps) {
   const documentId = id ?? "markdown";

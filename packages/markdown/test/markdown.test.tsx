@@ -613,3 +613,17 @@ test("a streamed code block shows plain text first, then the colored update, thr
   expect(container.querySelector("code")?.textContent).toBe("const a = 1;\nconst b = 2;\n");
   await act(async () => root.unmount());
 });
+
+test("an open fence keeps updating when every delta ends at a newline", async () => {
+  const browser = new Window();
+  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = browser.document.createElement("div");
+  const root = createRoot(container);
+  let source = "```ts\n";
+  for (let i = 0; i < 20; i++) {
+    source += `const value${i} = ${i};\n`;
+    await act(async () => root.render(<Markdown id="m" source={source} streaming />));
+  }
+  expect(container.querySelector("pre")!.textContent).toBe(source.slice("```ts\n".length));
+  await act(async () => root.unmount());
+});

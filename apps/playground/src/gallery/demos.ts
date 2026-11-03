@@ -350,6 +350,17 @@ export const demos: Demo[] = [
     events: [{ type: "message_commit", message_id: "markdown-large", message: text("assistant", "The whole generated table:\n\n```ts\n" + Array.from({ length: 400 }, (_, i) => `export const value${i} = compute(${i}, "item-${i}"); // row ${i}`).join("\n") + "\n```\n") }],
   },
   {
+    id: "markdown-crossing",
+    part: "Message",
+    title: "markdown, a fence that becomes the viewer",
+    description: "A fence streams past 40 lines and becomes the bounded viewer at the same height, keeping its colors and following its newest line.",
+    events: [
+      ...Array.from({ length: 60 }, (_, i): RunEvent => ({ type: "message_delta", message_id: "markdown-crossing", delta: (i ? "" : "Generating the table:\n\n```ts\n") + `export const value${i} = compute(${i}, "item-${i}");\n` })),
+      { type: "message_commit", message_id: "markdown-crossing", message: text("assistant", "Generating the table:\n\n```ts\n" + Array.from({ length: 60 }, (_, i) => `export const value${i} = compute(${i}, "item-${i}");\n`).join("") + "```\n") },
+    ],
+    live: 60,
+  },
+  {
     id: "markdown-large-constructs",
     part: "Message",
     title: "markdown, constructs across ranges",
