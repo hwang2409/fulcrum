@@ -9,6 +9,7 @@
     "check:zeta-events": "bun packages/zeta/scripts/check-events.ts",
     "bench:check": "bun scripts/bench-check.ts",
     "bench:markdown": "bun scripts/markdown-bench.ts",
+    "fuzz:markdown": "bun packages/markdown/test/fuzz.ts 10000",
     "bench:highlight": "bun run --cwd packages/highlight bench",
     "check:highlight-consumer": "bun scripts/highlight-consumer-check.ts",
     "check:highlight-notices": "bun scripts/highlight-notices-check.ts",
