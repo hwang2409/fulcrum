@@ -7,3 +7,4 @@ export {
   type RunState,
 } from "./reducer.js";
 export * from "./store.js";
+export type { RunLease, RunSource } from "./run-source.js";
