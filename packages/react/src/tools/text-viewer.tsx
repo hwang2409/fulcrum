@@ -4,8 +4,11 @@ import { useVirtualList } from "../virtual.js";
 import { spansIn, type AnsiSpan } from "./ansi.js";
 
 const SEGMENT_CHARS = 2_000;
-// The most text drawn as one highlighted block (one react commit of its tokens). Measured in chromium with the page's
-// CPU throttled 4x (apps/playground/scripts/large-blocks.ts): INLINE_CHARS_MEASURED. Larger text goes through the virtual viewer.
+// The most text drawn as one highlighted block (one react commit of its tokens); larger text goes through the virtual
+// viewer. Measured in chromium with the page's CPU throttled 4x (apps/playground/scripts/large-blocks.ts): about 1,900
+// token spans cost one 50 ms frame. Real code has about 0.18 spans per character: 9,900 characters of typescript (157
+// lines, 1,636 spans) committed with no long task and a 44-63 ms worst gap. The densest code (0.72 spans per character)
+// at this cap costs about 175 ms at 4x, about 45 ms unthrottled.
 const INLINE_CHARS = 10_000;
 // A code block with more lines than this is a scrolling viewer rather than a page-long box.
 const INLINE_LINES = 200;
@@ -26,7 +29,16 @@ export type TextMetrics = { characters: number; lines: number };
 export type TextFormat = { language?: string; spans?: AnsiSpan[] };
 export type TextSegment = { id: string; kind: string; start: number };
 /** The longest structured row a parser keeps (diff lines, search lines); longer rows are cut with a notice. */
-export const ROW_CHARS = INLINE_CHARS;
+export const ROW_CHARS = INLINE_CHARS / 2; // a closed preview shows at least its first and last rows: both fit INLINE_CHARS
+// Lines a viewer row of this many characters is assumed to wrap to before it is measured: a narrow viewer, so a group of
+// long lines is never estimated short (an estimate too short mounts too many rows in the first commit).
+const WRAP_CHARS = 80;
+const wrapped = (chars: number) => Math.max(1, Math.ceil(chars / WRAP_CHARS));
+// The estimated height, in lines, of one text segment: its share of the lines, or of the wrapped characters if more.
+const segmentLines = (text: string, metrics: TextMetrics) => {
+  const segments = Math.max(1, Math.ceil(text.length / SEGMENT_CHARS));
+  return Math.max(Math.ceil(metrics.lines / segments), wrapped(text.length / segments));
+};
 /**
  * Structured rows (diff lines, search results). `render(start, end)` draws rows [start, end) and highlights them as one
  * block: the compact view draws every row, the viewer only its mounted groups, through the same renderer. `part`
@@ -47,8 +59,12 @@ function previewRows(rows: RowModel) {
 function rowGroups(rows: RowModel): TextSegment[] {
   const groups: TextSegment[] = [];
   for (let start = 0, end = 0; start < rows.count; start = end) {
-    for (let chars = 0; end < rows.count && end - start < ROWS_PER_SEGMENT && (end === start || chars + rows.size(end) <= SEGMENT_CHARS); end++) chars += rows.size(end);
-    groups.push({ id: `rows-${start}`, kind: String(end - start), start });
+    let lines = 0;
+    for (let chars = 0; end < rows.count && end - start < ROWS_PER_SEGMENT && (end === start || chars + rows.size(end) <= SEGMENT_CHARS); end++) {
+      chars += rows.size(end);
+      lines += wrapped(rows.size(end));
+    }
+    groups.push({ id: `rows-${start}`, kind: String(lines), start });
   }
   return groups;
 }
@@ -305,7 +321,7 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
   const metrics = suppliedMetrics ?? measuredMetrics;
   const large = needsTextViewer(text, metrics);
   // Segments are built only for an open viewer: text in fixed-size ranges that start on a line, rows in fixed groups.
-  const textSegments = useSegments(open && !rows ? text : "", appendOnly, Math.max(1, Math.ceil(metrics.lines / Math.max(1, Math.ceil(text.length / SEGMENT_CHARS)))));
+  const textSegments = useSegments(open && !rows ? text : "", appendOnly, segmentLines(text, metrics));
   const rowSegments = useMemo(() => open && rows ? rowGroups(rows) : [], [open, rows]);
   if (rows && !(large && open)) {
     const { head, tail } = previewRows(rows);
@@ -366,7 +382,7 @@ export function CopyButton({ value, label }: { value: CopyValue; label: string }
  */
 export function CodeViewer({ text, language, id, done = true, label = "code" }: { text: string; language: string | undefined; id: string; done?: boolean; label?: string }) {
   const metrics = useTextMetrics(text, !done);
-  const segments = useSegments(text, !done, Math.max(1, Math.ceil(metrics.lines / Math.max(1, Math.ceil(text.length / SEGMENT_CHARS)))));
+  const segments = useSegments(text, !done, segmentLines(text, metrics));
   const format = useMemo(() => language ? { language } : undefined, [language]);
   return <VirtualText text={text} label={label} follow={false} metrics={metrics} segments={segments} format={format} id={id} done={done} copy />;
 }

@@ -1,9 +1,10 @@
 // Large highlighted blocks in real chromium, with the page's CPU throttled (CPU_THROTTLE, default 4; the worker is not
-// throttled). A markdown fence of 9,999 cpp lines (329,968 tokens) must mount and color with no main-thread task of
-// 50 ms or more and no 50 ms gap between 5 ms probes; its first visible lines must color without waiting for the whole
-// block; the bounded view must scroll by keyboard, copy the whole text, and let find-in-page reach its visible lines. A
-// small block asked for while a 330k-token result is still being delivered must color within two frames of the time it
-// takes on its own. LINES overrides the fence size (to measure smaller blocks on a base without the bounded view).
+// throttled). On a page that already shows a run, a markdown fence of 9,999 cpp lines (329,968 tokens) must mount, color,
+// and scroll a page per frame with no main-thread task of 50 ms or more and no 50 ms gap between 5 ms probes; its first
+// visible lines must color without waiting for the whole block; the bounded view must scroll by keyboard, copy the
+// whole text, and let find-in-page reach its visible lines. A small block asked for while a 330k-token result is still
+// being delivered must color within two frames of the time it takes on its own. LINES sets the fence size (to measure
+// the inline path, or a base without the bounded view). Runs vite's dev server with production react.
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -76,6 +77,20 @@ results.markdown = await measure(async () => {
   const colorMs = performance.now() - started;
   await new Promise((resolve) => setTimeout(resolve, 1000));
   return { parseMs, mountMs: Math.round(mountMs), colorMs: Math.round(colorMs), spans: block().querySelectorAll("[class^=tok-]").length, elements: block().querySelectorAll("*").length };
+});
+// Scrolling the bounded view a page per frame: each frame mounts and colors new rows.
+const viewer = block().querySelector("[data-part=text-viewer]");
+if (viewer) results.scroll = await measure(async () => {
+  let worstFrame = 0;
+  for (let frame = 0, last = performance.now(); frame < 120; frame++) {
+    viewer.scrollTop += viewer.clientHeight;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const now = performance.now();
+    worstFrame = Math.max(worstFrame, now - last);
+    last = now;
+  }
+  viewer.scrollTop = 0;
+  return { worstFrame: Math.round(worstFrame) };
 });
 window.__code = code;
 window.__results = results;
