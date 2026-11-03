@@ -266,3 +266,16 @@ test("an empty message_delta from any adapter is a no-op", () => {
   expect(store.getItem("message:empty")).toBeUndefined();
   expect(store.getState()).toBe(state);
 });
+
+test("a repeated approval_request updates its one row and keeps a recorded end", () => {
+  const store = createRunStore((flush) => flush());
+  const request: RunEvent = { type: "approval_request", request_id: "approval-1", tool_call: toolCall, delegated: false };
+  store.dispatch(request);
+  store.dispatch({ ...request, delegated: true });
+  expect(store.getOutline().map(({ id }) => id)).toEqual(["approval:approval-1"]);
+  expect(store.getItem("approval:approval-1")).toMatchObject({ request: { delegated: true } });
+  store.dispatch({ type: "approval_end", request_id: "approval-1" });
+  store.dispatch(request);
+  expect(store.getOutline()).toHaveLength(1);
+  expect(store.getItem("approval:approval-1")).toMatchObject({ ended: { type: "approval_end" } });
+});

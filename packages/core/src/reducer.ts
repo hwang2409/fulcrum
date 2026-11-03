@@ -324,7 +324,10 @@ export function reduceAllWithEntities(
       }
       case "approval_request": {
         const itemId = approvalItemId(event.request_id);
-        appendItem({ id: itemId, type: "approval", request: event });
+        const old = getItem(itemId);
+        // A request can arrive twice (a status snapshot and the live event); it stays one row.
+        if (old?.type === "approval") setItem({ ...old, request: event });
+        else appendItem({ id: itemId, type: "approval", request: event });
         break;
       }
       case "approval_end": {

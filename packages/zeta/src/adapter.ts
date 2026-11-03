@@ -279,3 +279,59 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
     return invalid(error);
   }
 }
+
+const text = (content: unknown[]) =>
+  content.flatMap((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string" ? [(block as { text: string }).text] : [])).join("");
+
+const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
+  const row = object(value, "history row");
+  const id = string(row.id, "history row id");
+  const role = string(row.role, "history row role");
+  if (!Array.isArray(row.content)) throw new Error("history row content must be an array");
+  const content = row.content as unknown[];
+  const events: RunEvent[] = [];
+  if (row.tool_result !== undefined && row.tool_result !== null) {
+    const result = toolResult(row.tool_result);
+    const call = calls.get(result.tool_call_id) ?? { id: result.tool_call_id, name: "tool", arguments: {} };
+    return [{ type: "tool_end", tool_call: call, tool_result: result, ...finishedView(call, row.tool_result) }];
+  }
+  if (role === "user") {
+    const attachments = content.filter((block) => (block as { type?: unknown } | null)?.type === "attachment");
+    events.push({ type: "user_message", text: text(content), mode: "send", ...(attachments.length ? { attachments } : {}) });
+  } else if (role === "assistant") {
+    // History keeps text and thinking; tool_use blocks become tool rows. An empty thinking header carries nothing to show.
+    const shown = content.filter((block) => {
+      const type = (block as { type?: unknown } | null)?.type;
+      return (type === "text" || type === "thinking") && (block as { text?: unknown }).text !== "";
+    });
+    if (shown.length) events.push({ type: "message_commit", message_id: id, message: message({ role, content: shown }) });
+    for (const block of content) {
+      if ((block as { type?: unknown } | null)?.type !== "tool_use") continue;
+      const call = tool((block as { tool_call?: unknown }).tool_call);
+      calls.set(call.id, call);
+      events.push({ type: "tool_start", tool_call: call, ...viewOf(call) });
+    }
+  } else {
+    const notification = optionalObject(row.notification ?? undefined, "history row notification");
+    events.push({ type: "notification", notification_id: optionalString(notification?.notification_id, "notification.notification_id"), data: { ...notification, role, text: text(content) } });
+  }
+  const failed = optionalObject(row.failed_turn ?? undefined, "failed_turn");
+  if (failed) events.push({ type: "error", error: { code: string(failed.code, "failed_turn.code"), message: string(failed.message, "failed_turn.message") } });
+  return events;
+};
+
+/**
+ * Maps `session_history` rows (oldest first, every page in order) to run events. Tool calls open at their `tool_use`
+ * block and close at their result row; a call with no result stays active until a later `run_end`. A row that does not
+ * validate becomes one `adapter_invalid_payload` error, and the other rows still map.
+ */
+export function fromZetaHistory(rows: readonly unknown[]): RunEvent[] {
+  const calls = new Map<string, ToolCall>();
+  return rows.flatMap((row) => {
+    try {
+      return historyRow(row, calls);
+    } catch (error) {
+      return invalid(error);
+    }
+  });
+}
