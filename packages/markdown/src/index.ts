@@ -1,6 +1,7 @@
 import type { Highlight } from "@fulcrum/highlight";
 import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
+import { PendingInline } from "./pending-inline.js";
 import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
 type MarkdownToken = {
@@ -741,10 +742,6 @@ function tailParagraph(blocks: Block[]): Extract<Block, { type: "paragraph" }> |
   }
 }
 
-function pendingInlineSource(content: string) {
-  return content;
-}
-
 function appendPendingTableRow(blocks: Block[], source: string, references: Environment) {
   const table = tailTable(blocks);
   if (!table) return false;
@@ -765,11 +762,6 @@ function appendPendingParagraph(blocks: Block[], pending: readonly Inline[], con
   const block = { type: "paragraph" as const, children: pending.slice() };
   blocks.push(block);
   return block;
-}
-
-function markProvisional(nodes: Inline[]) {
-  if (!nodes.length || nodes.length === 1 && nodes[0]?.type === "pending-text") return;
-  nodes.splice(0, nodes.length, { type: "pending-text", children: nodes.slice() });
 }
 
 function hideOpenInlineLink(value: string) {
@@ -849,9 +841,9 @@ export function createStreamingDocument(): StreamingDocument {
   let previewBlocks: readonly Block[] | undefined;
   let pendingReferenceApply = false;
   let trailingCarriageReturn = false;
-  let pendingPreviewLength = 0;
-  let pendingPreviewNodes: Inline[] = [];
-  let pendingPreviewAppendable = false;
+  // The growing line's inline nodes; `pendingInlineOffset` is where its content starts in the pending line.
+  let pendingInline: PendingInline | undefined;
+  let pendingInlineOffset = 0;
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
 
@@ -926,8 +918,14 @@ export function createStreamingDocument(): StreamingDocument {
     }
   };
 
-  const updateParagraph = (record: ParagraphRecord, streaming = false, pendingReferences = true) => {
+  const updateParagraph = (record: ParagraphRecord, streaming = false, pendingReferences = true, committed?: Inline[]) => {
     unregister(record);
+    if (committed) {
+      record.block.children = committed;
+      registerReferences(record);
+      tailParses++;
+      return;
+    }
     const classified = streaming && !record.source.includes("\n") ? resolver.classifyCommitted(record.source) : undefined;
     let inlineSource = classified?.kind === "paragraph" ? classified.content : record.source;
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
@@ -958,7 +956,8 @@ export function createStreamingDocument(): StreamingDocument {
       content = content.slice(task[0].length);
     }
     const record: ParagraphRecord = { block, source: content, labels: new Set() };
-    updateParagraph(record, true);
+    // The growing line already holds stable nodes for this text; only its unresolved tail is parsed again.
+    updateParagraph(record, true, true, pendingInline?.commit(content));
     paragraphRecords.set(block, record);
     allParagraphRecords.add(record);
     appendBlock(block);
@@ -1149,39 +1148,33 @@ export function createStreamingDocument(): StreamingDocument {
     source += delta;
     previewBlocks = undefined;
     scannedCharacters += delta.length * 3;
-    for (const piece of delta.match(/[^\n]*\n|[^\n]+$/g) ?? [])
+    for (const piece of delta.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
       for (const resolution of resolver.append(piece)) apply(resolution);
-    if (delta.includes("\n")) {
-      pendingPreviewLength = 0;
-      pendingPreviewNodes = [];
-      pendingPreviewAppendable = false;
+      if (piece.endsWith("\n")) pendingInline = undefined;
     }
   };
 
-  const pendingPreview = () => {
-    const pending = resolver.pending.content;
-    if (pendingPreviewAppendable && pending.length >= pendingPreviewLength) {
-      const suffix = pending.slice(pendingPreviewLength);
-      previewScannedCharacters += suffix.length;
-      if (!/[\\[*_~`<!&#|>\r\n]/.test(suffix)) {
-        if (suffix) pendingPreviewNodes.push({ type: "text", value: suffix });
-        copiedCharacters += suffix.length;
-        pendingPreviewLength = pending.length;
-        return pendingPreviewNodes;
-      }
+  const parsePending = (source: string, streaming: boolean) => {
+    const nodes = parseInline(source, streaming, environment());
+    markPendingReferences(nodes);
+    hideTableCandidatePipes(nodes);
+    return nodes;
+  };
+
+  const pendingPreview = (): Inline[] => {
+    const line = resolver.pending.content;
+    const classification = resolver.classifyPending(line);
+    if (classification.kind !== "paragraph") return [];
+    if (!pendingInline || pendingInlineOffset !== classification.offset) {
+      pendingInline = new PendingInline(parsePending);
+      pendingInlineOffset = classification.offset;
     }
-    const classification = resolver.classifyPending(pending);
-    const inlineSource = pendingInlineSource(classification.content);
-    previewScannedCharacters += pending.length;
-    copiedCharacters += inlineSource.length;
-    pendingPreviewNodes = inlineSource
-      ? /[\\[*_~`<!&]/.test(inlineSource) ? parseInline(inlineSource, true, environment()) : [{ type: "text", value: inlineSource }]
-      : [];
-    markPendingReferences(pendingPreviewNodes);
-    if (classification.provisional) markProvisional(pendingPreviewNodes);
-    pendingPreviewLength = pending.length;
-    pendingPreviewAppendable = classification.appendable;
-    return pendingPreviewNodes;
+    const copied = pendingInline.copiedCharacters;
+    const known = pendingInlineOffset + pendingInline.content.length;
+    previewScannedCharacters += line.length - known;
+    const suffix = pendingInline.append(line.slice(known));
+    copiedCharacters += pendingInline.copiedCharacters - copied;
+    return pendingInline.nodes.concat(suffix);
   };
 
   const normalizeDelta = (delta: string) => {

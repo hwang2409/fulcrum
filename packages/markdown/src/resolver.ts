@@ -39,9 +39,12 @@ export type PendingLine = {
 export type PendingClassification = {
   readonly content: string;
   readonly kind: "empty" | "fence" | "paragraph";
-  readonly provisional: boolean;
-  readonly appendable: boolean;
+  /** Where `content` starts in the classified line; only set for growing paragraph lines. */
+  readonly offset: number;
 };
+
+const EMPTY: PendingClassification = { content: "", kind: "empty", offset: 0 };
+const FENCE: PendingClassification = { content: "", kind: "fence", offset: 0 };
 
 type MutablePendingLine = {
   content: string;
@@ -161,32 +164,27 @@ function stripPendingContainers(line: string) {
 
 function classifyLeaf(line: string, growing: boolean): PendingClassification {
   let content = stripPendingContainers(line);
-  if (!content.trim()) return { content: "", kind: "empty", provisional: false, appendable: false };
+  if (!content.trim()) return EMPTY;
   const heading = /^#{1,6}[ \t]+/.exec(content);
   if (heading) content = content.slice(heading[0].length);
   const task = /^\[([ xX])\][ \t]+/.exec(content);
-  if (/^[ \t]*\[[^\]\n]+\]:/.test(content)) return { content: "", kind: "empty", provisional: false, appendable: false };
+  if (/^[ \t]*\[[^\]\n]+\]:/.test(content)) return EMPTY;
   if (task) content = content.slice(task[0].length);
-  else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return { content: "", kind: "empty", provisional: false, appendable: false };
-  if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return { content: "", kind: "fence", provisional: false, appendable: false };
+  else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
+  if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
   if (/[:-]/.test(content) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(content))
-    return { content: "", kind: "empty", provisional: false, appendable: false };
+    return EMPTY;
   if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
-    return { content: "", kind: "empty", provisional: false, appendable: false };
-  const firstBracket = content.indexOf("[");
+    return EMPTY;
+  // A growing `[label]` at the line start can still become a definition; labels end within 999 characters.
+  if (growing) return /^ {0,3}\[[^\]]{0,999}\]?[ \t]*$/.test(content) ? EMPTY : { content, kind: "paragraph", offset: line.length - content.length };
+  // An open `[` may still close on a later line.
   const openBracket = content.lastIndexOf("[");
-  // An open `[` may still close on a later line; only a growing line can still turn `[label]` into `[label]:`.
   if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
-  else if (growing && firstBracket >= 0 && content.trimEnd().endsWith("]")) content = content.slice(0, openBracket);
   const visibleContent = content.includes("|")
     ? content.split("|").map((cell) => cell.trim()).join("")
     : content;
-  return {
-    content: visibleContent,
-    kind: "paragraph",
-    provisional: false,
-    appendable: visibleContent.length > 0 && line.endsWith(visibleContent) && !/[\\[*_~`<!&#|>]/.test(visibleContent),
-  };
+  return { content: visibleContent, kind: "paragraph", offset: 0 };
 }
 
 function referenceDefinition(line: string) {
@@ -246,8 +244,8 @@ export class MarkdownLineResolver {
       const content = line.slice(cursor.offset);
       const marker = this.openLeaf.marker;
       if (new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(content))
-        return { content: "", kind: "fence", provisional: false, appendable: false };
-      return { content, kind: "fence", provisional: false, appendable: !/[\r\n]/.test(content) };
+        return FENCE;
+      return { content, kind: "fence", offset: cursor.offset };
     }
     return classifyLeaf(line, true);
   }
