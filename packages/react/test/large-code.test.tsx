@@ -147,6 +147,22 @@ test.each([
   expect(miscolored.length).toBe(0);
 });
 
+test("a colored cold-grammar result stays colored on the next streamed append", () => {
+  let warmed = false;
+  let notify: (() => void) | undefined;
+  const first = "const x = 1;\n";
+  const cold: Highlight = Object.assign((code: string) => warmed && code === first ? [{ text: code, type: "keyword" as const }] : [{ text: code }], {
+    dispose() {},
+    subscribe: (_id: string, listener: () => void) => { notify = listener; return () => {}; },
+  });
+  mount(<Markdown id="cold" source={"```ts\n" + first} streaming highlight={cold} />);
+  expect(spans()).toBe(0);
+  act(() => { warmed = true; notify!(); });
+  expect(spans()).toBeGreaterThan(0);
+  act(() => root!.render(<Markdown id="cold" source={"```ts\n" + first + "const y = 2;\n"} streaming highlight={cold} />));
+  expect(spans()).toBeGreaterThan(0);
+});
+
 test("a streaming fence over the limits follows its newest line", () => {
   mount(<Markdown id="m" source={"```cpp\n" + line.repeat(300)} streaming highlight={highlight} />);
   expect(container.querySelector('[data-part="text-viewer-position"]')!.textContent).toBe("at bottom");
