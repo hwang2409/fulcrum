@@ -416,7 +416,10 @@ function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; ch
   const previous = useRef<readonly { id: string }[] | null>(null);
   const [watched, setWatched] = useState<readonly string[]>([]);
   const [text, setText] = useState("");
+  // Rows that already spoke their final words: a row that moves (or folds back in) must not speak again.
+  const spoken = useRef(new Set<string>());
   const announce = useCallback((id: string, next: string) => {
+    spoken.current.add(id);
     pending.current.push(next);
     setWatched((current) => current.filter((candidate) => candidate !== id));
     if (timer.current !== null) return;
@@ -431,15 +434,15 @@ function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; ch
     const before = previous.current;
     previous.current = items;
     if (before === null || before === items) return;
-    // Rows added at the end are new: watch them all. Rows put anywhere else (an approval folding into its tool row, an
-    // older page, a store swap) speak only if they have nothing to say yet, so a folded call still says when it
-    // finishes and a swapped-in finished session stays silent.
+    // Rows added at the end are new: watch them all. A row that replaces rows (an approval folding into its tool row)
+    // is watched too, so a fast call that folds already finished still says so; a row that already spoke stays silent. Rows put anywhere else (an older page, a store swap) speak only if they have
+    // nothing to say yet, so a swapped-in finished session stays silent.
     const added: string[] = [];
     if (change?.from === before) {
       let length = before.length;
       for (const { index, deleteCount, items: inserted } of change.splices) {
         const atEnd = index === length && deleteCount === 0;
-        for (const { id } of inserted) if (atEnd || silent(store.getItem(id))) added.push(id);
+        for (const { id } of inserted) if (!spoken.current.has(id) && (atEnd || deleteCount > 0 || silent(store.getItem(id)))) added.push(id);
         length += inserted.length - deleteCount;
       }
       // A removed row's item is gone too; an edit touches few rows, so this skips scanning the outline.

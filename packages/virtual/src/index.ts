@@ -516,19 +516,28 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
           length += inserted.length - deleteCount;
         }
         if (length !== items.length) throw new Error("outline update does not match the outline");
-        for (const { index, deleteCount, items: inserted } of update.splices) {
-          const atEnd = index === layout.length && deleteCount === 0;
-          let replacedUnseen = false;
-          layout.splice(index, deleteCount, inserted, {
-            add: entry,
-            remove: ({ id, kind }) => {
-              idsByKind.get(kind)?.delete(id);
-              if (measuredByKind.get(kind)?.delete(id)) totalMeasuredSize -= measured.get(id)!;
-              if (unseenIds.delete(id)) replacedUnseen = true;
-            },
-          });
-          // New rows at the end are unseen; a row that replaces an unseen row stays unseen; history and folds are not new.
-          if (!pinned && (atEnd || replacedUnseen)) for (const { id } of inserted) unseenIds.add(id);
+        // A later splice can still throw (a duplicate id) after earlier ones applied: then forget the outline, so the
+        // next update rebuilds instead of editing a half-edited layout. A first splice that throws changed nothing.
+        let applied = 0;
+        try {
+          for (const { index, deleteCount, items: inserted } of update.splices) {
+            const atEnd = index === layout.length && deleteCount === 0;
+            let replacedUnseen = false;
+            layout.splice(index, deleteCount, inserted, {
+              add: entry,
+              remove: ({ id, kind }) => {
+                idsByKind.get(kind)?.delete(id);
+                if (measuredByKind.get(kind)?.delete(id)) totalMeasuredSize -= measured.get(id)!;
+                if (unseenIds.delete(id)) replacedUnseen = true;
+              },
+            });
+            // New rows at the end are unseen; a row that replaces an unseen row stays unseen; history and folds are not new.
+            if (!pinned && (atEnd || replacedUnseen)) for (const { id } of inserted) unseenIds.add(id);
+            applied++;
+          }
+        } catch (error) {
+          if (applied > 0) appliedOutline = null;
+          throw error;
         }
       } else {
         const ids = new Set<Id>();

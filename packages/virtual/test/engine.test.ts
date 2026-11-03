@@ -554,6 +554,18 @@ describe("incremental outline updates", () => {
     expect(virtual.getSnapshot().rows.map(({ id }) => id)).toEqual(["a", "b"]);
   });
 
+  test("a later bad splice after an applied one makes the next update rebuild, never edit a half-edited layout", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10 });
+    const outline = [{ id: "a", kind: "x" }, { id: "b", kind: "x" }];
+    virtual.setOutline(outline);
+    const next = [{ id: "c", kind: "x" }, { id: "a", kind: "x" }, { id: "b", kind: "x" }, { id: "c", kind: "x" }];
+    expect(() => virtual.setOutline(next, { from: outline, splices: [{ index: 0, deleteCount: 0, items: [{ id: "c", kind: "x" }] }, { index: 3, deleteCount: 0, items: [{ id: "c", kind: "x" }] }] })).toThrow("unique");
+    const good = [{ id: "a", kind: "x" }, { id: "b", kind: "x" }, { id: "d", kind: "x" }];
+    virtual.setOutline(good, { from: outline, splices: [{ index: 2, deleteCount: 0, items: [{ id: "d", kind: "x" }] }] });
+    virtual.setViewport({ scrollTop: 0, size: 100, source: "user" });
+    expect(virtual.getSnapshot().rows.map(({ id }) => id)).toEqual(["a", "b", "d"]);
+  });
+
   test("all-loaded mode follows incremental outline updates", () => {
     const virtual = createVirtualizer({ estimateSize: () => 10 });
     const outline = [{ id: "a", kind: "x" }];
