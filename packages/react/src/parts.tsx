@@ -456,7 +456,7 @@ const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Rende
 // A sub-agent row is fixed at 56 px; with the 12 px row gap the estimate is exact.
 const estimateRowSize = (kind: string) => kind === "tool" ? 120 : kind === "approval" ? 100 : kind === "message" ? 72 : kind === "sub_agent" ? 68 : 48;
 const virtualContainerStyle: CSSProperties = { position: "relative", display: "block", contain: "size style", overflowAnchor: "none" };
-const virtualRowStyle: CSSProperties = { position: "absolute", insetInline: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBlockEnd: "var(--fulcrum-gap, 12px)", contain: "layout style" };
+const virtualRowStyle: CSSProperties = { position: "absolute", insetBlockStart: 0, insetInline: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBlockEnd: "var(--fulcrum-gap, 12px)", contain: "layout style" };
 
 export type TimelineProps = {
   renderers?: Renderers;
