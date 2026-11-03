@@ -345,7 +345,7 @@ function Run({ client, sessions, open, opener, focusComposer }: { client: ZetaCl
             <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
             <EmptyRun />
           </div>
-          <RunComposer key={open.id} client={open.stale ? null : client} onUndelivered={onUndelivered} />
+          <RunComposer key={open.id} client={open.stale ? null : client} store={open.lease.store} onUndelivered={onUndelivered} />
         </RunProvider>
       </Undelivered>
     </Decisions.Provider>
@@ -366,9 +366,8 @@ function EmptyRun() {
 const offline = () => Promise.reject(new Error("not connected to zeta serve"));
 
 /** The message box: send while idle, steer while a turn runs (zeta always takes steering), stop the turn. */
-function RunComposer({ client, onUndelivered }: { client: ZetaClient | null; onUndelivered(intents: string[]): void }) {
+function RunComposer({ client, store, onUndelivered }: { client: ZetaClient | null; store: SessionStore; onUndelivered(intents: string[]): void }) {
   const running = useRun((state) => state.agent === "running");
-  const store = useRunStore();
   const delivery = useMemo(() => createDelivery(undefined, (event) => {
     const deliveryId = event.type === "user_message" && event.delivery_id;
     if (deliveryId && !store.getState().messageAliases.get(`delivery:${deliveryId}`)) store.dispatch(event);
