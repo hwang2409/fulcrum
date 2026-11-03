@@ -1,6 +1,7 @@
 import type { RunEvent, RunItem } from "./events.js";
 import {
   initialState,
+  createEntityDraft,
   reduceAllWithEntities,
   type OutlineItem,
   type OutlineSplice,
@@ -68,35 +69,24 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   let outlineChanged = false;
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
-  let edits: OutlineSplice[] = [];
 
   const flush = () => {
     if (pending.length === 0 || disposed) return false;
     const events = pending;
     pending = [];
     const beforeOutline = current.outline;
-    current = reduceAllWithEntities(current, events, {
-      get: (id) => entities.get(id),
-      set: (item) => {
-        entities.set(item.id, item);
-        changedItems.add(item.id);
-      },
-      delete: (id) => {
-        entities.delete(id);
-        changedItems.add(id);
-      },
-      splice: (edit) => edits.push(edit),
-      getMessageAlias: (key) => messageAliases.get(key),
-      setMessageAlias: (key, id) => messageAliases.set(key, id),
-    });
+    const transaction = createEntityDraft(entities, messageAliases);
+    const next = reduceAllWithEntities(current, events, transaction.draft);
+    transaction.commit();
+    for (const id of transaction.changed) changedItems.add(id);
+    current = next;
     stateChanged = true;
     if (current.outline !== beforeOutline) {
       // One change per notification: flushes before it (a read forces one) extend it, so subscribers see one edit list.
       const prior = outlineChanged ? outlineSnapshot.change : { from: beforeOutline, splices: [] };
-      outlineSnapshot = { items: current.outline, change: prior && { from: prior.from, splices: mergeSplices(prior.splices, edits) } };
+      outlineSnapshot = { items: current.outline, change: prior && { from: prior.from, splices: mergeSplices(prior.splices, transaction.edits) } };
       outlineChanged = true;
     }
-    edits = [];
     return true;
   };
   const notify = () => {

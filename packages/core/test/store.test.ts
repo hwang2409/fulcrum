@@ -179,6 +179,27 @@ test("stores do not share delivery aliases through initialState", () => {
   expect(second.getOutline()).toEqual([{ id: "user:delivery:same", kind: "user" }]);
 });
 
+test("a failed batch does not publish entity or delivery indexes", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((flush) => jobs.push(flush));
+  store.dispatch({ type: "user_message", text: "go", mode: "send", delivery_id: "throw" });
+  store.dispatch({ type: "tool_start", tool_call: undefined as never });
+  expect(() => jobs.shift()!()).toThrow();
+  expect(store.getState().outline).toEqual([]);
+  expect(store.getItem("user:delivery:throw")).toBeUndefined();
+  expect(store.hasMessageDelivery("throw")).toBe(false);
+});
+
+test("a failed batch does not publish a plain entity write", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((flush) => jobs.push(flush));
+  store.dispatch({ type: "user_message", text: "go", mode: "send" });
+  store.dispatch({ type: "tool_start", tool_call: undefined as never });
+  expect(() => jobs.shift()!()).toThrow();
+  expect(store.getState().outline).toEqual([]);
+  expect(store.getItem("user:1")).toBeUndefined();
+});
+
 test("dispose and replay rebuilds delivery aliases", () => {
   const store = createRunStore((flush) => flush());
   store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "one" });

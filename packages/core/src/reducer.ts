@@ -63,7 +63,7 @@ const compareSubAgentOrder = (prior: SubAgentEvent, event: SubAgentEvent) => {
   return before === undefined || after === undefined ? undefined : Math.sign(after - before);
 };
 
-interface EntityDraft {
+export interface EntityDraft {
   get(id: string): RunItem | undefined;
   set(item: RunItem): void;
   delete(id: string): void;
@@ -73,6 +73,36 @@ interface EntityDraft {
   setMessageAlias(key: string, id: string): void;
 }
 type SpliceOutline = (index: number, deleteCount: number, items: readonly OutlineItem[]) => void;
+
+export function createEntityDraft(entities: Map<string, RunItem>, aliases: Map<string, string>) {
+  const entityChanges = new Map<string, RunItem | undefined>();
+  const aliasChanges = new Map<string, string | undefined>();
+  const edits: OutlineSplice[] = [];
+  const changed = new Set<string>();
+  const draft: EntityDraft = {
+    get: (id) => entityChanges.has(id) ? entityChanges.get(id) : entities.get(id),
+    set: (item) => { entityChanges.set(item.id, item); changed.add(item.id); },
+    delete: (id) => { entityChanges.set(id, undefined); changed.add(id); },
+    splice: (edit) => edits.push(edit),
+    getMessageAlias: (key) => aliasChanges.has(key) ? aliasChanges.get(key) : aliases.get(key),
+    setMessageAlias: (key, id) => aliasChanges.set(key, id),
+  };
+  return {
+    draft,
+    edits,
+    changed,
+    commit() {
+      for (const [id, item] of entityChanges) {
+        if (item === undefined) entities.delete(id);
+        else entities.set(id, item);
+      }
+      for (const [key, id] of aliasChanges) {
+        if (id === undefined) aliases.delete(key);
+        else aliases.set(key, id);
+      }
+    },
+  };
+}
 
 type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;
 type MessageBlock = Extract<RunEvent, { type: "message_block" }>;
