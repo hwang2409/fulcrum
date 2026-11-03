@@ -368,7 +368,8 @@ export function reduceAllWithEntities(
           const order = compareSubAgentOrder(prior, event);
           const priorTerminal = terminalSubAgentStatuses.has(prior.status);
           if (order === -1 || (priorTerminal && (order === undefined || !terminalSubAgentStatuses.has(event.status)))) break;
-          setItem({ ...prior, ...event, id, urgency: event.urgency });
+          const toolCount = prior.toolCount === undefined || event.toolCount === undefined ? event.toolCount ?? prior.toolCount : Math.max(prior.toolCount, event.toolCount);
+          setItem({ ...prior, ...event, id, urgency: event.urgency, toolCount });
         } else {
           appendItem({ ...event, id });
         }

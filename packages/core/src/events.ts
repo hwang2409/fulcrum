@@ -64,6 +64,14 @@ export interface SubAgentEvent {
   type: "sub_agent";
   childRunId: string;
   status: SubAgentStatus;
+  /** The worker or preset label, for example "reviewer". */
+  name?: string;
+  /** The delegated task, one line. */
+  task?: string;
+  /** The newest progress line, for example "$ bun test". */
+  latestActivity?: string;
+  /** Tool calls the child started so far. It never goes down. */
+  toolCount?: number;
   summary?: string;
   urgency?: SubAgentUrgency;
   notificationId?: string;

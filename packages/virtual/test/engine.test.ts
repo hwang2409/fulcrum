@@ -502,3 +502,22 @@ test("explicit upward intent releases follow until the user reaches the exact bo
   virtual.setViewport({ scrollTop: 290, size: 10, source: "user" });
   expect(virtual.getSnapshot()).toMatchObject({ pinned: true, unseenCount: 0 });
 });
+
+test("scrollToEnd and scrollToId notify with follow mode already updated", () => {
+  const virtual = engine(Array(50).fill(20), 100, 0);
+  virtual.setViewport({ scrollTop: 0, size: 100, source: "user" });
+  const seen: boolean[] = [];
+  virtual.subscribe(() => seen.push(virtual.getSnapshot().pinned));
+  virtual.scrollToEnd();
+  virtual.scrollToId("row-10");
+  expect(seen).toEqual([true, false]);
+});
+
+test("releasing follow clears the last correction's jump, so the adapter does not undo the user's scroll", () => {
+  const virtual = engine(Array(50).fill(20), 100, 900);
+  virtual.scrollToEnd();
+  mutate(virtual, () => virtual.measure("row-49", 60));
+  expect(Math.abs(virtual.getSnapshot().jump)).toBeGreaterThan(0);
+  virtual.setFollow(false);
+  expect(virtual.getSnapshot().jump).toBe(0);
+});
