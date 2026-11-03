@@ -406,3 +406,32 @@ test("tool-specific timeline renderer still wins", () => {
   expect(container.querySelector("[data-override]")?.textContent).toBe("tool:override");
   expect(container.querySelector("[data-tool-view]")).toBeNull();
 });
+
+test("a command taller than its clamp gets a control that shows all of it", () => {
+  const command = Array.from({ length: 20 }, (_, i) => `echo ${i}`).join("\n");
+  // happy-dom has no layout: the command reports 20 lines of content in an 8-line box until the clamp is removed.
+  const proto = HTMLElement.prototype;
+  const descriptors = (["scrollHeight", "clientHeight"] as const).map((name) => [name, Object.getOwnPropertyDescriptor(proto, name)] as const);
+  Object.defineProperty(proto, "scrollHeight", { configurable: true, get() { return 400; } });
+  Object.defineProperty(proto, "clientHeight", { configurable: true, get(this: Element) { return this.hasAttribute("data-expanded") ? 400 : 160; } });
+  try {
+    render(tool("sh", "bash", { kind: "shell", command }, "ok\n"), ["tool:sh"]);
+    openCard("tool:sh");
+    const button = q('[data-action="show-command"]');
+    expect(button.textContent).toBe("show full command");
+    expect(q('[data-part="shell-command"]').hasAttribute("data-expanded")).toBe(false);
+    act(() => button.click());
+    expect(q('[data-part="shell-command"]').hasAttribute("data-expanded")).toBe(true);
+    expect(q('[data-action="show-command"]')).toBeNull();
+    expect(q('[data-part="shell-command"]').textContent).toBe(command);
+  } finally {
+    for (const [name, descriptor] of descriptors) descriptor ? Object.defineProperty(proto, name, descriptor) : delete (proto as Partial<HTMLElement>)[name];
+  }
+});
+
+test("a command that fits its clamp has no show control", () => {
+  render(tool("sh", "bash", { kind: "shell", command: `rg ${"x".repeat(80)}` }, "ok\n"), ["tool:sh"]);
+  openCard("tool:sh");
+  expect(q('[data-part="shell-command"]')).not.toBeNull();
+  expect(q('[data-action="show-command"]')).toBeNull();
+});

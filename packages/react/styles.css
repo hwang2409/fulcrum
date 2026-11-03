@@ -230,7 +230,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 :is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]):hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
 :is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]):active { background: var(--fulcrum-border); }
 :is([data-part="tool"], [data-part="approval"]) button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
-[data-part="tool-body"] button[data-action="open-viewer"] { display: block; width: 100%; padding: 0 12px; color: var(--fulcrum-accent); text-align: left; }
+[data-part="tool-body"] button:is([data-action="open-viewer"], [data-action="show-command"]) { display: block; width: 100%; padding: 0 12px; color: var(--fulcrum-accent); text-align: left; }
 @media (pointer: coarse) { :is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]) { min-height: 44px; } }
 
 [data-part="approval-actions"] {
@@ -329,6 +329,14 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-tool-view="shell"] [data-part="tool-summary"] { color: var(--fulcrum-fg); }
 :is([data-part="shell-command"], [data-part="tool-path"]) { padding: 8px 12px; }
 [data-part="shell-command"] { color: var(--fulcrum-fg); }
+/* A long command shows 8 lines; the "show full command" button below it removes the clamp. The bottom space is a
+   border, not padding, so the clip does not show the top of line 9. */
+[data-part="shell-command"]:not([data-expanded]) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 8; line-clamp: 8; overflow: hidden; padding-bottom: 0; border-bottom: 8px solid transparent; }
+/* Narrow screens: the command is the main fact of a shell card, so the header wraps it to 4 lines, hung after the "$ ",
+   before it cuts it. A command cut there is longer than the body's repeat threshold, so the body still shows it in full. */
+@media (max-width: 860px) {
+  [data-tool-view="shell"] [data-part="tool-summary"] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; white-space: normal; overflow-wrap: anywhere; padding-left: 2ch; text-indent: -2ch; }
+}
 [data-part="shell-command"]::before { content: "$ "; color: var(--fulcrum-ok); font-weight: 700; }
 [data-tool-view="shell"] [data-part="tool-output"] { background: var(--fulcrum-bg); }
 [data-part="tool-output"][data-stream="stderr"] { border-left: 2px solid var(--fulcrum-danger); padding-left: 10px; }
