@@ -1,7 +1,7 @@
 const external = ["@fulcrum/core", "@fulcrum/highlight", "@fulcrum/markdown", "@fulcrum/react", "@fulcrum/zeta", "@fulcrum/virtual", "react", "react-dom"];
 const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external, ceiling: 8_500 },
-  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 18_100 }, // tool-card highlighting, ANSI, and JSON: ~15 kB
+  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 18_600 }, // tool-card highlighting, ANSI, JSON, and the show-full-command control
   { name: "zeta", entry: "packages/zeta/dist/index.js", external, ceiling: 8_500 },
   { name: "virtual", entry: "packages/virtual/dist/index.js", external, ceiling: 11_000 },
   { name: "markdown", entry: "packages/markdown/dist/react.js", external, reportOnly: true },
