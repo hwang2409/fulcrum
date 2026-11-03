@@ -149,7 +149,7 @@ export const aliases: Record<string, string> = {
   "jison": "jison",
   "json": "json",
   "json5": "json5",
-  "jsonc": "jsonc",
+  "jsonc": "json",
   "jsonl": "jsonl",
   "jsonnet": "jsonnet",
   "jssm": "jssm",
@@ -360,7 +360,7 @@ const extensions: Record<string, string> = {
   "svg": "xml",
   "xsd": "xml",
   "xsl": "xml",
-  "env": "dotenv",
+  "env": "shell",
   "tf": "terraform",
   "tfvars": "terraform",
   "hcl": "hcl",
@@ -422,7 +422,9 @@ const extensions: Record<string, string> = {
   "npmrc": "ini",
   "h": "c",
   "m": "objective-c",
-  "pl": "perl"
+  "pl": "perl",
+  "jsonl": "json",
+  "json5": "json"
 };
 const fileNames: Record<string, string> = {
   "dockerfile": "dockerfile",
@@ -434,7 +436,7 @@ const fileNames: Record<string, string> = {
   "apache.conf": "apache",
   "httpd.conf": "apache",
   ".gitconfig": "ini",
-  ".env": "dotenv",
+  ".env": "shell",
   ".envrc": "shell",
   ".bashrc": "shell",
   ".bash_profile": "shell",

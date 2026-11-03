@@ -46,7 +46,7 @@ scope.onmessage = async (event) => {
   const { requestId, code, language, context } = event.data;
   try {
     const tokens = await runtime.tokenize(code, language, context);
-    send({ requestId, tokens, provisional: runtime.willUpdate(context), recycle: runtime.shouldRecycle() });
+    send({ requestId, tokens, provisional: runtime.willUpdate(context), recycle: runtime.consumeRecycle() });
   } catch (cause) {
     scope.postMessage({ requestId, error: cause instanceof Error ? cause.message : String(cause) });
   }

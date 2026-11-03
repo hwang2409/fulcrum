@@ -54,13 +54,6 @@ class RegexCache extends Map<string, RegExp | Error> {
 // message queue after WARM_SLICE_MS, so a new request waits at most one slice plus one pattern (in Chromium the most
 // costly bundled pattern, in cpp, converts and compiles in about 21 ms).
 const WARM_SLICE_MS = 8;
-const WARM_SAMPLE = 'x = f("s", 1); // c';
-function warmSample(language: string): string {
-  if (language === "html") return '<style>body { color: red; }</style>\n<script>const x = 1;</script>\n';
-  if (language === "css") return '.card { color: red; }\n';
-  if (language === "typescript") return 'import type { RunEvent } from "./events.js";\nexport function createRunStore() {\n  let state: RunState = { items: [], itemsById: new Map() };\n  const pending: RunEvent[] = [];\n  return { dispatch(event: RunEvent) { pending.push(event); state = reduce(state, event); } };\n}\n';
-  return WARM_SAMPLE;
-}
 type Provisional = { code: string; language: string; context: HighlightContext };
 /**
  * Where the runtime sends a block again, colored, once its grammar is warm. Until then a block is answered at once
@@ -116,7 +109,10 @@ export class TokenizerRuntime {
   private readonly warmTasks = new Map<string, { patterns: Set<string>; highlighter: HighlighterCore; cache: RegexCache; epoch: number; order: number; resolve: () => void }>();
   private warmingActive = false;
   private warmOrder = 0;
+  private readonly demandOrder = new Map<string, number>();
+  private demandSequence = 0;
   private readonly warmed = new Set<string>();
+  private readonly initializing = new Set<string>();
   private recycle = false;
   // The newest revision of each block asked for while its grammar was cold, until that grammar is warm.
   private readonly provisional = new Map<string, Provisional>();
@@ -131,6 +127,8 @@ export class TokenizerRuntime {
   // create their own (each racer would load its grammar into a different engine).
   private enginePromise?: Promise<HighlighterCore>;
   private readonly languages = new Map<string, Promise<void>>();
+  private readonly loadTasks = new Map<string, { resolve: () => void; reject: (cause: unknown) => void; order: number }>();
+  private loadingActive = false;
 
   private engine(): Promise<HighlighterCore> {
     this.enginePromise ??= (async () => {
@@ -151,27 +149,47 @@ export class TokenizerRuntime {
     const epoch = this.epoch;
     let loading = this.languages.get(language);
     if (!loading) {
-      loading = (async () => {
-        const grammars = await loadLanguage(language);
-        await highlighter.loadLanguage(...grammars);
-        const patterns = grammarPatterns(grammars, new Set());
-        if (this.languages.size >= MAX_RESIDENT_LANGUAGES) this.recycle = true;
-        for (const pattern of patterns) cache.grammar.add(pattern);
-        // Not awaited: requests are answered while the grammar warms, with plain text until it is warm.
-        this.scheduleWarm(language, patterns, highlighter, cache, epoch);
-      })();
+      let resolve!: () => void;
+      let reject!: (cause: unknown) => void;
+      loading = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
       this.languages.set(language, loading);
+      this.loadTasks.set(language, { resolve, reject, order: this.demandOrder.get(language) ?? 0 });
+      void this.pumpLoads(highlighter, cache, epoch);
       loading.catch(() => this.languages.delete(language)); // a failed load can be retried
     }
     await loading;
     return highlighter;
   }
 
+  private async pumpLoads(highlighter: HighlighterCore, cache: RegexCache, epoch: number): Promise<void> {
+    if (this.loadingActive) return;
+    this.loadingActive = true;
+    try {
+      // collect same-turn visible demands before starting an import, so background warm-up cannot win by a race.
+      await nextTask();
+      while (this.loadTasks.size) {
+        const [language, task] = [...this.loadTasks.entries()].sort((a, b) => b[1].order - a[1].order)[0]!;
+        this.loadTasks.delete(language);
+        try {
+          const grammars = await loadLanguage(language);
+          await highlighter.loadLanguage(...grammars);
+          const patterns = grammarPatterns(grammars, new Set());
+          if (this.languages.size >= MAX_RESIDENT_LANGUAGES) this.recycle = true;
+          for (const pattern of patterns) cache.grammar.add(pattern);
+          this.scheduleWarm(language, patterns, highlighter, cache, epoch);
+          task.resolve();
+        } catch (cause) { task.reject(cause); }
+        await nextTask();
+      }
+    } finally { this.loadingActive = false; }
+  }
+
   private scheduleWarm(language: string, patterns: Set<string>, highlighter: HighlighterCore, cache: RegexCache, epoch: number): void {
     let resolve!: () => void;
     const done = new Promise<void>((finish) => { resolve = finish; });
     this.warming.set(language, done);
-    this.warmTasks.set(language, { patterns, highlighter, cache, epoch, order: ++this.warmOrder, resolve });
+    const order = this.demandOrder.get(language) ?? ++this.warmOrder;
+    this.warmTasks.set(language, { patterns, highlighter, cache, epoch, order, resolve });
     void this.pumpWarm();
   }
 
@@ -194,11 +212,11 @@ export class TokenizerRuntime {
     this.onProgress(null);
     await nextTask();
     if (epoch !== this.epoch) return;
-    // The sample initializes the scanner without compiling every dormant rule. Demand tokenization must stay independent
-    // of warm-up; compiling the full grammar here made common languages wait several seconds behind background work.
-    highlighter.codeToTokensBase(warmSample(language), { lang: language, theme: THEME });
+    // Readiness is established by the real pending block, never by a representative sample. Its scanner is initialized
+    // from the exact syntax the caller asked to render, then the same block is replayed with the normal path.
     this.warmed.add(language);
-    await this.flushProvisional(language, epoch);
+    this.initializing.add(language);
+    try { await this.flushProvisional(language, epoch); } finally { this.initializing.delete(language); }
   }
 
   // Compiles each pattern not yet cached, yielding to the worker's queue after each WARM_SLICE_MS.
@@ -238,8 +256,12 @@ export class TokenizerRuntime {
     return this.provisional.get(context.id)?.context.version === context.version;
   }
 
-  /** Entries in the regex cache: a loaded grammar's own patterns, and patterns built while tokenizing (at most MAX_DYNAMIC_REGEXES). */
-  shouldRecycle(): boolean { return this.recycle; }
+  /** Consume one maintenance-recycle request. It is deliberately separate from fatal worker recovery. */
+  consumeRecycle(): boolean {
+    const requested = this.recycle;
+    this.recycle = false;
+    return requested;
+  }
 
   cacheSize(): { static: number; dynamic: number } {
     return { static: this.cache?.static.size ?? 0, dynamic: this.cache?.size ?? 0 };
@@ -247,6 +269,7 @@ export class TokenizerRuntime {
 
   async tokenize(code: string, language: string, context: HighlightContext): Promise<Token[]> {
     const epoch = this.epoch;
+    if (!this.demandOrder.has(language)) this.demandOrder.set(language, ++this.demandSequence);
     const highlighter = await this.ensureLanguage(language);
     if (epoch !== this.epoch) return code ? [{ text: code }] : []; // disposed while the grammar loaded
     const known = this.provisional.get(context.id);
@@ -295,13 +318,14 @@ export class TokenizerRuntime {
       return output;
     };
     const budget = { retryMs: DOCUMENT_RETRY_BUDGET_MS };
+    const initializing = this.initializing.has(language);
     const tokens: Token[] = [];
     let grammarState = state;
     this.onProgress(context);
     for (const line of sourceLines(code.slice(start, completeLength))) {
       if (line.replace(/\n$/, "").length > MAX_LINE) { appendToken(tokens, line); grammarState = undefined; }
       else {
-        const result = this.tokenizeLine(highlighter, line, language, grammarState, budget);
+        const result = this.tokenizeLine(highlighter, line, language, grammarState, budget, initializing);
         if (!result) { appendToken(tokens, line); grammarState = undefined; }
         else { this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result); }
       }
@@ -311,10 +335,10 @@ export class TokenizerRuntime {
   }
 
   /** One line's tokens under the tokenize policy (top of file), or undefined: the line is plain. */
-  private tokenizeLine(highlighter: HighlighterCore, line: string, language: string, grammarState: GrammarState | undefined, budget: { retryMs: number }): ThemedToken[][] | undefined {
+  private tokenizeLine(highlighter: HighlighterCore, line: string, language: string, grammarState: GrammarState | undefined, budget: { retryMs: number }, initializing = false): ThemedToken[][] | undefined {
     for (let attempt = 1; ; attempt++) {
       const started = performance.now();
-      const result = highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
+      const result = highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, ...(initializing ? {} : { tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS }) });
       const elapsed = performance.now() - started;
       if (attempt > 1) budget.retryMs -= elapsed;
       if (elapsed < TOKENIZE_TIME_LIMIT_MS) return result;
@@ -349,11 +373,16 @@ export class TokenizerRuntime {
     this.highlighter = undefined;
     this.enginePromise = undefined;
     this.languages.clear();
+    this.loadTasks.clear();
+    this.loadingActive = false;
     this.cache?.clear();
     this.cache = undefined;
     this.warming.clear();
     this.warmTasks.clear();
     this.warmed.clear();
+    this.initializing.clear();
+    this.demandOrder.clear();
+    this.demandSequence = 0;
     this.warmingActive = false;
     this.provisional.clear();
     this.recycle = false;

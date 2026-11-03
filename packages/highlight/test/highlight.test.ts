@@ -217,23 +217,23 @@ describe("incremental tokenization", () => {
     counter.runtime.dispose();
   });
 
-  // In the worker a grammar is warmed in the background; once warm, a document compiles no regex: warm-up compiled each
-  // pattern in every form textmate compiles it (anchor variants, `\z` rewritten). Regression: cpp's anchor variants were
-  // missed, and its first line then compiled 51 patterns in one scanner build that cannot yield (272 ms in Chromium).
-  test("prioritizes the fifteenth of thirty demanded languages", async () => {
-    const languages = ["csharp", "powershell", "dart", "scala", "clojure", "elixir", "haskell", "ocaml", "zig", "nix", "terraform", "vue", "svelte", "astro", "julia", "solidity", "graphql", "prisma", "sql", "toml", "dotenv", "dockerfile", "makefile", "cmake", "nginx", "csv", "latex", "log", "rust", "typescript"];
+  // A visible request arrives after background warming has started. Demand priority must survive grammar loading,
+  // initialization, and tokenization; the old FIFO scheduler took more than 20 seconds on this shape.
+  test("visible demand preempts 29 background languages", async () => {
+    const background = ["csharp", "powershell", "dart", "scala", "clojure", "elixir", "haskell", "ocaml", "zig", "nix", "terraform", "vue", "svelte", "astro", "solidity", "graphql", "prisma", "sql", "toml", "dotenv", "dockerfile", "makefile", "cmake", "nginx", "csv", "latex", "log", "rust", "typescript"];
     const realNow = Object.getOwnPropertyDescriptor(performance, "now")!;
     Object.defineProperty(performance, "now", { configurable: true, value: () => Date.now() });
-    const started = Date.now();
     let colored = false;
-    const runtime = new TokenizerRuntime((context, language, tokens) => { if (context.id === "demand-14" && language === "julia" && tokens.some((token) => token.type)) colored = true; });
-    await Promise.all(languages.map((language, index) => runtime.tokenize("function greet() { return 1; }\n", language, { id: `demand-${index}`, version: 1, state: "done" })));
-    while (!colored && Date.now() - started < 30_000) await new Promise((resolve) => setTimeout(resolve, 10));
+    const runtime = new TokenizerRuntime((context, language, tokens) => { if (context.id === "visible-julia" && language === "julia" && tokens.some((token) => token.type)) colored = true; });
+    background.forEach((language, index) => { void runtime.tokenize("function greet() { return 1; }\n", language, { id: `background-${index}`, version: 1, state: "done" }); });
+    const started = Date.now();
+    void runtime.tokenize("function greet()\n  return 1\nend\n", "julia", { id: "visible-julia", version: 1, state: "done" });
+    while (!colored && Date.now() - started < 10_000) await new Promise((resolve) => setTimeout(resolve, 10));
     expect(colored).toBe(true);
-    expect(Date.now() - started).toBeLessThan(30_000);
+    expect(Date.now() - started).toBeLessThan(10_000);
     runtime.dispose();
     Object.defineProperty(performance, "now", realNow);
-  }, 60_000);
+  }, 20_000);
 
   test("recycles before grammar residency exceeds its finite budget", async () => {
     const runtime = new TokenizerRuntime(() => {});
@@ -243,7 +243,7 @@ describe("incremental tokenization", () => {
       await runtime.tokenize("x\n", language, { id: `budget-${index}`, version: 1, state: "done" });
       await runtime["warming"].get(language);
     }
-    expect(runtime.shouldRecycle()).toBe(true);
+    expect(runtime.consumeRecycle()).toBe(true);
     runtime.dispose();
   }, 60_000);
 

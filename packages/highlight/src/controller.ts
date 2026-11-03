@@ -127,6 +127,14 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     crashes.push(now);
     scheduleRestart(RESTART_BACKOFF_MS[crashes.length - 1]);
   };
+  // Residency recycling is planned maintenance, not a worker failure. Replace immediately and replay every job
+  // without consuming crash tolerance or announcing permanent unavailability.
+  const recycle = () => {
+    stop();
+    if (disposed) return;
+    if (!startWorker()) return crash();
+    for (const [id, job] of pending) post(id, job);
+  };
   const onSilence = () => {
     if (owesAck) return heard(); // the worker waits on this page (a hidden tab runs no frames), it is not hung
     const blamed = busyWith;
@@ -155,7 +163,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
             if (sameBlock(busyWith, job.context)) busyWith = null;
             // An error for one block (the worker is alive) leaves that block plain.
             job.resolve(tokens ?? plain(job.code));
-            if ("recycle" in data && data.recycle) crash();
+            if ("recycle" in data && data.recycle) recycle();
           }
         }
         heard();
