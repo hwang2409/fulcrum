@@ -2,7 +2,7 @@
   "name": "@fulcrum/highlight",
   "version": "0.0.0",
   "type": "module",
-  "files": ["dist", "styles.css", "THIRD_PARTY_NOTICES.md", "README.md"],
+  "files": ["dist", "src/names.ts", "styles.css", "THIRD_PARTY_NOTICES.md", "README.md"],
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./languages": { "types": "./dist/names.d.ts", "bun": "./src/names.ts", "import": "./dist/names.js" },
