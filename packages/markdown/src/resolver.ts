@@ -137,7 +137,17 @@ function consumeItemIndent(cursor: Cursor, width: number) {
   return false;
 }
 
+function physicalLeaf(line: string) {
+  for (;;) {
+    const marker = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)?.[0];
+    if (!marker) return line;
+    line = line.slice(marker.length);
+  }
+}
+
 const isBlank = (line: string, offset = 0) => /^[ \t]*$/.test(line.slice(offset));
+const isTableDelimiter = (line: string) => /^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$/.test(line)
+  || /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/.test(line);
 const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
 const normalizeReference = (label: string) => label.trim().replace(/\s+/g, " ").toUpperCase();
 
@@ -167,7 +177,7 @@ const frameEqual = (left: ContainerFrame, right: ContainerFrame) => left.kind ==
 
 export class MarkdownLineResolver {
   private stack: ContainerFrame[] = [{ kind: "document" }];
-  private openLeaf?: { kind: "paragraph" } | { kind: "fence"; marker: string } | { kind: "indented-code" } | { kind: "table" } | { kind: "html"; end: RegExp };
+  private openLeaf?: { kind: "paragraph"; content: string } | { kind: "fence"; marker: string } | { kind: "indented-code" } | { kind: "table" } | { kind: "html"; end: RegExp };
   private pendingLine: MutablePendingLine = freshPending();
   private readonly referenceIndex = new Map<string, ReferenceDefinition>();
   private pendingReferenceTitle?: { label: string };
@@ -205,12 +215,22 @@ export class MarkdownLineResolver {
   }
 
   resolveLine(line: string, _final: boolean): LineResolution {
+    if (this.openLeaf?.kind === "table" || this.openLeaf?.kind === "paragraph" && this.openLeaf.content.includes("|")) {
+      const leafLine = physicalLeaf(line);
+      const path = this.stack.slice();
+      if (this.openLeaf.kind === "paragraph" && isTableDelimiter(leafLine)) {
+        this.openLeaf = { kind: "table" };
+        return { continued: false, lazy: false, closedToDepth: this.stack.length, opened: [], leaf: { kind: "table-delimiter", content: leafLine, path } };
+      }
+      if (this.openLeaf.kind === "table" && leafLine.includes("|"))
+        return { continued: true, lazy: false, closedToDepth: this.stack.length, opened: [], leaf: { kind: "table-row", content: leafLine, path } };
+    }
     const cursor: Cursor = { line, offset: 0, column: 0 };
     let matchedDepth = 1;
     for (; matchedDepth < this.stack.length; matchedDepth++) {
       const frame = this.stack[matchedDepth]!;
       if (frame.kind === "list") continue;
-      if (frame.kind === "quote" ? consumeQuote(cursor) : frame.kind === "item" && consumeItemIndent(cursor, frame.contentIndent)) continue;
+      if (frame.kind === "quote" ? consumeQuote(cursor) : frame.kind === "item" && (isBlank(cursor.line, cursor.offset) || consumeItemIndent(cursor, frame.contentIndent))) continue;
       break;
     }
 
@@ -226,7 +246,7 @@ export class MarkdownLineResolver {
         lazy: false,
         closedToDepth: this.stack.length,
         opened: [],
-        leaf: { kind: closes ? "fence-close" : "fence-line", content, marker, path: this.stack.map((frame) => ({ ...frame })) },
+        leaf: { kind: closes ? "fence-close" : "fence-line", content, marker, path: this.stack.slice() },
       };
     }
     if (!unmatched && this.openLeaf?.kind === "html") {
@@ -238,24 +258,26 @@ export class MarkdownLineResolver {
         lazy: false,
         closedToDepth: this.stack.length,
         opened: [],
-        leaf: { kind: closes ? "html-close" : "html-line", content, path: this.stack.map((frame) => ({ ...frame })) },
+        leaf: { kind: closes ? "html-close" : "html-line", content, path: this.stack.slice() },
       };
     }
     const probe: Cursor = { ...cursor };
     const startsQuote = consumeQuote(probe);
     const marker = startsQuote ? undefined : listMarker(probe);
     const startsContainer = startsQuote || Boolean(marker);
+    const unmatchedContent = line.slice(cursor.offset);
+    const startsBlock = startsContainer || /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$|<)/.test(unmatchedContent);
     if (!unmatched && this.openLeaf?.kind === "table" && !blank && !startsContainer) {
       return {
         continued: true,
         lazy: false,
         closedToDepth: this.stack.length,
         opened: [],
-        leaf: { kind: "table-row", content: line.slice(cursor.offset), path: this.stack.map((frame) => ({ ...frame })) },
+        leaf: { kind: "table-row", content: line.slice(cursor.offset), path: this.stack.slice() },
       };
     }
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
-    const lazy = unmatched && this.openLeaf?.kind === "paragraph" && !blank && !startsContainer;
+    const lazy = unmatched && this.openLeaf?.kind === "paragraph" && !blank && !startsBlock;
     let closedToDepth = lazy ? this.stack.length : matchedDepth;
     const unmatchedFrame = this.stack[matchedDepth];
     const parent = this.stack[matchedDepth - 1];
@@ -292,12 +314,22 @@ export class MarkdownLineResolver {
       }
     }
 
-    const leafPath = () => this.stack.map((frame) => ({ ...frame }));
+    const leafPath = () => this.stack.slice();
     if (blank) {
       this.pendingReferenceTitle = undefined;
       return { continued: false, lazy: false, closedToDepth, opened };
     }
     const content = line.slice(cursor.offset);
+    if (lazy && this.openLeaf?.kind === "paragraph") {
+      this.openLeaf.content += `\n${content}`;
+      return {
+        continued: true,
+        lazy: true,
+        closedToDepth,
+        opened,
+        leaf: { kind: "paragraph", content, path: leafPath() },
+      };
+    }
     if (this.pendingReferenceTitle) {
       const title = referenceTitle(content);
       if (title !== undefined) {
@@ -341,9 +373,7 @@ export class MarkdownLineResolver {
         leaf: { kind: "html-open", content, path: leafPath() },
       };
     }
-    const tableDelimiter = opened.length === 0 && this.openLeaf?.kind === "paragraph"
-      && (/^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$/.test(content)
-        || /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/.test(content));
+    const tableDelimiter = opened.length === 0 && this.openLeaf?.kind === "paragraph" && isTableDelimiter(content);
     if (tableDelimiter) {
       this.openLeaf = { kind: "table" };
       return {
@@ -409,8 +439,10 @@ export class MarkdownLineResolver {
         leaf: { kind: "indented-code", content: line.slice(indented.offset), path: leafPath() },
       };
     }
-    const continued = this.openLeaf?.kind === "paragraph" && opened.length === 0;
-    this.openLeaf = { kind: "paragraph" };
+    const previousParagraph = this.openLeaf?.kind === "paragraph" ? this.openLeaf : undefined;
+    const continued = Boolean(previousParagraph) && opened.length === 0;
+    const paragraphContent = continued ? `${previousParagraph!.content}\n${content}` : content;
+    this.openLeaf = { kind: "paragraph", content: paragraphContent };
     return {
       continued,
       lazy,
