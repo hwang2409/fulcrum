@@ -655,9 +655,10 @@ summary[data-part="reasoning-header"]::before {
   transform: translateY(-1px);
   animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate;
 }
-/* The newest words while it thinks: end-aligned in a clipped box, so the line shows its end as it grows. */
+/* The newest words while it thinks: end-aligned in a clipped box, so a long line shows its end as it grows; the inner
+   span is at least the box wide, so a short line still starts at the left. */
 [data-part="reasoning-preview"] { display: flex; flex: 1; justify-content: flex-end; min-width: 0; overflow: hidden; color: var(--fulcrum-muted); white-space: nowrap; }
-[data-part="reasoning-preview"] > span { flex: none; }
+[data-part="reasoning-preview"] > span { flex: none; min-width: 100%; }
 [data-part="reasoning-body"] { padding: 2px 12px 8px 12px; color: var(--fulcrum-muted); }
 [data-part="reasoning-body"] > :last-child { margin-bottom: 0; }
 
