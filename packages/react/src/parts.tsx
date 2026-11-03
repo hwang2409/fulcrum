@@ -402,7 +402,7 @@ function ApprovalSkip({ items, reveal }: { items: readonly { id: string; kind?: 
     const card = await reveal(pending.id);
     (card?.querySelector<HTMLElement>("[data-part=approval-actions] button:not(:disabled)") ?? card)?.focus();
   };
-  return <button type="button" data-part="jump-to-approval" onClick={() => void jump()}>jump to approval: {toolLabel(tool_call.name)} {oneLine(summary)}</button>;
+  return <button type="button" data-part="jump-to-approval" onClick={() => void jump()}>jump to approval: {view?.kind === "shell" ? "" : `${toolLabel(tool_call.name)} `}{oneLine(summary)}</button>;
 }
 
 function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; change: { type: "append" | "prepend"; count: number } | null }) {
