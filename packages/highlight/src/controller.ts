@@ -40,6 +40,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   let unavailable = false;
   let busyWith: HighlightContext | null = null; // the block the worker last said it works on
   let parts: Token[] = []; // a long reply's tokens so far (protocol.ts)
+  let owesAck: WorkerLike | undefined; // the worker waits for this page to ack its last part, in the next frame
   const crashes: number[] = [];
   const poisoned = new Set<string>(); // revisions (`revision()`) that went silent: plain for this controller's life
   let disposed = false;
@@ -95,7 +96,13 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   };
   // Any message from the worker proves it alive: the silence clock starts again while work is pending.
   const heard = () => { clearTimeout(watchdog); watchdog = pending.size ? setTimeout(onSilence, WORKER_SILENCE_MS) : undefined; };
-  const stop = () => { clearTimeout(watchdog); watchdog = undefined; worker?.terminate(); worker = undefined; busyWith = null; parts = []; };
+  const stop = () => { clearTimeout(watchdog); watchdog = undefined; worker?.terminate(); worker = undefined; busyWith = null; parts = []; owesAck = undefined; };
+  // One part per frame: the next part's message task cannot run back to back with this one (protocol.ts).
+  const ackNextFrame = (from: WorkerLike) => {
+    owesAck = from;
+    const run = () => { if (owesAck !== from || worker !== from) return; owesAck = undefined; from.postMessage({ type: "ack" }); heard(); };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run); else setTimeout(run, 16);
+  };
   const joined = (last: Token[]) => { if (!parts.length) return last; const tokens = parts; parts = []; for (const token of last) tokens.push(token); return tokens; };
   const giveUp = () => {
     stop();
@@ -121,6 +128,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     scheduleRestart(RESTART_BACKOFF_MS[crashes.length - 1]);
   };
   const onSilence = () => {
+    if (owesAck) return heard(); // the worker waits on this page (a hidden tab runs no frames), it is not hung
     const blamed = busyWith;
     if (!blamed) return crash();
     stop();
@@ -137,7 +145,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
         if (worker !== next || disposed) return;
         const data = event.data;
         if ("progress" in data) busyWith = data.progress;
-        else if ("part" in data) for (const token of data.part) parts.push(token);
+        else if ("part" in data) { for (const token of data.part) parts.push(token); ackNextFrame(next); }
         else if ("update" in data) { if (sameBlock(busyWith, data.update)) busyWith = null; update(data.update, data.language, joined(data.tokens)); }
         else {
           const tokens = "tokens" in data ? joined(data.tokens) : undefined; // joined even for a request no longer pending

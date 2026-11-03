@@ -425,6 +425,36 @@ describe("worker liveness and restarts", () => {
     highlighter.dispose();
   }));
 
+  test("a long reply's parts are paced: the page acks one part per animation frame, and owing an ack is not silence", withFakeTimers(async () => {
+    const frames: Array<() => void> = [];
+    const native = globalThis.requestAnimationFrame;
+    globalThis.requestAnimationFrame = ((run: () => void) => frames.push(run)) as typeof requestAnimationFrame;
+    try {
+      const workers: Scripted[] = [];
+      const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+      const long = highlighter("abc", "cpp", block("paced"));
+      const worker = workers[0];
+      const acks = () => (worker.posted as unknown[]).filter((value) => (value as { type?: string }).type === "ack").length;
+      worker.send({ progress: worker.posted[0].context });
+      worker.send({ part: [{ text: "a", type: "keyword" }] });
+      expect(acks()).toBe(0); // not in the message's own task
+      jest.advanceTimersByTime(30_000); // a hidden tab runs no frames: the worker waits on the page, it is not hung
+      expect(workers.length).toBe(1);
+      const run = () => frames.splice(0).forEach((frame) => frame());
+      run();
+      expect(acks()).toBe(1);
+      run();
+      expect(acks()).toBe(1); // one ack per part, never more
+      worker.send({ part: [{ text: "b" }] });
+      run();
+      expect(acks()).toBe(2);
+      worker.send({ requestId: worker.posted[0].requestId, tokens: [{ text: "c" }], provisional: false });
+      expect(await long).toEqual([{ text: "a", type: "keyword" }, { text: "b" }, { text: "c" }]);
+      expect(frames.length).toBe(0);
+      highlighter.dispose();
+    } finally { globalThis.requestAnimationFrame = native; }
+  }));
+
   test("crashes spread out over time keep recovering", withFakeTimers(async () => {
     const workers: Scripted[] = [];
     let told = 0;
@@ -445,6 +475,32 @@ describe("worker liveness and restarts", () => {
     highlighter.dispose();
   }));
 });
+
+test("the worker sends the next part of a long result only after the page acks the one before", async () => {
+  const worker = new Worker(new URL("../dist/worker.js", import.meta.url), { type: "module" });
+  const messages: Array<Record<string, unknown>> = [];
+  worker.onmessage = (event) => { if (!("progress" in event.data)) messages.push(event.data); };
+  const until = async (done: () => boolean) => { for (let wait = 0; !done(); wait++) { if (wait > 3_000) throw new Error("timed out"); await Bun.sleep(10); } };
+  const parts = () => messages.filter((message) => "part" in message).length;
+  const code = "[1, 2, 3, 4, 5, 6],\n".repeat(5_000); // over 16,384 tokens: more than one part
+  worker.postMessage({ type: "highlight", requestId: 1, code, language: "json", context: { id: "paced", version: 1, state: "done" } });
+  await until(() => parts() === 1);
+  await Bun.sleep(200);
+  expect(parts()).toBe(1);
+  let acked = 0;
+  while ("part" in messages.at(-1)!) {
+    const seen = messages.length;
+    worker.postMessage({ type: "ack" });
+    acked++;
+    await until(() => messages.length > seen);
+    expect(messages.length).toBe(seen + 1); // one message per ack
+  }
+  expect(acked).toBe(parts());
+  expect(acked).toBeGreaterThan(1);
+  const final = messages.at(-1)!;
+  expect(text([...messages.flatMap((message) => (message.part ?? []) as Token[]), ...(final.tokens as Token[])])).toBe(code);
+  worker.terminate();
+}, 30_000);
 
 describe("identity, failure, and caps", () => {
   test("never confuses same-length blocks", async () => {
