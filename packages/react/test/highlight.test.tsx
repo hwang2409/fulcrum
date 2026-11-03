@@ -343,3 +343,19 @@ test("useTokens repaints a block when the highlighter updates it, with the same 
   expect([...container.querySelectorAll(".tok-keyword")].map((node) => node.textContent)).toEqual(["const", "let"]);
   expect(container.textContent).toBe(code);
 });
+
+test("a multi-line command is tokenized as written, then joined onto the header's one line", () => {
+  // A stand-in shell grammar: a "#" starts a comment that runs to the end of its line.
+  const highlight = ((code: string) => code.split(/(\n)/).flatMap((line): Token[] => {
+    if (line === "\n") return [{ text: line }];
+    const at = line.indexOf("#");
+    return at === -1 ? (line ? [{ text: line, type: "keyword" }] : []) : [...(at ? [{ text: line.slice(0, at), type: "keyword" as const }] : []), { text: line.slice(at), type: "comment" }];
+  })) as Highlight;
+  highlight.dispose = () => {};
+  highlight.subscribe = () => () => {};
+  const command = "cat > release.sh <<'EOF'\n#!/usr/bin/env bash\nset -euo pipefail\nEOF";
+  render([{ type: "tool_start", tool_call: { id: "h", name: "bash", arguments: { command } }, view: { kind: "shell", command } }], ["tool:h"], highlight);
+  const summary = q('[data-id="tool:h"] [data-part="tool-summary"]');
+  expect(summary.textContent).toBe("$ cat > release.sh <<'EOF' #!/usr/bin/env bash set -euo pipefail EOF");
+  expect([...summary.querySelectorAll(".tok-comment")].map((node) => node.textContent)).toEqual(["#!/usr/bin/env bash"]);
+});

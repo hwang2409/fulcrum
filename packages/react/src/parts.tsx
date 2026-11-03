@@ -2,7 +2,7 @@ import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useRe
 import type { RunEvent, RunItem } from "@fulcrum/core";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
-import { Code, HighlightContext } from "./highlight.js";
+import { HighlightContext, Tokens, useTokens } from "./highlight.js";
 import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
 import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
@@ -97,13 +97,32 @@ function ToolName({ name }: { name: string }) {
 
 const oneLine = (text: string) => boundText(text.replace(/\s+/g, " ").trim(), MAX_SUMMARY_CHARS).text;
 
+/**
+ * A command on one line, colored as written: tokenized before its lines are joined, so a heredoc's `#!` stays a
+ * one-line comment instead of turning the rest of the joined line into one.
+ */
+function CommandLine({ command, id }: { command: string; id: string }) {
+  const source = boundText(command.trim(), MAX_SUMMARY_CHARS).text;
+  const tokens = useTokens(source, "shell", id);
+  if (!tokens) return <>{oneLine(source)}</>;
+  let last = " "; // collapses whitespace across token edges, and trims the start
+  const joined = tokens.flatMap((token) => {
+    const spaced = token.text.replace(/\s+/g, " ");
+    const text = last.endsWith(" ") && spaced.startsWith(" ") ? spaced.slice(1) : spaced;
+    if (!text) return [];
+    last = text;
+    return [{ ...token, text }];
+  });
+  return <Tokens tokens={joined} />;
+}
+
 /** The default summary with each fact in its color: `$ command` highlighted, paths, ranges, +/- counts, patterns. */
 function ViewSummary({ item }: { item: ToolItem }) {
   const view = item.view;
   const path = (value: string) => <span data-part="summary-path">{oneLine(value)}</span>;
   switch (view?.kind) {
     case "shell":
-      return <><span data-part="shell-prompt">$ </span><Code text={oneLine(view.command)} language="shell" id={`${item.id}:summary`} /></>;
+      return <><span data-part="shell-prompt">$ </span><CommandLine command={view.command} id={`${item.id}:summary`} /></>;
     case "read": {
       const summary = toolSummary(item);
       return <>{path(view.path)}{summary.length > view.path.length ? <span data-part="summary-range">{summary.slice(view.path.length)}</span> : null}</>;
