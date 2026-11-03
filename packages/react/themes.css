@@ -3,10 +3,12 @@
    Each palette uses its official colors; the source is above each block. UI text (fg, muted, accent, ok, warn, danger)
    reaches 4.5:1 on bg, surface, and the diff row tints; where an official color misses that, it is mixed with the least
    black (light themes) or white (dark themes) that reaches it, and muted mixes fg into bg where a palette has no secondary
-   text color. Syntax colors (tok-*, also the tool-header paths, numbers, and diff counts) and the 16 ansi-* terminal colors
-   keep the official hex where it reaches 3:1 on every background they sit on (tok-*: bg, surface, diff rows; ansi-*: bg,
-   surface). Where it does not, the comment names the official value, and the color takes the smallest OKLCH lightness
-   change at the same hue and chroma that reaches 3:1 (packages/react/test/themes.test.ts). */
+   text color. Syntax colors (tok-*, code only) and the 16 ansi-* terminal colors keep the official hex where it reaches
+   3:1 on every background they sit on (tok-*: bg, surface, diff rows; ansi-*: bg, surface). Where it does not, the
+   comment names the official value, and the color takes the smallest OKLCH lightness change at the same hue and chroma
+   that reaches 3:1. The ui-* accents color tool facts (paths, numbers, +/- counts, patterns, content types), which are UI
+   text: each starts from the official hex of the tok-* color its comment names and, where that misses 4.5:1 on bg or
+   surface, takes the smallest OKLCH lightness change that reaches it (packages/react/test/themes.test.ts). */
 
 /* gruvbox-dark: https://github.com/morhetz/gruvbox (README palette; syntax from colors/gruvbox.vim, except functions:
    vim tells them from strings only by bold, so they take aqua as in https://github.com/jdinhify/vscode-theme-gruvbox) */
@@ -36,6 +38,12 @@
   --fulcrum-tok-regexp: #fe8019;
   --fulcrum-tok-inserted: #b8bb26;
   --fulcrum-tok-deleted: #fb4934;
+  --fulcrum-ui-path: #8ec07c; /* tok-function #8ec07c */
+  --fulcrum-ui-number: #d3869b; /* tok-number #d3869b */
+  --fulcrum-ui-added: #b8bb26; /* tok-inserted #b8bb26 */
+  --fulcrum-ui-removed: #ff654f; /* tok-deleted #fb4934 is 3.82:1 on surface; OKLCH L +0.040 */
+  --fulcrum-ui-pattern: #b8bb26; /* tok-string #b8bb26 */
+  --fulcrum-ui-type: #fabd2f; /* tok-type #fabd2f */
   --fulcrum-ansi-black: #797979; /* official #282828 is 1.00:1 on bg; OKLCH L +0.299 */
   --fulcrum-ansi-red: #df3b30; /* official #cc241d is 2.40:1 on surface; OKLCH L +0.053 */
   --fulcrum-ansi-green: #98971a;
@@ -82,6 +90,12 @@
   --fulcrum-tok-regexp: #af3a03;
   --fulcrum-tok-inserted: #79740e;
   --fulcrum-tok-deleted: #9d0006;
+  --fulcrum-ui-path: #397250; /* tok-function #427b58 is 3.97:1 on surface; OKLCH L -0.030 */
+  --fulcrum-ui-number: #8f3f71; /* tok-number #8f3f71 */
+  --fulcrum-ui-added: #6e6900; /* tok-inserted #79740e is 3.87:1 on surface; OKLCH L -0.037 */
+  --fulcrum-ui-removed: #9d0006; /* tok-deleted #9d0006 */
+  --fulcrum-ui-pattern: #6e6900; /* tok-string #79740e is 3.87:1 on surface; OKLCH L -0.037 */
+  --fulcrum-ui-type: #915b00; /* tok-type #b57614 is 3.00:1 on surface; OKLCH L -0.099 */
   --fulcrum-ansi-black: #8d835d; /* official #fbf1c7 is 1.00:1 on bg; OKLCH L -0.346 */
   --fulcrum-ansi-red: #cc241d;
   --fulcrum-ansi-green: #898700; /* official #98971a is 2.47:1 on surface; OKLCH L -0.051 */
@@ -127,6 +141,12 @@
   --fulcrum-tok-regexp: #ff5555;
   --fulcrum-tok-inserted: #50fa7b;
   --fulcrum-tok-deleted: #ff5555;
+  --fulcrum-ui-path: #50fa7b; /* tok-function #50fa7b */
+  --fulcrum-ui-number: #bd93f9; /* tok-number #bd93f9 */
+  --fulcrum-ui-added: #50fa7b; /* tok-inserted #50fa7b */
+  --fulcrum-ui-removed: #ff5555; /* tok-deleted #ff5555 */
+  --fulcrum-ui-pattern: #f1fa8c; /* tok-string #f1fa8c */
+  --fulcrum-ui-type: #8be9fd; /* tok-type #8be9fd */
   --fulcrum-ansi-black: #71737f; /* official #21222c is 1.00:1 on surface; OKLCH L +0.303 */
   --fulcrum-ansi-red: #ff5555;
   --fulcrum-ansi-green: #50fa7b;
@@ -172,6 +192,12 @@
   --fulcrum-tok-regexp: #ebcb8b;
   --fulcrum-tok-inserted: #a3be8c;
   --fulcrum-tok-deleted: #d07078; /* official #bf616a is 2.46:1 on surface; OKLCH L +0.050 */
+  --fulcrum-ui-path: #88c0d0; /* tok-function #88c0d0 */
+  --fulcrum-ui-number: #c9a2c1; /* tok-number #b48ead is 3.55:1 on surface; OKLCH L +0.065 */
+  --fulcrum-ui-added: #a3be8c; /* tok-inserted #a3be8c */
+  --fulcrum-ui-removed: #f59199; /* tok-deleted #bf616a is 2.46:1 on surface; OKLCH L +0.157 */
+  --fulcrum-ui-pattern: #a3be8c; /* tok-string #a3be8c */
+  --fulcrum-ui-type: #8fbcbb; /* tok-type #8fbcbb */
   --fulcrum-ansi-black: #848d9f; /* official #3b4252 is 1.00:1 on surface; OKLCH L +0.263 */
   --fulcrum-ansi-red: #d07078; /* official #bf616a is 2.46:1 on surface; OKLCH L +0.050 */
   --fulcrum-ansi-green: #a3be8c;
@@ -217,6 +243,12 @@
   --fulcrum-tok-regexp: #b4f9f8;
   --fulcrum-tok-inserted: #9ece6a;
   --fulcrum-tok-deleted: #f7768e;
+  --fulcrum-ui-path: #7aa2f7; /* tok-function #7aa2f7 */
+  --fulcrum-ui-number: #ff9e64; /* tok-number #ff9e64 */
+  --fulcrum-ui-added: #9ece6a; /* tok-inserted #9ece6a */
+  --fulcrum-ui-removed: #f7768e; /* tok-deleted #f7768e */
+  --fulcrum-ui-pattern: #9ece6a; /* tok-string #9ece6a */
+  --fulcrum-ui-type: #2ac3de; /* tok-type #2ac3de */
   --fulcrum-ansi-black: #656670; /* official #15161e is 1.00:1 on surface; OKLCH L +0.310 */
   --fulcrum-ansi-red: #f7768e;
   --fulcrum-ansi-green: #9ece6a;
@@ -262,6 +294,12 @@
   --fulcrum-tok-regexp: #f5c2e7;
   --fulcrum-tok-inserted: #a6e3a1;
   --fulcrum-tok-deleted: #f38ba8;
+  --fulcrum-ui-path: #89b4fa; /* tok-function #89b4fa */
+  --fulcrum-ui-number: #fab387; /* tok-number #fab387 */
+  --fulcrum-ui-added: #a6e3a1; /* tok-inserted #a6e3a1 */
+  --fulcrum-ui-removed: #f38ba8; /* tok-deleted #f38ba8 */
+  --fulcrum-ui-pattern: #a6e3a1; /* tok-string #a6e3a1 */
+  --fulcrum-ui-type: #f9e2af; /* tok-type #f9e2af */
   --fulcrum-ansi-black: #66687d; /* official #45475a is 1.80:1 on bg; OKLCH L +0.120 */
   --fulcrum-ansi-red: #f38ba8;
   --fulcrum-ansi-green: #a6e3a1;
@@ -307,6 +345,12 @@
   --fulcrum-tok-regexp: #c857ac; /* official #ea76cb is 2.05:1 on deleted row; OKLCH L -0.099 */
   --fulcrum-tok-inserted: #33941c; /* official #40a02b is 2.59:1 on deleted row; OKLCH L -0.038 */
   --fulcrum-tok-deleted: #d20f39;
+  --fulcrum-ui-path: #155dec; /* tok-function #1e66f5 is 4.04:1 on surface; OKLCH L -0.026 */
+  --fulcrum-ui-number: #b64400; /* tok-number #fe640b is 2.45:1 on surface; OKLCH L -0.155 */
+  --fulcrum-ui-added: #1e7900; /* tok-inserted #40a02b is 2.75:1 on surface; OKLCH L -0.121 */
+  --fulcrum-ui-removed: #d10e39; /* tok-deleted #d20f39 is 4.46:1 on surface; OKLCH L -0.002 */
+  --fulcrum-ui-pattern: #1e7900; /* tok-string #40a02b is 2.75:1 on surface; OKLCH L -0.121 */
+  --fulcrum-ui-type: #965c00; /* tok-type #df8e1d is 2.15:1 on surface; OKLCH L -0.186 */
   --fulcrum-ansi-black: #5c5f77;
   --fulcrum-ansi-red: #d20f39;
   --fulcrum-ansi-green: #399923; /* official #40a02b is 2.75:1 on surface; OKLCH L -0.022 */
@@ -352,6 +396,12 @@
   --fulcrum-tok-regexp: #e23834; /* official #dc322f is 2.81:1 on surface; OKLCH L +0.016 */
   --fulcrum-tok-inserted: #859900;
   --fulcrum-tok-deleted: #e23834; /* official #dc322f is 2.81:1 on surface; OKLCH L +0.016 */
+  --fulcrum-ui-path: #3e9fe7; /* tok-function #268bd2 is 3.53:1 on surface; OKLCH L +0.063 */
+  --fulcrum-ui-number: #35a99f; /* tok-number #2aa198 is 4.12:1 on surface; OKLCH L +0.025 */
+  --fulcrum-ui-added: #8da218; /* tok-inserted #859900 is 4.06:1 on surface; OKLCH L +0.028 */
+  --fulcrum-ui-removed: #ff665b; /* tok-deleted #dc322f is 2.81:1 on surface; OKLCH L +0.116 */
+  --fulcrum-ui-pattern: #35a99f; /* tok-string #2aa198 is 4.12:1 on surface; OKLCH L +0.025 */
+  --fulcrum-ui-type: #be9218; /* tok-type #b58900 is 4.05:1 on surface; OKLCH L +0.029 */
   --fulcrum-ansi-black: #55808d; /* official #073642 is 1.00:1 on surface; OKLCH L +0.264 */
   --fulcrum-ansi-red: #e23834; /* official #dc322f is 2.81:1 on surface; OKLCH L +0.016 */
   --fulcrum-ansi-green: #859900;
@@ -397,6 +447,12 @@
   --fulcrum-tok-regexp: #dc322f;
   --fulcrum-tok-inserted: #7b8e00; /* official #859900 is 2.62:1 on surface; OKLCH L -0.034 */
   --fulcrum-tok-deleted: #dc322f;
+  --fulcrum-ui-path: #006dad; /* tok-function #268bd2 is 3.00:1 on surface; OKLCH L -0.098 */
+  --fulcrum-ui-number: #00756e; /* tok-number #2aa198 is 2.58:1 on surface; OKLCH L -0.137 */
+  --fulcrum-ui-added: #606f00; /* tok-inserted #859900 is 2.62:1 on surface; OKLCH L -0.133 */
+  --fulcrum-ui-removed: #cd1e21; /* tok-deleted #dc322f is 3.77:1 on surface; OKLCH L -0.042 */
+  --fulcrum-ui-pattern: #00756e; /* tok-string #2aa198 is 2.58:1 on surface; OKLCH L -0.137 */
+  --fulcrum-ui-type: #846300; /* tok-type #b58900 is 2.62:1 on surface; OKLCH L -0.135 */
   --fulcrum-ansi-black: #073642;
   --fulcrum-ansi-red: #dc322f;
   --fulcrum-ansi-green: #7b8e00; /* official #859900 is 2.62:1 on surface; OKLCH L -0.034 */
@@ -442,6 +498,12 @@
   --fulcrum-tok-regexp: #7ee787;
   --fulcrum-tok-inserted: #aff5b4;
   --fulcrum-tok-deleted: #ffdcd7;
+  --fulcrum-ui-path: #d2a8ff; /* tok-function #d2a8ff */
+  --fulcrum-ui-number: #79c0ff; /* tok-number #79c0ff */
+  --fulcrum-ui-added: #aff5b4; /* tok-inserted #aff5b4 */
+  --fulcrum-ui-removed: #ffdcd7; /* tok-deleted #ffdcd7 */
+  --fulcrum-ui-pattern: #a5d6ff; /* tok-string #a5d6ff */
+  --fulcrum-ui-type: #ffa657; /* tok-type #ffa657 */
   --fulcrum-ansi-black: #5f6770; /* official #484f58 is 2.09:1 on surface; OKLCH L +0.085 */
   --fulcrum-ansi-red: #ff7b72;
   --fulcrum-ansi-green: #3fb950;
@@ -488,6 +550,12 @@
   --fulcrum-tok-regexp: #116329;
   --fulcrum-tok-inserted: #116329;
   --fulcrum-tok-deleted: #82071e;
+  --fulcrum-ui-path: #8250df; /* tok-function #8250df */
+  --fulcrum-ui-number: #0550ae; /* tok-number #0550ae */
+  --fulcrum-ui-added: #116329; /* tok-inserted #116329 */
+  --fulcrum-ui-removed: #82071e; /* tok-deleted #82071e */
+  --fulcrum-ui-pattern: #0a3069; /* tok-string #0a3069 */
+  --fulcrum-ui-type: #953800; /* tok-type #953800 */
   --fulcrum-ansi-black: #24292f;
   --fulcrum-ansi-red: #cf222e;
   --fulcrum-ansi-green: #116329;
@@ -533,6 +601,12 @@
   --fulcrum-tok-regexp: #56b6c2;
   --fulcrum-tok-inserted: #98c379;
   --fulcrum-tok-deleted: #e06c75;
+  --fulcrum-ui-path: #61afef; /* tok-function #61afef */
+  --fulcrum-ui-number: #d19a66; /* tok-number #d19a66 */
+  --fulcrum-ui-added: #98c379; /* tok-inserted #98c379 */
+  --fulcrum-ui-removed: #e36e77; /* tok-deleted #e06c75 is 4.38:1 on bg; OKLCH L +0.008 */
+  --fulcrum-ui-pattern: #98c379; /* tok-string #98c379 */
+  --fulcrum-ui-type: #e5c07b; /* tok-type #e5c07b */
   --fulcrum-ansi-black: #70757e; /* official #282c34 is 1.00:1 on bg; OKLCH L +0.269 */
   --fulcrum-ansi-red: #e06c75;
   --fulcrum-ansi-green: #98c379;
@@ -579,6 +653,12 @@
     --fulcrum-tok-regexp: #7ee787;
     --fulcrum-tok-inserted: #aff5b4;
     --fulcrum-tok-deleted: #ffdcd7;
+    --fulcrum-ui-path: #d2a8ff; /* tok-function #d2a8ff */
+    --fulcrum-ui-number: #79c0ff; /* tok-number #79c0ff */
+    --fulcrum-ui-added: #aff5b4; /* tok-inserted #aff5b4 */
+    --fulcrum-ui-removed: #ffdcd7; /* tok-deleted #ffdcd7 */
+    --fulcrum-ui-pattern: #a5d6ff; /* tok-string #a5d6ff */
+    --fulcrum-ui-type: #ffa657; /* tok-type #ffa657 */
     --fulcrum-ansi-black: #5f6770; /* official #484f58 is 2.09:1 on surface; OKLCH L +0.085 */
     --fulcrum-ansi-red: #ff7b72;
     --fulcrum-ansi-green: #3fb950;

@@ -16,10 +16,13 @@ const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body
   name: selector!.replace(/\/\*[\s\S]*?\*\//g, "").trim().replace(/\s+/g, " "),
   vars: Object.fromEntries([...body!.matchAll(/--fulcrum-([\w-]+):\s*([^;]+);/g)].map(([, name, value]) => [name!, value!.trim()])),
   official: Object.fromEntries([...body!.matchAll(/--fulcrum-([\w-]+):[^;]+;\s*\/\*\s*official (#[0-9a-f]{6})\b/g)].map(([, name, hex]) => [name!, hex!])),
+  source: Object.fromEntries([...body!.matchAll(/--fulcrum-(ui-[\w-]+):[^;]+;\s*\/\*\s*(tok-[\w-]+) (#[0-9a-f]{6})\b/g)].map(([, name, token, hex]) => [name!, [token!, hex!]])),
 }));
 const palettes = blocks.filter((block) => block.vars.bg);
 const UI = ["fg", "muted", "accent", "ok", "warn", "danger"];
 const ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"].flatMap((name) => [`ansi-${name}`, `ansi-bright-${name}`]);
+// Tool facts are UI text, so they get their own accents, each from one official syntax hue (named in its comment).
+const ACCENTS = ["path", "number", "added", "removed", "pattern", "type"].map((name) => `ui-${name}`);
 const TOKENS = ["keyword", "string", "number", "comment", "function", "type", "variable", "constant", "operator", "punctuation", "tag", "attribute", "regexp", "inserted", "deleted"].map((name) => `tok-${name}`);
 
 type Rgb = [number, number, number];
@@ -63,7 +66,7 @@ const worst = (rgb: Rgb, on: Record<string, Rgb>) => Math.min(...Object.values(o
 
 test("there are 12 named themes and the OS-dark default, and each defines every text color", () => {
   expect(palettes.length).toBe(13);
-  expect(palettes.flatMap(({ name, vars }) => [...UI, ...TOKENS, ...ANSI].filter((key) => !vars[key]).map((key) => `${name}: --fulcrum-${key}`))).toEqual([]);
+  expect(palettes.flatMap(({ name, vars }) => [...UI, ...ACCENTS, ...TOKENS, ...ANSI].filter((key) => !vars[key]).map((key) => `${name}: --fulcrum-${key}`))).toEqual([]);
 });
 
 test("UI text reaches 4.5:1 on bg, surface, and diff rows in every theme", () => {
@@ -100,6 +103,50 @@ test("syntax and ANSI colors reach 3:1 where they sit, as the official hex or it
       if (b.C > a.C + 0.005) problems.push(`${where} adds chroma to ${official[key]}`);
     }
   }
+  expect(problems).toEqual([]);
+});
+
+test("ui-* accents reach 4.5:1 on bg and surface, as their source tok-* official hex or its smallest OKLCH lightness change", () => {
+  const problems: string[] = [];
+  for (const { name, vars, official, source } of palettes) {
+    for (const key of ACCENTS) {
+      const where = `${name}: --fulcrum-${key} ${vars[key]}`;
+      if (!source[key] || !/^#[0-9a-f]{6}$/i.test(vars[key]!)) { problems.push(`${where} needs a palette hex and a /* tok-<name> #rrggbb */ source note`); continue; }
+      const [token, hex] = source[key]!;
+      if (hex !== (official[token!] ?? vars[token!])) problems.push(`${where}: source ${hex} is not the official ${token} ${official[token!] ?? vars[token!]}`);
+      const on = { bg: color(vars.bg!, vars), surface: color(vars.surface!, vars) };
+      const value = color(vars[key]!, vars);
+      const ratio = worst(value, on);
+      if (ratio < 4.5) problems.push(`${where} is ${ratio.toFixed(2)}:1`);
+      if (vars[key] === hex) continue;
+      const before = color(hex!, vars);
+      if (worst(before, on) >= 4.5) problems.push(`${where}: ${token} ${hex} already reaches 4.5:1, use it`);
+      if (ratio >= 4.6) problems.push(`${where} is ${ratio.toFixed(2)}:1, more change than 4.5:1 needs`);
+      const [a, b] = [oklch(before), oklch(value)];
+      const hueShift = Math.abs(((a.h - b.h + 540) % 360) - 180);
+      if (a.C > 0.03 && hueShift > 3) problems.push(`${where} moves hue ${hueShift.toFixed(1)} deg from ${hex}`);
+      if (b.C > a.C + 0.005) problems.push(`${where} adds chroma to ${hex}`);
+    }
+  }
+  expect(problems).toEqual([]);
+});
+
+// tok-* colors only pass 3:1, so only code may use them: the token spans and the diff rows' tint and changed-word line.
+const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const rules = [...styles.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector!.trim().replace(/\s+/g, " "), body: body! }));
+const CODE = /^(\.tok-[\w-]+|\[data-part="diff-line"\]\[data-change="(insert|delete)"\]|\[data-change="(insert|delete)"\] \[data-part="diff-word"\])$/;
+const TOOL_FACTS = ["summary-path", "summary-pattern", "diff-stat", "tool-duration", "tool-cwd", "tool-path", "tool-size", "search-path", "search-count", "search-total", "fetch-type", "fetch-url"];
+
+test("styles.css uses tok-* variables only in code selectors", () => {
+  expect(rules.filter(({ selector, body }) => body.includes("--fulcrum-tok-") && !selector.split(",").every((part) => CODE.test(part.trim()))).map(({ selector }) => selector)).toEqual([]);
+});
+
+test("every tool fact is colored by a ui-* accent, never a tok-* variable", () => {
+  const problems = TOOL_FACTS.flatMap((part) => {
+    const own = rules.filter(({ selector, body }) => selector.includes(`[data-part="${part}"]`) && /\bcolor:/.test(body));
+    if (!own.length) return [`${part} has no color rule`];
+    return own.filter(({ body }) => body.includes("--fulcrum-tok-") || !body.includes("var(--fulcrum-ui-")).map(({ selector }) => `${selector} is not colored by --fulcrum-ui-*`);
+  });
   expect(problems).toEqual([]);
 });
 
