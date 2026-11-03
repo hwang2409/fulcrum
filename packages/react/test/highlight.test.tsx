@@ -271,3 +271,31 @@ test("hover warms a collapsed body at once, and only once per revision", () => {
   expect(calls.filter((call) => call.context?.id === "tool:w-read:content")).toHaveLength(1);
   expect(q('[data-id="tool:w-read"] [data-part="tool-body"]')).toBeNull();
 });
+
+test("two different same-length sources on one surface never show the first source's tokens", async () => {
+  const { useTokens } = await import("../src/highlight.js");
+  const { HighlightContext } = await import("../src/highlight.js");
+  // A caching highlighter keyed by (id, version, language) only, like the real controller's cache key.
+  const cache = new Map<string, Token[]>();
+  const highlight = ((code: string, language: string | undefined, context?: HighlightContext) => {
+    const key = `${context?.id}\0${context?.version}\0${language}`;
+    const hit = cache.get(key);
+    if (hit) return hit;
+    const tokens: Token[] = [{ text: code, type: "keyword" }];
+    cache.set(key, tokens);
+    return tokens;
+  }) as Highlight;
+  highlight.dispose = () => {};
+  const seen: string[] = [];
+  function Probe({ code }: { code: string }) {
+    const tokens = useTokens(code, "typescript", "surface:1");
+    seen.push(tokens ? tokens.map((token) => token.text).join("") : code);
+    return null;
+  }
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  act(() => root!.render(<HighlightContext.Provider value={highlight}><Probe code="let a = 1;" /></HighlightContext.Provider>));
+  act(() => root!.render(<HighlightContext.Provider value={highlight}><Probe code="var b = 2;" /></HighlightContext.Provider>));
+  expect(seen.at(-1)).toBe("var b = 2;");
+});

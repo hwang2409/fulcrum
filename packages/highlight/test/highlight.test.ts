@@ -347,3 +347,13 @@ describe("identity, failure, and caps", () => {
     highlighter.dispose();
   });
 });
+
+test("a cache hit never returns tokens for different code under the same id and version", async () => {
+  const highlighter = createHighlighter({ worker: false });
+  const context = { id: "same-surface", version: 7, state: "done" as const };
+  const first = await highlighter("let a = 1;", "typescript", context);
+  expect(first.map((token: Token) => token.text).join("")).toBe("let a = 1;");
+  const second = await highlighter("var b = 2;", "typescript", context);
+  expect(second.map((token: Token) => token.text).join("")).toBe("var b = 2;");
+  highlighter.dispose();
+});

@@ -3,15 +3,39 @@ import type { Highlight, Token } from "@fulcrum/highlight";
 
 export const HighlightContext = createContext<Highlight | undefined>(undefined);
 
-const length = (tokens: Token[]) => tokens.reduce((sum, token) => sum + token.text.length, 0);
+const spelled = new WeakMap<Token[], string>();
+/** The text a token list spells; cached per list, so checking a result against its source costs one join per result. */
+const spell = (tokens: Token[]) => {
+  let text = spelled.get(tokens);
+  if (text === undefined) spelled.set(tokens, (text = tokens.map((token) => token.text).join("")));
+  return text;
+};
+
+// One version per (surface id, exact content, done): a warmed block and the mounted body that later asks for the same
+// content get the same version, so they share one cache entry; any other content gets a new, larger version. Length is
+// never used: two different sources of one length must not share a key. Versions come from one counter, so they also grow
+// per id, which the highlighter needs to keep only the newest revision and to tokenize appends incrementally.
+const MAX_SURFACES = 1024;
+const surfaces = new Map<string, { code: string; done: boolean; version: number }>();
+let nextVersion = 0;
+const versionFor = (id: string, code: string, done: boolean) => {
+  const known = surfaces.get(id);
+  if (known && known.done === done && known.code === code) {
+    surfaces.delete(id); surfaces.set(id, known);
+    return known.version;
+  }
+  const entry = { code, done, version: ++nextVersion };
+  surfaces.delete(id); surfaces.set(id, entry);
+  if (surfaces.size > MAX_SURFACES) surfaces.delete(surfaces.keys().next().value!);
+  return entry.version;
+};
 
 /** One highlight block: what a body asks the highlighter for, and what warming asks for ahead of the body. */
 export type Block = { code: string; language: string | undefined; id: string; done?: boolean };
 
 /** The one place a block becomes a highlighter request, so a warmed block and the mounted body share one cache key. */
 export function requestTokens(highlight: Highlight | undefined, { code, language, id, done = true }: Block) {
-  // The version grows with appended text and once more when the text is done, so each revision has its own cache key.
-  return highlight && language && code ? highlight(code, language, { id, version: code.length * 2 + (done ? 1 : 0), state: done ? "done" : "streaming" }) : null;
+  return highlight && language && code ? highlight(code, language, { id, version: versionFor(id, code, done), state: done ? "done" : "streaming" }) : null;
 }
 
 /**
@@ -31,7 +55,7 @@ export function useTokens(code: string, language: string | undefined, id: string
     return () => { live = false; };
   }, [result]);
   const ready = Array.isArray(result) ? result : settled?.result === result ? settled!.tokens : undefined;
-  if (ready && length(ready) === code.length) {
+  if (ready && spell(ready) === code) {
     last.current = { code, tokens: ready };
     return ready;
   }
