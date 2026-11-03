@@ -20,6 +20,8 @@ export interface RunState {
   nextId: number;
   activeMessageId?: string;
   activeToolIds: Record<string, boolean>;
+  /** Tool call id -> its approval's item id. */
+  toolApprovals: Record<string, string>;
 }
 
 export const initialState: RunState = {
@@ -32,6 +34,7 @@ export const initialState: RunState = {
   receiptOrder: [],
   nextId: 1,
   activeToolIds: {},
+  toolApprovals: {},
 };
 
 const messageItemId = (id: string) => `message:${id}`;
@@ -147,6 +150,7 @@ export function reduceAllWithEntities(
     nextId: state.nextId,
     activeMessageId: state.activeMessageId,
     activeToolIds: state.activeToolIds,
+    toolApprovals: state.toolApprovals,
   };
   const getItem = (id: string) => entities.get(id);
   const setItem = (item: RunItem) => entities.set(item);
@@ -163,6 +167,20 @@ export function reduceAllWithEntities(
     next.activeToolIds = { ...next.activeToolIds };
     if (active) next.activeToolIds[id] = true;
     else delete next.activeToolIds[id];
+  };
+  // One row per call: once a call's approval has resolved and the call has a row, the approval's row folds into the
+  // tool's row, which takes the earlier of the two places (live the approval comes first, a replayed history the tool).
+  const foldApproval = (toolId: string) => {
+    const approvalId = next.toolApprovals[toolId];
+    const approval = approvalId ? getItem(approvalId) : undefined;
+    const tool = getItem(toolItemId(toolId));
+    if (approval?.type !== "approval" || !approval.ended || tool?.type !== "tool") return;
+    if (tool.approval !== approval.ended) setItem({ ...tool, approval: approval.ended, version: tool.version + 1 });
+    const at = next.outline.findIndex((entry) => entry.id === approvalId);
+    if (at === -1) return;
+    const outline = next.outline.filter((entry) => entry.id !== tool.id);
+    outline.splice(outline.findIndex((entry) => entry.id === approvalId), 1, { id: tool.id, kind: "tool" });
+    next.outline = outline;
   };
   const endActiveMessage = () => {
     if (!next.activeMessageId) return;
@@ -240,7 +258,9 @@ export function reduceAllWithEntities(
       case "tool_start": {
         const id = event.tool_call.id;
         const itemId = toolItemId(id);
-        const exists = getItem(itemId)?.type === "tool";
+        const old = getItem(itemId);
+        const prior = old?.type === "tool" ? old : undefined;
+        const exists = Boolean(prior);
         const item: RunItem = {
           id: itemId,
           type: "tool",
@@ -251,10 +271,12 @@ export function reduceAllWithEntities(
           active: true,
           is_error: false,
           canceled: false,
+          ...(prior?.approval ? { approval: prior.approval } : {}),
         };
         if (exists) setItem(item);
         else appendItem(item);
         setToolActive(id, true);
+        foldApproval(id);
         break;
       }
       case "tool_input": {
@@ -265,9 +287,11 @@ export function reduceAllWithEntities(
         if (!prior) {
           appendItem({ id: itemId, type: "tool", tool_call: event.tool_call, view: event.view, output: "", version: 1, active: true, is_error: false, canceled: false });
           setToolActive(id, true);
+          foldApproval(id);
           break;
         }
         setItem({ ...prior, tool_call: event.tool_call, view: event.view ?? prior.view, version: prior.version + 1 });
+        foldApproval(id);
         break;
       }
       case "tool_output": {
@@ -288,6 +312,7 @@ export function reduceAllWithEntities(
             result: prior?.result,
             is_error: prior?.is_error ?? false,
             canceled: prior?.canceled ?? false,
+            ...(prior?.approval ? { approval: prior.approval } : {}),
           },
           continuing ? prior : undefined,
           "output",
@@ -297,6 +322,7 @@ export function reduceAllWithEntities(
         if (prior) setItem(item);
         else appendItem(item);
         setToolActive(id, true);
+        foldApproval(id);
         break;
       }
       case "tool_end": {
@@ -316,10 +342,12 @@ export function reduceAllWithEntities(
           result,
           is_error: result?.is_error ?? false,
           canceled: result?.is_canceled ?? false,
+          ...(prior?.approval ? { approval: prior.approval } : {}),
         };
         if (prior) setItem(item);
         else appendItem(item);
         setToolActive(id, false);
+        foldApproval(id);
         break;
       }
       case "approval_request": {
@@ -328,12 +356,16 @@ export function reduceAllWithEntities(
         // A request can arrive twice (a status snapshot and the live event); it stays one row.
         if (old?.type === "approval") setItem({ ...old, request: event });
         else appendItem({ id: itemId, type: "approval", request: event });
+        if (next.toolApprovals[event.tool_call.id] !== itemId) next.toolApprovals = { ...next.toolApprovals, [event.tool_call.id]: itemId };
+        foldApproval(event.tool_call.id);
         break;
       }
       case "approval_end": {
         const itemId = approvalItemId(event.request_id);
         const old = getItem(itemId);
-        if (old?.type === "approval") setItem({ ...old, ended: event });
+        if (old?.type !== "approval") break;
+        setItem({ ...old, ended: event });
+        if (old.request.type === "approval_request") foldApproval(old.request.tool_call.id);
         break;
       }
       case "usage": {

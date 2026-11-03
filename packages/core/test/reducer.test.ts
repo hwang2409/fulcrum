@@ -86,7 +86,7 @@ test("all event paths replay through the store", () => {
     { type: "run_end" },
   ];
   const store = replay(events);
-  expect(store.getOutline()).toHaveLength(8);
+  expect(store.getOutline()).toHaveLength(7); // the resolved approval folds into its tool's row
   expect(store.getState().agent).toBe("idle");
 });
 
@@ -290,4 +290,29 @@ test("a repeated approval_request updates its one row and keeps a recorded end",
   store.dispatch(request);
   expect(store.getOutline()).toHaveLength(1);
   expect(store.getItem("approval:approval-1")).toMatchObject({ ended: { type: "approval_end" } });
+});
+
+test("a resolved approval folds into its tool's row, in the same place live and after a reload", () => {
+  const request: RunEvent = { type: "approval_request", request_id: "approval-1", tool_call: toolCall, delegated: false };
+  const end: RunEvent = { type: "approval_end", request_id: "approval-1", data: { decision: "approve" } };
+  const result: RunEvent = { type: "tool_end", tool_call: toolCall, tool_result: { tool_call_id: toolCall.id, content: "ok", is_error: false } };
+  const before: RunEvent = { type: "user_message", text: "go", mode: "normal" };
+  const after: RunEvent = { type: "error", error: { code: "x", message: "later" } };
+  const ids = (store: ReturnType<typeof replay>) => store.getOutline().map(({ id }) => id);
+  // Live: the request, the decision, then the call runs.
+  const live = replay([before, request, end, { type: "tool_start", tool_call: toolCall }, { type: "tool_output", tool_call: toolCall, output: "o" }, result, after]);
+  // A reload: history replays the call first, then its approval.
+  const reloaded = replay([before, { type: "tool_start", tool_call: toolCall }, result, request, end, after]);
+  for (const store of [live, reloaded]) {
+    expect(ids(store)).toHaveLength(3);
+    expect(ids(store).filter((id) => id.startsWith("approval:"))).toEqual([]);
+    expect(ids(store)[1]).toBe(`tool:${toolCall.id}`);
+    expect(store.getItem(`tool:${toolCall.id}`)).toMatchObject({ approval: { type: "approval_end", data: { decision: "approve" } } });
+  }
+  // A pending approval keeps its own row (it carries the actions) even when the call already has a card.
+  const pending = replay([{ type: "tool_start", tool_call: toolCall }, request]);
+  expect(ids(pending)).toEqual([`tool:${toolCall.id}`, "approval:approval-1"]);
+  // A denied call that never ran stays one approval row.
+  const denied = replay([request, { type: "approval_end", request_id: "approval-1", data: { decision: "deny" } }]);
+  expect(ids(denied)).toEqual(["approval:approval-1"]);
 });

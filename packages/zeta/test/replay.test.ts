@@ -107,10 +107,10 @@ test("timeline ids are unique and all resolve", () => {
   });
 });
 
-test("approval and its tool execution stay distinct in the timeline", () => {
+test("an approved call is one row: the resolved approval folds into its tool card", () => {
   const store = replay("approval-then-tool.jsonl").get("approval-tool")!;
-  expect(store.getOutline()).toHaveLength(2);
-  expect(items(store).map(({ type }) => type)).toEqual(["approval", "tool"]);
+  expect(items(store).map(({ type }) => type)).toEqual(["tool"]);
+  expect(items(store)[0]).toMatchObject({ approval: { type: "approval_end" } });
 });
 
 const deliberateUnknown = new Set([

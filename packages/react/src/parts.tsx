@@ -1,5 +1,5 @@
 import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
-import type { RunItem } from "@fulcrum/core";
+import type { RunEvent, RunItem } from "@fulcrum/core";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { Code, HighlightContext } from "./highlight.js";
@@ -124,11 +124,13 @@ function ViewSummary({ item }: { item: ToolItem }) {
 
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
   const ms = item.view?.durationMs;
+  const approval = item.approval ? approvalEnd(item.approval) : undefined;
   return (
     <>
       <ToolName name={item.tool_call.name} />
       <span data-part="tool-summary">{summary ? oneLine(summary(item)) : <ViewSummary item={item} />}</span>
       <span data-part="tool-status">
+        {approval ? <span data-part="tool-approval" data-decision={approval.decision || undefined}>{approval.text}</span> : null}
         {status ?? statusText[state]}
         {ms !== undefined ? <span data-part="tool-duration">{duration(ms)}</span> : null}
       </span>
@@ -195,7 +197,15 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
 
 type Decide = (requestId: string) => void | Promise<unknown>;
 
-const approvalStatus = (reason: string) => ({ controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" } as Record<string, string>)[reason] ?? "ended";
+const endReasons: Record<string, string> = { controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" };
+const decisionWords: Record<string, string> = { approve: "approved", approved: "approved", deny: "denied", denied: "denied" };
+/** How an approval ended: its decision ("approve" | "deny" | "abort"), then the reason, so every ending reads as words. */
+const approvalEnd = (ended: RunEvent | undefined) => {
+  const data = ended && "data" in ended ? ended.data : undefined;
+  const decision = String(data?.decision ?? "");
+  const reason = String(data?.reason ?? "");
+  return { decision, text: decisionWords[decision] ?? endReasons[reason] ?? (decision === "abort" ? "canceled" : "ended") };
+};
 
 const ApprovalButton = ({ action, handler, sending, disabledReason, decide }: { action: "approve" | "deny"; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: "approve" | "deny", handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler || sending} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{action}</button> : null;
 
@@ -250,8 +260,8 @@ export const Approval = memo(function Approval({
       throw error;
     }
   };
-  const endReason = item.ended && "data" in item.ended ? String(item.ended.data?.reason ?? "") : "";
-  const status = pending ? sending ? (sending === "approve" ? "approving" : "denying") : undefined : approvalStatus(endReason);
+  const end = approvalEnd(item.ended);
+  const status = pending ? sending ? (sending === "approve" ? "approving" : "denying") : undefined : end.text;
   return (
     <div
       className={className}
@@ -264,6 +274,7 @@ export const Approval = memo(function Approval({
       data-tool={toolLabel(tool_call.name)}
       data-tool-view={view?.kind}
       data-state={state}
+      data-decision={pending ? undefined : end.decision || undefined}
     >
       <div data-part="tool-header" id={labelId}>
         <Header item={requested} state={state} status={status} summary={summary} />

@@ -460,3 +460,24 @@ test("output restarted into the same tool id (a replay, a reconnect, a demo loop
     console.error = original;
   }
 });
+
+test("a resolved approval says how it ended, and a folded one marks its tool card", () => {
+  const call = (id: string) => ({ id, name: "bash", arguments: { command: "ls" } });
+  const ask = (id: string): RunEvent => ({ type: "approval_request", request_id: id, tool_call: call(`${id}-call`), view: { kind: "shell", command: "ls" }, delegated: false });
+  const end = (id: string, data: Record<string, unknown>): RunEvent => ({ type: "approval_end", request_id: id, data });
+  render([
+    ask("yes"), end("yes", { decision: "approve" }),
+    ask("no"), end("no", { decision: "deny" }),
+    ask("lost"), end("lost", { decision: "abort", reason: "controller_disconnected" }),
+    ask("abort"), end("abort", { decision: "abort" }),
+    ask("ran"), end("ran", { decision: "approve" }), ...tool("ran-call", "bash", { kind: "shell", command: "ls" }, "a\n").map((event) => ({ ...event, tool_call: call("ran-call") }) as RunEvent),
+  ], ["approval:yes", "approval:no", "approval:lost", "approval:abort", "tool:ran-call"]);
+  const status = (id: string) => q(`[data-id="${id}"] [data-part="tool-status"]`).textContent;
+  expect(status("approval:yes")).toBe("approved");
+  expect(status("approval:no")).toBe("denied");
+  expect(status("approval:lost")).toBe("connection lost");
+  expect(status("approval:abort")).toBe("canceled");
+  expect(q('[data-id="approval:no"]').getAttribute("data-decision")).toBe("deny");
+  expect(q('[data-id="tool:ran-call"] [data-part="tool-approval"]').textContent).toBe("approved");
+  expect(status("tool:ran-call")).toBe("approveddone");
+});

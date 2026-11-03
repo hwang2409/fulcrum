@@ -207,6 +207,15 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-state="canceled"] > [data-part="tool-header"] > [data-part="tool-summary"] { text-decoration: line-through; }
 
 [data-part="approval"][data-state="done"] { --mark: var(--fulcrum-muted); }
+/* A resolved approval says its decision in color: approved in ok, denied in danger; other endings stay muted. */
+[data-part="approval"][data-decision="approve"] { --mark: var(--fulcrum-ok); }
+[data-part="approval"][data-decision="approve"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-ok); }
+[data-part="approval"][data-decision="deny"] { --mark: var(--fulcrum-danger); }
+[data-part="approval"][data-decision="deny"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-danger); }
+/* A call's folded approval sits before its state mark: "approved ■ done". */
+[data-part="tool-approval"] { order: -1; color: var(--fulcrum-muted); }
+[data-part="tool-approval"][data-decision="approve"] { color: var(--fulcrum-ok); }
+[data-part="tool-approval"][data-decision="deny"] { color: var(--fulcrum-danger); }
 [data-part="approval"][data-state="pending"],
 [data-part="approval"][data-state="submitting"] { --rail: var(--fulcrum-warn); --mark: var(--fulcrum-warn); border-color: var(--fulcrum-warn); }
 [data-part="approval"][data-state="pending"] > [data-part="tool-header"] > [data-part="tool-status"],

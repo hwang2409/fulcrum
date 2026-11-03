@@ -142,21 +142,19 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       const lease = await openSession(target, id, (messages) => { if (mine === openGeneration) set({ opening: { id, messages } }); });
       if (mine !== openGeneration || !live(target)) return lease.release();
       if (previous) {
-        const rebuilt = new Map<string, ReturnType<typeof previous.getItem>>();
-        for (const { id: itemId } of lease.store.getOutline()) {
-          const item = lease.store.getItem(itemId);
-          if (item?.type === "approval" && item.request.type === "approval_request") rebuilt.set(item.request.request_id, item);
-        }
+        // Approvals by request id, with the ones folded into their tool's row (the core folds a resolved approval).
+        const approvals = (store: typeof previous) => store.getOutline().flatMap(({ id: itemId }) => {
+          const item = store.getItem(itemId);
+          const folded = item?.type === "tool" && item.approval?.type === "approval_end" ? store.getItem(`approval:${item.approval.request_id}`) : item;
+          return folded?.type === "approval" && folded.request.type === "approval_request" ? [folded] : [];
+        });
+        const rebuilt = new Map(approvals(lease.store).map((item) => [item.request.type === "approval_request" ? item.request.request_id : "", item]));
         // Older servers did not advertise approval_history. Keep their old tool-only inference; negotiated servers are authoritative.
         const oldServer = !target.features.includes("approval_history");
-        const hasHistoryApproval = lease.store.getOutline().some(({ id: itemId }) => {
-          const item = lease.store.getItem(itemId);
-          return item?.type === "approval";
-        });
+        const hasHistoryApproval = rebuilt.size > 0;
         const hasHistoryTool = lease.store.getOutline().some(({ id: itemId }) => lease.store.getItem(itemId)?.type === "tool");
-        for (const { id: itemId } of previous.getOutline()) {
-          const item = previous.getItem(itemId);
-          if (item?.type !== "approval" || item.request.type !== "approval_request") continue;
+        for (const item of approvals(previous)) {
+          if (item.type !== "approval" || item.request.type !== "approval_request") continue;
           const current = rebuilt.get(item.request.request_id);
           if (current) continue;
           lease.store.dispatch(item.request);

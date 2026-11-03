@@ -100,6 +100,8 @@ export type RunItem =
       result?: ToolResult;
       is_error: boolean;
       canceled: boolean;
+      /** The end of this call's approval, once it resolved: the approval's row folds into the tool's row. */
+      approval?: RunEvent;
     }
   | { id: string; type: "approval"; request: RunEvent; ended?: RunEvent }
   | {
