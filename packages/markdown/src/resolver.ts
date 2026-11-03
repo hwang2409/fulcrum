@@ -123,8 +123,9 @@ function listMarker(cursor: Cursor): Marker | undefined {
   }
   const marker = match[1] ?? `${match[2]}${match[3]}`;
   const markerWidth = marker.length;
-  const padding = match[4]!.includes("\t") ? 1 : Math.min(match[4]!.length, 4);
-  cursor.offset += markerWidth + match[4]!.length;
+  const whitespace = match[4]!;
+  const padding = whitespace.includes("\t") || whitespace.length > 4 ? 1 : whitespace.length;
+  cursor.offset += markerWidth + padding;
   cursor.column += markerWidth + padding;
   return { ordered: !match[1], marker, contentIndent: markerWidth + padding };
 }
@@ -135,14 +136,6 @@ function consumeItemIndent(cursor: Cursor, width: number) {
   if (consumed >= width) return true;
   Object.assign(cursor, start);
   return false;
-}
-
-function physicalLeaf(line: string) {
-  for (;;) {
-    const marker = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)?.[0];
-    if (!marker) return line;
-    line = line.slice(marker.length);
-  }
 }
 
 const isBlank = (line: string, offset = 0) => /^[ \t]*$/.test(line.slice(offset));
@@ -157,6 +150,7 @@ function referenceDefinition(line: string) {
   return {
     label: normalizeReference(match[1]!),
     value: { href: match[2] ?? match[3]!, title: match[4] ?? match[5] ?? match[6] ?? "" },
+    canContinueTitle: match[4] === undefined && match[5] === undefined && match[6] === undefined,
   };
 }
 
@@ -215,16 +209,6 @@ export class MarkdownLineResolver {
   }
 
   resolveLine(line: string, _final: boolean): LineResolution {
-    if (this.openLeaf?.kind === "table" || this.openLeaf?.kind === "paragraph" && this.openLeaf.content.includes("|")) {
-      const leafLine = physicalLeaf(line);
-      const path = this.stack.slice();
-      if (this.openLeaf.kind === "paragraph" && isTableDelimiter(leafLine)) {
-        this.openLeaf = { kind: "table" };
-        return { continued: false, lazy: false, closedToDepth: this.stack.length, opened: [], leaf: { kind: "table-delimiter", content: leafLine, path } };
-      }
-      if (this.openLeaf.kind === "table" && leafLine.includes("|"))
-        return { continued: true, lazy: false, closedToDepth: this.stack.length, opened: [], leaf: { kind: "table-row", content: leafLine, path } };
-    }
     const cursor: Cursor = { line, offset: 0, column: 0 };
     let matchedDepth = 1;
     for (; matchedDepth < this.stack.length; matchedDepth++) {
@@ -350,7 +334,7 @@ export class MarkdownLineResolver {
     const definition = referenceDefinition(content);
     if (definition) {
       this.referenceIndex.set(definition.label, definition.value);
-      if (!definition.value.title) this.pendingReferenceTitle = { label: definition.label };
+      if (definition.canContinueTitle) this.pendingReferenceTitle = { label: definition.label };
       this.openLeaf = undefined;
       return {
         continued: false,
