@@ -12,6 +12,8 @@ jobs:
       - run: bun run --cwd packages/highlight build # @fulcrum/react imports its built entry
       - run: git diff --exit-code -- packages/highlight/src/names.ts packages/highlight/src/languages.ts
       - run: bun test
+      - run: bun scripts/highlight-token-parity.ts
+      - run: bun scripts/highlight-resolver-contract.ts
       - run: bun run bench:check
       - run: bun run bench:markdown
       - run: bun run size:check

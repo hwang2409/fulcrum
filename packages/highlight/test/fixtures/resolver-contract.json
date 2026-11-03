@@ -1,0 +1,40 @@
+{
+  "fences": {
+    "patch": "diff",
+    "htm": "html",
+    "h": "c",
+    "cc": "cpp",
+    "hpp": "cpp",
+    "ts": "typescript",
+    "m": "objective-c",
+    "pl": "perl",
+    "v": "verilog",
+    "jsonc": "json"
+  },
+  "paths": {
+    "script.ksh": "shell",
+    "data.plist": "xml",
+    "page.xhtml": "html",
+    "rows.ndjson": "json",
+    "map.geojson": "json",
+    "main.cxx": "cpp",
+    "header.hh": "cpp",
+    "header.hxx": "cpp",
+    ".editorconfig": "ini",
+    ".npmrc": "ini",
+    "Pipfile": "toml",
+    "Cargo.lock": "toml",
+    "Makefile.am": "makefile",
+    ".env.local": "dotenv",
+    "a.jsonl": "json",
+    "a.json5": "json",
+    "settings.jsonc": "json",
+    "x.env": "shell",
+    ".env": "shell"
+  },
+  "media": {
+    "text/json": "json",
+    "application/ecmascript": "javascript",
+    "application/x-yaml": "yaml"
+  }
+}

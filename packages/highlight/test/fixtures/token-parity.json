@@ -1,0 +1,1533 @@
+{
+  "tsx": {
+    "source": "type Props = { name: string };\nexport const View = ({ name }: Props) => <main className=\"card\">{name}</main>;\n",
+    "lines": [
+      [
+        {
+          "text": "type",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "Props",
+          "type": "type"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "{",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "name",
+          "type": "variable"
+        },
+        {
+          "text": ":",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "string",
+          "type": "type"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "};",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "export",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "const",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "View",
+          "type": "function"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "({",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "name",
+          "type": "variable"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "}",
+          "type": "punctuation"
+        },
+        {
+          "text": ":",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "Props",
+          "type": "type"
+        },
+        {
+          "text": ")",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=>",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "<",
+          "type": "punctuation"
+        },
+        {
+          "text": "main",
+          "type": "tag"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "className",
+          "type": "attribute"
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": "\"",
+          "type": "punctuation"
+        },
+        {
+          "text": "card",
+          "type": "string"
+        },
+        {
+          "text": "\">{",
+          "type": "punctuation"
+        },
+        {
+          "text": "name",
+          "type": "variable"
+        },
+        {
+          "text": "}</",
+          "type": "punctuation"
+        },
+        {
+          "text": "main",
+          "type": "tag"
+        },
+        {
+          "text": ">;",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "jsx": {
+    "source": "export const App = () => <main className=\"app\">hello</main>;\n",
+    "lines": [
+      [
+        {
+          "text": "export",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "const",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "App",
+          "type": "function"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "()",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=>",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "<",
+          "type": "punctuation"
+        },
+        {
+          "text": "main",
+          "type": "tag"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "className",
+          "type": "attribute"
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": "\"",
+          "type": "punctuation"
+        },
+        {
+          "text": "app",
+          "type": "string"
+        },
+        {
+          "text": "\">",
+          "type": "punctuation"
+        },
+        {
+          "text": "hello"
+        },
+        {
+          "text": "</",
+          "type": "punctuation"
+        },
+        {
+          "text": "main",
+          "type": "tag"
+        },
+        {
+          "text": ">;",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "typescript": {
+    "source": "type User = { id: number };\nconst greet = (user: User) => `hi ${user.id}`;\n",
+    "lines": [
+      [
+        {
+          "text": "type",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "User",
+          "type": "type"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "{",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "id",
+          "type": "variable"
+        },
+        {
+          "text": ":",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "number",
+          "type": "type"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "};",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "const",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "greet",
+          "type": "function"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "(",
+          "type": "punctuation"
+        },
+        {
+          "text": "user",
+          "type": "variable"
+        },
+        {
+          "text": ":",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "User",
+          "type": "type"
+        },
+        {
+          "text": ")",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=>",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "`",
+          "type": "punctuation"
+        },
+        {
+          "text": "hi ",
+          "type": "string"
+        },
+        {
+          "text": "${",
+          "type": "punctuation"
+        },
+        {
+          "text": "user",
+          "type": "variable"
+        },
+        {
+          "text": ".",
+          "type": "punctuation"
+        },
+        {
+          "text": "id",
+          "type": "variable"
+        },
+        {
+          "text": "}`;",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "javascript": {
+    "source": "function add(a, b) { return a + b; }\n",
+    "lines": [
+      [
+        {
+          "text": "function",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "add",
+          "type": "function"
+        },
+        {
+          "text": "(",
+          "type": "punctuation"
+        },
+        {
+          "text": "a",
+          "type": "variable"
+        },
+        {
+          "text": ",",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "b",
+          "type": "variable"
+        },
+        {
+          "text": ")",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "{",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "return",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "a",
+          "type": "variable"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "+",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "b",
+          "type": "variable"
+        },
+        {
+          "text": ";",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "}",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "html": {
+    "source": "<style>.card { color: red; }</style>\n<script>const answer = 42;</script>\n<article data-id=\"1\">hello</article>\n",
+    "lines": [
+      [
+        {
+          "text": "<",
+          "type": "punctuation"
+        },
+        {
+          "text": "style",
+          "type": "tag"
+        },
+        {
+          "text": ">",
+          "type": "punctuation"
+        },
+        {
+          "text": ".card "
+        },
+        {
+          "text": "{",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "color",
+          "type": "attribute"
+        },
+        {
+          "text": ":",
+          "type": "punctuation"
+        },
+        {
+          "text": " red"
+        },
+        {
+          "text": ";",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "}</",
+          "type": "punctuation"
+        },
+        {
+          "text": "style",
+          "type": "tag"
+        },
+        {
+          "text": ">",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "<",
+          "type": "punctuation"
+        },
+        {
+          "text": "script",
+          "type": "tag"
+        },
+        {
+          "text": ">",
+          "type": "punctuation"
+        },
+        {
+          "text": "const",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "answer",
+          "type": "constant"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "42",
+          "type": "number"
+        },
+        {
+          "text": ";</",
+          "type": "punctuation"
+        },
+        {
+          "text": "script",
+          "type": "tag"
+        },
+        {
+          "text": ">",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "<",
+          "type": "punctuation"
+        },
+        {
+          "text": "article",
+          "type": "tag"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "data-id",
+          "type": "attribute"
+        },
+        {
+          "text": "=\"",
+          "type": "punctuation"
+        },
+        {
+          "text": "1",
+          "type": "string"
+        },
+        {
+          "text": "\">",
+          "type": "punctuation"
+        },
+        {
+          "text": "hello"
+        },
+        {
+          "text": "</",
+          "type": "punctuation"
+        },
+        {
+          "text": "article",
+          "type": "tag"
+        },
+        {
+          "text": ">",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "vue": {
+    "source": "<template><button @click=\"count++\">{{ count }}</button></template>\n<script setup lang=\"ts\">const count = ref(0);</script>\n",
+    "lines": [
+      [],
+      [],
+      []
+    ]
+  },
+  "svelte": {
+    "source": "<script>let count = 0;</script>\n<button on:click={() => count++}>{count}</button>\n",
+    "lines": [
+      [],
+      [],
+      []
+    ]
+  },
+  "markdown": {
+    "source": "# title\n\n```typescript\nconst answer: number = 42;\n```\n",
+    "lines": [
+      [
+        {
+          "text": "#",
+          "type": "punctuation"
+        },
+        {
+          "text": " title",
+          "type": "keyword"
+        }
+      ],
+      [],
+      [
+        {
+          "text": "```",
+          "type": "punctuation"
+        },
+        {
+          "text": "typescript",
+          "type": "string"
+        }
+      ],
+      [
+        {
+          "text": "const",
+          "type": "keyword"
+        },
+        {
+          "text": " ",
+          "type": "string"
+        },
+        {
+          "text": "answer",
+          "type": "constant"
+        },
+        {
+          "text": ":",
+          "type": "operator"
+        },
+        {
+          "text": " ",
+          "type": "string"
+        },
+        {
+          "text": "number",
+          "type": "type"
+        },
+        {
+          "text": " ",
+          "type": "string"
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": " ",
+          "type": "string"
+        },
+        {
+          "text": "42",
+          "type": "number"
+        },
+        {
+          "text": ";",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "```",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "julia": {
+    "source": "function greet(name)\n  println(\"hello $name\")\nend\n",
+    "lines": [
+      [],
+      [],
+      [],
+      []
+    ]
+  },
+  "python": {
+    "source": "def greet(name: str):\n    return f\"hello {name}\"\n",
+    "lines": [
+      [
+        {
+          "text": "def",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "greet",
+          "type": "function"
+        },
+        {
+          "text": "(",
+          "type": "punctuation"
+        },
+        {
+          "text": "name",
+          "type": "variable"
+        },
+        {
+          "text": ":",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "str",
+          "type": "type"
+        },
+        {
+          "text": "):",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "    "
+        },
+        {
+          "text": "return",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "f",
+          "type": "keyword"
+        },
+        {
+          "text": "\"hello ",
+          "type": "string"
+        },
+        {
+          "text": "{",
+          "type": "constant"
+        },
+        {
+          "text": "name"
+        },
+        {
+          "text": "}",
+          "type": "constant"
+        },
+        {
+          "text": "\"",
+          "type": "string"
+        }
+      ],
+      []
+    ]
+  },
+  "rust": {
+    "source": "fn main() { let value: u32 = 42; println!(\"{value}\"); }\n",
+    "lines": [
+      [
+        {
+          "text": "fn",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "main",
+          "type": "function"
+        },
+        {
+          "text": "()",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "{",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "let",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "value",
+          "type": "variable"
+        },
+        {
+          "text": ":",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "u32",
+          "type": "type"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "42",
+          "type": "number"
+        },
+        {
+          "text": ";",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "println!",
+          "type": "function"
+        },
+        {
+          "text": "(\"{",
+          "type": "punctuation"
+        },
+        {
+          "text": "value",
+          "type": "string"
+        },
+        {
+          "text": "}\");",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "}",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "go": {
+    "source": "package main\nfunc main() { println(\"hello\") }\n",
+    "lines": [
+      [
+        {
+          "text": "package",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "main",
+          "type": "type"
+        }
+      ],
+      [
+        {
+          "text": "func",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "main",
+          "type": "function"
+        },
+        {
+          "text": "()",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "{",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "println",
+          "type": "function"
+        },
+        {
+          "text": "(\"",
+          "type": "punctuation"
+        },
+        {
+          "text": "hello",
+          "type": "string"
+        },
+        {
+          "text": "\")",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "}",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "c": {
+    "source": "#include <stdio.h>\nint main(void) { return 0; }\n",
+    "lines": [
+      [
+        {
+          "text": "#",
+          "type": "punctuation"
+        },
+        {
+          "text": "include",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "<",
+          "type": "punctuation"
+        },
+        {
+          "text": "stdio.h",
+          "type": "string"
+        },
+        {
+          "text": ">",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "int",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "main",
+          "type": "function"
+        },
+        {
+          "text": "(",
+          "type": "punctuation"
+        },
+        {
+          "text": "void",
+          "type": "keyword"
+        },
+        {
+          "text": ")",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "{",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "return",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "0",
+          "type": "number"
+        },
+        {
+          "text": ";",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "}",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "cpp": {
+    "source": "#include <vector>\nstd::vector<int> values;\n",
+    "lines": [
+      [
+        {
+          "text": "#",
+          "type": "punctuation"
+        },
+        {
+          "text": "include",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "<",
+          "type": "punctuation"
+        },
+        {
+          "text": "vector",
+          "type": "string"
+        },
+        {
+          "text": ">",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "std"
+        },
+        {
+          "text": "::",
+          "type": "punctuation"
+        },
+        {
+          "text": "vector",
+          "type": "variable"
+        },
+        {
+          "text": "<",
+          "type": "operator"
+        },
+        {
+          "text": "int",
+          "type": "keyword"
+        },
+        {
+          "text": ">",
+          "type": "operator"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "values",
+          "type": "variable"
+        },
+        {
+          "text": ";",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "shell": {
+    "source": "#!/bin/sh\nfor file in *.ts; do echo \"$file\"; done\n",
+    "lines": [
+      [
+        {
+          "text": "#!",
+          "type": "punctuation"
+        },
+        {
+          "text": "/bin/sh",
+          "type": "comment"
+        }
+      ],
+      [
+        {
+          "text": "for",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "file",
+          "type": "variable"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "in",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "*.ts",
+          "type": "string"
+        },
+        {
+          "text": ";",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "do",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "echo",
+          "type": "function"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "\"",
+          "type": "punctuation"
+        },
+        {
+          "text": "$file",
+          "type": "variable"
+        },
+        {
+          "text": "\";",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "done",
+          "type": "keyword"
+        }
+      ],
+      []
+    ]
+  },
+  "json": {
+    "source": "{\n  \"ok\": true,\n  \"count\": 2\n}\n",
+    "lines": [
+      [
+        {
+          "text": "{",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "  "
+        },
+        {
+          "text": "\"",
+          "type": "punctuation"
+        },
+        {
+          "text": "ok",
+          "type": "attribute"
+        },
+        {
+          "text": "\":",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "true",
+          "type": "constant"
+        },
+        {
+          "text": ",",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "  "
+        },
+        {
+          "text": "\"",
+          "type": "punctuation"
+        },
+        {
+          "text": "count",
+          "type": "attribute"
+        },
+        {
+          "text": "\":",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "2",
+          "type": "number"
+        }
+      ],
+      [
+        {
+          "text": "}",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "yaml": {
+    "source": "name: fulcrum\nitems:\n  - one\n  - two\n",
+    "lines": [
+      [
+        {
+          "text": "name",
+          "type": "tag"
+        },
+        {
+          "text": ":",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "fulcrum",
+          "type": "string"
+        }
+      ],
+      [
+        {
+          "text": "items",
+          "type": "tag"
+        },
+        {
+          "text": ":",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "  "
+        },
+        {
+          "text": "-",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "one",
+          "type": "string"
+        }
+      ],
+      [
+        {
+          "text": "  "
+        },
+        {
+          "text": "-",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "two",
+          "type": "string"
+        }
+      ],
+      []
+    ]
+  },
+  "toml": {
+    "source": "[package]\nname = \"fulcrum\"\nversion = \"1.0\"\n",
+    "lines": [
+      [
+        {
+          "text": "[",
+          "type": "punctuation"
+        },
+        {
+          "text": "package",
+          "type": "keyword"
+        },
+        {
+          "text": "]",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "name",
+          "type": "variable"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "\"",
+          "type": "punctuation"
+        },
+        {
+          "text": "fulcrum",
+          "type": "string"
+        },
+        {
+          "text": "\"",
+          "type": "punctuation"
+        }
+      ],
+      [
+        {
+          "text": "version",
+          "type": "variable"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "=",
+          "type": "punctuation"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "\"",
+          "type": "punctuation"
+        },
+        {
+          "text": "1.0",
+          "type": "string"
+        },
+        {
+          "text": "\"",
+          "type": "punctuation"
+        }
+      ],
+      []
+    ]
+  },
+  "sql": {
+    "source": "SELECT id, name FROM users WHERE active = true;\n",
+    "lines": [
+      [
+        {
+          "text": "SELECT",
+          "type": "keyword"
+        },
+        {
+          "text": " id, "
+        },
+        {
+          "text": "name",
+          "type": "keyword"
+        },
+        {
+          "text": " "
+        },
+        {
+          "text": "FROM",
+          "type": "keyword"
+        },
+        {
+          "text": " users "
+        },
+        {
+          "text": "WHERE",
+          "type": "keyword"
+        },
+        {
+          "text": " active "
+        },
+        {
+          "text": "=",
+          "type": "operator"
+        },
+        {
+          "text": " true;"
+        }
+      ],
+      []
+    ]
+  },
+  "diff": {
+    "source": "diff --git a/file.ts b/file.ts\n-old line\n+new line\n",
+    "lines": [
+      [
+        {
+          "text": "diff --git a/file.ts b/file.ts"
+        }
+      ],
+      [
+        {
+          "text": "-",
+          "type": "punctuation"
+        },
+        {
+          "text": "old line",
+          "type": "deleted"
+        }
+      ],
+      [
+        {
+          "text": "+",
+          "type": "punctuation"
+        },
+        {
+          "text": "new line",
+          "type": "inserted"
+        }
+      ],
+      []
+    ]
+  }
+}

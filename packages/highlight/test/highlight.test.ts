@@ -228,9 +228,9 @@ describe("incremental tokenization", () => {
     background.forEach((language, index) => { void runtime.tokenize("function greet() { return 1; }\n", language, { id: `background-${index}`, version: 1, state: "done" }); });
     const started = Date.now();
     void runtime.tokenize("function greet()\n  return 1\nend\n", "julia", { id: "visible-julia", version: 1, state: "done" });
-    while (!colored && Date.now() - started < 20_000) await new Promise((resolve) => setTimeout(resolve, 10));
+    while (!colored && Date.now() - started < 1_500) await new Promise((resolve) => setTimeout(resolve, 10));
     expect(colored).toBe(true);
-    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(Date.now() - started).toBeLessThan(1_500);
     runtime.dispose();
     Object.defineProperty(performance, "now", realNow);
   }, 30_000);
@@ -256,7 +256,7 @@ describe("incremental tokenization", () => {
       const before = runtime.cacheSize();
       const tokens = await runtime.tokenize(source, language, { id: "warm", version: 1, state: "done" });
       expect(text(tokens)).toBe(source);
-      expect(runtime.cacheSize().static).toBeGreaterThanOrEqual(before.static);
+      expect(runtime.cacheSize()).toEqual(before);
       runtime.dispose();
     }
   }, 60_000);
@@ -818,7 +818,7 @@ describe("grammar warm-up and regex caches", () => {
     expect(updates.map(({ id, language }) => [id, language])).toEqual([["cold", "typescript"], ["other", "typescript"]]);
     expect(text(updates[0]!.tokens)).toBe(cold);
     // The vite config read whose first line a cold grammar once left plain: every line with text is colored.
-    expect(typedPerLine(updates[0]!.tokens).slice(0, 6).filter(Boolean).length).toBeGreaterThanOrEqual(4);
+    expect(typedPerLine(updates[0]!.tokens).slice(0, 6)).toEqual([true, true, false, true, true, true]);
     expect(runtime.willUpdate({ id: "cold", version: 1, state: "done" })).toBe(false);
 
     // Once warm, a line over the limit is really slow: it stays plain, final, and is never re-sent.
