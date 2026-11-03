@@ -6,6 +6,6 @@ streaming markdown uses one physical-line resolver. it owns the open document, q
 
 visible streaming text is monotonic. text whose final block ownership is still inherently ambiguous is emitted as `pending-text` and rendered with `data-part="md-text-pending"`; unresolved references use `pending-reference`. a complete line that can still become a table header or setext heading remains provisional until the following line settles it. fence openers commit immediately, and fence content is owned by that fence only when its container path continues.
 
-`test/recursive-containers.test.tsx` covers generated nesting through depth 6 and the 100 kb `blockquote > list > blockquote` regression. `test/reviewer-round3.test.tsx` records the minimized fence, table, marker-cache, and non-final-text regressions. `bun run bench:markdown` takes the median of five runs and enforces the 1.2 work ratio, 2 ms p95, 4 ms p99, and 16 ms isolated-pause budgets.
+`test/recursive-containers.test.tsx` covers generated nesting through depth 6 and the 100 kb `blockquote > list > blockquote` regression. `test/reviewer-round3.test.tsx` records the minimized fence, table, marker-cache, and non-final-text regressions. `bun run bench:markdown` takes the median of five runs and enforces the 1.2 work ratio, 2 ms p95, 4 ms p99, and 50 ms isolated-pause budgets.
 
 `finish()` must equal the one-shot `parseMarkdown` result for every fuzz document.
