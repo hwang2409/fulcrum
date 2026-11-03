@@ -183,7 +183,7 @@ function classifyLeaf(line: string): PendingClassification {
   return {
     content: visibleContent,
     kind: "paragraph",
-    provisional: true,
+    provisional: false,
     appendable: visibleContent.length > 0 && line.endsWith(visibleContent) && !/[\\[*_~`<!&#|>]/.test(visibleContent),
   };
 }

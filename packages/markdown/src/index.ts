@@ -452,7 +452,7 @@ function parseStreamingMarkdown(source: string, environment: Environment = {}): 
 
 export interface StreamingDocument {
   readonly source: string;
-  readonly stats: { readonly frozenParses: number; readonly tailParses: number; readonly scannedCharacters: number; readonly previewScannedCharacters: number };
+  readonly stats: { readonly frozenParses: number; readonly tailParses: number; readonly scannedCharacters: number; readonly previewScannedCharacters: number; readonly copiedCharacters: number };
   append(delta: string): void;
   finish(): void;
   render(): readonly Block[];
@@ -580,7 +580,7 @@ function markPendingReferences(inlines: Inline[], blocked: ReadonlySet<string> =
     for (const match of node.value.matchAll(/!?\[([^\]\n]+)\](?:\[([^\]\n]*)\])?/g)) {
       if (match.index === undefined || match.index > 0 && node.value[match.index - 1] === "\\" || node.value[match.index + match[0].length] === ":" || blocked.has(normalizeReferenceLabel(match[1]!))) continue;
       if (match.index > offset) replacement.push({ type: "text", value: node.value.slice(offset, match.index) });
-      if (!match[0].startsWith("!")) replacement.push({ type: "pending-reference", value: match[1]! });
+      if (!match[0].startsWith("!")) replacement.push({ type: "text", value: match[1]! });
       offset = match.index + match[0].length;
     }
     if (!replacement.length) continue;
@@ -698,9 +698,17 @@ function cloneOpenPath(blocks: readonly Block[], cloneLeaf = true): Block[] {
     const item = items.at(-1);
     if (item) items[items.length - 1] = { ...item, children: cloneOpenPath(item.children, cloneLeaf) };
     copy[index] = { ...block, items };
-  } else if (cloneLeaf && block.type === "paragraph") copy[index] = { ...block, children: structuredClone(block.children) };
+  } else if (cloneLeaf && block.type === "paragraph") copy[index] = { ...block, children: block.children.slice() };
   else if (cloneLeaf && block.type === "code") copy[index] = { ...block };
+  else if (cloneLeaf && block.type === "table") copy[index] = { ...block, rows: block.rows.slice() };
   return copy;
+}
+
+function tailTable(blocks: Block[]): Extract<Block, { type: "table" }> | undefined {
+  const block = blocks.at(-1);
+  if (block?.type === "table") return block;
+  if (block?.type === "blockquote") return tailTable(block.children);
+  if (block?.type === "list") return tailTable(block.items.at(-1)?.children ?? []);
 }
 
 function tailParagraph(blocks: Block[]): Extract<Block, { type: "paragraph" }> | undefined {
@@ -723,25 +731,26 @@ function pendingInlineSource(content: string) {
   return content;
 }
 
-function appendPendingParagraph(blocks: Block[], source: string, references: Environment, continuesParagraph: boolean, blocked: ReadonlySet<string>, provisional: boolean) {
-  if (!source) return;
-  const paragraph = continuesParagraph && !provisional ? tailParagraph(blocks) : undefined;
-  const inlineSource = paragraph ? `${inlineTextFromNodes(paragraph.children)}\n${source}` : source;
-  const children = /[\\[*_~`<!&]/.test(inlineSource) ? parseInline(inlineSource, true, references) : [{ type: "text" as const, value: inlineSource }];
-  markPendingReferences(children, blocked);
-  if (provisional) markProvisional(children);
-  if (paragraph) paragraph.children = children;
-  else {
-    const pending = { type: "paragraph" as const, children };
-    blocks.push(pending);
-    return pending;
-  }
-  return paragraph;
+function appendPendingTableRow(blocks: Block[], source: string, references: Environment, blocked: ReadonlySet<string>) {
+  const table = tailTable(blocks);
+  if (!table) return false;
+  const cells = tableCells(source);
+  const row = Array.from({ length: table.header.length }, (_, index) => parseInline(cells[index]?.trim() ?? "", true, references));
+  row.forEach((cell) => markPendingReferences(cell, blocked));
+  table.rows = [...table.rows, row];
+  return true;
 }
 
-function inlineTextFromNodes(nodes: readonly Inline[]): string {
-  return nodes.map((node) => node.type === "text" || node.type === "pending-reference" || node.type === "code" ? node.value
-    : node.type === "break" ? "\n" : node.type === "image" ? node.alt : inlineTextFromNodes(node.children)).join("");
+function appendPendingParagraph(blocks: Block[], pending: readonly Inline[], continuesParagraph: boolean) {
+  if (!pending.length) return;
+  const paragraph = continuesParagraph ? tailParagraph(blocks) : undefined;
+  if (paragraph) {
+    paragraph.children = [...paragraph.children, { type: "text", value: "\n" }, ...pending];
+    return paragraph;
+  }
+  const block = { type: "paragraph" as const, children: pending.slice() };
+  blocks.push(block);
+  return block;
 }
 
 function markProvisional(nodes: Inline[]) {
@@ -809,6 +818,7 @@ export function createStreamingDocument(): StreamingDocument {
   let tailParses = 0;
   let scannedCharacters = 0;
   let previewScannedCharacters = 0;
+  let copiedCharacters = 0;
   const resolver = new MarkdownLineResolver();
   const blocks = new BlockBuffer();
   let openRoots: Block[] = [];
@@ -827,7 +837,7 @@ export function createStreamingDocument(): StreamingDocument {
   let pendingReferenceApply = false;
   let trailingCarriageReturn = false;
   let pendingPreviewLength = 0;
-  let pendingPreviewText = "";
+  let pendingPreviewNodes: Inline[] = [];
   let pendingPreviewAppendable = false;
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
@@ -1124,7 +1134,7 @@ export function createStreamingDocument(): StreamingDocument {
       for (const resolution of resolver.append(piece)) apply(resolution);
     if (delta.includes("\n")) {
       pendingPreviewLength = 0;
-      pendingPreviewText = "";
+      pendingPreviewNodes = [];
       pendingPreviewAppendable = false;
     }
   };
@@ -1135,17 +1145,24 @@ export function createStreamingDocument(): StreamingDocument {
       const suffix = pending.slice(pendingPreviewLength);
       previewScannedCharacters += suffix.length;
       if (!/[\\[*_~`<!&#|>\r\n]/.test(suffix)) {
-        pendingPreviewText += suffix;
+        if (suffix) pendingPreviewNodes.push({ type: "text", value: suffix });
+        copiedCharacters += suffix.length;
         pendingPreviewLength = pending.length;
-        return pendingPreviewText;
+        return pendingPreviewNodes;
       }
     }
     const classification = resolver.classifyPending(pending);
+    const inlineSource = pendingInlineSource(classification.content);
     previewScannedCharacters += pending.length;
-    pendingPreviewText = pendingInlineSource(classification.content);
+    copiedCharacters += inlineSource.length;
+    pendingPreviewNodes = inlineSource
+      ? /[\\[*_~`<!&]/.test(inlineSource) ? parseInline(inlineSource, true, environment()) : [{ type: "text", value: inlineSource }]
+      : [];
+    markPendingReferences(pendingPreviewNodes, blockedReferences);
+    if (classification.provisional) markProvisional(pendingPreviewNodes);
     pendingPreviewLength = pending.length;
     pendingPreviewAppendable = classification.appendable;
-    return pendingPreviewText;
+    return pendingPreviewNodes;
   };
 
   const normalizeDelta = (delta: string) => {
@@ -1162,7 +1179,7 @@ export function createStreamingDocument(): StreamingDocument {
 
   return {
     get source() { return source; },
-    get stats() { return { frozenParses, tailParses, scannedCharacters, previewScannedCharacters }; },
+    get stats() { return { frozenParses, tailParses, scannedCharacters, previewScannedCharacters, copiedCharacters }; },
     append(delta) {
       if (finished || !delta) return;
       const normalized = normalizeDelta(delta);
@@ -1193,10 +1210,8 @@ export function createStreamingDocument(): StreamingDocument {
         const disposition = resolver.pendingFenceDisposition;
         if (disposition === "closes") closeOpenCode(overlay);
         else if (disposition === "none" && classification.content) appendOpenCode(overlay, classification.content);
-      } else {
-        const lookaheadParagraph = resolver.hasPendingLookahead ? tailParagraph(overlay) : undefined;
-        appendPendingParagraph(overlay, pendingPreview(), environment(), Boolean(openParagraph), blockedReferences, classification.provisional);
-        if (lookaheadParagraph) markProvisional(lookaheadParagraph.children);
+      } else if (!(openTable && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment(), blockedReferences))) {
+        appendPendingParagraph(overlay, pendingPreview(), Boolean(openParagraph));
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];

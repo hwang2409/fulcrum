@@ -28,8 +28,8 @@ const json = (value: unknown) => JSON.stringify(value, (key, item) => key === "o
 test("pending classification is resolver-owned and settles marker suffixes", () => {
   const resolver = new MarkdownLineResolver();
   expect(resolver.classifyPending("> ")).toMatchObject({ kind: "empty", content: "" });
-  expect(resolver.classifyPending("> hello")).toMatchObject({ kind: "paragraph", content: "hello", provisional: true });
-  expect(resolver.classifyPending("- item")).toMatchObject({ kind: "paragraph", content: "item", provisional: true });
+  expect(resolver.classifyPending("> hello")).toMatchObject({ kind: "paragraph", content: "hello", provisional: false });
+  expect(resolver.classifyPending("- item")).toMatchObject({ kind: "paragraph", content: "item", provisional: false });
 });
 
 test("fence ownership does not reveal text that the next newline retracts", () => {
@@ -38,7 +38,7 @@ test("fence ownership does not reveal text that the next newline retracts", () =
   expect(visible(document.render())).toBe("");
   document.append("\n");
   expect(visible(document.render())).toBe("4");
-  expect(visible(document.render(), false)).toBe("");
+  expect(visible(document.render(), false)).toBe("4");
   document.finish();
   expect(json(document.render())).toBe(json(parseMarkdown(">~~~\n4\n")));
 });
@@ -52,10 +52,26 @@ test("an empty pipe header never takes ownership of later paragraph text", () =>
   expect(json(document.render())).toBe(json(parseMarkdown(source)));
 });
 
-test("ambiguous complete lines stay provisional through table and setext lookahead", () => {
+test("block lookahead keeps plain text stable without provisional styling", () => {
   for (const source of ["left | right\n", "heading\n"]) {
     const markup = renderToStaticMarkup(<Markdown source={source} streaming />);
-    expect(markup).toContain('data-part="md-text-pending"');
+    expect(markup).not.toContain('data-part="md-text-pending"');
+  }
+});
+
+test("preview copy work stays bounded for 10 KB, 100 KB, and 1 MB leaves", () => {
+  for (const size of [10_000, 100_000, 1_000_000]) {
+    const document = createStreamingDocument();
+    let previous = 0;
+    let maximum = 0;
+    for (let offset = 0; offset < size; offset += 1_024) {
+      document.append("a".repeat(Math.min(1_024, size - offset)));
+      document.render();
+      maximum = Math.max(maximum, document.stats.copiedCharacters - previous);
+      previous = document.stats.copiedCharacters;
+    }
+    expect(maximum, `${size} byte leaf`).toBeLessThanOrEqual(1_024);
+    expect(document.stats.copiedCharacters, `${size} byte leaf total`).toBe(size);
   }
 });
 

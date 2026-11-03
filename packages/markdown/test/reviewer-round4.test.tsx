@@ -140,13 +140,15 @@ test("648 incomplete definitions equal one-shot parsing after finish", () => {
   expect(cases).toBe(648);
 });
 
-test("a terminal definition stays pending until its continuation line is decided", () => {
+test("a terminal definition keeps its stable label visible until its continuation line is decided", () => {
   const source = "reader opens [shared].\n\n[shared]: https://example.com/docs";
   const document = createStreamingDocument();
   document.append(source);
-  expect(json(document.render())).toContain('"type":"pending-reference","value":"shared"');
+  expect(json(document.render())).toContain('"type":"text","value":"shared"');
+  expect(json(document.render())).not.toContain('"type":"pending-reference"');
   document.append("\n");
-  expect(json(document.render())).toContain('"type":"pending-reference","value":"shared"');
+  expect(json(document.render())).toContain('"type":"text","value":"shared"');
+  expect(json(document.render())).not.toContain('"type":"pending-reference"');
   document.append('"next title"\n');
   expect(json(document.render())).toBe(json(parseMarkdown(`${source}\n"next title"\n`)));
 });

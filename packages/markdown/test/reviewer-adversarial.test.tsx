@@ -15,6 +15,18 @@ function visible(blocks: readonly Block[], includeProvisional = true): string {
     : block.type === "list" ? block.items.map((item) => visible(item.children, includeProvisional)).join("")
     : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => inlineVisible(cell, includeProvisional)).join("") : "").join("").replace(/\s/g, "");
 }
+function provisionalCharacters(blocks: readonly Block[]): number {
+  const inline = (nodes: readonly Inline[]): number => nodes.reduce((count, node) => count
+    + (node.type === "pending-reference" ? node.value.length
+      : node.type === "pending-text" ? inlineVisible(node.children).length
+      : "children" in node ? inline(node.children) : 0), 0);
+  return blocks.reduce((count, block) => count
+    + (block.type === "paragraph" || block.type === "heading" ? inline(block.children)
+      : block.type === "blockquote" ? provisionalCharacters(block.children)
+      : block.type === "list" ? block.items.reduce((sum, item) => sum + provisionalCharacters(item.children), 0)
+      : block.type === "table" ? [...block.header, ...block.rows.flat()].reduce((sum, cell) => sum + inline(cell), 0) : 0), 0);
+}
+
 function subsequence(needle: string, haystack: string) {
   const wanted = [...needle];
   let offset = 0;
@@ -56,8 +68,12 @@ const chunkPlans = [
   { name: "marker-boundaries", chunks: (source: string) => source.split(/(?=[\n\r`~|>\-*+.#\[\]()])/).filter(Boolean) },
 ];
 
-test("reviewer 25-family generator preserves visible order and final output", () => {
+test("reviewer 25-family generator preserves visible order and final output within the provisional budget", () => {
   expect(cases).toHaveLength(25);
+  let renders = 0;
+  let shareTotal = 0;
+  let maximumShare = 0;
+  let maximumCharacters = 0;
   for (const current of cases) for (const plan of chunkPlans) {
     const document = createStreamingDocument();
     let previousStable = "";
@@ -66,10 +82,21 @@ test("reviewer 25-family generator preserves visible order and final output", ()
       document.append(chunk);
       prefix += chunk;
       const blocks = document.render();
+      const allCharacters = visible(blocks).length;
+      const provisional = provisionalCharacters(blocks);
+      const share = provisional / Math.max(1, allCharacters);
+      renders++;
+      shareTotal += share;
+      maximumShare = Math.max(maximumShare, share);
+      maximumCharacters = Math.max(maximumCharacters, provisional);
+      expect(provisional, `${current.name}/${plan.name}: provisional budget`).toBeLessThanOrEqual(256);
       expect(subsequence(previousStable, visible(blocks)), `${current.name}/${plan.name}: ${JSON.stringify(prefix)}: ${JSON.stringify(previousStable)} -> ${JSON.stringify(visible(blocks))}`).toBe(true);
       previousStable = visible(blocks, false);
     }
     document.finish();
     expect(json(document.render()), `${current.name}/${plan.name}`).toBe(json(parseMarkdown(current.source)));
   }
+  const meanShare = shareTotal / renders;
+  console.log(`provisional share: mean ${(meanShare * 100).toFixed(3)}%, max ${(maximumShare * 100).toFixed(3)}%, max ${maximumCharacters} characters`);
+  expect(meanShare).toBeLessThan(0.02);
 });

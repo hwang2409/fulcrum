@@ -3,7 +3,7 @@ import { createStreamingDocument } from "../packages/markdown/src/index.js";
 const targetBytes = 100_000;
 const deltaSizes = [1, 20, 200];
 
-type Measurement = { p95: number; p99: number; max: number; workRatio: number; maxWork: number };
+type Measurement = { p95: number; p99: number; max: number; workRatio: number; maxWork: number; maxCopied: number };
 const failsGate = ({ p95, p99, max, workRatio }: Measurement) => workRatio > 1.2 || p95 > 2 || p99 > 4 || max > 50;
 
 const quarterRatio = (samples: number[]) => {
@@ -21,7 +21,7 @@ function proveGateSensitivity() {
   const wholeContainerRatio = quarterRatio(wholeContainer);
   if (boundedRatio > 1.2 || wholeContainerRatio <= 1.2)
     throw new Error(`markdown work gate is not sensitive: bounded ${boundedRatio.toFixed(2)}x, whole-container ${wholeContainerRatio.toFixed(2)}x`);
-  const base = { p95: 1, p99: 2, max: 8, workRatio: 1, maxWork: 1 };
+  const base = { p95: 1, p99: 2, max: 8, workRatio: 1, maxWork: 1, maxCopied: 1 };
   if (failsGate(base) || !failsGate({ ...base, p99: 4.01 }) || !failsGate({ ...base, max: 50.01 }))
     throw new Error("markdown latency gate does not catch p99 regressions and isolated pauses");
   console.log(`work gate sensitivity: bounded ${boundedRatio.toFixed(2)}x passes; deliberate whole-container parser ${wholeContainerRatio.toFixed(2)}x fails; p99 and isolated-pause probes fail`);
@@ -29,17 +29,20 @@ function proveGateSensitivity() {
 
 function measure(source: string, deltaSize: number): Measurement {
   let work: number[] = [];
+  let maxCopied = 0;
   const trials = Array.from({ length: 5 }, (_, trial) => {
     const document = createStreamingDocument();
     const durations: number[] = [];
     const trialWork: number[] = [];
     for (let index = 0; index < source.length; index += deltaSize) {
       const before = document.stats.scannedCharacters;
+      const copiedBefore = document.stats.copiedCharacters;
       const start = performance.now();
       document.append(source.slice(index, index + deltaSize));
       document.render();
       durations.push(performance.now() - start);
       trialWork.push(document.stats.scannedCharacters - before);
+      maxCopied = Math.max(maxCopied, document.stats.copiedCharacters - copiedBefore);
     }
     if (trial === 0) work = trialWork;
     const sorted = durations.sort((a, b) => a - b);
@@ -52,6 +55,7 @@ function measure(source: string, deltaSize: number): Measurement {
     max: median("max"),
     workRatio: quarterRatio(work),
     maxWork: Math.max(...work),
+    maxCopied,
   };
 }
 
@@ -77,7 +81,10 @@ console.log(`markdown stream benchmark: ${targetBytes} bytes`);
 let failed = false;
 for (const deltaSize of deltaSizes) for (const [name, source] of cases) {
   const result = measure(source, deltaSize);
-  console.log(`${String(deltaSize).padStart(3)} B  ${name.padEnd(22)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  work ${result.workRatio.toFixed(2)}x  max-work ${result.maxWork}`);
+  console.log(`${String(deltaSize).padStart(3)} B  ${name.padEnd(22)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  work ${result.workRatio.toFixed(2)}x  max-work ${result.maxWork}  max-copy ${result.maxCopied}`);
   if (failsGate(result)) failed = true;
 }
+const millionByteParagraph = measure("a".repeat(1_000_000), 1_024);
+console.log(`1024 B  ${"1 MB soft-wrapped paragraph".padEnd(22)} p95 ${millionByteParagraph.p95.toFixed(3)} ms  p99 ${millionByteParagraph.p99.toFixed(3)} ms  max ${millionByteParagraph.max.toFixed(3)} ms  work ${millionByteParagraph.workRatio.toFixed(2)}x  max-work ${millionByteParagraph.maxWork}  max-copy ${millionByteParagraph.maxCopied}`);
+if (failsGate(millionByteParagraph) || millionByteParagraph.maxCopied > 1_024) failed = true;
 if (failed) process.exit(1);

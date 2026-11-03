@@ -105,9 +105,9 @@ test("streaming never changes the source", () => {
   }
 });
 
-test("holds unmatched emphasis and link syntax while rendering open code", () => {
-  expect(renderToStaticMarkup(<Markdown source="**bold" streaming />)).toBe('<p data-part="md-paragraph"><span data-part="md-text-pending">bold</span></p>');
-  expect(renderToStaticMarkup(<Markdown source="[docs](https://example.com" streaming />)).toBe('<p data-part="md-paragraph"><span data-part="md-text-pending">docs</span></p>');
+test("hides unmatched emphasis and link syntax while keeping their prose stable", () => {
+  expect(renderToStaticMarkup(<Markdown source="**bold" streaming />)).toBe('<p data-part="md-paragraph">bold</p>');
+  expect(renderToStaticMarkup(<Markdown source="[docs](https://example.com" streaming />)).toBe('<p data-part="md-paragraph">docs</p>');
   expect(renderToStaticMarkup(<Markdown source="use ``a ` b" streaming />)).toContain('<code data-part="md-code-inline">a ` b</code>');
   expect(renderToStaticMarkup(<Markdown source={'```ts\nconst x = 1;'} streaming />)).toContain('<pre data-part="md-code-block" data-language="ts">');
 });
@@ -188,7 +188,7 @@ test("generated mixed reference streams hide definitions and brackets", () => {
     document.finish();
     expect(json(document.render())).toBe(json(parseMarkdown(source)));
   }
-  expect(renderToStaticMarkup(<Markdown source="See [later]." streaming />)).toContain('data-part="md-reference-pending"');
+  expect(renderToStaticMarkup(<Markdown source="See [later]." streaming />)).not.toContain('data-part="md-reference-pending"');
 });
 
 test("finish retains blocks whose final output is unchanged", () => {
