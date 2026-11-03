@@ -168,6 +168,11 @@ export class TokenizerRuntime {
       // collect same-turn visible demands before starting an import, so background warm-up cannot win by a race.
       await nextTask();
       while (this.loadTasks.size) {
+        if (epoch !== this.epoch) {
+          for (const task of this.loadTasks.values()) task.resolve();
+          this.loadTasks.clear();
+          return;
+        }
         const [language, task] = [...this.loadTasks.entries()].sort((a, b) => b[1].order - a[1].order)[0]!;
         this.loadTasks.delete(language);
         try {
@@ -178,7 +183,10 @@ export class TokenizerRuntime {
           for (const pattern of patterns) cache.grammar.add(pattern);
           this.scheduleWarm(language, patterns, highlighter, cache, epoch);
           task.resolve();
-        } catch (cause) { task.reject(cause); }
+        } catch (cause) {
+          if (epoch !== this.epoch) task.resolve();
+          else task.reject(cause);
+        }
         await nextTask();
       }
     } finally { this.loadingActive = false; }

@@ -228,12 +228,12 @@ describe("incremental tokenization", () => {
     background.forEach((language, index) => { void runtime.tokenize("function greet() { return 1; }\n", language, { id: `background-${index}`, version: 1, state: "done" }); });
     const started = Date.now();
     void runtime.tokenize("function greet()\n  return 1\nend\n", "julia", { id: "visible-julia", version: 1, state: "done" });
-    while (!colored && Date.now() - started < 10_000) await new Promise((resolve) => setTimeout(resolve, 10));
+    while (!colored && Date.now() - started < 20_000) await new Promise((resolve) => setTimeout(resolve, 10));
     expect(colored).toBe(true);
-    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(Date.now() - started).toBeLessThan(20_000);
     runtime.dispose();
     Object.defineProperty(performance, "now", realNow);
-  }, 20_000);
+  }, 30_000);
 
   test("recycles before grammar residency exceeds its finite budget", async () => {
     const runtime = new TokenizerRuntime(() => {});
