@@ -1,13 +1,31 @@
 import { expect, test } from "bun:test";
-import { languageForContentType, languageForPath } from "../src/names.js";
+import { aliases, advertisedLanguages, languageForContentType, languageForPath, normalizeLanguage } from "../src/names.js";
+
+test("every generated language and alias resolves as a fence", () => {
+  expect(advertisedLanguages.length).toBeGreaterThan(200);
+  for (const language of advertisedLanguages) expect(normalizeLanguage(language)).toBe(language);
+  for (const [alias, language] of Object.entries(aliases)) expect(normalizeLanguage(alias)).toBe(language);
+});
+
+test("the expanded registry resolves representative paths", () => {
+  const cases: Record<string, string> = {
+    Dockerfile: "dockerfile", Makefile: "makefile", ".env": "dotenv", "main.cs": "csharp", "script.ps1": "powershell",
+    "app.dart": "dart", "Main.scala": "scala", "lib.clj": "clojure", "app.ex": "elixir", "main.erl": "erlang",
+    "Main.hs": "haskell", "lib.ml": "ocaml", "build.zig": "zig", "flake.nix": "nix", "main.tf": "terraform",
+    "web.vue": "vue", "page.svelte": "svelte", "index.astro": "astro", "stats.R": "r", "analysis.jl": "julia",
+    "Token.sol": "solidity", "schema.graphql": "graphql", "schema.prisma": "prisma", "query.sql": "sql", "config.toml": "toml",
+    "config.ini": "ini", "data.csv": "csv", "data.tsv": "tsv", "paper.tex": "latex", "changes.diff": "diff", "server.log": "log",
+  };
+  for (const [path, language] of Object.entries(cases)) expect(languageForPath(path)).toBe(language);
+});
 
 test("a path resolves by extension, then by well-known file name", () => {
   const cases: Record<string, string | undefined> = {
     "src/a.ts": "typescript", "web/App.TSX": "tsx", "a.mjs": "javascript", "tool.py": "python", "types.pyi": "python",
     "Cargo.toml": "toml", "go.mod": undefined, "main.go": "go", "lib.rs": "rust", "notes.md": "markdown", "page.mdx": "markdown",
     "Makefile": "makefile", "GNUmakefile": "makefile", "rules.mk": "makefile", "Dockerfile": "dockerfile", "Dockerfile.dev": "dockerfile",
-    "build/Containerfile": "dockerfile", "~/.bashrc": "shell", "/home/u/.zshrc": "shell", ".profile": "shell", "x.env": "shell", ".env": "shell",
-    "C:\\work\\run.sh": "shell", "icon.svg": "xml", "a.jsonl": "json", "settings.jsonc": "json", ".gitconfig": "ini", "setup.cfg": "ini",
+    "build/Containerfile": "dockerfile", "~/.bashrc": "shell", "/home/u/.zshrc": "shell", ".profile": "shell", "x.env": "dotenv", ".env": "dotenv",
+    "C:\\work\\run.sh": "shell", "icon.svg": "xml", "a.jsonl": "jsonl", "settings.jsonc": "jsonc", ".gitconfig": "ini", "setup.cfg": "ini",
     "README": undefined, "LICENSE": undefined, "archive.tar.gz": undefined, "": undefined, "dir.ts/": undefined, ".ts": undefined,
   };
   for (const [path, language] of Object.entries(cases)) expect([path, languageForPath(path)]).toEqual([path, language]);

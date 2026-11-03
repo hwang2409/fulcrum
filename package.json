@@ -12,6 +12,7 @@
     "fuzz:markdown": "bun packages/markdown/test/fuzz.ts 10000",
     "bench:highlight": "bun run --cwd packages/highlight bench",
     "check:highlight-consumer": "bun scripts/highlight-consumer-check.ts",
+    "check:highlight-bundle": "bun scripts/highlight-bundle-check.ts",
     "check:highlight-notices": "bun scripts/highlight-notices-check.ts",
     "check:markdown-consumer": "bun scripts/markdown-consumer-check.ts",
     "check:pack-consumer": "bun scripts/pack-consumer-check.ts",
