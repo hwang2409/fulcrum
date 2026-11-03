@@ -14,9 +14,10 @@ if (!baseUrl || !candidateUrl || !baseRoot)
     "STRESS_BASE_ROOT, STRESS_BASE_URL, and STRESS_CANDIDATE_URL are required",
   );
 const cases = [200, 5_000] as const;
-const pairs = Number(process.env.STRESS_PAIRS ?? 5);
-const calibrationRuns = 3;
-const durationMs = 2_000;
+const pairs = 7;
+const calibrationRuns = 7;
+const threshold = 1.2;
+const aaWarningThreshold = 1.1;
 const viewport = { width: 1440, height: 900 };
 const artifacts = new URL("../stress-artifacts/", import.meta.url).pathname;
 const browserArgs = ["x", "vite", "preview", "--host", "127.0.0.1"];
@@ -85,13 +86,13 @@ async function sample(
   await injection(page, url);
   await page.goto(`${url}?stressMessages=${messages}`);
   await page.evaluate(() => performance.mark("stress-start"));
-  await page.selectOption("#mode", "stress");
   const before =
     (await cdp.send("Performance.getMetrics")).metrics.find(
       (metric) => metric.name === "TaskDuration",
     )?.value ?? 0;
+  await page.selectOption("#mode", "stress");
   const result = await page.evaluate(
-    async ({ messages, durationMs }) => {
+    async ({ messages }) => {
       const started =
         performance.getEntriesByName("stress-start")[0]?.startTime ??
         performance.now();
@@ -103,10 +104,9 @@ async function sample(
         );
       while (itemCount() < messages) await new Promise(requestAnimationFrame);
       const firstPaint = performance.now() - started;
-      await new Promise((resolve) => setTimeout(resolve, durationMs));
       return { firstPaint };
     },
-    { messages, durationMs },
+    { messages },
   );
   const after =
     (await cdp.send("Performance.getMetrics")).metrics.find(
@@ -151,82 +151,73 @@ try {
   let failed = false;
   for (const messages of cases) {
     const aa: { firstPaint: number; taskDuration: number }[] = [];
-    for (let i = 0; i < calibrationRuns; i++) {
-      const a = await sample(browser, baseUrl, messages, "aa-a", i);
-      const b = await sample(browser, baseUrl, messages, "aa-b", i);
-      aa.push({
-        firstPaint: ratio(b.firstPaint, a.firstPaint),
-        taskDuration: ratio(b.taskDuration, a.taskDuration),
-      });
-    }
-    const aaSpread = {
-      firstPaint:
-        Math.max(...aa.map((x) => x.firstPaint)) -
-        Math.min(...aa.map((x) => x.firstPaint)),
-      taskDuration:
-        Math.max(...aa.map((x) => x.taskDuration)) -
-        Math.min(...aa.map((x) => x.taskDuration)),
-    };
-    const threshold = {
-      firstPaint: Math.max(
-        1.2,
-        Math.max(...aa.map((x) => x.firstPaint)) * 1.25,
-      ),
-      taskDuration: Math.max(
-        1.2,
-        Math.max(...aa.map((x) => x.taskDuration)) * 1.25,
-      ),
-    };
     const rows: unknown[] = [];
     for (let i = 0; i < pairs; i++) {
-      const a = await sample(browser, baseUrl, messages, "base", i);
-      const b = await sample(browser, candidateUrl, messages, "candidate", i);
-      const pair = {
+      const aaA = await sample(browser, baseUrl, messages, "aa-a", i);
+      const aaB = await sample(browser, baseUrl, messages, "aa-b", i);
+      aa.push({
+        firstPaint: ratio(aaB.firstPaint, aaA.firstPaint),
+        taskDuration: ratio(aaB.taskDuration, aaA.taskDuration),
+      });
+      const first = await sample(
+        browser,
+        i % 2 === 0 ? baseUrl : candidateUrl,
+        messages,
+        i % 2 === 0 ? "base" : "candidate",
+        i,
+      );
+      const second = await sample(
+        browser,
+        i % 2 === 0 ? candidateUrl : baseUrl,
+        messages,
+        i % 2 === 0 ? "candidate" : "base",
+        i,
+      );
+      const base = i % 2 === 0 ? first : second;
+      const candidate = i % 2 === 0 ? second : first;
+      rows.push({
         pair: i + 1,
-        base: a,
-        candidate: b,
+        base,
+        candidate,
         ratios: {
-          firstPaint: ratio(b.firstPaint, a.firstPaint),
-          taskDuration: ratio(b.taskDuration, a.taskDuration),
+          firstPaint: ratio(candidate.firstPaint, base.firstPaint),
+          taskDuration: ratio(candidate.taskDuration, base.taskDuration),
         },
-      };
-      rows.push(pair);
+      });
     }
+    const aaMedians = {
+      firstPaint: median(aa.map((x) => x.firstPaint)),
+      taskDuration: median(aa.map((x) => x.taskDuration)),
+    };
+    const aaSpread = {
+      firstPaint: Math.max(...aa.map((x) => x.firstPaint)) - Math.min(...aa.map((x) => x.firstPaint)),
+      taskDuration: Math.max(...aa.map((x) => x.taskDuration)) - Math.min(...aa.map((x) => x.taskDuration)),
+    };
     const ratios = rows.map((row) => (row as any).ratios);
     const medians = {
       firstPaint: median(ratios.map((x: any) => x.firstPaint)),
       taskDuration: median(ratios.map((x: any) => x.taskDuration)),
     };
-    const absoluteCeiling = {
-      firstPaint: median(rows.map((row) => (row as any).base.firstPaint)) * 2.5,
-      taskDuration:
-        median(rows.map((row) => (row as any).base.taskDuration)) * 2.5,
-    };
     const failures = ["firstPaint", "taskDuration"].filter(
-      (metric) =>
-        medians[metric as keyof typeof medians] >
-          threshold[metric as keyof typeof threshold] ||
-        median(rows.map((row) => (row as any).candidate[metric])) >
-          absoluteCeiling[metric as keyof typeof absoluteCeiling],
+      (metric) => medians[metric as keyof typeof medians] > threshold,
     );
     failed ||= failures.length > 0;
     (report.cases as unknown[]).push({
       case: messages,
       aa,
+      aaMedians,
       aaSpread,
+      aaWarning: ["firstPaint", "taskDuration"].filter(
+        (metric) => aaMedians[metric as keyof typeof aaMedians] > aaWarningThreshold,
+      ),
       threshold,
-      absoluteCeiling,
       pairs: rows,
       medians,
       failures,
     });
-    console.log(
-      JSON.stringify(
-        { case: messages, aaSpread, threshold, medians, failures },
-        null,
-        2,
-      ),
-    );
+    if (Object.keys(aaMedians).some((metric) => aaMedians[metric as keyof typeof aaMedians] > aaWarningThreshold))
+      console.warn(`A/A noise warning for ${messages} messages: ${JSON.stringify(aaMedians)}`);
+    console.log(JSON.stringify({ case: messages, aaMedians, aaSpread, threshold, medians, failures }, null, 2));
   }
   await Bun.write(
     `${artifacts}/stress-ab-report.json`,

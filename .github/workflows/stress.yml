@@ -6,6 +6,8 @@ on:
       - "apps/playground/**"
       - "scripts/**"
       - ".github/workflows/stress.yml"
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       inject:
@@ -33,7 +35,11 @@ jobs:
         env:
           BASE_DIR: ${{ github.workspace }}/../fulcrum-stress-base
         run: |
-          BASE_SHA=$(git merge-base HEAD origin/main)
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            BASE_SHA=$(git merge-base HEAD origin/main)
+          else
+            BASE_SHA=$(git rev-parse HEAD^)
+          fi
           git worktree add --detach "$BASE_DIR" "$BASE_SHA"
           cd "$BASE_DIR"
           bun install --frozen-lockfile
