@@ -492,8 +492,15 @@ export const demos: Demo[] = [
     id: "approval-resolved",
     part: "Approval",
     title: "resolved",
-    description: "After approval_end the buttons go away and data-state is \"done\".",
-    events: [ask("r-done", calls("ap").edit), { type: "approval_end", request_id: "r-done" }],
+    description: "After approval_end the buttons go away and the row says how it ended: approved (folded into its tool card once the call runs, so one call is one row), denied, or the reason, such as a lost connection.",
+    events: (() => {
+      const c = calls("ap");
+      return [
+        ask("r-done", c.edit), { type: "approval_end", request_id: "r-done", data: { decision: "approve" } }, start(c.edit), end(c.edit, "1 replacement"),
+        ask("r-deny", c.bash), { type: "approval_end", request_id: "r-deny", data: { decision: "deny" } },
+        ask("r-lost", c.write), { type: "approval_end", request_id: "r-lost", data: { decision: "abort", reason: "controller_disconnected" } },
+      ];
+    })(),
   },
   {
     id: "subagent-states",
@@ -571,6 +578,13 @@ export const demos: Demo[] = [
     title: "error",
     description: "An error event (kind \"error\").",
     events: [{ type: "error", error: { code: "rate_limited", message: "Rate limited by the model provider. Retrying in 30s." } }],
+  },
+  {
+    id: "fallback-stopped",
+    part: "Fallback",
+    title: "stopped",
+    description: "The user's own stop (an error event with code \"aborted\"): a neutral row, not an error.",
+    events: [{ type: "error", error: { code: "aborted", message: "turn aborted" } }],
   },
   {
     id: "fallback-notification",

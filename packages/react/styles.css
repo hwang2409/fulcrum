@@ -307,6 +307,8 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   color: var(--fulcrum-muted);
   font-size: 12px;
 }
+/* With no facts, the first button's text lines up with the body's text above it. */
+[data-part="tool-foot"] > button:first-child { margin-left: -8px; }
 [data-part="tool-meta"] { display: flex; flex: 1; flex-wrap: wrap; gap: 0 12px; min-width: 0; }
 /* The open viewer: counts, where the view is, and a jump control above the scroll box. */
 [data-part="text-viewer-head"] {
