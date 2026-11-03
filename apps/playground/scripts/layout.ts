@@ -6,8 +6,8 @@
 // ok, warn, danger, and accent (running) need 3:1 on bg, when a capped output box cuts through a line, or when
 // the keyword, string, comment, function, and type token colors are not all distinct. Every visible text inside the
 // parts (labels drawn by ::before/::after too) must reach 4.5:1 on the background it is drawn on, in every theme; text in
-// a syntax or ANSI color (--fulcrum-tok-*, --fulcrum-ansi-*: code, terminal output, tool-header paths and numbers) must
-// reach 3:1, the floor for official palette colors (packages/react/themes.css). Every button, summary, and
+// a syntax or ANSI color (--fulcrum-tok-*, --fulcrum-ansi-*: code, terminal output, tool-header paths and numbers), or
+// on an ANSI background, must reach 3:1, the floor for official palette colors (packages/react/themes.css). Every button, summary, and
 // a[role=button] inside the parts must be a styled fulcrum control, with no browser-default appearance, ButtonFace
 // background, default border, or system font, at rest and under forced :hover, :focus, :focus-visible, and :active. The large-output viewer opens in <16 ms, follows the bottom, and highlights a
 // 1,000,000-line file with no long tasks; scrolling it under 4x CPU throttling is reported. Needs a production build
@@ -103,7 +103,7 @@ function pageProblems(minHeight: number) {
     if (Math.abs(lines - Math.round(lines)) > 0.05) problems.push(`${box.dataset.part} in ${box.closest<HTMLElement>("[data-id]")?.dataset.id} shows ${lines.toFixed(2)} lines, cuts through a line`);
   }
   // Every visible text in the parts, and the text labels drawn by ::before and ::after, at 4.5:1 on what is behind it, or
-  // 3:1 when it is drawn in a syntax or ANSI color.
+  // 3:1 when it is drawn in a syntax or ANSI color, or on an ANSI background (.ansi-has-bg: bg text on that color).
   const syntax = new Set([
     ...["keyword", "string", "number", "comment", "function", "type", "variable", "constant", "operator", "punctuation", "tag", "attribute", "regexp", "inserted", "deleted"].map((name) => `tok-${name}`),
     ...["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"].flatMap((name) => [`ansi-${name}`, `ansi-bright-${name}`]),
@@ -119,7 +119,7 @@ function pageProblems(minHeight: number) {
   const checkText = (node: HTMLElement, color: string, sample: string) => {
     const [r, g, b, a] = rgba(color);
     const ratio = contrastOn(`rgba(${r}, ${g}, ${b}, ${a! * opacityOf(node)})`, backgroundOf(node));
-    const min = syntax.has([r, g, b, a].join()) ? 3 : 4.5;
+    const min = syntax.has([r, g, b, a].join()) || node.classList.contains("ansi-has-bg") ? 3 : 4.5;
     if (ratio >= min) return;
     const where = node.closest<HTMLElement>("[data-part]");
     const key = `${where?.dataset.part}.${node.className || node.tagName.toLowerCase()} ${color}`;
