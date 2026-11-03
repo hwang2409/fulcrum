@@ -9,7 +9,7 @@ export type ContainerFrame =
 export type OpenedContainer = Exclude<ContainerFrame, { kind: "document" }>;
 
 export type ResolvedLeaf = {
-  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code" | "atx-heading" | "setext-heading" | "thematic-break" | "table-delimiter" | "table-row";
+  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code" | "atx-heading" | "setext-heading" | "thematic-break" | "table-delimiter" | "table-row" | "html-open" | "html-line" | "html-close";
   content: string;
   path: readonly ContainerFrame[];
   marker?: string;
@@ -137,12 +137,20 @@ function consumeItemIndent(cursor: Cursor, width: number) {
 
 const isBlank = (line: string, offset = 0) => /^[ \t]*$/.test(line.slice(offset));
 const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
+function htmlBlockEnd(line: string) {
+  if (/^ {0,3}<!--/.test(line)) return /-->/;
+  if (/^ {0,3}<\?/.test(line)) return /\?>/;
+  if (/^ {0,3}<!\[CDATA\[/.test(line)) return /\]\]>/;
+  const tag = /^ {0,3}<(address|article|aside|base|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t/>]|$)/i.exec(line)?.[1];
+  return tag ? new RegExp(`</${tag}>`, "i") : undefined;
+}
+
 const frameEqual = (left: ContainerFrame, right: ContainerFrame) => left.kind === right.kind
   && (left.kind !== "list" || right.kind === "list" && left.ordered === right.ordered);
 
 export class MarkdownLineResolver {
   private stack: ContainerFrame[] = [{ kind: "document" }];
-  private openLeaf?: { kind: "paragraph" } | { kind: "fence"; marker: string } | { kind: "indented-code" } | { kind: "table" };
+  private openLeaf?: { kind: "paragraph" } | { kind: "fence"; marker: string } | { kind: "indented-code" } | { kind: "table" } | { kind: "html"; end: RegExp };
   private pendingLine: MutablePendingLine = freshPending();
 
   get pending(): PendingLine {
@@ -196,6 +204,18 @@ export class MarkdownLineResolver {
         closedToDepth: this.stack.length,
         opened: [],
         leaf: { kind: closes ? "fence-close" : "fence-line", content, marker, path: this.stack.map((frame) => ({ ...frame })) },
+      };
+    }
+    if (!unmatched && this.openLeaf?.kind === "html") {
+      const content = line.slice(cursor.offset);
+      const closes = this.openLeaf.end.test(content);
+      if (closes) this.openLeaf = undefined;
+      return {
+        continued: !closes,
+        lazy: false,
+        closedToDepth: this.stack.length,
+        opened: [],
+        leaf: { kind: closes ? "html-close" : "html-line", content, path: this.stack.map((frame) => ({ ...frame })) },
       };
     }
     const probe: Cursor = { ...cursor };
@@ -252,6 +272,19 @@ export class MarkdownLineResolver {
     const leafPath = () => this.stack.map((frame) => ({ ...frame }));
     if (blank) return { continued: false, lazy: false, closedToDepth, opened };
     const content = line.slice(cursor.offset);
+    const htmlEnd = htmlBlockEnd(content);
+    if (htmlEnd) {
+      if (!htmlEnd.test(content.replace(/^.*?(?:<!--|<\?|<!\[CDATA\[|<[a-z][^>]*>)/i, "")))
+        this.openLeaf = { kind: "html", end: htmlEnd };
+      else this.openLeaf = undefined;
+      return {
+        continued: false,
+        lazy: false,
+        closedToDepth,
+        opened,
+        leaf: { kind: "html-open", content, path: leafPath() },
+      };
+    }
     const tableDelimiter = opened.length === 0 && this.openLeaf?.kind === "paragraph"
       && (/^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$/.test(content)
         || /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/.test(content));
