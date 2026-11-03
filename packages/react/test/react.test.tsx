@@ -843,3 +843,23 @@ test("with a pending approval, the timeline's first tab stop jumps to it and foc
   act(() => store.dispatch({ type: "approval_end", request_id: "p", decision: "deny" }));
   expect(container.querySelector('[data-part="jump-to-approval"]')).toBeNull();
 });
+
+test("virtual Timeline shows the folded tool card live when an approval folds in place across batches", () => {
+  const { store, send } = setup([{ type: "user_message", text: "read it", mode: "normal" }]);
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  try {
+    mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
+    const rows = () => [...container.querySelectorAll("[data-virtual-id]")].map((row) => row.getAttribute("data-virtual-id"));
+    const read = { id: "read-1", name: "read", arguments: { path: "README.md" } };
+    send({ type: "approval_request", request_id: "read-1", tool_call: read, delegated: false });
+    expect(rows()).toEqual(["user:1", "approval:read-1"]);
+    send({ type: "approval_end", request_id: "read-1", decision: "approve" });
+    send({ type: "tool_start", tool_call: read });
+    send({ type: "tool_end", tool_call: read, tool_result: { tool_call_id: "read-1", content: "# fulcrum", is_error: false } });
+    expect(rows()).toEqual(["user:1", "tool:read-1"]);
+    expect(store.getOutline().map(({ id }) => id)).toEqual(rows());
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+  }
+});
