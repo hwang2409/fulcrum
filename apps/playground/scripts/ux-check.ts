@@ -142,6 +142,8 @@ async function checkFocus(browser: Browser, port: number): Promise<string[]> {
   const shown = await where();
   if (shown.tag === "BODY" || shown.demo !== "tools-done") failures.push(`focus: after "show all", focus is on ${shown.tag} in "${shown.demo}", expected the shown output`);
   await page.goto(`http://127.0.0.1:${port}/gallery.html#tool-huge`);
+  await page.waitForSelector("#tool-huge details[data-part=tool]");
+  await page.evaluate(() => { document.querySelector<HTMLDetailsElement>("#tool-huge details[data-part=tool]")!.open = true; }); // n-5 is checked on its own
   await page.waitForSelector("#tool-huge [data-action=open-viewer]");
   await page.focus("#tool-huge [data-action=open-viewer]");
   await page.keyboard.press("Enter");
@@ -335,7 +337,11 @@ const checks = { viewer1: (b: Browser, p: number) => checkViewer(b, p, 1), viewe
 export async function checkUx(browser: Browser, port: number): Promise<string[]> {
   const only = process.env.ONLY?.split(",");
   const failures: string[] = [];
-  for (const [name, check] of Object.entries(checks)) if (!only || only.includes(name)) failures.push(...await check(browser, port));
+  for (const [name, check] of Object.entries(checks)) {
+    if (only && !only.includes(name)) continue;
+    try { failures.push(...await check(browser, port)); }
+    catch (error) { failures.push(`${name}: ${String(error).split("\n")[0]}`); }
+  }
   return failures;
 }
 

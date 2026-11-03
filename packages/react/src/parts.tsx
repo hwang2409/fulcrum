@@ -146,6 +146,9 @@ function ViewSummary({ item }: { item: ToolItem }) {
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
   const ms = item.view?.durationMs;
   const approval = item.approval ? approvalEnd(item.approval) : undefined;
+  const word = status ?? statusText[state];
+  // A denied call never ran, and "canceled · canceled" says one thing twice: the approval's word is the status then.
+  const both = approval && approval.decision !== "deny" && approval.text !== word;
   return (
     <>
       <ToolName name={item.tool_call.name} />
@@ -153,7 +156,7 @@ function Header({ item, state, status, summary }: { item: ToolItem; state: ItemS
       <span data-part="tool-status">
         {/* One order everywhere: the mark (::before), the approval's word, then the call's state ("■ approved · done"). */}
         {approval ? <span data-part="tool-approval" data-decision={approval.decision || undefined}>{approval.text}</span> : null}
-        {approval?.decision === "deny" ? null : <>{approval ? <span aria-hidden="true">·</span> : null}{status ?? statusText[state]}</>}
+        {approval && !both ? null : <>{both ? <span aria-hidden="true">·</span> : null}{word}</>}
         {ms !== undefined ? <span data-part="tool-duration">{duration(ms)}</span> : null}
       </span>
     </>
