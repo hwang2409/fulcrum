@@ -59,7 +59,8 @@ export async function checkCards(browser: Browser, port: number): Promise<string
   if (wrong.length) failures.push(`markdown-large-constructs: ${wrong.length} piece(s) miscolored, e.g. ${wrong.slice(0, 3).join("; ")}`);
   else console.log("ok   markdown-large-constructs: a block comment and a docstring keep their colors across range edges");
   // A pending approval: the timeline's first tab stop is "jump to approval"; drawn on focus in the timeline's column,
-  // over no row, and Enter puts focus on the approval's first action, in view.
+  // over the top row on an opaque background (no row moves, ux-check.ts), and Enter puts focus on the approval's first
+  // action, in view.
   await page.goto(`http://127.0.0.1:${port}/gallery.html#approval-pending`);
   const present = await page.waitForSelector("#approval-pending [data-part=jump-to-approval]", { state: "attached", timeout: 10_000 }).then(() => true, () => false);
   if (!present) {
@@ -75,20 +76,19 @@ export async function checkCards(browser: Browser, port: number): Promise<string
     const box = button.getBoundingClientRect();
     const shown = getComputedStyle(button).clipPath === "none" && box.width > 40 && box.height >= 24;
     const column = Math.round(box.left - timeline.getBoundingClientRect().left);
-    const firstRow = timeline.querySelector<HTMLElement>(":scope > :not([data-part=jump-to-approval])")!.getBoundingClientRect();
-    const covers = Math.max(0, Math.round(box.bottom - firstRow.top));
+    const opaque = getComputedStyle(button).backgroundColor.match(/[\d.]+/g)!.length === 3 || getComputedStyle(button).backgroundColor.endsWith(", 1)");
     button.click();
     await new Promise((resolve) => setTimeout(resolve, 100));
     const active = document.activeElement as HTMLElement;
     const rect = active.getBoundingClientRect();
-    return { first: focusables[0] === button, shown, column, covers, action: active.dataset.action, inView: rect.top >= 0 && rect.bottom <= innerHeight };
+    return { first: focusables[0] === button, shown, column, opaque, action: active.dataset.action, inView: rect.top >= 0 && rect.bottom <= innerHeight };
   });
   if (!skip.first) failures.push("approval-pending: jump to approval is not the timeline's first tab stop");
   if (!skip.shown) failures.push("approval-pending: jump to approval is not visible while focused");
   if (skip.column) failures.push(`approval-pending: jump to approval starts ${skip.column} px from the timeline's column`);
-  if (skip.covers) failures.push(`approval-pending: jump to approval covers the first row by ${skip.covers} px`);
+  if (!skip.opaque) failures.push("approval-pending: jump to approval is drawn over the timeline on a see-through background");
   if (skip.action !== "approve" || !skip.inView) failures.push(`approval-pending: jump focused ${skip.action ?? "nothing"} (${skip.inView ? "in view" : "out of view"}), expected approve in view`);
-  if (skip.first && skip.shown && !skip.column && !skip.covers && skip.action === "approve" && skip.inView) console.log("ok   approval-pending: jump to approval is the first tab stop and focuses approve");
+  if (skip.first && skip.shown && !skip.column && skip.opaque && skip.action === "approve" && skip.inView) console.log("ok   approval-pending: jump to approval is the first tab stop and focuses approve");
   await page.close();
   return failures;
 }
