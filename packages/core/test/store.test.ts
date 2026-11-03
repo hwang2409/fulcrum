@@ -143,6 +143,39 @@ test("an approval folding into its tool row is one replace in place, even with a
   expect(ids(store.getOutline()).slice(5)).toEqual(["tool:write-3", "message:between"]);
 });
 
+test("serializes dispatches that re-enter during a reduction", () => {
+  const store = createRunStore((job) => job());
+  const nested = { type: "user_message", text: "nested", mode: "send", delivery_id: "nested" } as const;
+  const outer = {
+    type: "user_message", text: "outer", mode: "send",
+    get delivery_id() { store.dispatch(nested); return "outer"; },
+  } as const;
+  store.dispatch(outer);
+  expect(store.getOutline()).toEqual([
+    { id: "user:delivery:outer", kind: "user" },
+    { id: "user:delivery:nested", kind: "user" },
+  ]);
+  expect(store.getItem("user:delivery:outer")).toBeDefined();
+  expect(store.getItem("user:delivery:nested")).toBeDefined();
+  expect(store.hasMessageDelivery("outer")).toBe(true);
+  expect(store.hasMessageDelivery("nested")).toBe(true);
+});
+
+test("does not publish a reduction when disposed during the reduction", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const event = {
+    type: "user_message", text: "dispose", mode: "send",
+    get delivery_id() { store.dispose(); return "dispose"; },
+  } as const;
+  store.dispatch(event);
+  jobs.shift()!();
+  expect(store.getOutline()).toEqual([]);
+  expect(store.getItem("user:delivery:dispose")).toBeUndefined();
+  expect(store.hasMessageDelivery("dispose")).toBe(false);
+  expect(() => store.dispatch({ type: "message_delta", message_id: "late", delta: "x" })).toThrow("store is disposed");
+});
+
 test("dispose stops notifications, drops pending chunks, and rejects dispatch", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));
