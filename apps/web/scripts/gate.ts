@@ -473,6 +473,12 @@ try {
       await mobile.getByRole("dialog", { name: "sessions" }).getByRole("button", { name: "new session" }).waitFor({ timeout: 2000 });
       await shoot(mobile, "drawer-390-gruvbox-dark");
       await auditThemes(mobile, "390 drawer", 44);
+      // A rejected new session (zeta refuses while a turn runs) keeps the drawer open and says why.
+      fake.setRejectCreate(true);
+      await mobile.getByRole("dialog", { name: "sessions" }).getByRole("button", { name: "new session" }).click();
+      await mobile.getByRole("dialog", { name: "sessions" }).getByRole("alert").filter({ hasText: "could not start a session" }).waitFor({ timeout: 3000 })
+        .catch(() => { throw new Error("a failed new session at 390 px closed the drawer or showed no error"); });
+      fake.setRejectCreate(false);
       await mobile.keyboard.press("Escape");
       if (await mobile.getByRole("dialog").count()) throw new Error("Escape did not close the drawer");
       if (!(await mobile.evaluate(() => document.activeElement?.getAttribute("aria-label") === "sessions"))) throw new Error("focus did not return to the menu button");

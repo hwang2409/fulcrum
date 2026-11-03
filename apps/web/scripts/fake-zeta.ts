@@ -204,6 +204,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let turnStarted = false;
   let approvalAborted = false;
   let running = false;
+  let rejectCreate = false;
   let delayedOpen = false;
   const decisions: Json[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
@@ -245,7 +246,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
-          if (running) return reply({ error: { code: -32004, message: "a turn is already running" } });
+          if (running || rejectCreate) return reply({ error: { code: -32004, message: "a turn is already running" } });
           const created = meta(`s-new-${sessions.length}`, 0, { created_at: at(0), cwd: "/Users/dev/me/fun/fulcrum", retained_tail: 8, compaction_budget: 262144, override_audit: [], context_files: [], skill_catalog: [], agent_catalog: [], plan_mode: false, project_id: null, tool_allow: null, tool_deny: [] });
           sessions.unshift(created);
           histories[created.session_id] = [];
@@ -324,6 +325,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     /** Hands out a token the server will refuse. */
     async wrongToken() { await write({ port: server.port, token: "stale-token", pid: process.pid, origins: allowed }); },
     setMode(next: Mode) { mode = next; },
+    /** `true`: new_session fails the way real zeta does while a turn runs (`require_idle`). */
+    setRejectCreate(next: boolean) { rejectCreate = next; },
     setHistoryMode(next: HistoryMode) { currentHistoryMode = next; },
     setLive(next: boolean) { liveEnabled = next; },
     /** `true`: a fresh zeta home, with no sessions and no server session. `false`: the seeded sessions again. */

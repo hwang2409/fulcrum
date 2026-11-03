@@ -83,10 +83,14 @@ export function App() {
     sessions.select(id);
     setDrawer(false);
   }, [sessions]);
+  // The drawer stays open until zeta has made the session: a refusal (zeta rejects while a turn runs) shows in the
+  // drawer, where the user pressed the button, not in a run hidden behind it.
   const create = useCallback(() => {
     focusComposer.current = true;
-    setDrawer(false);
-    void sessions.create().then(() => { if (sessions.state.createError) focusComposer.current = false; });
+    void sessions.create().then(() => {
+      if (sessions.state.createError) { focusComposer.current = false; return; }
+      setDrawer(false);
+    });
   }, [sessions]);
   const current = view.sessions.find((session) => session.session_id === (view.open?.id ?? view.selected));
   useEffect(() => { document.title = current ? `${sessionTitle(current)} · zeta` : "zeta · fulcrum"; }, [current]);
@@ -305,7 +309,7 @@ function Body({ state, view, connection, sessions, opener, focusComposer, onCrea
   const any = view.sessions.length > 0;
   return (
     <Panel title={any ? "choose a session" : "start a session"} tone="busy">
-      <p>{any ? "pick a session from the list to follow its run, or start a new one." : "this zeta has no sessions yet. start one, then write to zeta below."}</p>
+      <p>{any ? "pick a session from the list to follow its run, or start a new one." : "this zeta has no sessions yet. start one to write to zeta."}</p>
       {view.createError ? <p className="mono" role="alert">could not start a session: {view.createError}</p> : null}
       <div className="actions">
         <NewSession state={state} view={view} onCreate={onCreate} className="primary" />

@@ -189,8 +189,9 @@ const viewOf = (call: ToolCall) => {
 };
 /**
  * bash's result text, `"stdout:\n" + stdout + "\nstderr:\n" + stderr` (zeta src/zeta/tools/bash/__init__.py). History
- * keeps only this text (structured_content is null there). Other shapes (a timeout marker, a spill preview, a cancel)
- * stay raw. shortcut: a stdout that itself contains "\nstderr:\n" splits at its last copy; exact once zeta keeps
+ * keeps only this text (structured_content is null there). A timeout marker or a cancel stays raw; a spill preview is
+ * split too, so its truncation note can sit inside stdout. shortcut: the split is at the last "\nstderr:\n", so a
+ * stderr that itself contains that text is mislabeled (stdout containing it is fine); exact once zeta keeps
  * structured_content in history.
  */
 const bashText = (content: string) => {
