@@ -32,6 +32,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const versions = new Map<string, string[]>();
   const current = new Map<string, string>();
   const latestVersion = new Map<string, number>();
+  const listeners = new Map<string, Set<() => void>>();
 
   const plain = (code: string): Token[] => code ? [{ text: code }] : [];
   const cacheKey = (context: HighlightContext, language: string) => `${context.id}\0${context.version}\0${language}`;
@@ -41,9 +42,9 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (keys.length) versions.set(entry.id, keys);
     else versions.delete(entry.id);
   };
+  const weigh = (code: string, tokens: Token[]) => code.length * 2 + tokens.reduce((sum, token) => sum + token.text.length * 2 + 32, 0);
   const remember = (key: string, context: HighlightContext, code: string, tokens: Token[]) => {
-    const weight = code.length * 2 + tokens.reduce((sum, token) => sum + token.text.length * 2 + 32, 0);
-    cache.set(key, { tokens, weight, used: ++clock, done: context.state === "done", id: context.id, code });
+    cache.set(key, { tokens, weight: weigh(code, tokens), used: ++clock, done: context.state === "done", id: context.id, code });
     const keys = [...(versions.get(context.id) ?? []).filter((item) => item !== key), key];
     while (keys.length > 2) cache.delete(keys.shift()!);
     versions.set(context.id, keys);
@@ -55,6 +56,14 @@ export function createController(options: HighlighterOptions = {}): Highlight {
       if (!found) break;
       dropCompleted(found[0], oldest); bytes -= oldest.weight; completed = completed.filter((entry) => entry !== oldest);
     }
+  };
+  // A worker's update replaces only the cached revision it was made for, and only with tokens that spell its exact code.
+  const update = (context: HighlightContext, language: string, tokens: Token[]) => {
+    const entry = cache.get(cacheKey(context, language));
+    if (!entry || tokens.map((token) => token.text).join("") !== entry.code) return;
+    entry.tokens = tokens;
+    entry.weight = weigh(entry.code, tokens);
+    for (const listener of listeners.get(context.id) ?? []) listener();
   };
   const fallback = async (code: string, language: string, context: HighlightContext) => {
     const { TokenizerRuntime } = await import("./runtime.js");
@@ -77,6 +86,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
       const next = options.workerFactory?.() ?? new Worker(new URL("./worker.js", import.meta.url), { type: "module" }) as unknown as WorkerLike;
       worker = next;
       next.onmessage = (event) => {
+        if ("update" in event.data) { if (!disposed) update(event.data.update, event.data.language, event.data.tokens); return; }
         const job = pending.get(event.data.requestId);
         if (!job) return;
         pending.delete(event.data.requestId);
@@ -136,12 +146,17 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     inflightCode.set(key, code);
     return tracked;
   }) as Highlight;
+  highlight.subscribe = (id, listener) => {
+    const set = listeners.get(id) ?? new Set();
+    listeners.set(id, set.add(listener));
+    return () => { set.delete(listener); if (!set.size && listeners.get(id) === set) listeners.delete(id); };
+  };
   highlight.dispose = () => {
     disposed = true;
     if (worker) { worker.postMessage({ type: "dispose" }); worker.terminate(); }
     clearTimeout(watchdog);
     for (const job of pending.values()) job.resolve(plain(job.code));
-    pending.clear(); cache.clear(); inflight.clear(); inflightCode.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); runtime?.dispose();
+    pending.clear(); cache.clear(); inflight.clear(); inflightCode.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); listeners.clear(); runtime?.dispose();
   };
   return highlight;
 }

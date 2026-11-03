@@ -5,6 +5,9 @@ import { semanticTheme } from "../src/scopes.js";
 const build = Bun.spawnSync(["bun", "run", "build"], { cwd: new URL("..", import.meta.url).pathname });
 if (build.exitCode !== 0) throw new Error(build.stderr.toString());
 const { createHighlighter } = await import("../dist/index.js");
+// Unit tests never depend on how fast this machine is: the clock stands still unless a test moves it, so no line is ever
+// over the time limit by chance. Only a real worker (its own clock) runs on real time.
+Object.defineProperty(performance, "now", { configurable: true, value: () => 0 });
 const directHighlighter = createHighlighter({ worker: false });
 afterAll(() => directHighlighter.dispose());
 
@@ -43,6 +46,7 @@ const samples: Record<string, string> = {
 
 const text = (tokens: Token[]) => tokens.map((token) => token.text).join("");
 const fallbackSource = (label: string, lines = 120) => Array.from({ length: lines }, (_, index) => `const ${label}_${index} = ${index}; // ${"x".repeat(32)}\n`).join("");
+const viteConfig = 'import { defineConfig } from "vite";\nimport { resolve } from "node:path";\n\nexport default defineConfig({\n  build: { outDir: resolve("dist") },\n});\n';
 const typedPerLine = (tokens: Token[]) => {
   const lines: boolean[] = [false];
   for (const token of tokens) token.text.split("\n").forEach((part, index) => {
@@ -166,18 +170,22 @@ describe("incremental tokenization", () => {
   test("a cold grammar colors every line once the worker's warm-up lands", async () => {
     const replies: Array<{ requestId?: number; provisional?: boolean; update?: unknown }> = [];
     const highlighter = createHighlighter({ workerFactory: () => recordingWorker(replies) });
-    const source = 'import { defineConfig } from "vite";\nimport { resolve } from "node:path";\n\nexport default defineConfig({\n  build: { outDir: resolve("dist") },\n});\n';
+    const source = viteConfig;
     for (const language of ["typescript", "javascript"]) {
       const context = { id: `cold-${language}`, version: 1, state: "done" as const };
       const updated = new Promise<void>((resolve) => { const stop = highlighter.subscribe(context.id, () => { stop(); resolve(); }); });
       const first = (await highlighter(source, language, context))!;
       expect(text(first)).toBe(source);
-      // The handshake: a provisional reply is followed by exactly one update for its block.
-      if (replies.findLast((reply) => reply.requestId !== undefined)!.provisional) await updated;
+      // The handshake: a provisional reply is followed by one update for its block, which the cache then serves.
+      const reply = replies.findLast((item) => item.requestId !== undefined)!;
+      if (reply.provisional) await updated;
       const tokens = highlighter(source, language, context) as Token[];
       expect(Array.isArray(tokens)).toBe(true);
       expect(text(tokens)).toBe(source);
-      expect(typedPerLine(tokens).slice(0, 6)).toEqual([true, true, false, true, true, true]);
+      if (reply.provisional) expect(tokens).toEqual((replies.findLast((item) => item.update !== undefined) as { tokens: Token[] }).tokens);
+      // Every line colored is shown deterministically below ("re-sends each provisional block once"); here, on real
+      // time, the colors only have to arrive.
+      expect(tokens.some((token) => token.type)).toBe(true);
     }
     highlighter.dispose();
   });
@@ -199,9 +207,9 @@ describe("incremental tokenization", () => {
   });
 
   // Counts every tokenize attempt of a runtime; `extra` runs after each one.
-  const countAttempts = async (language: string, extra?: () => void, onUpdate?: () => void) => {
+  const countAttempts = async (language: string, extra?: () => void) => {
     const { TokenizerRuntime } = await import("../dist/runtime.js");
-    const runtime = new TokenizerRuntime(onUpdate);
+    const runtime = new TokenizerRuntime();
     const highlighter = await runtime["ensureLanguage"](language);
     const attempt = highlighter.codeToTokensBase.bind(highlighter);
     const counter = { attempts: 0, runtime };
@@ -221,17 +229,20 @@ describe("incremental tokenization", () => {
     counter.runtime.dispose();
   });
 
-  // In the worker a grammar is warmed in the background; once warm, a document's first lines need no retry.
-  test("a warm grammar needs no retry", async () => {
-    const source = "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n";
-    const counter = await countAttempts("go", undefined, () => {});
-    await counter.runtime["warming"].get("go");
-    counter.attempts = 0;
-    const tokens = await counter.runtime.tokenize(source, "go", { id: "cold-go", version: 1, state: "done" }, false);
-    expect(text(tokens)).toBe(source);
-    expect(counter.attempts).toBe(source.split("\n").length - 1);
-    expect(tokens.filter((token) => token.type).length).toBeGreaterThan(5);
-    counter.runtime.dispose();
+  // In the worker a grammar is warmed in the background; once warm, a document compiles none of the grammar's own
+  // patterns (only a dynamic end, built from the text its begin matched, can be new).
+  test("after warm-up a document compiles no grammar pattern", async () => {
+    const { TokenizerRuntime } = await import("../dist/runtime.js");
+    for (const [language, source] of [["go", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"], ["typescript", viteConfig]] as const) {
+      const runtime = new TokenizerRuntime(() => {});
+      await runtime.tokenize("x\n", language, { id: "load", version: 1, state: "done" }, false);
+      await runtime["warming"].get(language);
+      const before = runtime.cacheSize();
+      const tokens = await runtime.tokenize(source, language, { id: "warm", version: 1, state: "done" }, false);
+      expect(text(tokens)).toBe(source);
+      expect(runtime.cacheSize().static).toBe(before.static);
+      runtime.dispose();
+    }
   });
 
   // Every line here looks like a cold one (slow, and it built a scanner), as in a document that embeds many cold
@@ -519,24 +530,25 @@ describe("grammar warm-up and regex caches", () => {
     const { TokenizerRuntime } = await import("../dist/runtime.js");
     const updates: Array<{ id: string; language: string; tokens: Token[] }> = [];
     const runtime = new TokenizerRuntime((context, language, tokens) => updates.push({ id: context.id, language, tokens }));
-    const cold = '{"a": 1}\n{"b": [true, null]}\n';
+    const cold = viteConfig;
     const [first, second, warming] = await withClock(10, async () => {
-      const first = await runtime.tokenize(cold, "json", { id: "cold", version: 1, state: "done" }, false);
-      const second = await runtime.tokenize("[1]\n", "json", { id: "other", version: 1, state: "done" }, false);
-      return [first, second, runtime["warming"].get("json")!] as const;
+      const first = await runtime.tokenize(cold, "typescript", { id: "cold", version: 1, state: "done" }, false);
+      const second = await runtime.tokenize("[1]\n", "typescript", { id: "other", version: 1, state: "done" }, false);
+      return [first, second, runtime["warming"].get("typescript")!] as const;
     });
     // Both requests were answered while warm-up was still running, with exact plain text, marked provisional.
     expect(Bun.peek.status(warming)).toBe("pending");
     expect([first, second]).toEqual([[{ text: cold }], [{ text: "[1]\n" }]]);
     expect(runtime.willUpdate({ id: "cold", version: 1, state: "done" })).toBe(true);
     await warming;
-    expect(updates.map(({ id, language }) => [id, language])).toEqual([["cold", "json"], ["other", "json"]]);
+    expect(updates.map(({ id, language }) => [id, language])).toEqual([["cold", "typescript"], ["other", "typescript"]]);
     expect(text(updates[0]!.tokens)).toBe(cold);
-    expect(typedPerLine(updates[0]!.tokens).slice(0, 2)).toEqual([true, true]);
+    // The vite config read whose first line a cold grammar once left plain: every line with text is colored.
+    expect(typedPerLine(updates[0]!.tokens).slice(0, 6)).toEqual([true, true, false, true, true, true]);
     expect(runtime.willUpdate({ id: "cold", version: 1, state: "done" })).toBe(false);
 
     // Once warm, a line over the limit is really slow: it stays plain, final, and is never re-sent.
-    const slow = await withClock(50, () => runtime.tokenize("[2]\n", "json", { id: "slow", version: 1, state: "done" }, false));
+    const slow = await withClock(50, () => runtime.tokenize("[2]\n", "typescript", { id: "slow", version: 1, state: "done" }, false));
     expect(slow).toEqual([{ text: "[2]\n" }]);
     expect(runtime.willUpdate({ id: "slow", version: 1, state: "done" })).toBe(false);
     expect(runtime["provisional"].size).toBe(0);
@@ -549,7 +561,8 @@ describe("grammar warm-up and regex caches", () => {
       // A fence of N backticks ends at N backticks: textmate builds a new end pattern per fence length.
       for (let index = 0; index < 200; index++) {
         const fence = "`".repeat(3 + index);
-        await runtime.tokenize(`${fence}\nplain ${index}\n${fence}\n`, "markdown", { id: `fence-${index}`, version: 1, state: "done" }, false);
+        const tildes = "~".repeat(3 + index);
+        await runtime.tokenize(`${fence}\nplain ${index}\n${fence}\n${tildes}\nplain\n${tildes}\n`, "markdown", { id: `fence-${index}`, version: 1, state: "done" }, false);
       }
       await runtime["warming"].get("markdown");
       const size = runtime.cacheSize();
