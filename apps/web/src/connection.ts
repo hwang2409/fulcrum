@@ -22,6 +22,9 @@ export type ConnectionEvent =
   | { type: "incompatible" }
   | { type: "closed"; now: number };
 
+/** The command that starts a server this page may connect to. The origin is exact: localhost and 127.0.0.1 differ. */
+export const serveCommand = (origin: string, port: number) => `zeta serve --ws ${port} --ws-origin ${origin}`;
+
 export const initialConnection: ConnectionState = { phase: "connecting", attempt: 0, lost: false };
 
 /** 0.5 s, 1 s, 2 s, 4 s, 8 s, then every 10 s: quick after a blip, and cheap while the server stays down. */
@@ -66,6 +69,8 @@ export type Connection = {
   readonly state: ConnectionState;
   /** The live client while `state.phase` is `connected`, else `null`. */
   readonly client: ZetaClient | null;
+  /** The websocket port of the last server found, so a restart hint names it; 8765 (zeta's documented port) before any. */
+  readonly port: number;
   subscribe(listener: () => void): () => void;
   /** Skips the wait before the next automatic try. */
   retryNow(): void;
@@ -89,6 +94,7 @@ export function createConnection({
 }: ConnectionDeps): Connection {
   let state = initialConnection;
   let client: ZetaClient | null = null;
+  let port = 8765;
   let timer: unknown = null;
   let generation = 0;
   let stopped = false;
@@ -117,6 +123,7 @@ export function createConnection({
     }
     if (!current()) return;
     if (!discovery) return send({ type: "not_running", now: now() });
+    port = Number(new URL(discovery.url).port) || port;
     // An origin the allowlist lacks fails at the upgrade with no detail, so name it before trying.
     if (discovery.origins.length && !discovery.origins.includes(origin))
       return send({ type: "auth_failed", reason: "origin", origins: discovery.origins, now: now() });
@@ -144,6 +151,7 @@ export function createConnection({
   return {
     get state() { return state; },
     get client() { return client; },
+    get port() { return port; },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     retryNow() {
       if (state.phase === "connected" || state.phase === "connecting" || stopped) return;

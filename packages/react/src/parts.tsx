@@ -146,13 +146,17 @@ function ViewSummary({ item }: { item: ToolItem }) {
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
   const ms = item.view?.durationMs;
   const approval = item.approval ? approvalEnd(item.approval) : undefined;
+  const word = status ?? statusText[state];
+  // A denied call never ran, and "canceled · canceled" says one thing twice: the approval's word is the status then.
+  const both = approval && approval.decision !== "deny" && approval.text !== word;
   return (
     <>
       <ToolName name={item.tool_call.name} />
       <span data-part="tool-summary">{summary ? oneLine(summary(item)) : <ViewSummary item={item} />}</span>
       <span data-part="tool-status">
+        {/* One order everywhere: the mark (::before), the approval's word, then the call's state ("■ approved · done"). */}
         {approval ? <span data-part="tool-approval" data-decision={approval.decision || undefined}>{approval.text}</span> : null}
-        {approval?.decision === "deny" ? null : status ?? statusText[state]}
+        {approval && !both ? null : <>{both ? <span aria-hidden="true">·</span> : null}{word}</>}
         {ms !== undefined ? <span data-part="tool-duration">{duration(ms)}</span> : null}
       </span>
     </>
@@ -230,7 +234,7 @@ const approvalEnd = (ended: RunEvent | undefined) => {
   return { decision, text: (decision && decisionWords[decision]) ?? endReasons[reason] ?? (decision === "abort" ? "canceled" : "ended") };
 };
 
-const ApprovalButton = ({ action, handler, sending, disabledReason, decide }: { action: "approve" | "deny"; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: "approve" | "deny", handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler || sending} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{action}</button> : null;
+const ApprovalButton = ({ action, handler, sending, disabledReason, decide }: { action: "approve" | "deny"; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: "approve" | "deny", handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{action}</button> : null;
 
 const ApprovalActions = function ApprovalActions({
   sending,
@@ -254,6 +258,33 @@ const ApprovalActions = function ApprovalActions({
   </div>;
 };
 
+/**
+ * A decision unmounts the approval's buttons, and later its row folds into the call's card. Focus that was on them
+ * moves to the next pending approval's row (Tab then reaches its actions), else to this row, or to the card it folded
+ * into; never to the page.
+ */
+function useDecisionFocus(pending: boolean, callId: string) {
+  const card = useRef<HTMLDivElement>(null);
+  const scope = useRef<Element | null>(null); // the timeline, while focus is in this card after a decision
+  const lost = () => !document.activeElement || document.activeElement === document.body;
+  const move = () => {
+    const root = scope.current;
+    if (!root?.isConnected || !lost()) return;
+    // The next pending row, not its approve button: a repeated or held Enter must never decide a request unread.
+    const next = root.querySelector<HTMLElement>('[data-part="approval"][data-state="pending"]');
+    const folded = root.querySelector<HTMLElement>(`[data-part="tool"][data-id="${CSS.escape(`tool:${callId}`)}"] > summary`);
+    const target = next ?? (card.current?.isConnected ? card.current : folded);
+    if (target !== card.current) scope.current = null;
+    target?.focus({ preventScroll: !next });
+  };
+  useLayoutEffect(() => { if (!pending) move(); }, [pending]);
+  useLayoutEffect(() => () => { if (scope.current) requestAnimationFrame(move); }, []);
+  const remember = () => {
+    if (card.current?.contains(document.activeElement)) scope.current = card.current.closest('[data-part="timeline"]') ?? document.body;
+  };
+  return { card, remember };
+}
+
 export const Approval = memo(function Approval({
   id,
   className,
@@ -266,6 +297,8 @@ export const Approval = memo(function Approval({
   const item = useItem(id);
   const [sending, setSending] = useState<"approve" | "deny">();
   const labelId = useId();
+  const request = item?.type === "approval" && item.request.type === "approval_request" ? item.request : undefined;
+  const focus = useDecisionFocus(!item || (item.type === "approval" && !item.ended), request?.tool_call.id ?? "");
   if (item?.type !== "approval" || item.request.type !== "approval_request") return null;
   const { request_id, tool_call, view } = item.request;
   const requested: ToolItem = { id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false };
@@ -274,6 +307,7 @@ export const Approval = memo(function Approval({
   // One decision per request: later clicks are ignored until the handler fails or the request resolves.
   const decide = (action: "approve" | "deny", handler: Decide) => () => {
     if (sending) return;
+    focus.remember();
     setSending(action);
     const retry = () => setSending(undefined);
     try {
@@ -287,8 +321,10 @@ export const Approval = memo(function Approval({
   const status = pending ? sending ? (sending === "approve" ? "approving" : "denying") : undefined : end.text;
   return (
     <div
+      ref={focus.card}
       className={className}
       role="group"
+      tabIndex={-1}
       aria-labelledby={labelId}
       aria-busy={state === "submitting" || undefined}
       data-part="approval"
@@ -318,7 +354,15 @@ const itemLabel = (item: RunItem) => {
   if (item.type === "user" && item.event.type === "user_message") return item.event.text;
   if (item.type === "error" && item.event.type === "error") return item.event.error.message;
   if (item.type === "unknown" && item.event.type === "unknown") return item.event.name;
+  if (item.type === "notification" && item.event.type === "notification") return notificationText(item.event.data) ?? item.type;
   return item.type;
+};
+// A notification's data has no fixed shape: its first text field (in this order) is what it says.
+const notificationText = (data: Record<string, unknown> | undefined) => {
+  for (const key of ["text", "message", "summary", "title", "preview", "description"]) {
+    const value = data?.[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
 };
 
 /** Generic part for kinds without a renderer (user, error, notification, unknown, ...). */

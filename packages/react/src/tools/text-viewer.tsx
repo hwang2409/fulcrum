@@ -272,12 +272,15 @@ export const Styled = memo(function Styled({ text, start = 0, end = text.length,
 const counts = new Intl.NumberFormat("en-US");
 const count = (value: number) => counts.format(value);
 
-type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean; seed?: Token[] | null };
+type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean; seed?: Token[] | null; caption?: string; focus?: boolean };
+type Place = "top" | "middle" | "bottom";
+const placeWords: Record<Place, string> = { top: "at top", middle: "scrolled", bottom: "at bottom" };
 
-function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy, seed }: ViewerProps) {
+function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy, seed, caption, focus }: ViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(follow);
-  const [atBottom, setAtBottom] = useState(follow);
+  const lastTop = useRef(0);
+  const [place, setPlace] = useState<Place>(follow ? "bottom" : "top");
   const [newOutput, setNewOutput] = useState(false);
   const seenLength = useRef(text.length);
   // useSegments either extends its array (old segments are the same objects) or builds a new one: an extension is an
@@ -306,10 +309,15 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
     else if (text.length > seenLength.current) setNewOutput(true);
     seenLength.current = text.length;
   }, [follow, text, list.scrollToEnd]);
+  // Opened by a control that unmounts (the closed preview's "open all"): focus moves to the viewer, not to the page.
+  useLayoutEffect(() => { if (focus) scrollRef.current?.focus({ preventScroll: true }); }, []);
   const onScroll = (node: HTMLDivElement) => {
     const bottom = node.scrollHeight - node.scrollTop - node.clientHeight < 1;
-    following.current = follow && bottom;
-    setAtBottom(bottom);
+    // Only a move up leaves the bottom: rows that grow or settle after their measure move nothing and are no user scroll.
+    if (bottom) following.current = follow;
+    else if (node.scrollTop < lastTop.current) following.current = false;
+    lastTop.current = node.scrollTop;
+    setPlace(bottom || following.current ? "bottom" : node.scrollTop < 1 ? "top" : "middle");
     if (bottom) setNewOutput(false);
   };
   const jump = (end: boolean) => {
@@ -323,20 +331,25 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
     }
     node.focus({ preventScroll: true });
   };
-  const position = newOutput ? "new output" : atBottom ? "at bottom" : "scrolled";
+  const atBottom = place === "bottom";
+  const position = newOutput ? "new output" : placeWords[place];
+  const target = atBottom ? "top" : "bottom";
   return (
     <>
       <div data-part="text-viewer-head">
-        <span data-part="text-viewer-count">{count(metrics.lines)} lines · {count(metrics.characters)} characters</span>
+        {caption ? <span data-part="text-viewer-language">{caption}</span> : null}
+        {/* Narrow heads drop the character count and the buttons' verbs (styles.css): the head stays one row. */}
+        <span data-part="text-viewer-count">{count(metrics.lines)} {metrics.lines === 1 ? "line" : "lines"}<span data-part="text-viewer-wide"> · {count(metrics.characters)} characters</span></span>
         <span data-part="text-viewer-position" data-position={position.replace(" ", "-")} aria-live="polite">{position}</span>
-        <button type="button" data-action={atBottom ? "jump-top" : "jump-bottom"} onClick={() => jump(!atBottom)}>
-          {atBottom ? "jump to top" : "jump to bottom"}
+        <button type="button" data-action={`jump-${target}`} aria-label={`jump to ${target}`} onClick={() => jump(!atBottom)}>
+          <span data-part="text-viewer-wide">jump to </span>{target}
         </button>
         {copy ? <CopyButton label={label} value={text} /> : null}
       </div>
       <div
         ref={scrollRef}
         data-part="text-viewer"
+        data-language={rows ? undefined : format?.language}
         role="region"
         aria-label={`${label} viewer`}
         tabIndex={0}
@@ -400,11 +413,13 @@ export type TextViewerProps = {
   done?: boolean;
   /** Draw `text` as these structured rows instead of as text; `text` still decides the size and is what copy uses. */
   rows?: RowModel;
+  /** Start a large text in the open viewer instead of its cut preview (what an approval asks about is never cut). */
+  opened?: boolean;
 };
 
 /** One bounded, virtualized disclosure for every large tool text surface. */
-export function TextViewer({ text, label, id, appendOnly = false, follow = false, part = "tool-output", stream, metrics: suppliedMetrics, format, done = true, rows }: TextViewerProps) {
-  const [open, setOpen] = useState(false);
+export function TextViewer({ text, label, id, appendOnly = false, follow = false, part = "tool-output", stream, metrics: suppliedMetrics, format, done = true, rows, opened = false }: TextViewerProps) {
+  const [open, setOpen] = useState<boolean | "focus">(opened);
   const measuredMetrics = useTextMetrics(suppliedMetrics ? "" : text, appendOnly);
   const metrics = suppliedMetrics ?? measuredMetrics;
   const large = needsTextViewer(text, metrics);
@@ -412,6 +427,8 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
   // shortcut: the tool viewer keeps 2,000 even for highlighted text; 500 made opening a 1,000,000-line .ts read take
   // 20 ms (the layout gate's bound is 16). Upgrade when segments are built lazily, so their count no longer costs the open.
   const textSegments = useSegments(open && !rows ? text : "", appendOnly, segmentLines(text, metrics));
+  // "open all" unmounts itself: the viewer it opens takes focus.
+  const openViewer = () => setOpen("focus");
   const rowSegments = useMemo(() => open && rows ? rowGroups(rows) : [], [open, rows]);
   const cap = useCap(rows ? rows.count : text);
   if (rows && !(large && open)) {
@@ -422,12 +439,12 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
         <div ref={cap.ref} data-part={rows.part} data-language={rows.language} data-expanded={cap.expanded ? "" : undefined}>
           {cut ? <>
             {rows.render(0, head)}
-            <div data-part="tool-gap">… {count(metrics.lines)} lines / {count(metrics.characters)} characters; open to view all …</div>
+            <div data-part="tool-gap">… {count(tail - head)} more lines of {count(rows.count)} …</div>
             {rows.render(tail, rows.count)}
           </> : rows.render(0, rows.count)}
         </div>
         {cap.expand ? <ExpandButton lines={metrics.lines} expand={cap.expand} /> : null}
-        {large ? <OpenButton metrics={metrics} open={() => setOpen(true)} /> : null}
+        {large ? <OpenButton metrics={metrics} open={openViewer} /> : null}
       </>
     );
   }
@@ -438,16 +455,17 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
       {cap.expand ? <ExpandButton lines={metrics.lines} expand={cap.expand} /> : null}
     </>
   );
-  if (open) return <VirtualText text={text} label={label} follow={follow} metrics={metrics} segments={rows ? rowSegments : textSegments} rows={rows} format={format} id={id} done={done} />;
+  if (open) return <VirtualText text={text} label={label} follow={follow} metrics={metrics} segments={rows ? rowSegments : textSegments} rows={rows} format={format} id={id} done={done} focus={open === "focus"} />;
   const { headEnd, tailStart } = previewRanges(text);
+  const shown = textMetrics(text.slice(0, headEnd)).lines + textMetrics(text.slice(tailStart)).lines;
   return (
     <>
       <pre data-part={part} data-stream={stream} data-language={format?.language} data-anchor={follow ? undefined : "start"}><span>
         <Styled text={text} end={headEnd} format={format} id={id} />
-        <span data-part="tool-gap">… {count(metrics.lines)} lines / {count(metrics.characters)} characters; open to view all …{"\n"}</span>
+        <span data-part="tool-gap">… {count(metrics.lines - shown)} more lines of {count(metrics.lines)} …{"\n"}</span>
         <Styled text={text} start={tailStart} format={format} id={id} done={done} />
       </span></pre>
-      <OpenButton metrics={metrics} open={() => setOpen(true)} />
+      <OpenButton metrics={metrics} open={openViewer} />
     </>
   );
 }
@@ -469,7 +487,7 @@ export function CopyButton({ value, label }: { value: CopyValue; label: string }
       setResult("copy failed"); // no clipboard (insecure context) or permission denied
     }
   };
-  return <button type="button" data-action="copy" aria-label={`copy ${label}`} onClick={copy}>{result ?? `copy ${label}`}</button>;
+  return <button type="button" data-action="copy" aria-label={`copy ${label}`} onClick={copy}>{result ?? <>copy<span data-part="text-viewer-wide"> {label}</span></>}</button>;
 }
 
 /**
@@ -484,7 +502,7 @@ export function CodeViewer({ text, language, id, done = true, label = "code", se
   const segments = useSegments(text, !done, segmentLines(text, metrics, size), size);
   const format = useMemo(() => language ? { language } : undefined, [language]);
   // A block still streaming in follows its newest line, as the timeline follows the run; a finished one starts at its top.
-  return <VirtualText text={text} label={label} follow={!done} metrics={metrics} segments={segments} format={format} id={id} done={done} copy seed={seed} />;
+  return <VirtualText text={text} label={label} follow={!done} metrics={metrics} segments={segments} format={format} id={id} done={done} copy seed={seed} caption={language} />;
 }
 
 /**
@@ -517,7 +535,14 @@ function useCap(content: unknown) {
       delete node.dataset.fade;
     };
   }, [node, expanded, content]);
-  return { ref: setNode, expanded, expand: cut && !expanded ? () => setExpanded(true) : undefined };
+  // "show all" unmounts itself: focus moves to the box it opened (tabIndex -1: focusable by script, not a tab stop).
+  const expand = () => {
+    setExpanded(true);
+    if (!node) return;
+    node.tabIndex = -1;
+    node.focus({ preventScroll: true });
+  };
+  return { ref: setNode, expanded, expand: cut && !expanded ? expand : undefined };
 }
 
 const ExpandButton = ({ lines, expand }: { lines: number; expand: () => void }) => (

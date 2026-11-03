@@ -94,6 +94,9 @@ export type SessionsState = {
   open: { id: string; lease: SessionLease; stale: boolean } | null;
   opening: { id: string; messages: number } | null;
   openError: { id: string; message: string; busy: boolean } | null;
+  /** A `new_session` in flight, and why the last one failed. */
+  creating: boolean;
+  createError: string | null;
 };
 
 type Source = { readonly client: ZetaClient | null; subscribe(listener: () => void): () => void };
@@ -106,7 +109,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
  * opens are released.
  */
 export function createSessions(connection: Source, { selected = null, onSelect }: { selected?: string | null; onSelect?: (id: string) => void } = {}) {
-  let state: SessionsState = { sessions: [], nextOffset: null, listError: null, server: null, selected, open: null, opening: null, openError: null };
+  let state: SessionsState = { sessions: [], nextOffset: null, listError: null, server: null, selected, open: null, opening: null, openError: null, creating: false, createError: null };
   const listeners = new Set<() => void>();
   const set = (patch: Partial<SessionsState>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); };
   let client: ZetaClient | null = null;
@@ -199,6 +202,21 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       void open(id);
     },
     refresh,
+    /** Starts a session with zeta's `new_session` (which makes it the server's own), then opens it. */
+    async create() {
+      const target = client;
+      if (!target || state.creating) return;
+      set({ creating: true, createError: null });
+      try {
+        const { session } = (await target.request("new_session", {}, { timeoutMs: 30_000 })) as { session: SessionMeta };
+        if (!live(target)) return set({ creating: false });
+        set({ creating: false, sessions: [session, ...state.sessions.filter((item) => item.session_id !== session.session_id)] });
+        onSelect?.(session.session_id);
+        await open(session.session_id);
+      } catch (error) {
+        set({ creating: false, createError: live(target) ? message(error) : null });
+      }
+    },
     async loadMore() {
       const target = client;
       if (!target || state.nextOffset === null) return;

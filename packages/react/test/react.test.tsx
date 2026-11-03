@@ -940,3 +940,26 @@ test("a store swap to a finished session announces nothing", async () => {
   await waitForAnnouncement();
   expect(q('[data-part="timeline-live"]').textContent).toBe("");
 });
+
+test("after a keyboard decision, focus lands on the next approval's row, never on its approve button", () => {
+  const { store, send } = setup([
+    { type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false },
+    { type: "approval_request", request_id: "r2", tool_call: call("t2", "bash"), delegated: false },
+  ]);
+  mount(
+    <RunProvider store={store}>
+      <div data-part="timeline">
+        <Approval id="approval:r1" onApprove={() => {}} />
+        <Approval id="approval:r2" onApprove={() => {}} />
+      </div>
+    </RunProvider>,
+  );
+  const first = q('[data-id="approval:r1"] [data-action="approve"]');
+  act(() => first.focus());
+  act(() => first.click());
+  send({ type: "approval_end", request_id: "r1", decision: "approve" });
+  const active = document.activeElement as HTMLElement;
+  // A second Enter must not approve a request the user has not read: the row takes focus, Tab then reaches approve.
+  expect(active.getAttribute("data-action")).toBeNull();
+  expect(active.getAttribute("data-id")).toBe("approval:r2");
+});

@@ -35,6 +35,11 @@ button:disabled { color: var(--fulcrum-muted); cursor: not-allowed; }
 .primary { border-color: var(--fulcrum-fg); background: var(--fulcrum-fg); color: var(--fulcrum-bg); font-weight: 700; }
 .primary:hover { text-decoration: underline; text-underline-offset: 3px; }
 .primary:focus-visible { outline-offset: 2px; }
+/* The one call to action in the sidebar: accent outline and text on a faint accent tint, filled on hover. */
+.accent { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: var(--control); padding: 0 14px; border-color: var(--fulcrum-accent); background: color-mix(in srgb, var(--fulcrum-accent) 8%, var(--fulcrum-bg)); color: var(--fulcrum-accent); font-weight: 700; white-space: nowrap; }
+.accent::before { content: "+"; font-weight: 800; }
+.accent:hover:not(:disabled) { background: var(--fulcrum-accent); color: var(--fulcrum-bg); }
+.accent:disabled { border-color: var(--fulcrum-border); background: transparent; }
 button:active:not(:disabled) { transform: scale(0.97); }
 
 /* Frame: sessions on the left, the run on the right. */
@@ -63,12 +68,14 @@ button:active:not(:disabled) { transform: scale(0.97); }
 .badge[data-tone="warn"]::before, .state[data-status="approval"]::before { background: var(--fulcrum-warn); }
 .badge[data-tone="danger"]::before { background: var(--fulcrum-danger); }
 .state[data-status="idle"]::before { background: var(--fulcrum-muted); }
+.run-meta .state[data-status="approval"] { font-weight: 700; }
 
-.list-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; }
+.list-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--fulcrum-border); }
 .list-head h2 { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fulcrum-muted); }
 .list-head h2::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; vertical-align: 1px; background: var(--fulcrum-accent); }
-.list-head .count { color: var(--fulcrum-muted); font-size: 12px; }
+.list-head .count { color: var(--fulcrum-accent); font-size: 12px; font-weight: 700; }
 .list-head .ghost { margin-left: auto; padding: 0 10px; font-size: 12px; }
+.list-head .accent { flex-basis: 100%; }
 .list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 8px; }
 .list ul { margin: 0; padding: 0; list-style: none; }
 .session {
@@ -83,12 +90,18 @@ button:active:not(:disabled) { transform: scale(0.97); }
   font-weight: 400;
   line-height: 1.45;
 }
+/* Rows are split by a hairline, so a wrapped title reads as one row. The live session's rail carries its state. */
+.list li + li .session { border-top: 1px solid color-mix(in srgb, var(--fulcrum-border) 60%, transparent); }
+.session:hover { border-left-color: color-mix(in srgb, var(--fulcrum-accent) 50%, var(--fulcrum-border)); }
 /* The selection is an accent rail on a faint accent tint; its meta turns fg, so text keeps 4.5:1 on the tint. */
-.session:hover { border-left-color: var(--fulcrum-border); }
 .session[aria-current] { border-left-color: var(--fulcrum-accent); background: color-mix(in srgb, var(--fulcrum-accent) 10%, var(--fulcrum-bg)); }
 .session[aria-current] .session-meta { color: var(--fulcrum-fg); }
+.session[data-status="running"] { border-left-color: var(--fulcrum-accent); }
+.session[data-status="open"] { border-left-color: var(--fulcrum-ok); }
+.session[data-status="approval"] { border-left-color: var(--fulcrum-warn); background: color-mix(in srgb, var(--fulcrum-warn) 8%, var(--fulcrum-bg)); }
+.session[data-status="approval"] .session-meta { color: var(--fulcrum-fg); }
 .session:active:not(:disabled) { transform: none; }
-.session-title { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; font-size: 13px; }
+.session-title { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; font-size: 13px; line-height: 1.35; }
 .session[aria-current] .session-title { font-weight: 700; }
 .session-meta { display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--fulcrum-muted); font-size: 12px; }
 .session-meta .model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -151,6 +164,13 @@ button:active:not(:disabled) { transform: scale(0.97); }
 /* The composer docks under the run, on the timeline's column. */
 .dock { flex: none; padding: 8px 24px max(16px, env(safe-area-inset-bottom)); }
 .dock > [data-part="composer"] { max-width: 880px; margin: 0 auto; }
+/* Idle and ready: the frame takes a share of the accent, so the input reads as the next step. */
+.dock > [data-part="composer"][data-state="idle"]:not(:focus-within) { border-color: color-mix(in srgb, var(--fulcrum-accent) 45%, var(--fulcrum-border)); border-left-color: var(--fulcrum-accent); }
+
+/* An empty session: a short note in the run's column instead of a blank run. */
+.empty-run { max-width: 880px; margin: max(32px, 10dvh) auto 0; padding: 16px 20px; border: 1px solid var(--fulcrum-border); border-left: var(--rail) solid var(--fulcrum-accent); }
+.empty-run h2 { margin-bottom: 4px; font-size: 14px; font-weight: 700; }
+.empty-run p { color: var(--fulcrum-muted); font-size: 13px; }
 
 /* A steer that a stop dropped: the row stays, struck through, with a danger rail and a note that says why. */
 .scroll [data-kind="user"]:has(+ .undelivered) { border-left-color: var(--fulcrum-danger); color: var(--fulcrum-muted); text-decoration: line-through; text-decoration-color: var(--fulcrum-danger); }

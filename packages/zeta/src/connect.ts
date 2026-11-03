@@ -101,10 +101,10 @@ export type ZetaDiscovery = { url: string; token: string; origins: string[] };
 /** The same-origin path `zetaDiscoveryPlugin` from `@fulcrum/zeta/discovery` serves. */
 export const zetaDiscoveryPath = "/__fulcrum/zeta";
 
-/** Asks the page's own dev server for the running `zeta serve --ws`; `null` when no server runs (404). */
+/** Asks the page's own dev server for the running `zeta serve --ws`; `null` when no server runs (204, or 404 without the handler). */
 export async function discoverZeta(path = zetaDiscoveryPath): Promise<ZetaDiscovery | null> {
   const response = await fetch(path, { cache: "no-store" });
-  if (response.status === 404) return null;
+  if (response.status === 204 || response.status === 404) return null;
   if (!response.ok) throw new Error(`zeta discovery failed (${response.status})`);
   const value = (await response.json()) as Partial<ZetaDiscovery>;
   if (typeof value.url !== "string" || typeof value.token !== "string") throw new Error("zeta discovery returned an invalid body");

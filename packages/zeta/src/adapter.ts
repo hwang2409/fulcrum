@@ -187,18 +187,33 @@ const viewOf = (call: ToolCall) => {
   const view = resolveToolView(zetaTools, call);
   return view ? { view } : {};
 };
+/**
+ * bash's result text, `"stdout:\n" + stdout + "\nstderr:\n" + stderr` (zeta src/zeta/tools/bash/__init__.py). History
+ * keeps only this text (structured_content is null there). A timeout marker or a cancel stays raw; a spill preview is
+ * split too, so its truncation note can sit inside stdout. shortcut: the split is at the last "\nstderr:\n", so a
+ * stderr that itself contains that text is mislabeled (stdout containing it is fine); exact once zeta keeps
+ * structured_content in history.
+ */
+const bashText = (content: string) => {
+  if (!content.startsWith("stdout:\n")) return undefined;
+  const split = content.lastIndexOf("\nstderr:\n");
+  return split < 0 ? undefined : { stdout: content.slice(8, split), stderr: content.slice(split + 9) };
+};
+
 // bash reports exit_code, stdout, and stderr in structured_content. Values of the wrong type are ignored, not trusted.
 const finishedView = (call: ToolCall, result: unknown) => {
+  // A call with no command (history without arguments, apps/web/GAPS.md #3) keeps the generic card: a shell card
+  // with an empty `$` header reads as broken.
   const view = resolveToolView(zetaTools, call);
   if (view?.kind !== "shell") return view ? { view } : {};
-  const extra = (result as { structured_content?: unknown } | null | undefined)?.structured_content;
+  const { structured_content: extra, content, is_error } = (result ?? {}) as { structured_content?: unknown; content?: unknown; is_error?: unknown };
   const { exit_code, stdout, stderr } = extra && typeof extra === "object" ? (extra as Record<string, unknown>) : {};
-  const done: ToolView = {
-    ...view,
-    ...(Number.isInteger(exit_code) ? { exitCode: exit_code as number } : {}),
-    ...(typeof stdout === "string" && typeof stderr === "string" ? { stdout, stderr } : {}),
-  };
-  return { view: done };
+  if (typeof stdout === "string" && typeof stderr === "string")
+    return { view: { ...view, ...(Number.isInteger(exit_code) ? { exitCode: exit_code as number } : {}), stdout, stderr } satisfies ToolView };
+  const parsed = call.name === "bash" && typeof content === "string" ? bashText(content) : undefined;
+  if (!parsed) return { view };
+  // zeta sets is_error for a nonzero exit or a timeout, so a clean result means exit 0; a failure's code is unknown.
+  return { view: { ...view, ...parsed, ...(is_error === false ? { exitCode: 0 } : {}) } satisfies ToolView };
 };
 
 // zeta's terminal approval decisions (src/zeta/core/approval.py `ApprovalDecision`, plus "abort"); "ask" is not an ending.
@@ -290,7 +305,13 @@ const text = (content: unknown[]) =>
 
 const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
   const row = object(value, "history row");
-  if (row.event === "approval_request" || row.event === "approval_end") return fromZetaEvent(row);
+  if (row.event === "approval_request" || row.event === "approval_end") {
+    // History empties tool_use arguments, but an approval row keeps them: the call's result row then gets its full view.
+    let call: ToolCall | undefined;
+    try { call = tool(row.tool_call); } catch { /* no usable call: the row still maps */ }
+    if (call && calls.has(call.id) && Object.keys(call.arguments).length) calls.set(call.id, call);
+    return fromZetaEvent(row);
+  }
   const id = string(row.id, "history row id");
   const role = string(row.role, "history row role");
   if (!Array.isArray(row.content)) throw new Error("history row content must be an array");

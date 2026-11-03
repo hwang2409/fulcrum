@@ -12,13 +12,14 @@
 // background, default border, or system font, at rest and under forced :hover, :focus, :focus-visible, and :active. The large-output viewer's median open and append operations stay under 16 ms, it follows the bottom, and highlights a
 // 1,000,000-line file with no long tasks; scrolling it under 4x CPU throttling is reported. Needs a production build
 // (`bun run build`). Collapsed tool bodies warm before they open (see warm-check.ts). Every highlighted box is
-// colored line by line against its fixture (see token-check.ts).
+// colored line by line against its fixture (see token-check.ts). The ux test 6 regressions are in ux-check.ts.
 import { chromium, type Page } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { checkComposer } from "./composer-check.js";
 import { checkStreams } from "./stream-check.js";
 import { checkCards } from "./cards-check.js";
+import { checkUx } from "./ux-check.js";
 import { checkSubAgents } from "./subagent-check.js";
 import { checkWarmBodies } from "./warm-check.js";
 import { checkLineTokens } from "./token-check.js";
@@ -326,6 +327,7 @@ try {
   failures.push(...await checkComposer(browser, port));
   failures.push(...await checkStreams(browser, port));
   failures.push(...await checkCards(browser, port));
+  failures.push(...await checkUx(browser, port));
   const replay = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await replay.addInitScript(() => {
     const request = window.requestAnimationFrame.bind(window);

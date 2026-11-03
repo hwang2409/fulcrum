@@ -16,7 +16,10 @@ const alive = (pid: unknown) => {
   }
 };
 
-/** Answers 200 with a `ZetaDiscovery` only to same-origin loopback requests while the server process runs; otherwise 404. */
+/**
+ * Answers same-origin loopback requests: 200 with a `ZetaDiscovery` while the server process runs, else 204 (a stopped
+ * zeta is a normal state, so the page's retries log nothing). Any other request gets 404.
+ */
 export function createZetaDiscoveryHandler(
   file = join(process.env.ZETA_HOME || join(homedir(), ".zeta"), "run", "serve.ws.json"),
   port: number | string | (() => number | undefined) = 5173,
@@ -42,7 +45,7 @@ export function createZetaDiscoveryHandler(
       res.setHeader("Cache-Control", "no-store");
       res.end(JSON.stringify(body));
     } catch {
-      res.statusCode = 404;
+      res.statusCode = 204;
       res.end();
     }
   };

@@ -1,6 +1,6 @@
 // A scripted `zeta serve --ws` for the browser gate and for trying the app without a real zeta. It speaks the subset
-// of protocol 1.2 the app uses (hello, list_sessions, status, resume, session_history, approve, deny, send, steer,
-// abort, with the delivery_id and user_message_event features), checks the
+// of protocol 1.2 the app uses (hello, list_sessions, new_session, status, resume, session_history, approve, deny,
+// send, steer, abort, with the delivery_id and user_message_event features), checks the
 // token and Origin like the real upgrade, and writes the discovery file under its own ZETA_HOME, never ~/.zeta.
 //
 // Manual use: `bun scripts/fake-zeta.ts`, then start vite with the printed ZETA_HOME.
@@ -22,7 +22,7 @@ const meta = (id: string, minutesAgo: number, extra: Json = {}) => ({
 
 export const ACTIVE = "s-reconnect";
 export const LONG = "s-long";
-const sessions = [
+const seeded = [
   meta(ACTIVE, 2, { name: "fix the flaky reconnect test in packages/zeta" }),
   meta("s-themes", 45, { first_message_preview: "check every theme's muted text against 4.5:1 on the surface color" }),
   meta(LONG, 60 * 5, { first_message_preview: "profile the virtual timeline with 400 rows of history" }),
@@ -34,6 +34,7 @@ const sessions = [
 
 const text = (value: string) => ({ type: "text", text: value });
 const toolUse = (id: string, name: string) => ({ type: "tool_use", tool_call: { id, name, arguments: {} } });
+// History keeps a result's text only; bash's is "stdout:\n" + stdout + "\nstderr:\n" + stderr (zeta src/zeta/tools/bash).
 const result = (id: string, content: string, extra: Json = {}) => ({ tool_call_id: id, content, is_error: false, content_blocks: [], structured_content: null, ...extra });
 const histories: Record<string, Json[]> = {
   [ACTIVE]: [
@@ -41,7 +42,7 @@ const histories: Record<string, Json[]> = {
     { id: "h2", role: "assistant", content: [{ type: "thinking", text: "start with the test and the client close path." }, text("I will read the test first, then run it in a loop."), toolUse("c1", "read")], tool_result: null },
     { id: "h3", role: "tool_result", content: [text("")], tool_result: result("c1", "import { expect, test } from \"bun:test\";\nimport { connect } from \"../src/index.js\";\n\ntest(\"reconnects\", async () => {\n  const client = connect(transport);\n  await client.hello();\n});") },
     { id: "h4", role: "assistant", content: [toolUse("c2", "bash")], tool_result: null },
-    { id: "h5", role: "tool_result", content: [text("")], tool_result: result("c2", "bun test v1.3.13\n\n packages/zeta/test/rpc.test.ts:\n(fail) reconnects [5003.12ms]\n  timed out after 5000ms\n\n 4 pass\n 1 fail") },
+    { id: "h5", role: "tool_result", content: [text("")], tool_result: result("c2", "stdout:\nbun test v1.3.13\n\n packages/zeta/test/rpc.test.ts:\n(fail) reconnects [5003.12ms]\n  timed out after 5000ms\n\n 4 pass\n 1 fail\n\nstderr:\n", { is_error: true }) },
     {
       id: "h6", role: "assistant", tool_result: null, content: [text(
         "The failure is a race in the close path:\n\n1. `transport.close()` fires `onClose` **before** pending requests reject.\n2. The test awaits `hello()`, which never settles.\n\n```ts\ntransport.onClose?.((code) => {\n  const error = rejectPending(code); // reject first\n  closeListeners.forEach((listener) => listener(error));\n});\n```\n\nI will fix the order and add a test that fails without it.",
@@ -50,6 +51,11 @@ const histories: Record<string, Json[]> = {
   ],
   "s-themes": [
     { id: "t1", role: "user", content: [text("check every theme's muted text against 4.5:1 on the surface color")], tool_result: null },
+    { id: "t1b", role: "assistant", content: [toolUse("t-ls", "bash")], tool_result: null },
+    // As in zeta: tool_use arguments are emptied, but an approved call's approval rows keep them.
+    { id: "t1b", role: "system", event: "approval_request", request_id: "t-ls", tool_call: { id: "t-ls", name: "bash", arguments: { command: "ls packages/react/src" } }, delegated: false },
+    { id: "t1c", role: "system", event: "approval_end", request_id: "t-ls", tool_call: { id: "t-ls", name: "bash", arguments: { command: "ls packages/react/src" } }, data: { decision: "allow" } },
+    { id: "t1d", role: "tool_result", content: [text("stdout:\nthemes.css\nthemes.ts\n\nstderr:\n")], tool_result: result("t-ls", "stdout:\nthemes.css\nthemes.ts\n\nstderr:\n") },
     { id: "t2", role: "assistant", content: [text("All 12 themes pass on `bg`. On `surface`, **solarized-light** is closest at 4.61:1.\n\n| theme | bg | surface |\n| --- | --- | --- |\n| gruvbox-dark | 5.9 | 5.4 |\n| solarized-light | 4.9 | 4.61 |")], tool_result: null },
   ],
   [LONG]: Array.from({ length: 400 }, (_, index) => index % 2 === 0
@@ -193,10 +199,12 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let currentHistoryMode = historyMode;
   let allowed = origins;
   let active: string | null = ACTIVE;
+  let sessions = [...seeded];
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
   let turnStarted = false;
   let approvalAborted = false;
   let running = false;
+  let rejectCreate = false;
   let delayedOpen = false;
   const decisions: Json[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
@@ -235,6 +243,15 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
           return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
+        }
+        if (method === "new_session") {
+          // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
+          if (running || rejectCreate) return reply({ error: { code: -32004, message: "a turn is already running" } });
+          const created = meta(`s-new-${sessions.length}`, 0, { created_at: at(0), cwd: "/Users/dev/me/fun/fulcrum", retained_tail: 8, compaction_budget: 262144, override_audit: [], context_files: [], skill_catalog: [], agent_catalog: [], plan_mode: false, project_id: null, tool_allow: null, tool_deny: [] });
+          sessions.unshift(created);
+          histories[created.session_id] = [];
+          active = created.session_id;
+          return reply({ result: { session: created } });
         }
         if (method === "list_sessions") {
           const offset = Number(params.offset ?? 0);
@@ -308,8 +325,12 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     /** Hands out a token the server will refuse. */
     async wrongToken() { await write({ port: server.port, token: "stale-token", pid: process.pid, origins: allowed }); },
     setMode(next: Mode) { mode = next; },
+    /** `true`: new_session fails the way real zeta does while a turn runs (`require_idle`). */
+    setRejectCreate(next: boolean) { rejectCreate = next; },
     setHistoryMode(next: HistoryMode) { currentHistoryMode = next; },
     setLive(next: boolean) { liveEnabled = next; },
+    /** `true`: a fresh zeta home, with no sessions and no server session. `false`: the seeded sessions again. */
+    setEmpty(empty: boolean) { sessions = empty ? [] : [...seeded]; active = empty ? null : ACTIVE; },
     async close() { this.drop(); server.stop(true); await rm(home, { recursive: true, force: true }); },
   };
 }

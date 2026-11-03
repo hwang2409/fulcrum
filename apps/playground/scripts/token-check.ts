@@ -5,7 +5,6 @@
 // line may be plain for a moment, so streaming boxes are skipped.
 import type { Page } from "playwright";
 
-const gap = 41; // the "… N lines / N characters; open to view all …" line of a cut preview
 // Line numbers are 1-based. Each plain line says why it stays plain. A diff's hunk headers (`@@ … @@`) are muted by
 // their row, not tokens.
 const expectedPlain: Record<string, number[]> = {
@@ -33,8 +32,7 @@ const expectedPlain: Record<string, number[]> = {
   "tool:lang-4 tool-lines": [], // shell
   "approval:r-edit-pending tool-diff": [1],
   "approval:r-write tool-lines": [],
-  // The preview's tail is highlighted without the text above it, so json closers outside their object are plain.
-  "approval:r-generic tool-args": [gap, 50, 61, 62],
+  "approval:r-generic text-viewer": [], // a pending approval opens its arguments in the viewer, never cut
 };
 
 type Run = [text: string, colored: boolean];
@@ -44,7 +42,9 @@ type Line = { text: string; colored: boolean };
 // In the page: each box's rows as runs of text, each run inside a syntax token or not.
 function readBoxes(): Box[] {
   return [...document.querySelectorAll<HTMLElement>("[data-part=tool-body] [data-language]")].map((box) => {
-    const rows = box.matches("pre") ? [box] : [...box.querySelectorAll<HTMLElement>("[data-part=line-text], [data-part=diff-text]")];
+    // An open viewer draws its mounted ranges as rows placed by the virtual engine: read them in place order.
+    const viewerRows = () => [...box.querySelectorAll<HTMLElement>("[data-part=text-viewer-row]")].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+    const rows = box.matches("pre") ? [box] : box.dataset.part === "text-viewer" ? viewerRows() : [...box.querySelectorAll<HTMLElement>("[data-part=line-text], [data-part=diff-text]")];
     return {
       key: `${box.closest<HTMLElement>("[data-id]")?.dataset.id} ${box.dataset.part ?? "pre"}`,
       streaming: !!box.closest("[data-state=streaming]"),

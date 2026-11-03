@@ -1,0 +1,148 @@
+[
+ {
+  "id": "40bb1a7dbd414ba893acc611d02c1822",
+  "role": "user",
+  "content": [
+   {
+    "type": "text",
+    "text": "Use the bash tool exactly twice, one call at a time. First call: printf 'alpha\\nbeta\\n'; echo warn-line >&2  . Second call: ls /nonexistent-dir-xyz . Then reply with one word: done."
+   }
+  ],
+  "tool_result": null
+ },
+ {
+  "id": "9daba164d7164988bfddf2a5364072ed",
+  "role": "assistant",
+  "content": [
+   {
+    "type": "tool_use",
+    "tool_call": {
+     "id": "ollama-751c24f5-4766-41d6-b155-f36e1b7279d1",
+     "name": "bash",
+     "arguments": {}
+    }
+   }
+  ],
+  "tool_result": null
+ },
+ {
+  "id": "9daba164d7164988bfddf2a5364072ed",
+  "role": "system",
+  "event": "approval_request",
+  "request_id": "ollama-751c24f5-4766-41d6-b155-f36e1b7279d1",
+  "tool_call": {
+   "arguments": {
+    "command": "printf 'alpha\\nbeta\\n'; echo warn-line >&2"
+   },
+   "id": "ollama-751c24f5-4766-41d6-b155-f36e1b7279d1",
+   "name": "bash"
+  },
+  "delegated": false
+ },
+ {
+  "id": "c4b7a5a0e57348f3bf0d4a64e4dad443",
+  "role": "system",
+  "event": "approval_end",
+  "request_id": "ollama-751c24f5-4766-41d6-b155-f36e1b7279d1",
+  "tool_call": {
+   "arguments": {
+    "command": "printf 'alpha\\nbeta\\n'; echo warn-line >&2"
+   },
+   "id": "ollama-751c24f5-4766-41d6-b155-f36e1b7279d1",
+   "name": "bash"
+  },
+  "data": {
+   "decision": "allow"
+  }
+ },
+ {
+  "id": "cd5cccf7fc02496083332eaa9a2d5367",
+  "role": "tool_result",
+  "content": [
+   {
+    "type": "text",
+    "text": "stdout:\nalpha\nbeta\n\nstderr:\nwarn-line\n"
+   }
+  ],
+  "tool_result": {
+   "content": "stdout:\nalpha\nbeta\n\nstderr:\nwarn-line\n",
+   "content_blocks": [],
+   "is_error": false,
+   "structured_content": null,
+   "tool_call_id": "ollama-751c24f5-4766-41d6-b155-f36e1b7279d1"
+  }
+ },
+ {
+  "id": "0fd9e27357794bae9defbb3574cf4148",
+  "role": "assistant",
+  "content": [
+   {
+    "type": "tool_use",
+    "tool_call": {
+     "id": "ollama-c0479748-7bde-45ef-bc63-26fa663e0b10",
+     "name": "bash",
+     "arguments": {}
+    }
+   }
+  ],
+  "tool_result": null
+ },
+ {
+  "id": "0fd9e27357794bae9defbb3574cf4148",
+  "role": "system",
+  "event": "approval_request",
+  "request_id": "ollama-c0479748-7bde-45ef-bc63-26fa663e0b10",
+  "tool_call": {
+   "arguments": {
+    "command": "ls /nonexistent-dir-xyz"
+   },
+   "id": "ollama-c0479748-7bde-45ef-bc63-26fa663e0b10",
+   "name": "bash"
+  },
+  "delegated": false
+ },
+ {
+  "id": "8660078d128e4715aa9c1e74949f62ff",
+  "role": "system",
+  "event": "approval_end",
+  "request_id": "ollama-c0479748-7bde-45ef-bc63-26fa663e0b10",
+  "tool_call": {
+   "arguments": {
+    "command": "ls /nonexistent-dir-xyz"
+   },
+   "id": "ollama-c0479748-7bde-45ef-bc63-26fa663e0b10",
+   "name": "bash"
+  },
+  "data": {
+   "decision": "allow"
+  }
+ },
+ {
+  "id": "9d5e77391c1c4e06b9c54f3be9d8412f",
+  "role": "tool_result",
+  "content": [
+   {
+    "type": "text",
+    "text": "stdout:\n\nstderr:\nls: /nonexistent-dir-xyz: No such file or directory\n"
+   }
+  ],
+  "tool_result": {
+   "content": "stdout:\n\nstderr:\nls: /nonexistent-dir-xyz: No such file or directory\n",
+   "content_blocks": [],
+   "is_error": true,
+   "structured_content": null,
+   "tool_call_id": "ollama-c0479748-7bde-45ef-bc63-26fa663e0b10"
+  }
+ },
+ {
+  "id": "c2211aaa7fb64b25907de4578f3fb8ca",
+  "role": "assistant",
+  "content": [
+   {
+    "type": "text",
+    "text": "done."
+   }
+  ],
+  "tool_result": null
+ }
+]

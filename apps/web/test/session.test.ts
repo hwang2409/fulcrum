@@ -186,3 +186,36 @@ test("live events after the open land in the open store", async () => {
   fake.event({ event: "assistant_delta", session_id: "b", delta: "streaming", kind: "assistant" });
   expect(kinds(view.state)).toEqual(["user", "message", "approval", "message"]);
 });
+
+// zeta's `new_session` answers `{ session: <full metadata> }` and makes it the server's session (server.py).
+test("create starts a session with new_session, lists it, and opens it without resume", async () => {
+  let current: string | null = null;
+  const created = meta("new-1", "2026-11-04T10:00:00Z", { name: "", cwd: "/tmp/project", model: "qwen3.6:35b" });
+  const fake = await server(handlers(null, {
+    new_session: () => { current = created.session_id; return { session: created }; },
+    list_sessions: () => ({ sessions: current ? [created, ...sessions] : sessions, next_offset: null }),
+    status: () => ({ session: current ? created : null, state: "idle", pending_approvals: [] }),
+    session_history: () => ({ messages: [], next_offset: null }),
+  }));
+  const selected: string[] = [];
+  const view = createSessions(source(fake.client), { onSelect: (id) => selected.push(id) });
+  await tick();
+  await view.create();
+  await tick();
+  expect(fake.calls.find(([method]) => method === "new_session")).toEqual(["new_session", {}]);
+  expect(fake.calls.map(([method]) => method)).not.toContain("resume");
+  expect(view.state.sessions.map((session) => session.session_id)).toContain("new-1");
+  expect(view.state.open?.id).toBe("new-1");
+  expect(view.state.selected).toBe("new-1");
+  expect(selected).toEqual(["new-1"]);
+  expect(view.state.createError).toBeNull();
+});
+
+test("a failed create keeps the current session and says why", async () => {
+  const fake = await server(handlers("b", { new_session: () => { throw { code: -32004, message: "a turn is already running" }; } }));
+  const view = createSessions(source(fake.client));
+  await tick();
+  await view.create();
+  expect(view.state.createError).toBe("a turn is already running");
+  expect(view.state.open?.id).toBe("b");
+});
