@@ -438,7 +438,8 @@ export function CodeViewer({ text, language, id, done = true, label = "code" }: 
   const metrics = useTextMetrics(text, !done);
   const segments = useSegments(text, !done, segmentLines(text, metrics, CODE_SEGMENT_CHARS), CODE_SEGMENT_CHARS);
   const format = useMemo(() => language ? { language } : undefined, [language]);
-  return <VirtualText text={text} label={label} follow={false} metrics={metrics} segments={segments} format={format} id={id} done={done} copy />;
+  // A block still streaming in follows its newest line, as the timeline follows the run; a finished one starts at its top.
+  return <VirtualText text={text} label={label} follow={!done} metrics={metrics} segments={segments} format={format} id={id} done={done} copy />;
 }
 
 /**

@@ -145,3 +145,8 @@ test.each([
   const miscolored = [...container.querySelectorAll(".tok-keyword")].filter((node) => node.textContent === "x");
   expect(miscolored.length).toBe(0);
 });
+
+test("a streaming fence over the limits follows its newest line", () => {
+  mount(<Markdown id="m" source={"```cpp\n" + line.repeat(300)} streaming highlight={highlight} />);
+  expect(container.querySelector('[data-part="text-viewer-position"]')!.textContent).toBe("at bottom");
+});
