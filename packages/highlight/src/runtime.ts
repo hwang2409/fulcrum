@@ -183,10 +183,13 @@ export class TokenizerRuntime {
   }
 
   // `epoch` is the one the grammar was loaded in: a warm-up queued before dispose must not run after it.
-  private async warm(language: string, patterns: Set<string>, highlighter: HighlighterCore, cache: RegexCache, epoch: number): Promise<void> {
-    await this.compile(patterns, cache, epoch);
+  private async warm(language: string, _patterns: Set<string>, highlighter: HighlighterCore, _cache: RegexCache, epoch: number): Promise<void> {
+    // Let all requests already on the worker queue receive their plain provisional reply first.
+    this.onProgress(null);
+    await nextTask();
     if (epoch !== this.epoch) return;
-    // The first line through a grammar also builds its rules and runs the regex jit once; a sample does it here.
+    // The sample initializes the scanner without compiling every dormant rule. Demand tokenization must stay independent
+    // of warm-up; compiling the full grammar here made common languages wait several seconds behind background work.
     highlighter.codeToTokensBase(WARM_SAMPLE, { lang: language, theme: THEME });
     this.warmed.add(language);
     await this.flushProvisional(language, epoch);
