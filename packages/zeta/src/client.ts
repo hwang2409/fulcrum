@@ -1,4 +1,4 @@
-import { createRunStore, type Scheduler, type RunState } from "@fulcrum/core";
+import { createRunStore, type RunEvent, type Scheduler, type RunState } from "@fulcrum/core";
 import { fromZetaEvent } from "./adapter.js";
 import type { HelloResult, RpcError, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
@@ -85,6 +85,28 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       },
     };
   };
+  const buffers = new Map<string, RunEvent[]>();
+  /**
+   * Opens `session` on a fresh store: the cached store is dropped, live events for the session wait while `load`
+   * runs, then the loaded history and the waiting events dispatch in that order. Without a server cursor, a message
+   * that commits while `load` runs can appear in both the history and the live events.
+   */
+  const replay = async (session: string, load: () => Promise<RunEvent[]>): Promise<SessionLease> => {
+    if (buffers.has(session)) throw new Error(`session ${session} is already replaying`);
+    evict(session);
+    const waiting: RunEvent[] = [];
+    buffers.set(session, waiting);
+    let history: RunEvent[];
+    try {
+      history = await load();
+    } finally {
+      if (buffers.get(session) === waiting) buffers.delete(session);
+    }
+    const lease = forSession(session);
+    for (const event of history) lease.store.dispatch(event);
+    for (const event of waiting) lease.store.dispatch(event);
+    return lease;
+  };
   const settle = (id: number, callback: (request: Pending) => void) => {
     const request = pending.get(id); if (!request) return;
     pending.delete(id); if (request.timer) clearTimeout(request.timer); callback(request);
@@ -99,6 +121,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       if (!message.params || typeof message.params !== "object") { store.dispatch(adapterError("event params are invalid")); return; }
       const events = fromZetaEvent(message.params);
       const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
+      const waiting = session === undefined ? undefined : buffers.get(session);
+      if (waiting) { waiting.push(...events); return; }
       const sessionStore = eventStore(session);
       for (const event of events) sessionStore.dispatch(event);
       return;
@@ -108,8 +132,17 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const request = pending.get(message.id); if (!request) return;
     settle(message.id, (item) => message.error ? item.reject(Object.assign(new Error(message.error.message), message.error)) : item.resolve(message.result));
   });
-  const rejectPending = (code?: number) => { const error = closeError?.(handshaken, code) ?? new Error("transport closed"); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); };
-  transport.onClose?.(rejectPending);
+  const closeListeners = new Set<(error: unknown) => void>();
+  let closed = false;
+  const rejectPending = (code?: number) => { const error = closeError?.(handshaken, code) ?? new Error("transport closed"); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); return error; };
+  transport.onClose?.((code) => {
+    const error = rejectPending(code);
+    if (closed) return;
+    closed = true;
+    closeListeners.forEach((listener) => listener(error));
+  });
+  /** Calls `listener` once when the transport closes, with the same error that rejected pending requests. */
+  const onClose = (listener: (error: unknown) => void) => { closeListeners.add(listener); return () => { closeListeners.delete(listener); }; };
   const request = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
     if (!handshaken && method !== "hello") return Promise.reject(new Error("hello required"));
     if (pending.size >= maxPending) return Promise.reject(Object.assign(new Error("too many pending requests"), { code: "pending_limit" }));
@@ -129,7 +162,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const send = () => request("hello", { protocol_version: "1.0", client_version: "1.2", ...(requestedFeatures ? { features: requestedFeatures } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => { handshaken = true; negotiatedFeatures = result.capabilities?.features ?? []; return result; });
   };
-  return { store, stores, forSession, request, hello, get features() { return negotiatedFeatures; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
+  return { store, stores, forSession, replay, request, hello, onClose, get features() { return negotiatedFeatures; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
 }
+export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }
 export type { RunState };

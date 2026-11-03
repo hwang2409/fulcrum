@@ -193,6 +193,32 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
 
 type Decide = (requestId: string) => void | Promise<unknown>;
 
+const approvalStatus = (reason: string) => ({ controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" } as Record<string, string>)[reason] ?? (reason ? "ended" : "resolved");
+
+const ApprovalButton = ({ action, handler, sending, disabledReason, decide }: { action: "approve" | "deny"; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: "approve" | "deny", handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler || sending} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{action}</button> : null;
+
+const ApprovalActions = function ApprovalActions({
+  sending,
+  onApprove,
+  onDeny,
+  disabledReason,
+  decide,
+}: {
+  sending: "approve" | "deny" | undefined;
+  onApprove?: Decide;
+  onDeny?: Decide;
+  disabledReason?: string;
+  decide: (action: "approve" | "deny", handler: Decide) => () => void;
+}) {
+  if (!onApprove && !onDeny && !disabledReason) return null;
+  const busy = Boolean(sending);
+  return <div data-part="approval-actions">
+    <ApprovalButton action="approve" handler={onApprove} sending={busy} disabledReason={disabledReason} decide={decide} />
+    <ApprovalButton action="deny" handler={onDeny} sending={busy} disabledReason={disabledReason} decide={decide} />
+    {disabledReason ? <span role="status">{disabledReason}</span> : null}
+  </div>;
+};
+
 export const Approval = memo(function Approval({
   id,
   className,
@@ -200,7 +226,8 @@ export const Approval = memo(function Approval({
   onDeny,
   summary,
   body: Body = ToolBody,
-}: ItemProps & ToolViewProps & { onApprove?: Decide; onDeny?: Decide }) {
+  disabledReason,
+}: ItemProps & ToolViewProps & { onApprove?: Decide; onDeny?: Decide; disabledReason?: string }) {
   const item = useItem(id);
   const [sending, setSending] = useState<"approve" | "deny">();
   const labelId = useId();
@@ -221,7 +248,8 @@ export const Approval = memo(function Approval({
       throw error;
     }
   };
-  const status = !pending ? "resolved" : sending ? (sending === "approve" ? "approving" : "denying") : undefined;
+  const endReason = item.ended && "data" in item.ended ? String(item.ended.data?.reason ?? "") : "";
+  const status = pending ? sending ? (sending === "approve" ? "approving" : "denying") : undefined : approvalStatus(endReason);
   return (
     <div
       className={className}
@@ -243,20 +271,7 @@ export const Approval = memo(function Approval({
           <div data-part="tool-body">
             <Body item={requested} output="" state={state} />
           </div>
-          {onApprove || onDeny ? (
-            <div data-part="approval-actions">
-              {onApprove ? (
-                <button type="button" data-action="approve" aria-disabled={sending ? true : undefined} onClick={decide("approve", onApprove)}>
-                  approve
-                </button>
-              ) : null}
-              {onDeny ? (
-                <button type="button" data-action="deny" aria-disabled={sending ? true : undefined} onClick={decide("deny", onDeny)}>
-                  deny
-                </button>
-              ) : null}
-            </div>
-          ) : null}
+          <ApprovalActions sending={sending} onApprove={onApprove} onDeny={onDeny} disabledReason={disabledReason} decide={decide} />
         </>
       ) : null}
     </div>
