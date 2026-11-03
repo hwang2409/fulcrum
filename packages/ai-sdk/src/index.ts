@@ -166,23 +166,28 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     return [{ type: "message_delta", message_id: messageId, delta, kind }];
   };
 
+  // Sources and files stream in as whole blocks, in their place among the text and reasoning. A file that is an image
+  // (the SDK's generated images) is an image block, so it renders as one.
   const decodeAsset = (part: Row, type: string): RunEvent[] => {
+    let block: ContentBlock;
     if (type === "file") {
-      const block: ContentBlock = { type: "file", kind: "file", url: wireString(part.url, "part.url"), mediaType: wireString(part.mediaType, "part.mediaType"), ...(providerMeta(part) ? { meta: providerMeta(part) } : {}) };
-      content.push(block);
-      return [];
+      const url = wireString(part.url, "part.url");
+      const mediaType = wireString(part.mediaType, "part.mediaType");
+      block = { ...(/^image\//i.test(mediaType) ? { type: "image" } : { type: "file", kind: "file" }), url, mediaType, ...(providerMeta(part) ? { meta: providerMeta(part) } : {}) };
+    } else {
+      const sourceId = wireString(part.sourceId, "part.sourceId");
+      const meta = defined({ sourceId, providerMetadata: part.providerMetadata === undefined ? undefined : [part.providerMetadata] });
+      block = {
+        type: "source", kind: "source",
+        ...(type === "source-url" ? { url: wireString(part.url, "part.url") } : { mediaType: wireString(part.mediaType, "part.mediaType") }),
+        ...(part.title === undefined ? {} : { title: wireString(part.title, "part.title") }),
+        ...(part.filename === undefined ? {} : { filename: wireString(part.filename, "part.filename") }),
+        meta,
+      };
     }
-    const sourceId = wireString(part.sourceId, "part.sourceId");
-    const meta = defined({ sourceId, providerMetadata: part.providerMetadata === undefined ? undefined : [part.providerMetadata] });
-    const block: ContentBlock = {
-      type: "source", kind: "source",
-      ...(type === "source-url" ? { url: wireString(part.url, "part.url") } : { mediaType: wireString(part.mediaType, "part.mediaType") }),
-      ...(part.title === undefined ? {} : { title: wireString(part.title, "part.title") }),
-      ...(part.filename === undefined ? {} : { filename: wireString(part.filename, "part.filename") }),
-      meta,
-    };
+    messageId ??= syntheticId("message", ++messageNumber);
     content.push(block);
-    return [];
+    return [{ type: "message_block", message_id: messageId, block: { ...block } }];
   };
 
   const decodeTool = (part: Row, type: string): RunEvent[] => {

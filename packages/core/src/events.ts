@@ -1,7 +1,24 @@
+/**
+ * One piece of a message, in order. The known types below are what the default renderer draws; any other type is kept
+ * as it is and shown as an unsupported block, so no adapter data is lost. URLs are unchecked here: renderers pass them
+ * through `safeUrl` before they become links or images.
+ */
 export interface ContentBlock {
   type: string;
   [key: string]: unknown;
 }
+/** Text, as markdown or plain text (the message decides). Adjacent text blocks render as one. */
+export interface TextContentBlock extends ContentBlock {
+  type: "text";
+  text: string;
+}
+/** The model's reasoning. `redacted` reasoning has no readable text (the provider sent it encrypted). */
+export interface ReasoningContentBlock extends ContentBlock {
+  type: "reasoning";
+  text: string;
+  redacted?: boolean;
+}
+/** A cited source: a web page (`url`) or a document (`mediaType`, `filename`). */
 export interface SourceContentBlock extends ContentBlock {
   type: "source";
   kind: "source";
@@ -10,6 +27,7 @@ export interface SourceContentBlock extends ContentBlock {
   title?: string;
   filename?: string;
 }
+/** A file the message carries. `size` is in bytes. */
 export interface FileContentBlock extends ContentBlock {
   type: "file";
   kind: "file";
@@ -17,7 +35,20 @@ export interface FileContentBlock extends ContentBlock {
   mediaType?: string;
   title?: string;
   filename?: string;
+  size?: number;
 }
+/** An image. `width` and `height` (pixels) let the renderer reserve its exact shape before it loads. `size` is in bytes. */
+export interface ImageContentBlock extends ContentBlock {
+  type: "image";
+  url: string;
+  mediaType?: string;
+  alt?: string;
+  filename?: string;
+  width?: number;
+  height?: number;
+  size?: number;
+}
+
 export interface Message {
   role: string;
   content: ContentBlock[];
@@ -50,6 +81,8 @@ export interface ToolResult {
   content: string;
   is_error: boolean;
   is_canceled?: boolean;
+  /** What the result carries beside its text, such as images, in order. Renderers show them under the output. */
+  blocks?: ContentBlock[];
 }
 export type SubAgentStatus =
   | "running"
@@ -89,6 +122,7 @@ export type RunItem =
       message: Message;
       version: number;
       active: boolean;
+      /** Text streaming in after `message.content`: the message reads as its content blocks, then this text. */
       text?: string;
     }
   | {
@@ -123,7 +157,10 @@ export type RunEvent =
         | "message_reset";
       data?: Record<string, unknown>;
     }
+  /** Streams text into a message. A `kind` other than text ("reasoning") streams into its own block of that type. */
   | { type: "message_delta"; message_id?: string; delta: string; kind?: string }
+  /** Adds a whole block (a source, a file, an image) to the streaming message, after what it has so far. */
+  | { type: "message_block"; message_id?: string; block: ContentBlock }
   | { type: "retry" }
   | { type: "message_commit"; message_id?: string; message: Message }
   | { type: "tool_start"; tool_call: ToolCall; view?: ToolView; data?: Record<string, unknown> }

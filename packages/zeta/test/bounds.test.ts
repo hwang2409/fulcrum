@@ -23,14 +23,14 @@ const fields: Record<string, string[]> = {
   compaction_end: ["event", "data"],
   message_start: ["event", "data"],
   assistant_delta: ["event", "data", "data.message_id", "delta", "kind"],
-  assistant_message: ["event", "data", "data.message_id", "message", "message.role", "message.content", "message.content.0", "message.content.0.type", "message.content.0.text", "message.content.1", "message.content.1.type", "message.content.1.text", "message.content.1.signature", "message.content.2", "message.content.2.type", "message.content.2.data", "message.content.2.mimeType", "message.content.3", "message.content.3.type", "message.content.3.data", "message.content.4", "message.content.4.type", "message.content.4.tool_call", "message.content.4.tool_call.id", "message.content.4.tool_call.name", "message.content.4.tool_call.arguments", "message.tool_result", "message.tool_result.tool_call_id", "message.tool_result.content", "message.tool_result.is_error", "message.tool_result.is_canceled", "message.metadata"],
+  assistant_message: ["event", "data", "data.message_id", "message", "message.role", "message.content", "message.content.0", "message.content.0.type", "message.content.0.text", "message.content.1", "message.content.1.type", "message.content.1.text", "message.content.1.signature", "message.content.2", "message.content.2.type", "message.content.2.data", "message.content.2.mimeType", "message.content.2.path", "message.content.2.size", "message.content.3", "message.content.3.type", "message.content.3.data", "message.content.4", "message.content.4.type", "message.content.4.tool_call", "message.content.4.tool_call.id", "message.content.4.tool_call.name", "message.content.4.tool_call.arguments", "message.tool_result", "message.tool_result.tool_call_id", "message.tool_result.content", "message.tool_result.is_error", "message.tool_result.is_canceled", "message.metadata"],
   retry: ["event", "data"],
   assistant_reset: ["event", "data"],
   approval_request: ["event", "data", "request_id", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "delegated", "agent_instance_id", "data.summary", "data.question", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   approval_end: ["event", "data", "request_id", "data.agent_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   tool_start: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments"],
   tool_output: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "output"],
-  tool_end: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "tool_result", "tool_result.tool_call_id", "tool_result.content", "tool_result.is_error", "tool_result.is_canceled", "tool_result.structured_content", "tool_result.structured_content.exit_code", "tool_result.structured_content.stdout", "tool_result.structured_content.stderr"],
+  tool_end: ["event", "data", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "tool_result", "tool_result.tool_call_id", "tool_result.content", "tool_result.is_error", "tool_result.is_canceled", "tool_result.structured_content", "tool_result.structured_content.exit_code", "tool_result.structured_content.stdout", "tool_result.structured_content.stderr", "tool_result.content_blocks", "tool_result.content_blocks.0", "tool_result.content_blocks.0.type", "tool_result.content_blocks.0.data", "tool_result.content_blocks.0.mimeType", "tool_result.content_blocks.0.path", "tool_result.content_blocks.0.size", "tool_result.content_blocks.0.caption", "tool_result.content_blocks.0.width", "tool_result.content_blocks.0.height"],
   notification_by_kind: ["event", "data", "data.kind", "data.child_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   child_message_delivered: ["event", "data", "data.agent_instance_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   account_limit: ["event", "data"],
@@ -79,6 +79,9 @@ const assertCoreShape = (events: ReturnType<typeof fromZetaEvent>) => {
   }
 };
 
+// A 4x3 png from a real zeta read (fixtures/zeta-images.json).
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAE0lEQVR4nGO8PlORAQaY4Cx0DgA7RwGXzCXxUwAAAABJRU5ErkJggg==";
+
 test("every consumed field is decoded or becomes a typed adapter error", () => {
   const baseByName = Object.fromEntries(allEvents.map((event) => [event.event, event]));
   baseByName.assistant_message = {
@@ -88,7 +91,7 @@ test("every consumed field is decoded or becomes a typed adapter error", () => {
       content: [
         { type: "text", text: "hello" },
         { type: "thinking", text: "think", signature: "signed" },
-        { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+        { type: "image", data: PNG, mimeType: "image/png", path: "/tmp/shot.png", size: 76 },
         { type: "redacted_thinking", data: "redacted" },
         { type: "tool_use", tool_call: { id: "tool-2", name: "read", arguments: {} } },
       ],
@@ -100,7 +103,7 @@ test("every consumed field is decoded or becomes a typed adapter error", () => {
   baseByName.tool_end = {
     ...baseByName.tool_end,
     tool_call: { id: "tool-1", name: "bash", arguments: { command: "ls" } },
-    tool_result: { tool_call_id: "tool-1", content: "ok", is_error: false, is_canceled: false, structured_content: { exit_code: 0, stdout: "ok", stderr: "" } },
+    tool_result: { tool_call_id: "tool-1", content: "ok", is_error: false, is_canceled: false, structured_content: { exit_code: 0, stdout: "ok", stderr: "" }, content_blocks: [{ type: "image", data: PNG, mimeType: "image/png", path: "/tmp/shot.png", size: 76, caption: "shot", width: 4, height: 3 }] },
   };
   baseByName.approval_request = { ...baseByName.approval_request, agent_instance_id: "child" };
   baseByName.error = { ...baseByName.error, data: { agent_instance_id: "child" } };

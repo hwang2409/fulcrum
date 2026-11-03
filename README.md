@@ -58,6 +58,15 @@ const renderers: Renderers = {
 
 - hooks: `useRun(selector)` (return a primitive or a reference from state), `useTimeline()` (stable ordered `{ id, kind }` entries), `useItem(id)`, and `useItemSelector(id, selector)`. They use `useSyncExternalStore`, so a text delta re-renders only the item that changed.
 - parts: `Timeline`, `Message`, `ToolCall`, `Approval`, `SubAgent`, `RunNavigator`, and `Fallback` for other kinds. Parts have no styles. They take `className` and expose `data-part`, `data-kind`, `data-state` (`streaming`, `done`, `error`, `pending`), `data-role`, and `data-tool`. Message text stays plain unless a markdown renderer is supplied. The renderer is used for assistant messages by default; set `markdownFor="all"` for user messages or `markdown={false}` for explicit plain text.
+- content blocks: a message renders its `content` in order, then its streaming text. Text is markdown (or plain); `reasoning` is a closed disclosure that says "thinking" while it streams and announces "reasoning finished" once; `source` links out; `file` shows name, media type, and size; `image` reserves its box (`width`/`height` when known) and opens on click; any other type is an "unsupported block" with copyable json. Adapters stream a whole block with `{ type: "message_block", block }` and reasoning with `message_delta` `kind: "reasoning"`. Override one type with `blocks`, and open files and images with `onOpen`; the defaults (`ReasoningBlock`, `SourceBlock`, `FileBlock`, `ImageBlock`, `UnknownBlock`) are exported to wrap:
+
+  ```tsx
+  type ContentBlockProps = { block: ContentBlock; id: string; streaming: boolean; markdown?: ComponentType<MarkdownContentProps>; onOpen?: (block: FileContentBlock | ImageContentBlock) => void };
+  const blocks: BlockRenderers = { source: ({ block }) => <Citation href={safeUrl(block.url)} /> }; // module scope: a stable object
+  const renderers: Renderers = { message: ({ id }) => <Message id={id} markdown={Markdown} blocks={blocks} onOpen={openInPanel} /> };
+  ```
+
+  Every URL goes through `safeUrl` from `@fulcrum/core`: links are http, https, mailto, or relative; images may also be inline png, jpeg, gif, webp, avif, or bmp `data:` URLs. Any URL longer than `MAX_URL_CHARS` (8 MiB) is refused before any other work. Addresses never become labels, titles, or data attributes.
 - tool body slot: `ToolCall` and `Approval` own the one header row (`tool-name`, `tool-summary`, `tool-status`), the disclosure, the state rail, and the approval actions. A per-tool card passes only what goes inside `data-part="tool-body"`, so it never draws a second header:
 
   ```tsx
@@ -114,7 +123,7 @@ import { Message } from "@fulcrum/react";
 <Message id={id} markdown={Markdown} />;
 ```
 
-The streaming document freezes completed blocks, table rows, and list items. Open fences and plain paragraphs consume only appended text. `Markdown` covers CommonMark and GFM message content: ATX/setext headings, paragraphs, inline/indented/fenced code, nested/task lists, emphasis, reference and literal links, images, blockquotes, tables, rules, entities, and hard breaks. Raw HTML stays escaped. Link and image protocols are limited to HTTP(S), `mailto:`, and relative URLs.
+The streaming document freezes completed blocks, table rows, and list items. Open fences and plain paragraphs consume only appended text. `Markdown` covers CommonMark and GFM message content: ATX/setext headings, paragraphs, inline/indented/fenced code, nested/task lists, emphasis, reference and literal links, images, blockquotes, tables, rules, entities, and hard breaks. Raw HTML stays escaped. Links and images follow `safeUrl` from `@fulcrum/core`: HTTP(S), `mailto:`, and relative URLs, plus size-capped inline raster images.
 
 Code blocks accept the `Highlight` returned by `createHighlighter()` from `@fulcrum/highlight`. The shared callback receives `(code, language, { id, version, state })` and returns tokens immediately or in a promise. `state` is `streaming` or `done`; stale async results are ignored. Tokens without a `type` render as plain text; styled token classes are `tok-keyword`, `tok-string`, `tok-number`, `tok-comment`, `tok-function`, `tok-type`, `tok-variable`, `tok-constant`, `tok-operator`, `tok-punctuation`, `tok-tag`, `tok-attribute`, `tok-regexp`, `tok-inserted`, and `tok-deleted`. Copy `@fulcrum/react/styles.css` and `@fulcrum/react/themes.css`; also copy `@fulcrum/highlight/styles.css` when code highlighting is enabled. Regenerate the vendored parser with `bun run vendor:markdown-it`.
 

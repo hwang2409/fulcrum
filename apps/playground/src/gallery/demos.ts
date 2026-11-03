@@ -1,5 +1,6 @@
-import { resolveToolView, type RunEvent, type SubAgentEvent, type ToolCall, type ToolView } from "@fulcrum/core";
+import { resolveToolView, type ContentBlock, type RunEvent, type SubAgentEvent, type ToolCall, type ToolView } from "@fulcrum/core";
 import { zetaTools } from "@fulcrum/zeta";
+import { CHART_PNG } from "./chart";
 
 /**
  * `part` is the `@fulcrum/react` export the demo shows. `live` replays `events` in a loop, one event per `live` ms.
@@ -51,6 +52,40 @@ const longText =
   "\n\n" +
   "Ordinary prose wraps across several lines when the column is narrow, and keeps its paragraph breaks. ".repeat(3);
 
+// A message that streams its parts in order (a string is text, word by word; `reasoning` streams the same way; a block
+// arrives whole), then commits the same content, as an adapter does.
+type Piece = string | { reasoning: string } | ContentBlock;
+const words = (value: string) => value.match(/\S+\s*/g) ?? [];
+const blockStream = (id: string, pieces: Piece[]): RunEvent[] => {
+  const events: RunEvent[] = [];
+  const content: ContentBlock[] = [];
+  for (const piece of pieces) {
+    if (typeof piece === "string") {
+      events.push(...words(piece).map((delta): RunEvent => ({ type: "message_delta", message_id: id, delta })));
+      content.push({ type: "text", text: piece });
+    } else if ("reasoning" in piece && typeof piece.reasoning === "string") {
+      events.push(...words(piece.reasoning).map((delta): RunEvent => ({ type: "message_delta", message_id: id, kind: "reasoning", delta })));
+      content.push({ type: "reasoning", text: piece.reasoning });
+    } else {
+      events.push({ type: "message_block", message_id: id, block: piece as ContentBlock });
+      content.push(piece as ContentBlock);
+    }
+  }
+  return [...events, { type: "message_commit", message_id: id, message: { role: "assistant", content } }];
+};
+const committed = (id: string, pieces: Piece[]) => blockStream(id, pieces).slice(-1);
+
+const thinking = { reasoning: "The failing import is node:path in vite.config.ts. The config runs in node, so the import is fine there; the browser bundle must be pulling the config in through the shared constants file. Check who imports constants.ts before changing anything." };
+const docs = { type: "source", kind: "source", url: "https://vite.dev/config/shared-options#resolve-alias", title: "Vite: shared options, resolve.alias" };
+const issue = { type: "source", kind: "source", url: "https://github.com/vitejs/vite/issues/9200", title: "node:path in a client bundle" };
+const guide = { type: "source", kind: "source", mediaType: "application/pdf", title: "Build guide", filename: "build-guide.pdf" };
+const report = { type: "file", kind: "file", url: "https://example.com/artifacts/bundle-report.html", mediaType: "text/html", filename: "bundle-report.html", size: 48_213 };
+const trace = { type: "file", kind: "file", url: "data:application/json;base64,eyJ0cmFjZSI6W119", mediaType: "application/json", filename: "trace.json", size: 12 };
+const chart = { type: "image", url: CHART_PNG, mediaType: "image/png", alt: "bundle size per entry, in kB", width: 640, height: 360, size: 2_940 };
+const unsized = { type: "image", url: CHART_PNG, mediaType: "image/png", filename: "chart.png" };
+const blocked = { type: "image", url: "data:image/svg+xml;base64,PHN2Zy8+", filename: "logo.svg" };
+const custom = { type: "chart-spec", spec: { mark: "bar", encoding: { x: "entry", y: "kB" } }, rows: 7 };
+const contentPieces: Piece[] = [thinking, "The browser bundle imports `node:path` through `constants.ts`. ", docs, issue, "Here is the size of each entry after the fix:\n\n", chart, report, "Move the alias into the config's server block."];
 
 // Tool events get their view the way an adapter attaches it: zeta's tool map, or an explicit view for a tool zeta
 // does not have (grep). Approvals pass the same view, so they show the same body.
@@ -367,6 +402,106 @@ export const demos: Demo[] = [
     title: "markdown, constructs across ranges",
     description: "A large fence colors its visible ranges first, then the whole block in the background: a 2,000-character block comment and a python docstring keep their colors past every range edge.",
     events: [{ type: "message_commit", message_id: "markdown-large-constructs", message: text("assistant", "A license header, then a docstring:\n\n```cpp\n/*\n" + Array.from({ length: 28 }, () => " *" + " lorem".repeat(12)).join("\n") + "\n */\n" + Array.from({ length: 220 }, (_, i) => `int value${i} = ${i};`).join("\n") + "\n```\n\n```python\n\"\"\"\n" + Array.from({ length: 28 }, () => "   " + " ipsum".repeat(12)).join("\n") + "\n\"\"\"\n" + Array.from({ length: 220 }, (_, i) => `value_${i} = ${i}`).join("\n") + "\n```\n") }],
+  },
+  {
+    id: "content-streaming",
+    part: "Message",
+    title: "content blocks, streaming",
+    description: "Reasoning, text, sources, an image, and a file stream into one message in the order they arrive; the commit keeps that order.",
+    events: blockStream("content-live", contentPieces),
+    live: 70,
+  },
+  {
+    id: "content-done",
+    part: "Message",
+    title: "content blocks, done",
+    description: "The same message after it commits: reasoning closes to its word count, every other block keeps its place.",
+    events: committed("content-done", contentPieces),
+  },
+  {
+    id: "reasoning-streaming",
+    part: "ReasoningBlock",
+    title: "reasoning, streaming",
+    description: "A closed disclosure that says \"thinking\" and shows its newest words; a screen reader hears \"reasoning finished\" once, when it ends.",
+    events: blockStream("reasoning-live", [thinking]),
+    live: 90,
+  },
+  {
+    id: "reasoning-done",
+    part: "ReasoningBlock",
+    title: "reasoning, done and redacted",
+    description: "Finished reasoning shows its word count and opens on click; redacted reasoning (encrypted by the provider) says so.",
+    events: committed("reasoning-done", [thinking, { type: "reasoning", text: "", redacted: true }, "The alias belongs in the server block."]),
+  },
+  {
+    id: "source-streaming",
+    part: "SourceBlock",
+    title: "sources, streaming",
+    description: "Sources arrive whole, in their place among the text.",
+    events: blockStream("source-live", ["Both fixes are documented. ", docs, issue, guide, "The first is the one to use."]),
+    live: 120,
+  },
+  {
+    id: "source-done",
+    part: "SourceBlock",
+    title: "sources, done",
+    description: "A web page links out (http, https, mailto only), a document shows its type, and an unsafe address is not a link.",
+    events: committed("source-done", [docs, guide, { type: "source", kind: "source", url: "mailto:build@example.com", title: "build team" }, { type: "source", kind: "source", url: "javascript:alert(1)", title: "unsafe link, shown as text" }]),
+  },
+  {
+    id: "file-streaming",
+    part: "FileBlock",
+    title: "files, streaming",
+    description: "A generated file arrives mid-answer.",
+    events: blockStream("file-live", ["The bundle report is ready: ", report, "Open it to see each chunk."]),
+    live: 120,
+  },
+  {
+    id: "file-done",
+    part: "FileBlock",
+    title: "files, done",
+    description: "Name, media type, and size; open goes through the host's onOpen, else the file's http(s) link. An inline file with no host callback has no link.",
+    events: committed("file-done", [report, trace]),
+  },
+  {
+    id: "image-streaming",
+    part: "ImageBlock",
+    title: "images, streaming",
+    description: "The image's box is reserved before it loads, so the text after it never moves.",
+    events: blockStream("image-live", ["Bundle size per entry: ", chart, "The largest entry is the editor."]),
+    live: 120,
+  },
+  {
+    id: "image-done",
+    part: "ImageBlock",
+    title: "images, done",
+    description: "A known size reserves its exact shape; an unknown size gets a fixed frame; an unsafe address (an inline svg) is not drawn. Click an image to open it.",
+    events: committed("image-done", [chart, unsized, blocked]),
+  },
+  {
+    id: "tool-images",
+    part: "ToolResultBlocks",
+    title: "tool result images",
+    description: "A tool's image results show under its output, in a box reserved before they load; the card opens for them. zeta sends these as tool_result.content_blocks (a read of a png, an MCP chart with a caption and size).",
+    events: (() => {
+      const tool = call("tool-images", "render_chart", { entries: 7 });
+      return [start(tool), { type: "tool_end", tool_call: tool, tool_result: { tool_call_id: tool.id, content: "[image block] media_type=image/png dimensions=640x360 bytes=2940 caption=bundle size per entry, in kB", is_error: false, blocks: [chart] } }];
+    })(),
+  },
+  {
+    id: "unknown-streaming",
+    part: "UnknownBlock",
+    title: "unsupported block, streaming",
+    description: "A block type the renderer does not know arrives mid-stream: it keeps its place and its data.",
+    events: blockStream("unknown-live", ["Here is the chart spec: ", custom, "Render it with your charting tool."]),
+    live: 120,
+  },
+  {
+    id: "unknown-done",
+    part: "UnknownBlock",
+    title: "unsupported block, done",
+    description: "Its type on one line; \"show json\" reveals the whole block and copy takes it, so nothing an adapter sent is lost.",
+    events: committed("unknown-done", [custom]),
   },
   {
     id: "tool-running",

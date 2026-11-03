@@ -259,7 +259,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 
 /* Every control inside a card (and a large code block's viewer) is a fulcrum button: no browser chrome in any state. Quiet text buttons (copy, open,
    jump) keep a 12 px label but a 32 px hit area; the approval actions below are the loud ones. */
-:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button {
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button {
   appearance: none;
   margin: 0;
   border: 0;
@@ -271,15 +271,15 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   line-height: 1;
   cursor: pointer;
 }
-:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]) {
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action="approve"], [data-action="deny"]) {
   min-height: 32px;
   padding: 0 8px;
 }
-:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]):hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
-:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]):active { background: var(--fulcrum-border); }
-:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action="approve"], [data-action="deny"]):hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action="approve"], [data-action="deny"]):active { background: var(--fulcrum-border); }
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 [data-part="tool-body"] button:is([data-action="open-viewer"], [data-action="show-command"], [data-action="expand"]) { display: block; width: 100%; padding: 0 12px; color: var(--fulcrum-accent); text-align: left; }
-@media (pointer: coarse) { :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]) { min-height: 44px; } }
+@media (pointer: coarse) { :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action="approve"], [data-action="deny"]) { min-height: 44px; } }
 
 [data-part="approval-actions"] {
   display: flex;
@@ -607,6 +607,129 @@ span[data-part="run-crumb"] { color: var(--fulcrum-fg); font-weight: 700; outlin
   [data-part="sub-agent-open"]::after { font-size: 12px; content: "\203A"; }
 }
 
+/* Content blocks (@fulcrum/react content.tsx): reasoning, sources, files, images, and unsupported blocks, in message
+   order. One grammar: a kind label in accent, the name in fg, then facts in their --fulcrum-ui-* hue (type, size,
+   address). Rows are hairline boxes with the state rail, like tool cards; reasoning is a quiet disclosure. */
+:is([data-part="reasoning"], [data-part="source"], [data-part="file"], [data-part="image"], [data-part="block-unknown"]) { margin: 0 0 0.75em; font-size: 13px; line-height: 1.55; }
+[data-part="block-label"] { color: var(--fulcrum-accent); font-weight: 700; white-space: nowrap; }
+[data-part="block-type"] { color: var(--fulcrum-ui-type); white-space: nowrap; }
+[data-part="block-size"] { color: var(--fulcrum-ui-number); white-space: nowrap; }
+[data-part="file-name"],
+[data-part="source-title"],
+[data-part="source-link"] { min-width: 0; overflow: hidden; color: var(--fulcrum-fg); text-overflow: ellipsis; white-space: nowrap; }
+[data-part="source-address"] { min-width: 0; overflow: hidden; color: var(--fulcrum-ui-path); text-overflow: ellipsis; white-space: nowrap; }
+
+[data-part="reasoning"] { --rail: var(--fulcrum-border); --mark: var(--fulcrum-muted); border-left: 2px solid var(--rail); }
+[data-part="reasoning"][data-state="streaming"] { --rail: var(--fulcrum-accent); --mark: var(--fulcrum-accent); }
+[data-part="reasoning-header"] {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-height: 32px;
+  padding: 6px 12px 5px 10px;
+  list-style: none;
+}
+[data-part="reasoning-header"]::-webkit-details-marker { display: none; }
+summary[data-part="reasoning-header"] { cursor: pointer; user-select: none; }
+summary[data-part="reasoning-header"]:hover { background: var(--fulcrum-surface); }
+summary[data-part="reasoning-header"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+summary[data-part="reasoning-header"]::before {
+  content: "";
+  flex: none;
+  width: 0;
+  height: 0;
+  border-block: 4px solid transparent;
+  border-left: 5px solid var(--fulcrum-muted);
+  transform: translateY(-1px);
+  transition: transform 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+[data-part="reasoning"][open] > summary[data-part="reasoning-header"]::before { transform: translateY(-1px) rotate(90deg); }
+[data-part="reasoning-name"] { color: var(--fulcrum-ui-number); font-weight: 700; }
+[data-part="reasoning-status"] { display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-muted); white-space: nowrap; }
+[data-part="reasoning"][data-state="streaming"] [data-part="reasoning-status"] { color: var(--fulcrum-accent); }
+[data-part="reasoning"][data-state="streaming"] [data-part="reasoning-status"]::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  background: var(--mark);
+  transform: translateY(-1px);
+  animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate;
+}
+/* The newest words while it thinks: end-aligned in a clipped box, so a long line shows its end as it grows; the inner
+   span is at least the box wide, so a short line still starts at the left. */
+[data-part="reasoning-preview"] { display: flex; flex: 1; justify-content: flex-end; min-width: 0; overflow: hidden; color: var(--fulcrum-muted); white-space: nowrap; }
+[data-part="reasoning-preview"] > span { flex: none; min-width: 100%; }
+[data-part="reasoning-body"] { padding: 2px 12px 8px 12px; color: var(--fulcrum-muted); }
+[data-part="reasoning-body"] > :last-child { margin-bottom: 0; }
+
+:is([data-part="source"], [data-part="file"], [data-part="block-unknown-header"], [data-part="image-caption"]) {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+[data-part="source"],
+[data-part="file"] { min-height: 34px; padding: 6px 12px 5px 10px; border: 1px solid var(--fulcrum-border); border-left: 2px solid var(--fulcrum-accent); }
+[data-part="file"] { border-left-color: var(--fulcrum-ui-path); align-items: center; }
+[data-part="source-link"] { text-decoration: underline 1px var(--fulcrum-accent); text-underline-offset: 3px; }
+[data-part="source-link"]:hover { text-decoration-thickness: 2px; }
+:is([data-part="source-link"], a[data-action="open"]):focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 1px; }
+/* The open action sits at the row's end; a link looks like the card buttons. */
+[data-part="file"] > [data-action="open"] { margin: -6px -8px -5px auto; }
+a[data-action="open"] { display: inline-flex; align-items: center; min-height: 32px; padding: 0 8px; color: var(--fulcrum-accent); font-size: 12px; text-decoration: none; }
+a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--fulcrum-fg); }
+[data-part="file"] button[data-action="open"] { color: var(--fulcrum-accent); }
+
+[data-part="tool-blocks"] { padding: 10px 12px; }
+[data-part="tool-blocks"] > :last-child { margin-bottom: 0; }
+[data-part="image"] { display: flex; flex-direction: column; gap: 6px; max-width: 100%; }
+/* The box is reserved before the image loads: its own size when known (width and aspect-ratio inline), else a fixed
+   4:3 frame the image fits inside. */
+:is([data-part="image-open"], [data-part="image-placeholder"]) {
+  display: block;
+  width: min(100%, 480px);
+  max-width: 100%;
+  aspect-ratio: 4 / 3;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--fulcrum-border);
+  background: var(--fulcrum-surface);
+}
+[data-part="image-open"] { appearance: none; border-radius: 0; color: inherit; font: inherit; cursor: zoom-in; }
+[data-part="image-open"]:hover { border-color: var(--fulcrum-accent); }
+[data-part="image-open"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
+[data-part="image-open"] > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+[data-part="image-placeholder"] { display: flex; align-items: center; justify-content: center; padding: 12px; color: var(--fulcrum-muted); font-size: 12px; text-align: center; }
+/* An image that will never load needs no reserved box: one line says why. */
+[data-part="image"][data-state="blocked"] [data-part="image-placeholder"] { width: auto; height: auto; aspect-ratio: auto; justify-content: flex-start; padding: 6px 12px; }
+[data-part="image"][data-state="error"] [data-part="image-placeholder"] { color: var(--fulcrum-danger); }
+[data-part="image-caption"] { font-size: 12px; }
+[data-part="image-dialog"] {
+  max-width: 95vw;
+  max-height: 95vh;
+  padding: 0;
+  border: 1px solid var(--fulcrum-border);
+  background: var(--fulcrum-bg);
+  color: var(--fulcrum-fg);
+  font: 12px/1.5 var(--fulcrum-font);
+}
+[data-part="image-dialog"]::backdrop { background: rgb(0 0 0 / 0.8); }
+[data-part="image-dialog"] > img { display: block; max-width: calc(95vw - 2px); max-height: calc(95vh - 46px); margin: 0 auto; }
+[data-part="image-dialog"] > button { display: block; width: 100%; border-top: 1px solid var(--fulcrum-border); }
+
+[data-part="block-unknown"] { border: 1px solid var(--fulcrum-border); border-left: 2px solid var(--fulcrum-warn); }
+[data-part="block-unknown-header"] { flex-wrap: wrap; align-items: center; row-gap: 0; min-height: 34px; padding: 0 0 0 10px; }
+[data-part="block-actions"] { display: flex; margin-left: auto; white-space: nowrap; }
+[data-part="block-unknown-header"] > :is([data-part="block-label"], [data-part="block-type"]) { line-height: 32px; }
+[data-part="block-unknown-header"] > [data-part="block-label"] { color: var(--fulcrum-warn); }
+[data-part="block-unknown"] > [data-part="tool-args"] { border-top: 1px solid var(--fulcrum-border); }
+
+@media (max-width: 480px) {
+  /* Narrow: a row wraps its facts under the name instead of cutting them. */
+  :is([data-part="source"], [data-part="file"], [data-part="image-caption"]) { flex-wrap: wrap; row-gap: 0; }
+}
+
 /* Markdown, for @fulcrum/markdown's data-part names. */
 [data-part="message"] > :first-child { margin-top: 0; }
 [data-part="message"] > :last-child { margin-bottom: 0; }
@@ -916,6 +1039,8 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="item"][data-kind="error"] { --rail: CanvasText; --mark: CanvasText; border-color: CanvasText; }
   [data-part="approval"][data-state="pending"] { border-width: 2px; }
   [data-part="tool-status"]::before { forced-color-adjust: none; background: CanvasText; }
+  [data-part="reasoning"] { --rail: CanvasText; --mark: CanvasText; }
+  [data-part="reasoning-status"]::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
   [data-part="message"][data-state="streaming"]::after { forced-color-adjust: none; background: CanvasText; }
