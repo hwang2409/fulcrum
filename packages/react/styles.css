@@ -210,9 +210,9 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="approval"][data-state="submitting"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-warn); font-weight: 700; }
 [data-part="approval"][data-state="submitting"] > [data-part="tool-header"] > [data-part="tool-status"]::before { animation: fulcrum-pulse 0.6s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
 
-/* Every control inside a card is a fulcrum button: no browser chrome in any state. Quiet text buttons (copy, open,
+/* Every control inside a card (and a large code block's viewer) is a fulcrum button: no browser chrome in any state. Quiet text buttons (copy, open,
    jump) keep a 12 px label but a 32 px hit area; the approval actions below are the loud ones. */
-:is([data-part="tool"], [data-part="approval"]) button {
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button {
   appearance: none;
   margin: 0;
   border: 0;
@@ -224,15 +224,15 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   line-height: 1;
   cursor: pointer;
 }
-:is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]) {
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]) {
   min-height: 32px;
   padding: 0 8px;
 }
-:is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]):hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
-:is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]):active { background: var(--fulcrum-border); }
-:is([data-part="tool"], [data-part="approval"]) button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]):hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]):active { background: var(--fulcrum-border); }
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 [data-part="tool-body"] button:is([data-action="open-viewer"], [data-action="show-command"]) { display: block; width: 100%; padding: 0 12px; color: var(--fulcrum-accent); text-align: left; }
-@media (pointer: coarse) { :is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]) { min-height: 44px; } }
+@media (pointer: coarse) { :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]) { min-height: 44px; } }
 
 [data-part="approval-actions"] {
   display: flex;
