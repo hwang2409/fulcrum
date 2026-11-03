@@ -159,6 +159,36 @@ test("dispose stops notifications, drops pending chunks, and rejects dispatch", 
   );
 });
 
+test("published state snapshots do not change after a later delivery", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "one" });
+  const snapshot = structuredClone(store.getState());
+  store.dispatch({ type: "user_message", text: "second", mode: "send", delivery_id: "two" });
+  expect(store.getState()).toEqual(expect.objectContaining(snapshot));
+  expect(snapshot.outline).toHaveLength(1);
+});
+
+test("stores do not share delivery aliases through initialState", () => {
+  const first = createRunStore((flush) => flush());
+  first.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "same" });
+  first.dispose();
+  const second = createRunStore((flush) => flush());
+  second.dispatch({ type: "user_message", text: "second", mode: "send", delivery_id: "same" });
+  expect(second.getOutline()).toEqual([{ id: "user:delivery:same", kind: "user" }]);
+});
+
+test("dispose and replay rebuilds delivery aliases", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "one" });
+  store.dispose();
+  const replay = createRunStore((flush) => flush());
+  replay.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "one" });
+  replay.dispatch({ type: "user_message", text: "replacement", mode: "send", delivery_id: "two" });
+  expect(replay.getOutline()).toHaveLength(2);
+  expect(replay.getItem("user:delivery:one")).toBeDefined();
+  expect(replay.getItem("user:delivery:two")).toBeDefined();
+});
+
 test("one user intent is one row: a dropped steer resent as a new message replaces its row in place", () => {
   const store = createRunStore((flush) => flush());
   store.dispatch({ type: "user_message", text: "run the tests", mode: "send", intent: "a" });
@@ -207,6 +237,7 @@ test("live and history user messages join one row through original and replaceme
   expect(liveFirst.getOutline().filter((item) => item.kind === "user")).toHaveLength(1);
 
   const historyFirst = createRunStore((flush) => flush());
+  historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", delivery_id: "delivery-1" });
   historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-1" });
   historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-2" });
   expect(historyFirst.getOutline().filter((item) => item.kind === "user")).toHaveLength(1);
