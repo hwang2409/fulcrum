@@ -62,12 +62,12 @@ async function injection(page: Page, url: string) {
         });
     }
     if (mode === "render-work") {
-      const append = Element.prototype.appendChild;
-      Element.prototype.appendChild = function <T extends Node>(node: T) {
-        const result = append.call(this, node);
-        if (this.matches?.('[data-part="message"], .scroll')) burn(20);
-        return result as T;
-      };
+      // Pure render work: add CPU without changing rows, commits, or DOM output.
+      new MutationObserver(() => burn(20)).observe(document, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+      });
     }
   }, inject);
 }
