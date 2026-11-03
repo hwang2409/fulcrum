@@ -27,14 +27,14 @@ export const composerDemos: ComposerDemo[] = [
   demo("idle", "idle", "No turn runs. Enter sends, Shift+Enter adds a line; a blank draft cannot send.", { state: "idle" }),
   demo("draft", "draft", "A short draft: the field grows a line at a time.", { state: "idle", draft: "the reconnect test fails one run in ten.\nfind out why and fix it." }),
   demo("grow", "long draft", "The field stops growing at ten lines and scrolls; the bar stays in place.", { state: "idle", draft: long }),
-  demo("sending", "sending", "Submit is in flight: the action is disabled, the field keeps focus and the draft.", { state: "idle", draft: "run the full suite once", submit: "pending" }),
+  demo("sending", "sending", "Submit is in flight: the action is disabled, and the field keeps the draft.", { state: "idle", draft: "run the full suite once", submit: "pending" }),
   demo("send-error", "send failed", "The harness rejected it: the draft stays, the error is announced, and send retries. Same height as sending.", { state: "idle", draft: "run the full suite once", submit: "reject" }),
   demo("steerable", "steer", "A turn runs and the harness takes input into it: the action is steer, and stop is shown.", { state: "steerable", draft: "also check the windows path" }),
   demo("steering", "steering", "A steer is in flight.", { state: "steerable", draft: "also check the windows path", submit: "pending" }),
   demo("running", "running, no steering", "The harness cannot take input mid-turn: send is disabled and the draft waits. Nothing is queued.", { state: "running", draft: "next: update the docs" }),
   demo("stopping", "stopping", "Stop is in flight.", { state: "steerable", stop: "pending" }),
   demo("stop-error", "stop failed", "Stop failed: the error says why, and stop retries.", { state: "steerable", stop: "reject" }),
-  demo("read-only", "read-only", "This view cannot act: no field, no actions, and the reason.", { state: "read-only", reason: "observing · another client controls this run" }),
+  demo("read-only", "read-only", "This view cannot act: no actions, and the reason. A draft stays on screen, read-only.", { state: "read-only", reason: "reconnecting · sending is paused until the server confirms this session", draft: "draft kept across the disconnect" }),
 ];
 
 const never = () => new Promise<never>(() => {});
@@ -67,10 +67,11 @@ function useLiveHarness(toast: (message: string) => void) {
 export function ComposerCard({ demo, toast }: { demo: ComposerDemo; toast: (message: string) => void }) {
   const body = useRef<HTMLDivElement>(null);
   const live = useLiveHarness(toast);
-  // Frozen states: press the action once, after mount, so the card shows the state the harness answer leads to.
+  // Frozen states: act once, after mount, so the card shows the state the harness answer leads to. Submit goes through
+  // Enter in the field and stop through a click, the two paths that never move focus, so the page keeps its scroll.
   useEffect(() => {
-    const action = demo.submit ? "composer-submit" : demo.stop ? "composer-stop" : null;
-    if (action) body.current?.querySelector<HTMLButtonElement>(`[data-part="${action}"]`)?.click();
+    if (demo.submit) body.current?.querySelector("textarea")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    else if (demo.stop) body.current?.querySelector<HTMLButtonElement>('[data-part="composer-stop"]')?.click();
   }, [demo]);
   const answer = (mode?: "pending" | "reject") => () => (mode === "reject" ? Promise.reject(new Error("socket closed before the server answered")) : mode === "pending" ? never() : Promise.resolve());
   const props = demo.live
@@ -89,7 +90,7 @@ export function ComposerCard({ demo, toast }: { demo: ComposerDemo; toast: (mess
       </header>
       <div className="demo-body" ref={body}>
         {props.state === "read-only" ? (
-          <Composer state="read-only" reason={demo.reason!} onSubmit={props.onSubmit} />
+          <Composer state="read-only" reason={demo.reason!} label={`message (${demo.title})`} defaultValue={demo.draft} onSubmit={props.onSubmit} />
         ) : (
           <Composer {...props} state={props.state} label={`message (${demo.title})`} placeholder="message the agent" defaultValue={demo.draft} />
         )}

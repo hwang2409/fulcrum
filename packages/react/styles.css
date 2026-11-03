@@ -33,6 +33,9 @@
 [data-part="timeline"] *,
 [data-part="timeline"] *::before,
 [data-part="timeline"] *::after { box-sizing: border-box; border-radius: 0; }
+/* The scroll root (the Timeline's parent) contains the hidden live region, which is absolutely positioned: unpositioned,
+   it would sit below the content and stretch the host page. Zero specificity, so a host's own position wins. */
+:where(:has(> [data-part="timeline"])) { position: relative; }
 
 /* Skip layout and paint for off-screen items in long timelines. */
 [data-part="timeline"][data-virtual="false"] > * {
@@ -686,12 +689,14 @@ ul[data-part="md-list"] { list-style: "- "; }
 .ansi-italic { font-style: italic; }
 .ansi-underline { text-decoration: underline; text-underline-offset: 3px; }
 
-/* Composer: one hairline box under the run. The rail and the primary action carry the state: accent to send, warn to
-   steer a running turn, danger to stop. The field grows with its text up to ten lines, then scrolls; a hidden copy of
+/* Composer: one hairline box under the run. The rail and the primary action carry the state: accent to send (filled)
+   and to steer a running turn (outlined), danger to stop, muted while it cannot act. One inset pads the text and the
+   actions alike. The field grows with its text up to ten lines, then scrolls; a hidden copy of
    the draft (data-value) sizes the grid cell, so growth needs no script. The status row has a fixed height, so an error
    never moves the layout. */
 [data-part="composer"] {
-  --rail: var(--fulcrum-border);
+  --rail: var(--fulcrum-accent);
+  --inset: 10px;
   display: block;
   container-type: inline-size;
   margin: 0;
@@ -708,7 +713,6 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="composer"] *::before,
 [data-part="composer"] *::after { box-sizing: border-box; border-radius: 0; }
 [data-part="composer"]:focus-within { --rail: var(--fulcrum-accent); border-color: var(--fulcrum-accent); }
-[data-part="composer"][data-state="steerable"] { --rail: var(--fulcrum-warn); }
 [data-part="composer"][data-state="running"] { --rail: var(--fulcrum-muted); }
 [data-part="composer"][data-error] { --rail: var(--fulcrum-danger); border-color: var(--fulcrum-danger); }
 [data-part="composer-field"] { display: grid; }
@@ -716,9 +720,9 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="composer-field"]::after {
   grid-area: 1 / 1;
   /* Ten lines and the top padding, so the cut edge falls between lines while the field sits at its top. */
-  max-height: calc(10 * 1.55em + 10px);
+  max-height: calc(10 * 1.55em + var(--inset));
   margin: 0;
-  padding: 10px 12px;
+  padding: var(--inset);
   border: 0;
   font: inherit;
   white-space: pre-wrap;
@@ -727,7 +731,7 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="composer-field"]::after { content: attr(data-value) " "; visibility: hidden; overflow: hidden; pointer-events: none; }
 [data-part="composer-field"] > textarea {
   min-width: 0;
-  min-height: calc(1.55em + 20px);
+  min-height: calc(1.55em + 2 * var(--inset));
   appearance: none;
   resize: none;
   overflow-y: auto;
@@ -737,7 +741,7 @@ ul[data-part="md-list"] { list-style: "- "; }
   caret-color: var(--fulcrum-accent);
 }
 [data-part="composer-field"] > textarea::placeholder { color: var(--fulcrum-muted); opacity: 1; }
-[data-part="composer-bar"] { display: flex; align-items: center; gap: 4px; padding: 0 4px 4px 12px; }
+[data-part="composer-bar"] { display: flex; align-items: center; gap: 8px; padding: 0 var(--inset) var(--inset); }
 [data-part="composer-status"] {
   flex: 1;
   min-width: 0;
@@ -778,7 +782,8 @@ ul[data-part="md-list"] { list-style: "- "; }
   transition: transform 100ms cubic-bezier(0.2, 0, 0, 1);
 }
 [data-part="composer-submit"] { --action: var(--fulcrum-accent); }
-[data-part="composer-submit"][data-action="steer"] { --action: var(--fulcrum-warn); }
+/* Steer is not a warning: the same accent as send, outlined, so it reads as "add to the turn", not as a new message. */
+[data-part="composer"] [data-part="composer-submit"][data-action="steer"] { background: var(--fulcrum-bg); color: var(--fulcrum-accent); }
 /* Stop is the quiet, destructive one: danger text on the page, never filled. Its min width holds "stopping". */
 [data-part="composer"] [data-part="composer-stop"] { --action: var(--fulcrum-danger); min-width: calc(8ch + 32px); background: var(--fulcrum-bg); color: var(--fulcrum-danger); }
 [data-part="composer"] button:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -799,13 +804,17 @@ ul[data-part="md-list"] { list-style: "- "; }
   gap: 8px;
   min-height: 44px;
   margin: 0;
-  padding: 0 12px;
+  padding: 0 var(--inset);
   background: var(--fulcrum-surface);
   color: var(--fulcrum-muted);
   font-size: 12px;
 }
+[data-part="composer"][data-state="read-only"] { --rail: var(--fulcrum-muted); }
+[data-part="composer"][data-state="read-only"] [data-part="composer-field"] { color: var(--fulcrum-muted); }
 [data-part="composer-reason"]::before { content: ""; flex: none; width: 7px; height: 7px; outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
 @media (pointer: coarse) { [data-part="composer"] button { min-height: 44px; } }
+/* iOS zooms the page when a field under 16 px takes focus. */
+@media (pointer: coarse), (max-width: 640px) { [data-part="composer-field"] { font-size: 16px; } }
 /* Narrow: the status takes its own row of two fixed lines above the actions, so an error stays readable. */
 @container (max-width: 480px) {
   [data-part="composer-bar"] { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; }

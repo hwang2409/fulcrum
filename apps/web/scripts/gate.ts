@@ -134,6 +134,7 @@ try {
         if (command) {
           const shown = await page.locator(".panel .command code").textContent();
           if (shown !== `zeta serve --ws 8765 --ws-origin ${origin}`) throw new Error(`command is "${shown}"`);
+          await page.locator('.panel .command code [class*="tok-"]').first().waitFor({ timeout: 3000 }).catch(() => { throw new Error("the command is not highlighted"); });
         }
         if (name !== "incompatible" && name !== "connecting") await page.getByRole("button", { name: "retry now" }).waitFor();
         await shoot(page, `state-${name}-1440`);
@@ -158,6 +159,13 @@ try {
       await page.locator('[data-part="timeline"] [data-part="message"]').first().waitFor();
       if (!(await page.locator('[data-part="timeline"] [data-part="tool"]').count())) throw new Error("no tool card");
       if (await page.locator('[data-part="timeline"] [data-part="tool"][data-state="streaming"]').count() > 1) throw new Error("history tool left running");
+    });
+    await check("shell cards are highlighted: line 1 of the command has token colors", async () => {
+      const summary = page.locator('[data-tool-view="shell"] [data-part="tool-summary"]').first();
+      await summary.waitFor({ timeout: 5000 });
+      await summary.locator('[class*="tok-"]').first().waitFor({ timeout: 5000 }).catch(() => { throw new Error("no token spans in the shell header"); });
+      const colors = await summary.evaluate((node) => new Set([...node.querySelectorAll('[class*="tok-"]')].map((span) => getComputedStyle(span).color)).size);
+      if (colors < 2) throw new Error(`the shell header has ${colors} token color(s)`);
     });
     await check("live run streams a shell card, then a dropped pending approval aborts", async () => {
       await page.locator('[data-tool-view="shell"]').first().waitFor({ timeout: 5000 });
@@ -207,12 +215,17 @@ try {
     await check("a dropped socket shows 'connection lost', reconnects, and rebuilds without lost or duplicate rows", async () => {
       await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
       await settle(page);
+      await page.locator(".dock textarea").fill("draft kept across disconnect");
       await fake.stop();
       await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 });
       await shoot(page, "state-lost-1440");
       if (!(await page.locator('[data-part="timeline"] [data-kind="user"]').count())) throw new Error("transcript hidden while offline");
       await page.locator('.dock [data-part="composer"][data-state="read-only"] [data-part="composer-reason"]', { hasText: "sending is paused" }).waitFor({ timeout: 2000 });
-      if (await page.locator(".dock textarea, .dock button").count()) throw new Error("the composer offers input while offline");
+      if (await page.locator(".dock button").count()) throw new Error("the composer offers actions while offline");
+      const draft = page.locator('.dock [data-part="composer"][data-state="read-only"] textarea');
+      if (!(await draft.count()) || (await draft.inputValue()) !== "draft kept across disconnect" || !(await draft.evaluate((node) => (node as HTMLTextAreaElement).readOnly))) throw new Error("the read-only composer does not show the draft, read-only");
+      const stale = await page.locator("button.session .state").allTextContents();
+      if (stale.length) throw new Error(`the session list shows live status "${stale.join(", ")}" while not connected`);
       await fake.start();
       await page.getByRole("button", { name: "retry now" }).click();
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
@@ -293,9 +306,103 @@ try {
       if (fake.aborts !== 1) throw new Error(`${fake.aborts} aborts`);
       await shoot(page, "composer-stopped-1440-tokyo-night");
     });
+    await check("a steer that a stop drops is marked not delivered; focus stays in the field when stop goes away", async () => {
+      const composer = page.locator('.dock [data-part="composer"]');
+      const field = composer.locator("textarea");
+      await field.fill("start another turn");
+      await page.keyboard.press("Enter");
+      await composer.and(page.locator('[data-state="steerable"]')).waitFor({ timeout: 5000 });
+      // Steer is not a warning: neither the button nor the rail uses the warning color.
+      const warnUsed = await composer.evaluate((node) => {
+        const probe = document.createElement("i");
+        probe.style.color = "var(--fulcrum-warn)";
+        node.append(probe);
+        const warn = getComputedStyle(probe).color;
+        probe.remove();
+        const submit = getComputedStyle(node.querySelector('[data-part="composer-submit"]')!);
+        return [submit.backgroundColor, submit.borderTopColor, getComputedStyle(node).borderLeftColor].filter((color) => color === warn);
+      });
+      if (warnUsed.length) throw new Error("steer uses the warning color");
+      const before = fake.sent.length;
+      await field.fill("steer: keep it short");
+      await page.keyboard.press("Enter");
+      for (let i = 0; i < 30 && fake.sent.length === before; i++) await Bun.sleep(100);
+      await page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: "steer: keep it short" }).waitFor({ timeout: 3000 });
+      await composer.locator('[data-part="composer-stop"]').focus();
+      await page.keyboard.press("Enter");
+      await composer.and(page.locator('[data-state="idle"]')).waitFor({ timeout: 5000 });
+      await settle(page);
+      await page.locator(".undelivered", { hasText: "not delivered" }).waitFor({ timeout: 3000 }).catch(() => { throw new Error("the dropped steer is not marked as not delivered"); });
+      const marked = await page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: "steer: keep it short" }).evaluate((row) => row.nextElementSibling?.classList.contains("undelivered") ?? false);
+      if (!marked) throw new Error("the not-delivered mark is not on the steer's row");
+      await Bun.sleep(300);
+      if (fake.sent.filter((entry) => entry.text === "steer: keep it short").length !== 1) throw new Error("a steer the user stopped was resent");
+      const active = await page.evaluate(() => document.activeElement?.tagName);
+      if (active !== "TEXTAREA") throw new Error(`focus went to ${active} when the stop button went away`);
+      await shoot(page, "composer-steer-dropped-1440-tokyo-night");
+    });
+    await check("the page never scrolls: after IME typing the document fits the viewport and the headers stay in view", async () => {
+      // A tall run: the Timeline's hidden live region sits at the end of 400 rows.
+      await page.locator("button.session", { hasText: "400 rows" }).click();
+      await page.locator('[data-part="timeline"][data-virtual="true"]').waitFor({ timeout: 10_000 });
+      const field = page.locator(".dock textarea");
+      await field.click();
+      const cdp = await context.newCDPSession(page);
+      await cdp.send("Input.imeSetComposition", { text: "にほんご", selectionStart: 4, selectionEnd: 4 });
+      await cdp.send("Input.insertText", { text: "日本語のテスト" });
+      await page.keyboard.type(": hello");
+      // The run read from its top: the hidden live region then sits furthest below the scroll box.
+      await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
+      await settle(page);
+      const layout = await page.evaluate(() => ({
+        height: document.scrollingElement!.scrollHeight,
+        viewport: innerHeight,
+        y: scrollY,
+        tops: [".topbar", ".brand"].map((selector) => document.querySelector(selector)!.getBoundingClientRect().top),
+        overflow: [getComputedStyle(document.documentElement).overflow, getComputedStyle(document.body).overflow],
+      }));
+      if (layout.height > layout.viewport) throw new Error(`the document is ${layout.height} px tall on a ${layout.viewport} px viewport`);
+      if (layout.y !== 0 || layout.tops.some((top) => top < 0)) throw new Error(`the page scrolled: scrollY ${layout.y}, header tops ${layout.tops.join(", ")}`);
+      if (layout.overflow.some((value) => value !== "hidden")) throw new Error(`html and body overflow are ${layout.overflow.join(", ")}`);
+      await field.fill("");
+    });
+    await check("composer: the text and the buttons sit at even insets; 14 px text on desktop", async () => {
+      const insets = await page.locator('.dock [data-part="composer"]').evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        const field = node.querySelector("textarea")!;
+        const fieldBox = field.getBoundingClientRect();
+        const fieldStyle = getComputedStyle(field);
+        const submit = node.querySelector('[data-part="composer-submit"]')!.getBoundingClientRect();
+        return {
+          left: fieldBox.left + parseFloat(fieldStyle.paddingLeft) - (box.left + parseFloat(style.borderLeftWidth)),
+          top: fieldBox.top + parseFloat(fieldStyle.paddingTop) - (box.top + parseFloat(style.borderTopWidth)),
+          right: box.right - parseFloat(style.borderRightWidth) - submit.right,
+          bottom: box.bottom - parseFloat(style.borderBottomWidth) - submit.bottom,
+          font: parseFloat(fieldStyle.fontSize),
+        };
+      });
+      const sides = [insets.left, insets.top, insets.right, insets.bottom];
+      if (Math.max(...sides) - Math.min(...sides) > 2) throw new Error(`insets left ${insets.left}, top ${insets.top}, right ${insets.right}, bottom ${insets.bottom}`);
+      if (insets.font !== 14) throw new Error(`desktop field text is ${insets.font} px`);
+    });
     await check("composer: layout, controls, and contrast in all 12 themes after a run", () => auditThemes(page, "1440 composer", 36));
     if (errors.length) fail(`desktop console: ${errors.join("; ")}`);
     await context.close();
+
+    await check("1024: the theme picker shows every theme name in full", async () => {
+      const mid = await browser.newContext({ viewport: { width: 1024, height: 768 } });
+      const tablet = await mid.newPage();
+      const cut: string[] = [];
+      for (const theme of themes) {
+        await tablet.goto(`${origin}/?theme=${theme}`);
+        const name = tablet.locator(".theme-name");
+        await name.waitFor({ timeout: 5000 });
+        if (await name.evaluate((node) => node.scrollWidth > node.clientWidth + 0.5)) cut.push(theme);
+      }
+      await mid.close();
+      if (cut.length) throw new Error(`cut: ${cut.join(", ")}`);
+    });
 
     // Mobile: drawer, layout, contrast.
     fake.setLive(true);
@@ -326,6 +433,10 @@ try {
       await mobile.evaluate(() => { document.documentElement.dataset.fulcrumTheme = "solarized-light"; });
       await mobile.waitForTimeout(300); // the drawer's 180 ms slide-out
       await shoot(mobile, "connected-390-solarized-light");
+    });
+    await check("390: the field text is at least 16 px, so iOS does not zoom on focus", async () => {
+      const size = await mobile.locator(".dock textarea").evaluate((node) => parseFloat(getComputedStyle(node).fontSize));
+      if (size < 16) throw new Error(`field text is ${size} px`);
     });
     await check("390 layout, 44 px targets, and contrast in all 12 themes", () => auditThemes(mobile, "390", 44));
     await check("390 connection state shows the command and fits", async () => {

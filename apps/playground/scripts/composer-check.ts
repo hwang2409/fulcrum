@@ -9,6 +9,20 @@ const STATES = ["live", "idle", "draft", "grow", "sending", "send-error", "steer
 
 export async function checkComposer(browser: Browser, port: number): Promise<string[]> {
   const failures: string[] = [];
+  // The frozen demos reach their states on mount; that must neither scroll the page nor take focus.
+  const top = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  await top.goto(`http://127.0.0.1:${port}/gallery.html`);
+  await top.waitForSelector('#composer-stop-error [data-part="composer"][data-error="stop"]');
+  await top.waitForTimeout(300);
+  const opened = await top.evaluate(() => ({ y: scrollY, active: document.activeElement?.tagName }));
+  if (opened.y !== 0 || opened.active !== "BODY") failures.push(`composer: /gallery.html opens at scrollY ${opened.y} with focus on ${opened.active}; it must open at the top with nothing focused`);
+  // A run path deep link has no #id; it still lands on its demo.
+  await top.goto(`http://127.0.0.1:${port}/gallery.html?run-navigator-nested=reviewer&run-navigator-nested=tester`);
+  await top.waitForSelector('#composer-stop-error [data-part="composer"][data-error="stop"]');
+  await top.waitForTimeout(300);
+  const nested = await top.evaluate(() => document.getElementById("run-navigator-nested")!.getBoundingClientRect().top);
+  if (nested < -1 || nested > 200) failures.push(`composer: the nested run-navigator deep link lands with its demo at top ${Math.round(nested)} px`);
+  await top.close();
   for (const width of [390, 768, 1024, 1440]) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
     const errors: string[] = [];
@@ -32,7 +46,7 @@ export async function checkComposer(browser: Browser, port: number): Promise<str
         heights: Object.fromEntries(["sending", "send-error", "steerable", "steering", "stopping", "stop-error", "running"].map((id) => [id, height(id)])),
         stopWidths: [idleStop.getBoundingClientRect().width, stop.getBoundingClientRect().width],
         buttons,
-        readOnly: { controls: box("read-only")!.querySelectorAll("button, textarea").length, reason: box("read-only")!.textContent },
+        readOnly: { controls: box("read-only")!.querySelectorAll("button, textarea:not([readonly])").length, draft: field("read-only")?.value ?? "", reason: box("read-only")!.querySelector('[data-part="composer-reason"]')?.textContent },
       };
     }, STATES);
     const problems: string[] = [];
@@ -48,7 +62,7 @@ export async function checkComposer(browser: Browser, port: number): Promise<str
     if (measured.stopWidths[0] !== measured.stopWidths[1]) problems.push(`stop changes width when pending: ${measured.stopWidths.join(" -> ")}`);
     const floor = width <= 860 ? 44 : 36;
     for (const button of measured.buttons) if (button.height < floor - 0.5) problems.push(`"${button.name}" is ${Math.round(button.height)} px tall, needs ${floor}`);
-    if (measured.readOnly.controls || !measured.readOnly.reason?.trim()) problems.push(`read-only shows ${measured.readOnly.controls} controls and reason "${measured.readOnly.reason}"`);
+    if (measured.readOnly.controls || !measured.readOnly.reason?.trim() || !measured.readOnly.draft) problems.push(`read-only shows ${measured.readOnly.controls} controls, draft "${measured.readOnly.draft}", and reason "${measured.readOnly.reason}"`);
 
     // The live flow: send, steer while running, a refused steer, stop.
     const live = page.locator('#composer-live [data-part="composer"]');
