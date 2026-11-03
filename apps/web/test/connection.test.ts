@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ZetaError, type ZetaClient, type ZetaDiscovery } from "@fulcrum/zeta";
-import { backoff, createConnection, initialConnection, reduceConnection, type ConnectionState } from "../src/connection";
+import { backoff, createConnection, initialConnection, reduceConnection, serveCommand, type ConnectionState } from "../src/connection";
 
 const ORIGIN = "http://localhost:5180";
 const found: ZetaDiscovery = { url: "ws://127.0.0.1:8765/", token: "secret", origins: [ORIGIN] };
@@ -121,4 +121,18 @@ test("stop closes the client and ignores attempts still in flight", async () => 
   await settle();
   expect(connection.state.phase).toBe("connecting");
   expect(connection.client).toBeNull();
+});
+
+// The banner's `zeta serve --ws <port>` names the port this page last reached, not a fixed default.
+test("port is the last discovered server's port, and stays after the server goes away", async () => {
+  const client = fakeClient();
+  const { connection, settle, advance } = harness([async () => ({ ...found, url: "ws://127.0.0.1:18765/" }), async () => null], [async () => client]);
+  expect(connection.port).toBe(8765);
+  await settle();
+  expect(connection.port).toBe(18765);
+  client.drop();
+  await advance(500);
+  expect(connection.state.phase).toBe("not_running");
+  expect(connection.port).toBe(18765);
+  expect(serveCommand("http://localhost:5180", connection.port)).toBe("zeta serve --ws 18765 --ws-origin http://localhost:5180");
 });

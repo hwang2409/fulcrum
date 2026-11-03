@@ -4,8 +4,9 @@
 // that cannot send, steer the running turn, or stop it, or that offers input while offline; UI text under 4.5:1 on its real background in any of the 12 themes (syntax
 // token colors are reported, not gated yet: they are the palettes' own); a connection state that does not show its
 // title, the exact `zeta serve --ws-origin` command, or a retry; a session list, history, markdown, highlighting,
-// tool card, approval, or follow-bottom that does not work; a reconnect that loses or duplicates rows; or a drawer,
-// theme picker, or session list that the keyboard cannot drive.
+// tool card, approval, or follow-bottom that does not work; a reconnect that loses or duplicates rows; a drawer,
+// theme picker, or session list that the keyboard cannot drive; a fresh zeta where the page cannot start a session;
+// a run header that says "running" while an approval waits; or a discovery retry that logs an error.
 // Screenshots go to $WEB_SHOTS (default apps/web/gate-artifacts).
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -109,7 +110,9 @@ try {
     await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
     const page = await context.newPage();
     const errors: string[] = [];
-    page.on("console", (message) => { if (message.type() === "error" && !/WebSocket connection|Failed to load resource/.test(message.text())) errors.push(message.text()); });
+    // A stopped zeta is a normal state: its retries must not log errors (a WebSocket the server refuses still does).
+    page.on("console", (message) => { if (message.type() === "error" && !/WebSocket connection/.test(message.text())) errors.push(message.text()); });
+    page.on("response", (response) => { if (response.url().includes("/__fulcrum/zeta") && response.status() >= 400) errors.push(`discovery answered ${response.status()}`); });
     page.on("pageerror", (error) => errors.push(error.message));
 
     // The first load pays for vite's dependency scan, which can reload the page once.
@@ -133,7 +136,9 @@ try {
         await page.getByRole("heading", { name: title }).waitFor({ timeout: 5000 });
         if (command) {
           const shown = await page.locator(".panel .command code").textContent();
-          if (shown !== `zeta serve --ws 8765 --ws-origin ${origin}`) throw new Error(`command is "${shown}"`);
+          // The port of the server the page found; zeta's default 8765 when it never found one.
+          const port = name === "not-running" ? 8765 : fake.port;
+          if (shown !== `zeta serve --ws ${port} --ws-origin ${origin}`) throw new Error(`command is "${shown}"`);
           await page.locator('.panel .command code [class*="tok-"]').first().waitFor({ timeout: 3000 }).catch(() => { throw new Error("the command is not highlighted"); });
         }
         if (name !== "incompatible" && name !== "connecting") await page.getByRole("button", { name: "retry now" }).waitFor();
@@ -172,6 +177,13 @@ try {
       await page.locator(".scroll").evaluate((element) => { element.scrollTop = element.scrollHeight; });
       const approval = page.locator('[data-part="approval"][data-state="pending"]');
       await approval.waitFor({ timeout: 5000 });
+      // The run is blocked on the user, not running: the header says so, with the warn color.
+      const header = page.locator(".run-meta .state");
+      await header.filter({ hasText: "waiting for approval" }).waitFor({ timeout: 3000 }).catch(async () => { throw new Error(`the run header says "${await header.textContent()}" while an approval waits`); });
+      const [mark, warn] = await header.evaluate((node) => [getComputedStyle(node, "::before").backgroundColor, (() => { const probe = document.createElement("span"); probe.style.color = "var(--fulcrum-warn)"; node.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()]);
+      if (mark !== warn) throw new Error(`the header mark is ${mark}, not the warn color ${warn}`);
+      const row = await page.locator("button.session[aria-current] .state").textContent();
+      if (row !== "needs approval") throw new Error(`the session row says "${row}" while an approval waits`);
       await shoot(page, "connected-approval-1440-tokyo-night");
       await fake.start();
       fake.drop();
@@ -209,6 +221,7 @@ try {
       await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
       await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor();
       await page.locator('[data-part="timeline"] [data-part="md-code-block"] [class*="tok-"]').first().waitFor({ timeout: 5000 });
+
       await page.locator('[data-part="jump-to-latest"]').waitFor({ state: "detached", timeout: 1000 }).catch(() => {});
     });
     await check("desktop layout, controls, and contrast in all 12 themes", () => auditThemes(page, "1440", 36));
@@ -219,6 +232,10 @@ try {
       await page.locator(".dock textarea").fill("draft kept across disconnect");
       await fake.stop();
       await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 });
+      // The command names the port the page was connected to, not a default.
+      const command = await page.locator(".notice .command code").textContent();
+      if (command !== `zeta serve --ws ${fake.port} --ws-origin ${origin}`) throw new Error(`the banner command is "${command}"`);
+      await Bun.sleep(2000); // a few quiet retries; the console listener fails the gate on any error
       await shoot(page, "state-lost-1440");
       if (!(await page.locator('[data-part="timeline"] [data-kind="user"]').count())) throw new Error("transcript hidden while offline");
       await page.locator('.dock [data-part="composer"][data-state="read-only"] [data-part="composer-reason"]', { hasText: "sending is paused" }).waitFor({ timeout: 2000 });
@@ -389,6 +406,30 @@ try {
       if (insets.font !== 14) throw new Error(`desktop field text is ${insets.font} px`);
     });
     await check("composer: layout, controls, and contrast in all 12 themes after a run", () => auditThemes(page, "1440 composer", 36));
+    await check("a fresh zeta: new session from the empty state opens it with the composer focused and a hint", async () => {
+      fake.setEmpty(true);
+      await page.goto(`${origin}/?theme=tokyo-night`);
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".list-head").getByRole("button", { name: "new session" }).waitFor({ timeout: 3000 });
+      await shoot(page, "empty-1440-tokyo-night");
+      await page.locator(".panel").getByRole("button", { name: "new session" }).click();
+      await page.locator("[data-run-ready]").waitFor({ timeout: 5000 });
+      await page.locator("button.session[aria-current]").waitFor({ timeout: 3000 });
+      const focused = await page.evaluate(() => document.activeElement?.closest(".dock") !== null && document.activeElement?.tagName === "TEXTAREA");
+      if (!focused) throw new Error(`focus is on ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 60))}, not the composer`);
+      await page.locator(".empty-run", { hasText: /no messages yet/ }).waitFor({ timeout: 3000 });
+      await shoot(page, "new-session-1440-tokyo-night");
+      await page.keyboard.type("hello from a new session");
+      await page.keyboard.press("Enter");
+      await page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: "hello from a new session" }).waitFor({ timeout: 3000 });
+      await page.locator(".empty-run").waitFor({ state: "detached", timeout: 3000 });
+      await page.locator('.dock [data-part="composer"][data-state="idle"]').waitFor({ timeout: 10_000 });
+      await page.locator(".list-head").getByRole("button", { name: "new session" }).click();
+      await page.locator(".empty-run").waitFor({ timeout: 5000 });
+      if ((await page.locator("button.session").count()) !== 2) throw new Error(`${await page.locator("button.session").count()} sessions after two creates`);
+      await auditThemes(page, "1440 new session", 36);
+      fake.setEmpty(false);
+    });
     if (errors.length) fail(`desktop console: ${errors.join("; ")}`);
     await context.close();
 
@@ -416,6 +457,12 @@ try {
     await check("390: the run fills the width; the session list is a drawer", async () => {
       await mobile.goto(`${origin}/?theme=gruvbox-dark#session=s-themes`);
       await mobile.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
+      // A reopened, approved bash call is the live shell card: its command (from the approval row), its output without
+      // zeta's raw "stdout:"/"stderr:" labels, and exit 0.
+      const reopened = mobile.locator('[data-part="timeline"] [data-tool-view="shell"]', { hasText: "ls packages/react/src" });
+      await reopened.waitFor({ timeout: 5000 }).catch(() => { throw new Error("the reopened bash call is not a shell card with its command"); });
+      const card = await reopened.innerText();
+      if (/\bstdout:|\bstderr:/.test(card) || !card.includes("themes.ts") || !card.includes("exit 0")) throw new Error(`the reopened bash card reads "${card.replace(/\s+/g, " ")}"`);
       if (await mobile.locator("button.session").first().isVisible()) throw new Error("sidebar visible without the drawer");
       await shoot(mobile, "connected-390-gruvbox-dark");
       await mobile.getByRole("button", { name: "sessions" }).click();
@@ -423,8 +470,15 @@ try {
       await settle(mobile);
       await mobile.waitForTimeout(250);
       if (!(await mobile.evaluate(() => document.activeElement?.closest("#sessions") !== null))) throw new Error("focus did not move into the drawer");
+      await mobile.getByRole("dialog", { name: "sessions" }).getByRole("button", { name: "new session" }).waitFor({ timeout: 2000 });
       await shoot(mobile, "drawer-390-gruvbox-dark");
       await auditThemes(mobile, "390 drawer", 44);
+      // A rejected new session (zeta refuses while a turn runs) keeps the drawer open and says why.
+      fake.setRejectCreate(true);
+      await mobile.getByRole("dialog", { name: "sessions" }).getByRole("button", { name: "new session" }).click();
+      await mobile.getByRole("dialog", { name: "sessions" }).getByRole("alert").filter({ hasText: "could not start a session" }).waitFor({ timeout: 3000 })
+        .catch(() => { throw new Error("a failed new session at 390 px closed the drawer or showed no error"); });
+      fake.setRejectCreate(false);
       await mobile.keyboard.press("Escape");
       if (await mobile.getByRole("dialog").count()) throw new Error("Escape did not close the drawer");
       if (!(await mobile.evaluate(() => document.activeElement?.getAttribute("aria-label") === "sessions"))) throw new Error("focus did not return to the menu button");
