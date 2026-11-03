@@ -344,8 +344,9 @@ export function reduceAllWithEntities(
         break;
       }
       case "user_message": {
-        const id = `user:${next.nextId++}`;
-        appendItem({ id, type: "user", event });
+        const id = event.intent === undefined ? `user:${next.nextId++}` : `user:intent:${event.intent}`;
+        if (getItem(id)) setItem({ id, type: "user", event });
+        else appendItem({ id, type: "user", event });
         break;
       }
       case "error": {

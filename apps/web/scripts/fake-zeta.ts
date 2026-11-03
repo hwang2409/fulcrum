@@ -1,5 +1,6 @@
 // A scripted `zeta serve --ws` for the browser gate and for trying the app without a real zeta. It speaks the subset
-// of protocol 1.2 the app uses (hello, list_sessions, status, resume, session_history, approve, deny), checks the
+// of protocol 1.2 the app uses (hello, list_sessions, status, resume, session_history, approve, deny, send, steer,
+// abort, with the delivery_id and user_message_event features), checks the
 // token and Origin like the real upgrade, and writes the discovery file under its own ZETA_HOME, never ~/.zeta.
 //
 // Manual use: `bun scripts/fake-zeta.ts`, then start vite with the printed ZETA_HOME.
@@ -100,6 +101,86 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
   e("agent_end");
 };
 
+/**
+ * The composer's methods (send, steer, delivery_status, abort) with zeta's delivery_id rules. A send starts a
+ * text-only reply that streams for about 2.5 s, long enough to steer and to stop. As in zeta, an accepted message is
+ * echoed as `user_message` before the reply, and a steer is persisted only once a turn takes it.
+ */
+function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): boolean; set(value: boolean): void }) {
+  const sent: Json[] = [];
+  const deliveries = new Map<string, Json>();
+  const statuses = new Map<string, "queued" | "delivered" | "dropped">();
+  let aborts = 0;
+  let chat: { session: string; steers: string[]; aborted: boolean } | null = null;
+  type Send = (event: Json) => void;
+  const chatTurn = async (session: string, send: Send) => {
+    const turn = { session, steers: [] as string[], aborted: false }; // steers holds delivery ids
+    chat = turn;
+    running.set(true);
+    const e = (event: string, body: Json = {}) => { if (!turn.aborted) send({ event, session_id: session, ...body }); };
+    e("agent_start");
+    e("turn_start", { data: { turn: sent.length } });
+    let reply = "";
+    for (const word of "Reading the files you named, then running the focused tests before the full suite. ".repeat(3).match(/\S+\s*/g)!) {
+      await wait(Number(process.env.FAKE_ZETA_WORD_MS ?? 60));
+      if (turn.aborted) return;
+      reply += word;
+      e("assistant_delta", { delta: word, kind: "assistant" });
+    }
+    e("assistant_message", { message: { role: "assistant", content: [text(reply)] } });
+    histories[session] = [...(histories[session] ?? []), { id: `reply-${sent.length}`, role: "assistant", content: [text(reply)], tool_result: null }];
+    // As in zeta: a turn with no tool call reaches no provider boundary, so steering still queued at its end is dropped.
+    for (const id of turn.steers) statuses.set(id, "dropped");
+    e("turn_end", { data: { turn: sent.length } });
+    chat = null;
+    running.set(false);
+    e("agent_end");
+  };
+  const deliver = (method: "send" | "steer", params: Json, active: string | null, send: Send): Json => {
+    const delivery = typeof params.delivery_id === "string" ? params.delivery_id : null;
+    const seen = delivery ? deliveries.get(delivery) : undefined;
+    if (seen) return { result: statuses.get(delivery!) === "dropped" ? { accepted: false, duplicate: true, status: "dropped" } : { ...seen, duplicate: true } };
+    if (!active) return { error: { code: -32003, message: "no active session" } };
+    if (method === "send" && running.get()) return { error: { code: -32004, message: "a turn is already running" } };
+    if (method === "steer" && !running.get()) return { error: { code: -32005, message: "no turn is running for steering" } };
+    const value = String(params.text ?? "");
+    sent.push({ method, text: value, delivery_id: delivery });
+    send({ event: "user_message", session_id: active, text: value, mode: method, attachments: [] });
+    const accepted = method === "send" ? { accepted: true, session_id: active } : { accepted: true };
+    if (delivery) { deliveries.set(delivery, accepted); statuses.set(delivery, method === "steer" ? "queued" : "delivered"); }
+    if (method === "steer") { if (delivery) chat?.steers.push(delivery); return { result: accepted }; }
+    histories[active] = [...(histories[active] ?? []), { id: `sent-${sent.length}`, role: "user", content: [text(value)], tool_result: null }];
+    // After the reply, as zeta starts the turn once the send is persisted.
+    queueMicrotask(() => void chatTurn(active, send));
+    return { result: accepted };
+  };
+  const abort = (send: Send): Json => {
+    if (!chat) return { result: { aborted: false } };
+    const turn = chat;
+    for (const id of turn.steers) statuses.set(id, "dropped");
+    chat = null;
+    running.set(false);
+    turn.aborted = true;
+    aborts++;
+    send({ event: "turn_aborted", session_id: turn.session, data: { reason: "abort" } });
+    send({ event: "agent_end", session_id: turn.session, data: {} });
+    return { result: { aborted: true } };
+  };
+  return {
+    /** Every accepted send and steer, in order. */
+    sent,
+    get aborts() { return aborts; },
+    /** The reply body for a composer method, or undefined for any other method. */
+    handle(method: string, params: Json, active: string | null, send: Send): Json | undefined {
+      if (method === "send" || method === "steer") return deliver(method, params, active, send);
+      if (method === "abort") return abort(send);
+      if (method !== "delivery_status") return undefined;
+      const status = statuses.get(String(params.delivery_id));
+      return status ? { result: { delivery_id: params.delivery_id, status } } : { error: { code: -32602, message: "unknown delivery_id" } };
+    },
+  };
+}
+
 export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows" }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
@@ -119,6 +200,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   const sockets = new Set<ServerWebSocket<unknown>>();
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   const openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
+  const composer = composerMethods(wait, { get: () => running, set: (value) => { running = value; } });
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -150,7 +232,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "busy" || sockets.size > 1) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
-          return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
+          return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
         }
         if (method === "list_sessions") {
           const offset = Number(params.offset ?? 0);
@@ -192,6 +274,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           reply({ result: { accepted: true, request_id: params.request_id, decision: method } });
           return decide(method);
         }
+        const handled = composer.handle(method, params, active, send);
+        if (handled) return reply(handled);
         reply({ error: { code: -32601, message: `method not found: ${method}` } });
       },
     },
@@ -203,6 +287,9 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     home,
     port: server.port,
     decisions,
+    /** Every accepted send and steer, in order. */
+    sent: composer.sent,
+    get aborts() { return composer.aborts; },
     /** Closes every socket, like a network blip; the server keeps running. */
     drop() { for (const socket of sockets) socket.close(1012, "restart"); },
     /** Removes the discovery file and refuses upgrades, like a stopped server. */

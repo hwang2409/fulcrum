@@ -686,13 +686,149 @@ ul[data-part="md-list"] { list-style: "- "; }
 .ansi-italic { font-style: italic; }
 .ansi-underline { text-decoration: underline; text-underline-offset: 3px; }
 
+/* Composer: one hairline box under the run. The rail and the primary action carry the state: accent to send, warn to
+   steer a running turn, danger to stop. The field grows with its text up to ten lines, then scrolls; a hidden copy of
+   the draft (data-value) sizes the grid cell, so growth needs no script. The status row has a fixed height, so an error
+   never moves the layout. */
+[data-part="composer"] {
+  --rail: var(--fulcrum-border);
+  display: block;
+  container-type: inline-size;
+  margin: 0;
+  border: 1px solid var(--fulcrum-border);
+  border-left: 2px solid var(--rail);
+  background: var(--fulcrum-bg);
+  color: var(--fulcrum-fg);
+  font: 14px/1.55 var(--fulcrum-font);
+  font-variant-ligatures: none;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+[data-part="composer"] *,
+[data-part="composer"] *::before,
+[data-part="composer"] *::after { box-sizing: border-box; border-radius: 0; }
+[data-part="composer"]:focus-within { --rail: var(--fulcrum-accent); border-color: var(--fulcrum-accent); }
+[data-part="composer"][data-state="steerable"] { --rail: var(--fulcrum-warn); }
+[data-part="composer"][data-state="running"] { --rail: var(--fulcrum-muted); }
+[data-part="composer"][data-error] { --rail: var(--fulcrum-danger); border-color: var(--fulcrum-danger); }
+[data-part="composer-field"] { display: grid; }
+[data-part="composer-field"] > textarea,
+[data-part="composer-field"]::after {
+  grid-area: 1 / 1;
+  /* Ten lines and the top padding, so the cut edge falls between lines while the field sits at its top. */
+  max-height: calc(10 * 1.55em + 10px);
+  margin: 0;
+  padding: 10px 12px;
+  border: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+[data-part="composer-field"]::after { content: attr(data-value) " "; visibility: hidden; overflow: hidden; pointer-events: none; }
+[data-part="composer-field"] > textarea {
+  min-width: 0;
+  min-height: calc(1.55em + 20px);
+  appearance: none;
+  resize: none;
+  overflow-y: auto;
+  outline: none;
+  background: none;
+  color: inherit;
+  caret-color: var(--fulcrum-accent);
+}
+[data-part="composer-field"] > textarea::placeholder { color: var(--fulcrum-muted); opacity: 1; }
+[data-part="composer-bar"] { display: flex; align-items: center; gap: 4px; padding: 0 4px 4px 12px; }
+[data-part="composer-status"] {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--fulcrum-muted);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+[data-part="composer-status"][data-tone="busy"] { color: var(--fulcrum-accent); }
+[data-part="composer-status"][data-tone="danger"] { color: var(--fulcrum-danger); font-weight: 700; }
+[data-part="composer-message"]:not(:empty)::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  vertical-align: 1px;
+  background: currentColor;
+}
+[data-part="composer-status"][data-tone="busy"] > [data-part="composer-message"]::before { animation: fulcrum-pulse 0.6s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
+[data-part="composer"] button {
+  flex: none;
+  min-width: 72px;
+  min-height: 36px;
+  margin: 0;
+  padding: 0 14px;
+  appearance: none;
+  border: 1px solid var(--action);
+  border-radius: 0;
+  background: var(--action);
+  color: var(--fulcrum-bg);
+  font: 600 13px/1 var(--fulcrum-font);
+  cursor: pointer;
+  transition: transform 100ms cubic-bezier(0.2, 0, 0, 1);
+}
+[data-part="composer-submit"] { --action: var(--fulcrum-accent); }
+[data-part="composer-submit"][data-action="steer"] { --action: var(--fulcrum-warn); }
+/* Stop is the quiet, destructive one: danger text on the page, never filled. Its min width holds "stopping". */
+[data-part="composer"] [data-part="composer-stop"] { --action: var(--fulcrum-danger); min-width: calc(8ch + 32px); background: var(--fulcrum-bg); color: var(--fulcrum-danger); }
+[data-part="composer"] button:hover { text-decoration: underline; text-underline-offset: 3px; }
+[data-part="composer"] button:active { transform: scale(0.96); }
+[data-part="composer"] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
+[data-part="composer"] button[aria-disabled="true"] {
+  border-color: var(--fulcrum-border);
+  background: var(--fulcrum-surface);
+  color: var(--fulcrum-muted);
+  cursor: not-allowed;
+  text-decoration: none;
+  transform: none;
+}
+[data-part="composer"][data-pending] button[aria-disabled="true"] { cursor: progress; }
+[data-part="composer-reason"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 12px;
+  background: var(--fulcrum-surface);
+  color: var(--fulcrum-muted);
+  font-size: 12px;
+}
+[data-part="composer-reason"]::before { content: ""; flex: none; width: 7px; height: 7px; outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
+@media (pointer: coarse) { [data-part="composer"] button { min-height: 44px; } }
+/* Narrow: the status takes its own row of two fixed lines above the actions, so an error stays readable. */
+@container (max-width: 480px) {
+  [data-part="composer-bar"] { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; }
+  [data-part="composer-status"] {
+    flex: 1 0 100%;
+    display: -webkit-box;
+    height: 32px;
+    line-height: 16px;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
+
 @keyframes fulcrum-blink { 50% { opacity: 0; } }
 @keyframes fulcrum-pulse { to { opacity: 0.25; } }
 
 @media (prefers-reduced-motion: reduce) {
   [data-part="timeline"] *,
   [data-part="timeline"] *::before,
-  [data-part="timeline"] *::after { animation: none !important; transition: none !important; }
+  [data-part="timeline"] *::after,
+  [data-part="composer"] *,
+  [data-part="composer"] *::before { animation: none !important; transition: none !important; }
 }
 
 /* Forced colors (Windows high contrast): the system palette wins, so state rests on the status words and rails. */
@@ -709,6 +845,9 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }
   :is([data-part="sub-agent-status"], [data-part="run-state"])::before,
   [data-part="run-state"] { forced-color-adjust: none; background: CanvasText; }
+  [data-part="composer"] { --rail: CanvasText; border-color: CanvasText; }
+  [data-part="composer"] button { border-color: ButtonText; }
+  [data-part="composer-submit"]:not([aria-disabled="true"]) { forced-color-adjust: none; background: Highlight; color: HighlightText; }
 }
 
 [data-part="virtual-debug"] {
