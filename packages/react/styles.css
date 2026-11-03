@@ -366,7 +366,7 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-part="diff-sign"] { text-align: center; user-select: none; }
 [data-part="diff-text"] { padding-right: 12px; white-space: pre-wrap; }
 [data-part="diff-line"][data-change="hunk"] { color: var(--fulcrum-muted); }
-/* Rows are tinted 8%: every text color is checked at 4.5:1 on these tints (test/themes.test.ts). A stronger tint would
+/* Rows are tinted 8%: syntax colors are checked at 3:1 and UI text at 4.5:1 on these tints (test/themes.test.ts). A stronger tint would
    push low-contrast palettes (solarized, one dark) under it, so the changed span is marked with a line, not a fill. */
 [data-part="diff-line"][data-change="delete"] { background: color-mix(in srgb, var(--fulcrum-tok-deleted) 8%, var(--fulcrum-bg)); }
 [data-part="diff-line"][data-change="insert"] { background: color-mix(in srgb, var(--fulcrum-tok-inserted) 8%, var(--fulcrum-bg)); }

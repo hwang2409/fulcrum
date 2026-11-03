@@ -1,10 +1,12 @@
 /* @fulcrum/react themes. Load after styles.css and keep the themes you use.
    Set data-fulcrum-theme="<name>" on <html> or on any subtree. With no attribute, github-light or github-dark follows the OS.
-   Each palette uses its official colors; the source is above each block. Every color that draws text (fg, muted, accent,
-   ok, warn, danger, the tok-* syntax colors, and the 16 ansi-* terminal colors) reaches 4.5:1 on bg and on surface
-   (packages/react/test/themes.test.ts). Where an official color misses that, it is mixed with the least black (light
-   themes) or white (dark themes) that reaches it, so its hue stays; muted mixes fg into bg where a palette has no
-   secondary text color. ansi-* are each palette's official terminal colors. */
+   Each palette uses its official colors; the source is above each block. UI text (fg, muted, accent, ok, warn, danger)
+   reaches 4.5:1 on bg, surface, and the diff row tints; where an official color misses that, it is mixed with the least
+   black (light themes) or white (dark themes) that reaches it, and muted mixes fg into bg where a palette has no secondary
+   text color. Syntax colors (tok-*, also the tool-header paths, numbers, and diff counts) and the 16 ansi-* terminal colors
+   keep the official hex where it reaches 3:1 on every background they sit on (tok-*: bg, surface, diff rows; ansi-*: bg,
+   surface). Where it does not, the comment names the official value, and the color takes the smallest OKLCH lightness
+   change at the same hue and chroma that reaches 3:1 (packages/react/test/themes.test.ts). */
 
 /* gruvbox-dark: https://github.com/morhetz/gruvbox (README palette; syntax from colors/gruvbox.vim, except functions:
    vim tells them from strings only by bold, so they take aqua as in https://github.com/jdinhify/vscode-theme-gruvbox) */
@@ -19,10 +21,10 @@
   --fulcrum-danger: color-mix(in srgb, #fb4934 80%, white);
   --fulcrum-ok: #b8bb26;
   --fulcrum-warn: #fabd2f;
-  --fulcrum-tok-keyword: color-mix(in srgb, #fb4934 80%, white);
+  --fulcrum-tok-keyword: #fb4934;
   --fulcrum-tok-string: #b8bb26;
   --fulcrum-tok-number: #d3869b;
-  --fulcrum-tok-comment: color-mix(in srgb, #928374 82%, white);
+  --fulcrum-tok-comment: #928374;
   --fulcrum-tok-function: #8ec07c;
   --fulcrum-tok-type: #fabd2f;
   --fulcrum-tok-variable: #83a598;
@@ -33,17 +35,17 @@
   --fulcrum-tok-attribute: #8ec07c;
   --fulcrum-tok-regexp: #fe8019;
   --fulcrum-tok-inserted: #b8bb26;
-  --fulcrum-tok-deleted: color-mix(in srgb, #fb4934 80%, white);
-  --fulcrum-ansi-black: color-mix(in srgb, #282828 46%, white);
-  --fulcrum-ansi-red: color-mix(in srgb, #cc241d 58%, white);
-  --fulcrum-ansi-green: color-mix(in srgb, #98971a 92%, white);
+  --fulcrum-tok-deleted: #fb4934;
+  --fulcrum-ansi-black: #797979; /* official #282828 is 1.00:1 on bg; OKLCH L +0.299 */
+  --fulcrum-ansi-red: #df3b30; /* official #cc241d is 2.40:1 on surface; OKLCH L +0.053 */
+  --fulcrum-ansi-green: #98971a;
   --fulcrum-ansi-yellow: #d79921;
-  --fulcrum-ansi-blue: color-mix(in srgb, #458588 75%, white);
-  --fulcrum-ansi-magenta: color-mix(in srgb, #b16286 75%, white);
-  --fulcrum-ansi-cyan: color-mix(in srgb, #689d6a 91%, white);
+  --fulcrum-ansi-blue: #458588;
+  --fulcrum-ansi-magenta: #b16286;
+  --fulcrum-ansi-cyan: #689d6a;
   --fulcrum-ansi-white: #a89984;
-  --fulcrum-ansi-bright-black: color-mix(in srgb, #928374 82%, white);
-  --fulcrum-ansi-bright-red: color-mix(in srgb, #fb4934 80%, white);
+  --fulcrum-ansi-bright-black: #928374;
+  --fulcrum-ansi-bright-red: #fb4934;
   --fulcrum-ansi-bright-green: #b8bb26;
   --fulcrum-ansi-bright-yellow: #fabd2f;
   --fulcrum-ansi-bright-blue: #83a598;
@@ -66,35 +68,35 @@
   --fulcrum-ok: color-mix(in srgb, #79740e 88%, black);
   --fulcrum-warn: color-mix(in srgb, #b57614 76%, black);
   --fulcrum-tok-keyword: #9d0006;
-  --fulcrum-tok-string: color-mix(in srgb, #79740e 88%, black);
+  --fulcrum-tok-string: #79740e;
   --fulcrum-tok-number: #8f3f71;
-  --fulcrum-tok-comment: color-mix(in srgb, #928374 74%, black);
-  --fulcrum-tok-function: color-mix(in srgb, #427b58 89%, black);
-  --fulcrum-tok-type: color-mix(in srgb, #b57614 76%, black);
+  --fulcrum-tok-comment: #8c7d6e; /* official #928374 is 2.79:1 on deleted row; OKLCH L -0.020 */
+  --fulcrum-tok-function: #427b58;
+  --fulcrum-tok-type: #b1720c; /* official #b57614 is 2.86:1 on deleted row; OKLCH L -0.013 */
   --fulcrum-tok-variable: #076678;
   --fulcrum-tok-constant: #8f3f71;
   --fulcrum-tok-operator: #af3a03;
-  --fulcrum-tok-punctuation: color-mix(in srgb, #7c6f64 88%, black);
+  --fulcrum-tok-punctuation: #7c6f64;
   --fulcrum-tok-tag: #076678;
-  --fulcrum-tok-attribute: color-mix(in srgb, #427b58 89%, black);
+  --fulcrum-tok-attribute: #427b58;
   --fulcrum-tok-regexp: #af3a03;
-  --fulcrum-tok-inserted: color-mix(in srgb, #79740e 88%, black);
+  --fulcrum-tok-inserted: #79740e;
   --fulcrum-tok-deleted: #9d0006;
-  --fulcrum-ansi-black: color-mix(in srgb, #fbf1c7 41%, black);
-  --fulcrum-ansi-red: color-mix(in srgb, #cc241d 95%, black);
-  --fulcrum-ansi-green: color-mix(in srgb, #98971a 68%, black);
-  --fulcrum-ansi-yellow: color-mix(in srgb, #d79921 60%, black);
-  --fulcrum-ansi-blue: color-mix(in srgb, #458588 81%, black);
-  --fulcrum-ansi-magenta: color-mix(in srgb, #b16286 81%, black);
-  --fulcrum-ansi-cyan: color-mix(in srgb, #689d6a 69%, black);
-  --fulcrum-ansi-white: color-mix(in srgb, #7c6f64 88%, black);
-  --fulcrum-ansi-bright-black: color-mix(in srgb, #928374 74%, black);
+  --fulcrum-ansi-black: #8d835d; /* official #fbf1c7 is 1.00:1 on bg; OKLCH L -0.346 */
+  --fulcrum-ansi-red: #cc241d;
+  --fulcrum-ansi-green: #898700; /* official #98971a is 2.47:1 on surface; OKLCH L -0.051 */
+  --fulcrum-ansi-yellow: #af7900; /* official #d79921 is 1.97:1 on surface; OKLCH L -0.110 */
+  --fulcrum-ansi-blue: #458588;
+  --fulcrum-ansi-magenta: #b16286;
+  --fulcrum-ansi-cyan: #5b8f5d; /* official #689d6a is 2.52:1 on surface; OKLCH L -0.045 */
+  --fulcrum-ansi-white: #7c6f64;
+  --fulcrum-ansi-bright-black: #908172; /* official #928374 is 2.92:1 on surface; OKLCH L -0.007 */
   --fulcrum-ansi-bright-red: #9d0006;
-  --fulcrum-ansi-bright-green: color-mix(in srgb, #79740e 88%, black);
-  --fulcrum-ansi-bright-yellow: color-mix(in srgb, #b57614 76%, black);
+  --fulcrum-ansi-bright-green: #79740e;
+  --fulcrum-ansi-bright-yellow: #b57614;
   --fulcrum-ansi-bright-blue: #076678;
   --fulcrum-ansi-bright-magenta: #8f3f71;
-  --fulcrum-ansi-bright-cyan: color-mix(in srgb, #427b58 89%, black);
+  --fulcrum-ansi-bright-cyan: #427b58;
   --fulcrum-ansi-bright-white: #3c3836;
 }
 
@@ -113,7 +115,7 @@
   --fulcrum-tok-keyword: #ff79c6;
   --fulcrum-tok-string: #f1fa8c;
   --fulcrum-tok-number: #bd93f9;
-  --fulcrum-tok-comment: color-mix(in srgb, #6272a4 67%, white);
+  --fulcrum-tok-comment: #6f80b2; /* official #6272a4 is 2.50:1 on inserted row; OKLCH L +0.046 */
   --fulcrum-tok-function: #50fa7b;
   --fulcrum-tok-type: #8be9fd;
   --fulcrum-tok-variable: #f8f8f2;
@@ -122,19 +124,19 @@
   --fulcrum-tok-punctuation: #f8f8f2;
   --fulcrum-tok-tag: #ff79c6;
   --fulcrum-tok-attribute: #50fa7b;
-  --fulcrum-tok-regexp: color-mix(in srgb, #ff5555 81%, white);
+  --fulcrum-tok-regexp: #ff5555;
   --fulcrum-tok-inserted: #50fa7b;
-  --fulcrum-tok-deleted: color-mix(in srgb, #ff5555 81%, white);
-  --fulcrum-ansi-black: color-mix(in srgb, #21222c 43%, white);
-  --fulcrum-ansi-red: color-mix(in srgb, #ff5555 81%, white);
+  --fulcrum-tok-deleted: #ff5555;
+  --fulcrum-ansi-black: #71737f; /* official #21222c is 1.00:1 on surface; OKLCH L +0.303 */
+  --fulcrum-ansi-red: #ff5555;
   --fulcrum-ansi-green: #50fa7b;
   --fulcrum-ansi-yellow: #f1fa8c;
   --fulcrum-ansi-blue: #bd93f9;
   --fulcrum-ansi-magenta: #ff79c6;
   --fulcrum-ansi-cyan: #8be9fd;
   --fulcrum-ansi-white: #f8f8f2;
-  --fulcrum-ansi-bright-black: color-mix(in srgb, #6272a4 67%, white);
-  --fulcrum-ansi-bright-red: color-mix(in srgb, #ff6e6e 95%, white);
+  --fulcrum-ansi-bright-black: #6272a4;
+  --fulcrum-ansi-bright-red: #ff6e6e;
   --fulcrum-ansi-bright-green: #69ff94;
   --fulcrum-ansi-bright-yellow: #ffffa5;
   --fulcrum-ansi-bright-blue: #d6acff;
@@ -155,35 +157,35 @@
   --fulcrum-danger: color-mix(in srgb, #bf616a 60%, white);
   --fulcrum-ok: #a3be8c;
   --fulcrum-warn: #ebcb8b;
-  --fulcrum-tok-keyword: color-mix(in srgb, #81a1c1 83%, white);
+  --fulcrum-tok-keyword: #81a1c1;
   --fulcrum-tok-string: #a3be8c;
-  --fulcrum-tok-number: color-mix(in srgb, #b48ead 80%, white);
-  --fulcrum-tok-comment: color-mix(in srgb, #616e88 56%, white);
+  --fulcrum-tok-number: #b48ead;
+  --fulcrum-tok-comment: #7f8da8; /* official #616e88 is 1.96:1 on surface; OKLCH L +0.104 */
   --fulcrum-tok-function: #88c0d0;
   --fulcrum-tok-type: #8fbcbb;
   --fulcrum-tok-variable: #d8dee9;
-  --fulcrum-tok-constant: color-mix(in srgb, #81a1c1 83%, white);
-  --fulcrum-tok-operator: color-mix(in srgb, #81a1c1 83%, white);
+  --fulcrum-tok-constant: #81a1c1;
+  --fulcrum-tok-operator: #81a1c1;
   --fulcrum-tok-punctuation: #eceff4;
-  --fulcrum-tok-tag: color-mix(in srgb, #81a1c1 83%, white);
+  --fulcrum-tok-tag: #81a1c1;
   --fulcrum-tok-attribute: #8fbcbb;
   --fulcrum-tok-regexp: #ebcb8b;
   --fulcrum-tok-inserted: #a3be8c;
-  --fulcrum-tok-deleted: color-mix(in srgb, #bf616a 60%, white);
-  --fulcrum-ansi-black: color-mix(in srgb, #3b4252 43%, white);
-  --fulcrum-ansi-red: color-mix(in srgb, #bf616a 60%, white);
+  --fulcrum-tok-deleted: #d07078; /* official #bf616a is 2.46:1 on surface; OKLCH L +0.050 */
+  --fulcrum-ansi-black: #848d9f; /* official #3b4252 is 1.00:1 on surface; OKLCH L +0.263 */
+  --fulcrum-ansi-red: #d07078; /* official #bf616a is 2.46:1 on surface; OKLCH L +0.050 */
   --fulcrum-ansi-green: #a3be8c;
   --fulcrum-ansi-yellow: #ebcb8b;
-  --fulcrum-ansi-blue: color-mix(in srgb, #81a1c1 83%, white);
-  --fulcrum-ansi-magenta: color-mix(in srgb, #b48ead 80%, white);
+  --fulcrum-ansi-blue: #81a1c1;
+  --fulcrum-ansi-magenta: #b48ead;
   --fulcrum-ansi-cyan: #88c0d0;
   --fulcrum-ansi-white: #e5e9f0;
-  --fulcrum-ansi-bright-black: color-mix(in srgb, #4c566a 48%, white);
-  --fulcrum-ansi-bright-red: color-mix(in srgb, #bf616a 60%, white);
+  --fulcrum-ansi-bright-black: #828da2; /* official #4c566a is 1.36:1 on surface; OKLCH L +0.189 */
+  --fulcrum-ansi-bright-red: #d07078; /* official #bf616a is 2.46:1 on surface; OKLCH L +0.050 */
   --fulcrum-ansi-bright-green: #a3be8c;
   --fulcrum-ansi-bright-yellow: #ebcb8b;
-  --fulcrum-ansi-bright-blue: color-mix(in srgb, #81a1c1 83%, white);
-  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #b48ead 80%, white);
+  --fulcrum-ansi-bright-blue: #81a1c1;
+  --fulcrum-ansi-bright-magenta: #b48ead;
   --fulcrum-ansi-bright-cyan: #8fbcbb;
   --fulcrum-ansi-bright-white: #eceff4;
 }
@@ -203,7 +205,7 @@
   --fulcrum-tok-keyword: #bb9af7;
   --fulcrum-tok-string: #9ece6a;
   --fulcrum-tok-number: #ff9e64;
-  --fulcrum-tok-comment: color-mix(in srgb, #565f89 70%, white);
+  --fulcrum-tok-comment: #666f9a; /* official #565f89 is 2.37:1 on inserted row; OKLCH L +0.056 */
   --fulcrum-tok-function: #7aa2f7;
   --fulcrum-tok-type: #2ac3de;
   --fulcrum-tok-variable: #c0caf5;
@@ -215,7 +217,7 @@
   --fulcrum-tok-regexp: #b4f9f8;
   --fulcrum-tok-inserted: #9ece6a;
   --fulcrum-tok-deleted: #f7768e;
-  --fulcrum-ansi-black: color-mix(in srgb, #15161e 48%, white);
+  --fulcrum-ansi-black: #656670; /* official #15161e is 1.00:1 on surface; OKLCH L +0.310 */
   --fulcrum-ansi-red: #f7768e;
   --fulcrum-ansi-green: #9ece6a;
   --fulcrum-ansi-yellow: #e0af68;
@@ -223,7 +225,7 @@
   --fulcrum-ansi-magenta: #bb9af7;
   --fulcrum-ansi-cyan: #7dcfff;
   --fulcrum-ansi-white: #a9b1d6;
-  --fulcrum-ansi-bright-black: color-mix(in srgb, #414868 61%, white);
+  --fulcrum-ansi-bright-black: #5e6587; /* official #414868 is 1.91:1 on bg; OKLCH L +0.105 */
   --fulcrum-ansi-bright-red: #f7768e;
   --fulcrum-ansi-bright-green: #9ece6a;
   --fulcrum-ansi-bright-yellow: #e0af68;
@@ -260,7 +262,7 @@
   --fulcrum-tok-regexp: #f5c2e7;
   --fulcrum-tok-inserted: #a6e3a1;
   --fulcrum-tok-deleted: #f38ba8;
-  --fulcrum-ansi-black: color-mix(in srgb, #45475a 58%, white);
+  --fulcrum-ansi-black: #66687d; /* official #45475a is 1.80:1 on bg; OKLCH L +0.120 */
   --fulcrum-ansi-red: #f38ba8;
   --fulcrum-ansi-green: #a6e3a1;
   --fulcrum-ansi-yellow: #f9e2af;
@@ -268,7 +270,7 @@
   --fulcrum-ansi-magenta: #f5c2e7;
   --fulcrum-ansi-cyan: #94e2d5;
   --fulcrum-ansi-white: #bac2de;
-  --fulcrum-ansi-bright-black: color-mix(in srgb, #585b70 65%, white);
+  --fulcrum-ansi-bright-black: #65697e; /* official #585b70 is 2.46:1 on bg; OKLCH L +0.049 */
   --fulcrum-ansi-bright-red: #f38ba8;
   --fulcrum-ansi-bright-green: #a6e3a1;
   --fulcrum-ansi-bright-yellow: #f9e2af;
@@ -290,37 +292,37 @@
   --fulcrum-danger: color-mix(in srgb, #d20f39 95%, black);
   --fulcrum-ok: color-mix(in srgb, #40a02b 72%, black);
   --fulcrum-warn: color-mix(in srgb, #df8e1d 63%, black);
-  --fulcrum-tok-keyword: color-mix(in srgb, #8839ef 95%, black);
-  --fulcrum-tok-string: color-mix(in srgb, #40a02b 72%, black);
-  --fulcrum-tok-number: color-mix(in srgb, #fe640b 68%, black);
-  --fulcrum-tok-comment: color-mix(in srgb, #7c7f93 79%, black);
-  --fulcrum-tok-function: color-mix(in srgb, #1e66f5 89%, black);
-  --fulcrum-tok-type: color-mix(in srgb, #df8e1d 63%, black);
+  --fulcrum-tok-keyword: #8839ef;
+  --fulcrum-tok-string: #33941c; /* official #40a02b is 2.59:1 on deleted row; OKLCH L -0.038 */
+  --fulcrum-tok-number: #de5500; /* official #fe640b is 2.31:1 on deleted row; OKLCH L -0.069 */
+  --fulcrum-tok-comment: #7c7f93;
+  --fulcrum-tok-function: #1e66f5;
+  --fulcrum-tok-type: #b87100; /* official #df8e1d is 2.03:1 on deleted row; OKLCH L -0.102 */
   --fulcrum-tok-variable: #4c4f69;
-  --fulcrum-tok-constant: color-mix(in srgb, #fe640b 68%, black);
-  --fulcrum-tok-operator: color-mix(in srgb, #04a5e5 65%, black);
-  --fulcrum-tok-punctuation: color-mix(in srgb, #7c7f93 79%, black);
-  --fulcrum-tok-tag: color-mix(in srgb, #1e66f5 89%, black);
-  --fulcrum-tok-attribute: color-mix(in srgb, #df8e1d 63%, black);
-  --fulcrum-tok-regexp: color-mix(in srgb, #ea76cb 63%, black);
-  --fulcrum-tok-inserted: color-mix(in srgb, #40a02b 72%, black);
-  --fulcrum-tok-deleted: color-mix(in srgb, #d20f39 95%, black);
+  --fulcrum-tok-constant: #de5500; /* official #fe640b is 2.31:1 on deleted row; OKLCH L -0.069 */
+  --fulcrum-tok-operator: #008ac1; /* official #04a5e5 is 2.17:1 on deleted row; OKLCH L -0.083 */
+  --fulcrum-tok-punctuation: #7c7f93;
+  --fulcrum-tok-tag: #1e66f5;
+  --fulcrum-tok-attribute: #b87100; /* official #df8e1d is 2.03:1 on deleted row; OKLCH L -0.102 */
+  --fulcrum-tok-regexp: #c857ac; /* official #ea76cb is 2.05:1 on deleted row; OKLCH L -0.099 */
+  --fulcrum-tok-inserted: #33941c; /* official #40a02b is 2.59:1 on deleted row; OKLCH L -0.038 */
+  --fulcrum-tok-deleted: #d20f39;
   --fulcrum-ansi-black: #5c5f77;
-  --fulcrum-ansi-red: color-mix(in srgb, #d20f39 95%, black);
-  --fulcrum-ansi-green: color-mix(in srgb, #40a02b 72%, black);
-  --fulcrum-ansi-yellow: color-mix(in srgb, #df8e1d 63%, black);
-  --fulcrum-ansi-blue: color-mix(in srgb, #1e66f5 89%, black);
-  --fulcrum-ansi-magenta: color-mix(in srgb, #ea76cb 63%, black);
-  --fulcrum-ansi-cyan: color-mix(in srgb, #179299 76%, black);
-  --fulcrum-ansi-white: color-mix(in srgb, #acb0be 57%, black);
-  --fulcrum-ansi-bright-black: color-mix(in srgb, #6c6f85 90%, black);
-  --fulcrum-ansi-bright-red: color-mix(in srgb, #d20f39 95%, black);
-  --fulcrum-ansi-bright-green: color-mix(in srgb, #40a02b 72%, black);
-  --fulcrum-ansi-bright-yellow: color-mix(in srgb, #df8e1d 63%, black);
-  --fulcrum-ansi-bright-blue: color-mix(in srgb, #1e66f5 89%, black);
-  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #ea76cb 63%, black);
-  --fulcrum-ansi-bright-cyan: color-mix(in srgb, #179299 76%, black);
-  --fulcrum-ansi-bright-white: color-mix(in srgb, #bcc0cc 52%, black);
+  --fulcrum-ansi-red: #d20f39;
+  --fulcrum-ansi-green: #399923; /* official #40a02b is 2.75:1 on surface; OKLCH L -0.022 */
+  --fulcrum-ansi-yellow: #be7500; /* official #df8e1d is 2.15:1 on surface; OKLCH L -0.087 */
+  --fulcrum-ansi-blue: #1e66f5;
+  --fulcrum-ansi-magenta: #cd5cb0; /* official #ea76cb is 2.17:1 on surface; OKLCH L -0.084 */
+  --fulcrum-ansi-cyan: #179299;
+  --fulcrum-ansi-white: #828593; /* official #acb0be is 1.78:1 on surface; OKLCH L -0.140 */
+  --fulcrum-ansi-bright-black: #6c6f85;
+  --fulcrum-ansi-bright-red: #d20f39;
+  --fulcrum-ansi-bright-green: #399923; /* official #40a02b is 2.75:1 on surface; OKLCH L -0.022 */
+  --fulcrum-ansi-bright-yellow: #be7500; /* official #df8e1d is 2.15:1 on surface; OKLCH L -0.087 */
+  --fulcrum-ansi-bright-blue: #1e66f5;
+  --fulcrum-ansi-bright-magenta: #cd5cb0; /* official #ea76cb is 2.17:1 on surface; OKLCH L -0.084 */
+  --fulcrum-ansi-bright-cyan: #179299;
+  --fulcrum-ansi-bright-white: #828591; /* official #bcc0cc is 1.49:1 on surface; OKLCH L -0.190 */
 }
 
 /* solarized-dark: https://ethanschoonover.com/solarized (base03-base3 and accents; syntax from vim-colors-solarized) */
@@ -335,35 +337,35 @@
   --fulcrum-danger: color-mix(in srgb, #dc322f 66%, white);
   --fulcrum-ok: color-mix(in srgb, #859900 92%, white);
   --fulcrum-warn: color-mix(in srgb, #b58900 91%, white);
-  --fulcrum-tok-keyword: color-mix(in srgb, #859900 92%, white);
-  --fulcrum-tok-string: color-mix(in srgb, #2aa198 92%, white);
-  --fulcrum-tok-number: color-mix(in srgb, #2aa198 92%, white);
-  --fulcrum-tok-comment: color-mix(in srgb, #586e75 69%, white);
-  --fulcrum-tok-function: color-mix(in srgb, #268bd2 82%, white);
-  --fulcrum-tok-type: color-mix(in srgb, #b58900 91%, white);
-  --fulcrum-tok-variable: color-mix(in srgb, #268bd2 82%, white);
-  --fulcrum-tok-constant: color-mix(in srgb, #2aa198 92%, white);
-  --fulcrum-tok-operator: color-mix(in srgb, #859900 92%, white);
-  --fulcrum-tok-punctuation: color-mix(in srgb, #839496 93%, white);
-  --fulcrum-tok-tag: color-mix(in srgb, #268bd2 82%, white);
+  --fulcrum-tok-keyword: #859900;
+  --fulcrum-tok-string: #2aa198;
+  --fulcrum-tok-number: #2aa198;
+  --fulcrum-tok-comment: #677d85; /* official #586e75 is 2.42:1 on surface; OKLCH L +0.052 */
+  --fulcrum-tok-function: #268bd2;
+  --fulcrum-tok-type: #b58900;
+  --fulcrum-tok-variable: #268bd2;
+  --fulcrum-tok-constant: #2aa198;
+  --fulcrum-tok-operator: #859900;
+  --fulcrum-tok-punctuation: #839496;
+  --fulcrum-tok-tag: #268bd2;
   --fulcrum-tok-attribute: #93a1a1;
-  --fulcrum-tok-regexp: color-mix(in srgb, #dc322f 66%, white);
-  --fulcrum-tok-inserted: color-mix(in srgb, #859900 92%, white);
-  --fulcrum-tok-deleted: color-mix(in srgb, #dc322f 66%, white);
-  --fulcrum-ansi-black: color-mix(in srgb, #073642 49%, white);
-  --fulcrum-ansi-red: color-mix(in srgb, #dc322f 66%, white);
-  --fulcrum-ansi-green: color-mix(in srgb, #859900 92%, white);
-  --fulcrum-ansi-yellow: color-mix(in srgb, #b58900 91%, white);
-  --fulcrum-ansi-blue: color-mix(in srgb, #268bd2 82%, white);
-  --fulcrum-ansi-magenta: color-mix(in srgb, #d33682 69%, white);
-  --fulcrum-ansi-cyan: color-mix(in srgb, #2aa198 92%, white);
+  --fulcrum-tok-regexp: #e23834; /* official #dc322f is 2.81:1 on surface; OKLCH L +0.016 */
+  --fulcrum-tok-inserted: #859900;
+  --fulcrum-tok-deleted: #e23834; /* official #dc322f is 2.81:1 on surface; OKLCH L +0.016 */
+  --fulcrum-ansi-black: #55808d; /* official #073642 is 1.00:1 on surface; OKLCH L +0.264 */
+  --fulcrum-ansi-red: #e23834; /* official #dc322f is 2.81:1 on surface; OKLCH L +0.016 */
+  --fulcrum-ansi-green: #859900;
+  --fulcrum-ansi-yellow: #b58900;
+  --fulcrum-ansi-blue: #268bd2;
+  --fulcrum-ansi-magenta: #d73b86; /* official #d33682 is 2.86:1 on surface; OKLCH L +0.012 */
+  --fulcrum-ansi-cyan: #2aa198;
   --fulcrum-ansi-white: #eee8d5;
-  --fulcrum-ansi-bright-black: color-mix(in srgb, #002b36 46%, white);
-  --fulcrum-ansi-bright-red: color-mix(in srgb, #cb4b16 70%, white);
-  --fulcrum-ansi-bright-green: color-mix(in srgb, #586e75 69%, white);
-  --fulcrum-ansi-bright-yellow: color-mix(in srgb, #657b83 75%, white);
-  --fulcrum-ansi-bright-blue: color-mix(in srgb, #839496 93%, white);
-  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #6c71c4 76%, white);
+  --fulcrum-ansi-bright-black: #58808c; /* official #002b36 is 1.00:1 on bg; OKLCH L +0.307 */
+  --fulcrum-ansi-bright-red: #d0501c; /* official #cb4b16 is 2.82:1 on surface; OKLCH L +0.015 */
+  --fulcrum-ansi-bright-green: #677d85; /* official #586e75 is 2.42:1 on surface; OKLCH L +0.052 */
+  --fulcrum-ansi-bright-yellow: #677d85; /* official #657b83 is 2.92:1 on surface; OKLCH L +0.007 */
+  --fulcrum-ansi-bright-blue: #839496;
+  --fulcrum-ansi-bright-magenta: #6d72c5; /* official #6c71c4 is 2.97:1 on surface; OKLCH L +0.003 */
   --fulcrum-ansi-bright-cyan: #93a1a1;
   --fulcrum-ansi-bright-white: #fdf6e3;
 }
@@ -380,37 +382,37 @@
   --fulcrum-danger: color-mix(in srgb, #dc322f 89%, black);
   --fulcrum-ok: color-mix(in srgb, #859900 72%, black);
   --fulcrum-warn: color-mix(in srgb, #b58900 73%, black);
-  --fulcrum-tok-keyword: color-mix(in srgb, #859900 72%, black);
-  --fulcrum-tok-string: color-mix(in srgb, #2aa198 72%, black);
-  --fulcrum-tok-number: color-mix(in srgb, #2aa198 72%, black);
-  --fulcrum-tok-comment: color-mix(in srgb, #93a1a1 66%, black);
-  --fulcrum-tok-function: color-mix(in srgb, #268bd2 78%, black);
-  --fulcrum-tok-type: color-mix(in srgb, #b58900 73%, black);
-  --fulcrum-tok-variable: color-mix(in srgb, #268bd2 78%, black);
-  --fulcrum-tok-constant: color-mix(in srgb, #2aa198 72%, black);
-  --fulcrum-tok-operator: color-mix(in srgb, #859900 72%, black);
-  --fulcrum-tok-punctuation: color-mix(in srgb, #657b83 87%, black);
-  --fulcrum-tok-tag: color-mix(in srgb, #268bd2 78%, black);
-  --fulcrum-tok-attribute: color-mix(in srgb, #586e75 98%, black);
-  --fulcrum-tok-regexp: color-mix(in srgb, #dc322f 89%, black);
-  --fulcrum-tok-inserted: color-mix(in srgb, #859900 72%, black);
-  --fulcrum-tok-deleted: color-mix(in srgb, #dc322f 89%, black);
+  --fulcrum-tok-keyword: #7b8e00; /* official #859900 is 2.62:1 on surface; OKLCH L -0.034 */
+  --fulcrum-tok-string: #15958c; /* official #2aa198 is 2.58:1 on surface; OKLCH L -0.039 */
+  --fulcrum-tok-number: #15958c; /* official #2aa198 is 2.58:1 on surface; OKLCH L -0.039 */
+  --fulcrum-tok-comment: #7a8888; /* official #93a1a1 is 2.18:1 on surface; OKLCH L -0.083 */
+  --fulcrum-tok-function: #268bd2;
+  --fulcrum-tok-type: #a87f00; /* official #b58900 is 2.62:1 on surface; OKLCH L -0.035 */
+  --fulcrum-tok-variable: #268bd2;
+  --fulcrum-tok-constant: #15958c; /* official #2aa198 is 2.58:1 on surface; OKLCH L -0.039 */
+  --fulcrum-tok-operator: #7b8e00; /* official #859900 is 2.62:1 on surface; OKLCH L -0.034 */
+  --fulcrum-tok-punctuation: #657b83;
+  --fulcrum-tok-tag: #268bd2;
+  --fulcrum-tok-attribute: #586e75;
+  --fulcrum-tok-regexp: #dc322f;
+  --fulcrum-tok-inserted: #7b8e00; /* official #859900 is 2.62:1 on surface; OKLCH L -0.034 */
+  --fulcrum-tok-deleted: #dc322f;
   --fulcrum-ansi-black: #073642;
-  --fulcrum-ansi-red: color-mix(in srgb, #dc322f 89%, black);
-  --fulcrum-ansi-green: color-mix(in srgb, #859900 72%, black);
-  --fulcrum-ansi-yellow: color-mix(in srgb, #b58900 73%, black);
-  --fulcrum-ansi-blue: color-mix(in srgb, #268bd2 78%, black);
-  --fulcrum-ansi-magenta: color-mix(in srgb, #d33682 89%, black);
-  --fulcrum-ansi-cyan: color-mix(in srgb, #2aa198 72%, black);
-  --fulcrum-ansi-white: color-mix(in srgb, #eee8d5 45%, black);
+  --fulcrum-ansi-red: #dc322f;
+  --fulcrum-ansi-green: #7b8e00; /* official #859900 is 2.62:1 on surface; OKLCH L -0.034 */
+  --fulcrum-ansi-yellow: #a87f00; /* official #b58900 is 2.62:1 on surface; OKLCH L -0.035 */
+  --fulcrum-ansi-blue: #268bd2;
+  --fulcrum-ansi-magenta: #d33682;
+  --fulcrum-ansi-cyan: #15958c; /* official #2aa198 is 2.58:1 on surface; OKLCH L -0.039 */
+  --fulcrum-ansi-white: #8b8574; /* official #eee8d5 is 1.00:1 on surface; OKLCH L -0.314 */
   --fulcrum-ansi-bright-black: #002b36;
-  --fulcrum-ansi-bright-red: color-mix(in srgb, #cb4b16 89%, black);
-  --fulcrum-ansi-bright-green: color-mix(in srgb, #586e75 98%, black);
-  --fulcrum-ansi-bright-yellow: color-mix(in srgb, #657b83 87%, black);
-  --fulcrum-ansi-bright-blue: color-mix(in srgb, #839496 72%, black);
-  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #6c71c4 86%, black);
-  --fulcrum-ansi-bright-cyan: color-mix(in srgb, #93a1a1 66%, black);
-  --fulcrum-ansi-bright-white: color-mix(in srgb, #fdf6e3 42%, black);
+  --fulcrum-ansi-bright-red: #cb4b16;
+  --fulcrum-ansi-bright-green: #586e75;
+  --fulcrum-ansi-bright-yellow: #657b83;
+  --fulcrum-ansi-bright-blue: #78888a; /* official #839496 is 2.58:1 on surface; OKLCH L -0.039 */
+  --fulcrum-ansi-bright-magenta: #6c71c4;
+  --fulcrum-ansi-bright-cyan: #7a8888; /* official #93a1a1 is 2.18:1 on surface; OKLCH L -0.083 */
+  --fulcrum-ansi-bright-white: #8b8574; /* official #fdf6e3 is 1.00:1 on bg; OKLCH L -0.356 */
 }
 
 /* github-dark: https://github.com/primer/primitives (dark functional colors and prettylights syntax tokens) */
@@ -440,7 +442,7 @@
   --fulcrum-tok-regexp: #7ee787;
   --fulcrum-tok-inserted: #aff5b4;
   --fulcrum-tok-deleted: #ffdcd7;
-  --fulcrum-ansi-black: color-mix(in srgb, #484f58 67%, white);
+  --fulcrum-ansi-black: #5f6770; /* official #484f58 is 2.09:1 on surface; OKLCH L +0.085 */
   --fulcrum-ansi-red: #ff7b72;
   --fulcrum-ansi-green: #3fb950;
   --fulcrum-ansi-yellow: #d29922;
@@ -448,7 +450,7 @@
   --fulcrum-ansi-magenta: #bc8cff;
   --fulcrum-ansi-cyan: #39c5cf;
   --fulcrum-ansi-white: #b1bac4;
-  --fulcrum-ansi-bright-black: color-mix(in srgb, #6e7681 86%, white);
+  --fulcrum-ansi-bright-black: #6e7681;
   --fulcrum-ansi-bright-red: #ffa198;
   --fulcrum-ansi-bright-green: #56d364;
   --fulcrum-ansi-bright-yellow: #e3b341;
@@ -475,7 +477,7 @@
   --fulcrum-tok-string: #0a3069;
   --fulcrum-tok-number: #0550ae;
   --fulcrum-tok-comment: #59636e;
-  --fulcrum-tok-function: color-mix(in srgb, #8250df 97%, black);
+  --fulcrum-tok-function: #8250df;
   --fulcrum-tok-type: #953800;
   --fulcrum-tok-variable: #953800;
   --fulcrum-tok-constant: #0550ae;
@@ -490,18 +492,18 @@
   --fulcrum-ansi-red: #cf222e;
   --fulcrum-ansi-green: #116329;
   --fulcrum-ansi-yellow: #4d2d00;
-  --fulcrum-ansi-blue: color-mix(in srgb, #0969da 99%, black);
-  --fulcrum-ansi-magenta: color-mix(in srgb, #8250df 97%, black);
-  --fulcrum-ansi-cyan: color-mix(in srgb, #1b7c83 96%, black);
-  --fulcrum-ansi-white: color-mix(in srgb, #6e7781 91%, black);
+  --fulcrum-ansi-blue: #0969da;
+  --fulcrum-ansi-magenta: #8250df;
+  --fulcrum-ansi-cyan: #1b7c83;
+  --fulcrum-ansi-white: #6e7781;
   --fulcrum-ansi-bright-black: #57606a;
   --fulcrum-ansi-bright-red: #a40e26;
-  --fulcrum-ansi-bright-green: color-mix(in srgb, #1a7f37 97%, black);
+  --fulcrum-ansi-bright-green: #1a7f37;
   --fulcrum-ansi-bright-yellow: #633c01;
-  --fulcrum-ansi-bright-blue: color-mix(in srgb, #218bff 77%, black);
-  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #a475f9 75%, black);
-  --fulcrum-ansi-bright-cyan: color-mix(in srgb, #3192aa 80%, black);
-  --fulcrum-ansi-bright-white: color-mix(in srgb, #8c959f 73%, black);
+  --fulcrum-ansi-bright-blue: #218bff;
+  --fulcrum-ansi-bright-magenta: #a475f9;
+  --fulcrum-ansi-bright-cyan: #3192aa;
+  --fulcrum-ansi-bright-white: #88919b; /* official #8c959f is 2.85:1 on surface; OKLCH L -0.013 */
 }
 
 /* one-dark: https://github.com/atom/atom/tree/master/packages/one-dark-syntax (styles/colors.less; ui from one-dark-ui) */
@@ -516,35 +518,35 @@
   --fulcrum-danger: color-mix(in srgb, #e06c75 84%, white);
   --fulcrum-ok: #98c379;
   --fulcrum-warn: #e5c07b;
-  --fulcrum-tok-keyword: color-mix(in srgb, #c678dd 91%, white);
+  --fulcrum-tok-keyword: #c678dd;
   --fulcrum-tok-string: #98c379;
   --fulcrum-tok-number: #d19a66;
-  --fulcrum-tok-comment: color-mix(in srgb, #7f848e 78%, white);
+  --fulcrum-tok-comment: #7f848e;
   --fulcrum-tok-function: #61afef;
   --fulcrum-tok-type: #e5c07b;
-  --fulcrum-tok-variable: color-mix(in srgb, #e06c75 84%, white);
+  --fulcrum-tok-variable: #e06c75;
   --fulcrum-tok-constant: #d19a66;
   --fulcrum-tok-operator: #56b6c2;
   --fulcrum-tok-punctuation: #abb2bf;
-  --fulcrum-tok-tag: color-mix(in srgb, #e06c75 84%, white);
+  --fulcrum-tok-tag: #e06c75;
   --fulcrum-tok-attribute: #d19a66;
   --fulcrum-tok-regexp: #56b6c2;
   --fulcrum-tok-inserted: #98c379;
-  --fulcrum-tok-deleted: color-mix(in srgb, #e06c75 84%, white);
-  --fulcrum-ansi-black: color-mix(in srgb, #282c34 45%, white);
-  --fulcrum-ansi-red: color-mix(in srgb, #e06c75 84%, white);
+  --fulcrum-tok-deleted: #e06c75;
+  --fulcrum-ansi-black: #70757e; /* official #282c34 is 1.00:1 on bg; OKLCH L +0.269 */
+  --fulcrum-ansi-red: #e06c75;
   --fulcrum-ansi-green: #98c379;
   --fulcrum-ansi-yellow: #e5c07b;
   --fulcrum-ansi-blue: #61afef;
-  --fulcrum-ansi-magenta: color-mix(in srgb, #c678dd 91%, white);
+  --fulcrum-ansi-magenta: #c678dd;
   --fulcrum-ansi-cyan: #56b6c2;
   --fulcrum-ansi-white: #abb2bf;
-  --fulcrum-ansi-bright-black: color-mix(in srgb, #5c6370 61%, white);
-  --fulcrum-ansi-bright-red: color-mix(in srgb, #e06c75 84%, white);
+  --fulcrum-ansi-bright-black: #6d7582; /* official #5c6370 is 2.32:1 on bg; OKLCH L +0.062 */
+  --fulcrum-ansi-bright-red: #e06c75;
   --fulcrum-ansi-bright-green: #98c379;
   --fulcrum-ansi-bright-yellow: #e5c07b;
   --fulcrum-ansi-bright-blue: #61afef;
-  --fulcrum-ansi-bright-magenta: color-mix(in srgb, #c678dd 91%, white);
+  --fulcrum-ansi-bright-magenta: #c678dd;
   --fulcrum-ansi-bright-cyan: #56b6c2;
   --fulcrum-ansi-bright-white: #ffffff;
 }
@@ -577,7 +579,7 @@
     --fulcrum-tok-regexp: #7ee787;
     --fulcrum-tok-inserted: #aff5b4;
     --fulcrum-tok-deleted: #ffdcd7;
-    --fulcrum-ansi-black: color-mix(in srgb, #484f58 67%, white);
+    --fulcrum-ansi-black: #5f6770; /* official #484f58 is 2.09:1 on surface; OKLCH L +0.085 */
     --fulcrum-ansi-red: #ff7b72;
     --fulcrum-ansi-green: #3fb950;
     --fulcrum-ansi-yellow: #d29922;
@@ -585,7 +587,7 @@
     --fulcrum-ansi-magenta: #bc8cff;
     --fulcrum-ansi-cyan: #39c5cf;
     --fulcrum-ansi-white: #b1bac4;
-    --fulcrum-ansi-bright-black: color-mix(in srgb, #6e7681 86%, white);
+    --fulcrum-ansi-bright-black: #6e7681;
     --fulcrum-ansi-bright-red: #ffa198;
     --fulcrum-ansi-bright-green: #56d364;
     --fulcrum-ansi-bright-yellow: #e3b341;
