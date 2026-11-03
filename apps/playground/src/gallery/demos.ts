@@ -350,6 +350,13 @@ export const demos: Demo[] = [
     events: [{ type: "message_commit", message_id: "markdown-large", message: text("assistant", "The whole generated table:\n\n```ts\n" + Array.from({ length: 400 }, (_, i) => `export const value${i} = compute(${i}, "item-${i}"); // row ${i}`).join("\n") + "\n```\n") }],
   },
   {
+    id: "markdown-large-constructs",
+    part: "Message",
+    title: "markdown, constructs across ranges",
+    description: "A large fence colors its visible ranges first, then the whole block in the background: a 2,000-character block comment and a python docstring keep their colors past every range edge.",
+    events: [{ type: "message_commit", message_id: "markdown-large-constructs", message: text("assistant", "A license header, then a docstring:\n\n```cpp\n/*" + " lorem".repeat(333) + " */\n" + Array.from({ length: 220 }, (_, i) => `int value${i} = ${i};`).join("\n") + "\n```\n\n```python\n\"\"\"" + " ipsum".repeat(333) + " \"\"\"\n" + Array.from({ length: 220 }, (_, i) => `value_${i} = ${i}`).join("\n") + "\n```\n") }],
+  },
+  {
     id: "tool-running",
     part: "ToolCall",
     title: "shell, streaming",

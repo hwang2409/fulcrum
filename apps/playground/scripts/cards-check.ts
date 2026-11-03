@@ -33,6 +33,31 @@ export async function checkCards(browser: Browser, port: number): Promise<string
     if (left) failures.push(`tools-done: ${left} box(es) still cut after "show all"`);
     else console.log(`ok   tools-done: ${capped.length} capped box(es) fade and expand`);
   }
+  // A large fence's constructs that cross 500-character range edges: once the whole block's colors arrive, every word of
+  // the block comment is comment and every word of the docstring is string (or comment), never code.
+  await page.goto(`http://127.0.0.1:${port}/gallery.html#markdown-large-constructs`);
+  await page.waitForSelector("#markdown-large-constructs [data-part=text-viewer-row] .tok-comment", { timeout: 30_000 }).catch(() => {});
+  const miscolored = () => page.evaluate(() => {
+    const words: Record<string, string[]> = { lorem: [".tok-comment"], ipsum: [".tok-string", ".tok-comment"] };
+    let found = 0;
+    const off: string[] = [];
+    const walker = document.createTreeWalker(document.getElementById("markdown-large-constructs")!, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      for (const [word, classes] of Object.entries(words)) {
+        if (!node.textContent!.includes(word) || !node.parentElement!.closest("[data-part=text-viewer-row]")) continue;
+        found++;
+        if (!classes.some((name) => node!.parentElement!.closest(name))) off.push(`${word} in ${node.parentElement!.className || "plain text"}`);
+      }
+    }
+    return found < 2 ? ["the constructs are not on screen"] : off;
+  });
+  let wrong = await miscolored();
+  for (let tries = 0; wrong.length && tries < 120; tries++) { // settles once the whole block's colors arrive
+    await page.waitForTimeout(250);
+    wrong = await miscolored();
+  }
+  if (wrong.length) failures.push(`markdown-large-constructs: ${wrong.length} piece(s) miscolored, e.g. ${wrong.slice(0, 3).join("; ")}`);
+  else console.log("ok   markdown-large-constructs: a block comment and a docstring keep their colors across range edges");
   // A pending approval: the timeline's first tab stop is "jump to approval"; drawn on focus without moving a row, and
   // Enter puts focus on the approval's first action, in view.
   await page.goto(`http://127.0.0.1:${port}/gallery.html#approval-pending`);
