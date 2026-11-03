@@ -1,4 +1,5 @@
 import type {
+  ApprovalDecision,
   ContentBlock,
   Message,
   RunEvent,
@@ -200,6 +201,9 @@ const finishedView = (call: ToolCall, result: unknown) => {
   return { view: done };
 };
 
+// zeta's terminal approval decisions (src/zeta/core/approval.py `ApprovalDecision`, plus "abort"); "ask" is not an ending.
+const zetaDecisions: ReadonlyMap<unknown, ApprovalDecision> = new Map([["allow", "approve"], ["deny", "deny"], ["abort", "abort"]]);
+
 export function fromZetaEvent(value: unknown): RunEvent[] {
   try {
     const wire = object(value, "event");
@@ -236,7 +240,8 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         return childRunId ? [approval, subAgent({ ...data, child_instance_id: childRunId, description: `approval for ${approval.tool_call.name}` }, "waiting_approval", "approval")] : [approval];
       }
       case "approval_end": {
-        const approval: RunEvent = { type: "approval_end", request_id: string(wire.request_id, "request_id"), data };
+        const decision = zetaDecisions.get(data.decision);
+        const approval: RunEvent = { type: "approval_end", request_id: string(wire.request_id, "request_id"), ...(decision ? { decision } : {}), data };
         const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
         if (!childRunId) return [approval];
         const [status, urgency] = resumedStatus(data);
@@ -257,7 +262,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
         return childRunId ? [event, subAgent({ ...data, child_instance_id: childRunId, summary: event.error.message }, "error", "error")] : [event];
       }
-      case "turn_aborted": return [{ type: "error", error: { code: "turn_aborted", message: optionalString(wire.message, "message") ?? "turn aborted" } }];
+      case "turn_aborted": return [{ type: "error", error: { code: "aborted", message: optionalString(wire.message, "message") ?? "turn aborted" } }];
       case "child_message_delivered": {
         const childRunId = optionalString(data.agent_instance_id, "data.agent_instance_id");
         return childRunId

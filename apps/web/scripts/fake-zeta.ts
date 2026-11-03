@@ -86,8 +86,10 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
   if (historyMode === "new") history.push({ id: "approval-request-1", role: "system", event: "approval_request", request_id: "approval-1", tool_call: clean, delegated: false });
   const decision = await approval;
   if (decision === "abort") return done();
-  e("approval_end", { request_id: "approval-1", data: { decision } });
-  if (historyMode === "new") history.push({ id: "approval-end-1", role: "system", event: "approval_end", request_id: "approval-1", tool_call: clean, data: { decision } });
+  // zeta's event says "allow" for an approve call (src/zeta/core/approval.py), not the method name.
+  const wire = { decision: decision === "approve" ? "allow" : decision };
+  e("approval_end", { request_id: "approval-1", data: wire });
+  if (historyMode === "new") history.push({ id: "approval-end-1", role: "system", event: "approval_end", request_id: "approval-1", tool_call: clean, data: wire });
   if (decision === "approve") {
     e("tool_start", { tool_call: clean, data: {} });
     row("r4", "tool_result", [text("")], result("live-2", "built 9 packages in 2.1s\n"));

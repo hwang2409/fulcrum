@@ -107,10 +107,10 @@ test("timeline ids are unique and all resolve", () => {
   });
 });
 
-test("approval and its tool execution stay distinct in the timeline", () => {
+test("an approved call is one row: the resolved approval folds into its tool card", () => {
   const store = replay("approval-then-tool.jsonl").get("approval-tool")!;
-  expect(store.getOutline()).toHaveLength(2);
-  expect(items(store).map(({ type }) => type)).toEqual(["approval", "tool"]);
+  expect(items(store).map(({ type }) => type)).toEqual(["tool"]);
+  expect(items(store)[0]).toMatchObject({ approval: { type: "approval_end" } });
 });
 
 const deliberateUnknown = new Set([
@@ -173,7 +173,7 @@ test("a delta after turn_aborted starts a new message", () => {
   expect(store.getState().agent).toBe("running");
   expect(store.getState().turn).toBe("running");
   const event = eventsByType(store, "error").at(-1);
-  expect(event?.type === "error" ? event.error.code : undefined).toBe("turn_aborted");
+  expect(event?.type === "error" ? event.error.code : undefined).toBe("aborted");
 });
 
 test("a delta after a terminal error starts a new message", () => {

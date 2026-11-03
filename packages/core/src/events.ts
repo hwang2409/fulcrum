@@ -60,6 +60,8 @@ export type SubAgentStatus =
   | "error"
   | "canceled";
 export type SubAgentUrgency = "approval" | "input" | "error";
+/** How an approval ended. Adapters map their harness's words (zeta's "allow") onto these; leave it unset when unknown. */
+export type ApprovalDecision = "approve" | "deny" | "abort";
 export interface SubAgentEvent {
   type: "sub_agent";
   childRunId: string;
@@ -100,6 +102,8 @@ export type RunItem =
       result?: ToolResult;
       is_error: boolean;
       canceled: boolean;
+      /** The end of this call's approval, once it resolved: the approval's row folds into the tool's row. */
+      approval?: RunEvent;
     }
   | { id: string; type: "approval"; request: RunEvent; ended?: RunEvent }
   | {
@@ -145,7 +149,7 @@ export type RunEvent =
       view?: ToolView;
       delegated: boolean;
     }
-  | { type: "approval_end"; request_id: string; data?: Record<string, unknown> }
+  | { type: "approval_end"; request_id: string; decision?: ApprovalDecision; data?: Record<string, unknown> }
   | { type: "usage"; usage: Record<string, number> }
   | {
       type: "user_message";
@@ -159,6 +163,7 @@ export type RunEvent =
        */
       intent?: string;
     }
+  /** `code: "aborted"` means the user stopped the run (a stop, not a failure); parts show it as a neutral "stopped". */
   | { type: "error"; error: { code: string; message: string } }
   | {
       type: "notification";

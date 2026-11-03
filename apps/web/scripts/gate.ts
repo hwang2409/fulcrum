@@ -184,11 +184,12 @@ try {
       await staleApproval.getByText(/decisions are disabled/).waitFor();
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
       await page.locator(".notice").waitFor({ state: "detached" });
-      const rebuilt = page.locator('[data-part="approval"][data-id="approval:approval-1"]');
+      // One row per call: the ended approval folds into its tool card's header, which says how it ended.
+      const rebuilt = page.locator('[data-part="tool"]', { has: page.locator('[data-part="tool-approval"]') });
       await rebuilt.waitFor({ timeout: 5000 });
-      if (await rebuilt.getByRole("button", { name: "approve" }).count() || await rebuilt.getByRole("button", { name: "deny" }).count()) throw new Error("aborted approval kept decision buttons");
-      if (await rebuilt.getByText("connection lost", { exact: true }).count() !== 1) throw new Error("approval did not show connection lost");
-      if (await page.locator('[data-part="approval"]').count() !== 1) throw new Error("duplicate approval rows after reconnect");
+      if (await page.getByRole("button", { name: "approve" }).count() || await page.getByRole("button", { name: "deny" }).count()) throw new Error("aborted approval kept decision buttons");
+      if (await rebuilt.locator('[data-part="tool-approval"]').getByText("connection lost", { exact: true }).count() !== 1) throw new Error("approval did not show connection lost");
+      if (await rebuilt.count() !== 1 || await page.locator('[data-part="approval"]').count()) throw new Error("duplicate approval rows after reconnect");
       if (await page.locator('[data-tone="danger"]').count()) throw new Error("reconnect showed an app error");
       if (fake.decisions.length) throw new Error("server received a decision for the aborted approval");
     });
@@ -298,7 +299,8 @@ try {
       await shoot(page, "composer-resent-steer-1440-tokyo-night");
       await composer.locator('[data-part="composer-stop"]').click();
       await composer.and(page.locator('[data-state="idle"]')).waitFor({ timeout: 5000 });
-      await page.locator('[data-part="timeline"]').getByText("turn aborted").first().waitFor({ timeout: 3000 });
+      // The user's own stop is a neutral row, not an error.
+      await page.locator('[data-part="timeline"] [data-kind="stopped"]').first().waitFor({ timeout: 3000 });
       const sent = fake.sent.map((entry) => `${entry.method}:${entry.text}`);
       if (sent.join(",") !== "send:run the focused tests,steer:also check the windows path,send:also check the windows path") throw new Error(`server saw ${sent.join(", ")}`);
       const ids = fake.sent.map((entry) => entry.delivery_id);

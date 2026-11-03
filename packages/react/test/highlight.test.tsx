@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
 import type { Highlight, HighlightContext, Token } from "@fulcrum/highlight";
 import { createRoot, type Root } from "react-dom/client";
-import { RunProvider, ToolCall } from "../src/index.js";
+import { Code, HighlightContext as HighlightProvider, RunProvider, ToolCall } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
@@ -342,4 +342,34 @@ test("useTokens repaints a block when the highlighter updates it, with the same 
   act(() => update("surface:update", [{ text: "const", type: "keyword" }, { text: " a = 1;\n" }, { text: "let", type: "keyword" }, { text: " b = 2;\n" }]));
   expect([...container.querySelectorAll(".tok-keyword")].map((node) => node.textContent)).toEqual(["const", "let"]);
   expect(container.textContent).toBe(code);
+});
+
+test("a multi-line command is tokenized as written, then joined onto the header's one line", () => {
+  // A stand-in shell grammar: a "#" starts a comment that runs to the end of its line.
+  const highlight = ((code: string) => code.split(/(\n)/).flatMap((line): Token[] => {
+    if (line === "\n") return [{ text: line }];
+    const at = line.indexOf("#");
+    return at === -1 ? (line ? [{ text: line, type: "keyword" }] : []) : [...(at ? [{ text: line.slice(0, at), type: "keyword" as const }] : []), { text: line.slice(at), type: "comment" }];
+  })) as Highlight;
+  highlight.dispose = () => {};
+  highlight.subscribe = () => () => {};
+  const command = "cat > release.sh <<'EOF'\n#!/usr/bin/env bash\nset -euo pipefail\nEOF";
+  render([{ type: "tool_start", tool_call: { id: "h", name: "bash", arguments: { command } }, view: { kind: "shell", command } }], ["tool:h"], highlight);
+  const summary = q('[data-id="tool:h"] [data-part="tool-summary"]');
+  expect(summary.textContent).toBe("$ cat > release.sh <<'EOF' #!/usr/bin/env bash set -euo pipefail EOF");
+  expect([...summary.querySelectorAll(".tok-comment")].map((node) => node.textContent)).toEqual(["#!/usr/bin/env bash"]);
+});
+
+test("a block whose done colors are pending keeps its streaming colors: no blink to plain at close", () => {
+  const pendingDone = ((code: string, _language: string | undefined, context?: HighlightContext) =>
+    context?.state === "done" ? new Promise<Token[]>(() => {}) : [{ text: code, type: "keyword" }]) as Highlight;
+  pendingDone.dispose = () => {};
+  pendingDone.subscribe = () => () => {};
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  act(() => root!.render(<HighlightProvider.Provider value={pendingDone}><Code text="let a = 1;" language="ts" id="c" done={false} /></HighlightProvider.Provider>));
+  expect(container.querySelector(".tok-keyword")).not.toBeNull();
+  act(() => root!.render(<HighlightProvider.Provider value={pendingDone}><Code text="let a = 1;" language="ts" id="c" /></HighlightProvider.Provider>));
+  expect(container.querySelector(".tok-keyword")?.textContent).toBe("let a = 1;");
 });

@@ -21,7 +21,7 @@
 [data-part="timeline"] {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--fulcrum-gap, 12px);
   color: var(--fulcrum-fg);
   background: var(--fulcrum-bg);
   font: 14px/1.6 var(--fulcrum-font);
@@ -60,6 +60,35 @@
 }
 [data-part="jump-to-latest"]:hover { text-decoration: underline; text-underline-offset: 3px; }
 [data-part="jump-to-latest"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
+/* A skip link: the timeline's first tab stop while an approval waits, in the timeline's own column. Hidden from sight,
+   not from screen readers, it takes no space until focused; focused, it takes its own band at the top, so it covers no
+   row there (a plain timeline's rows flow down; a virtual one's rows, placed by the engine, are shifted while it is). */
+[data-part="jump-to-approval"] {
+  position: sticky;
+  inset-block-start: 8px;
+  z-index: 2;
+  display: block;
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  height: 36px;
+  margin-bottom: calc(-36px - var(--fulcrum-gap, 12px));
+  padding: 0 12px;
+  overflow: hidden;
+  appearance: none;
+  border: 1px solid var(--fulcrum-warn);
+  border-radius: 0;
+  background: var(--fulcrum-bg);
+  color: var(--fulcrum-warn);
+  font: 700 13px/1 var(--fulcrum-font);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+[data-part="jump-to-approval"]:not(:focus) { clip-path: inset(50%); }
+[data-part="jump-to-approval"]:focus { margin-bottom: 0; }
+[data-part="timeline"]:has(> [data-part="jump-to-approval"]:focus) > [data-virtual-id] { translate: 0 calc(36px + var(--fulcrum-gap, 12px)); }
+[data-part="jump-to-approval"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 
 /* Messages: plain prose, no bubbles. The user's turn is a surface band with a prompt mark. */
 [data-part="message"] { max-width: 80ch; text-wrap: pretty; }
@@ -133,6 +162,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="tool-summary"] { min-width: 0; color: var(--fulcrum-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 [data-part="summary-path"] { color: var(--fulcrum-ui-path); }
 [data-part="summary-range"] { color: var(--fulcrum-muted); }
+[data-part="summary-count"] { color: var(--fulcrum-ui-number); }
 [data-part="summary-pattern"] { color: var(--fulcrum-ui-pattern); }
 [data-part="shell-prompt"] { color: var(--fulcrum-ok); font-weight: 700; user-select: none; }
 [data-part="diff-stat"][data-change="insert"] { color: var(--fulcrum-ui-added); }
@@ -173,6 +203,11 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   color: var(--fulcrum-fg);
 }
 [data-part="tool-output"][data-anchor="start"] { flex-direction: column; }
+/* A capped box that cuts its content fades on the cut edge; "show all" (data-expanded) lifts the cap. */
+[data-fade="top"] { mask-image: linear-gradient(to bottom, transparent, #000 2.5em); }
+[data-fade="bottom"] { mask-image: linear-gradient(to top, transparent, #000 2.5em); }
+[data-fade="top bottom"] { mask-image: linear-gradient(transparent, #000 2.5em, #000 calc(100% - 2.5em), transparent); }
+:is([data-part="tool-output"], [data-part="tool-args"], [data-part="tool-lines"], [data-part="tool-matches"], [data-part="tool-diff"])[data-expanded] { max-height: none; }
 [data-part="tool-body"] > * + * { border-top: 1px solid var(--fulcrum-border); }
 /* Approvals show the request in full: it is what the user decides on. */
 [data-part="approval"] [data-part="tool-args"] { max-height: none; color: var(--fulcrum-fg); }
@@ -207,6 +242,12 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-state="canceled"] > [data-part="tool-header"] > [data-part="tool-summary"] { text-decoration: line-through; }
 
 [data-part="approval"][data-state="done"] { --mark: var(--fulcrum-muted); }
+/* A resolved approval says its decision in color: approved in ok, denied in danger; other endings stay muted. */
+[data-part="approval"][data-decision="approve"], [data-part="tool-approval"][data-decision="approve"] { --mark: var(--fulcrum-ok); }
+[data-part="approval"][data-decision="deny"], [data-part="tool-approval"][data-decision="deny"] { --mark: var(--fulcrum-danger); }
+[data-part="approval"][data-decision] > [data-part="tool-header"] > [data-part="tool-status"], [data-part="tool-approval"][data-decision] { color: var(--mark); }
+/* A call's folded approval sits before its state mark: "approved ■ done". */
+[data-part="tool-approval"] { order: -1; color: var(--fulcrum-muted); }
 [data-part="approval"][data-state="pending"],
 [data-part="approval"][data-state="submitting"] { --rail: var(--fulcrum-warn); --mark: var(--fulcrum-warn); border-color: var(--fulcrum-warn); }
 [data-part="approval"][data-state="pending"] > [data-part="tool-header"] > [data-part="tool-status"],
@@ -234,7 +275,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]):hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
 :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]):active { background: var(--fulcrum-border); }
 :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
-[data-part="tool-body"] button:is([data-action="open-viewer"], [data-action="show-command"]) { display: block; width: 100%; padding: 0 12px; color: var(--fulcrum-accent); text-align: left; }
+[data-part="tool-body"] button:is([data-action="open-viewer"], [data-action="show-command"], [data-action="expand"]) { display: block; width: 100%; padding: 0 12px; color: var(--fulcrum-accent); text-align: left; }
 @media (pointer: coarse) { :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"]) button:not([data-action="approve"], [data-action="deny"]) { min-height: 44px; } }
 
 [data-part="approval-actions"] {
@@ -292,6 +333,8 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   color: var(--fulcrum-muted);
   font-size: 12px;
 }
+/* With no facts, the first button's text lines up with the body's text above it. */
+[data-part="tool-foot"] > button:first-child { margin-left: -8px; }
 [data-part="tool-meta"] { display: flex; flex: 1; flex-wrap: wrap; gap: 0 12px; min-width: 0; }
 /* The open viewer: counts, where the view is, and a jump control above the scroll box. */
 [data-part="text-viewer-head"] {
@@ -417,6 +460,8 @@ div[data-part="text-viewer-row"] { padding: 0; }
   color: var(--fulcrum-fg);
 }
 [data-part="item"][data-kind="error"]::before { content: "error  "; color: var(--fulcrum-danger); font-weight: 700; white-space: pre; }
+/* The user's own stop: the canceled mark (an empty square), no alarm. */
+[data-part="item"][data-kind="stopped"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; transform: translateY(-1px); }
 [data-part="item"][data-kind="notification"]::before,
 [data-part="item"][data-kind="unknown"]::before { content: "· "; }
 
@@ -595,6 +640,8 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="md-code-block"] > code { padding: 0; border: 0; background: none; font: inherit; }
 /* A large block is the shared code viewer (counts, copy, a scroll box); its rows bring their own padding. */
 [data-part="md-code-block"][data-size="large"] { padding: 0; white-space: normal; }
+/* As tall as the most lines an inline block shows (INLINE_LINES), so a fence that becomes the viewer keeps its height. */
+[data-part="md-code-block"][data-size="large"] [data-part="text-viewer"] { max-height: calc(40 * 1.55em); max-height: 40lh; }
 [data-part="md-code-block"][data-size="large"]::before { margin: 0; padding: 4px 12px; }
 /* The language as a caption line: a float would sit on top of long lines when the block scrolls. */
 [data-part="md-code-block"][data-language]::before {
@@ -812,6 +859,8 @@ ul[data-part="md-list"] { list-style: "- "; }
   font-size: 12px;
 }
 [data-part="composer"][data-state="read-only"] { --rail: var(--fulcrum-muted); }
+[data-part="composer"][data-state="read-only"]:focus { outline: none; }
+[data-part="composer"][data-state="read-only"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 [data-part="composer"][data-state="read-only"] [data-part="composer-field"] { color: var(--fulcrum-muted); }
 [data-part="composer-reason"]::before { content: ""; flex: none; width: 7px; height: 7px; outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
 @media (pointer: coarse) { [data-part="composer"] button { min-height: 44px; } }

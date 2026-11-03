@@ -15,6 +15,7 @@ const expectedPlain: Record<string, number[]> = {
   "tool:done-read-py tool-lines": [],
   "tool:nav-read tool-lines": [], // the sub-agent demo's parent run
   "tool:done-edit tool-diff": [1],
+  "tool:ap-edit tool-diff": [1], // the resolved approval, folded into its tool card
   "tool:done-write tool-lines": [],
   "tool:done-fetch tool-output": [],
   "tool:done-fetch-html tool-output": [],

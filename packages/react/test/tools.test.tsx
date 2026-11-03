@@ -3,9 +3,10 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
+import { createRunStore, type ApprovalDecision, type RunEvent, type ToolView } from "@fulcrum/core";
 import { Approval, RunProvider, Timeline, ToolCall } from "../src/index.js";
 import { boundLines } from "../src/tools/common.js";
 import { segmentText } from "../src/tools/text-viewer.js";
@@ -434,4 +435,123 @@ test("a command that fits its clamp has no show control", () => {
   openCard("tool:sh");
   expect(q('[data-part="shell-command"]')).not.toBeNull();
   expect(q('[data-action="show-command"]')).toBeNull();
+});
+
+test("output restarted into the same tool id (a replay, a reconnect, a demo loop) shows each line once", () => {
+  const errors: unknown[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args); };
+  try {
+    const tool_call = { id: "r", name: "bash", arguments: { command: "bun test" } };
+    const lines = Array.from({ length: 24 }, (_, i) => `\x1b[32mok\x1b[0m case ${i + 1}\n`);
+    const store = () => createRunStore((flush) => flush());
+    let current = store();
+    const view = () => <RunProvider store={current}><ToolCall id="tool:r" /></RunProvider>;
+    for (let loop = 0; loop < 3; loop++) {
+      current = store();
+      current.dispatch({ type: "tool_start", tool_call, view: { kind: "shell", command: "bun test" } });
+      if (loop) act(() => root!.render(view()));
+      else mount(view());
+      openCard("tool:r");
+      for (const line of lines) act(() => current.dispatch({ type: "tool_output", tool_call, output: line }));
+      expect(q('[data-part="tool-output"]').textContent).toBe(lines.map((line) => line.replace(/\x1b\[\d+m/g, "")).join(""));
+    }
+    expect(errors).toEqual([]);
+  } finally {
+    console.error = original;
+  }
+});
+
+test("a resolved approval says how it ended, and a folded one marks its tool card", () => {
+  const call = (id: string) => ({ id, name: "bash", arguments: { command: "ls" } });
+  const ask = (id: string): RunEvent => ({ type: "approval_request", request_id: id, tool_call: call(`${id}-call`), view: { kind: "shell", command: "ls" }, delegated: false });
+  // The adapter's raw data keeps the harness's own word (zeta says "allow"); the card reads only `decision`.
+  const end = (id: string, decision: ApprovalDecision, data: Record<string, unknown> = {}): RunEvent => ({ type: "approval_end", request_id: id, decision, data: { decision: decision === "approve" ? "allow" : decision, ...data } });
+  render([
+    ask("yes"), end("yes", "approve"),
+    ask("no"), end("no", "deny"),
+    ask("lost"), end("lost", "abort", { reason: "controller_disconnected" }),
+    ask("abort"), end("abort", "abort"),
+    ask("ran"), end("ran", "approve"), ...tool("ran-call", "bash", { kind: "shell", command: "ls" }, "a\n").map((event) => ({ ...event, tool_call: call("ran-call") }) as RunEvent),
+  ], ["approval:yes", "approval:no", "approval:lost", "approval:abort", "tool:ran-call"]);
+  const status = (id: string) => q(`[data-id="${id}"] [data-part="tool-status"]`).textContent;
+  expect(status("approval:yes")).toBe("approved");
+  expect(status("approval:no")).toBe("denied");
+  expect(status("approval:lost")).toBe("connection lost");
+  expect(status("approval:abort")).toBe("canceled");
+  expect(q('[data-id="approval:no"]').getAttribute("data-decision")).toBe("deny");
+  expect(q('[data-id="tool:ran-call"] [data-part="tool-approval"]').textContent).toBe("approved");
+  expect(status("tool:ran-call")).toBe("approveddone");
+});
+
+test("an approval's decision word is colored by styles.css: approved ok, denied danger, other endings muted", () => {
+  const style = document.createElement("style");
+  style.textContent = ":root { --fulcrum-ok: rgb(0, 128, 0); --fulcrum-danger: rgb(255, 0, 0); --fulcrum-muted: rgb(128, 128, 128); }" + readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+  document.head.append(style);
+  try {
+    const call = (id: string) => ({ id, name: "bash", arguments: { command: "ls" } });
+    const ask = (id: string): RunEvent => ({ type: "approval_request", request_id: id, tool_call: call(`${id}-call`), delegated: false });
+    render([
+      ask("yes"), { type: "approval_end", request_id: "yes", decision: "approve" },
+      ask("no"), { type: "approval_end", request_id: "no", decision: "deny" },
+      ask("abort"), { type: "approval_end", request_id: "abort", decision: "abort" },
+      ask("ran"), { type: "approval_end", request_id: "ran", decision: "approve" }, { type: "tool_start", tool_call: call("ran-call") },
+    ], ["approval:yes", "approval:no", "approval:abort", "tool:ran-call"]);
+    const color = (selector: string) => getComputedStyle(q(selector)).color;
+    expect(color('[data-id="approval:yes"] [data-part="tool-status"]')).toBe("rgb(0, 128, 0)");
+    expect(color('[data-id="approval:no"] [data-part="tool-status"]')).toBe("rgb(255, 0, 0)");
+    expect(color('[data-id="approval:abort"] [data-part="tool-status"]')).toBe("rgb(128, 128, 128)");
+    expect(color('[data-id="tool:ran-call"] [data-part="tool-approval"]')).toBe("rgb(0, 128, 0)");
+  } finally {
+    style.remove();
+  }
+});
+
+test("a denied call, replayed from history, says denied once and keeps the harness's note closed", () => {
+  const tool_call = { id: "bash-3", name: "bash", arguments: { command: "rm -rf packages/core/dist" } };
+  // zeta's history: the call, its error result (src/zeta/tools/registry.py "tool execution denied"), then the approval.
+  render([
+    { type: "tool_start", tool_call, view: { kind: "shell", command: "rm -rf packages/core/dist" } },
+    { type: "tool_end", tool_call, tool_result: { tool_call_id: "bash-3", content: "tool execution denied", is_error: true } },
+    { type: "approval_request", request_id: "bash-3", tool_call, delegated: false },
+    { type: "approval_end", request_id: "bash-3", decision: "deny" },
+  ], ["tool:bash-3"]);
+  expect(q('[data-id="tool:bash-3"] [data-part="tool-status"]').textContent).toBe("denied");
+  expect((q('[data-id="tool:bash-3"]') as HTMLDetailsElement).open).toBe(false);
+});
+
+test("a pending approval shows a short command once, and a footer without facts has no empty left side", () => {
+  const tool_call = { id: "s1", name: "bash", arguments: { command: "rm -rf dist" } };
+  render([{ type: "approval_request", request_id: "s1", tool_call, view: { kind: "shell", command: "rm -rf dist" }, delegated: false }], ["approval:s1"]);
+  expect(q('[data-id="approval:s1"] [data-part="tool-summary"]').textContent).toBe("$ rm -rf dist");
+  expect(q('[data-id="approval:s1"] [data-part="shell-command"]')).toBeNull();
+  expect(q('[data-id="approval:s1"] [data-part="tool-foot"] [data-part="tool-meta"]')).toBeNull();
+});
+
+test("a pending read, write, or search shows a short path once, and a long one also in the body", () => {
+  const long = `packages/${"deep/".repeat(16)}README.md`;
+  const ask = (id: string, name: string, view: ToolView): RunEvent => ({ type: "approval_request", request_id: id, tool_call: { id, name, arguments: {} }, view, delegated: false });
+  render([
+    ask("r", "read", { kind: "read", path: "README.md" }),
+    ask("w", "write", { kind: "write", path: "notes.md", content: "a\n" }),
+    ask("s", "grep", { kind: "search", pattern: "TODO", path: "src" }),
+    ask("long", "read", { kind: "read", path: long }),
+  ], ["approval:r", "approval:w", "approval:s", "approval:long"]);
+  for (const id of ["r", "w", "s"]) expect(q(`[data-id="approval:${id}"] [data-part="tool-path"]`)).toBeNull();
+  expect(q('[data-id="approval:r"] [data-part="tool-summary"]').textContent).toBe("README.md");
+  expect(q('[data-id="approval:long"] [data-part="tool-path"]').textContent).toBe(long);
+});
+
+test("a generic tool's summary is colored, and a list argument reads as a count and its first item", () => {
+  const store = (id: string, args: Record<string, unknown>): RunEvent => ({ type: "tool_start", tool_call: { id, name: id, arguments: args } });
+  render([
+    store("todo", { items: [{ content: "cap the pending queue", status: "in_progress" }] }),
+    store("todos", { items: [{ status: "done", content: "one" }, { content: "two" }] }),
+    store("write_file", { path: "fixtures/session.json", content: "{}" }),
+  ], ["tool:todo", "tool:todos", "tool:write_file"]);
+  const summary = (id: string) => q(`[data-id="tool:${id}"] [data-part="tool-summary"]`);
+  expect(summary("todo").textContent).toBe("1 item · cap the pending queue");
+  expect(summary("todos").textContent).toBe("2 items · one");
+  expect(summary("todo").querySelector('[data-part="summary-count"]')?.textContent).toBe("1 item");
+  expect(summary("write_file").querySelector('[data-part="summary-path"]')?.textContent).toBe("fixtures/session.json");
 });

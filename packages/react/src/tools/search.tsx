@@ -2,7 +2,7 @@ import { useMemo, type CSSProperties } from "react";
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import { MarkedTokens, tokenLines, useTokens, type Block } from "../highlight.js";
-import { Arguments, asking, boundText, Empty, Foot, memoText, Output, outputBlocks, splitLines } from "./common.js";
+import { Arguments, asking, boundText, cutByHeader, Empty, Foot, memoText, Output, outputBlocks, splitLines } from "./common.js";
 import { ROW_CHARS, TextViewer, useTextMetrics, viewerBlocks, type RowModel } from "./text-viewer.js";
 
 // `path:line:text` (grep -n, ripgrep), or `path-line-text` for ripgrep context lines.
@@ -132,7 +132,7 @@ export function SearchBody({ item, output, state }: ToolBodyProps) {
   const matches = groups?.reduce((sum, file) => sum + file.matches, 0);
   return (
     <>
-      {asking(state) ? <pre data-part="tool-path">{boundText(path ? `${pattern} in ${path}` : pattern).text}</pre> : null}
+      {asking(state) && cutByHeader(path ? `"${pattern}" ${path}` : pattern) ? <pre data-part="tool-path">{boundText(path ? `${pattern} in ${path}` : pattern).text}</pre> : null}
       {!text ? <Empty state={state} noun="matches" /> : model
         ? <TextViewer text={text} id={`${item.id}:results`} label="search results" appendOnly metrics={metrics} done={state !== "streaming"} rows={model} />
         : <Output text={text} id={`${item.id}:output`} done={state !== "streaming"} />}

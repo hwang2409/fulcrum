@@ -16,6 +16,14 @@ const defaultScheduler: Scheduler = (callback) =>
     ? requestAnimationFrame(callback)
     : queueMicrotask(callback);
 
+// An append keeps every old entry in place (the reducer reuses entry objects); a delete, a reset, or a fold that moves
+// a row is a rewrite, which views must take as a full change.
+const isAppend = (before: readonly OutlineItem[], after: readonly OutlineItem[]) => {
+  if (after.length < before.length) return false;
+  for (let index = 0; index < before.length; index++) if (before[index] !== after[index]) return false;
+  return true;
+};
+
 export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   let entities = new Map<string, RunItem>();
   let current: RunState = structuredClone(initialState);
@@ -48,7 +56,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
     });
     stateChanged = true;
     if (current.outline !== beforeOutline) {
-      const appended = !events.some(({ type }) => type === "message_reset") && current.outline.length >= beforeOutline.length;
+      const appended = isAppend(beforeOutline, current.outline);
       const priorChange = outlineChanged ? outlineSnapshot.change : { type: "append" as const, count: 0 };
       outlineSnapshot = {
         items: current.outline,

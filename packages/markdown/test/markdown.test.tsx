@@ -514,11 +514,31 @@ test("a stale streaming highlight cannot replace the done result", async () => {
 
   await act(async () => root.render(<Markdown source={'```ts\nconst value = 1;\n'} streaming highlight={highlight} />));
   await act(async () => root.render(<Markdown source={'```ts\nconst value = 1;\n```'} highlight={highlight} />));
-  await act(async () => pending[1]!([{ text: "done", type: "string" }]));
+  await act(async () => pending[1]!([{ text: "const value = 1;\n", type: "string" }]));
   expect(container.innerHTML).toContain("tok-string");
-  await act(async () => pending[0]!([{ text: "stale", type: "keyword" }]));
+  await act(async () => pending[0]!([{ text: "const value = 1;\n", type: "keyword" }]));
   expect(container.innerHTML).toContain("tok-string");
   expect(container.innerHTML).not.toContain("tok-keyword");
+  await act(async () => root.unmount());
+});
+
+test("a closing fence never shows fewer characters than the source while its done colors are pending", async () => {
+  const browser = new Window();
+  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = browser.document.createElement("div");
+  const root = createRoot(container);
+  // Streaming answers at once (the incremental path); the done answer waits for the worker.
+  const highlight: Highlight = Object.assign(
+    (code: string, _language: string | undefined, context?: HighlightContext) =>
+      context?.state === "done" ? new Promise<Token[]>(() => {}) : [{ text: code, type: "keyword" as const }],
+    { dispose() {}, subscribe: () => () => {} },
+  );
+  const code = () => container.querySelector("pre")!.textContent;
+  await act(async () => root.render(<Markdown id="m" source={'```ts\nconst outDir = new URL('} streaming highlight={highlight} />));
+  expect(code()).toBe("const outDir = new URL(");
+  await act(async () => root.render(<Markdown id="m" source={'```ts\nconst outDir = new URL("./dist");\n```'} highlight={highlight} />));
+  expect(code()).toBe('const outDir = new URL("./dist");\n');
+  expect(container.innerHTML).toContain("tok-keyword"); // the stale colors stay on their prefix: no color blink
   await act(async () => root.unmount());
 });
 
@@ -591,5 +611,19 @@ test("a streamed code block shows plain text first, then the colored update, thr
   await act(async () => listeners.get("m:1")!());
   expect(container.querySelector(".tok-keyword")?.textContent).toBe("const");
   expect(container.querySelector("code")?.textContent).toBe("const a = 1;\nconst b = 2;\n");
+  await act(async () => root.unmount());
+});
+
+test("an open fence keeps updating when every delta ends at a newline", async () => {
+  const browser = new Window();
+  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = browser.document.createElement("div");
+  const root = createRoot(container);
+  let source = "```ts\n";
+  for (let i = 0; i < 20; i++) {
+    source += `const value${i} = ${i};\n`;
+    await act(async () => root.render(<Markdown id="m" source={source} streaming />));
+  }
+  expect(container.querySelector("pre")!.textContent).toBe(source.slice("```ts\n".length));
   await act(async () => root.unmount());
 });

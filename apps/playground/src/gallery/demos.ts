@@ -350,6 +350,24 @@ export const demos: Demo[] = [
     events: [{ type: "message_commit", message_id: "markdown-large", message: text("assistant", "The whole generated table:\n\n```ts\n" + Array.from({ length: 400 }, (_, i) => `export const value${i} = compute(${i}, "item-${i}"); // row ${i}`).join("\n") + "\n```\n") }],
   },
   {
+    id: "markdown-crossing",
+    part: "Message",
+    title: "markdown, a fence that becomes the viewer",
+    description: "A fence streams past 40 lines and becomes the bounded viewer at the same height, keeping its colors and following its newest line.",
+    events: [
+      ...Array.from({ length: 60 }, (_, i): RunEvent => ({ type: "message_delta", message_id: "markdown-crossing", delta: (i ? "" : "Generating the table:\n\n```ts\n") + `export const value${i} = compute(${i}, "item-${i}");\n` })),
+      { type: "message_commit", message_id: "markdown-crossing", message: text("assistant", "Generating the table:\n\n```ts\n" + Array.from({ length: 60 }, (_, i) => `export const value${i} = compute(${i}, "item-${i}");\n`).join("") + "```\n") },
+    ],
+    live: 60,
+  },
+  {
+    id: "markdown-large-constructs",
+    part: "Message",
+    title: "markdown, constructs across ranges",
+    description: "A large fence colors its visible ranges first, then the whole block in the background: a 2,000-character block comment and a python docstring keep their colors past every range edge.",
+    events: [{ type: "message_commit", message_id: "markdown-large-constructs", message: text("assistant", "A license header, then a docstring:\n\n```cpp\n/*\n" + Array.from({ length: 28 }, () => " *" + " lorem".repeat(12)).join("\n") + "\n */\n" + Array.from({ length: 220 }, (_, i) => `int value${i} = ${i};`).join("\n") + "\n```\n\n```python\n\"\"\"\n" + Array.from({ length: 28 }, () => "   " + " ipsum".repeat(12)).join("\n") + "\n\"\"\"\n" + Array.from({ length: 220 }, (_, i) => `value_${i} = ${i}`).join("\n") + "\n```\n") }],
+  },
+  {
     id: "tool-running",
     part: "ToolCall",
     title: "shell, streaming",
@@ -492,8 +510,15 @@ export const demos: Demo[] = [
     id: "approval-resolved",
     part: "Approval",
     title: "resolved",
-    description: "After approval_end the buttons go away and data-state is \"done\".",
-    events: [ask("r-done", calls("ap").edit), { type: "approval_end", request_id: "r-done" }],
+    description: "After approval_end the buttons go away and the row says how it ended: approved (folded into its tool card once the call runs, so one call is one row), denied, or the reason, such as a lost connection.",
+    events: (() => {
+      const c = calls("ap");
+      return [
+        ask("r-done", c.edit), { type: "approval_end", request_id: "r-done", decision: "approve" }, start(c.edit), end(c.edit, "1 replacement"),
+        ask("r-deny", c.bash), { type: "approval_end", request_id: "r-deny", decision: "deny" },
+        ask("r-lost", c.write), { type: "approval_end", request_id: "r-lost", decision: "abort", data: { reason: "controller_disconnected" } },
+      ];
+    })(),
   },
   {
     id: "subagent-states",
@@ -571,6 +596,13 @@ export const demos: Demo[] = [
     title: "error",
     description: "An error event (kind \"error\").",
     events: [{ type: "error", error: { code: "rate_limited", message: "Rate limited by the model provider. Retrying in 30s." } }],
+  },
+  {
+    id: "fallback-stopped",
+    part: "Fallback",
+    title: "stopped",
+    description: "The user's own stop (an error event with code \"aborted\"): a neutral row, not an error.",
+    events: [{ type: "error", error: { code: "aborted", message: "turn aborted" } }],
   },
   {
     id: "fallback-notification",

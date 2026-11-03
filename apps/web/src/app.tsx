@@ -4,7 +4,7 @@ import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvi
 import type { ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { createConnection, type Connection, type ConnectionState } from "./connection";
-import { createDelivery, stopTurn } from "./delivery";
+import { createDelivery } from "./delivery";
 import { ago, createSessions, sessionTitle, topLevel, type SessionMeta, type Sessions, type SessionsState } from "./session";
 import { ThemePicker, useTheme } from "./theme";
 
@@ -306,20 +306,14 @@ const offline = () => Promise.reject(new Error("not connected to zeta serve"));
 function RunComposer({ client, onUndelivered }: { client: ZetaClient | null; onUndelivered(intents: string[]): void }) {
   const running = useRun((state) => state.agent === "running");
   const delivery = useMemo(() => createDelivery(), []);
-  // Whether the user stopped the current turn: then the steers it dropped were meant to go.
-  const stopped = useRef(false);
   const wasRunning = useRef(running);
   useEffect(() => {
-    if (running && !wasRunning.current) stopped.current = false;
     // shortcut: a resend that fails is not shown; upgrade when the composer can take a host-reported error.
-    if (!running && wasRunning.current && client) delivery.turnEnded(client, { stopped: stopped.current }).then(onUndelivered, () => {});
+    if (!running && wasRunning.current && client) delivery.turnEnded(client).then(onUndelivered, () => {});
     wasRunning.current = running;
   }, [running, client, delivery, onUndelivered]);
   const onSubmit = useCallback((text: string, { steer }: { steer: boolean }) => (client ? delivery.submit(client, text, steer) : offline()), [client, delivery]);
-  const onStop = useCallback(() => {
-    stopped.current = true;
-    return client ? stopTurn(client) : offline();
-  }, [client]);
+  const onStop = useCallback(() => (client ? delivery.stop(client) : offline()), [client, delivery]);
   return (
     <div className="dock">
       {client ? (

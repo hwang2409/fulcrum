@@ -123,8 +123,107 @@ test("a large fence shows an honest line count and copies the whole text", async
 });
 
 test("a fence under the limits stays one inline block", () => {
-  const code = line.repeat(199);
+  const code = "int a = 1;\n".repeat(39);
   mount(<Markdown id="m" source={"```cpp\n" + code + "```\n"} highlight={highlight} />);
-  expect(container.querySelector('[data-part="text-viewer"]')).toBeNull();
+  expect(container.querySelector('[data-part="text-viewer"]') === null).toBe(true);
   expect(container.querySelector("pre[data-part=md-code-block] > code")!.textContent).toBe(code);
+});
+
+// A stand-in grammar with state that spans lines: a /* */ comment and a """ """ docstring color everything inside them.
+const stateful: Highlight = Object.assign((code: string) => code.match(/\/\*[\s\S]*?(?:\*\/|$)|"""[\s\S]*?(?:"""|$)|\w+|\W/g)!.map((text): Token =>
+  text.startsWith("/*") ? { text, type: "comment" } : text.startsWith('"""') ? { text, type: "string" } : /\w/.test(text) ? { text, type: "keyword" } : { text }), { dispose() {}, subscribe: () => () => {} });
+
+test.each([
+  // A 2,000-character construct crosses three range edges; 45 more lines put the fence over INLINE_LINES.
+  ["a 2,000-character block comment", "cpp", "/*" + " x".repeat(998) + " */\n" + "int a;\n".repeat(45)],
+  ["a 2,000-character python docstring", "python", '"""' + " x".repeat(998) + ' """\n' + "a = 1\n".repeat(45)],
+])("%s that crosses range edges in a large fence gets the whole block's colors", async (_, language, code) => {
+  mount(<Markdown id="m" source={"```" + language + "\n" + code + "```\n"} highlight={stateful} />);
+  await act(async () => {}); // the whole block is asked for once the mounted ranges have colored
+  expect(container.querySelector('[data-part="md-code-block"]')!.getAttribute("data-size")).toBe("large");
+  const rows = container.querySelectorAll('[data-part="text-viewer-row"]');
+  expect(rows[2]?.textContent).toContain(" x x"); // the third mounted range is still inside the construct
+  const miscolored = [...container.querySelectorAll(".tok-keyword")].filter((node) => node.textContent === "x");
+  expect(miscolored.length).toBe(0);
+});
+
+test("a streaming fence over the limits follows its newest line", () => {
+  mount(<Markdown id="m" source={"```cpp\n" + line.repeat(300)} streaming highlight={highlight} />);
+  expect(container.querySelector('[data-part="text-viewer-position"]')!.textContent).toBe("at bottom");
+});
+
+// Streaming answers at once; any other request (a viewer range, the whole block) stays pending, so only colors carried
+// over from the inline block can show.
+const streamingOnly: Highlight = Object.assign((code: string, _language: string | undefined, context?: { state?: string }) =>
+  context?.state === "streaming" ? tokens(code) : new Promise<Token[]>(() => {}), { dispose() {}, subscribe: () => () => {} });
+
+test("a streaming fence that crosses the line limit keeps its colors as it becomes the viewer", () => {
+  const code = "int a = 1;\n".repeat(39);
+  mount(<Markdown id="m" source={"```cpp\n" + code} streaming highlight={streamingOnly} />);
+  expect(container.querySelector('[data-part="md-code-block"]')!.getAttribute("data-size")).toBe(null);
+  expect(spans()).toBeGreaterThan(0);
+  act(() => root!.render(<Markdown id="m" source={"```cpp\n" + code + "int b = 2;\nint c"} streaming highlight={streamingOnly} />));
+  expect(container.querySelector('[data-part="md-code-block"]')!.getAttribute("data-size")).toBe("large");
+  expect(container.querySelector('[data-part="text-viewer-row"] .tok-keyword')).not.toBeNull();
+});
+
+test("a fence under the line limit with more than INLINE_SPANS tokens is the viewer, colored from its own tokens", () => {
+  const dense = line.repeat(35); // 35 lines of the densest code: about 1,150 tokens
+  mount(<Markdown id="m" source={"```cpp\n" + dense + "```\n"} highlight={highlight} />);
+  const block = container.querySelector('[data-part="md-code-block"]')!;
+  expect(block.getAttribute("data-size")).toBe("large");
+  expect(spans()).toBeLessThan(1_000);
+  expect(block.querySelector('[data-part="text-viewer-row"] .tok-keyword')).not.toBeNull();
+});
+
+// Records what is asked for, in order, and answers when told: the order the worker would see.
+function deferred() {
+  const asked: Array<{ id: string; code: string; resolve: (tokens: Token[]) => void }> = [];
+  const highlight: Highlight = Object.assign((code: string, _language: string | undefined, context?: { id: string }) =>
+    new Promise<Token[]>((resolve) => { asked.push({ id: context!.id, code, resolve }); }), { dispose() {}, subscribe: () => () => {} });
+  const answer = async (match: (id: string) => boolean, tokens: (code: string) => Token[]) => {
+    for (const request of asked.filter(({ id }) => match(id))) request.resolve(tokens(request.code));
+    await act(async () => {});
+  };
+  return { asked, highlight, answer };
+}
+const isWhole = (id: string) => id.endsWith(":whole");
+const underCap = "int a = 1; // c\n".repeat(200); // 200 lines, 3,200 characters: the viewer, under the whole-block cap
+
+test("a viewer under the whole-block cap asks for the whole block only after its mounted ranges colored", async () => {
+  const { asked, highlight, answer } = deferred();
+  mount(<Markdown id="m" source={"```cpp\n" + underCap + "```\n"} highlight={highlight} />);
+  expect(container.querySelector('[data-part="md-code-block"]')!.getAttribute("data-size")).toBe("large");
+  expect(asked.length).toBeGreaterThan(0);
+  expect(asked.filter(({ id }) => isWhole(id))).toEqual([]); // the visible ranges go to the worker first, alone
+  await answer((id) => !isWhole(id), tokens);
+  expect(asked.filter(({ id }) => isWhole(id)).map(({ code }) => code)).toEqual([underCap]);
+  await answer(isWhole, tokens);
+  expect(container.querySelector('[data-part="text-viewer-row"] .tok-keyword')).not.toBeNull();
+});
+
+test("a viewer that unmounts or changes before its ranges colored never asks for the whole block", async () => {
+  const { asked, highlight, answer } = deferred();
+  mount(<Markdown id="m" source={"```cpp\n" + underCap + "```\n"} highlight={highlight} />);
+  act(() => root!.render(<Markdown id="m" source={"```cpp\n" + underCap + "int b = 2;\n```\n"} highlight={highlight} />));
+  act(() => root!.render(<></>));
+  await answer(() => true, tokens);
+  expect(asked.filter(({ id }) => isWhole(id))).toEqual([]);
+});
+
+test("a whole-block answer that is one untyped token (the highlighter's plain text) keeps the ranges' colors", async () => {
+  const { highlight, answer } = deferred();
+  mount(<Markdown id="m" source={"```cpp\n" + underCap + "```\n"} highlight={highlight} />);
+  await answer((id) => !isWhole(id), tokens);
+  await answer(isWhole, (code) => [{ text: code }]);
+  expect(container.querySelector('[data-part="text-viewer-row"] .tok-keyword')).not.toBeNull();
+});
+
+test("a block over 10,000 lines (the highlighter answers it plain) keeps its ranges' colors", async () => {
+  // As the controller does (packages/highlight/src/controller.ts MAX_LINES): a block over 10,000 lines is plain at once.
+  const plainOver: Highlight = Object.assign((code: string) => code.split("\n").length > 10_000 ? [{ text: code }] : tokens(code), { dispose() {}, subscribe: () => () => {} });
+  const short = "1,\n".repeat(10_001); // 30,003 characters
+  mount(<Markdown id="m" source={"```json\n" + short + "```\n"} highlight={plainOver} />);
+  await act(async () => {});
+  expect(container.querySelector('[data-part="text-viewer-row"] .tok-keyword')).not.toBeNull();
 });

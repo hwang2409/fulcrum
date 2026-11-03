@@ -1,11 +1,11 @@
-import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
-import type { RunItem } from "@fulcrum/core";
+import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type RefObject } from "react";
+import type { ApprovalDecision, RunEvent, RunItem } from "@fulcrum/core";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
-import { Code, HighlightContext } from "./highlight.js";
+import { HighlightContext, Tokens, useTokens } from "./highlight.js";
 import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
-import { ToolBody, toolSummary } from "./tools/index.js";
+import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
 import { SubAgent, subAgentLabel, subAgentStatusText } from "./sub-agent.js";
 import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
@@ -97,13 +97,32 @@ function ToolName({ name }: { name: string }) {
 
 const oneLine = (text: string) => boundText(text.replace(/\s+/g, " ").trim(), MAX_SUMMARY_CHARS).text;
 
+/**
+ * A command on one line, colored as written: tokenized before its lines are joined, so a heredoc's `#!` stays a
+ * one-line comment instead of turning the rest of the joined line into one.
+ */
+function CommandLine({ command, id }: { command: string; id: string }) {
+  const source = boundText(command.trim(), MAX_SUMMARY_CHARS).text;
+  const tokens = useTokens(source, "shell", id);
+  if (!tokens) return <>{oneLine(source)}</>;
+  let last = " "; // collapses whitespace across token edges, and trims the start
+  const joined = tokens.flatMap((token) => {
+    const spaced = token.text.replace(/\s+/g, " ");
+    const text = last.endsWith(" ") && spaced.startsWith(" ") ? spaced.slice(1) : spaced;
+    if (!text) return [];
+    last = text;
+    return [{ ...token, text }];
+  });
+  return <Tokens tokens={joined} />;
+}
+
 /** The default summary with each fact in its color: `$ command` highlighted, paths, ranges, +/- counts, patterns. */
 function ViewSummary({ item }: { item: ToolItem }) {
   const view = item.view;
   const path = (value: string) => <span data-part="summary-path">{oneLine(value)}</span>;
   switch (view?.kind) {
     case "shell":
-      return <><span data-part="shell-prompt">$ </span><Code text={oneLine(view.command)} language="shell" id={`${item.id}:summary`} /></>;
+      return <><span data-part="shell-prompt">$ </span><CommandLine command={view.command} id={`${item.id}:summary`} /></>;
     case "read": {
       const summary = toolSummary(item);
       return <>{path(view.path)}{summary.length > view.path.length ? <span data-part="summary-range">{summary.slice(view.path.length)}</span> : null}</>;
@@ -119,17 +138,21 @@ function ViewSummary({ item }: { item: ToolItem }) {
     case "fetch":
       return view.url !== undefined ? path(view.url.replace(/^https?:\/\//, "")) : <span data-part="summary-pattern">{oneLine(view.query)}</span>;
   }
-  return <>{oneLine(toolSummary(item))}</>;
+  if (view) return <>{oneLine(toolSummary(item))}</>;
+  const { count, text } = argumentSummary(item.tool_call);
+  return <>{count ? <><span data-part="summary-count">{count}</span> · </> : null}{text ? path(text) : null}</>;
 }
 
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
   const ms = item.view?.durationMs;
+  const approval = item.approval ? approvalEnd(item.approval) : undefined;
   return (
     <>
       <ToolName name={item.tool_call.name} />
       <span data-part="tool-summary">{summary ? oneLine(summary(item)) : <ViewSummary item={item} />}</span>
       <span data-part="tool-status">
-        {status ?? statusText[state]}
+        {approval ? <span data-part="tool-approval" data-decision={approval.decision || undefined}>{approval.text}</span> : null}
+        {approval?.decision === "deny" ? null : status ?? statusText[state]}
         {ms !== undefined ? <span data-part="tool-duration">{duration(ms)}</span> : null}
       </span>
     </>
@@ -141,7 +164,10 @@ const SHORT_OUTPUT_LINES = 8;
    answer ("1 replacement", "42 pass"). Long or empty output starts collapsed so the header row carries the run.
    Set once at mount, so the user's own toggle is never overridden while output streams in. */
 const openByDefault = (item: ToolItem | undefined, output: string) =>
-  !item || item.active || item.is_error || (output !== "" && output.length < 1200 && output.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1);
+  !item || item.active || (!denied(item) && (item.is_error || (output !== "" && output.length < 1200 && output.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1)));
+
+// A call its approval denied never ran: the header's "denied" is its status, and the harness's note stays closed.
+const denied = (item: ToolItem) => item.approval?.type === "approval_end" && item.approval.decision === "deny";
 
 // Streamed output, then the final result when it adds something (an error message, a cancel reason).
 const toolOutput = ({ output, result }: ToolItem) => {
@@ -195,7 +221,14 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
 
 type Decide = (requestId: string) => void | Promise<unknown>;
 
-const approvalStatus = (reason: string) => ({ controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" } as Record<string, string>)[reason] ?? "ended";
+const endReasons: Record<string, string> = { controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" };
+const decisionWords: Record<ApprovalDecision, string | undefined> = { approve: "approved", deny: "denied", abort: undefined };
+/** How an approval ended: its decision, then the reason, so every ending reads as words. */
+const approvalEnd = (ended: RunEvent | undefined) => {
+  const decision = ended?.type === "approval_end" ? ended.decision : undefined;
+  const reason = String(ended?.type === "approval_end" ? ended.data?.reason ?? "" : "");
+  return { decision, text: (decision && decisionWords[decision]) ?? endReasons[reason] ?? (decision === "abort" ? "canceled" : "ended") };
+};
 
 const ApprovalButton = ({ action, handler, sending, disabledReason, decide }: { action: "approve" | "deny"; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: "approve" | "deny", handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler || sending} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{action}</button> : null;
 
@@ -250,8 +283,8 @@ export const Approval = memo(function Approval({
       throw error;
     }
   };
-  const endReason = item.ended && "data" in item.ended ? String(item.ended.data?.reason ?? "") : "";
-  const status = pending ? sending ? (sending === "approve" ? "approving" : "denying") : undefined : approvalStatus(endReason);
+  const end = approvalEnd(item.ended);
+  const status = pending ? sending ? (sending === "approve" ? "approving" : "denying") : undefined : end.text;
   return (
     <div
       className={className}
@@ -264,6 +297,7 @@ export const Approval = memo(function Approval({
       data-tool={toolLabel(tool_call.name)}
       data-tool-view={view?.kind}
       data-state={state}
+      data-decision={pending ? undefined : end.decision || undefined}
     >
       <div data-part="tool-header" id={labelId}>
         <Header item={requested} state={state} status={status} summary={summary} />
@@ -291,9 +325,12 @@ const itemLabel = (item: RunItem) => {
 export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
   const item = useItem(id);
   if (!item) return null;
+  // An "aborted" error is the user's own stop: a neutral row, not a failure.
+  const stopped = item.type === "error" && item.event.type === "error" && item.event.error.code === "aborted";
+  const kind = stopped ? "stopped" : item.type;
   return (
-    <div className={className} style={pre} data-part="item" data-kind={item.type} data-id={id} data-state={item.type === "error" ? "error" : "done"}>
-      {itemLabel(item)}
+    <div className={className} style={pre} data-part="item" data-kind={kind} data-id={id} data-state={stopped ? "stopped" : item.type === "error" ? "error" : "done"}>
+      {stopped ? "stopped" : itemLabel(item)}
     </div>
   );
 });
@@ -313,7 +350,7 @@ export const announcementForItem = (item: RunItem): string | null => {
     }
     case "approval":
       return !item.ended && item.request.type === "approval_request" ? `approval needed: ${toolLabel(item.request.tool_call.name)}` : null;
-    case "error": return item.event.type === "error" ? `error: ${item.event.error.message}` : null;
+    case "error": return item.event.type !== "error" ? null : item.event.error.code === "aborted" ? "stopped" : `error: ${item.event.error.message}`;
     case "notification": return "new notification";
     case "unknown": return "new activity";
     case "sub_agent": return ["done", "error", "canceled"].includes(item.status) || item.urgency ? `sub-agent ${subAgentLabel(item)} ${subAgentStatusText[item.status]}` : null;
@@ -340,10 +377,44 @@ function AnnouncementTracker({ id, announce }: { id: string; announce(id: string
   return null;
 }
 
+// The first pending approval among the rows, re-read when any approval row changes.
+function usePendingApproval(items: readonly { id: string; kind?: string }[]) {
+  const store = useRunStore();
+  const ids = useMemo(() => items.filter((item) => item.kind === "approval").map(({ id }) => id), [items]);
+  const subscribe = useCallback((listener: () => void) => {
+    const stops = ids.map((id) => store.subscribe(id, listener));
+    return () => stops.forEach((stop) => stop());
+  }, [ids, store]);
+  const pending = () => ids.find((id) => { const item = store.getItem(id); return item?.type === "approval" && !item.ended; });
+  const id = useSyncExternalStore(subscribe, pending, pending);
+  const item = id ? store.getItem(id) : undefined;
+  return item?.type === "approval" && item.request.type === "approval_request" ? { id: item.id, request: item.request } : undefined;
+}
+
+/**
+ * While an approval waits, the timeline's first tab stop jumps to it (a skip link: drawn when focused), so keyboard
+ * users reach the decision without walking every row. It focuses the approval's first action.
+ */
+function ApprovalSkip({ items, reveal }: { items: readonly { id: string; kind?: string }[]; reveal: (id: string) => HTMLElement | null | Promise<HTMLElement | null> }) {
+  const pending = usePendingApproval(items);
+  if (!pending) return null;
+  const { tool_call, view } = pending.request;
+  const summary = toolSummary({ id: pending.id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false });
+  const jump = async () => {
+    const card = await reveal(pending.id);
+    (card?.querySelector<HTMLElement>("[data-part=approval-actions] button:not(:disabled)") ?? card)?.focus();
+  };
+  return <button type="button" data-part="jump-to-approval" onClick={() => void jump()}>jump to approval: {view?.kind === "shell" ? "" : `${toolLabel(tool_call.name)} `}{oneLine(summary)}</button>;
+}
+
+const silent = (item: RunItem | undefined) => !item || announcementForItem(item) === null;
+
 function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; change: { type: "append" | "prepend"; count: number } | null }) {
   const initialized = useRef(false);
   const pending = useRef<string[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const store = useRunStore();
+  const previous = useRef<ReadonlySet<string>>(new Set());
   const [watched, setWatched] = useState<readonly string[]>([]);
   const [text, setText] = useState("");
   const announce = useCallback((id: string, next: string) => {
@@ -358,14 +429,23 @@ function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; ch
     }, 1_000);
   }, []);
   useLayoutEffect(() => {
+    const present = new Set(items.map(({ id }) => id));
+    const before = previous.current;
+    previous.current = present;
     if (!initialized.current) {
       initialized.current = true;
       return;
     }
-    const present = new Set(items.map(({ id }) => id));
-    const appended = change?.type === "append" && change.count > 0 ? items.slice(-change.count).map(({ id }) => id) : [];
-    setWatched((current) => [...new Set([...current.filter((id) => present.has(id)), ...appended])]);
-  }, [change, items]);
+    // An append announces its rows. A rewrite in place (an approval folding into its tool row, a store swap) arrives as a
+    // full change: watch only rows that are new and still have nothing to say, so they speak when they finish and a
+    // swapped-in finished session stays silent.
+    const added = change?.type === "append" && change.count > 0
+      ? items.slice(-change.count).map(({ id }) => id)
+      : change === null
+        ? items.map(({ id }) => id).filter((id) => !before.has(id) && silent(store.getItem(id)))
+        : [];
+    setWatched((current) => [...new Set([...current.filter((id) => present.has(id)), ...added])]);
+  }, [change, items, store]);
   useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current); }, []);
   return (
     <>
@@ -389,7 +469,7 @@ const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Rende
 // A sub-agent row is fixed at 56 px; with the 12 px row gap the estimate is exact.
 const estimateRowSize = (kind: string) => kind === "tool" ? 120 : kind === "approval" ? 100 : kind === "message" ? 72 : kind === "sub_agent" ? 68 : 48;
 const virtualContainerStyle: CSSProperties = { position: "relative", display: "block", contain: "size style", overflowAnchor: "none" };
-const virtualRowStyle: CSSProperties = { position: "absolute", insetInline: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBlockEnd: "var(--fulcrum-gap, 12px)", contain: "layout style" };
+const virtualRowStyle: CSSProperties = { position: "absolute", insetBlockStart: 0, insetInline: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBlockEnd: "var(--fulcrum-gap, 12px)", contain: "layout style" };
 
 export type TimelineProps = {
   renderers?: Renderers;
@@ -484,6 +564,11 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
     return (
       <>
         <div ref={plainRef} className={className} data-part="timeline" data-virtual="false" role="log" aria-label={ariaLabel} aria-live="off">
+          <ApprovalSkip items={items} reveal={(id) => {
+            const card = plainRef.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`) ?? null;
+            card?.scrollIntoView({ block: "nearest" });
+            return card;
+          }} />
           {items.map(({ id }) => <Row key={id} id={id} renderers={renderers} />)}
         </div>
         <LiveAnnouncer items={items} change={change} />
@@ -510,6 +595,11 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
         onFocusCapture={(event) => setFocusedId(event.target instanceof Element ? event.target.closest<HTMLElement>("[data-virtual-id]")?.dataset.virtualId ?? null : null)}
         onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedId(null); }}
       >
+        <ApprovalSkip items={items} reveal={(id) => {
+          list.scrollToId(id);
+          // The row mounts on the next frame once scrolled into the window.
+          return new Promise((resolve) => requestAnimationFrame(() => resolve(document.querySelector<HTMLElement>(`[data-virtual-id="${CSS.escape(id)}"] [data-id="${CSS.escape(id)}"]`))));
+        }} />
         {[...mounted, ...(retainedRow ? [retainedRow] : [])].map((row) => (
           <div
             key={row.id}

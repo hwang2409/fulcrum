@@ -1,4 +1,4 @@
-import type { ContentBlock, RunEvent, ToolCall, ToolResult } from "@fulcrum/core";
+import type { ApprovalDecision, ContentBlock, RunEvent, ToolCall, ToolResult } from "@fulcrum/core";
 
 /** The documented UI message stream implemented by this adapter. */
 export const AI_SDK_PROTOCOL = { package: "ai", version: "6.0.0", stream: "v1" } as const;
@@ -130,11 +130,11 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     tools.set(id, state);
     return state;
   };
-  const approvalEnd = (toolCallId: string): RunEvent[] => {
+  const approvalEnd = (toolCallId: string, decision: ApprovalDecision): RunEvent[] => {
     const requestId = approvalByTool.get(toolCallId);
     if (requestId === undefined) return [];
     approvalByTool.delete(toolCallId);
-    return [{ type: "approval_end", request_id: requestId }];
+    return [{ type: "approval_end", request_id: requestId, decision }];
   };
   const commit = (): RunEvent | undefined => {
     if (!content.length) return undefined;
@@ -218,12 +218,12 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     }
     const state = call(id, undefined, meta);
     if (type === "tool-output-denied")
-      return [{ type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: "tool execution denied", is_error: true, is_canceled: true } }, ...approvalEnd(id)];
+      return [{ type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: "tool execution denied", is_error: true, is_canceled: true } }, ...approvalEnd(id, "deny")];
     const isError = type === "tool-output-error";
     const output = isError ? wireString(part.errorText, "part.errorText") : serialized(part.output);
     if (!isError && part.preliminary === true) return [{ type: "tool_output", tool_call: state.call, output }];
     const result: ToolResult = { tool_call_id: id, content: output, is_error: isError };
-    return [{ type: "tool_output", tool_call: state.call, output }, { type: "tool_end", tool_call: state.call, tool_result: result }, ...approvalEnd(id)];
+    return [{ type: "tool_output", tool_call: state.call, output }, { type: "tool_end", tool_call: state.call, tool_result: result }, ...approvalEnd(id, "approve")];
   };
 
   const decodeLifecycle = (part: Row, type: string): RunEvent[] => {
@@ -239,7 +239,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
       const event = commit();
       return [...(event ? [event] : []), ...(value ? [{ type: "usage", usage: value } as RunEvent] : []), { type: "turn_end" }, { type: "run_end", data: defined({ finishReason: optionalString(part.finishReason, "part.finishReason"), messageMetadata: part.messageMetadata }) }];
     }
-    if (type === "abort") return [{ type: "error", error: { code: "run_aborted", message: "run aborted" } }];
+    if (type === "abort") return [{ type: "error", error: { code: "aborted", message: "run aborted" } }];
     return [{ type: "error", error: { code: "ai_sdk_error", message: wireString(part.errorText, "part.errorText") } }];
   };
 

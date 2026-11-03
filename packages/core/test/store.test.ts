@@ -84,6 +84,29 @@ test("outline snapshots describe batched appends and structural deletion", () =>
   expect(store.getOutlineSnapshot()).toMatchObject({ change: null });
 });
 
+test("an outline rewritten in place is a full change, even when its length holds or grows in the same frame", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const read = { id: "read-1", name: "read", arguments: { path: "README.md" } };
+  store.dispatch({ type: "approval_request", request_id: "read-1", tool_call: read, delegated: false });
+  store.dispatch({ type: "approval_end", request_id: "read-1", decision: "approve" });
+  jobs.shift()!();
+  // The tool's row takes the approval's place: same length, a new entry at index 0.
+  store.dispatch({ type: "tool_start", tool_call: read });
+  jobs.shift()!();
+  expect(store.getOutlineSnapshot()).toMatchObject({ items: [{ id: "tool:read-1" }], change: null });
+  // A fold and an append in one frame are still not an append.
+  const bash = { id: "bash-2", name: "bash", arguments: { command: "ls" } };
+  store.dispatch({ type: "approval_request", request_id: "bash-2", tool_call: bash, delegated: false });
+  jobs.shift()!();
+  store.dispatch({ type: "approval_end", request_id: "bash-2", decision: "approve" });
+  store.dispatch({ type: "tool_start", tool_call: bash });
+  store.dispatch({ type: "message_commit", message_id: "after", message: message("after") });
+  jobs.shift()!();
+  expect(store.getOutlineSnapshot()).toMatchObject({ change: null });
+  expect(store.getOutline().map(({ id }) => id)).toEqual(["tool:read-1", "tool:bash-2", "message:after"]);
+});
+
 test("dispose stops notifications, drops pending chunks, and rejects dispatch", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));

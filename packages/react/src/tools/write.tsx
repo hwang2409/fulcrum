@@ -1,14 +1,14 @@
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import type { Block } from "../highlight.js";
-import { Arguments, asking, boundText, bytes, Foot, NumberedLines, numberedBlocks, Output, outputBlocks } from "./common.js";
+import { Arguments, asking, boundText, cutByHeader, bytes, Foot, NumberedLines, numberedBlocks, Output, outputBlocks } from "./common.js";
 
 export function WriteBody({ item, output, state }: ToolBodyProps) {
   if (item.view?.kind !== "write") return null;
   const { path, content, bytes: size } = item.view;
   return (
     <>
-      {asking(state) ? <pre data-part="tool-path">{boundText(path).text}</pre> : null}
+      {asking(state) && cutByHeader(path) ? <pre data-part="tool-path">{boundText(path).text}</pre> : null}
       {content ? <NumberedLines text={content} id={`${item.id}:content`} language={languageForPath(path)} /> : null}
       {output ? <Output text={output} id={`${item.id}:output`} done={state !== "streaming"} /> : null}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}

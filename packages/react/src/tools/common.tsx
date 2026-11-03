@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Children, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { ToolCall } from "@fulcrum/core";
 import type { ItemState } from "../parts.js";
 import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
@@ -44,6 +44,10 @@ export function boundText(value: string, limit = MAX_DOM_CHARS): BoundedText {
 }
 
 export const asking = (state: ItemState) => state === "pending" || state === "submitting";
+// The header cuts a summary longer than this to one line (a few on narrow screens); a pending body repeats what the
+// header shows (a command, a path) only then, so a short one is said once.
+const HEADER_CHARS = 72;
+export const cutByHeader = (text: string) => text.length > HEADER_CHARS || text.includes("\n");
 export const splitLines = (text: string) => (text === "" ? [] : (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n"));
 export const lineCount = (text: string) => {
   if (text === "") return 0;
@@ -122,16 +126,23 @@ export function memoText<T>(compute: (text: string) => T): (text: string) => T {
 const ansiOf = memoText((text) => (hasControls(text) ? parseAnsi(text) : undefined));
 const jsonOf = memoText(jsonText);
 
-/** Append-only terminal text with its escape codes applied; undefined while the text has no control characters. */
+/** Terminal text with its escape codes applied; undefined while the text has no control characters. */
 function useAnsi(text: string): AnsiText | undefined {
-  const cache = useRef<{ source: string; parsed?: AnsiText }>({ source: "" });
+  // `owned`: parsed is this hook's own copy. parseAnsi extends its prior's spans in place, so a memoized (shared) result
+  // is copied once before it is extended; extending it in place corrupted the next replay of the same text.
+  const cache = useRef<{ source: string; parsed?: AnsiText; owned: boolean }>({ source: "", owned: false });
   const prior = cache.current;
   if (text === prior.source) return prior.parsed;
-  const appended = text.length > prior.source.length && prior.source.length > 0;
-  const delta = appended ? text.slice(prior.source.length) : text;
-  const base = appended ? prior.parsed : undefined;
-  const parsed = !appended ? ansiOf(text) : !base && !hasControls(delta) ? undefined : parseAnsi(delta, base ?? parseAnsi(prior.source));
-  cache.current = { source: text, parsed };
+  // Text that does not extend the previous text (a replay, a reconnect, a reset store) is parsed from the start.
+  const appended = prior.source.length > 0 && text.length > prior.source.length && text.startsWith(prior.source);
+  const delta = text.slice(prior.source.length);
+  let parsed: AnsiText | undefined;
+  if (!appended) parsed = ansiOf(text);
+  else if (prior.parsed || hasControls(delta)) {
+    const base = prior.parsed ? (prior.owned ? prior.parsed : { ...prior.parsed, spans: [...prior.parsed.spans] }) : parseAnsi(prior.source);
+    parsed = parseAnsi(delta, base);
+  }
+  cache.current = { source: text, parsed, owned: appended && parsed !== undefined };
   return parsed;
 }
 
@@ -193,13 +204,15 @@ export function NumberedLines({ text, start = 1, id, language, done = true }: Nu
   );
 }
 
-/** The last row of every body: facts on the left (exit code, cwd, size), copy buttons on the right. */
+/** The last row of every body: facts on the left (exit code, cwd, size), copy buttons on the right; with no facts the
+ * buttons start at the left, so the row has no empty side. */
 export function Foot({ children, copy }: { children?: ReactNode; copy: Array<[label: string, value: CopyValue | undefined]> }) {
   const buttons = copy.filter((entry): entry is [string, CopyValue] => !!entry[1]);
-  if (!children && !buttons.length) return null;
+  const facts = Children.toArray(children).length > 0;
+  if (!facts && !buttons.length) return null;
   return (
     <div data-part="tool-foot">
-      <span data-part="tool-meta">{children}</span>
+      {facts ? <span data-part="tool-meta">{children}</span> : null}
       {buttons.map(([label, value]) => <CopyButton key={label} label={label} value={value} />)}
     </div>
   );
@@ -218,7 +231,7 @@ export function Arguments({ call, id, open }: { call: ToolCall; id: string; open
   const content = value === undefined ? null : (
     <>
       <TextViewer text={value} id={`${id}:arguments`} label="arguments" part="tool-args" format={JSON_FORMAT} />
-      <div data-part="tool-foot"><span data-part="tool-meta" /><CopyButton label="arguments" value={value} /></div>
+      <div data-part="tool-foot"><CopyButton label="arguments" value={value} /></div>
     </>
   );
   return open ? <div data-part="tool-args-wrap">{content}</div> : (

@@ -1,7 +1,7 @@
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import type { Block } from "../highlight.js";
-import { Arguments, asking, boundText, Empty, Foot, NumberedLines, numberedBlocks, Output, outputBlocks } from "./common.js";
+import { Arguments, asking, boundText, cutByHeader, Empty, Foot, NumberedLines, numberedBlocks, Output, outputBlocks } from "./common.js";
 
 // A failed or canceled read returns a reason, not file lines, so it gets no line numbers.
 export function ReadBody({ item, output, state }: ToolBodyProps) {
@@ -10,7 +10,7 @@ export function ReadBody({ item, output, state }: ToolBodyProps) {
   const id = `${item.id}:content`;
   return (
     <>
-      {asking(state) ? <pre data-part="tool-path">{boundText(path).text}</pre> : null}
+      {asking(state) && cutByHeader(path) ? <pre data-part="tool-path">{boundText(path).text}</pre> : null}
       {output ? (item.is_error || item.canceled
         ? <Output text={output} id={id} />
         : <NumberedLines text={output} start={(range?.offset ?? 0) + 1} id={id} language={languageForPath(path)} done={state !== "streaming"} />

@@ -812,3 +812,93 @@ test("a blank tool name renders a readable fallback label", () => {
   expect(name.textContent).toBe("unnamed tool");
   expect(name.getAttribute("data-blank")).toBe("");
 });
+
+test("the user's own stop is a neutral stopped row; a real error stays an error", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "error", error: { code: "aborted", message: "turn aborted" } });
+  store.dispatch({ type: "error", error: { code: "provider_error", message: "rate limited" } });
+  mount(<RunProvider store={store}><Timeline /></RunProvider>);
+  const rows = [...container.querySelectorAll<HTMLElement>('[data-part="item"]')];
+  expect(rows.map((row) => [row.dataset.kind, row.dataset.state, row.textContent])).toEqual([
+    ["stopped", "stopped", "stopped"],
+    ["error", "error", "rate limited"],
+  ]);
+});
+
+test("the jump to approval sits inside the timeline (its content column), virtual or not", () => {
+  for (const virtual of [false, true]) {
+    const store = createRunStore((flush) => flush());
+    store.dispatch({ type: "approval_request", request_id: "p", tool_call: { id: "r", name: "read", arguments: { path: "README.md" } }, view: { kind: "read", path: "README.md" }, delegated: false });
+    mount(<RunProvider store={store}><Timeline virtual={virtual} /></RunProvider>);
+    const link = q('[data-part="jump-to-approval"]');
+    expect(link.parentElement?.dataset.part).toBe("timeline");
+    expect(link.parentElement?.firstElementChild).toBe(link);
+    act(() => root?.unmount());
+    root = undefined;
+    container.remove();
+  }
+});
+
+test("with a pending approval, the timeline's first tab stop jumps to it and focuses its first action", async () => {
+  const store = createRunStore((flush) => flush());
+  for (let i = 0; i < 5; i++) {
+    const tool_call = { id: `t${i}`, name: "bash", arguments: { command: "ls" } };
+    store.dispatch({ type: "tool_start", tool_call, view: { kind: "shell", command: "ls" } });
+    store.dispatch({ type: "tool_end", tool_call, tool_result: { tool_call_id: `t${i}`, content: "a\n", is_error: false } });
+  }
+  store.dispatch({ type: "approval_request", request_id: "p", tool_call: { id: "rm", name: "bash", arguments: { command: "rm -rf dist" } }, view: { kind: "shell", command: "rm -rf dist" }, delegated: false });
+  const renderers: Renderers = { approval: ({ id }) => <Approval id={id} onApprove={() => {}} onDeny={() => {}} /> };
+  mount(<RunProvider store={store}><Timeline renderers={renderers} /></RunProvider>);
+  const first = container.querySelector<HTMLElement>("button, summary, [tabindex]")!;
+  expect(first.dataset.part).toBe("jump-to-approval");
+  expect(first.textContent).toContain("rm -rf dist");
+  await act(async () => first.click());
+  expect(document.activeElement?.getAttribute("data-action")).toBe("approve");
+  act(() => store.dispatch({ type: "approval_end", request_id: "p", decision: "deny" }));
+  expect(container.querySelector('[data-part="jump-to-approval"]')).toBeNull();
+});
+
+test("virtual Timeline shows the folded tool card live when an approval folds in place across batches", () => {
+  const { store, send } = setup([{ type: "user_message", text: "read it", mode: "normal" }]);
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  try {
+    mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
+    const rows = () => [...container.querySelectorAll("[data-virtual-id]")].map((row) => row.getAttribute("data-virtual-id"));
+    const read = { id: "read-1", name: "read", arguments: { path: "README.md" } };
+    send({ type: "approval_request", request_id: "read-1", tool_call: read, delegated: false });
+    expect(rows()).toEqual(["user:1", "approval:read-1"]);
+    send({ type: "approval_end", request_id: "read-1", decision: "approve" });
+    send({ type: "tool_start", tool_call: read });
+    send({ type: "tool_end", tool_call: read, tool_result: { tool_call_id: "read-1", content: "# fulcrum", is_error: false } });
+    expect(rows()).toEqual(["user:1", "tool:read-1"]);
+    expect(store.getOutline().map(({ id }) => id)).toEqual(rows());
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+  }
+});
+
+test("an approved call that folds into its tool row is still announced when it finishes", async () => {
+  const { store, send } = setup([]);
+  mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
+  const live = q('[data-part="timeline-live"]');
+  send({ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false });
+  await waitForAnnouncement();
+  expect(live.textContent).toBe("approval needed: bash");
+  send({ type: "approval_end", request_id: "r1", decision: "approve" }, { type: "tool_start", tool_call: call("t1", "bash") });
+  send({ type: "tool_end", tool_call: call("t1", "bash"), tool_result: { tool_call_id: "t1", content: "ok", is_error: false } });
+  await waitForAnnouncement();
+  expect(live.textContent).toBe("tool bash finished");
+});
+
+test("a store swap to a finished session announces nothing", async () => {
+  const first = setup([]);
+  const second = setup([
+    { type: "tool_start", tool_call: call("t9", "read") },
+    { type: "tool_end", tool_call: call("t9", "read"), tool_result: { tool_call_id: "t9", content: "x", is_error: false } },
+  ]);
+  mount(<RunProvider store={first.store}><Timeline virtual /></RunProvider>);
+  act(() => root!.render(<RunProvider store={second.store}><Timeline virtual /></RunProvider>));
+  await waitForAnnouncement();
+  expect(q('[data-part="timeline-live"]').textContent).toBe("");
+});

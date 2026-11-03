@@ -74,14 +74,26 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
   }, [running]);
   // The stop button goes away when the turn ends; if it had focus, focus moves to the field, not to the page. React
   // runs this cleanup before it removes the button, while the button still holds focus. Stable, so it runs only then.
+  // When the whole form goes (read-only), the field goes with it: the read-only composer takes focus after the commit.
+  const focusLost = useRef(false);
+  const group = useRef<HTMLDivElement>(null);
   const stopRef = useCallback((button: HTMLButtonElement | null) => {
     if (!button) return;
-    return () => { if (document.activeElement === button) input.current?.focus({ preventScroll: true }); };
+    return () => {
+      if (document.activeElement !== button) return;
+      focusLost.current = true;
+      input.current?.focus({ preventScroll: true });
+    };
   }, []);
+  useLayoutEffect(() => {
+    if (!focusLost.current) return;
+    focusLost.current = false;
+    if (!input.current?.isConnected) group.current?.focus({ preventScroll: true });
+  });
 
   if (state === "read-only")
     return (
-      <div className={className} data-part="composer" data-state="read-only" role="group" aria-label={label}>
+      <div ref={group} tabIndex={-1} className={className} data-part="composer" data-state="read-only" role="group" aria-label={label}>
         {text ? (
           <div data-part="composer-field" data-value={text}>
             <textarea rows={1} value={text} readOnly aria-label={`${label} (draft, read-only)`} />
