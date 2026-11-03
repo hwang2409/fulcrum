@@ -221,11 +221,7 @@ try {
       await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
       await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor();
       await page.locator('[data-part="timeline"] [data-part="md-code-block"] [class*="tok-"]').first().waitFor({ timeout: 5000 });
-      // A reopened bash card shows its output as the live card does: no raw "stdout:"/"stderr:" labels from zeta's text.
-      const reopened = page.locator('[data-part="timeline"] [data-part="tool"]', { hasText: "bun test v1.3.13" });
-      await reopened.waitFor({ timeout: 5000 });
-      if (await reopened.getAttribute("data-tool-view") !== "shell") throw new Error("the reopened bash call is not a shell card");
-      if (/\bstdout:|\bstderr:/.test(await reopened.innerText())) throw new Error("the reopened bash card shows zeta's raw stdout:/stderr: labels");
+
       await page.locator('[data-part="jump-to-latest"]').waitFor({ state: "detached", timeout: 1000 }).catch(() => {});
     });
     await check("desktop layout, controls, and contrast in all 12 themes", () => auditThemes(page, "1440", 36));
@@ -461,6 +457,12 @@ try {
     await check("390: the run fills the width; the session list is a drawer", async () => {
       await mobile.goto(`${origin}/?theme=gruvbox-dark#session=s-themes`);
       await mobile.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
+      // A reopened, approved bash call is the live shell card: its command (from the approval row), its output without
+      // zeta's raw "stdout:"/"stderr:" labels, and exit 0.
+      const reopened = mobile.locator('[data-part="timeline"] [data-tool-view="shell"]', { hasText: "ls packages/react/src" });
+      await reopened.waitFor({ timeout: 5000 }).catch(() => { throw new Error("the reopened bash call is not a shell card with its command"); });
+      const card = await reopened.innerText();
+      if (/\bstdout:|\bstderr:/.test(card) || !card.includes("themes.ts") || !card.includes("exit 0")) throw new Error(`the reopened bash card reads "${card.replace(/\s+/g, " ")}"`);
       if (await mobile.locator("button.session").first().isVisible()) throw new Error("sidebar visible without the drawer");
       await shoot(mobile, "connected-390-gruvbox-dark");
       await mobile.getByRole("button", { name: "sessions" }).click();

@@ -201,14 +201,15 @@ const bashText = (content: string) => {
 
 // bash reports exit_code, stdout, and stderr in structured_content. Values of the wrong type are ignored, not trusted.
 const finishedView = (call: ToolCall, result: unknown) => {
-  const { structured_content: extra, content, is_error } = (result ?? {}) as { structured_content?: unknown; content?: unknown; is_error?: unknown };
-  const parsed = call.name === "bash" && typeof content === "string" ? bashText(content) : undefined;
-  // History empties arguments (apps/web/GAPS.md #3): a bash result still gets its shell card, with no command yet.
-  const view = resolveToolView(zetaTools, call) ?? (parsed ? { kind: "shell" as const, command: "" } : undefined);
+  // A call with no command (history without arguments, apps/web/GAPS.md #3) keeps the generic card: a shell card
+  // with an empty `$` header reads as broken.
+  const view = resolveToolView(zetaTools, call);
   if (view?.kind !== "shell") return view ? { view } : {};
+  const { structured_content: extra, content, is_error } = (result ?? {}) as { structured_content?: unknown; content?: unknown; is_error?: unknown };
   const { exit_code, stdout, stderr } = extra && typeof extra === "object" ? (extra as Record<string, unknown>) : {};
   if (typeof stdout === "string" && typeof stderr === "string")
     return { view: { ...view, ...(Number.isInteger(exit_code) ? { exitCode: exit_code as number } : {}), stdout, stderr } satisfies ToolView };
+  const parsed = call.name === "bash" && typeof content === "string" ? bashText(content) : undefined;
   if (!parsed) return { view };
   // zeta sets is_error for a nonzero exit or a timeout, so a clean result means exit 0; a failure's code is unknown.
   return { view: { ...view, ...parsed, ...(is_error === false ? { exitCode: 0 } : {}) } satisfies ToolView };

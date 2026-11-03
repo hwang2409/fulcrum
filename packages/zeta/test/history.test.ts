@@ -95,10 +95,10 @@ test("bash text that is not zeta's stdout/stderr shape stays raw output", () => 
   }
 });
 
-test("a bash result whose call has no arguments in history still gets the split shell view", () => {
+test("a bash call with no arguments in history keeps the generic card until zeta keeps arguments (GAPS #3)", () => {
   const events = fromZetaHistory([
     { id: "a", role: "assistant", content: [{ type: "tool_use", tool_call: { id: "t1", name: "bash", arguments: {} } }], tool_result: null },
     { id: "r", role: "tool_result", content: [], tool_result: { tool_call_id: "t1", content: "stdout:\nplayground\nweb\n\nstderr:\n", is_error: false, content_blocks: [], structured_content: null } },
   ]);
-  expect(events.at(-1)).toMatchObject({ type: "tool_end", view: { kind: "shell", command: "", stdout: "playground\nweb\n", stderr: "", exitCode: 0 } });
+  expect(events.at(-1)).not.toHaveProperty("view");
 });
