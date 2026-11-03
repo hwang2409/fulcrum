@@ -9,12 +9,12 @@ const MAX_SESSIONS = 32;
 const MAX_SESSION_BYTES = 8 * 1024 * 1024;
 const MAX_SLICE_MS = 4;
 // The tokenize policy, all of it. Shiki stops a line at TOKENIZE_TIME_LIMIT_MS without saying so, and that time also
-// counts compiling a pattern the line meets for the first time. A slow attempt that built scanners met new patterns: it
-// gets one retry while the line and the document still have time. Otherwise the line is plain, exact text, and the
-// document goes on. A worker runtime tokenizes only with a warm grammar (see OnUpdate), so there a plain line is final.
+// counts compiling a pattern the line meets for the first time, and any pause of the thread (a garbage collection, a
+// busy machine). A slow attempt gets one retry while the document still has retry time; otherwise the line is
+// plain, exact text, and the document goes on. A worker runtime tokenizes only with a warm grammar (see OnUpdate), so
+// there a plain line is final: a line that a pause made slow once must get its retry.
 const TOKENIZE_TIME_LIMIT_MS = 10;
-const LINE_ATTEMPTS = 2;
-const LINE_BUDGET_MS = 25; // all attempts of one line
+const LINE_ATTEMPTS = 2; // shiki stops each attempt near TOKENIZE_TIME_LIMIT_MS, so a line costs about 2 x 10 ms
 const DOCUMENT_RETRY_BUDGET_MS = 100; // all retries of one tokenize call
 type Session = { language: string; version: number; code: string; finalizedLength: number; tokens: Token[]; state?: GrammarState; used: number; bytes: number };
 
@@ -105,7 +105,6 @@ export class TokenizerRuntime {
   private clock = 0;
   private epoch = 0;
   private activeJobs = 0;
-  private scanners = 0;
   private readonly warming = new Map<string, Promise<void>>();
   // Grammars warm one at a time, in the order they were first asked for: the first grammar asked for is colored first,
   // and a request waits behind one slice, not one slice per grammar warming at once.
@@ -131,12 +130,8 @@ export class TokenizerRuntime {
       const [{ createHighlighterCore }, { createJavaScriptRegexEngine }] = await Promise.all([
         import("shiki/core"), import("@shikijs/engine-javascript"),
       ]);
-      // Counts scanners (textmate builds one per rule, and one per resolved dynamic end), so tokenizeLine can tell a
-      // slow attempt that compiled from a runaway line.
       const cache = this.cache = new RegexCache();
       const engine = createJavaScriptRegexEngine({ cache });
-      const createScanner = engine.createScanner.bind(engine);
-      engine.createScanner = (patterns) => { this.scanners++; return createScanner(patterns); };
       this.highlighter = await createHighlighterCore({ engine, langs: [], themes: [semanticTheme] });
       return this.highlighter;
     })();
@@ -300,18 +295,14 @@ export class TokenizerRuntime {
 
   /** One line's tokens under the tokenize policy (top of file), or undefined: the line is plain. */
   private tokenizeLine(highlighter: HighlighterCore, line: string, language: string, grammarState: GrammarState | undefined, budget: { retryMs: number }): ThemedToken[][] | undefined {
-    let spent = 0;
     for (let attempt = 1; ; attempt++) {
-      const scanners = this.scanners;
       const started = performance.now();
       const result = highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
       const elapsed = performance.now() - started;
-      spent += elapsed;
       if (attempt > 1) budget.retryMs -= elapsed;
       if (elapsed < TOKENIZE_TIME_LIMIT_MS) return result;
-      const compiled = this.scanners > scanners;
-      const hasTime = spent + TOKENIZE_TIME_LIMIT_MS <= LINE_BUDGET_MS && budget.retryMs >= TOKENIZE_TIME_LIMIT_MS;
-      if (!compiled || attempt >= LINE_ATTEMPTS || !hasTime) return undefined;
+      // No per-line time budget: a pause can make the first attempt long, and it must not cost the line its retry.
+      if (attempt >= LINE_ATTEMPTS || budget.retryMs < TOKENIZE_TIME_LIMIT_MS) return undefined;
     }
   }
 

@@ -247,13 +247,35 @@ describe("incremental tokenization", () => {
     }
   }, 60_000);
 
-  // Every line here looks like a cold one (slow, and it built a scanner), as in a document that embeds many cold
+  // Regression: with a warm grammar, a slow attempt that built no scanner was final, so one pause of the thread (a
+  // garbage collection, a busy CI runner) left a line plain for good (a write card's line 7 in CI, 5 of 48 loads).
+  test("a line slowed once by a pause gets its retry and is colored", async () => {
+    const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
+    let clock = 0;
+    // The pause hits the second line's first attempt (a first line always builds a scanner, so it always got a retry).
+    const counter = await countAttempts("typescript", () => { if (counter.attempts === 2) clock += 30; });
+    const source = "const a = 1;\nconst MAX_PENDING = 10_000;\n";
+    // The same document once before, so the slow attempt below builds no scanner: only the pause made it slow.
+    await counter.runtime.tokenize(source, "typescript", { id: "warm", version: 1, state: "done" }, false);
+    counter.attempts = 0;
+    Object.defineProperty(performance, "now", { configurable: true, value: () => clock });
+    try {
+      const tokens = await counter.runtime.tokenize(source, "typescript", { id: "paused", version: 1, state: "done" }, false);
+      expect(counter.attempts).toBe(3);
+      expect(typedPerLine(tokens).slice(0, 2)).toEqual([true, true]);
+    } finally {
+      if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
+      counter.runtime.dispose();
+    }
+  });
+
+  // Every line here is slow, as in a document that embeds many cold
   // grammars: each line is tried at most twice, and the retries stop when the document's budget is spent.
   test("cold compiles across a document stay inside the document budget", async () => {
     const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
     let clock = 0;
     let counter: Awaited<ReturnType<typeof countAttempts>> | undefined;
-    counter = await countAttempts("typescript", () => { clock += 12; counter!.runtime["scanners"]++; });
+    counter = await countAttempts("typescript", () => { clock += 12; });
     Object.defineProperty(performance, "now", { configurable: true, value: () => clock });
     try {
       const lines = 50;
@@ -533,17 +555,19 @@ describe("grammar warm-up and regex caches", () => {
     const updates: Array<{ id: string; language: string; tokens: Token[] }> = [];
     const runtime = new TokenizerRuntime((context, language, tokens) => updates.push({ id: context.id, language, tokens }));
     const cold = viteConfig;
-    let scanners = -1;
+    let tokenized = 0;
+    const highlighter = await runtime["engine"]();
+    const tokenize = highlighter.codeToTokensBase.bind(highlighter);
+    highlighter.codeToTokensBase = (...args: Parameters<typeof tokenize>) => { tokenized++; return tokenize(...args); };
     const [first, second, warming] = await withClock(10, async () => {
       const first = await runtime.tokenize(cold, "typescript", { id: "cold", version: 1, state: "done" }, false);
-      scanners = runtime["scanners"];
       const second = await runtime.tokenize("[1]\n", "typescript", { id: "other", version: 1, state: "done" }, false);
       return [first, second, runtime["warming"].get("typescript")!] as const;
     });
     // Both requests were answered while warm-up was still running, with exact plain text, marked provisional, and
     // without tokenizing: a cold rule's scanner compiles all its patterns in one call that cannot yield.
     expect(Bun.peek.status(warming)).toBe("pending");
-    expect([scanners, runtime["scanners"]]).toEqual([0, 0]);
+    expect(tokenized).toBe(0);
     expect([first, second]).toEqual([[{ text: cold }], [{ text: "[1]\n" }]]);
     expect(runtime.willUpdate({ id: "cold", version: 1, state: "done" })).toBe(true);
     await warming;
