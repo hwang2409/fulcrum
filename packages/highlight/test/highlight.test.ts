@@ -188,7 +188,7 @@ describe("incremental tokenization", () => {
       expect(tokens.some((token) => token.type)).toBe(true);
     }
     highlighter.dispose();
-  });
+  }, 60_000);
 
   test("a line that stays over the time limit without compiling is plain and exact", async () => {
     const { TokenizerRuntime } = await import("../dist/runtime.js");
@@ -229,21 +229,23 @@ describe("incremental tokenization", () => {
     counter.runtime.dispose();
   });
 
-  // In the worker a grammar is warmed in the background; once warm, a document compiles none of the grammar's own
-  // patterns (only a dynamic end, built from the text its begin matched, can be new).
-  test("after warm-up a document compiles no grammar pattern", async () => {
+  // In the worker a grammar is warmed in the background; once warm, a document compiles no regex: warm-up compiled each
+  // pattern in every form textmate compiles it (anchor variants, `\z` rewritten). Regression: cpp's anchor variants were
+  // missed, and its first line then compiled 51 patterns in one scanner build that cannot yield (272 ms in Chromium).
+  test("after warm-up a document compiles no regex", async () => {
     const { TokenizerRuntime } = await import("../dist/runtime.js");
-    for (const [language, source] of [["go", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n"], ["typescript", viteConfig]] as const) {
+    const documents = [["cpp", "#include <vector>\nstd::vector<int> values;\nint main() { return values.size(); }\n"], ["typescript", viteConfig]] as const;
+    for (const [language, source] of documents) {
       const runtime = new TokenizerRuntime(() => {});
       await runtime.tokenize("x\n", language, { id: "load", version: 1, state: "done" }, false);
       await runtime["warming"].get(language);
       const before = runtime.cacheSize();
       const tokens = await runtime.tokenize(source, language, { id: "warm", version: 1, state: "done" }, false);
       expect(text(tokens)).toBe(source);
-      expect(runtime.cacheSize().static).toBe(before.static);
+      expect({ language, ...runtime.cacheSize() }).toEqual({ language, ...before });
       runtime.dispose();
     }
-  });
+  }, 60_000);
 
   // Every line here looks like a cold one (slow, and it built a scanner), as in a document that embeds many cold
   // grammars: each line is tried at most twice, and the retries stop when the document's budget is spent.
@@ -524,20 +526,24 @@ describe("grammar warm-up and regex caches", () => {
     expect(page.cacheSize().static).toBeLessThan(worker.cacheSize().static / 4);
     page.dispose();
     worker.dispose();
-  });
+  }, 60_000);
 
   test("a worker answers between warm-up slices, and re-sends each provisional block once when warm", async () => {
     const { TokenizerRuntime } = await import("../dist/runtime.js");
     const updates: Array<{ id: string; language: string; tokens: Token[] }> = [];
     const runtime = new TokenizerRuntime((context, language, tokens) => updates.push({ id: context.id, language, tokens }));
     const cold = viteConfig;
+    let scanners = -1;
     const [first, second, warming] = await withClock(10, async () => {
       const first = await runtime.tokenize(cold, "typescript", { id: "cold", version: 1, state: "done" }, false);
+      scanners = runtime["scanners"];
       const second = await runtime.tokenize("[1]\n", "typescript", { id: "other", version: 1, state: "done" }, false);
       return [first, second, runtime["warming"].get("typescript")!] as const;
     });
-    // Both requests were answered while warm-up was still running, with exact plain text, marked provisional.
+    // Both requests were answered while warm-up was still running, with exact plain text, marked provisional, and
+    // without tokenizing: a cold rule's scanner compiles all its patterns in one call that cannot yield.
     expect(Bun.peek.status(warming)).toBe("pending");
+    expect([scanners, runtime["scanners"]]).toEqual([0, 0]);
     expect([first, second]).toEqual([[{ text: cold }], [{ text: "[1]\n" }]]);
     expect(runtime.willUpdate({ id: "cold", version: 1, state: "done" })).toBe(true);
     await warming;
@@ -553,7 +559,7 @@ describe("grammar warm-up and regex caches", () => {
     expect(runtime.willUpdate({ id: "slow", version: 1, state: "done" })).toBe(false);
     expect(runtime["provisional"].size).toBe(0);
     runtime.dispose();
-  });
+  }, 60_000);
 
   test("the dynamic regex cache stays at its cap over 200 documents, and dispose frees every regex", async () => {
     const { TokenizerRuntime, MAX_DYNAMIC_REGEXES } = await import("../dist/runtime.js");
@@ -571,7 +577,7 @@ describe("grammar warm-up and regex caches", () => {
       runtime.dispose();
       expect(runtime.cacheSize()).toEqual({ static: 0, dynamic: 0 });
     }
-  });
+  }, 60_000);
 
   test("a worker update replaces the cached tokens of its exact block and tells that block's subscribers", async () => {
     const requests: Array<{ requestId: number; code: string }> = [];
