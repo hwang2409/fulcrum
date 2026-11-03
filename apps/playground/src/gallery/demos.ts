@@ -479,6 +479,16 @@ export const demos: Demo[] = [
     events: committed("image-done", [chart, unsized, blocked]),
   },
   {
+    id: "tool-images",
+    part: "ToolResultBlocks",
+    title: "tool result images",
+    description: "A tool's image results show under its output, in a box reserved before they load; the card opens for them. zeta sends these as tool_result.content_blocks (a read of a png, an MCP chart with a caption and size).",
+    events: (() => {
+      const tool = call("tool-images", "render_chart", { entries: 7 });
+      return [start(tool), { type: "tool_end", tool_call: tool, tool_result: { tool_call_id: tool.id, content: "[image block] media_type=image/png dimensions=640x360 bytes=2940 caption=bundle size per entry, in kB", is_error: false, blocks: [chart] } }];
+    })(),
+  },
+  {
     id: "unknown-streaming",
     part: "UnknownBlock",
     title: "unsupported block, streaming",
