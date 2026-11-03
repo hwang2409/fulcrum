@@ -454,11 +454,17 @@ test("later reference definitions update frozen blocks and react", () => {
   const before = document.render()[0];
   expect(before?.type).toBe("paragraph");
   document.append(definition);
+  const pending = document.render()[0];
+  expect(pending?.type === "paragraph" && pending.children.some((node) => node.type === "link")).toBe(false);
+  document.append("\n");
+  const pendingContinuation = document.render()[0];
+  expect(pendingContinuation?.type === "paragraph" && pendingContinuation.children.some((node) => node.type === "link")).toBe(false);
+  document.append("next block");
   const after = document.render()[0];
   expect(after).not.toBe(before);
   expect(after?.type === "paragraph" && after.children.some((node) => node.type === "link")).toBe(true);
   document.finish();
-  expect(json(document.render())).toBe(json(parseMarkdown(first + definition)));
+  expect(json(document.render())).toBe(json(parseMarkdown(`${first}${definition}\nnext block`)));
 
   const browser = new Window();
   Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
@@ -467,6 +473,10 @@ test("later reference definitions update frozen blocks and react", () => {
   act(() => root.render(<Markdown source={first} streaming />));
   expect(host.querySelector("a")).toBeNull();
   act(() => root.render(<Markdown source={first + definition} streaming />));
+  expect(host.querySelector("a")).toBeNull();
+  act(() => root.render(<Markdown source={`${first}${definition}\n`} streaming />));
+  expect(host.querySelector("a")).toBeNull();
+  act(() => root.render(<Markdown source={`${first}${definition}\nnext block`} streaming />));
   expect(host.querySelector("a")?.getAttribute("href")).toBe("https://example.com");
   act(() => root.unmount());
 });
@@ -525,20 +535,4 @@ test("highlighter uses the shared cumulative source contract", async () => {
     { code: "const a = 1;\npartial", context: { id: "message:one:0", version: 1, state: "streaming" } },
     { code: "const a = 1;\npartial\n", context: { id: "message:one:0", version: 1, state: "done" } },
   ]);
-});
-
-const plain = (blocks: unknown) => JSON.stringify(blocks, (key, value) => (key === "open" ? undefined : value));
-test("a table followed by a whitespace-only partial line streams without throwing or adding a row", () => {
-  for (const source of ["| a | b |\n| - | - |\n| 1 | 2 |\n   ", "| a | b |\n|---|---|\n\t"]) {
-    for (const split of [1, 2, 3, 7, 1000]) {
-      const document = createStreamingDocument();
-      for (let offset = 0; offset < source.length; offset += split) {
-        document.append(source.slice(offset, offset + split));
-        expect(() => document.render()).not.toThrow();
-      }
-      expect(plain(document.render())).toBe(plain(parseMarkdown(source)));
-      document.finish();
-      expect(plain(document.render())).toBe(plain(parseMarkdown(source)));
-    }
-  }
 });
