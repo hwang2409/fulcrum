@@ -260,7 +260,8 @@ const ApprovalActions = function ApprovalActions({
 
 /**
  * A decision unmounts the approval's buttons, and later its row folds into the call's card. Focus that was on them
- * moves to the next pending approval's first action, else to this row, or to the card it folded into; never to the page.
+ * moves to the next pending approval's row (Tab then reaches its actions), else to this row, or to the card it folded
+ * into; never to the page.
  */
 function useDecisionFocus(pending: boolean, callId: string) {
   const card = useRef<HTMLDivElement>(null);
@@ -269,7 +270,8 @@ function useDecisionFocus(pending: boolean, callId: string) {
   const move = () => {
     const root = scope.current;
     if (!root?.isConnected || !lost()) return;
-    const next = root.querySelector<HTMLElement>('[data-part="approval"][data-state="pending"] [data-part="approval-actions"] button:not(:disabled)');
+    // The next pending row, not its approve button: a repeated or held Enter must never decide a request unread.
+    const next = root.querySelector<HTMLElement>('[data-part="approval"][data-state="pending"]');
     const folded = root.querySelector<HTMLElement>(`[data-part="tool"][data-id="${CSS.escape(`tool:${callId}`)}"] > summary`);
     const target = next ?? (card.current?.isConnected ? card.current : folded);
     if (target !== card.current) scope.current = null;
@@ -322,7 +324,7 @@ export const Approval = memo(function Approval({
       ref={focus.card}
       className={className}
       role="group"
-      tabIndex={pending ? undefined : -1}
+      tabIndex={-1}
       aria-labelledby={labelId}
       aria-busy={state === "submitting" || undefined}
       data-part="approval"

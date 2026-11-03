@@ -98,7 +98,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
   };
   const act: Act = (action, requestId, path = []) => {
     const storeOf = (location: RunLocation | undefined) => (location?.runId ? runs[location.runId]! : store);
-    storeOf(path.at(-1)).dispatch({ type: "approval_end", request_id: requestId, data: { action } });
+    storeOf(path.at(-1)).dispatch({ type: "approval_end", request_id: requestId, decision: action, data: { action } });
     // The fake harness clears the waiting badge on every ancestor row, as a real one would once the child resumes.
     path.slice(1).forEach((location, index) => {
       const row = storeOf(path[index]).getItem(`sub-agent:${location.runId}`);
