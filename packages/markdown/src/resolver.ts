@@ -1,0 +1,236 @@
+export type ContainerKind = "document" | "quote" | "list" | "item";
+
+export type ContainerFrame =
+  | { kind: "document" }
+  | { kind: "quote" }
+  | { kind: "list"; ordered: boolean; marker: string }
+  | { kind: "item"; contentIndent: number };
+
+export type OpenedContainer = Exclude<ContainerFrame, { kind: "document" }>;
+
+export type ParagraphLeaf = {
+  kind: "paragraph";
+  content: string;
+  path: readonly ContainerFrame[];
+};
+
+export type LineResolution = {
+  continued: boolean;
+  lazy: boolean;
+  closedToDepth: number;
+  opened: readonly OpenedContainer[];
+  leaf?: ParagraphLeaf;
+};
+
+export type PendingLineScan = {
+  indentColumns: number;
+  marker: "none" | "possible" | "quote" | "bullet" | "ordered";
+};
+
+export type PendingLine = {
+  readonly pieces: readonly string[];
+  readonly length: number;
+  readonly scan: Readonly<PendingLineScan>;
+};
+
+type MutablePendingLine = {
+  pieces: string[];
+  length: number;
+  scan: PendingLineScan;
+  atLineStart: boolean;
+  orderedDigits: number;
+};
+
+type Cursor = { line: string; offset: number; column: number };
+
+type Marker = {
+  ordered: boolean;
+  marker: string;
+  contentIndent: number;
+};
+
+const freshPending = (): MutablePendingLine => ({
+  pieces: [],
+  length: 0,
+  scan: { indentColumns: 0, marker: "possible" },
+  atLineStart: true,
+  orderedDigits: 0,
+});
+
+function advancePending(scan: MutablePendingLine, delta: string) {
+  scan.pieces.push(delta);
+  scan.length += delta.length;
+  for (const character of delta) {
+    if (!scan.atLineStart) continue;
+    if (character === " " && scan.scan.indentColumns < 4) {
+      scan.scan.indentColumns++;
+      continue;
+    }
+    if (character === ">") scan.scan.marker = "quote";
+    else if (character === "-" || character === "+" || character === "*") scan.scan.marker = "bullet";
+    else if (/\d/.test(character) && scan.orderedDigits < 9) {
+      scan.orderedDigits++;
+      scan.scan.marker = "possible";
+      continue;
+    } else if ((character === "." || character === ")") && scan.orderedDigits) scan.scan.marker = "ordered";
+    else scan.scan.marker = "none";
+    scan.atLineStart = false;
+  }
+}
+
+function consumeIndent(cursor: Cursor, maximum: number) {
+  let columns = 0;
+  while (cursor.offset < cursor.line.length && columns < maximum) {
+    const character = cursor.line[cursor.offset];
+    if (character === " ") columns++;
+    else if (character === "\t") columns += 4 - columns % 4;
+    else break;
+    cursor.offset++;
+  }
+  cursor.column += columns;
+  return columns;
+}
+
+function consumeQuote(cursor: Cursor) {
+  const start = { ...cursor };
+  consumeIndent(cursor, 3);
+  if (cursor.line[cursor.offset] !== ">") {
+    Object.assign(cursor, start);
+    return false;
+  }
+  cursor.offset++;
+  cursor.column++;
+  if (cursor.line[cursor.offset] === " " || cursor.line[cursor.offset] === "\t") {
+    cursor.offset++;
+    cursor.column++;
+  }
+  return true;
+}
+
+function listMarker(cursor: Cursor): Marker | undefined {
+  const start = { ...cursor };
+  consumeIndent(cursor, 3);
+  const rest = cursor.line.slice(cursor.offset);
+  const match = /^(?:([-+*])|(\d{1,9})([.)]))([ \t]+)/.exec(rest);
+  if (!match) {
+    Object.assign(cursor, start);
+    return undefined;
+  }
+  const marker = match[1] ?? `${match[2]}${match[3]}`;
+  const markerWidth = marker.length;
+  const padding = match[4]!.includes("\t") ? 1 : Math.min(match[4]!.length, 4);
+  cursor.offset += markerWidth + match[4]!.length;
+  cursor.column += markerWidth + padding;
+  return { ordered: !match[1], marker, contentIndent: markerWidth + padding };
+}
+
+function consumeItemIndent(cursor: Cursor, width: number) {
+  const start = { ...cursor };
+  const consumed = consumeIndent(cursor, width);
+  if (consumed >= width) return true;
+  Object.assign(cursor, start);
+  return false;
+}
+
+const isBlank = (line: string, offset = 0) => /^[ \t]*$/.test(line.slice(offset));
+const frameEqual = (left: ContainerFrame, right: ContainerFrame) => left.kind === right.kind
+  && (left.kind !== "list" || right.kind === "list" && left.ordered === right.ordered);
+
+export class MarkdownLineResolver {
+  private stack: ContainerFrame[] = [{ kind: "document" }];
+  private openParagraph = false;
+  private pendingLine: MutablePendingLine = freshPending();
+
+  get pending(): PendingLine {
+    return { pieces: this.pendingLine.pieces, length: this.pendingLine.length, scan: this.pendingLine.scan };
+  }
+
+  append(delta: string): LineResolution[] {
+    const resolved: LineResolution[] = [];
+    let offset = 0;
+    while (offset < delta.length) {
+      const newline = delta.indexOf("\n", offset);
+      if (newline < 0) {
+        advancePending(this.pendingLine, delta.slice(offset));
+        break;
+      }
+      advancePending(this.pendingLine, delta.slice(offset, newline));
+      resolved.push(this.resolveLine(this.pendingLine.pieces.join(""), false));
+      this.pendingLine = freshPending();
+      offset = newline + 1;
+    }
+    return resolved;
+  }
+
+  finish(): LineResolution | undefined {
+    if (!this.pendingLine.length) return undefined;
+    const result = this.resolveLine(this.pendingLine.pieces.join(""), true);
+    this.pendingLine = freshPending();
+    return result;
+  }
+
+  resolveLine(line: string, _final: boolean): LineResolution {
+    const cursor: Cursor = { line, offset: 0, column: 0 };
+    let matchedDepth = 1;
+    for (; matchedDepth < this.stack.length; matchedDepth++) {
+      const frame = this.stack[matchedDepth]!;
+      if (frame.kind === "list") continue;
+      if (frame.kind === "quote" ? consumeQuote(cursor) : frame.kind === "item" && consumeItemIndent(cursor, frame.contentIndent)) continue;
+      break;
+    }
+
+    const unmatched = matchedDepth < this.stack.length;
+    const blank = isBlank(line, cursor.offset);
+    const probe: Cursor = { ...cursor };
+    const startsQuote = consumeQuote(probe);
+    const marker = startsQuote ? undefined : listMarker(probe);
+    const startsContainer = startsQuote || Boolean(marker);
+    const lazy = unmatched && this.openParagraph && !blank && !startsContainer;
+    let closedToDepth = lazy ? this.stack.length : matchedDepth;
+    const unmatchedFrame = this.stack[matchedDepth];
+    const parent = this.stack[matchedDepth - 1];
+    if (!lazy && unmatchedFrame?.kind === "item" && parent?.kind === "list"
+      && (!marker || marker.ordered !== parent.ordered)) closedToDepth--;
+    if (!lazy) {
+      this.stack.length = closedToDepth;
+      if (unmatched || blank) this.openParagraph = false;
+    }
+
+    const opened: OpenedContainer[] = [];
+    if (!lazy && !blank) {
+      for (;;) {
+        if (consumeQuote(cursor)) {
+          const frame = { kind: "quote" } as const;
+          this.stack.push(frame);
+          opened.push(frame);
+          continue;
+        }
+        const beforeMarker = { ...cursor };
+        const marker = listMarker(cursor);
+        if (!marker) break;
+        const existing = this.stack.at(-1);
+        const list = { kind: "list", ordered: marker.ordered, marker: marker.marker } as const;
+        if (!existing || !frameEqual(existing, list)) {
+          this.stack.push(list);
+          opened.push(list);
+        }
+        const item = { kind: "item", contentIndent: marker.contentIndent } as const;
+        this.stack.push(item);
+        opened.push(item);
+        if (cursor.offset === beforeMarker.offset) break;
+      }
+    }
+
+    if (blank) return { continued: false, lazy: false, closedToDepth, opened };
+    const content = line.slice(cursor.offset);
+    const continued = this.openParagraph && opened.length === 0;
+    this.openParagraph = true;
+    return {
+      continued,
+      lazy,
+      closedToDepth,
+      opened,
+      leaf: { kind: "paragraph", content, path: this.stack.map((frame) => ({ ...frame })) },
+    };
+  }
+}
