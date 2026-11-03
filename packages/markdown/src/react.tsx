@@ -52,7 +52,7 @@ function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block,
   const nextRequestId = useRef(0);
   const [tokens, setTokens] = useState<Token[] | null>(null);
   const [, setRevision] = useState(0);
-  // The highlighter replaced this block's tokens (a line a cold grammar left plain is now colored): ask again.
+  // The highlighter replaced this block's tokens (answered plain while its grammar was cold, now colored): ask again.
   useEffect(() => highlight?.subscribe(id, () => { request.current = undefined; setRevision((value) => value + 1); }), [highlight, id]);
   const state = block.open ? "streaming" : "done";
   if (previous.current !== block.value) {

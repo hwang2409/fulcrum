@@ -42,7 +42,8 @@ export function requestTokens(highlight: Highlight | undefined, { code, language
  * Tokens for `code` from the RunProvider's highlighter, or null while they are on their way (render the text plain).
  * Work runs in the highlighter's worker. While a longer streamed revision is pending, the last tokens stay on its prefix,
  * so colors never drop back to plain; tokens that do not spell `code` exactly are never shown. When the highlighter
- * replaces this block's tokens (a line a cold grammar left plain is now colored), the hook asks again: same text, new spans.
+ * replaces this block's tokens (a block answered plain while its grammar was cold is now colored), the hook asks again:
+ * same text, new spans.
  */
 export function useTokens(code: string, language: string | undefined, id: string, done = true): Token[] | null {
   const highlight = useContext(HighlightContext);
