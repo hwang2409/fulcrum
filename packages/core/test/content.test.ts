@@ -65,3 +65,14 @@ test("safeUrl allows inline raster images under the size cap only", () => {
   const big = "data:image/png;base64," + "A".repeat(MAX_DATA_IMAGE_CHARS);
   expect(safeUrl(big, "image")).toBeUndefined();
 });
+
+test("a stream that restarts a finished message replaces its blocks instead of appending to them", () => {
+  const store = replay([
+    { type: "message_commit", message_id: "m", message: { role: "assistant", content: [{ type: "text", text: "old" }, { type: "reasoning", text: "old thought" }] } },
+    { type: "message_delta", message_id: "m", delta: "new" },
+  ]);
+  expect(read(store, "message:m")).toEqual({ content: [], text: "new" });
+  store.dispatch({ type: "message_commit", message_id: "m", message: { role: "assistant", content: [{ type: "text", text: "old" }] } });
+  store.dispatch({ type: "message_delta", message_id: "m", kind: "reasoning", delta: "again" });
+  expect(read(store, "message:m")).toEqual({ content: [{ type: "reasoning", text: "again" }], text: undefined });
+});

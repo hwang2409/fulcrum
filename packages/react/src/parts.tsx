@@ -9,53 +9,14 @@ import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
 import { SubAgent, subAgentLabel, subAgentStatusText } from "./sub-agent.js";
 import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
+import { Message } from "./content.js";
 
 export type ItemProps = { id: string; className?: string };
-export type MarkdownContentProps = { id: string; source: string; streaming: boolean };
-export type MessageProps = ItemProps & {
-  /** Markdown is enabled for assistant messages when a renderer is supplied. */
-  markdown?: ComponentType<MarkdownContentProps> | false;
-  /** Use `all` to render user-role messages as markdown too. */
-  markdownFor?: "assistant" | "all";
-};
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
 export type Renderers = Partial<Record<string, ComponentType<{ id: string }>>>;
 export type ItemState = "streaming" | "done" | "error" | "canceled" | "pending" | "submitting";
 
 const pre = { whiteSpace: "pre-wrap" } as const;
-
-const messageText = (item: Extract<RunItem, { type: "message" }>) =>
-  item.text ??
-  item.message.content
-    .filter((block) => block.type === "text")
-    .map((block) => String(block.text))
-    .join("");
-
-export const Message = memo(function Message({
-  id,
-  className,
-  markdown: Markdown,
-  markdownFor = "assistant",
-}: MessageProps) {
-  const item = useItem(id);
-  if (item?.type !== "message") return null;
-  const text = messageText(item);
-  const rich = Markdown && (markdownFor === "all" || item.message.role === "assistant");
-  return (
-    <div
-      className={className}
-      style={rich ? undefined : pre}
-      data-part="message"
-      data-kind="message"
-      data-id={id}
-      data-role={item.message.role}
-      data-state={item.active ? "streaming" : "done"}
-      data-format={rich ? "markdown" : "text"}
-    >
-      {rich ? <Markdown id={id} source={text} streaming={item.active} /> : text}
-    </div>
-  );
-});
 
 export type ToolItem = Extract<RunItem, { type: "tool" }>;
 /**

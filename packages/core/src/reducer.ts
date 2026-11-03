@@ -78,7 +78,7 @@ const appendMessageOutline = (next: RunState, itemId: string) => {
  * into the content as a text block, so text, reasoning, and sources keep the order they arrived in. Only the last
  * block is copied: the other blocks keep their identity, so their renderers skip the update.
  */
-const appendBlock = (prior: MessageItem | undefined, itemId: string, event: MessageDelta | MessageBlock): MessageItem => {
+const appendBlock = (prior: MessageItem | undefined, itemId: string, event: MessageDelta | MessageBlock, version: number): MessageItem => {
   const message = prior?.message ?? { role: "assistant", content: [] };
   const content = message.content.slice();
   if (prior?.text) content.push({ type: "text", text: prior.text });
@@ -86,7 +86,7 @@ const appendBlock = (prior: MessageItem | undefined, itemId: string, event: Mess
   if (event.type === "message_block") content.push(event.block);
   else if (last && last.type === event.kind && typeof last.text === "string" && !prior?.text) content[content.length - 1] = { ...last, text: last.text + event.delta };
   else content.push({ type: event.kind!, text: event.delta });
-  return { id: itemId, type: "message", message: { ...message, content }, version: (prior?.version ?? 0) + 1, active: true };
+  return { id: itemId, type: "message", message: { ...message, content }, version, active: true };
 };
 const reduceMessageDelta = (
   next: RunState,
@@ -101,12 +101,15 @@ const reduceMessageDelta = (
   const old = getItem(itemId);
   const continuing = next.activeMessageId === id;
   const prior = old?.type === "message" ? old : undefined;
+  // A stream that is not the active one restarts its message: it replaces what the message had, never appends to it.
+  const base = continuing ? prior : undefined;
+  const version = (prior?.version ?? 0) + 1;
   const text = event.type === "message_delta" && (!event.kind || event.kind === "assistant" || event.kind === "text");
   const item = !text
-    ? appendBlock(prior, itemId, event)
+    ? appendBlock(base, itemId, event, version)
     : appendText<RunItem>(
-        { id: itemId, type: "message", message: prior?.message ?? { role: "assistant", content: [] }, version: (prior?.version ?? 0) + 1, active: true },
-        continuing ? prior : undefined,
+        { id: itemId, type: "message", message: base?.message ?? { role: "assistant", content: [] }, version, active: true },
+        base,
         "text",
         () => prior?.text ?? "",
         event.delta,
