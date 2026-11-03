@@ -17,7 +17,8 @@
     "@fulcrum/react": "workspace:*",
     "@fulcrum/zeta": "workspace:*",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "@fulcrum/mermaid": "workspace:*"
   },
   "devDependencies": {
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
