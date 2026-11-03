@@ -243,8 +243,12 @@ function Gallery() {
     else url.searchParams.delete("inspect");
     history.replaceState(history.state, "", url); // keeps the run paths in the URL
   }, [theme, inspect]);
-  // The page renders after load, so the browser cannot jump to a #demo link by itself.
-  useEffect(() => { document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(); }, []);
+  // The page renders after load, so the browser cannot jump to a #demo link by itself. A run path link
+  // (?run-navigator-nested=reviewer) has no #id; it lands on the demo that its parameter names.
+  useEffect(() => {
+    const target = decodeURIComponent(location.hash.slice(1)) || [...new URLSearchParams(location.search).keys()].find((key) => cards.some((demo) => demo.id === key));
+    if (target) document.getElementById(target)?.scrollIntoView();
+  }, []);
   useEffect(() => {
     if (!message) return;
     const timer = setTimeout(() => setMessage(undefined), 2000);

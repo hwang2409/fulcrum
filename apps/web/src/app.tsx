@@ -1,6 +1,6 @@
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
-import { Approval, Composer, Message, RunProvider, Timeline, useRun, type Renderers } from "@fulcrum/react";
+import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvider, Timeline, useItemSelector, useRun, type Renderers } from "@fulcrum/react";
 import type { ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { createConnection, type Connection, type ConnectionState } from "./connection";
@@ -22,9 +22,23 @@ function ZetaApproval({ id }: { id: string }) {
   const decide = useContext(Decisions);
   return <Approval id={id} onApprove={decide?.approve} onDeny={decide?.deny} disabledReason={decide?.disabledReason} />;
 }
+// The intents of steers a stop dropped: zeta never gave them to the agent, so their rows must not look delivered.
+const Undelivered = createContext<ReadonlySet<string>>(new Set());
+function UserRow({ id }: { id: string }) {
+  const intent = useItemSelector(id, (item) => (item?.type === "user" && item.event.type === "user_message" ? item.event.intent : undefined));
+  const undelivered = useContext(Undelivered);
+  const lost = intent !== undefined && undelivered.has(intent);
+  return (
+    <>
+      <Fallback id={id} />
+      {lost ? <p className="undelivered" role="note">not delivered · the stop ended the turn before zeta took this steer</p> : null}
+    </>
+  );
+}
 const renderers: Renderers = {
   message: ({ id }) => <Message id={id} markdown={RichMarkdown} />,
   approval: ZetaApproval,
+  user: UserRow,
 };
 
 const useExternal = <T,>(source: { subscribe(listener: () => void): () => void; readonly state: T }) =>
@@ -73,27 +87,29 @@ export function App() {
   useEffect(() => { document.title = current ? `${sessionTitle(current)} · zeta` : "zeta · fulcrum"; }, [current]);
 
   return (
-    <div className="app" data-drawer={drawer ? "open" : "closed"}>
-      <Sidebar
-        state={state}
-        view={view}
-        sessions={sessions}
-        onSelect={select}
-        open={drawer}
-        onClose={closeDrawer}
-        footer={<ThemePicker theme={theme} onChange={setTheme} />}
-      />
-      {drawer ? <button type="button" className="scrim" aria-label="close sessions" tabIndex={-1} onClick={closeDrawer} /> : null}
-      <main className="main" inert={drawer || undefined}>
-        <header className="topbar">
-          <button ref={menu} type="button" className="menu" aria-label="sessions" aria-expanded={drawer} aria-controls="sessions" onClick={() => setDrawer(true)}>
-            <span aria-hidden="true" className="menu-icon" />
-          </button>
-          <RunTitle session={current} view={view} />
-        </header>
-        <Body state={state} view={view} connection={connection} sessions={sessions} opener={runOpener} onOpenDrawer={() => setDrawer(true)} />
-      </main>
-    </div>
+    <HighlightContext value={highlight}>
+      <div className="app" data-drawer={drawer ? "open" : "closed"}>
+        <Sidebar
+          state={state}
+          view={view}
+          sessions={sessions}
+          onSelect={select}
+          open={drawer}
+          onClose={closeDrawer}
+          footer={<ThemePicker theme={theme} onChange={setTheme} />}
+        />
+        {drawer ? <button type="button" className="scrim" aria-label="close sessions" tabIndex={-1} onClick={closeDrawer} /> : null}
+        <main className="main" inert={drawer || undefined}>
+          <header className="topbar">
+            <button ref={menu} type="button" className="menu" aria-label="sessions" aria-expanded={drawer} aria-controls="sessions" onClick={() => setDrawer(true)}>
+              <span aria-hidden="true" className="menu-icon" />
+            </button>
+            <RunTitle session={current} view={view} />
+          </header>
+          <Body state={state} view={view} connection={connection} sessions={sessions} opener={runOpener} onOpenDrawer={() => setDrawer(true)} />
+        </main>
+      </div>
+    </HighlightContext>
   );
 }
 
@@ -150,7 +166,7 @@ function Sidebar({ state, view, sessions, onSelect, open, onClose, footer }: {
         {state.phase === "connected" && !rows.length && !view.listError ? <p className="note">no sessions yet. start one in zeta.</p> : null}
         <ul ref={list}>
           {rows.map((session) => (
-            <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} server={view.server} onSelect={onSelect} />
+            <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} server={state.phase === "connected" ? view.server : null} onSelect={onSelect} />
           ))}
         </ul>
         {view.nextOffset !== null ? <button type="button" className="ghost more" onClick={() => void sessions.loadMore()}>load more sessions</button> : null}
@@ -265,15 +281,21 @@ function Run({ client, sessions, open, opener }: { client: ZetaClient | null; se
   useLayoutEffect(() => {
     if (document.activeElement === opener.current || document.activeElement === document.body) scroll.current?.focus({ preventScroll: true });
   }, [open.lease.store, opener]);
+  const [undelivered, setUndelivered] = useState<ReadonlySet<string>>(() => new Set());
+  const onUndelivered = useCallback((intents: string[]) => {
+    if (intents.length) setUndelivered((current) => new Set([...current, ...intents]));
+  }, []);
   return (
     <Decisions.Provider value={decisions}>
-      <RunProvider store={open.lease.store}>
-        <RefreshOnIdle sessions={sessions} />
-        <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready="true">
-          <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
-        </div>
-        <RunComposer key={open.id} client={open.stale ? null : client} />
-      </RunProvider>
+      <Undelivered value={undelivered}>
+        <RunProvider store={open.lease.store} highlight={highlight}>
+          <RefreshOnIdle sessions={sessions} />
+          <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready="true">
+            <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
+          </div>
+          <RunComposer key={open.id} client={open.stale ? null : client} onUndelivered={onUndelivered} />
+        </RunProvider>
+      </Undelivered>
     </Decisions.Provider>
   );
 }
@@ -281,7 +303,7 @@ function Run({ client, sessions, open, opener }: { client: ZetaClient | null; se
 const offline = () => Promise.reject(new Error("not connected to zeta serve"));
 
 /** The message box: send while idle, steer while a turn runs (zeta always takes steering), stop the turn. */
-function RunComposer({ client }: { client: ZetaClient | null }) {
+function RunComposer({ client, onUndelivered }: { client: ZetaClient | null; onUndelivered(intents: string[]): void }) {
   const running = useRun((state) => state.agent === "running");
   const delivery = useMemo(() => createDelivery(), []);
   // Whether the user stopped the current turn: then the steers it dropped were meant to go.
@@ -290,9 +312,9 @@ function RunComposer({ client }: { client: ZetaClient | null }) {
   useEffect(() => {
     if (running && !wasRunning.current) stopped.current = false;
     // shortcut: a resend that fails is not shown; upgrade when the composer can take a host-reported error.
-    if (!running && wasRunning.current && client) delivery.turnEnded(client, { stopped: stopped.current }).catch(() => {});
+    if (!running && wasRunning.current && client) delivery.turnEnded(client, { stopped: stopped.current }).then(onUndelivered, () => {});
     wasRunning.current = running;
-  }, [running, client, delivery]);
+  }, [running, client, delivery, onUndelivered]);
   const onSubmit = useCallback((text: string, { steer }: { steer: boolean }) => (client ? delivery.submit(client, text, steer) : offline()), [client, delivery]);
   const onStop = useCallback(() => {
     stopped.current = true;
@@ -323,7 +345,7 @@ function Copy({ value }: { value: string }) {
   useEffect(() => { if (!copied) return; const timer = setTimeout(() => setCopied(false), 1500); return () => clearTimeout(timer); }, [copied]);
   return (
     <div className="command">
-      <code>{value}</code>
+      <code><Code text={value} language="shell" id="serve-command" /></code>
       <button type="button" className="ghost" onClick={() => void navigator.clipboard?.writeText(value).then(() => setCopied(true))}>
         {copied ? "copied" : "copy"}
       </button>

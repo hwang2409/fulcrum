@@ -46,7 +46,7 @@ export async function checkComposer(browser: Browser, port: number): Promise<str
         heights: Object.fromEntries(["sending", "send-error", "steerable", "steering", "stopping", "stop-error", "running"].map((id) => [id, height(id)])),
         stopWidths: [idleStop.getBoundingClientRect().width, stop.getBoundingClientRect().width],
         buttons,
-        readOnly: { controls: box("read-only")!.querySelectorAll("button, textarea").length, reason: box("read-only")!.textContent },
+        readOnly: { controls: box("read-only")!.querySelectorAll("button, textarea:not([readonly])").length, draft: field("read-only")?.value ?? "", reason: box("read-only")!.querySelector('[data-part="composer-reason"]')?.textContent },
       };
     }, STATES);
     const problems: string[] = [];
@@ -62,7 +62,7 @@ export async function checkComposer(browser: Browser, port: number): Promise<str
     if (measured.stopWidths[0] !== measured.stopWidths[1]) problems.push(`stop changes width when pending: ${measured.stopWidths.join(" -> ")}`);
     const floor = width <= 860 ? 44 : 36;
     for (const button of measured.buttons) if (button.height < floor - 0.5) problems.push(`"${button.name}" is ${Math.round(button.height)} px tall, needs ${floor}`);
-    if (measured.readOnly.controls || !measured.readOnly.reason?.trim()) problems.push(`read-only shows ${measured.readOnly.controls} controls and reason "${measured.readOnly.reason}"`);
+    if (measured.readOnly.controls || !measured.readOnly.reason?.trim() || !measured.readOnly.draft) problems.push(`read-only shows ${measured.readOnly.controls} controls, draft "${measured.readOnly.draft}", and reason "${measured.readOnly.reason}"`);
 
     // The live flow: send, steer while running, a refused steer, stop.
     const live = page.locator('#composer-live [data-part="composer"]');

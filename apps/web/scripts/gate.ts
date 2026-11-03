@@ -348,6 +348,8 @@ try {
       await cdp.send("Input.imeSetComposition", { text: "にほんご", selectionStart: 4, selectionEnd: 4 });
       await cdp.send("Input.insertText", { text: "日本語のテスト" });
       await page.keyboard.type(": hello");
+      // The run read from its top: the hidden live region then sits furthest below the scroll box.
+      await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
       await settle(page);
       const layout = await page.evaluate(() => ({
         height: document.scrollingElement!.scrollHeight,

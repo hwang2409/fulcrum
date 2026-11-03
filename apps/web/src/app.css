@@ -2,7 +2,8 @@
    state (square marks, the 2 px rail) and syntax; text stays fg or muted so every theme keeps 4.5:1. */
 :root { --control: 36px; --rail: 2px; --side: 300px; }
 * { box-sizing: border-box; border-radius: 0; }
-html, body { height: 100%; }
+/* The page is fixed to the viewport: only the run and the session list scroll. */
+html, body { height: 100%; overflow: hidden; }
 body {
   margin: 0;
   background: var(--fulcrum-bg);
@@ -51,7 +52,11 @@ button:active:not(:disabled) { transform: scale(0.97); }
 
 /* State words: the word stays fg; its square mark carries the color. */
 .badge, .state { display: inline-flex; align-items: center; gap: 6px; color: var(--fulcrum-fg); font-size: 12px; white-space: nowrap; }
-.badge { margin-left: auto; }
+.badge { --tone: var(--fulcrum-muted); margin-left: auto; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--tone) 55%, transparent); background: color-mix(in srgb, var(--tone) 12%, var(--fulcrum-bg)); }
+.badge[data-tone="ok"] { --tone: var(--fulcrum-ok); }
+.badge[data-tone="busy"] { --tone: var(--fulcrum-accent); }
+.badge[data-tone="warn"] { --tone: var(--fulcrum-warn); }
+.badge[data-tone="danger"] { --tone: var(--fulcrum-danger); }
 .badge::before, .state::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--fulcrum-muted); }
 .badge[data-tone="ok"]::before, .state[data-status="open"]::before { background: var(--fulcrum-ok); }
 .badge[data-tone="busy"]::before, .state[data-status="running"]::before { background: var(--fulcrum-accent); animation: pulse 1s infinite alternate; }
@@ -61,6 +66,7 @@ button:active:not(:disabled) { transform: scale(0.97); }
 
 .list-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; }
 .list-head h2 { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fulcrum-muted); }
+.list-head h2::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; vertical-align: 1px; background: var(--fulcrum-accent); }
 .list-head .count { color: var(--fulcrum-muted); font-size: 12px; }
 .list-head .ghost { margin-left: auto; padding: 0 10px; font-size: 12px; }
 .list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-bottom: 8px; }
@@ -77,9 +83,9 @@ button:active:not(:disabled) { transform: scale(0.97); }
   font-weight: 400;
   line-height: 1.45;
 }
-/* No fill on hover or selection: muted meta keeps its 4.5:1 only on bg. The rail and the weight carry the state. */
+/* The selection is an accent rail on a faint accent tint; its meta turns fg, so text keeps 4.5:1 on the tint. */
 .session:hover { border-left-color: var(--fulcrum-border); }
-.session[aria-current] { border-left-color: var(--fulcrum-accent); }
+.session[aria-current] { border-left-color: var(--fulcrum-accent); background: color-mix(in srgb, var(--fulcrum-accent) 10%, var(--fulcrum-bg)); }
 .session[aria-current] .session-meta { color: var(--fulcrum-fg); }
 .session:active:not(:disabled) { transform: none; }
 .session-title { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; font-size: 13px; }
@@ -93,7 +99,10 @@ button:active:not(:disabled) { transform: scale(0.97); }
 
 /* Theme picker: a listbox that opens upward from the sidebar foot. */
 .theme-picker { position: relative; }
-.theme-button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: var(--control); padding: 0 12px; }
+/* The label sits above the name, so the longest theme name fits the 300 px sidebar. */
+.theme-button { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 10px; row-gap: 3px; width: 100%; min-height: var(--control); padding: 6px 12px; }
+.theme-button .swatch { grid-area: 1 / 2 / 3 / 3; }
+.theme-label { font-size: 11px; line-height: 1; text-align: left; }
 .theme-button:hover { border-color: var(--fulcrum-fg); }
 .theme-label { color: var(--fulcrum-muted); font-weight: 400; }
 .theme-name { flex: 1; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
@@ -142,6 +151,10 @@ button:active:not(:disabled) { transform: scale(0.97); }
 /* The composer docks under the run, on the timeline's column. */
 .dock { flex: none; padding: 8px 24px max(16px, env(safe-area-inset-bottom)); }
 .dock > [data-part="composer"] { max-width: 880px; margin: 0 auto; }
+
+/* A steer that a stop dropped: the row stays, struck through, with a danger rail and a note that says why. */
+.scroll [data-kind="user"]:has(+ .undelivered) { border-left: var(--rail) solid var(--fulcrum-danger); padding-left: 10px; color: var(--fulcrum-muted); text-decoration: line-through; text-decoration-color: var(--fulcrum-danger); }
+.undelivered { margin: 4px 0 0; padding-left: 12px; color: var(--fulcrum-danger); font-size: 12px; font-weight: 700; }
 
 /* Notices and empty states. */
 .panel { width: min(64ch, calc(100% - 48px)); margin: max(32px, 12dvh) auto 32px; padding: 20px 24px; border: 1px solid var(--fulcrum-border); border-left: var(--rail) solid var(--fulcrum-muted); }

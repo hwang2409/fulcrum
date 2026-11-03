@@ -26,7 +26,7 @@ const refusal = (result: Accepted) => new Error(result.status === "dropped" ? "t
  * Zeta delivers a steer at the next provider boundary of the running turn. A turn that ends first (a final answer with
  * no tool call) drops it, and the protocol leaves the resend to the client. `turnEnded` does that, as the zeta TUI does:
  * each dropped steer goes out again as a new message, in order, with a new delivery id. After a stop the user meant to
- * drop them, so they stay dropped.
+ * drop them, so they stay dropped, and `turnEnded` names them so the view can show they never reached the agent.
  *
  * Each message keeps one `intent` across every attempt, and the client stamps it on zeta's `user_message` echo, so the
  * steer's row becomes the resent message's row: the user sees one row per message they wrote.
@@ -74,16 +74,21 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
       unsettled = null;
       if (result.accepted === false) throw refusal(result);
     },
-    /** Call when the running turn ends. Resends the steers it dropped, unless the user stopped it. */
+    /**
+     * Call when the running turn ends. Resends the steers it dropped, unless the user stopped it: then they stay
+     * dropped, and their intents are returned so the view can mark those rows as not delivered.
+     */
     async turnEnded(client: ZetaClient, { stopped }: { stopped: boolean }) {
       const ended = steers;
       steers = [];
-      if (stopped) return;
+      const undelivered: string[] = [];
       for (const message of ended) {
         if (!(await dropped(client, message.id!))) continue;
+        if (stopped) { undelivered.push(message.intent); continue; }
         const result = await deliver(client, "send", { ...message, id: newId() });
         if (result.accepted === false) throw refusal(result);
       }
+      return undelivered;
     },
   };
 }
