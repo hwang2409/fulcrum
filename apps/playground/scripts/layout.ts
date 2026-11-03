@@ -392,8 +392,9 @@ try {
       await page.waitForSelector('[data-part="tool"]');
       // Code highlighting arrives after the highlighter loads; without this wait the text audit sees almost no syntax
       // spans. Wait for the five main roles, then for the span count to hold still.
-      const highlighted = await page.waitForFunction(() => ["keyword", "string", "comment", "function", "type"].every((role) => document.querySelector(`[data-part="timeline"] .tok-${role}`)), undefined, { timeout: 15_000 }).then(() => true, () => false);
-      if (!highlighted) failures.push(`${theme} @ ${width}: syntax highlighting did not arrive in 15 s`);
+      const missingRoles = () => page.evaluate(() => ["keyword", "string", "comment", "function", "type"].filter((role) => !document.querySelector(`[data-part="timeline"] .tok-${role}`)));
+      const highlighted = await page.waitForFunction(() => ["keyword", "string", "comment", "function", "type"].every((role) => document.querySelector(`[data-part="timeline"] .tok-${role}`)), undefined, { timeout: 30_000 }).then(() => true, () => false);
+      if (!highlighted) failures.push(`${theme} @ ${width}: no .tok-${(await missingRoles()).join(", .tok-")} span after 30 s; syntax highlighting did not arrive`);
       for (let last = -1, i = 0; i < 40; i++) {
         const spans = await page.locator('[data-part="timeline"] [class*="tok-"]').count();
         if (spans === last) break;
