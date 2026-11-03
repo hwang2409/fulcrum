@@ -1,3 +1,4 @@
+import { safeUrl } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
@@ -47,14 +48,8 @@ type Environment = { references?: Record<string, { href: string; title: string }
 
 const markdown = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
 
-const safeHref = (href: string | null) => {
-  if (href === null) return undefined;
-  const value = href.trim();
-  const normalized = value.replace(/[\u0000-\u0020]/g, "");
-  if (/^(https?:|mailto:)/i.test(normalized)) return value;
-  if (!/^[a-z][a-z\d+.-]*:/i.test(normalized) && !/^[\\/]{2}/.test(normalized)) return value;
-  return undefined;
-};
+// The one URL rule fulcrum renders with: http, https, mailto, or relative.
+const safeHref = (href: string | null) => safeUrl(href);
 
 const attr = (token: MarkdownToken, name: string) => token.attrGet(name) ?? undefined;
 

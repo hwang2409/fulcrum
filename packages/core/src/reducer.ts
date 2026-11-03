@@ -62,7 +62,9 @@ interface EntityDraft {
 }
 
 type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;
+type MessageBlock = Extract<RunEvent, { type: "message_block" }>;
 type MessageCommit = Extract<RunEvent, { type: "message_commit" }>;
+type MessageItem = Extract<RunItem, { type: "message" }>;
 const nextMessageId = (next: RunState, supplied?: string) => supplied ?? next.activeMessageId ?? (next.nextId === 1 ? "assistant" : `assistant-${next.nextId}`);
 const finishPriorMessage = (next: RunState, id: string, endActiveMessage: () => void) => {
   if (next.activeMessageId && next.activeMessageId !== id) endActiveMessage();
@@ -71,9 +73,24 @@ const appendMessageOutline = (next: RunState, itemId: string) => {
   next.outline = [...next.outline, { id: itemId, kind: "message" }];
   next.nextId += 1;
 };
+/**
+ * A streaming message reads as its content blocks, then its text tail. A block that is not text first moves the tail
+ * into the content as a text block, so text, reasoning, and sources keep the order they arrived in. Only the last
+ * block is copied: the other blocks keep their identity, so their renderers skip the update.
+ */
+const appendBlock = (prior: MessageItem | undefined, itemId: string, event: MessageDelta | MessageBlock): MessageItem => {
+  const message = prior?.message ?? { role: "assistant", content: [] };
+  const content = message.content.slice();
+  if (prior?.text) content.push({ type: "text", text: prior.text });
+  const last = content.at(-1);
+  if (event.type === "message_block") content.push(event.block);
+  else if (last && last.type === event.kind && typeof last.text === "string" && !prior?.text) content[content.length - 1] = { ...last, text: last.text + event.delta };
+  else content.push({ type: event.kind!, text: event.delta });
+  return { id: itemId, type: "message", message: { ...message, content }, version: (prior?.version ?? 0) + 1, active: true };
+};
 const reduceMessageDelta = (
   next: RunState,
-  event: MessageDelta,
+  event: MessageDelta | MessageBlock,
   getItem: EntityDraft["get"],
   setItem: EntityDraft["set"],
   endActiveMessage: () => void,
@@ -84,23 +101,9 @@ const reduceMessageDelta = (
   const old = getItem(itemId);
   const continuing = next.activeMessageId === id;
   const prior = old?.type === "message" ? old : undefined;
-  const streamedKind = event.kind && event.kind !== "assistant" && event.kind !== "text" ? event.kind : undefined;
-  const item = streamedKind
-    ? (() => {
-        const message = prior?.message ?? { role: "assistant", content: [] };
-        const content = message.content.map((block) => ({ ...block }));
-        const block = content.at(-1);
-        if (block?.type === streamedKind && typeof block.text === "string") block.text += event.delta;
-        else content.push({ type: streamedKind, text: event.delta });
-        return {
-          id: itemId,
-          type: "message" as const,
-          message: { ...message, content },
-          version: (prior?.version ?? 0) + 1,
-          active: true,
-          ...(prior?.text === undefined ? {} : { text: prior.text }),
-        };
-      })()
+  const text = event.type === "message_delta" && (!event.kind || event.kind === "assistant" || event.kind === "text");
+  const item = !text
+    ? appendBlock(prior, itemId, event)
     : appendText<RunItem>(
         { id: itemId, type: "message", message: prior?.message ?? { role: "assistant", content: [] }, version: (prior?.version ?? 0) + 1, active: true },
         continuing ? prior : undefined,
@@ -243,6 +246,7 @@ export function reduceAllWithEntities(
       case "message_start":
         break;
       case "message_delta":
+      case "message_block":
         reduceMessageDelta(next, event, getItem, setItem, endActiveMessage);
         break;
       case "message_commit":
