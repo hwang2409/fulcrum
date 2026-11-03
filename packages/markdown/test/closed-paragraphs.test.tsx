@@ -4,8 +4,7 @@ import { createStreamingDocument, parseMarkdown, type Block, type Inline } from 
 const splits = [1, 2, 3, 7, 20, 1000];
 
 const inlineText = (nodes: readonly Inline[], provisional: boolean): string => nodes.map((node) =>
-  node.type === "pending-text" ? provisional ? inlineText(node.children, provisional) : ""
-  : node.type === "text" || node.type === "code" || node.type === "pending-reference" ? node.value
+  node.type === "text" || node.type === "code" || node.type === "pending-reference" ? node.value
   : node.type === "image" ? node.alt
   : node.type === "break" ? "\n"
   : inlineText(node.children, provisional)).join("");

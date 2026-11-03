@@ -1,0 +1,90 @@
+import { expect, test } from "bun:test";
+import { createStreamingDocument, type Block, type Inline } from "../src/index.js";
+import { PENDING_INLINE_SUFFIX as PENDING_INLINE_SUFFIX_BUDGET } from "../src/pending-inline.js";
+
+function text(nodes: readonly Inline[]): string {
+  return nodes.map((node) => node.type === "text" || node.type === "pending-reference" || node.type === "code"
+    ? node.value
+    : node.type === "break" ? "\n"
+      : "children" in node ? text(node.children) : node.type === "image" ? node.alt : "").join("");
+}
+
+function stableText(nodes: readonly Inline[]): string {
+  return nodes.map((node) => node.type === "pending-reference" ? ""
+    : node.type === "text" || node.type === "code" ? node.value
+      : node.type === "break" ? "\n"
+        : "children" in node ? stableText(node.children) : node.type === "image" ? node.alt : "").join("");
+}
+
+function stableVisible(blocks: readonly Block[]): string {
+  return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? stableText(block.children)
+    : block.type === "code" ? block.value
+      : block.type === "blockquote" ? stableVisible(block.children)
+        : block.type === "list" ? block.items.map((item) => stableVisible(item.children)).join("")
+          : block.type === "table" ? [...block.header, ...block.rows.flat()].map(stableText).join("") : "").join("");
+}
+
+function subsequence(before: string, after: string) {
+  let cursor = 0;
+  for (const character of after) if (character === before[cursor]) cursor++;
+  return cursor === before.length;
+}
+
+function visible(blocks: readonly Block[]): string {
+  return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? text(block.children)
+    : block.type === "code" ? block.value
+      : block.type === "blockquote" ? visible(block.children)
+        : block.type === "list" ? block.items.map((item) => visible(item.children)).join("")
+          : block.type === "table" ? [...block.header, ...block.rows.flat()].map(text).join("") : "").join("");
+}
+
+test("a setext underline candidate stays hidden syntax while the heading text stays visible", () => {
+  const document = createStreamingDocument();
+  document.append("heading\n");
+  for (let offset = 0; offset < 100_000; offset += 1_024) {
+    document.append("=".repeat(1_024));
+    expect(visible(document.render())).toBe("heading");
+  }
+  document.append("\n");
+  expect(document.render()[0]?.type).toBe("heading");
+});
+
+for (const [name, source, stableCharacters] of [
+  ["unclosed bracket", `[${"x".repeat(100_000)}`, 100_000],
+] as const) test(`${name} keeps hidden and provisional text bounded at every prefix`, () => {
+  const document = createStreamingDocument();
+  for (let offset = 0; offset < source.length; offset += 1_024) {
+    document.append(source.slice(offset, offset + 1_024));
+    const blocks = document.render();
+    const received = Math.min(offset + 1_024, source.length);
+    const expectedStable = name === "unclosed bracket" ? Math.max(0, received - 1) : Math.max(0, received - "heading\n".length);
+    const hiddenStable = expectedStable - visible(blocks).replace("heading", "").length;
+    expect(hiddenStable, `prefix ${received}`).toBeLessThanOrEqual(PENDING_INLINE_SUFFIX_BUDGET);
+  }
+  expect(visible(document.render())).toContain("x".repeat(name === "unclosed bracket" ? stableCharacters : 0));
+});
+
+test("a late closer restyles retained characters without removing or reordering them", () => {
+  const label = "retained ".repeat(200);
+  const document = createStreamingDocument();
+  document.append(`[${label}](`);
+  const before = stableVisible(document.render());
+  expect(before.length).toBeGreaterThan(label.length - PENDING_INLINE_SUFFIX_BUDGET);
+  // The link style arrives once its closer leaves the provisional suffix.
+  document.append(`https://example.com)${" tail".repeat(60)}`);
+  const after = stableVisible(document.render());
+  expect(subsequence(before, after)).toBe(true);
+  expect(after.startsWith(label)).toBe(true);
+  expect(document.render()[0]?.type === "paragraph" && document.render()[0].children[0]?.type).toBe("link");
+});
+
+test("an unresolved owner copies only the delta and bounded suffix", () => {
+  const source = ("**strong** *emphasis* `code` [link](https://example.com) [" + "plain **strong** and *emphasis* with `code`. ".repeat(24_000)).slice(0, 1_000_000);
+  const document = createStreamingDocument();
+  for (let offset = 0; offset < source.length; offset += 1_024) {
+    const copied = document.stats.copiedCharacters;
+    document.append(source.slice(offset, offset + 1_024));
+    document.render();
+    expect(document.stats.copiedCharacters - copied, `offset ${offset}`).toBeLessThanOrEqual(1_024 + PENDING_INLINE_SUFFIX_BUDGET + 64);
+  }
+});

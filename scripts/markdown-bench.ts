@@ -86,10 +86,27 @@ for (const deltaSize of deltaSizes) for (const [name, source] of cases) {
 }
 const millionByteParagraph = measure("a".repeat(1_000_000), 1_024);
 console.log(`1024 B  ${"1 MB soft-wrapped paragraph".padEnd(22)} p95 ${millionByteParagraph.p95.toFixed(3)} ms  p99 ${millionByteParagraph.p99.toFixed(3)} ms  max ${millionByteParagraph.max.toFixed(3)} ms  work ${millionByteParagraph.workRatio.toFixed(2)}x  max-work ${millionByteParagraph.maxWork}  max-copy ${millionByteParagraph.maxCopied}`);
-if (failsGate(millionByteParagraph) || millionByteParagraph.maxCopied > 1_024) failed = true;
+// The growing line re-parses its fixed provisional suffix (256 plus at most 64 characters of cut slack).
+if (failsGate(millionByteParagraph) || millionByteParagraph.maxCopied > 1_024 + 256 + 64) failed = true;
 
 // The newline that commits a long rich line parses it once; quadratic scans took 6-8 s at 1 MB.
 const richUnit = "plain **strong** and *emphasis* with `code`. ";
+
+// A growing 1 MB rich line copies only the delta plus the fixed pending suffix, whatever its markers do.
+const PENDING_SUFFIX = 256;
+const richLines = [
+  ["1 MB rich line", richUnit],
+  ["1 MB must prose", "We **must** keep this fast. "],
+  ["1 MB arithmetic", "x * y = z and a_b. "],
+  ["1 MB code spans", "The function returns `null` when `value` is missing. "],
+  ["1 MB rich unresolved [", `**strong** *emphasis* \`code\` [link](https://example.com) [${richUnit}`],
+] as const;
+for (const [name, unit] of richLines) {
+  const result = measure(unit.repeat(Math.ceil(1_000_000 / unit.length)).slice(0, 1_000_000), 1_024);
+  console.log(`1024 B  ${name.padEnd(22)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  max-copy ${result.maxCopied}`);
+  if (result.p99 > 5 || result.max > 16 || result.maxCopied > 1_024 + PENDING_SUFFIX + 64) failed = true;
+}
+
 const commitTime = (length: number) => {
   const samples = Array.from({ length: 3 }, () => {
     const document = createStreamingDocument();
@@ -107,4 +124,22 @@ for (const [length, time] of commits) console.log(`newline  ${`rich line commit 
 const commitRatio = commits[2]![1] / Math.max(commits[0]![1], 0.1);
 console.log(`rich line commit growth 100k -> 1 MB: ${commitRatio.toFixed(1)}x (linear is ~10x)`);
 if (commitRatio > 25 || commits[2]![1] > 500) failed = true;
+
+// A paragraph's 2nd and later lines ask, on every delta, whether the growing line starts a block. That check must read
+// the line's first characters only; a whole-line regex makes continuation lines quadratic (15x time for 4x length).
+const continuationTime = (units: number) => {
+  const source = `first line\n${"word **b** `c` and more ".repeat(units)}`;
+  const samples = Array.from({ length: 3 }, () => {
+    const document = createStreamingDocument();
+    const start = performance.now();
+    for (let offset = 0; offset < source.length; offset += 64) { document.append(source.slice(offset, offset + 64)); document.render(); }
+    return performance.now() - start;
+  });
+  return samples.sort((a, b) => a - b)[1]!;
+};
+const continuationSmall = continuationTime(2_000);
+const continuationLarge = continuationTime(8_000);
+const continuationRatio = continuationLarge / Math.max(continuationSmall, 0.1);
+console.log(`64 B  continuation line 46k -> 184k: ${continuationSmall.toFixed(0)} -> ${continuationLarge.toFixed(0)} ms, ${continuationRatio.toFixed(1)}x (linear is ~4x, quadratic ~16x)`);
+if (continuationRatio > 8) failed = true;
 if (failed) process.exit(1);
