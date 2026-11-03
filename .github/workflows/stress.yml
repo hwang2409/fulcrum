@@ -6,12 +6,22 @@ on:
       - "apps/playground/**"
       - "scripts/**"
       - ".github/workflows/stress.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      inject:
+        description: "known-fail sensitivity injection"
+        required: false
+        type: choice
+        options: ["", row-subscription, frame-work, render-work, render-work-small]
 jobs:
   stress:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - uses: oven-sh/setup-bun@v2
         with: { bun-version: 1.3.13 }
       - uses: actions/setup-node@v4
@@ -21,7 +31,34 @@ jobs:
       - run: bun run --cwd packages/highlight build
       - run: bun run --cwd apps/playground build
       - run: cd apps/playground && bunx playwright install --with-deps chromium
-      - run: bun run stress
+      - name: build merge-base for paired comparison
+        env:
+          BASE_DIR: ${{ github.workspace }}/../fulcrum-stress-base
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            BASE_SHA=$(git merge-base HEAD origin/main)
+          else
+            BASE_SHA=$(git rev-parse HEAD^)
+          fi
+          git worktree add --detach "$BASE_DIR" "$BASE_SHA"
+          cd "$BASE_DIR"
+          bun install --frozen-lockfile
+          bunx tsc -b
+          bun run --cwd packages/highlight build
+          bun run --cwd apps/playground build
+      - name: counted-work gate
+        if: ${{ github.event_name == 'pull_request' && inputs.inject == '' }}
+        run: bun run --cwd apps/playground stress
+      - name: same-runner calibrated a/b gate
+        id: ab
+        env:
+          BASE_DIR: ${{ github.workspace }}/../fulcrum-stress-base
+          STRESS_BASE_ROOT: ${{ github.workspace }}/../fulcrum-stress-base/apps/playground
+          STRESS_CANDIDATE_ROOT: ${{ github.workspace }}/apps/playground
+          STRESS_BASE_URL: http://127.0.0.1:4174
+          STRESS_CANDIDATE_URL: http://127.0.0.1:4173
+          STRESS_INJECT: ${{ inputs.inject }}
+        run: bun run --cwd apps/playground stress:ab
       - if: always()
         uses: actions/upload-artifact@v4
         with:
