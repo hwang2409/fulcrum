@@ -35,7 +35,14 @@ missing, why the app needs it, and the proposed API.
 ### 3. history tool calls have no arguments (zeta)
 - **missing:** `session_history` sends `tool_use` blocks with `arguments: {}`.
 - **why:** reopened sessions show generic `bash` and `read` cards without `$ command` or a path. Live calls show the full cards.
-- **proposed api:** zeta keeps bounded arguments in history rows, or `session_events` carries them. Send to the zeta inbox.
+- **in the mapping now:** an approved call's `approval_request`/`approval_end` history rows keep the arguments, so
+  `fromZetaHistory` gives that call its full card. bash's result text (`"stdout:\n" + stdout + "\nstderr:\n" + stderr`)
+  is split back into stdout and stderr, and a clean result shows `exit 0` (`packages/zeta/test/history.test.ts`, with a
+  real `session_history` fixture). A call that needed no approval still has no arguments and keeps the generic card.
+- **also missing:** history sets `structured_content` to null, so a failed bash call's exit code is lost (zeta keeps
+  only `is_error`); a reopened failure shows "failed" without `exit N`.
+- **proposed api:** zeta keeps bounded arguments and bash's `exit_code` (or the bounded `structured_content`) in history
+  rows, or `session_events` carries them. Sent to the zeta inbox (920a34cf covers arguments).
 
 ### 4. list status for sessions other than the open one (zeta)
 - **missing:** `list_sessions` has no run state. Only `status` reports one session, the server's own.
@@ -83,6 +90,13 @@ missing, why the app needs it, and the proposed API.
 - **proposed api:** zeta echoes `delivery_id` in `user_message`, so a client can match the echo without a pending window.
 - **proposed api:** zeta keeps a dropped steer in history with its `dropped` outcome, so a reload can still show it.
 - **proposed api:** zeta serve delivers a late steer as the next turn, as the TUI does, so every client gets it.
+
+### 13. a stop and a dropped steer vanish after a reload (zeta)
+- **seen:** live, the user's stop is a neutral `stopped` row and a steer the stop dropped is marked "not delivered".
+  zeta's history has no row for either, so after a reload both are gone and the reply ends mid-sentence with no marker.
+- **in the app:** nothing is faked on the client: the rows come back when zeta records them.
+- **proposed api:** zeta writes durable rows for a user stop and for a dropped steer with its `dropped` outcome (zeta
+  inbox 920a34cf; see #10).
 
 ## library bugs found
 
