@@ -13,6 +13,7 @@ const expectedPlain: Record<string, number[]> = {
   "tool:run-edit tool-diff": [1],
   "tool:done-read tool-lines": [],
   "tool:done-read-py tool-lines": [],
+  "tool:nav-read tool-lines": [], // the sub-agent demo's parent run
   "tool:done-edit tool-diff": [1],
   "tool:done-write tool-lines": [],
   "tool:done-fetch tool-output": [],
