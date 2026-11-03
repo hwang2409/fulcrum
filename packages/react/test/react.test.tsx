@@ -824,3 +824,22 @@ test("the user's own stop is a neutral stopped row; a real error stays an error"
     ["error", "error", "rate limited"],
   ]);
 });
+
+test("with a pending approval, the timeline's first tab stop jumps to it and focuses its first action", async () => {
+  const store = createRunStore((flush) => flush());
+  for (let i = 0; i < 5; i++) {
+    const tool_call = { id: `t${i}`, name: "bash", arguments: { command: "ls" } };
+    store.dispatch({ type: "tool_start", tool_call, view: { kind: "shell", command: "ls" } });
+    store.dispatch({ type: "tool_end", tool_call, tool_result: { tool_call_id: `t${i}`, content: "a\n", is_error: false } });
+  }
+  store.dispatch({ type: "approval_request", request_id: "p", tool_call: { id: "rm", name: "bash", arguments: { command: "rm -rf dist" } }, view: { kind: "shell", command: "rm -rf dist" }, delegated: false });
+  const renderers: Renderers = { approval: ({ id }) => <Approval id={id} onApprove={() => {}} onDeny={() => {}} /> };
+  mount(<RunProvider store={store}><Timeline renderers={renderers} /></RunProvider>);
+  const first = container.querySelector<HTMLElement>("button, summary, [tabindex]")!;
+  expect(first.dataset.part).toBe("jump-to-approval");
+  expect(first.textContent).toContain("rm -rf dist");
+  await act(async () => first.click());
+  expect(document.activeElement?.getAttribute("data-action")).toBe("approve");
+  act(() => store.dispatch({ type: "approval_end", request_id: "p", data: { decision: "deny" } }));
+  expect(container.querySelector('[data-part="jump-to-approval"]')).toBeNull();
+});

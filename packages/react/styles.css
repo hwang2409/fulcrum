@@ -60,6 +60,30 @@
 }
 [data-part="jump-to-latest"]:hover { text-decoration: underline; text-underline-offset: 3px; }
 [data-part="jump-to-latest"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
+/* A skip link: the timeline's first tab stop while an approval waits. It takes no space (a negative bottom margin), so
+   showing it on focus never moves the rows; hidden from sight, not from screen readers, until focused. */
+[data-part="jump-to-approval"] {
+  position: sticky;
+  inset-block-start: 8px;
+  z-index: 2;
+  display: block;
+  max-width: 100%;
+  height: 32px;
+  margin-bottom: -32px;
+  padding: 0 12px;
+  overflow: hidden;
+  appearance: none;
+  border: 1px solid var(--fulcrum-warn);
+  border-radius: 0;
+  background: var(--fulcrum-bg);
+  color: var(--fulcrum-warn);
+  font: 700 13px/1 var(--fulcrum-font);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+[data-part="jump-to-approval"]:not(:focus) { clip-path: inset(50%); }
+[data-part="jump-to-approval"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 
 /* Messages: plain prose, no bubbles. The user's turn is a surface band with a prompt mark. */
 [data-part="message"] { max-width: 80ch; text-wrap: pretty; }

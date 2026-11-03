@@ -1,4 +1,4 @@
-import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
+import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type RefObject } from "react";
 import type { RunEvent, RunItem } from "@fulcrum/core";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
@@ -375,6 +375,36 @@ function AnnouncementTracker({ id, announce }: { id: string; announce(id: string
   return null;
 }
 
+// The first pending approval among the rows, re-read when any approval row changes.
+function usePendingApproval(items: readonly { id: string; kind?: string }[]) {
+  const store = useRunStore();
+  const ids = useMemo(() => items.filter((item) => item.kind === "approval").map(({ id }) => id), [items]);
+  const subscribe = useCallback((listener: () => void) => {
+    const stops = ids.map((id) => store.subscribe(id, listener));
+    return () => stops.forEach((stop) => stop());
+  }, [ids, store]);
+  const pending = () => ids.find((id) => { const item = store.getItem(id); return item?.type === "approval" && !item.ended; });
+  const id = useSyncExternalStore(subscribe, pending, pending);
+  const item = id ? store.getItem(id) : undefined;
+  return item?.type === "approval" && item.request.type === "approval_request" ? { id: item.id, request: item.request } : undefined;
+}
+
+/**
+ * While an approval waits, the timeline's first tab stop jumps to it (a skip link: drawn when focused), so keyboard
+ * users reach the decision without walking every row. It focuses the approval's first action.
+ */
+function ApprovalSkip({ items, reveal }: { items: readonly { id: string; kind?: string }[]; reveal: (id: string) => HTMLElement | null | Promise<HTMLElement | null> }) {
+  const pending = usePendingApproval(items);
+  if (!pending) return null;
+  const { tool_call, view } = pending.request;
+  const summary = toolSummary({ id: pending.id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false });
+  const jump = async () => {
+    const card = await reveal(pending.id);
+    (card?.querySelector<HTMLElement>("[data-part=approval-actions] button:not(:disabled)") ?? card)?.focus();
+  };
+  return <button type="button" data-part="jump-to-approval" onClick={() => void jump()}>jump to approval: {toolLabel(tool_call.name)} {oneLine(summary)}</button>;
+}
+
 function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; change: { type: "append" | "prepend"; count: number } | null }) {
   const initialized = useRef(false);
   const pending = useRef<string[]>([]);
@@ -518,6 +548,11 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
   if (!enabled) {
     return (
       <>
+        <ApprovalSkip items={items} reveal={(id) => {
+          const card = plainRef.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`) ?? null;
+          card?.scrollIntoView({ block: "nearest" });
+          return card;
+        }} />
         <div ref={plainRef} className={className} data-part="timeline" data-virtual="false" role="log" aria-label={ariaLabel} aria-live="off">
           {items.map(({ id }) => <Row key={id} id={id} renderers={renderers} />)}
         </div>
@@ -532,6 +567,11 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
   const retainedRow = retained >= 0 ? { ...items[retained]!, index: retained, start: -10_000, size: 0, loaded: true } : null;
   return (
     <>
+      <ApprovalSkip items={items} reveal={(id) => {
+        list.scrollToId(id);
+        // The row mounts on the next frame once scrolled into the window.
+        return new Promise((resolve) => requestAnimationFrame(() => resolve(document.querySelector<HTMLElement>(`[data-virtual-id="${CSS.escape(id)}"] [data-id="${CSS.escape(id)}"]`))));
+      }} />
       <div
         ref={list.timelineRef}
         className={className}
