@@ -97,22 +97,11 @@ export async function swap(virtual: boolean, where: "bottom" | "above" | "below"
   observer.observe(scroller, { childList: true, subtree: true });
   const heights: number[] = [];
   const positions: number[] = [];
-  // One sample per painted frame, as painted: a 1 px element changes width every frame, and its observer (made after
-  // the timeline's, so it runs after the timeline's corrections) reads layout after this frame's resize work, before paint.
-  let sampling = true;
-  const tick = document.body.appendChild(document.createElement("div"));
-  tick.style.cssText = "position: fixed; top: 0; left: 0; height: 1px; width: 1px; visibility: hidden";
-  const painted = new ResizeObserver(() => {
+  const stop = paintedFrames(() => {
     const current = box();
     if (current) { const height = Math.round(current.getBoundingClientRect().height * 10) / 10; if (heights.at(-1) !== height) heights.push(height); }
     positions.push(position());
   });
-  painted.observe(tick);
-  const sampler = (async () => {
-    for (let frame = 0; sampling; frame++) { tick.style.width = `${1 + (frame & 1)}px`; await new Promise(requestAnimationFrame); }
-    painted.disconnect();
-    tick.remove();
-  })();
   const closed = performance.now();
   close();
   await until(() => svgsIn(scroller) > 0);
@@ -120,8 +109,7 @@ export async function swap(virtual: boolean, where: "bottom" | "above" | "below"
   await sleep(500);
   // later events elsewhere never draw it again
   for (let i = 0; i < 10; i++) { run.store.dispatch(delta("later", `${words(5)} `)); await afterPaint(); }
-  sampling = false;
-  await sampler;
+  await stop();
   observer.disconnect();
   const drift = Math.max(...positions.map((value) => Math.abs(value - start)));
   run.remove();
@@ -129,6 +117,71 @@ export async function swap(virtual: boolean, where: "bottom" | "above" | "below"
   const moved = positions.filter((value) => Math.abs(value - start) > 1).length;
   const offsets = positions.map((value) => Math.round(value - start)).join(" ");
   return { virtual, where, following, drawnMs: Math.round(drawnMs), inserts, heights, drift: Math.round(drift * 10) / 10, moved, ...(moved ? { offsets } : {}), samples: positions.length };
+}
+
+/**
+ * The reader's own move beats a growing row (the virtual rule: the user beats the engine). The timeline follows the
+ * end, then, in one frame, a reader input moves 300 px up while the last row grows by `grow` px. `input`: "none" (no
+ * move: the end must stay in view in every painted frame), "scrollbar" (a pointer drag: no input event says where),
+ * "wheel", "key", "touch". After paint, every frame's scrollTop and gap to the bottom, for 12 frames.
+ */
+export async function race(input: "none" | "scrollbar" | "wheel" | "key" | "touch") {
+  const run = mountRun(true);
+  const { scroller, store } = run;
+  for (let i = 0; i < 30; i++) store.dispatch(commit(`race-${i}`, `before ${i}\n\n${words(70)}`));
+  const id = `race-${input}`;
+  store.dispatch(delta(id, "growing"));
+  for (let i = 0; i < 4; i++) { scroller.scrollTop = scroller.scrollHeight; await afterPaint(); }
+  const startTop = scroller.scrollTop;
+  const startGap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  const row = () => [...scroller.querySelectorAll<HTMLElement>("[data-virtual-id]")].at(-1)!; // the growing message
+  const rowBefore = row().getBoundingClientRect().height;
+  const moved = input === "none" ? startTop : startTop - 300;
+  const tops: number[] = [];
+  const gaps: number[] = [];
+  const stop = paintedFrames(() => { tops.push(scroller.scrollTop); gaps.push(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight); });
+  await new Promise<void>((resolve) => requestAnimationFrame(() => {
+    // after this frame's scroll events: the engine sees the move first in the next frame, as with a real drag
+    const at = { clientX: 200, clientY: 200 };
+    if (input === "scrollbar") scroller.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, ...at }));
+    if (input === "wheel") scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -300, ...at }));
+    if (input === "key") scroller.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "PageUp" }));
+    if (input === "touch") {
+      const touch = (clientY: number) => new Touch({ identifier: 1, target: scroller, clientX: 200, clientY });
+      scroller.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, touches: [touch(200)] }));
+      scroller.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, touches: [touch(500)] }));
+    }
+    scroller.scrollTop = moved;
+    store.dispatch(delta(id, `\n\n${Array.from({ length: 24 }, (_, i) => `line ${i}`).join("\n\n")}`));
+    resolve();
+  }));
+  for (let i = 0; i < 12; i++) await afterPaint();
+  await stop();
+  if (input === "touch") scroller.dispatchEvent(new TouchEvent("touchend", { bubbles: true, touches: [] }));
+  if (input === "scrollbar") scroller.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  const grew = Math.round(row().getBoundingClientRect().height - rowBefore);
+  run.remove();
+  const off = (values: number[], want: number) => values.filter((value) => Math.abs(value - want) > 1).length;
+  // the move: every painted scrollTop where the reader put it; no move: every painted gap the start's
+  const wrong = input === "none" ? off(gaps, startGap) : off(tops, moved);
+  return { input, grew, startTop: Math.round(startTop), moved: Math.round(moved), wrong, tops: tops.map(Math.round).join(" "), gaps: gaps.map(Math.round).join(" ") };
+}
+
+/** Calls `sample` once per painted frame, as painted, until the returned stop resolves. */
+function paintedFrames(sample: () => void) {
+  // a 1 px element changes width every frame, and its observer (made after the timeline's, so it runs after the
+  // timeline's corrections) reads layout after this frame's resize work, before paint
+  let sampling = true;
+  const tick = document.body.appendChild(document.createElement("div"));
+  tick.style.cssText = "position: fixed; top: 0; left: 0; height: 1px; width: 1px; visibility: hidden";
+  const painted = new ResizeObserver(sample);
+  painted.observe(tick);
+  const sampler = (async () => {
+    for (let frame = 0; sampling; frame++) { tick.style.width = `${1 + (frame & 1)}px`; await new Promise(requestAnimationFrame); }
+    painted.disconnect();
+    tick.remove();
+  })();
+  return () => { sampling = false; return sampler; };
 }
 
 /** A diagram drawn once shows from the cache in the commit that mounts it again: no source frame, no render. */
@@ -242,4 +295,4 @@ export async function single() {
   await until(() => svgsIn(host) === 1);
 }
 
-Object.assign(window, { scenarios: { swap, cached, many, hostile, single } });
+Object.assign(window, { scenarios: { swap, race, cached, many, hostile, single } });

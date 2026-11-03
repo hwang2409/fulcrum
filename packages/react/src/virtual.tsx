@@ -117,7 +117,10 @@ export function useVirtualList<Id extends string>(
       if (resizeFrame.current === null) resizeFrame.current = requestAnimationFrame(flushMeasurements);
       // Rows are in flow, so the DOM already has the new end: a pinned reader sticks to it before this frame paints,
       // not a frame later when the engine measures (and then agrees). Moving scroll resizes nothing: no observer loop.
-      if (engine.getSnapshot().pinned) container.scrollTop = container.scrollHeight - container.clientHeight;
+      // The user beats the engine: a scroll the engine has not seen yet (a scrollbar drag sends no input event first)
+      // is the reader's move, so the follow waits for its scroll event, which unpins; wheel, keys, and touch unpin earlier.
+      const { pinned, scrollTop } = engine.getSnapshot();
+      if (pinned && Math.abs(container.scrollTop - scrollTop) < 1) container.scrollTop = container.scrollHeight - container.clientHeight;
     });
     observerRef.current = observer;
     for (const row of rows.current.values()) observer.observe(row);

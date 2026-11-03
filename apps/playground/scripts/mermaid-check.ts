@@ -3,6 +3,8 @@
 //   the virtual timeline follows; the first row in view otherwise), with the diagram at the bottom, just above the
 //   viewport, or below it, in virtual and plain timelines; when the box passes through any height between its source
 //   and its diagram (a blank or collapsed frame); or when the svg is inserted more than once;
+// - a reader's move up (a scrollbar drag, wheel, key, or touch) in the same frame as the last row's growth does not
+//   hold in every painted frame, or, with no move, the end leaves the view in any painted frame;
 // - a remounted diagram does not show from the cache in its first commit;
 // - with 50 diagrams, any diagram far from the view draws before it is scrolled near, or they do not all draw;
 // - hostile diagrams (html labels, click callbacks, javascript: links, outside urls, init/frontmatter overrides) get
@@ -62,6 +64,14 @@ try {
     if ((result.drift as number) > 1) failures.push(`${name}: the reading position moved ${result.drift} px`);
     if ((result.heights as number[]).length > 2) failures.push(`${name}: the box went through ${(result.heights as number[]).join(" -> ")} px, expected source -> diagram`);
     if (result.inserts !== 1) failures.push(`${name}: the svg was inserted ${result.inserts} times`);
+  }
+  for (const input of ["none", "scrollbar", "wheel", "key", "touch"]) {
+    const result = await run(page, "race", input);
+    console.log(`race ${input}\t${JSON.stringify(result)}`);
+    if ((result.grew as number) < 300) failures.push(`race ${input}: the row grew only ${result.grew} px`);
+    if (result.wrong) failures.push(input === "none"
+      ? `race none: the end left the view in ${result.wrong} painted frames (gaps ${result.gaps})`
+      : `race ${input}: the timeline overrode the reader's move in ${result.wrong} painted frames (scrollTop ${result.tops}, the reader's ${result.moved})`);
   }
   const cached = await run(page, "cached");
   console.log(`cached\t${JSON.stringify(cached)}`);
