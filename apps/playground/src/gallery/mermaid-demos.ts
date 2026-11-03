@@ -12,6 +12,13 @@ export const diagrams: Array<[id: string, title: string, intro: string, code: st
     "  E --> F([virtual rows])",
     "  B -.->|unknown| G[Fallback]",
   ].join("\n")],
+  ["pipeline", "flowchart, short", "One tool call, end to end:", [
+    "flowchart LR",
+    "  A[user prompt] --> B[agent loop]",
+    "  B -->|tool call| C[bash]",
+    "  C --> D[tool result]",
+    "  D --> B",
+  ].join("\n")],
   ["sequence", "sequence", "The approval round trip:", [
     "sequenceDiagram",
     "  autonumber",

@@ -229,7 +229,7 @@ export function MermaidFence({ code, done, source }: FenceProps) {
   const showDiagram = !!diagram && view === "diagram";
   const state = !done ? "streaming" : diagram ? view : shown ? "error" : "pending";
   return (
-    <div ref={box} data-part="mermaid" data-state={state}>
+    <div ref={box} data-part="mermaid" data-state={state} data-wide="">
       {diagram ? (
         <div data-part="mermaid-bar">
           <span data-part="mermaid-caption">mermaid</span>

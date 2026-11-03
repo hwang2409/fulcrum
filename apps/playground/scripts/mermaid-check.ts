@@ -12,6 +12,9 @@
 // - the page fetches mermaid before the first fence closes;
 // - a gallery diagram at 1440, 768, or 390 px is scaled up, scaled so its smallest label is under 11 px, scrolls when
 //   it could shrink and stay readable, or overflows its box without an edge fade and a labelled focusable region;
+// - a gallery diagram, in tokyo-night at every width and github-light at 1440 px, is narrower than its content column
+//   (held to the 80ch text measure), hides no less than a box at that measure would, or its text exceeds the measure;
+// - at 1440 px the short flowchart (too wide for the 80ch measure, not for the content width) does not fit fully;
 // - at 390 px the diagram does not scroll inside its box, or the page scrolls sideways;
 // - the bar's controls are not reachable by Tab with their names, full size does not open and close by keyboard with
 //   focus back on its button, or the svg has no label;
@@ -89,18 +92,29 @@ try {
 
   // Fit: every gallery diagram at 1440, 768, and 390 px either fits its box with its smallest label at 11 px or more
   // (or at its own size, never scaled up), or scrolls inside it at that readable scale with a visible edge fade and
-  // a labelled, focusable scroll region. Full size is always the natural size.
-  for (const width of [1440, 768, 390]) {
+  // a labelled, focusable scroll region. Full size is always the natural size. A diagram is a wide block: it gets the
+  // message's whole content width, not the 80ch text measure.
+  for (const [width, theme] of [[1440, "tokyo-night"], [1440, "github-light"], [768, "tokyo-night"], [390, "tokyo-night"]] as const) {
     const gallery = await context.newPage();
     gallery.on("pageerror", (error) => failures.push(`gallery ${width}: ${error.message}`));
     await gallery.setViewportSize({ width, height: 900 });
-    await gallery.goto(`http://127.0.0.1:${port}/gallery.html?theme=tokyo-night#Mermaid`);
+    await gallery.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#Mermaid`);
     const done = gallery.locator('article[id^="mermaid-"][id$="-done"]:not(#mermaid-invalid-done)');
     await done.first().waitFor({ timeout: 120_000 });
     for (const card of await done.all()) {
       await card.scrollIntoViewIfNeeded();
       await card.locator("[data-part=mermaid-diagram] > svg").waitFor({ timeout: 60_000 });
     }
+    // The edge fades ease in over 120 ms: read them once every running transition has ended, not mid-fade.
+    await gallery.evaluate(async () => {
+      // A transition reversed midway is canceled (finished rejects) and replaced, so look again until none runs.
+      for (;;) {
+        await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+        const fading = document.getAnimations().filter((animation) => animation instanceof CSSTransition);
+        if (!fading.length) break;
+        await Promise.all(fading.map((animation) => animation.finished.catch(() => {})));
+      }
+    });
     const fits = await gallery.evaluate(() => [...document.querySelectorAll<HTMLElement>('article[id$="-done"] [data-part=mermaid-diagram]')].map((box) => {
       const svg = box.querySelector("svg")!;
       const natural = Math.ceil(svg.viewBox.baseVal.width); // the drawn size: sanitizeSvg rounds the viewBox up
@@ -109,17 +123,24 @@ try {
       for (const text of svg.querySelectorAll("text")) if (text.textContent?.trim()) least = Math.min(least, parseFloat(getComputedStyle(text).fontSize));
       const overflows = box.scrollWidth > box.clientWidth + 1;
       const frame = box.parentElement!;
+      const message = box.closest<HTMLElement>("[data-part=message]")!;
       const fade = getComputedStyle(frame, "::after");
       return {
-        id: box.closest("article")!.id, box: box.clientWidth, natural: Math.round(natural), scale: Math.round(scale * 1000) / 1000,
-        smallest: Math.round(least * scale * 10) / 10, natural_smallest: least, overflows,
+        id: box.closest("article")!.id, column: message.parentElement!.clientWidth, frame: frame.offsetWidth, box: box.clientWidth,
+        text: message.querySelector<HTMLElement>(":scope > p")!.offsetWidth, measure: parseFloat(getComputedStyle(message).getPropertyValue("--fulcrum-measure")), natural: Math.round(natural), scale: Math.round(scale * 1000) / 1000,
+        smallest: Math.round(least * scale * 10) / 10, natural_smallest: least, overflows, hidden: box.scrollWidth - box.clientWidth, scroll: box.scrollWidth,
         cue: overflows ? { fade: fade.content !== "none" && Number(fade.opacity) > 0.5 && parseFloat(fade.width) >= 16, region: box.tabIndex === 0 && box.getAttribute("role") === "region" && !!box.getAttribute("aria-label") } : null,
       };
     }));
     await gallery.close();
     for (const fit of fits) {
-      console.log(`fit ${width}\t${JSON.stringify(fit)}`);
-      const name = `fit ${width} ${fit.id}`;
+      console.log(`fit ${width} ${theme}\t${JSON.stringify(fit)}`);
+      const name = `fit ${width} ${theme} ${fit.id}`;
+      if (!(fit.measure > 0) || fit.text > fit.measure + 1) failures.push(`${name}: the text beside the diagram is ${fit.text} px, over its ${fit.measure} px measure`);
+      // On bea1aaa the box was held to the measure: the short flowchart (864 px natural) scrolled there; it fits here.
+      if (width === 1440 && fit.id === "mermaid-pipeline-done" && fit.overflows) failures.push(`${name}: scrolls ${fit.hidden} px in its ${fit.box} px box, it fits the full content width`);
+      if (fit.overflows && fit.column > fit.measure + 2 && fit.hidden >= fit.scroll - fit.measure) failures.push(`${name}: hides ${fit.hidden} px, no less than a box held to the ${fit.measure} px measure`);
+      if (fit.frame < fit.column - 1) failures.push(`${name}: the diagram is ${fit.frame} px wide in a ${fit.column} px content column (held to the text measure)`);
       if (fit.scale > 1.001) failures.push(`${name}: scaled up to ${fit.scale}`);
       if (fit.scale < 0.999 && fit.smallest < 10.95) failures.push(`${name}: scaled to ${fit.scale}, its smallest label is ${fit.smallest} px (under 11)`);
       if (fit.overflows && !(fit.cue!.fade && fit.cue!.region)) failures.push(`${name}: overflows its ${fit.box} px box without a cue (${JSON.stringify(fit.cue)})`);

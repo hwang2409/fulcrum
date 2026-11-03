@@ -1,4 +1,4 @@
-// Screenshots of every gallery Mermaid card, streaming and done, at 1440 and 390 px, in a dark and a light theme.
+// Screenshots of every gallery Mermaid card, streaming and done, at 1440, 768, and 390 px, in a dark and a light theme.
 // OUT sets the folder (default ~/.zeta/scratch/fulcrum-mermaid); THEMES a comma list. Runs vite's dev server.
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
@@ -18,7 +18,7 @@ try {
   }
   const browser = await chromium.launch();
   try {
-    for (const theme of themes) for (const width of [1440, 390]) {
+    for (const theme of themes) for (const width of [1440, 768, 390]) {
       const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
