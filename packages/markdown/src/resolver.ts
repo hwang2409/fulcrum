@@ -177,9 +177,9 @@ function classifyLeaf(line: string): PendingClassification {
   const openBracket = content.lastIndexOf("[");
   if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
   else if (firstBracket >= 0 && content.trimEnd().endsWith("]")) content = content.slice(0, openBracket);
-  const visibleContent = content.includes("|") && (content.trimStart().startsWith("|") || content.split("|").length > 2)
+  const visibleContent = content.includes("|")
     ? content.split("|").map((cell) => cell.trim()).join("")
-    : content.replaceAll("|", "");
+    : content;
   return {
     content: visibleContent,
     kind: "paragraph",

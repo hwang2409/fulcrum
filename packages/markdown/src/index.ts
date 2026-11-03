@@ -1212,7 +1212,7 @@ export function createStreamingDocument(): StreamingDocument {
         else if (disposition === "none" && classification.content) appendOpenCode(overlay, classification.content);
       } else {
         const startsBlock = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
-        if (!(openTable && !startsBlock && classification.kind === "paragraph" && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment(), blockedReferences)))
+        if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.content && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment(), blockedReferences)))
           appendPendingParagraph(overlay, pendingPreview(), Boolean(openParagraph) && !startsBlock);
       }
       previewSource = source;
