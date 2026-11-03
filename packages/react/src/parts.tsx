@@ -206,8 +206,8 @@ export const Approval = memo(function Approval({
           </div>
           {onApprove || onDeny || disabledReason ? (
             <div data-part="approval-actions">
-              <button type="button" data-action="approve" disabled={!onApprove || Boolean(sending)} onClick={onApprove ? decide("approve", onApprove) : undefined}>approve</button>
-              <button type="button" data-action="deny" disabled={!onDeny || Boolean(sending)} onClick={onDeny ? decide("deny", onDeny) : undefined}>deny</button>
+              {onApprove || disabledReason ? <button type="button" data-action="approve" disabled={!onApprove || Boolean(sending)} onClick={onApprove ? decide("approve", onApprove) : undefined}>approve</button> : null}
+              {onDeny || disabledReason ? <button type="button" data-action="deny" disabled={!onDeny || Boolean(sending)} onClick={onDeny ? decide("deny", onDeny) : undefined}>deny</button> : null}
               {disabledReason ? <span role="status">{disabledReason}</span> : null}
             </div>
           ) : null}
