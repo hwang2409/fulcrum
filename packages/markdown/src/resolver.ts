@@ -194,6 +194,14 @@ export class MarkdownLineResolver {
     return cursor.line.slice(cursor.offset);
   }
 
+  get pendingFenceDisposition(): "none" | "possible" | "closes" {
+    if (this.openLeaf?.kind !== "fence") return "none";
+    const marker = this.openLeaf.marker;
+    const content = this.pendingLeafContent;
+    if (new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(content)) return "closes";
+    return new RegExp(`^ {0,3}${marker[0]}+\\s*$`).test(content) ? "possible" : "none";
+  }
+
   append(delta: string): LineResolution[] {
     const resolved: LineResolution[] = [];
     let offset = 0;

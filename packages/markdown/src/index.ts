@@ -658,6 +658,13 @@ function pendingLeafContent(line: string) {
 const canContinueReferenceTitle = (line: string) => /^ {0,3}\[[^\]\n]+\]:[ \t]*(?:<[^>\n]+>|\S+)[ \t]*$/.test(pendingLeafContent(line));
 const hasInlineReferenceTitle = (line: string) => /[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\))[ \t]*$/.test(line);
 
+function closeOpenCode(blocks: Block[]): boolean {
+  const code = tailCode(blocks);
+  if (!code?.open) return false;
+  code.open = false;
+  return true;
+}
+
 function appendOpenCode(blocks: Block[], content: string): boolean {
   for (let index = blocks.length - 1; index >= 0; index--) {
     const block = blocks[index]!;
@@ -1183,7 +1190,9 @@ export function createStreamingDocument(): StreamingDocument {
       const pendingLeaf = openCode ? resolver.pendingLeafContent : pendingLeafContent(pending);
       const overlay = cloneOpenPath(openRoots, Boolean(openParagraph || openCode));
       if (openCode && !openIndentedCode) {
-        if (!/^(?:`+|~+)\s*$/.test(pendingLeaf.trim())) appendOpenCode(overlay, pendingLeaf);
+        const disposition = resolver.pendingFenceDisposition;
+        if (disposition === "closes") closeOpenCode(overlay);
+        else if (disposition === "none") appendOpenCode(overlay, pendingLeaf);
       } else {
         appendPendingParagraph(overlay, pendingPreview(), environment(), Boolean(openParagraph), blockedReferences);
       }
