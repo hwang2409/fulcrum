@@ -909,7 +909,7 @@ export function createStreamingDocument(): StreamingDocument {
 
   const updateParagraph = (record: ParagraphRecord, streaming = false, pendingReferences = true) => {
     unregister(record);
-    const classified = streaming ? resolver.classifyPending(record.source) : undefined;
+    const classified = streaming && !record.source.includes("\n") ? resolver.classifyPending(record.source) : undefined;
     let inlineSource = classified?.kind === "paragraph" ? classified.content : record.source;
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
