@@ -856,6 +856,8 @@ ul[data-part="md-list"] { list-style: "- "; }
   font-size: 12px;
 }
 [data-part="composer"][data-state="read-only"] { --rail: var(--fulcrum-muted); }
+[data-part="composer"][data-state="read-only"]:focus { outline: none; }
+[data-part="composer"][data-state="read-only"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 [data-part="composer"][data-state="read-only"] [data-part="composer-field"] { color: var(--fulcrum-muted); }
 [data-part="composer-reason"]::before { content: ""; flex: none; width: 7px; height: 7px; outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
 @media (pointer: coarse) { [data-part="composer"] button { min-height: 44px; } }

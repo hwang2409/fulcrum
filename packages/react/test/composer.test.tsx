@@ -287,3 +287,10 @@ test("the field has a name, starts from defaultValue, and the grow mirror carrie
   type("a\nb\n");
   expect(q('[data-part="composer-field"]')!.dataset.value).toBe("a\nb\n");
 });
+
+test("when the composer goes read-only while stop has focus, focus moves to the read-only composer, not the page", () => {
+  mount(<Composer state="steerable" onSubmit={() => Promise.resolve()} onStop={() => {}} />);
+  act(() => stop()!.focus());
+  render(<Composer state="read-only" reason="reconnecting" onSubmit={() => Promise.resolve()} />);
+  expect(document.activeElement).toBe(q('[data-part="composer"]'));
+});
