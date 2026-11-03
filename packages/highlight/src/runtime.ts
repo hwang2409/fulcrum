@@ -205,6 +205,8 @@ export class TokenizerRuntime {
     if (this.warmingActive) return;
     this.warmingActive = true;
     try {
+      // let requests from the current turn register before starting background grammar work
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       while (this.warmTasks.size) {
         const task = [...this.warmTasks.entries()].sort((a, b) => b[1].order - a[1].order)[0]!;
         this.warmTasks.delete(task[0]);
@@ -224,7 +226,11 @@ export class TokenizerRuntime {
     // from the exact syntax the caller asked to render, then the same block is replayed with the normal path.
     this.warmed.add(language);
     this.initializing.add(language);
-    try { await this.flushProvisional(language, epoch); } finally { this.initializing.delete(language); }
+    try {
+      // initialize the grammar scanner before replaying the caller's full source; the replay remains the only displayed result
+      highlighter.codeToTokensBase("x\n", { lang: language, theme: THEME, tokenizeMaxLineLength: MAX_LINE });
+      await this.flushProvisional(language, epoch);
+    } finally { this.initializing.delete(language); }
   }
 
   // Compiles each pattern not yet cached, yielding to the worker's queue after each WARM_SLICE_MS.
@@ -349,7 +355,7 @@ export class TokenizerRuntime {
       const result = highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, ...(initializing ? {} : { tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS }) });
       const elapsed = performance.now() - started;
       if (attempt > 1) budget.retryMs -= elapsed;
-      if (elapsed < TOKENIZE_TIME_LIMIT_MS) return result;
+      if (initializing || elapsed < TOKENIZE_TIME_LIMIT_MS) return result;
       // No per-line time budget: a pause can make the first attempt long, and it must not cost the line its retry.
       if (attempt >= LINE_ATTEMPTS || budget.retryMs < TOKENIZE_TIME_LIMIT_MS) return undefined;
     }

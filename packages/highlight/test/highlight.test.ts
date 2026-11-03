@@ -227,7 +227,7 @@ describe("incremental tokenization", () => {
     const runtime = new TokenizerRuntime((context, language, tokens) => { if (context.id === "visible-julia" && language === "julia" && tokens.some((token) => token.type)) colored = true; });
     background.forEach((language, index) => { void runtime.tokenize("function greet() { return 1; }\n", language, { id: `background-${index}`, version: 1, state: "done" }); });
     const started = Date.now();
-    void runtime.tokenize("function greet()\n  return 1\nend\n", "julia", { id: "visible-julia", version: 1, state: "done" });
+    void runtime.tokenize("function greet(name)\n  return \"hello $name\"\nend\n", "julia", { id: "visible-julia", version: 1, state: "done" });
     while (!colored && Date.now() - started < 1_500) await new Promise((resolve) => setTimeout(resolve, 10));
     expect(colored).toBe(true);
     expect(Date.now() - started).toBeLessThan(1_500);
