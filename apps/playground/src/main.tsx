@@ -1,10 +1,12 @@
 import "@fulcrum/highlight/styles.css";
+import "@fulcrum/mermaid/styles.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, initialState, type RunEvent, type RunItem } from "@fulcrum/core";
 import { createAiSdkAdapter } from "@fulcrum/ai-sdk";
 import { createHighlighter } from "@fulcrum/highlight";
-import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
+import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
+import { MermaidFence } from "@fulcrum/mermaid";
 import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
 import { connectZeta, discoverZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
@@ -58,7 +60,8 @@ const HUGE = `${STATIC}${HUGE_MESSAGES}`;
 const STRESS_RATE = 200;
 const REPLAY_STORE_LAPS = 8;
 const highlight = createHighlighter();
-const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
+const fences: Fences = { mermaid: MermaidFence };
+const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} fences={fences} />;
 addEventListener("pagehide", () => highlight.dispose(), { once: true });
 
 // Sampled by the readout outside React state, so the readout never re-renders the timeline.

@@ -1,5 +1,6 @@
 import { createHighlighter } from "@fulcrum/highlight";
-import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
+import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
+import { MermaidFence } from "@fulcrum/mermaid";
 import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvider, Timeline, useItemSelector, useRun, useRunStore, useTimeline, type Renderers } from "@fulcrum/react";
 import type { SessionStore, ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
@@ -10,7 +11,8 @@ import { ThemePicker, useTheme } from "./theme";
 
 const highlight = createHighlighter();
 addEventListener("pagehide", () => highlight.dispose(), { once: true });
-const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
+const fences: Fences = { mermaid: MermaidFence };
+const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} fences={fences} />;
 
 // Renderers stay module-level so appends never re-render every row; approvals reach the live client through context.
 type Decide = (requestId: string) => Promise<unknown>;
