@@ -9,7 +9,7 @@ export type ContainerFrame =
 export type OpenedContainer = Exclude<ContainerFrame, { kind: "document" }>;
 
 export type ResolvedLeaf = {
-  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code" | "atx-heading" | "setext-heading";
+  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code" | "atx-heading" | "setext-heading" | "thematic-break";
   content: string;
   path: readonly ContainerFrame[];
   marker?: string;
@@ -136,6 +136,7 @@ function consumeItemIndent(cursor: Cursor, width: number) {
 }
 
 const isBlank = (line: string, offset = 0) => /^[ \t]*$/.test(line.slice(offset));
+const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
 const frameEqual = (left: ContainerFrame, right: ContainerFrame) => left.kind === right.kind
   && (left.kind !== "list" || right.kind === "list" && left.ordered === right.ordered);
 
@@ -221,6 +222,7 @@ export class MarkdownLineResolver {
           opened.push(frame);
           continue;
         }
+        if (isThematicBreak(cursor.line.slice(cursor.offset))) break;
         const beforeMarker = { ...cursor };
         const marker = listMarker(cursor);
         if (!marker) break;
@@ -249,6 +251,16 @@ export class MarkdownLineResolver {
         closedToDepth,
         opened,
         leaf: { kind: "setext-heading", content: "", level: setext[1]![0] === "=" ? 1 : 2, path: leafPath() },
+      };
+    }
+    if (isThematicBreak(content)) {
+      this.openLeaf = undefined;
+      return {
+        continued: false,
+        lazy: false,
+        closedToDepth,
+        opened,
+        leaf: { kind: "thematic-break", content: "", path: leafPath() },
       };
     }
     const atx = /^ {0,3}(#{1,6})(?:[ \t]+(.*?)[ \t]*|[ \t]*)$/.exec(content);

@@ -21,6 +21,15 @@ test("resolves atx headings at the deepest container", () => {
   }]);
 });
 
+test("resolves a thematic break when no paragraph can take it as setext", () => {
+  const source = "> - * * *\n";
+  expect(leaves(source)).toMatchObject([{ kind: "thematic-break", content: "" }]);
+  expect(parseMarkdown(source)).toEqual([{
+    type: "blockquote",
+    children: [{ type: "list", ordered: false, start: undefined, items: [{ children: [{ type: "rule" }] }] }],
+  }]);
+});
+
 test("turns only the preceding paragraph into a setext heading", () => {
   const source = "> title\n> ===\n";
   const resolved = leaves(source);
