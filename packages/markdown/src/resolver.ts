@@ -249,8 +249,9 @@ export class MarkdownLineResolver {
     const startsQuote = consumeQuote(probe);
     const marker = startsQuote ? undefined : listMarker(probe);
     const startsContainer = startsQuote || Boolean(marker);
+    const startsInterruptingContainer = startsQuote || Boolean(marker && (!marker.ordered || /^1[.)]$/.test(marker.marker) || unmatched && this.stack.length > 1 || this.stack.some((frame) => frame.kind === "list" && frame.ordered)));
     const unmatchedContent = line.slice(cursor.offset);
-    const startsBlock = startsContainer || /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$|<)/.test(unmatchedContent);
+    const startsBlock = startsInterruptingContainer || this.openLeaf?.kind === "paragraph" && (this.openLeaf.content.includes("|") && isTableDelimiter(unmatchedContent) || /^ {0,3}(?:=+|-+)\s*$/.test(unmatchedContent)) || /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$|<)/.test(unmatchedContent);
     if (!unmatched && this.openLeaf?.kind === "table" && !blank && !startsContainer) {
       return {
         continued: true,
@@ -261,19 +262,20 @@ export class MarkdownLineResolver {
       };
     }
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
-    const lazy = unmatched && this.openLeaf?.kind === "paragraph" && !blank && !startsBlock;
-    let closedToDepth = lazy ? this.stack.length : matchedDepth;
+    const continuesParagraph = this.openLeaf?.kind === "paragraph" && !blank && !startsBlock;
+    const lazy = unmatched && continuesParagraph;
+    let closedToDepth = continuesParagraph ? this.stack.length : matchedDepth;
     const unmatchedFrame = this.stack[matchedDepth];
     const parent = this.stack[matchedDepth - 1];
-    if (!lazy && unmatchedFrame?.kind === "item" && parent?.kind === "list"
+    if (!continuesParagraph && unmatchedFrame?.kind === "item" && parent?.kind === "list"
       && (!marker || marker.ordered !== parent.ordered)) closedToDepth--;
-    if (!lazy) {
+    if (!continuesParagraph) {
       this.stack.length = closedToDepth;
       if (unmatched || blank) this.openLeaf = undefined;
     }
 
     const opened: OpenedContainer[] = [];
-    if (!lazy && !blank) {
+    if (!continuesParagraph && !blank) {
       for (;;) {
         if (consumeQuote(cursor)) {
           const frame = { kind: "quote" } as const;
@@ -304,7 +306,7 @@ export class MarkdownLineResolver {
       return { continued: false, lazy: false, closedToDepth, opened };
     }
     const content = line.slice(cursor.offset);
-    if (lazy && this.openLeaf?.kind === "paragraph") {
+    if (continuesParagraph && this.openLeaf?.kind === "paragraph") {
       this.openLeaf.content += `\n${content}`;
       return {
         continued: true,

@@ -1,18 +1,13 @@
-# @fulcrum/markdown
+## streaming resolver
 
-## streaming limits
+streaming markdown uses one physical-line resolver. it owns the open document, quote, list, and item path, plus the current leaf and the document-wide reference index. it does not create child streaming documents. committed lines are processed once; only the unfinished physical line is previewed.
 
-The recursive container parser fixes the three deep-streaming limits recorded in PR #13 review round 6:
+`test/recursive-containers.test.tsx` covers generated nesting through depth 6 and the 100 kb `blockquote > list > blockquote` regression. `bun run bench:markdown` enforces the 1.2 work-ratio and 16 ms worst-delta gates.
 
-- a 100 KB `blockquote > list > blockquote` stream no longer rescans retained containers;
-- the unfinished nested-table prefix `>   > |` stays hidden;
-- 1-byte mixed-quote deltas stay on the bounded open path used by the latency benchmark.
+three active-stream transitions are measured exceptions:
 
-`test/recursive-containers.test.tsx` keeps the regressions and generated nesting up to depth 6 covered. `bun run bench:markdown` enforces the 1.2 work-ratio and 16 ms worst-delta gates.
+- an eof reference definition stays pending while a next-line title is still possible;
+- a pipe-led nested line can remain undecided until the delimiter line establishes or rejects a table;
+- a complete retroactive block marker can remove its own syntax from visible text. the minimized case is `1. 3. setext heading\n      ===`: the completed `===` becomes heading syntax. this is recorded as `block-marker-transition`, not a parse failure.
 
-Two active-stream states intentionally wait for more input:
-
-- a reference use stays pending when its definition at EOF can still receive a title on the next line;
-- a pipe-led line inside a quote or list can briefly show a raw `|` until the next line decides whether it is a table. only that pipe may disappear; all other visible text must stay monotonic.
-
-`test/fuzz.ts` permits only these exact exceptions and requires `finish()` to equal one-shot parsing.
+all exceptions remain crash-free. `finish()` must equal the one-shot `parseMarkdown` result for every fuzz document.

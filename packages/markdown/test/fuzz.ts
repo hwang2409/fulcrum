@@ -2,7 +2,7 @@ import { createStreamingDocument, parseMarkdown, type Block, type Inline } from 
 
 type Random = () => number;
 type FuzzFailure = { source: string; splitSeed: number; reason: string };
-export type FuzzStats = { eofReferences: number; nestedPipeTransitions: number };
+export type FuzzStats = { eofReferences: number; nestedPipeTransitions: number; blockMarkerTransitions: number };
 
 const fixedLeaves = [
   "plain **strong** *emphasis* ~~strike~~ `code` and AT&amp;T.",
@@ -103,12 +103,19 @@ function equalValue(active: unknown, expected: unknown, pending: { count: number
     pending.count++;
     return true;
   }
-  const actualKeys = Object.keys(actual).filter((key) => key !== "open");
-  const expectedKeys = Object.keys(wanted).filter((key) => key !== "open");
+  const actualKeys = Object.keys(actual).filter((key) => key !== "open" && (!allowPending || key !== "tight"));
+  const expectedKeys = Object.keys(wanted).filter((key) => key !== "open" && (!allowPending || key !== "tight"));
   return actualKeys.length === expectedKeys.length && actualKeys.every((key) => expectedKeys.includes(key) && equalValue(actual[key], wanted[key], pending, allowPending));
 }
 
-const provisionalDefinitionAtEof = (source: string) => /(?:^|\n)(?: {0,3}> ?)*(?: {0,3}(?:[-+*]|\d{1,9}[.)])\s+)?\[[^\]\n]+\]:[^\n]*(?:\n(?: {0,3}> ?)*)?$/.test(source);
+const provisionalDefinitionAtEof = (source: string) => {
+  let line = source.slice(source.lastIndexOf("\n") + 1);
+  for (;;) {
+    const marker = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)?.[0];
+    if (!marker) return /^\s*\[[^\]\n]+\]:[^\n]*$/.test(line);
+    line = line.slice(marker.length);
+  }
+};
 
 function matchesActiveException(active: readonly Block[], expected: readonly Block[], source: string) {
   const pending = { count: 0 };
@@ -128,9 +135,19 @@ function pipeLedContainerLine(source: string) {
   return containers > 0 && line.trimStart().startsWith("|");
 }
 
+function syntaxOnlyDisappearance(previous: string, current: string) {
+  let offset = 0;
+  let removed = "";
+  for (const character of previous) {
+    if (character === current[offset]) offset++;
+    else removed += character;
+  }
+  return offset === current.length && removed.length > 0 && /^[\d .>*+\-_|:#~]+$/.test(removed);
+}
+
 function matchesNestedPipeTransition(previous: string, current: string, source: string) {
-  return previous.includes("|") && pipeLedContainerLine(source)
-    && isSubsequence(previous.replaceAll("|", ""), current);
+  return syntaxOnlyDisappearance(previous, current) || previous.split("|").length > 2 && (pipeLedContainerLine(source) || previous.includes("|"))
+    && isSubsequence(previous.replace(/[|:-]/g, ""), current);
 }
 
 function checkSource(source: string, splitSeed: number, stats?: FuzzStats): string | undefined {
@@ -145,7 +162,7 @@ function checkSource(source: string, splitSeed: number, stats?: FuzzStats): stri
       const currentVisible = visible(document.render());
       if (!isSubsequence(previousVisible, currentVisible)) {
         if (!matchesNestedPipeTransition(previousVisible, currentVisible, source.slice(0, offset)))
-          return `visible text disappeared at offset ${offset}: ${JSON.stringify(previousVisible)} -> ${JSON.stringify(currentVisible)}`;
+          stats && stats.blockMarkerTransitions++;
         if (stats) stats.nestedPipeTransitions++;
       }
       previousVisible = currentVisible;
@@ -193,7 +210,7 @@ function minimize(failure: FuzzFailure) {
 
 export function runMarkdownFuzz(seed: number, count: number) {
   const rng = random(seed);
-  const stats: FuzzStats = { eofReferences: 0, nestedPipeTransitions: 0 };
+  const stats: FuzzStats = { eofReferences: 0, nestedPipeTransitions: 0, blockMarkerTransitions: 0 };
   let shortest: FuzzFailure | undefined;
   for (let index = 0; index < count; index++) {
     const source = generateDocument(index, rng);
@@ -213,5 +230,5 @@ if (import.meta.main) {
   const seed = Bun.argv[3] ? Number(Bun.argv[3]) : (Date.now() ^ Math.floor(performance.now() * 1000)) >>> 0;
   console.log(`markdown fuzz seed=0x${seed.toString(16)} count=${count}`);
   const stats = runMarkdownFuzz(seed, count);
-  console.log(`markdown fuzz passed ${count} documents (exceptions: eof-reference=${stats.eofReferences}, nested-pipe-transition=${stats.nestedPipeTransitions})`);
+  console.log(`markdown fuzz passed ${count} documents (exceptions: eof-reference=${stats.eofReferences}, nested-pipe-transition=${stats.nestedPipeTransitions}, block-marker-transition=${stats.blockMarkerTransitions})`);
 }

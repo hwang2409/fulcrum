@@ -673,14 +673,19 @@ function hideOpenInlineLink(value: string) {
   return depth > 0 ? value.slice(0, open.index) + (open[1] ? "" : open[2]) : value;
 }
 
+function containsTable(blocks: readonly Block[]): boolean {
+  return blocks.some((block) => block.type === "table"
+    || block.type === "blockquote" && containsTable(block.children)
+    || block.type === "list" && block.items.some((item) => containsTable(item.children)));
+}
+
 function hideTableSyntax(blocks: Block[]) {
   const inline = (nodes: Inline[], table = false) => nodes.forEach((node) => {
     if (node.type === "text") node.value = table ? safeTableText(node.value).replace(/[\[\]]/g, "") : safeTableText(node.value);
     else if ("children" in node) inline(node.children, table);
   });
   const visit = (items: Block[]) => items.forEach((block) => {
-    if (block.type === "paragraph" || block.type === "heading") inline(block.children);
-    else if (block.type === "blockquote") visit(block.children);
+    if (block.type === "blockquote") visit(block.children);
     else if (block.type === "list") block.items.forEach((item) => visit(item.children));
     else if (block.type === "table") {
       block.header.forEach((cell) => inline(cell, true));
@@ -994,7 +999,7 @@ export function createStreamingDocument(): StreamingDocument {
           previewBlocks = blocks.view;
           return blocks.view;
         }
-        if (/^(?:[-*_]\s*){1,2}$/.test(pendingLeaf) || /^#{1,6}\s*$/.test(pendingLeaf) || /^\d{1,9}[.)]?\s*$/.test(pending.trim()) || /^(?:[ \t]*(?:>|[-+*]|\d{1,9}[.)]) ?)*[ \t]*\d{1,9}[.)]?$/.test(pending)) {
+        if (/^(?:[-*_]\s*){1,2}$/.test(pendingLeaf) || /^(?:`{1,2}|~{1,2})$/.test(pendingLeaf.trim()) || /^#{1,6}\s*$/.test(pendingLeaf) || /^\d{1,9}[.)]?\s*$/.test(pending.trim()) || /^(?:[ \t]*(?:>|[-+*]|\d{1,9}[.)]) ?)+[ \t]*\d{1,9}[.)]?$/.test(pending)) {
           blocks.publish(openRoots);
           previewSource = source;
           previewBlocks = blocks.view;
@@ -1050,11 +1055,11 @@ export function createStreamingDocument(): StreamingDocument {
         if (!pendingCode && !openInlineLink && pendingLeaf.endsWith("!")) safePreviewInput = safePreviewInput.slice(0, -1);
         if (hasTableDelimiter && pendingLeaf.includes("|") && !pendingLeaf.trimEnd().endsWith("|")) safePreviewInput += " |";
         const preview = parseMarkdown(safePreviewInput);
-        hideTableSyntax(preview);
+        if (containsTable(preview)) hideTableSyntax(preview);
         if (pendingCodeValue) appendOpenCodeSpan(preview, pendingCodeValue);
         markPendingReferenceBlocks(preview, blockedReferences);
         const frozen = Array.from(blocks.values()).slice(0, blocks.frozen);
-        const structuralPreview = completeReferenceTitle || completeTableDelimiter || hasTableDelimiter || !pending && source.endsWith("\n") || /^ {0,3}(?:=+|-+)\s*$/.test(pending);
+        const structuralPreview = completeReferenceTitle || completeTableDelimiter || hasTableDelimiter || /(?:^|[ >])\d+[.)]\s/.test(pending) || !pending && source.endsWith("\n") || /^ {0,3}(?:=+|-+)\s*$/.test(pending);
         const reconciled = structuralPreview ? preview : reconcileBlocks([...frozen, ...openRoots], preview);
         const changesFrozen = reconciled.slice(0, blocks.frozen).some((block, index) => block !== frozen[index]);
         if (!changesFrozen) blocks.publish(reconciled.slice(blocks.frozen));
