@@ -1,11 +1,11 @@
 // Large highlighted blocks in real chromium, with the page's CPU throttled (CPU_THROTTLE, default 4; the worker is not
 // throttled). On a page that already shows a run, a markdown fence of 9,999 cpp lines (329,968 tokens) must mount, color,
-// and scroll a page per frame with no main-thread task of 50 ms or more (and, while it scrolls, no 50 ms gap between 5 ms
-// probes); its first
-// visible lines must color without waiting for the whole block; the bounded view must scroll by keyboard, copy the
-// whole text, and let find-in-page reach its visible lines. A small block asked for while a 330k-token result is still
-// being delivered must color within two frames of the time it takes on its own. LINES sets the fence size (to measure
-// the inline path, or a base without the bounded view). Runs vite's dev server with production react.
+// and scroll a page per frame with no main-thread task of 50 ms or more (and, while it scrolls, no 50 ms gap between
+// 5 ms probes); its first visible lines must color without waiting for the whole block; the bounded view must scroll by
+// keyboard, copy the whole text, and let find-in-page reach its visible lines. A small block asked for while a
+// 330k-token result is still being delivered must color within two frames of the time it takes on its own. LINES sets
+// the fence size (to measure the inline path, or a base without the bounded view). Runs vite's dev server with
+// production react.
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";

@@ -184,14 +184,14 @@ test("large output opens in the shared bounded viewer", () => {
 });
 
 test("giant lines split into grapheme-safe fixed-size viewer rows", () => {
-  const text = `${"x".repeat(499)}e\u0301${"y".repeat(497)}👩🏽‍💻${"z".repeat(501)}`;
+  const text = `${"x".repeat(1_999)}e\u0301${"y".repeat(1_997)}👩🏽‍💻${"z".repeat(2_001)}`;
   const segments = segmentText(text, 1);
   const values = segments.map((segment, index) => text.slice(segment.start, segments[index + 1]?.start));
   const boundaries = new Set([0, ...[...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)].map(({ index }) => index), text.length]);
-  expect(values.every((value) => value.length <= 500)).toBe(true);
+  expect(values.every((value) => value.length <= 2_000)).toBe(true);
   expect(values.join("")).toBe(text);
   expect(segments.every(({ start }) => boundaries.has(start))).toBe(true);
-  expect(segmentText(`${"x".repeat(499)}\r\n${"y".repeat(500)}`, 2)[1]!.start).toBe(499);
+  expect(segmentText(`${"x".repeat(1_999)}\r\n${"y".repeat(2_000)}`, 2)[1]!.start).toBe(1_999);
 });
 
 test("tool names use one bounded label in calls and approvals", () => {

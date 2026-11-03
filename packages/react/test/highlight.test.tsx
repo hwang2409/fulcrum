@@ -219,7 +219,7 @@ test("segmenting a 2M-character line with no newline stays linear", async () => 
   String.prototype.lastIndexOf = function (this: string, ...args: [string, number?]) { calls.lastIndexOf++; return original.lastIndexOf.apply(this, args); };
   let segments;
   try { segments = segmentText(text, 1); } finally { Object.assign(String.prototype, original); }
-  expect(segments).toHaveLength(4_000); // 500-character segments
+  expect(segments).toHaveLength(1_000);
   expect(calls.charCodeAt).toBeLessThanOrEqual(text.length);
   expect(calls.lastIndexOf).toBe(0);
 });

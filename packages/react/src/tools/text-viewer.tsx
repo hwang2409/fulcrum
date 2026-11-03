@@ -3,7 +3,11 @@ import { Tokens, useTokens, type Block } from "../highlight.js";
 import { useVirtualList } from "../virtual.js";
 import { spansIn, type AnsiSpan } from "./ansi.js";
 
-const SEGMENT_CHARS = 500;
+const SEGMENT_CHARS = 2_000;
+// A code viewer's ranges are smaller: each scrolled-in range is one react commit of its tokens, and dense code reaches
+// about 1,400 spans per 2,000 characters (a 57-97 ms gap per fast-scrolled frame on a CI runner, 38-46 ms with 500).
+// The tool viewer keeps 2,000: four times the ranges made opening a 1,000,000-line output take 17 ms instead of 3.
+const CODE_SEGMENT_CHARS = 500;
 // The most text drawn as one highlighted block (one react commit of its tokens); larger text goes through the virtual
 // viewer. Measured in chromium with the page's CPU throttled 4x (apps/playground/scripts/large-blocks.ts): about 1,900
 // token spans cost one 50 ms frame. Real code has about 0.18 spans per character: 9,900 characters of typescript (157
@@ -35,8 +39,8 @@ export const ROW_CHARS = INLINE_CHARS / 2; // a closed preview shows at least it
 const WRAP_CHARS = 80;
 const wrapped = (chars: number) => Math.max(1, Math.ceil(chars / WRAP_CHARS));
 // The estimated height, in lines, of one text segment: its share of the lines, or of the wrapped characters if more.
-const segmentLines = (text: string, metrics: TextMetrics) => {
-  const segments = Math.max(1, Math.ceil(text.length / SEGMENT_CHARS));
+const segmentLines = (text: string, metrics: TextMetrics, size = SEGMENT_CHARS) => {
+  const segments = Math.max(1, Math.ceil(text.length / size));
   return Math.max(Math.ceil(metrics.lines / segments), wrapped(text.length / segments));
 };
 /**
@@ -126,19 +130,19 @@ export function isLargeCode(text: string) {
 
 // A segment ends after its last newline when that keeps at least half a segment, so rows start on a line (which the
 // highlighter needs) and a line is split only when it is longer than half a segment.
-const segmentEnd = (text: string, start: number) => {
-  const limit = start + SEGMENT_CHARS;
+const segmentEnd = (text: string, start: number, size: number) => {
+  const limit = start + size;
   if (limit >= text.length) return text.length;
   // Scans back at most half a segment: lastIndexOf has no lower bound and would rescan the whole text per segment.
-  for (let index = limit - 1; index >= start + SEGMENT_CHARS / 2; index--) if (text.charCodeAt(index) === 10) return index + 1;
+  for (let index = limit - 1; index >= start + size / 2; index--) if (text.charCodeAt(index) === 10) return index + 1;
   return safeEnd(text, limit);
 };
 
-export function segmentText(text: string, estimatedLines: number): TextSegment[] {
+export function segmentText(text: string, estimatedLines: number, size = SEGMENT_CHARS): TextSegment[] {
   const segments: TextSegment[] = [];
   let start = 0;
   while (start < text.length) {
-    const end = segmentEnd(text, start);
+    const end = segmentEnd(text, start, size);
     segments.push({ id: `text-${start}`, kind: String(estimatedLines), start });
     start = end;
   }
@@ -146,7 +150,7 @@ export function segmentText(text: string, estimatedLines: number): TextSegment[]
 }
 
 /** Builds only newly reached fixed-size segments when appendOnly text grows. */
-function useSegments(text: string, appendOnly: boolean, estimatedLines: number) {
+function useSegments(text: string, appendOnly: boolean, estimatedLines: number, size = SEGMENT_CHARS) {
   const cache = useRef<{ text: string; segments: TextSegment[] }>({ text: "", segments: [] });
   const prior = cache.current;
   if (text === prior.text) return prior.segments;
@@ -155,12 +159,12 @@ function useSegments(text: string, appendOnly: boolean, estimatedLines: number) 
   if (canAppend) {
     segments = prior.segments;
     let start = segments.at(-1)?.start ?? 0;
-    if (text.length - start > SEGMENT_CHARS) segments = [...segments];
-    while (text.length - start > SEGMENT_CHARS) {
-      start = segmentEnd(text, start);
+    if (text.length - start > size) segments = [...segments];
+    while (text.length - start > size) {
+      start = segmentEnd(text, start, size);
       segments.push({ id: `text-${start}`, kind: String(estimatedLines), start });
     }
-  } else segments = segmentText(text, estimatedLines);
+  } else segments = segmentText(text, estimatedLines, size);
   cache.current = { text, segments };
   return segments;
 }
@@ -384,7 +388,7 @@ export function CopyButton({ value, label }: { value: CopyValue; label: string }
  */
 export function CodeViewer({ text, language, id, done = true, label = "code" }: { text: string; language: string | undefined; id: string; done?: boolean; label?: string }) {
   const metrics = useTextMetrics(text, !done);
-  const segments = useSegments(text, !done, segmentLines(text, metrics));
+  const segments = useSegments(text, !done, segmentLines(text, metrics, CODE_SEGMENT_CHARS), CODE_SEGMENT_CHARS);
   const format = useMemo(() => language ? { language } : undefined, [language]);
   return <VirtualText text={text} label={label} follow={false} metrics={metrics} segments={segments} format={format} id={id} done={done} copy />;
 }
