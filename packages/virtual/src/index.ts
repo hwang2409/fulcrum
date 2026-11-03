@@ -62,14 +62,27 @@ export type VirtualSnapshot<Id extends string = string> = {
   unseenCount: number;
 };
 
-export type OutlineUpdate = { readonly type: "append" | "prepend"; readonly count: number };
+/** One positional outline edit, as `Array.prototype.splice` takes it. */
+export type OutlineSplice<Id extends string = string> = {
+  readonly index: number;
+  readonly deleteCount: number;
+  readonly items: readonly OutlineItem<Id>[];
+};
+/**
+ * How the new outline came from `from`: apply `splices` to it in order. The engine edits its layout in place when
+ * `from` is the outline it last received, and rebuilds from the full outline otherwise (a caller that missed an update).
+ */
+export type OutlineUpdate<Id extends string = string> = {
+  readonly from: readonly OutlineItem<Id>[];
+  readonly splices: readonly OutlineSplice<Id>[];
+};
 
 export const formatVirtualDebug = (snapshot: VirtualSnapshot, actions: readonly VirtualAction[]) =>
   JSON.stringify({ range: snapshot.range, visible: snapshot.visible, totalSize: snapshot.totalSize, scrollTop: snapshot.scrollTop, pinned: snapshot.pinned, actions: actions.slice(-8) }, null, 2);
 
 export type Virtualizer<Id extends string = string> = {
   reset(): void;
-  setOutline(items: readonly OutlineItem<Id>[], update?: OutlineUpdate): void;
+  setOutline(items: readonly OutlineItem<Id>[], update?: OutlineUpdate<Id> | null): void;
   setViewport(viewport: Viewport): void;
   measure(id: Id, size: number): void;
   setLoaded(ids: Iterable<Id> | "all"): void;
@@ -170,9 +183,30 @@ class Sequence<Id extends string> {
     if (this.root) this.root.parent = null;
   }
 
-  prepend(entries: readonly { item: OutlineItem<Id>; value: number }[]): void {
-    this.root = this.merge(this.build(entries), this.root);
-    if (this.root) this.root.parent = null;
+  /** Removes `deleteCount` rows at `index` (calling `rows.remove` for each), then inserts `items` there: O((d + k) log n). */
+  splice(index: number, deleteCount: number, items: readonly OutlineItem<Id>[], rows: {
+    add(item: OutlineItem<Id>): { item: OutlineItem<Id>; value: number };
+    remove(item: OutlineItem<Id>): void;
+  }): void {
+    if (!Number.isInteger(index) || !Number.isInteger(deleteCount) || index < 0 || deleteCount < 0 || index + deleteCount > this.length) throw new RangeError("outline splice is outside the outline");
+    // Checked before any change, so a bad edit leaves the layout whole: an inserted id may only reuse a removed row's id.
+    const ids = new Set<Id>();
+    for (const item of items) {
+      const at = this.indexOf(item.id);
+      if (ids.has(item.id) || (at !== undefined && (at < index || at >= index + deleteCount))) throw new Error("outline ids must be unique");
+      ids.add(item.id);
+    }
+    const [left, rest] = this.split(this.root, index);
+    const [cut, right] = this.split(rest, deleteCount);
+    const remove = (node: SequenceNode<Id> | null): void => {
+      if (!node) return;
+      remove(node.left);
+      this.nodes.delete(node.item.id);
+      rows.remove(node.item);
+      remove(node.right);
+    };
+    remove(cut);
+    this.root = this.merge(this.merge(left, this.build(items.map(rows.add))), right);
   }
 
   private nodeAt(index: number): SequenceNode<Id> | null {
@@ -185,6 +219,25 @@ class Sequence<Id extends string> {
       else { index -= leftCount + 1; node = node.right; }
     }
     return null;
+  }
+
+  // Splits by position: the first `count` rows, then the rest. Both roots come back with no parent.
+  private split(node: SequenceNode<Id> | null, count: number): [SequenceNode<Id> | null, SequenceNode<Id> | null] {
+    if (!node) return [null, null];
+    node.parent = null;
+    const leftCount = node.left?.count ?? 0;
+    if (count <= leftCount) {
+      const [first, rest] = this.split(node.left, count);
+      node.left = rest;
+      if (rest) rest.parent = node;
+      this.recalculate(node);
+      return [first, node];
+    }
+    const [first, rest] = this.split(node.right, count - leftCount - 1);
+    node.right = first;
+    if (first) first.parent = node;
+    this.recalculate(node);
+    return [node, rest];
   }
 
   private build(entries: readonly { item: OutlineItem<Id>; value: number }[]): SequenceNode<Id> | null {
@@ -244,6 +297,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   checkSize(bottomThreshold);
 
   let layout = new Sequence<Id>();
+  let appliedOutline: readonly OutlineItem<Id>[] | null = null;
   const measured = new Map<Id, number>(options.cache?.sizes);
   const kindMedians = new Map<string, number>(options.cache?.kindMedians);
   const measuredByKind = new Map<string, Map<Id, number>>();
@@ -295,6 +349,21 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       expectedCorrectionScroll = layout.prefix(index) - anchor.offset;
     }
     expectedCorrectionScroll = clampScroll(expectedCorrectionScroll);
+  };
+
+  // Registers one row's kind and measured size, and returns its layout entry.
+  const entry = ({ id, kind }: OutlineItem<Id>): { item: OutlineItem<Id>; value: number } => {
+    const ids = idsByKind.get(kind) ?? new Set<Id>();
+    ids.add(id);
+    idsByKind.set(kind, ids);
+    const measuredSize = measured.get(id);
+    if (measuredSize !== undefined) {
+      totalMeasuredSize += measuredSize;
+      const samples = measuredByKind.get(kind) ?? new Map<Id, number>();
+      samples.set(id, measuredSize);
+      measuredByKind.set(kind, samples);
+    }
+    return { item: { id, kind }, value: checkSize(measuredSize ?? kindMedians.get(kind) ?? options.estimateSize(kind)) };
   };
 
   const applyKindEstimate = (kind: string, median: number): void => {
@@ -416,6 +485,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   return {
     reset() {
       layout = new Sequence<Id>();
+      appliedOutline = null;
       measured.clear();
       kindMedians.clear();
       measuredByKind.clear();
@@ -438,48 +508,54 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     setOutline(items, update) {
       const expectedAnchor = captureExpectedAnchor();
       const cursorId = layout.at(rangeCursorIndex)?.id;
-      const incremental = update && update.count >= 0 && items.length === layout.length + update.count;
-      if (update && !incremental) throw new Error("outline update does not match the current length");
-      const source = incremental
-        ? update.type === "append" ? items.slice(items.length - update.count) : items.slice(0, update.count)
-        : items;
-      const addedIds = new Set<Id>();
-      for (const { id } of source) {
-        if (addedIds.has(id) || (incremental && layout.nodes.has(id))) throw new Error("outline ids must be unique");
-        addedIds.add(id);
-      }
-      if (!incremental) {
+      if (update && update.from === appliedOutline) {
+        let length = layout.length;
+        for (const { index, deleteCount, items: inserted } of update.splices) {
+          if (!Number.isInteger(index) || !Number.isInteger(deleteCount) || index < 0 || deleteCount < 0 || index + deleteCount > length)
+            throw new RangeError("outline splice is outside the outline");
+          length += inserted.length - deleteCount;
+        }
+        if (length !== items.length) throw new Error("outline update does not match the outline");
+        // A later splice can still throw (a duplicate id) after earlier ones applied: then forget the outline, so the
+        // next update rebuilds instead of editing a half-edited layout. A first splice that throws changed nothing.
+        let applied = 0;
+        try {
+          for (const { index, deleteCount, items: inserted } of update.splices) {
+            const atEnd = index === layout.length && deleteCount === 0;
+            let replacedUnseen = false;
+            layout.splice(index, deleteCount, inserted, {
+              add: entry,
+              remove: ({ id, kind }) => {
+                idsByKind.get(kind)?.delete(id);
+                if (measuredByKind.get(kind)?.delete(id)) totalMeasuredSize -= measured.get(id)!;
+                if (unseenIds.delete(id)) replacedUnseen = true;
+              },
+            });
+            // New rows at the end are unseen; a row that replaces an unseen row stays unseen; history and folds are not new.
+            if (!pinned && (atEnd || replacedUnseen)) for (const { id } of inserted) unseenIds.add(id);
+            applied++;
+          }
+        } catch (error) {
+          if (applied > 0) appliedOutline = null;
+          throw error;
+        }
+      } else {
+        const ids = new Set<Id>();
+        for (const { id } of items) {
+          if (ids.has(id)) throw new Error("outline ids must be unique");
+          ids.add(id);
+        }
         measuredByKind.clear();
         idsByKind = new Map();
         totalMeasuredSize = 0;
+        layout = new Sequence(items.map(entry));
+        for (const id of unseenIds) if (!ids.has(id)) unseenIds.delete(id);
       }
-      const entries = source.map(({ id, kind }) => {
-        const item = { id, kind };
-        const ids = idsByKind.get(kind) ?? new Set<Id>();
-        ids.add(id);
-        idsByKind.set(kind, ids);
-        const measuredSize = measured.get(id);
-        if (measuredSize !== undefined) {
-          totalMeasuredSize += measuredSize;
-          const samples = measuredByKind.get(kind) ?? new Map<Id, number>();
-          samples.set(id, measuredSize);
-          measuredByKind.set(kind, samples);
-        }
-        return { item, value: checkSize(measuredSize ?? kindMedians.get(kind) ?? options.estimateSize(kind)) };
-      });
-      if (!incremental) layout = new Sequence(entries);
-      else if (update.type === "append") layout.append(entries);
-      else layout.prepend(entries);
+      appliedOutline = items;
       rangeCursorIndex = cursorId === undefined ? 0 : (layout.indexOf(cursorId) ?? Math.min(rangeCursorIndex, Math.max(0, layout.length - 1)));
       rangeCursorStart = layout.prefix(rangeCursorIndex);
       calibrateKindEstimates();
       restoreExpectedAnchor(expectedAnchor);
-      if (!pinned && incremental && update.type === "append")
-        for (const { id } of source) unseenIds.add(id);
-      if (!incremental) {
-        const retained = new Set(items.map(({ id }) => id));
-        for (const id of unseenIds) if (!retained.has(id)) unseenIds.delete(id);
-      }
       log("outline", { count: layout.length, totalSize: layout.total });
       changed();
     },
