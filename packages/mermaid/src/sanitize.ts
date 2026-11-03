@@ -29,7 +29,7 @@ export function sanitizeSvg(markup: string): SVGSVGElement | null {
   for (const style of fragment.querySelectorAll("style")) if (EXTERNAL.test(style.textContent ?? "")) style.remove();
   const svg = fragment.firstElementChild;
   if (!(svg instanceof SVGSVGElement)) return null;
-  // Natural size from the viewBox: a wide diagram scrolls in its box instead of shrinking to unreadable text.
+  // Natural size from the viewBox: the fence scales it down to its box from there, to a readable minimum (index.tsx).
   const box = svg.viewBox?.baseVal;
   if (box && box.width > 0 && box.height > 0) {
     svg.setAttribute("width", String(Math.ceil(box.width)));

@@ -96,15 +96,72 @@ function copyOf(svg: SVGSVGElement): SVGSVGElement {
   return copy;
 }
 
-function Svg({ svg, part }: { svg: SVGSVGElement; part: string }) {
+// The smallest label a diagram is scaled down to, in px. Under it, the diagram keeps that scale and scrolls.
+const READABLE_PX = 11;
+// Each drawn diagram's smallest label size, read from its first mounted copy (getComputedStyle needs it in the page).
+const smallestLabel = new WeakMap<SVGSVGElement, number>();
+function smallestText(svg: SVGSVGElement) {
+  let least = Infinity;
+  for (const text of svg.querySelectorAll("text")) if (text.textContent?.trim()) least = Math.min(least, parseFloat(getComputedStyle(text).fontSize) || Infinity);
+  return least;
+}
+
+/** The scale that fits `natural` px into `room` px, never under the one that keeps a `smallest` px label readable, never up. */
+function fitScale(room: number, natural: number, smallest: number): number {
+  return Math.min(1, Math.max(room / natural, READABLE_PX / smallest));
+}
+
+/**
+ * The drawn diagram. `fit`: scaled down to its box while its smallest label stays readable; wider than that, it
+ * scrolls inside the box, which is then a labelled, focusable region with an edge fade on each side with more to see.
+ * Without `fit` (full size), it is its natural size. Recomputed when the box resizes.
+ */
+function Svg({ svg, part, fit = false }: { svg: SVGSVGElement; part: string; fit?: boolean }) {
+  const frame = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
-  // Before paint, in the commit that shows it: the box goes from the source to the diagram in one layout.
+  // Before paint, in the commit that shows it: the box goes from the source to the diagram, at its scale, in one layout.
   useLayoutEffect(() => {
     const node = box.current!;
-    node.replaceChildren(copyOf(svg));
-    return () => node.replaceChildren();
-  }, [svg]);
-  return <div ref={box} data-part={part} />;
+    const copy = copyOf(svg);
+    node.replaceChildren(copy);
+    const width = Number(svg.getAttribute("width"));
+    const height = Number(svg.getAttribute("height"));
+    const edges = () => {
+      const end = node.scrollWidth - node.clientWidth - node.scrollLeft;
+      frame.current!.dataset.overflow = `${node.scrollLeft > 1 ? "start " : ""}${end > 1 ? "end" : ""}`.trim();
+      if (node.scrollWidth > node.clientWidth + 1) {
+        node.tabIndex = 0;
+        node.setAttribute("role", "region");
+        node.setAttribute("aria-label", `${copy.getAttribute("aria-label") ?? "diagram"}, scrolls sideways`);
+      } else {
+        node.removeAttribute("tabindex");
+        node.removeAttribute("role");
+        node.removeAttribute("aria-label");
+      }
+    };
+    const size = () => {
+      if (fit && width > 0 && height > 0) {
+        const style = getComputedStyle(node);
+        const room = node.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        let least = smallestLabel.get(svg);
+        if (least === undefined) smallestLabel.set(svg, least = smallestText(copy));
+        const scale = fitScale(room, width, least);
+        copy.setAttribute("width", String(Math.floor(width * scale * 100) / 100));
+        copy.setAttribute("height", String(Math.floor(height * scale * 100) / 100));
+      }
+      edges();
+    };
+    size();
+    const resized = new ResizeObserver(size);
+    resized.observe(node);
+    node.addEventListener("scroll", edges, { passive: true });
+    return () => {
+      resized.disconnect();
+      node.removeEventListener("scroll", edges);
+      node.replaceChildren();
+    };
+  }, [svg, fit]);
+  return <div ref={frame} data-part={`${part}-frame`}><div ref={box} data-part={part} /></div>;
 }
 
 function FullSize({ svg, label, onClose }: { svg: SVGSVGElement; label: string; onClose: () => void }) {
@@ -184,7 +241,7 @@ export function MermaidFence({ code, done, source }: FenceProps) {
           <button ref={openButton} type="button" data-action="open" aria-haspopup="dialog" aria-label="open diagram full size" onClick={() => setFull(true)}>open</button>
         </div>
       ) : null}
-      {showDiagram ? <Svg svg={diagram.svg} part="mermaid-diagram" /> : null}
+      {showDiagram ? <Svg svg={diagram.svg} part="mermaid-diagram" fit /> : null}
       <div data-part="mermaid-source" hidden={showDiagram}>{source}</div>
       {shown && "error" in shown ? <p data-part="mermaid-error" role="note">mermaid: {shown.error}</p> : null}
       {full && diagram ? <FullSize svg={diagram.svg} label={diagram.label} onClose={() => { setFull(false); openButton.current?.focus(); }} /> : null}
