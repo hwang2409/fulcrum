@@ -741,7 +741,7 @@ function tableRow(state: OpenTableState, line: string, streaming: boolean) {
   }
   cells.push(cell);
   if (!cells[0]!.trim()) cells.shift();
-  if (!cells.at(-1)!.trim()) cells.pop();
+  if (cells.length && !cells.at(-1)!.trim()) cells.pop();
   return Array.from({ length: state.block.header.length }, (_, index) => {
     const value = cells[index]?.trim() ?? "";
     if (!streaming && !/[\\*_`~[\]<>]/.test(value)) return value ? [{ type: "text", value } satisfies Inline] : [];
@@ -767,7 +767,8 @@ function appendTableDelta(state: OpenTableState, delta: string) {
     const row = tableRow(state, line, false);
     if (row) state.block.rows.push(row);
   }
-  if (state.pending) {
+  // A whitespace-only partial line is undecided: a blank line ends the table, so it never becomes a row.
+  if (state.pending.trim()) {
     const row = tableRow(state, state.pending, true);
     if (row) {
       state.block.rows.push(row);
