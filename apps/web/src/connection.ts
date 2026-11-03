@@ -72,7 +72,7 @@ export type Connection = {
   stop(): void;
 };
 
-export const FEATURES = ["list_sessions_paging", "approval_history"];
+export const FEATURES = ["list_sessions_paging", "approval_history", "delivery_id", "user_message_event"];
 
 /**
  * Finds the server through the dev-server handoff, connects, and reconnects with backoff after any failure or drop.

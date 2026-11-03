@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import * as parts from "@fulcrum/react";
+import { composerDemos } from "../src/gallery/composer-demos";
 import { demos } from "../src/gallery/demos";
 
 test("every exported part of @fulcrum/react has a gallery demo", () => {
@@ -8,7 +9,7 @@ test("every exported part of @fulcrum/react has a gallery demo", () => {
   const components = Object.keys(parts).filter((name) => /^[A-Z]/.test(name) && name !== "RunProvider");
   const bodies = components.filter((name) => name.endsWith("Body") && name !== "ToolBody");
   const parents = components.filter((name) => !name.endsWith("Body"));
-  const shown = new Set(demos.map((demo) => demo.part));
+  const shown = new Set([...demos, ...composerDemos].map((demo) => demo.part));
   const kinds = new Set(
     demos.flatMap((demo) => demo.events.flatMap((event) => (event.type === "tool_start" || event.type === "approval_request" ? [event.view?.kind ?? "generic"] : []))),
   );

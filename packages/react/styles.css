@@ -684,6 +684,7 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="composer"] {
   --rail: var(--fulcrum-border);
   display: block;
+  container-type: inline-size;
   margin: 0;
   border: 1px solid var(--fulcrum-border);
   border-left: 2px solid var(--rail);
@@ -705,7 +706,8 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="composer-field"] > textarea,
 [data-part="composer-field"]::after {
   grid-area: 1 / 1;
-  max-height: calc(10 * 1.55em + 20px);
+  /* Ten lines and the top padding, so the cut edge falls between lines while the field sits at its top. */
+  max-height: calc(10 * 1.55em + 10px);
   margin: 0;
   padding: 10px 12px;
   border: 0;
@@ -769,7 +771,7 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="composer-submit"] { --action: var(--fulcrum-accent); }
 [data-part="composer-submit"][data-action="steer"] { --action: var(--fulcrum-warn); }
 /* Stop is the quiet, destructive one: danger text on the page, never filled. Its min width holds "stopping". */
-[data-part="composer"] [data-part="composer-stop"] { --action: var(--fulcrum-danger); min-width: 10ch; background: var(--fulcrum-bg); color: var(--fulcrum-danger); }
+[data-part="composer"] [data-part="composer-stop"] { --action: var(--fulcrum-danger); min-width: calc(8ch + 32px); background: var(--fulcrum-bg); color: var(--fulcrum-danger); }
 [data-part="composer"] button:hover { text-decoration: underline; text-underline-offset: 3px; }
 [data-part="composer"] button:active { transform: scale(0.96); }
 [data-part="composer"] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
@@ -795,6 +797,19 @@ ul[data-part="md-list"] { list-style: "- "; }
 }
 [data-part="composer-reason"]::before { content: ""; flex: none; width: 7px; height: 7px; outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
 @media (pointer: coarse) { [data-part="composer"] button { min-height: 44px; } }
+/* Narrow: the status takes its own row of two fixed lines above the actions, so an error stays readable. */
+@container (max-width: 480px) {
+  [data-part="composer-bar"] { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; }
+  [data-part="composer-status"] {
+    flex: 1 0 100%;
+    display: -webkit-box;
+    height: 32px;
+    line-height: 16px;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
 
 @keyframes fulcrum-blink { 50% { opacity: 0; } }
 @keyframes fulcrum-pulse { to { opacity: 0.25; } }

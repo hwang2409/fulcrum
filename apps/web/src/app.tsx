@@ -1,9 +1,10 @@
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
-import { Approval, Message, RunProvider, Timeline, useRun, type Renderers } from "@fulcrum/react";
+import { Approval, Composer, Message, RunProvider, Timeline, useRun, type Renderers } from "@fulcrum/react";
 import type { ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { createConnection, type Connection, type ConnectionState } from "./connection";
+import { createDelivery, stopTurn } from "./delivery";
 import { ago, createSessions, sessionTitle, topLevel, type SessionMeta, type Sessions, type SessionsState } from "./session";
 import { ThemePicker, useTheme } from "./theme";
 
@@ -271,8 +272,28 @@ function Run({ client, sessions, open, opener }: { client: ZetaClient | null; se
         <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready="true">
           <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
         </div>
+        <RunComposer key={open.id} client={open.stale ? null : client} />
       </RunProvider>
     </Decisions.Provider>
+  );
+}
+
+const offline = () => Promise.reject(new Error("not connected to zeta serve"));
+
+/** The message box: send while idle, steer while a turn runs (zeta always takes steering), stop the turn. */
+function RunComposer({ client }: { client: ZetaClient | null }) {
+  const running = useRun((state) => state.agent === "running");
+  const delivery = useMemo(() => createDelivery(), []);
+  const onSubmit = useCallback((text: string, { steer }: { steer: boolean }) => (client ? delivery.submit(client, text, steer) : offline()), [client, delivery]);
+  const onStop = useCallback(() => (client ? stopTurn(client) : offline()), [client]);
+  return (
+    <div className="dock">
+      {client ? (
+        <Composer state={running ? "steerable" : "idle"} label="message zeta" placeholder={running ? "steer the running turn" : "message zeta"} onSubmit={onSubmit} onStop={onStop} />
+      ) : (
+        <Composer state="read-only" reason="reconnecting · sending is paused until the server confirms this session" label="message zeta" onSubmit={onSubmit} />
+      )}
+    </div>
   );
 }
 

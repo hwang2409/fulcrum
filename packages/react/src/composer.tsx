@@ -142,7 +142,7 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
         />
       </div>
       <div data-part="composer-bar">
-        <p data-part="composer-status" data-tone={error ? "danger" : message ? "busy" : undefined}>
+        <p data-part="composer-status" data-tone={error ? "danger" : message ? "busy" : undefined} title={error?.text}>
           <span data-part="composer-hint" id={`${id}-hint`} hidden={Boolean(message)}>{hint}</span>
           <span data-part="composer-message" id={`${id}-message`} role="status">{message}</span>
         </p>
