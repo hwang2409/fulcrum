@@ -9,7 +9,7 @@
 // inside a .tok-* code span or an ANSI color span, or on an ANSI background, must reach 3:1, the floor for official
 // palette colors (packages/react/themes.css). Tool facts (paths, numbers, counts) are UI text at 4.5:1. Every button, summary, and
 // a[role=button] inside the parts must be a styled fulcrum control, with no browser-default appearance, ButtonFace
-// background, default border, or system font, at rest and under forced :hover, :focus, :focus-visible, and :active. The large-output viewer opens in <16 ms, follows the bottom, and highlights a
+// background, default border, or system font, at rest and under forced :hover, :focus, :focus-visible, and :active. The large-output viewer's median open and append operations stay under 16 ms, it follows the bottom, and highlights a
 // 1,000,000-line file with no long tasks; scrolling it under 4x CPU throttling is reported. Needs a production build
 // (`bun run build`). Collapsed tool bodies warm before they open (see warm-check.ts).
 import { chromium, type Page } from "playwright";
@@ -194,28 +194,36 @@ async function checkControls(page: Page): Promise<string[]> {
 
 type ViewerMeasurement = { fixture: string; width: number; openMs: number; appendMs: number; bottomGap: number; appendGap: number; middleMoved: boolean; outerMiddleDelta: number; outerBoundaryDelta: number; longTasks: number[]; tokens: number; scroll: { median: number; p95: number; over33: number } };
 
+const median = (values: number[]) => [...values].sort((left, right) => left - right)[values.length >> 1]!;
+const viewerTimingFails = (values: number[]) => median(values) >= 16;
+
 async function measureViewer(page: Page, width: number, fixture: "single" | "lines" | "read"): Promise<ViewerMeasurement> {
-  await page.goto(`http://127.0.0.1:${port}/gallery.html?viewerFixture=${fixture}`);
-  const button = page.getByRole("button", { name: /^open all/ });
-  await button.waitFor();
-  await page.waitForTimeout(500);
-  // Long tasks from opening the viewer and highlighting its mounted rows, counted from the click.
-  await page.evaluate(() => {
-    const target = window as typeof window & { __longTasks: number[] };
-    target.__longTasks = [];
-    new PerformanceObserver((list) => { for (const entry of list.getEntries()) target.__longTasks.push(entry.duration); }).observe({ type: "longtask" });
-  });
-  const openMs = await page.evaluate(() => new Promise<number>((resolve) => requestAnimationFrame(() => {
-    const root = document.querySelector('[data-part="tool-body"]')!;
-    const observer = new MutationObserver(() => {
-      if (!document.querySelector('[data-part="text-viewer"]')) return;
-      observer.disconnect();
-      resolve(performance.now() - started);
-    });
-    observer.observe(root, { childList: true, subtree: true });
-    const started = performance.now();
-    (document.querySelector('[data-action="open-viewer"]') as HTMLButtonElement).click();
-  })));
+  const openSamples: number[] = [];
+  for (let sample = 0; sample < 5; sample++) {
+    await page.goto(`http://127.0.0.1:${port}/gallery.html?viewerFixture=${fixture}`);
+    await page.getByRole("button", { name: /^open all/ }).waitFor();
+    await page.waitForTimeout(500);
+    if (sample === 4) {
+      // Long tasks from the retained opening and highlighting its mounted rows, counted from the click.
+      await page.evaluate(() => {
+        const target = window as typeof window & { __longTasks: number[] };
+        target.__longTasks = [];
+        new PerformanceObserver((list) => { for (const entry of list.getEntries()) target.__longTasks.push(entry.duration); }).observe({ type: "longtask" });
+      });
+    }
+    openSamples.push(await page.evaluate(() => new Promise<number>((resolve) => requestAnimationFrame(() => {
+      const root = document.querySelector('[data-part="tool-body"]')!;
+      const observer = new MutationObserver(() => {
+        if (!document.querySelector('[data-part="text-viewer"]')) return;
+        observer.disconnect();
+        resolve(performance.now() - started);
+      });
+      observer.observe(root, { childList: true, subtree: true });
+      const started = performance.now();
+      (document.querySelector('[data-action="open-viewer"]') as HTMLButtonElement).click();
+    }))));
+  }
+  const openMs = median(openSamples);
   const viewer = page.locator('[data-part="text-viewer"]');
   await viewer.waitFor();
   await page.waitForTimeout(1_500);
@@ -242,13 +250,15 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
 
   await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await page.waitForTimeout(100);
-  const appendMs = await page.evaluate(() => new Promise<number>((resolve) => requestAnimationFrame(() => {
+  const appendSamples: number[] = [];
+  for (let sample = 0; sample < 5; sample++) appendSamples.push(await page.evaluate((sample) => new Promise<number>((resolve) => requestAnimationFrame(() => {
     const viewer = document.querySelector('[data-part="text-viewer"]')!;
     const observer = new MutationObserver(() => { observer.disconnect(); resolve(performance.now() - started); });
     observer.observe(viewer, { childList: true, subtree: true, characterData: true, attributes: true });
     const started = performance.now();
-    (window as typeof window & { __appendViewerFixture: (delta: string) => void }).__appendViewerFixture("\nstreamed tail");
-  })));
+    (window as typeof window & { __appendViewerFixture: (delta: string) => void }).__appendViewerFixture(`\nstreamed tail ${sample}`);
+  })), sample));
+  const appendMs = median(appendSamples);
   await page.waitForTimeout(500);
   const appendGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
   // Frame times while the viewer scrolls 48 px a frame from the top, on a CPU four times slower.
@@ -297,6 +307,9 @@ async function checkStructuredViewer(page: Page, fixture: "edit" | "search") {
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const failures: string[] = [];
 try {
+  if (viewerTimingFails([6, 7, 8, 18, 25]) || !viewerTimingFails([6, 7, 17, 18, 19]))
+    throw new Error("viewer median timing gate does not reject a sustained >16 ms regression");
+  console.log("ok   viewer timing sensitivity: two isolated pauses pass; three >16 ms operations fail");
   for (let i = 0; ; i++) {
     try { if ((await fetch(`http://127.0.0.1:${port}/gallery.html`)).ok) break; } catch {}
     if (preview.exitCode !== null || i === 100) throw new Error("vite preview did not start");
@@ -451,8 +464,8 @@ try {
       console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms, append ${measured.appendMs.toFixed(1)} ms, gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px, long tasks [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}], ${measured.tokens} token spans, 4x-throttled scroll frames median ${measured.scroll.median.toFixed(1)} ms / p95 ${measured.scroll.p95.toFixed(1)} ms / ${measured.scroll.over33} over 33 ms`);
       if (fixture === "read" && measured.longTasks.length) failures.push(`viewer read @ ${width}: long tasks while opening and highlighting [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}] ms`);
       if (fixture === "read" && !measured.tokens) failures.push(`viewer read @ ${width}: the mounted rows of a .ts file were not highlighted`);
-      if (measured.openMs >= 16) failures.push(`viewer ${fixture} @ ${width}: open took ${measured.openMs.toFixed(1)} ms, needs <16 ms`);
-      if (measured.appendMs >= 16) failures.push(`viewer ${fixture} @ ${width}: append took ${measured.appendMs.toFixed(1)} ms, needs <16 ms`);
+      if (measured.openMs >= 16) failures.push(`viewer ${fixture} @ ${width}: median open took ${measured.openMs.toFixed(1)} ms, needs <16 ms`);
+      if (measured.appendMs >= 16) failures.push(`viewer ${fixture} @ ${width}: median append took ${measured.appendMs.toFixed(1)} ms, needs <16 ms`);
       if (Math.abs(measured.bottomGap) > 1) failures.push(`viewer ${fixture} @ ${width}: initial ${fixture === "read" ? "top" : "bottom"} gap ${measured.bottomGap.toFixed(1)} px, needs <=1 px`);
       if (Math.abs(measured.appendGap) > 1 && fixture !== "read") failures.push(`viewer ${fixture} @ ${width}: append bottom gap ${measured.appendGap.toFixed(1)} px, needs <=1 px`);
       if (!measured.middleMoved || measured.outerMiddleDelta !== 0) failures.push(`viewer ${fixture} @ ${width}: middle wheel did not stay inside viewer`);

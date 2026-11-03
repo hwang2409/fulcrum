@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
 import { Markdown } from "../src/react.js";
-import { MarkdownLineResolver } from "../src/resolver.js";
+import { MarkdownLineResolver, PENDING_INLINE_SUFFIX_BUDGET } from "../src/resolver.js";
 
 function inlineVisible(nodes: readonly Inline[], provisional: boolean): string {
   return nodes.map((node) => node.type === "pending-reference"
@@ -70,8 +70,8 @@ test("preview copy work stays bounded for 10 KB, 100 KB, and 1 MB leaves", () =>
       maximum = Math.max(maximum, document.stats.copiedCharacters - previous);
       previous = document.stats.copiedCharacters;
     }
-    expect(maximum, `${size} byte leaf`).toBeLessThanOrEqual(1_024);
-    expect(document.stats.copiedCharacters, `${size} byte leaf total`).toBe(size);
+    expect(maximum, `${size} byte leaf`).toBeLessThanOrEqual(1_024 + PENDING_INLINE_SUFFIX_BUDGET);
+    expect(document.stats.copiedCharacters, `${size} byte leaf total`).toBeLessThanOrEqual(size + Math.ceil(size / 1_024) * PENDING_INLINE_SUFFIX_BUDGET);
   }
 });
 

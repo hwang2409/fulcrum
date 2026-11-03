@@ -1,4 +1,5 @@
 import { createStreamingDocument } from "../packages/markdown/src/index.js";
+import { PENDING_INLINE_SUFFIX_BUDGET } from "../packages/markdown/src/resolver.js";
 
 const targetBytes = 100_000;
 const deltaSizes = [1, 20, 200];
@@ -86,5 +87,11 @@ for (const deltaSize of deltaSizes) for (const [name, source] of cases) {
 }
 const millionByteParagraph = measure("a".repeat(1_000_000), 1_024);
 console.log(`1024 B  ${"1 MB soft-wrapped paragraph".padEnd(22)} p95 ${millionByteParagraph.p95.toFixed(3)} ms  p99 ${millionByteParagraph.p99.toFixed(3)} ms  max ${millionByteParagraph.max.toFixed(3)} ms  work ${millionByteParagraph.workRatio.toFixed(2)}x  max-work ${millionByteParagraph.maxWork}  max-copy ${millionByteParagraph.maxCopied}`);
-if (failsGate(millionByteParagraph) || millionByteParagraph.maxCopied > 1_024) failed = true;
+if (failsGate(millionByteParagraph) || millionByteParagraph.maxCopied > 1_024 + PENDING_INLINE_SUFFIX_BUDGET) failed = true;
+
+const richPrefix = "**strong** *emphasis* `code` [link](https://example.com) [";
+const richUnit = "plain **strong** and *emphasis* with `code`. ";
+const millionByteRich = measure((richPrefix + richUnit.repeat(Math.ceil((1_000_000 - richPrefix.length) / richUnit.length))).slice(0, 1_000_000), 1_024);
+console.log(`1024 B  ${"1 MB rich unresolved [".padEnd(22)} p95 ${millionByteRich.p95.toFixed(3)} ms  p99 ${millionByteRich.p99.toFixed(3)} ms  max ${millionByteRich.max.toFixed(3)} ms  work ${millionByteRich.workRatio.toFixed(2)}x  max-work ${millionByteRich.maxWork}  max-copy ${millionByteRich.maxCopied}`);
+if (failsGate(millionByteRich) || millionByteRich.maxCopied > 1_024 + PENDING_INLINE_SUFFIX_BUDGET) failed = true;
 if (failed) process.exit(1);

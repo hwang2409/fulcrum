@@ -76,17 +76,21 @@ function inlineVisible(nodes: readonly Inline[], includeProvisional = true): str
     : inlineVisible(node.children, includeProvisional)).join("");
 }
 
-const proseVisible = (nodes: readonly Inline[], includeProvisional: boolean) =>
-  inlineVisible(nodes, includeProvisional).replace(/\s+/g, " ").trim();
+// Line-edge spaces select block indentation or a break style; they are syntax, not rendered characters.
+const paragraphVisible = (nodes: readonly Inline[], includeProvisional: boolean) =>
+  inlineVisible(nodes, includeProvisional).replace(/(^|\n)[ \t]+/g, "$1").replace(/[ \t]+(?=\n|$)/g, "");
+
+// Table layout owns cell-edge spacing, so only table-cell whitespace is normalized.
+const tableCellVisible = (nodes: readonly Inline[], includeProvisional: boolean) =>
+  inlineVisible(nodes, includeProvisional).replace(/[ \t\r\n]+/g, " ").trim();
 
 function visible(blocks: readonly Block[], includeProvisional = true): string {
   return blocks.map((block) => block.type === "paragraph" || block.type === "heading"
-    // HTML collapses prose whitespace; code whitespace remains exact below.
-    ? proseVisible(block.children, includeProvisional)
+    ? paragraphVisible(block.children, includeProvisional)
     : block.type === "code" ? block.value
     : block.type === "blockquote" ? visible(block.children, includeProvisional)
     : block.type === "list" ? block.items.map((item) => visible(item.children, includeProvisional)).join("")
-    : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => proseVisible(cell, includeProvisional)).join("")
+    : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => tableCellVisible(cell, includeProvisional)).join("")
     : "").join("");
 }
 
@@ -139,7 +143,7 @@ function checkSource(source: string, splitSeed: number, stats?: FuzzStats): stri
       document.append(source.slice(offset, offset + size));
       offset += size;
       const rendered = document.render();
-      // Block wrappers do not render separator text, so only AST text whitespace is compared here.
+      // Block wrappers do not render separator text; table cells alone normalize layout-owned edge whitespace.
       const currentStableVisible = visible(rendered, false);
       if (!isSubsequence(previousStableVisible, currentStableVisible)) {
         if (stats) stats.visibilityFailures++;

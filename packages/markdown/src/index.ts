@@ -1,6 +1,6 @@
 import type { Highlight } from "@fulcrum/highlight";
 import MarkdownIt from "./vendor/markdown-it.mjs";
-import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
+import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type PendingClassification, type ReferenceDefinition } from "./resolver.js";
 
 type MarkdownToken = {
   type: string;
@@ -392,7 +392,7 @@ function withoutTrailingLookahead(source: string) {
   const backslashes = /\\+$/.exec(source)?.[0].length ?? 0;
   if (backslashes % 2) return source.slice(0, -1);
   const entity = /&(?:#(?:x[0-9a-f]*|[0-9]*)?|[a-z][a-z0-9]*)?$/i.exec(source);
-  return entity ? source.slice(0, entity.index) : source;
+  return entity ? source.slice(0, entity.index).trimEnd() : source;
 }
 
 function safeInlineContent(source: string): SafeInlineContent {
@@ -741,14 +741,14 @@ function appendPendingTableRow(blocks: Block[], source: string, references: Envi
   return true;
 }
 
-function appendPendingParagraph(blocks: Block[], pending: readonly Inline[], continuesParagraph: boolean) {
+function appendPendingParagraph(blocks: Block[], pending: Inline[], continuesParagraph: boolean) {
   if (!pending.length) return;
   const paragraph = continuesParagraph ? tailParagraph(blocks) : undefined;
   if (paragraph) {
     paragraph.children = [...paragraph.children, { type: "text", value: "\n" }, ...pending];
     return paragraph;
   }
-  const block = { type: "paragraph" as const, children: pending.slice() };
+  const block = { type: "paragraph" as const, children: pending };
   blocks.push(block);
   return block;
 }
@@ -836,9 +836,11 @@ export function createStreamingDocument(): StreamingDocument {
   let previewBlocks: readonly Block[] | undefined;
   let pendingReferenceApply = false;
   let trailingCarriageReturn = false;
-  let pendingPreviewLength = 0;
+  let pendingPreviewContent = "";
+  let pendingPreviewStableEnd = 0;
   let pendingPreviewNodes: Inline[] = [];
-  let pendingPreviewAppendable = false;
+  let pendingPreviewSuffixNodes = 0;
+  let pendingPreviewOwner: { index: number; marker: string; closer?: string } | undefined;
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
 
@@ -972,18 +974,28 @@ export function createStreamingDocument(): StreamingDocument {
     return record;
   };
 
-  const applyReferences = () => {
+  const applyReferences = (retainUsers = false) => {
     for (const [label, users] of referenceUsers) {
       if (!resolver.references.has(label)) continue;
+      const retained = retainUsers ? [...users] : [];
       for (const user of [...users]) {
         if ("block" in user) {
           let frozenIndex = -1;
           for (let index = 0; index < blocks.frozen; index++) if (blocks.at(index) === user.block) { frozenIndex = index; break; }
           updateParagraph(user);
-          if (frozenIndex >= 0) blocks.replace(frozenIndex, { ...user.block, children: [...user.block.children] });
+          if (frozenIndex >= 0) {
+            const prior = user.block;
+            user.block = { ...prior, children: [...prior.children] };
+            paragraphRecords.delete(prior);
+            paragraphRecords.set(user.block, user);
+            blocks.replace(frozenIndex, user.block);
+          }
         } else updateTableCell(user);
       }
-      referenceUsers.delete(label);
+      if (retainUsers) {
+        for (const user of retained) user.labels.add(label);
+        referenceUsers.set(label, new Set(retained));
+      } else referenceUsers.delete(label);
     }
   };
 
@@ -1072,7 +1084,7 @@ export function createStreamingDocument(): StreamingDocument {
       const label = /^ {0,3}\[([^\]\n]+)\]:/.exec(leaf.content)?.[1];
       if (label) blockedReferences.delete(normalizeReferenceLabel(label));
       pendingReferenceApply = !hasInlineReferenceTitle(leaf.content);
-      if (!pendingReferenceApply) applyReferences();
+      applyReferences(pendingReferenceApply);
     } else if (leaf.kind === "reference-title") {
       applyReferences();
       pendingReferenceApply = false;
@@ -1133,35 +1145,66 @@ export function createStreamingDocument(): StreamingDocument {
     for (const piece of delta.match(/[^\n]*\n|[^\n]+$/g) ?? [])
       for (const resolution of resolver.append(piece)) apply(resolution);
     if (delta.includes("\n")) {
-      pendingPreviewLength = 0;
+      pendingPreviewContent = "";
+      pendingPreviewStableEnd = 0;
       pendingPreviewNodes = [];
-      pendingPreviewAppendable = false;
+      pendingPreviewSuffixNodes = 0;
+      pendingPreviewOwner = undefined;
     }
   };
 
-  const pendingPreview = () => {
-    const pending = resolver.pending.content;
-    if (pendingPreviewAppendable && pending.length >= pendingPreviewLength) {
-      const suffix = pending.slice(pendingPreviewLength);
-      previewScannedCharacters += suffix.length;
-      if (!/[\\[*_~`<!&#|>\r\n]/.test(suffix)) {
-        if (suffix) pendingPreviewNodes.push({ type: "text", value: suffix });
-        copiedCharacters += suffix.length;
-        pendingPreviewLength = pending.length;
-        return pendingPreviewNodes;
-      }
-    }
-    const classification = resolver.classifyPending(pending);
+  const parsePendingPart = (value: string, streaming: boolean) => {
+    if (!value) return [];
+    previewScannedCharacters += value.length;
+    copiedCharacters += value.length;
+    const nodes: Inline[] = /[\\[*_~`<!&]/.test(value)
+      ? parseInline(value, streaming, environment())
+      : [{ type: "text", value }];
+    markPendingReferences(nodes, blockedReferences);
+    return nodes;
+  };
+
+  const appendPendingNodes = (nodes: Inline[]) => {
+    const first = nodes[0];
+    const last = pendingPreviewNodes.at(-1);
+    if (last?.type === "text" && first?.type === "text") {
+      last.value += first.value;
+      pendingPreviewNodes.push(...nodes.slice(1));
+    } else pendingPreviewNodes.push(...nodes);
+  };
+
+  const pendingPreview = (classification: Readonly<PendingClassification>) => {
+    if (pendingPreviewSuffixNodes) pendingPreviewNodes.splice(-pendingPreviewSuffixNodes);
+    pendingPreviewSuffixNodes = 0;
     const inlineSource = pendingInlineSource(classification.content);
-    previewScannedCharacters += pending.length;
-    copiedCharacters += inlineSource.length;
-    pendingPreviewNodes = inlineSource
-      ? /[\\[*_~`<!&]/.test(inlineSource) ? parseInline(inlineSource, true, environment()) : [{ type: "text", value: inlineSource }]
-      : [];
-    markPendingReferences(pendingPreviewNodes, blockedReferences);
-    if (classification.provisional) markProvisional(pendingPreviewNodes);
-    pendingPreviewLength = pending.length;
-    pendingPreviewAppendable = classification.appendable;
+    const owner = classification.owner;
+    const extendsPrior = classification.stableEnd >= pendingPreviewStableEnd
+      && inlineSource.length >= pendingPreviewContent.length
+      && (classification.incremental || inlineSource.startsWith(pendingPreviewContent));
+    const sameOwner = owner?.index === pendingPreviewOwner?.index && owner?.marker === pendingPreviewOwner?.marker
+      && owner?.closer === pendingPreviewOwner?.closer;
+    const closedOwner = pendingPreviewOwner !== undefined && owner === undefined;
+    const stableEnd = closedOwner ? inlineSource.length : classification.stableEnd;
+    const rebuild = !extendsPrior || !sameOwner;
+
+    if (rebuild) {
+      pendingPreviewNodes = [];
+      if (owner && owner.index < stableEnd) {
+        appendPendingNodes(parsePendingPart(inlineSource.slice(0, owner.index), false));
+        appendPendingNodes(parsePendingPart(inlineSource.slice(owner.index + owner.marker.length, stableEnd), false));
+      } else appendPendingNodes(parsePendingPart(inlineSource.slice(0, stableEnd), false));
+    } else if (stableEnd > pendingPreviewStableEnd) {
+      appendPendingNodes(parsePendingPart(classification.stable, false));
+    }
+
+    const suffixSource = owner?.closer === ")" ? classification.suffix.replace(/\]\([^)]*$/, "") : classification.suffix;
+    const suffix = parsePendingPart(closedOwner ? "" : suffixSource, true);
+    if (classification.provisional) markProvisional(suffix);
+    pendingPreviewNodes.push(...suffix);
+    pendingPreviewSuffixNodes = suffix.length;
+    pendingPreviewContent = inlineSource;
+    pendingPreviewStableEnd = stableEnd;
+    pendingPreviewOwner = owner ? { ...owner } : undefined;
     return pendingPreviewNodes;
   };
 
@@ -1204,7 +1247,7 @@ export function createStreamingDocument(): StreamingDocument {
       if (finished || pendingReferenceApply || !resolver.pending.length && !resolver.hasPendingLookahead) return blocks.view;
       if (previewBlocks && previewSource === source) return previewBlocks;
       const pending = resolver.pending.content;
-      const classification = resolver.classifyPending(pending);
+      const classification = resolver.classifyPending();
       const overlay = cloneOpenPath(openRoots, Boolean(openParagraph || openCode || openTable));
       if (classification.kind === "fence" && openCode && !openIndentedCode) {
         const disposition = resolver.pendingFenceDisposition;
@@ -1213,7 +1256,7 @@ export function createStreamingDocument(): StreamingDocument {
       } else {
         const startsBlock = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
         if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.content && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment(), blockedReferences)))
-          appendPendingParagraph(overlay, pendingPreview(), Boolean(openParagraph) && !startsBlock);
+          appendPendingParagraph(overlay, pendingPreview(classification), Boolean(openParagraph) && !startsBlock);
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];
