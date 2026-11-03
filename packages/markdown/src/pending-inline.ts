@@ -36,16 +36,42 @@ class OpenerScan {
   resolved?: Opener;
   /** Where the closer of a resolved code span starts. */
   closedAt = -1;
+  /** Where the last run stopped: just after the closer of `resolved`, when there is one. */
+  stoppedAt = -1;
 
-  constructor(private readonly source: string, private readonly openers: Opener[], private readonly existing: number) {}
+  /** In a dry run: the existing openers it changed or removed, by position, so `restore` can put them back. */
+  private readonly saved?: Map<number, Opener>;
+
+  /** A dry run stops only at an existing emphasis opener, and `restore` undoes its changes to the existing openers. */
+  constructor(private readonly source: string, private readonly openers: Opener[], private readonly existing: number, dryRun = false) {
+    if (dryRun) this.saved = new Map();
+  }
+
+  restore() {
+    for (const [position, opener] of this.saved ?? []) this.openers[position] = opener;
+    this.openers.length = this.existing;
+  }
+
+  /** Keeps existing openers from `from` on, before they change or leave the stack. */
+  private keep(from: number) {
+    if (!this.saved) return;
+    for (let position = from; position < Math.min(this.existing, this.openers.length); position++) {
+      if (this.saved.has(position)) continue;
+      this.saved.set(position, this.openers[position]!);
+      this.openers[position] = { ...this.openers[position]! };
+    }
+  }
 
   run(from: number, to: number) {
-    for (let index = from; index < to && !this.resolved;) index = this.step(index, to);
+    let index = from;
+    while (index < to && !this.resolved) index = this.step(index, to);
+    this.stoppedAt = index;
     return this.resolved;
   }
 
   private resolve(position: number) {
-    if (position < this.existing) this.resolved = this.openers[position];
+    if (position < this.existing && (!this.saved || this.openers[position]!.kind === "emphasis")) this.resolved = this.openers[position];
+    this.keep(position);
     this.openers.length = position;
   }
 
@@ -58,7 +84,10 @@ class OpenerScan {
     const top = this.openers.at(-1);
     if (top?.kind === "code") return this.code(index, to, top);
     if (top?.kind === "angle") return this.angle(index, to);
-    if (top?.kind === "bracket" && top.state !== "text") return this.link(index, top);
+    if (top?.kind === "bracket" && top.state !== "text") {
+      this.keep(this.openers.length - 1);
+      return this.link(index, this.openers.at(-1)!);
+    }
     return this.text(index, to);
   }
 
@@ -98,13 +127,14 @@ class OpenerScan {
     let position = this.openers.length - 1;
     while (position >= 0 && this.openers[position]!.kind !== "bracket") position--;
     if (position < 0) return index + 1;
-    const opener = this.openers[position]!;
     const next = this.source[index + 1];
     if (next !== "(" && next !== "[") {
       this.resolve(position);
       return index + 1;
     }
+    this.keep(position);
     this.openers.length = position + 1;
+    const opener = this.openers[position]!;
     opener.state = next === "(" ? "dest" : "ref";
     opener.hideFrom = index;
     return index + 2;
@@ -175,13 +205,14 @@ function cutPoint(source: string, target: number) {
   const window = Math.max(0, target - 64);
   const space = source.slice(window, target).lastIndexOf(" ");
   let cut = space >= 0 ? window + space + 1 : target;
-  // A suffix that starts with a backtick would merge with the code-span marker it is parsed behind, and one that
-  // starts with an intraword `*_~` would parse it as an opener.
-  const unsafe = (index: number) => source[index] === "`" || /[*_~]/.test(source[index]!) && /[\p{L}\p{N}]/u.test(source[index - 1]!) || /[\uDC00-\uDFFF]/.test(source[index]!) || /[\\!]/.test(source[index - 1]!)
-    || source[index] === source[index - 1] && /[*_~]/.test(source[index]!) || source[index - 1] === "]" && /[([]/.test(source[index]!);
-  while (cut > 0 && unsafe(cut)) cut--;
+  while (cut > 0 && unsafeCut(source, cut)) cut--;
   return cut;
 }
+
+// A suffix that starts with a backtick would merge with the code-span marker it is parsed behind, and one that
+// starts with an intraword `*_~` would parse it as an opener.
+const unsafeCut = (source: string, index: number) => source[index] === "`" || /[*_~]/.test(source[index]!) && /[\p{L}\p{N}]/u.test(source[index - 1]!) || /[\uDC00-\uDFFF]/.test(source[index]!) || /[\\!]/.test(source[index - 1]!)
+  || source[index] === source[index - 1] && /[*_~]/.test(source[index]!) || source[index - 1] === "]" && /[([]/.test(source[index]!);
 
 /**
  * The growing line of the open paragraph: stable nodes for `content.slice(0, emittedEnd)` plus a provisional
@@ -223,6 +254,8 @@ export class PendingInline {
     this.nodes.length -= this.suffixLength;
     const cut = cutPoint(this.content, this.content.length - PENDING_INLINE_SUFFIX);
     if (cut > this.emittedEnd) this.emitStable(cut);
+    const closed = this.pastStableEmphasis();
+    if (closed > this.emittedEnd) this.emitStable(closed);
     const suffix = hideBrackets(this.suffix());
     // Blanks at the end of the growing line may still sit before a cell pipe.
     const last = suffix.at(-1);
@@ -341,6 +374,22 @@ export class PendingInline {
     const first = nodes[0];
     if (context.startsWith("[") && first && (first.type === "link" && !first.children.length || first.type === "text" && !first.value)) nodes.shift();
     return nodes;
+  }
+
+  /**
+   * The first safe cut past the closer of a stable emphasis opener, or -1. The suffix parses without the stable
+   * opener, so its closer would show as a raw marker over a span that already showed styled.
+   */
+  private pastStableEmphasis() {
+    if (!this.openers.length) return -1;
+    const scan = new OpenerScan(this.content, this.openers, this.openers.length, true);
+    const resolved = scan.run(this.emittedEnd, this.content.length);
+    scan.restore();
+    // A closer run at the end of the line may still grow.
+    if (resolved?.kind !== "emphasis" || scan.stoppedAt >= this.content.length) return -1;
+    let cut = scan.stoppedAt;
+    while (unsafeCut(this.content, cut)) if (++cut >= this.content.length) return -1;
+    return cut;
   }
 
   /** The first cut after the space past the `>` or space that ends the innermost open `<`, or -1 while it is open. */

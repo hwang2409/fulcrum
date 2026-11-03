@@ -100,6 +100,8 @@ const richLines = [
   ["1 MB arithmetic", "x * y = z and a_b. "],
   ["1 MB code spans", "The function returns `null` when `value` is missing. "],
   ["1 MB rich unresolved [", `**strong** *emphasis* \`code\` [link](https://example.com) [${richUnit}`],
+  // A stable opener that never closes: every delta looks for its closer in the suffix.
+  ["1 MB open emphasis", `_${richUnit}`],
 ] as const;
 for (const [name, unit] of richLines) {
   const result = measure(unit.repeat(Math.ceil(1_000_000 / unit.length)).slice(0, 1_000_000), 1_024);

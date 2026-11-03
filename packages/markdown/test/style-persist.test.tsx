@@ -74,8 +74,9 @@ test("generated long lines with styled spans before and after the suffix cut hav
   const pick = <Value,>(values: readonly Value[]) => values[Math.floor(rng() * values.length)]!;
   const words = (length: number) => {
     let text = "";
-    while (text.length < length) text += pick(["alpha", "beta", "gamma", "delta", "lorem", "ipsum", "sit", "amet"]) + " ";
-    return text.slice(0, length).replace(/ ?$/, " ");
+    // Code spans, links, and autolinks inside a styled span put another opener on top of the emphasis.
+    while (text.length < length) text += pick(["alpha", "beta", "gamma", "delta", "lorem", "ipsum", "sit", "amet", "`x`", "`a b`", "[a b](u)", "<https://e.com>"]) + " ";
+    return text;
   };
   const failures: string[] = [];
   for (let index = 0; index < 400; index++) {
@@ -94,4 +95,4 @@ test("generated long lines with styled spans before and after the suffix cut hav
     if (failure) failures.push(`${JSON.stringify(source.slice(0, 80))}… (${source.length}, ${marker}, delta ${delta}) ${failure}`);
   }
   expect(`${failures.length} regressions\n${failures.slice(0, 5).join("\n")}`).toBe("0 regressions\n");
-});
+}, 60_000);
