@@ -390,6 +390,16 @@ try {
     for (const theme of themes) {
       await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}`);
       await page.waitForSelector('[data-part="tool"]');
+      // Code highlighting arrives after the highlighter loads; without this wait the text audit sees almost no syntax
+      // spans. Wait for the five main roles, then for the span count to hold still.
+      const highlighted = await page.waitForFunction(() => ["keyword", "string", "comment", "function", "type"].every((role) => document.querySelector(`[data-part="timeline"] .tok-${role}`)), undefined, { timeout: 15_000 }).then(() => true, () => false);
+      if (!highlighted) failures.push(`${theme} @ ${width}: syntax highlighting did not arrive in 15 s`);
+      for (let last = -1, i = 0; i < 40; i++) {
+        const spans = await page.locator('[data-part="timeline"] [class*="tok-"]').count();
+        if (spans === last) break;
+        last = spans;
+        await page.waitForTimeout(250);
+      }
       // Names the widest element that pokes past the viewport, so a failure points at its cause.
       const result = await page.evaluate(() => {
         const viewport = innerWidth;
