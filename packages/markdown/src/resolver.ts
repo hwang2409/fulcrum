@@ -9,7 +9,7 @@ export type ContainerFrame =
 export type OpenedContainer = Exclude<ContainerFrame, { kind: "document" }>;
 
 export type ResolvedLeaf = {
-  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code" | "atx-heading" | "setext-heading" | "thematic-break";
+  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code" | "atx-heading" | "setext-heading" | "thematic-break" | "table-delimiter" | "table-row";
   content: string;
   path: readonly ContainerFrame[];
   marker?: string;
@@ -142,7 +142,7 @@ const frameEqual = (left: ContainerFrame, right: ContainerFrame) => left.kind ==
 
 export class MarkdownLineResolver {
   private stack: ContainerFrame[] = [{ kind: "document" }];
-  private openLeaf?: { kind: "paragraph" } | { kind: "fence"; marker: string } | { kind: "indented-code" };
+  private openLeaf?: { kind: "paragraph" } | { kind: "fence"; marker: string } | { kind: "indented-code" } | { kind: "table" };
   private pendingLine: MutablePendingLine = freshPending();
 
   get pending(): PendingLine {
@@ -202,6 +202,16 @@ export class MarkdownLineResolver {
     const startsQuote = consumeQuote(probe);
     const marker = startsQuote ? undefined : listMarker(probe);
     const startsContainer = startsQuote || Boolean(marker);
+    if (!unmatched && this.openLeaf?.kind === "table" && !blank && !startsContainer) {
+      return {
+        continued: true,
+        lazy: false,
+        closedToDepth: this.stack.length,
+        opened: [],
+        leaf: { kind: "table-row", content: line.slice(cursor.offset), path: this.stack.map((frame) => ({ ...frame })) },
+      };
+    }
+    if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
     const lazy = unmatched && this.openLeaf?.kind === "paragraph" && !blank && !startsContainer;
     let closedToDepth = lazy ? this.stack.length : matchedDepth;
     const unmatchedFrame = this.stack[matchedDepth];
@@ -242,6 +252,19 @@ export class MarkdownLineResolver {
     const leafPath = () => this.stack.map((frame) => ({ ...frame }));
     if (blank) return { continued: false, lazy: false, closedToDepth, opened };
     const content = line.slice(cursor.offset);
+    const tableDelimiter = opened.length === 0 && this.openLeaf?.kind === "paragraph"
+      && (/^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$/.test(content)
+        || /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/.test(content));
+    if (tableDelimiter) {
+      this.openLeaf = { kind: "table" };
+      return {
+        continued: false,
+        lazy: false,
+        closedToDepth,
+        opened,
+        leaf: { kind: "table-delimiter", content, path: leafPath() },
+      };
+    }
     const setext = opened.length === 0 && this.openLeaf?.kind === "paragraph" && /^ {0,3}(=+|-+)\s*$/.exec(content);
     if (setext) {
       this.openLeaf = undefined;
