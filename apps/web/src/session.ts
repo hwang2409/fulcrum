@@ -59,9 +59,9 @@ export type OpenProgress = (messages: number) => void;
  * already the server's: zeta's resume ends pending approvals.
  */
 export async function openSession(client: ZetaClient, id: string, progress?: OpenProgress): Promise<SessionLease> {
-  const before = await getStatus(client);
-  if (before.session?.session_id !== id) await client.request("resume", { session_id: id }, { timeoutMs: 30_000 });
   return client.replay(id, async () => {
+    const before = await getStatus(client);
+    if (before.session?.session_id !== id) await client.request("resume", { session_id: id }, { timeoutMs: 30_000 });
     const rows: unknown[] = [];
     for (let offset: number | null = 0; offset !== null; ) {
       const page = (await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000 })) as { messages?: unknown[]; next_offset?: number | null };

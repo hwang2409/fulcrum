@@ -1,7 +1,7 @@
 // Browser gate for apps/web against the fake zeta server (scripts/fake-zeta.ts), at 1440 and 390 px.
 // Fails on: a console error; a page that scrolls sideways; a button under 36 px (44 px at touch widths) or with no
-// name; a native select/input/textarea; any text under 4.5:1 on its real background in any of the 12 themes (syntax
-// token colors are reported, not gated: they are the palettes' own); a connection state that does not show its
+// name; a native select/input/textarea; UI text under 4.5:1 on its real background in any of the 12 themes (syntax
+// token colors are reported, not gated yet: they are the palettes' own); a connection state that does not show its
 // title, the exact `zeta serve --ws-origin` command, or a retry; a session list, history, markdown, highlighting,
 // tool card, approval, or follow-bottom that does not work; a reconnect that loses or duplicates rows; or a drawer,
 // theme picker, or session list that the keyboard cannot drive.

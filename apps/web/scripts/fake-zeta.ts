@@ -99,7 +99,7 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
-  const token = crypto.randomUUID();
+  let token = crypto.randomUUID();
   let mode: Mode = "ok";
   let allowed = origins;
   let active: string | null = ACTIVE;
@@ -143,7 +143,7 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
           return reply({ result: { session: active ? sessions.find((session) => session.session_id === active) ?? null : null, state: running ? (decide ? "tool" : "running") : "idle", explicit_finish: false, pending_approvals: pending, usage: {}, compaction_markers: 0 } });
         }
         if (method === "resume") {
-          if (running) return reply({ error: { code: -32004, message: "a turn is already running" } });
+          if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = String(params.session_id);
           return reply({ result: { session: sessions.find((session) => session.session_id === active) } });
         }
@@ -182,7 +182,7 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
     drop() { for (const socket of sockets) socket.close(1012, "restart"); },
     /** Removes the discovery file and refuses upgrades, like a stopped server. */
     async stop() { allowed = []; await rm(discovery, { force: true }); this.drop(); },
-    async start() { allowed = origins; await write({ port: server.port, token, pid: process.pid, origins: allowed }); },
+    async start() { allowed = origins; token = crypto.randomUUID(); await write({ port: server.port, token, pid: process.pid, origins: allowed }); },
     /** Lists other origins in the allowlist, so this page's origin is missing. */
     async foreignOrigin() { allowed = ["http://localhost:5173"]; await write({ port: server.port, token, pid: process.pid, origins: allowed }); },
     /** Hands out a token the server will refuse. */

@@ -72,3 +72,7 @@ missing, why the app needs it, and the proposed API.
 - **seen:** in Chromium, a finished `ts` block in history gets one typed token (the last `;`). `sh` and `tsx` blocks get full tokens. In bun, `createHighlighter()("const a = 1;\n", "ts", { id, version: 1, state: "done" })` returns no typed tokens, and `js` and `typescript` return `variable` and `operator` but no `keyword` for `const`.
 - **why it matters:** most agent output is ts or js, and Henry asked for "syntax highlighting for pretty much everything".
 - **next step:** a highlight slice: a failing test for `ts`, `typescript`, `js`, and `javascript` on `const a = 1;`, then a fix to the grammar alias or scope mapping.
+
+### 12. websocket discovery tokens are visible in request urls
+- **seen:** the zeta websocket contract authenticates the loopback upgrade with `?token=`. the token is therefore visible in browser devtools and in any logging of request urls.
+- **next step:** harden the generic zeta protocol with a `Sec-WebSocket-Protocol` bearer subprotocol or a one-time websocket ticket. this is intentionally not an app-local workaround.
