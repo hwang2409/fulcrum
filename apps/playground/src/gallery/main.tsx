@@ -135,6 +135,11 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
     return () => { delete target.__appendViewerFixture; };
   }, [demo.id, store]);
 
+  // A demo that describes a tool's body ("the body says so in words") opens on it.
+  useLayoutEffect(() => {
+    if (demo.open) body.current!.querySelectorAll<HTMLDetailsElement>("details[data-part=tool]:not([open])").forEach((card) => { card.open = true; });
+  }, [generation]);
+
   useEffect(() => {
     if (!inspect) return;
     const root = body.current!;
@@ -195,7 +200,7 @@ function ThemePicker({ value, onChange }: { value: string; onChange: (value: str
     <div className="theme">
       <label htmlFor="theme">theme</label>
       <select id="theme" value={value} onChange={(event) => onChange(event.target.value)}>
-        <option value={AUTO}>auto (github, follows the OS)</option>
+        <option value={AUTO}>auto (github, OS)</option>
         {themeNames.map((name) => (
           <option key={name} value={name}>
             {name}
@@ -259,6 +264,7 @@ function Gallery() {
 
   return (
     <div className="gallery">
+      <a className="skip" href="#main">skip to content</a>
       <header className="topbar">
         <a className="brand" href="#">
           fulcrum
@@ -304,7 +310,7 @@ function Gallery() {
           ))}
         </select>
       </label>
-      <main className="main">
+      <main className="main" id="main" tabIndex={-1}>
         <header className="intro">
           <h1>Agent UI parts, in every state.</h1>
           <p>

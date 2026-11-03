@@ -2,6 +2,8 @@
 // - viewer (M-B): a streaming fence that became the code viewer follows its newest line to the end, at 1x and 4x CPU:
 //   it never says "scrolled" or "new output" while nobody touched it, and its last line ends inside the box; "jump to
 //   bottom" on a finished block settles at the bottom and stays "at bottom". An untouched finished block says "at top" (n-6).
+// - status words (M-D): every word of every card's status reaches 4.5:1 in all 12 themes, every approval ending on
+//   every card state included.
 // - viewer head (M-C): at 390 px the head is one row: the count never wraps inside a word and the language label sits
 //   in the head, not in a band above it.
 // - focus (m-a): approving by keyboard and "show all" leave focus on a control or row in the demo, never on BODY.
@@ -57,7 +59,8 @@ async function checkViewer(browser: Browser, port: number, throttle: number): Pr
   if (!streaming.length) failures.push(`${at}: markdown-crossing never streamed into the viewer`);
   if (lost.length) failures.push(`${at}: markdown-crossing says "${lost[0]!.position}" on ${lost.length} of ${streaming.length} streaming frames (gap ${lost[0]!.gap.toFixed(1)} px); nobody scrolled`);
   const end = samples.at(-1);
-  if (!end || end.gap >= 1 || end.lastBottom > 0.5 || end.position !== "at bottom")
+  // Under 1 px is chromium rounding the scroll extent of a fractional (40lh) box to whole pixels.
+  if (!end || end.gap >= 1 || end.lastBottom >= 1 || end.position !== "at bottom")
     failures.push(`${at}: the streamed block ends ${end?.gap.toFixed(1)} px short of its bottom, last line ${end?.lastBottom.toFixed(1)} px past the box, "${end?.position}"`);
   if (!failures.length) console.log(`ok   ${at}: markdown-crossing stays "at bottom" on ${streaming.length} streaming frames and ends on its last line`);
 
@@ -138,13 +141,13 @@ async function checkFocus(browser: Browser, port: number): Promise<string[]> {
   await page.waitForTimeout(300);
   const shown = await where();
   if (shown.tag === "BODY" || shown.demo !== "tools-done") failures.push(`focus: after "show all", focus is on ${shown.tag} in "${shown.demo}", expected the shown output`);
-  await page.goto(`http://127.0.0.1:${port}/gallery.html#tool-large`);
-  await page.waitForSelector("#tool-large [data-action=open-viewer]");
-  await page.focus("#tool-large [data-action=open-viewer]");
+  await page.goto(`http://127.0.0.1:${port}/gallery.html#tool-huge`);
+  await page.waitForSelector("#tool-huge [data-action=open-viewer]");
+  await page.focus("#tool-huge [data-action=open-viewer]");
   await page.keyboard.press("Enter");
   await page.waitForTimeout(300);
   const opened = await where();
-  if (opened.tag === "BODY" || opened.demo !== "tool-large") failures.push(`focus: after "open all", focus is on ${opened.tag} in "${opened.demo}", expected the viewer`);
+  if (opened.tag === "BODY" || opened.demo !== "tool-huge") failures.push(`focus: after "open all", focus is on ${opened.tag} in "${opened.demo}", expected the viewer (tool-huge)`);
   if (!failures.length) console.log(`ok   focus: approve (${approved.part}), show all (${shown.part}), and open all (${opened.part}) keep focus in their card`);
   await page.close();
   return failures;
@@ -266,14 +269,74 @@ async function checkGallery(browser: Browser, port: number): Promise<string[]> {
   return failures;
 }
 
+// M-D: every word in every card's status (the state, a folded approval's decision, the duration), in every theme, at
+// 4.5:1 on the background it is drawn on, with the approval-endings demo's every ending on every card state present.
+async function checkStatusWords(browser: Browser, port: number): Promise<string[]> {
+  const failures: string[] = [];
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  await page.goto(`http://127.0.0.1:${port}/gallery.html`);
+  await page.waitForSelector("#approval-endings [data-part=tool]", { timeout: 10_000 }).catch(() => failures.push("status words: no approval-endings demo on the gallery"));
+  const themes = await page.$$eval("#theme option", (options) => options.map((option) => (option as HTMLOptionElement).value).filter((value) => value !== "auto"));
+  let checked = 0;
+  for (const theme of themes) {
+    await page.selectOption("#theme", theme);
+    await page.waitForTimeout(50);
+    const result = await page.evaluate(() => {
+      const pixel = new OffscreenCanvas(1, 1).getContext("2d", { willReadFrequently: true })!;
+      const rgba = (color: string) => {
+        pixel.clearRect(0, 0, 1, 1);
+        pixel.fillStyle = color;
+        pixel.fillRect(0, 0, 1, 1);
+        const [r, g, b, a] = pixel.getImageData(0, 0, 1, 1).data;
+        return [r!, g!, b!, a! / 255];
+      };
+      const over = (top: number[], bottom: number[]) => top.slice(0, 3).map((c, i) => c * top[3]! + bottom[i]! * (1 - top[3]!)).concat(1);
+      const luminance = (c: number[]) => c.slice(0, 3).map((v) => (v /= 255) <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i]!, 0);
+      const backgroundOf = (start: HTMLElement | null) => {
+        const layers: number[][] = [];
+        for (let node = start; node; node = node.parentElement) if (layers.at(-1)?.[3] !== 1) layers.push(rgba(getComputedStyle(node).backgroundColor));
+        return layers.reduceRight((below, layer) => over(layer, below), [255, 255, 255, 1]);
+      };
+      const contrast = (node: HTMLElement) => {
+        const background = backgroundOf(node);
+        const [light, dark] = [luminance(over(rgba(getComputedStyle(node).color), background)), luminance(background)].sort((a, b) => b - a);
+        return (light! + 0.05) / (dark! + 0.05);
+      };
+      const problems: string[] = [];
+      let words = 0;
+      for (const status of document.querySelectorAll<HTMLElement>("[data-part=tool-status]")) {
+        const card = status.closest<HTMLElement>("[data-state]")!;
+        // Each run of text in the status is drawn by its own parent: the status itself or a word span inside it.
+        const walker = document.createTreeWalker(status, NodeFilter.SHOW_TEXT);
+        for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+          if (!text.textContent?.trim()) continue;
+          const node = text.parentElement!;
+          if (node.closest("[aria-hidden=true]") && node !== status) continue;
+          words++;
+          const ratio = contrast(node);
+          if (ratio < 4.5) problems.push(`${card.dataset.part} ${card.dataset.state}${card.dataset.decision ? `/${card.dataset.decision}` : ""} "${text.textContent.trim()}" (${node.dataset.part ?? "tool-status"}${node.dataset.decision ? ` ${node.dataset.decision}` : ""}) is ${ratio.toFixed(2)}:1`);
+        }
+      }
+      const endings = new Set([...document.querySelectorAll<HTMLElement>("#approval-endings [data-part=tool]")].map((card) => `${card.dataset.state}:${card.querySelector<HTMLElement>("[data-part=tool-approval]")?.textContent}`));
+      return { problems, words, endings: [...endings] };
+    });
+    checked += result.words;
+    for (const problem of [...new Set(result.problems)]) failures.push(`status words @ ${theme}: ${problem}, needs 4.5:1`);
+    if (theme === themes[0] && result.endings.length < 20) failures.push(`status words: approval-endings shows ${result.endings.length} of 20 ending/state pairs (${result.endings.join(", ")})`);
+  }
+  if (!failures.length) console.log(`ok   status words: ${checked} words over ${themes.length} themes, every one 4.5:1`);
+  await page.close();
+  return failures;
+}
+
+const checks = { viewer1: (b: Browser, p: number) => checkViewer(b, p, 1), viewer4: (b: Browser, p: number) => checkViewer(b, p, 4), head: checkNarrowHead, focus: checkFocus, gallery: checkGallery, status: checkStatusWords };
+
+/** ONLY=focus,gallery runs some of the checks. */
 export async function checkUx(browser: Browser, port: number): Promise<string[]> {
-  return [
-    ...await checkViewer(browser, port, 1),
-    ...await checkViewer(browser, port, 4),
-    ...await checkNarrowHead(browser, port),
-    ...await checkFocus(browser, port),
-    ...await checkGallery(browser, port),
-  ];
+  const only = process.env.ONLY?.split(",");
+  const failures: string[] = [];
+  for (const [name, check] of Object.entries(checks)) if (!only || only.includes(name)) failures.push(...await check(browser, port));
+  return failures;
 }
 
 if (import.meta.main) {
