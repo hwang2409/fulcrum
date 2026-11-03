@@ -2,7 +2,7 @@ import { createStreamingDocument, parseMarkdown, type Block, type Inline } from 
 
 type Random = () => number;
 type FuzzFailure = { source: string; splitSeed: number; reason: string };
-export type FuzzStats = { eofReferences: number; nestedPipeTransitions: number; blockMarkerTransitions: number };
+export type FuzzStats = { eofReferences: number; visibilityFailures: number };
 
 const fixedLeaves = [
   "plain **strong** *emphasis* ~~strike~~ `code` and AT&amp;T.",
@@ -67,20 +67,20 @@ export function generateDocument(index: number, rng: Random) {
   return source;
 }
 
-function inlineVisible(nodes: readonly Inline[]): string {
-  return nodes.map((node) => node.type === "text" || node.type === "pending-reference" || node.type === "code"
-    ? node.value
+function inlineVisible(nodes: readonly Inline[], includeProvisional = true): string {
+  return nodes.map((node) => node.type === "pending-reference" ? includeProvisional ? node.value : ""
+    : node.type === "text" || node.type === "code" ? node.value
     : node.type === "image" ? node.alt
     : node.type === "break" ? "\n"
-    : inlineVisible(node.children)).join("");
+    : inlineVisible(node.children, includeProvisional)).join("");
 }
 
-function visible(blocks: readonly Block[]): string {
-  return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? inlineVisible(block.children)
+function visible(blocks: readonly Block[], includeProvisional = true): string {
+  return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? inlineVisible(block.children, includeProvisional)
     : block.type === "code" ? block.value
-    : block.type === "blockquote" ? visible(block.children)
-    : block.type === "list" ? block.items.map((item) => visible(item.children)).join("")
-    : block.type === "table" ? [...block.header, ...block.rows.flat()].map(inlineVisible).join("")
+    : block.type === "blockquote" ? visible(block.children, includeProvisional)
+    : block.type === "list" ? block.items.map((item) => visible(item.children, includeProvisional)).join("")
+    : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => inlineVisible(cell, includeProvisional)).join("")
     : "").join("").replace(/\s/g, "");
 }
 
@@ -122,50 +122,22 @@ function matchesActiveException(active: readonly Block[], expected: readonly Blo
   return provisionalDefinitionAtEof(source) && equalValue(active, expected, pending, true) && pending.count > 0;
 }
 
-function pipeLedContainerLine(source: string) {
-  const body = source.endsWith("\n") ? source.slice(0, -1) : source;
-  let line = body.slice(body.lastIndexOf("\n") + 1);
-  let containers = 0;
-  for (;;) {
-    const marker = /^(?: {0,3}> ?| {0,3}(?:[-+*]|\d{1,9}[.)])\s+)/.exec(line)?.[0];
-    if (!marker) break;
-    containers++;
-    line = line.slice(marker.length);
-  }
-  return containers > 0 && line.trimStart().startsWith("|");
-}
-
-function syntaxOnlyDisappearance(previous: string, current: string) {
-  let offset = 0;
-  let removed = "";
-  for (const character of previous) {
-    if (character === current[offset]) offset++;
-    else removed += character;
-  }
-  return offset === current.length && removed.length > 0 && /^[\d .>*+\-_|:#~]+$/.test(removed);
-}
-
-function matchesNestedPipeTransition(previous: string, current: string, source: string) {
-  return syntaxOnlyDisappearance(previous, current) || previous.split("|").length > 2 && (pipeLedContainerLine(source) || previous.includes("|"))
-    && isSubsequence(previous.replace(/[|:-]/g, ""), current);
-}
-
 function checkSource(source: string, splitSeed: number, stats?: FuzzStats): string | undefined {
   const document = createStreamingDocument();
   const rng = random(splitSeed);
-  let previousVisible = "";
+  let previousStableVisible = "";
   try {
     for (let offset = 0; offset < source.length;) {
       const size = 1 + Math.floor(rng() * Math.min(24, source.length - offset));
       document.append(source.slice(offset, offset + size));
       offset += size;
-      const currentVisible = visible(document.render());
-      if (!isSubsequence(previousVisible, currentVisible)) {
-        if (!matchesNestedPipeTransition(previousVisible, currentVisible, source.slice(0, offset)))
-          stats && stats.blockMarkerTransitions++;
-        if (stats) stats.nestedPipeTransitions++;
+      const rendered = document.render();
+      const currentVisible = visible(rendered);
+      if (!isSubsequence(previousStableVisible, currentVisible)) {
+        if (stats) stats.visibilityFailures++;
+        return `visible text disappeared or reordered: ${JSON.stringify(previousStableVisible)} -> ${JSON.stringify(currentVisible)}`;
       }
-      previousVisible = currentVisible;
+      previousStableVisible = visible(rendered, false);
     }
     const active = document.render();
     const expected = parseMarkdown(source);
@@ -210,7 +182,7 @@ function minimize(failure: FuzzFailure) {
 
 export function runMarkdownFuzz(seed: number, count: number) {
   const rng = random(seed);
-  const stats: FuzzStats = { eofReferences: 0, nestedPipeTransitions: 0, blockMarkerTransitions: 0 };
+  const stats: FuzzStats = { eofReferences: 0, visibilityFailures: 0 };
   let shortest: FuzzFailure | undefined;
   for (let index = 0; index < count; index++) {
     const source = generateDocument(index, rng);
@@ -230,5 +202,5 @@ if (import.meta.main) {
   const seed = Bun.argv[3] ? Number(Bun.argv[3]) : (Date.now() ^ Math.floor(performance.now() * 1000)) >>> 0;
   console.log(`markdown fuzz seed=0x${seed.toString(16)} count=${count}`);
   const stats = runMarkdownFuzz(seed, count);
-  console.log(`markdown fuzz passed ${count} documents (exceptions: eof-reference=${stats.eofReferences}, nested-pipe-transition=${stats.nestedPipeTransitions}, block-marker-transition=${stats.blockMarkerTransitions})`);
+  console.log(`markdown fuzz passed ${count} documents (provisional eof references=${stats.eofReferences}, visibility failures=${stats.visibilityFailures})`);
 }
