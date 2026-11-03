@@ -15,9 +15,10 @@ export const PROGRESS_MS = 100;
 // left first, so a small reply does not wait for every part of a 330k-token one (it waited 335 ms at 4x).
 export const TOKENS_PER_MESSAGE = 16_384;
 // `provisional`: an update for the same block follows once its grammar is warm. An update carries the block's context.
+export type Completion = { status: "pending" | "complete" | "unavailable"; reason?: "grammar" | "size" | "watchdog" | "worker" };
 export type WorkerResponse =
-  | { requestId: number; tokens: Token[]; provisional: boolean; of: number }
-  | { requestId: number; error: string }
+  | { requestId: number; tokens: Token[]; provisional: boolean; completion: Completion; of: number }
+  | { requestId: number; error: string; completion: Completion }
   | { update: HighlightContext; language: string; tokens: Token[]; of: number }
   | { progress: HighlightContext | null }
   | { part: Token[]; of: number };

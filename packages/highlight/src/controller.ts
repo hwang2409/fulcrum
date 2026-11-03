@@ -1,5 +1,5 @@
 import { normalizeLanguage } from "./names.js";
-import type { Highlight, HighlightContext, Token } from "./types.js";
+import type { Completion, CompletionNotice, Highlight, HighlightContext, Token } from "./types.js";
 import type { WorkerRequest, WorkerResponse } from "./protocol.js";
 
 const MAX_BLOCK = 512 * 1024;
@@ -25,14 +25,14 @@ type Pending = { resolve: (tokens: Token[]) => void; code: string; language: str
 // pathological line) ran away. The block revision (id and version) being worked on is blamed, not the worker: that
 // revision stays plain for this controller's life (a newer revision of the block is tried again), the worker is
 // replaced at once, and every other pending request, other revisions of the same block included, goes to the new one.
-const WORKER_SILENCE_MS = 10_000;
+const WORKER_SILENCE_MS = 500;
 // A crash (an error or messageerror event, a failed construction, or silence with no block to blame) restarts the
 // worker after these pauses, for the 1st, 2nd and 3rd crash in CRASH_WINDOW_MS. One more in that window: plain for good.
 const RESTART_BACKOFF_MS = [250, 1_000, 4_000];
 const MAX_CRASHES = RESTART_BACKOFF_MS.length;
 const CRASH_WINDOW_MS = 60_000;
 // `code` is kept so a hit is checked against the exact source: an (id, version) pair from a caller is a hint, never proof of content.
-type CacheEntry = { tokens: Token[]; weight: number; used: number; done: boolean; id: string; code: string };
+type CacheEntry = { tokens: Token[]; weight: number; used: number; done: boolean; id: string; code: string; completion: Completion };
 
 export function createController(options: HighlighterOptions = {}): Highlight {
   let worker: WorkerLike | undefined;
@@ -49,6 +49,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   let restart: ReturnType<typeof setTimeout> | undefined;
   const pending = new Map<number, Pending>();
   const cache = new Map<string, CacheEntry>();
+  const pendingUpdates = new Map<string, { context: HighlightContext; language: string; tokens: Token[] }>();
   const inflight = new Map<string, Promise<Token[]>>();
   const inflightCode = new Map<string, string>();
   const inflightIds = new Map<string, string>();
@@ -56,7 +57,19 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const versions = new Map<string, string[]>();
   const current = new Map<string, string>();
   const latestVersion = new Map<string, number>();
-  const listeners = new Map<string, Set<() => void>>();
+  const listeners = new Map<string, Set<(completion: CompletionNotice) => void>>();
+  const completions = new Map<string, Completion>();
+  const completionWaiters = new Map<string, Set<(completion: CompletionNotice) => void>>();
+  const notify = (context: HighlightContext, completion: Completion) => {
+    const key = revision(context);
+    if (completion.status !== "pending") completions.set(key, completion);
+    const notice = { version: context.version, ...completion };
+    if (completion.status !== "pending") {
+      for (const listener of listeners.get(context.id) ?? []) listener(notice);
+      for (const resolve of completionWaiters.get(key) ?? []) resolve(notice);
+      completionWaiters.delete(key);
+    }
+  };
 
   const plain = (code: string): Token[] => code ? [{ text: code }] : [];
   const revision = (context: HighlightContext) => `${context.id}\0${context.version}`;
@@ -68,8 +81,11 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     else versions.delete(entry.id);
   };
   const weigh = (code: string, tokens: Token[]) => code.length * 2 + tokens.reduce((sum, token) => sum + token.text.length * 2 + 32, 0);
-  const remember = (key: string, context: HighlightContext, code: string, tokens: Token[]) => {
-    cache.set(key, { tokens, weight: weigh(code, tokens), used: ++clock, done: context.state === "done", id: context.id, code });
+  const remember = (key: string, context: HighlightContext, code: string, tokens: Token[], completion: Completion = { status: context.state === "done" ? "complete" : "pending" }) => {
+    cache.set(key, { tokens, weight: weigh(code, tokens), used: ++clock, done: context.state === "done", id: context.id, code, completion });
+    notify(context, completion);
+    const queued = pendingUpdates.get(key);
+    if (queued) { pendingUpdates.delete(key); update(queued.context, queued.language, queued.tokens); }
     const keys = [...(versions.get(context.id) ?? []).filter((item) => item !== key), key];
     while (keys.length > 2) cache.delete(keys.shift()!);
     versions.set(context.id, keys);
@@ -84,11 +100,14 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   };
   // A worker's update replaces only the cached revision it was made for, and only with tokens that spell its exact code.
   const update = (context: HighlightContext, language: string, tokens: Token[]) => {
-    const entry = cache.get(cacheKey(context, language));
-    if (!entry || tokens.map((token) => token.text).join("") !== entry.code) return;
+    const key = cacheKey(context, language);
+    const entry = cache.get(key);
+    if (!entry) { pendingUpdates.set(key, { context, language, tokens }); return; }
+    if (tokens.map((token) => token.text).join("") !== entry.code) return;
     entry.tokens = tokens;
     entry.weight = weigh(entry.code, tokens);
-    for (const listener of listeners.get(context.id) ?? []) listener();
+    entry.completion = { status: context.state === "done" ? "complete" : "pending" };
+    if (context.state === "done" && current.get(context.id) === cacheKey(context, language)) notify(context, { status: "complete" });
   };
   const post = (id: number, job: Pending) => {
     watchdog ??= setTimeout(onSilence, WORKER_SILENCE_MS);
@@ -107,7 +126,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const giveUp = () => {
     stop();
     unavailable = true;
-    for (const job of pending.values()) job.resolve(plain(job.code));
+    for (const job of pending.values()) { notify(job.context, { status: "unavailable", reason: "worker" }); job.resolve(plain(job.code)); }
     pending.clear();
     if (!disposed) queueMicrotask(() => options.onHighlightUnavailable?.());
   };
@@ -133,6 +152,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (!blamed) return crash();
     stop();
     poisoned.add(revision(blamed));
+    notify(blamed, { status: "unavailable", reason: "watchdog" });
     for (const [id, job] of pending) if (sameBlock(blamed, job.context)) { pending.delete(id); job.resolve(plain(job.code)); }
     scheduleRestart(0);
   };
@@ -154,6 +174,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
             pending.delete(data.requestId);
             if (sameBlock(busyWith, job.context)) busyWith = null;
             // An error for one block (the worker is alive) leaves that block plain.
+            if ("completion" in data) notify(job.context, data.completion);
+            else if ((data as { provisional?: boolean }).provisional) completions.set(revision(job.context), { status: "pending" });
             job.resolve(tokens ?? plain(job.code));
           }
         }
@@ -176,8 +198,11 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (disposed || unavailable) return plain(code);
     const language = normalizeLanguage(lang);
     if (!language) return null;
-    if (code.length > MAX_BLOCK || (code.match(/\n/g)?.length ?? 0) + 1 > MAX_LINES) return plain(code);
     const actual = context ?? { id: `finished:${language}:${code}`, version: 0, state: "done" as const };
+    if (code.length > MAX_BLOCK || (code.match(/\n/g)?.length ?? 0) + 1 > MAX_LINES) {
+      notify(actual, { status: "unavailable", reason: "size" });
+      return plain(code);
+    }
     if (poisoned.has(revision(actual))) return plain(code);
     const key = cacheKey(actual, language);
     if (actual.version >= (latestVersion.get(actual.id) ?? -Infinity)) {
@@ -189,7 +214,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (hit) dropCompleted(key, hit);
     const active = inflightCode.get(key) === code ? inflight.get(key) : undefined;
     if (active) return active;
-    if (!ensureWorker()) return plain(code);
+    if (!ensureWorker()) { notify(actual, { status: "unavailable", reason: "worker" }); return plain(code); }
     const result = new Promise<Token[]>((resolve) => {
       const id = ++requestId;
       const job = { resolve, code, language, context: actual };
@@ -203,7 +228,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
       if (newest) { inflight.delete(key); inflightIds.delete(key); inflightCode.delete(key); }
       const currentKey = current.get(actual.id);
       if (!disposed && currentKey === key) {
-        if (newest && !unavailable && !poisoned.has(revision(actual))) remember(key, actual, code, tokens); // plain for want of a worker is never cached
+        if (newest && !unavailable && !poisoned.has(revision(actual))) remember(key, actual, code, tokens, completions.get(revision(actual)) ?? { status: actual.state === "done" ? "complete" : "pending" }); // plain for want of a worker is never cached
         if ([...inflightIds].some(([otherKey, id]) => id === actual.id && otherKey !== key)) latestSettled.set(actual.id, { key, tokens });
         return tokens;
       }
@@ -224,13 +249,19 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     listeners.set(id, set.add(listener));
     return () => { set.delete(listener); if (!set.size && listeners.get(id) === set) listeners.delete(id); };
   };
+  highlight.awaitCompletion = (id, version) => {
+    const key = `${id}\0${version}`;
+    const known = completions.get(key);
+    if (known) return Promise.resolve({ version, ...known });
+    return new Promise((resolve) => { const set = completionWaiters.get(key) ?? new Set(); set.add(resolve); completionWaiters.set(key, set); });
+  };
   highlight.dispose = () => {
     disposed = true;
     worker?.postMessage({ type: "dispose" });
     stop();
     clearTimeout(restart);
-    for (const job of pending.values()) job.resolve(plain(job.code));
-    pending.clear(); cache.clear(); inflight.clear(); inflightCode.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); listeners.clear(); poisoned.clear();
+    for (const job of pending.values()) { notify(job.context, { status: "unavailable", reason: "worker" }); job.resolve(plain(job.code)); }
+    pending.clear(); cache.clear(); pendingUpdates.clear(); inflight.clear(); inflightCode.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); listeners.clear(); completions.clear(); completionWaiters.clear(); poisoned.clear();
   };
   return highlight;
 }

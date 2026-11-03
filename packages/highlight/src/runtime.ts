@@ -4,17 +4,10 @@ import { loadLanguage } from "./languages.js";
 import { appendToken, semanticTheme } from "./scopes.js";
 
 const THEME = "fulcrum-semantic";
-const MAX_LINE = 20_000;
 const MAX_SESSIONS = 32;
 const MAX_SESSION_BYTES = 8 * 1024 * 1024;
-// The tokenize policy, all of it. Shiki stops a line at TOKENIZE_TIME_LIMIT_MS without saying so, and that time also
-// counts compiling a pattern the line meets for the first time, and any pause of the thread (a garbage collection, a
-// busy machine). A slow attempt gets one retry while the document still has retry time; otherwise the line is
-// plain, exact text, and the document goes on. The runtime tokenizes only with a warm grammar (see OnUpdate), so a
-// plain line is final: a line that a pause made slow once must get its retry.
-const TOKENIZE_TIME_LIMIT_MS = 10;
-const LINE_ATTEMPTS = 2; // shiki stops each attempt near TOKENIZE_TIME_LIMIT_MS, so a line costs about 2 x 10 ms
-const DOCUMENT_RETRY_BUDGET_MS = 100; // all retries of one tokenize call
+// tokenization budgets may schedule work, but never choose the final token semantics. the worker watchdog handles a
+// truly pathological scanner; a slow machine must keep trying until the pinned grammar returns its full result.
 type Session = { language: string; version: number; code: string; finalizedLength: number; tokens: Token[]; state?: GrammarState; used: number; bytes: number };
 
 function nextCompleteLength(code: string, done: boolean): number {
@@ -111,6 +104,7 @@ export class TokenizerRuntime {
   private readonly warmed = new Set<string>();
   // The newest revision of each block asked for while its grammar was cold, until that grammar is warm.
   private readonly provisional = new Map<string, Provisional>();
+  private readonly provisionalReplies = new Set<string>();
 
   /**
    * The runtime warms each grammar it loads, in slices, answers blocks for a cold grammar with plain text, and sends
@@ -204,6 +198,13 @@ export class TokenizerRuntime {
     return this.provisional.get(context.id)?.context.version === context.version;
   }
 
+  takeProvisionalReply(context: HighlightContext): boolean {
+    const key = `${context.id}\0${context.version}`;
+    const result = this.provisionalReplies.has(key);
+    this.provisionalReplies.delete(key);
+    return result;
+  }
+
   /** Entries in the regex cache: a loaded grammar's own patterns, and patterns built while tokenizing (at most MAX_DYNAMIC_REGEXES). */
   cacheSize(): { static: number; dynamic: number } {
     return { static: this.cache?.static.size ?? 0, dynamic: this.cache?.size ?? 0 };
@@ -216,7 +217,7 @@ export class TokenizerRuntime {
     const known = this.provisional.get(context.id);
     const newest = !known || known.context.version <= context.version;
     if (!this.warmed.has(language)) {
-      if (newest) this.provisional.set(context.id, { code, language, context });
+      if (newest) { this.provisional.set(context.id, { code, language, context }); this.provisionalReplies.add(`${context.id}\0${context.version}`); }
       return code ? [{ text: code }] : [];
     }
     if (newest) this.provisional.delete(context.id); // this revision replaces the plain one
@@ -258,33 +259,22 @@ export class TokenizerRuntime {
       appendToken(output, code.slice(completeLength));
       return output;
     };
-    const budget = { retryMs: DOCUMENT_RETRY_BUDGET_MS };
     const tokens: Token[] = [];
     let grammarState = state;
     this.onProgress(context);
     for (const line of sourceLines(code.slice(start, completeLength))) {
-      if (line.replace(/\n$/, "").length > MAX_LINE) { appendToken(tokens, line); grammarState = undefined; }
-      else {
-        const result = this.tokenizeLine(highlighter, line, language, grammarState, budget);
-        if (!result) { appendToken(tokens, line); grammarState = undefined; }
-        else { this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result); }
+      {
+        const result = this.tokenizeLine(highlighter, line, language, grammarState);
+        this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result);
       }
       this.onProgress(context);
     }
     return finish(tokens, grammarState);
   }
 
-  /** One line's tokens under the tokenize policy (top of file), or undefined: the line is plain. */
-  private tokenizeLine(highlighter: HighlighterCore, line: string, language: string, grammarState: GrammarState | undefined, budget: { retryMs: number }): ThemedToken[][] | undefined {
-    for (let attempt = 1; ; attempt++) {
-      const started = performance.now();
-      const result = highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
-      const elapsed = performance.now() - started;
-      if (attempt > 1) budget.retryMs -= elapsed;
-      if (elapsed < TOKENIZE_TIME_LIMIT_MS) return result;
-      // No per-line time budget: a pause can make the first attempt long, and it must not cost the line its retry.
-      if (attempt >= LINE_ATTEMPTS || budget.retryMs < TOKENIZE_TIME_LIMIT_MS) return undefined;
-    }
+  /** A slow attempt is retried. Plain text is provisional only; it is never a terminal result. */
+  private tokenizeLine(highlighter: HighlighterCore, line: string, language: string, grammarState: GrammarState | undefined): ThemedToken[][] {
+    return highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState });
   }
 
   private appendShiki(output: Token[], lines: ThemedToken[][], source: string): void {
@@ -318,6 +308,7 @@ export class TokenizerRuntime {
     this.warming.clear();
     this.warmed.clear();
     this.provisional.clear();
+    this.provisionalReplies.clear();
   }
 }
 

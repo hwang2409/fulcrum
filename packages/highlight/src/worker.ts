@@ -18,7 +18,7 @@ const progress = (context: HighlightContext | null) => {
 // Every token message goes through one paced queue (protocol.ts). A result over TOKENS_PER_MESSAGE tokens goes out as
 // parts addressed by its message id (`of`), and after a part nothing is sent until the page acks it. The next message
 // always comes from the result with the fewest tokens left, so a small reply waits behind at most one part of a large one.
-type Result = { requestId: number; tokens: Token[]; provisional: boolean } | { update: HighlightContext; language: string; tokens: Token[] };
+type Result = { requestId: number; tokens: Token[]; provisional: boolean; completion: { status: "pending" | "complete" } } | { update: HighlightContext; language: string; tokens: Token[] };
 type Outgoing = { of: number; message: Result; at: number };
 const queue: Outgoing[] = [];
 let sent = 0;
@@ -46,8 +46,9 @@ scope.onmessage = async (event) => {
   const { requestId, code, language, context } = event.data;
   try {
     const tokens = await runtime.tokenize(code, language, context);
-    send({ requestId, tokens, provisional: runtime.willUpdate(context) });
+    const provisional = runtime.takeProvisionalReply(context);
+    send({ requestId, tokens, provisional, completion: { status: provisional || context.state !== "done" ? "pending" : "complete" } });
   } catch (cause) {
-    scope.postMessage({ requestId, error: cause instanceof Error ? cause.message : String(cause) });
+    scope.postMessage({ requestId, error: cause instanceof Error ? cause.message : String(cause), completion: { status: "unavailable", reason: "grammar" } });
   }
 };
