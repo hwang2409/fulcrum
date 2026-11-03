@@ -1,9 +1,23 @@
 import type { ToolBodyProps } from "../parts.js";
-import { Code } from "../highlight.js";
-import { Arguments, asking, boundText, Empty, Foot, Output, plainOutput } from "./common.js";
+import { Code, type Block } from "../highlight.js";
+import { Arguments, asking, boundText, Empty, Foot, Output, outputBlocks, plainOutput } from "./common.js";
 
 // The header cuts long commands to one line; the body then repeats the command in full.
 const LONG_COMMAND = 72;
+const showsCommand = (command: string, state: ToolBodyProps["state"]) => asking(state) || command.length > LONG_COMMAND || command.includes("\n");
+
+/** The highlight blocks ShellBody asks for when it first mounts. */
+export function shellBlocks({ item, output, state }: ToolBodyProps): Block[] {
+  if (item.view?.kind !== "shell") return [];
+  const { command, stdout, stderr } = item.view;
+  const done = state !== "streaming";
+  const blocks: Block[] = showsCommand(command, state) ? [{ code: boundText(command).text, language: "shell", id: `${item.id}:command` }] : [];
+  if (stdout !== undefined && stderr !== undefined) {
+    if (stdout) blocks.push(...outputBlocks({ text: stdout, id: `${item.id}:stdout`, done }));
+    if (stderr) blocks.push(...outputBlocks({ text: stderr, id: `${item.id}:stderr`, done }));
+  } else if (output) blocks.push(...outputBlocks({ text: output, id: `${item.id}:output`, done }));
+  return blocks;
+}
 
 export function ShellBody({ item, output, state }: ToolBodyProps) {
   if (item.view?.kind !== "shell") return null;
@@ -13,7 +27,7 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
   const done = state !== "streaming";
   return (
     <>
-      {asking(state) || command.length > LONG_COMMAND || command.includes("\n") ? (
+      {showsCommand(command, state) ? (
         <pre data-part="shell-command"><Code text={boundText(command).text} language="shell" id={`${item.id}:command`} /></pre>
       ) : null}
       {split ? (

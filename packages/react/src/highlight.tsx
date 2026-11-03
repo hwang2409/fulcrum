@@ -5,6 +5,15 @@ export const HighlightContext = createContext<Highlight | undefined>(undefined);
 
 const length = (tokens: Token[]) => tokens.reduce((sum, token) => sum + token.text.length, 0);
 
+/** One highlight block: what a body asks the highlighter for, and what warming asks for ahead of the body. */
+export type Block = { code: string; language: string | undefined; id: string; done?: boolean };
+
+/** The one place a block becomes a highlighter request, so a warmed block and the mounted body share one cache key. */
+export function requestTokens(highlight: Highlight | undefined, { code, language, id, done = true }: Block) {
+  // The version grows with appended text and once more when the text is done, so each revision has its own cache key.
+  return highlight && language && code ? highlight(code, language, { id, version: code.length * 2 + (done ? 1 : 0), state: done ? "done" : "streaming" }) : null;
+}
+
 /**
  * Tokens for `code` from the RunProvider's highlighter, or null while they are on their way (render the text plain).
  * Work runs in the highlighter's worker. While a longer streamed revision is pending, the last tokens stay on its prefix,
@@ -12,11 +21,7 @@ const length = (tokens: Token[]) => tokens.reduce((sum, token) => sum + token.te
  */
 export function useTokens(code: string, language: string | undefined, id: string, done = true): Token[] | null {
   const highlight = useContext(HighlightContext);
-  const result = useMemo(
-    // The version grows with appended text and once more when the text is done, so each revision has its own cache key.
-    () => (highlight && language && code ? highlight(code, language, { id, version: code.length * 2 + (done ? 1 : 0), state: done ? "done" : "streaming" }) : null),
-    [highlight, code, language, id, done],
-  );
+  const result = useMemo(() => requestTokens(highlight, { code, language, id, done }), [highlight, code, language, id, done]);
   const [settled, setSettled] = useState<{ result: unknown; tokens: Token[] }>();
   const last = useRef<{ code: string; tokens: Token[] }>(undefined);
   useEffect(() => {

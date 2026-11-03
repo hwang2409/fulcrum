@@ -1,9 +1,9 @@
 import { useMemo, type CSSProperties } from "react";
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
-import { MarkedTokens, tokenLines, useTokens } from "../highlight.js";
-import { Arguments, asking, boundText, Empty, Foot, Output, splitLines } from "./common.js";
-import { ROW_CHARS, TextViewer, useTextMetrics, type RowModel } from "./text-viewer.js";
+import { MarkedTokens, tokenLines, useTokens, type Block } from "../highlight.js";
+import { Arguments, asking, boundText, Empty, Foot, memoText, Output, outputBlocks, splitLines } from "./common.js";
+import { ROW_CHARS, TextViewer, useTextMetrics, viewerBlocks, type RowModel } from "./text-viewer.js";
 
 // `path:line:text` (grep -n, ripgrep), or `path-line-text` for ripgrep context lines.
 const MATCH = /^(.+?):(\d+):(.*)$/;
@@ -49,10 +49,15 @@ export function matchRanges(text: string, pattern: string): Array<[number, numbe
   return exact.length || lower.length !== text.length ? exact : find(lower);
 }
 
+// Lines [from, to) of one file as one block.
+const fileBlock = (file: Group, from: number, to: number, id: string): Block =>
+  ({ code: file.lines.slice(from, to).map((line) => line.text).join("\n"), language: languageForPath(file.path), id: `${id}@${from}` });
+
 /** Lines [from, to) of one file, highlighted as their own block; the head shows with the file's first line. */
 function File({ file, from, to, pattern, id, gutter }: { file: Group; from: number; to: number; pattern: string; id: string; gutter: CSSProperties }) {
   const shown = useMemo(() => file.lines.slice(from, to), [file, from, to]);
-  const tokens = useTokens(useMemo(() => shown.map((line) => line.text).join("\n"), [shown]), languageForPath(file.path), `${id}@${from}`);
+  const block = useMemo(() => fileBlock(file, from, to, id), [file, from, to, id]);
+  const tokens = useTokens(block.code, block.language, block.id);
   const lines = useMemo(() => tokens && tokenLines(tokens), [tokens]);
   return (
     <div data-part="search-file" style={gutter}>
@@ -79,28 +84,46 @@ function searchRows(groups: Group[], pattern: string, id: string): RowModel {
   }
   // The number column fits the largest line number of the whole result, so files and viewer groups align.
   const gutter = { "--gutter": `${Math.max(4, String(last).length)}ch` } as CSSProperties;
-  const render = (start: number, end: number) => {
-    const out = [];
+  // Each file rows [start, end) cross, with its lines [from, to).
+  const pieces = <T,>(start: number, end: number, piece: (g: number, from: number, to: number) => T) => {
+    const out: T[] = [];
     let low = 0;
     for (let high = groups.length - 1; low < high;) {
       const mid = (low + high + 1) >> 1;
       if (starts[mid]! <= start) low = mid;
       else high = mid - 1;
     }
-    for (let g = low; g < groups.length && starts[g]! < end; g++) {
-      const from = Math.max(0, start - starts[g]!);
-      out.push(<File key={g} file={groups[g]!} from={from} to={Math.min(groups[g]!.lines.length, end - starts[g]!)} pattern={pattern} id={`${id}:file-${g}`} gutter={gutter} />);
-    }
+    for (let g = low; g < groups.length && starts[g]! < end; g++) out.push(piece(g, Math.max(0, start - starts[g]!), Math.min(groups[g]!.lines.length, end - starts[g]!)));
     return out;
   };
-  return { count, part: "tool-matches", render };
+  return {
+    count,
+    part: "tool-matches",
+    render: (start, end) => pieces(start, end, (g, from, to) => <File key={g} file={groups[g]!} from={from} to={to} pattern={pattern} id={`${id}:file-${g}`} gutter={gutter} />),
+    blocks: (start, end) => pieces(start, end, (g, from, to) => fileBlock(groups[g]!, from, to, `${id}:file-${g}`)),
+  };
+}
+
+const groupsOf = memoText((text) => group(splitLines(text)));
+const searchText = (item: ToolBodyProps["item"], output: string) => (item.view?.kind === "search" ? item.view.matches?.join("\n") ?? output : "");
+
+/** The highlight blocks SearchBody asks for when it first mounts. */
+export function searchBlocks({ item, output, state }: ToolBodyProps): Block[] {
+  if (item.view?.kind !== "search") return [];
+  const text = searchText(item, output);
+  if (!text) return [];
+  const groups = groupsOf(text);
+  const done = state !== "streaming";
+  return groups
+    ? viewerBlocks({ text, id: `${item.id}:results`, done, rows: searchRows(groups, item.view.pattern, item.id) })
+    : outputBlocks({ text, id: `${item.id}:output`, done });
 }
 
 export function SearchBody({ item, output, state }: ToolBodyProps) {
   const view = item.view?.kind === "search" ? item.view : undefined;
-  const text = view ? view.matches?.join("\n") ?? output : "";
+  const text = searchText(item, output);
   const metrics = useTextMetrics(text, true);
-  const groups = useMemo(() => group(splitLines(text)), [text]);
+  const groups = groupsOf(text);
   const pattern = view?.pattern ?? "";
   const model = useMemo(() => groups && searchRows(groups, pattern, item.id), [groups, pattern, item.id]);
   if (!view) return null;

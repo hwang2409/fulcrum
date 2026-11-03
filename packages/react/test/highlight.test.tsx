@@ -83,7 +83,7 @@ test("with no highlighter every card renders the same text, plain", () => {
   expect(container.querySelector(".tok-keyword")).toBeNull();
 });
 
-test("collapsed output does no JSON or highlight work until it is opened", () => {
+test("collapsed output does no JSON or highlight work in its first render", () => {
   const output = JSON.stringify({ value: "x".repeat(2_000) });
   const { highlight, calls } = fakeHighlighter();
   const parse = JSON.parse;
@@ -213,4 +213,61 @@ test("segmenting a 2M-character line with no newline stays linear", async () => 
   const segments = segmentText("x".repeat(2_000_000), 1);
   expect(segments).toHaveLength(1_000);
   expect(performance.now() - started).toBeLessThan(100);
+});
+
+// Every view kind, small and large, collapsed when it mounts.
+const lines = (count: number, line: (i: number) => string) => Array.from({ length: count }, (_, i) => `${line(i)}\n`).join("");
+const warmFixtures: Array<[string, RunEvent[]]> = [
+  ["shell ansi", done("w-sh", "bash", { kind: "shell", command: "bun test" }, lines(20, (i) => `\x1b[32mpass\x1b[0m test ${i}`))],
+  ["shell split, long command", done("w-split", "bash", { kind: "shell", command: `rg ${"x".repeat(80)}`, stdout: lines(30, (i) => `out ${i}`), stderr: lines(12, (i) => `err ${i}`) }, "")],
+  ["shell huge", done("w-huge", "bash", { kind: "shell", command: "seq" }, lines(5_000, (i) => `line ${i}`))],
+  ["read", done("w-read", "read", { kind: "read", path: "src/a.ts" }, lines(30, (i) => `const a${i} = ${i};`))],
+  ["read large", done("w-big", "read", { kind: "read", path: "src/b.ts" }, lines(400, (i) => `export const b${i} = ${i};`))],
+  ["write", done("w-write", "write", { kind: "write", path: "src/c.py", content: lines(20, (i) => `x${i} = ${i}`) }, "")],
+  ["edit", done("w-edit", "edit", { kind: "edit", path: "src/d.ts", diff: "@@ -1,2 +1,2 @@\n const a = 1;\n-let n = 1;\n+let n = 2;\n" }, "")],
+  ["edit large", done("w-bigedit", "edit", { kind: "edit", path: "src/e.ts", diff: lines(200, (i) => `@@ -${i * 3 + 1},2 +${i * 3 + 1},2 @@\n const a${i} = 1;\n-let n = ${i};\n+let n = ${i + 1};`) }, "")],
+  ["search", done("w-grep", "grep", { kind: "search", pattern: "TODO" }, lines(20, (i) => (i % 2 ? `docs/n.md:${i}:TODO ${i}` : `src/f.ts:${i}:  // TODO ${i}`)))],
+  ["search large", done("w-biggrep", "grep", { kind: "search", pattern: "TODO" }, lines(300, (i) => `src/f${i >> 3}.ts:${i}:// TODO ${i}`))],
+  ["search, not grep output", done("w-plaingrep", "grep", { kind: "search", pattern: "TODO" }, lines(20, (i) => `no match format ${i}`))],
+  ["fetch json", done("w-fetch", "fetch", { kind: "fetch", url: "https://api.example.com/runs", contentType: "application/json" }, JSON.stringify({ runs: Array.from({ length: 200 }, (_, i) => ({ id: i })) }))],
+  ["fetch html", done("w-html", "fetch", { kind: "fetch", url: "https://example.com/" , contentType: "text/html" }, lines(20, (i) => `<p>${i}</p>`))],
+  ["generic json", done("w-gen", "custom", undefined, JSON.stringify({ rows: Array.from({ length: 200 }, (_, i) => ({ id: i })) }))],
+];
+const blockKey = (call: Call) => JSON.stringify([call.code, call.language, call.context]);
+
+test("idle warming asks for exactly the blocks the body asks for when it opens", async () => {
+  const { highlight, calls } = fakeHighlighter();
+  const body = (call: Call) => !call.context?.id.endsWith(":summary");
+  render(warmFixtures.flatMap(([, events]) => events), warmFixtures.map(([, events]) => `tool:${(events[0] as { tool_call: { id: string } }).tool_call.id}`), highlight);
+  const cards = [...container.querySelectorAll<HTMLDetailsElement>('[data-part="tool"]')];
+  expect(cards.map((card) => card.open)).toEqual(warmFixtures.map(() => false));
+  expect(calls.filter(body)).toHaveLength(0);
+  await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  const warmed = calls.filter(body).map(blockKey);
+  calls.length = 0;
+  const plain: string[] = [];
+  for (const card of cards) act(() => {
+    card.open = true;
+    card.dispatchEvent(new Event("toggle"));
+  });
+  for (const [name, events] of warmFixtures) {
+    const id = (events[0] as { tool_call: { id: string } }).tool_call.id;
+    const of = (keys: string[]) => keys.filter((key) => key.includes(`"tool:${id}:`)).sort();
+    const opened = of(calls.filter(body).map(blockKey));
+    expect({ name, blocks: of(warmed) }).toEqual({ name, blocks: opened });
+    if (opened.length === 0) plain.push(name);
+  }
+  // ANSI colors and plain text have no language, so they ask for no highlighting.
+  expect(plain).toEqual(["shell ansi", "shell huge", "search, not grep output"]);
+});
+
+test("hover warms a collapsed body at once, and only once per revision", () => {
+  const { highlight, calls } = fakeHighlighter();
+  render(warmFixtures[3]![1], ["tool:w-read"], highlight);
+  const summary = q('[data-id="tool:w-read"] > summary');
+  expect(calls.filter((call) => call.context?.id === "tool:w-read:content")).toHaveLength(0);
+  act(() => summary.dispatchEvent(new PointerEvent("pointerover", { bubbles: true })));
+  act(() => summary.dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
+  expect(calls.filter((call) => call.context?.id === "tool:w-read:content")).toHaveLength(1);
+  expect(q('[data-id="tool:w-read"] [data-part="tool-body"]')).toBeNull();
 });

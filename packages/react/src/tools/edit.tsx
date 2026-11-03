@@ -1,9 +1,9 @@
 import { useMemo, type CSSProperties, type ReactNode } from "react";
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
-import { MarkedTokens, tokenLines, useTokens } from "../highlight.js";
-import { Arguments, asking, boundText, Foot, Output } from "./common.js";
-import { ROW_CHARS, TextViewer, useTextMetrics, type RowModel } from "./text-viewer.js";
+import { MarkedTokens, tokenLines, useTokens, type Block } from "../highlight.js";
+import { Arguments, asking, boundText, Foot, memoText, Output, outputBlocks } from "./common.js";
+import { ROW_CHARS, TextViewer, useTextMetrics, viewerBlocks, type RowModel } from "./text-viewer.js";
 import { diffRows, type DiffRow } from "./diff.js";
 import type { Token } from "@fulcrum/highlight";
 
@@ -38,12 +38,17 @@ function sides(rows: DiffRow[]) {
   return { old: old.join("\n"), next: next.join("\n"), at };
 }
 
+// The two blocks of rows [start, end): the old side and the new side.
+const sideBlocks = (side: { old: string; next: string }, language: string | undefined, id: string, start: number): [Block, Block] =>
+  [{ code: side.old, language, id: `${id}@${start}:old` }, { code: side.next, language, id: `${id}@${start}:new` }];
+
 /** Rows [start, end) of a diff, highlighted as their own block: every edit view draws its rows through this. */
 function DiffLines({ rows, start, end, language, id, gutter }: { rows: DiffRow[]; start: number; end: number; language?: string; id: string; gutter: CSSProperties }) {
   const shown = useMemo(() => rows.slice(start, end), [rows, start, end]);
   const side = useMemo(() => sides(shown), [shown]);
-  const oldTokens = useTokens(side.old, language, `${id}@${start}:old`);
-  const newTokens = useTokens(side.next, language, `${id}@${start}:new`);
+  const [oldBlock, newBlock] = sideBlocks(side, language, id, start);
+  const oldTokens = useTokens(oldBlock.code, language, oldBlock.id);
+  const newTokens = useTokens(newBlock.code, language, newBlock.id);
   const oldLines = useMemo(() => oldTokens && tokenLines(oldTokens), [oldTokens]);
   const newLines = useMemo(() => newTokens && tokenLines(newTokens), [newTokens]);
   return shown.map((row, index) => {
@@ -53,6 +58,32 @@ function DiffLines({ rows, start, end, language, id, gutter }: { rows: DiffRow[]
 }
 
 const capped = (row: DiffRow) => (row.text.length > ROW_CHARS ? { ...row, text: boundText(row.text, ROW_CHARS).text } : row);
+const rowsOf = memoText((diff) => {
+  const rows = diffRows(diff).map(capped);
+  // Both number columns fit the largest line number, so every row (and every viewer group) aligns.
+  let last = 0;
+  for (const row of rows) last = Math.max(last, row.old ?? 0, row.new ?? 0);
+  return { rows, gutter: { "--diff-gutter": `${Math.max(4, String(last).length) + 1}ch` } as CSSProperties };
+});
+
+function diffModel(diff: string, language: string | undefined, id: string): RowModel {
+  const { rows, gutter } = rowsOf(diff);
+  return {
+    count: rows.length,
+    part: "tool-diff",
+    language,
+    render: (start, end) => <DiffLines rows={rows} start={start} end={end} language={language} id={id} gutter={gutter} />,
+    blocks: (start, end) => sideBlocks(sides(rows.slice(start, end)), language, id, start),
+  };
+}
+
+/** The highlight blocks EditBody asks for when it first mounts. */
+export function editBlocks({ item, output, state }: ToolBodyProps): Block[] {
+  if (item.view?.kind !== "edit") return [];
+  const id = `${item.id}:diff`;
+  const { diff, path } = item.view;
+  return [...viewerBlocks({ text: diff, id, rows: diffModel(diff, languageForPath(path), id) }), ...(output ? outputBlocks({ text: output, id: `${item.id}:output`, done: state !== "streaming" }) : [])];
+}
 
 export function EditBody({ item, output, state }: ToolBodyProps) {
   const view = item.view?.kind === "edit" ? item.view : undefined;
@@ -60,14 +91,7 @@ export function EditBody({ item, output, state }: ToolBodyProps) {
   const metrics = useTextMetrics(diff);
   const language = view ? languageForPath(view.path) : undefined;
   const id = `${item.id}:diff`;
-  const model = useMemo((): RowModel => {
-    const rows = diffRows(diff).map(capped);
-    // Both number columns fit the largest line number, so every row (and every viewer group) aligns.
-    let last = 0;
-    for (const row of rows) last = Math.max(last, row.old ?? 0, row.new ?? 0);
-    const gutter = { "--diff-gutter": `${Math.max(4, String(last).length) + 1}ch` } as CSSProperties;
-    return { count: rows.length, part: "tool-diff", language, render: (start, end) => <DiffLines rows={rows} start={start} end={end} language={language} id={id} gutter={gutter} /> };
-  }, [diff, language, id]);
+  const model = useMemo(() => diffModel(diff, language, id), [diff, language, id]);
   if (!view) return null;
   return (
     <>

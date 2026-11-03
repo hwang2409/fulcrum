@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { ToolCall } from "@fulcrum/core";
 import type { ItemState } from "../parts.js";
-import { tokenLines, Tokens, useTokens } from "../highlight.js";
+import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
 import { hasControls, parseAnsi, type AnsiText } from "./ansi.js";
 import { jsonText } from "./json.js";
-import { needsTextViewer, TextViewer, useTextMetrics, type TextFormat } from "./text-viewer.js";
+import { needsTextViewer, TextViewer, useTextMetrics, viewerBlocks, type TextFormat } from "./text-viewer.js";
 
 const JSON_FORMAT: TextFormat = { language: "json" };
 const HEAD_LINES = 40;
@@ -89,6 +89,39 @@ export function Gap({ window, noun = "lines" }: { window: Window<unknown>; noun?
   return <span data-part="tool-gap">{text}</span>;
 }
 
+const MEMO_ENTRIES = 32;
+const MEMO_CHARS = 2_000_000;
+/**
+ * The latest results of a pure function of one text, so a body warmed before it opens and the body once mounted share
+ * one computation (JSON detection, ANSI parsing, row models). Least recently used entries go first; the kept texts
+ * total at most MEMO_CHARS, so a streaming body does not pin its old revisions.
+ */
+export function memoText<T>(compute: (text: string) => T): (text: string) => T {
+  const cache = new Map<string, T>();
+  let chars = 0;
+  return (text) => {
+    if (cache.has(text)) {
+      const hit = cache.get(text)!;
+      cache.delete(text);
+      cache.set(text, hit);
+      return hit;
+    }
+    const value = compute(text);
+    if (text.length > MEMO_CHARS) return value;
+    cache.set(text, value);
+    chars += text.length;
+    for (const [key] of cache) {
+      if (cache.size <= MEMO_ENTRIES && chars <= MEMO_CHARS) break;
+      cache.delete(key);
+      chars -= key.length;
+    }
+    return value;
+  };
+}
+
+const ansiOf = memoText((text) => (hasControls(text) ? parseAnsi(text) : undefined));
+const jsonOf = memoText(jsonText);
+
 /** Append-only terminal text with its escape codes applied; undefined while the text has no control characters. */
 function useAnsi(text: string): AnsiText | undefined {
   const cache = useRef<{ source: string; parsed?: AnsiText }>({ source: "" });
@@ -97,7 +130,7 @@ function useAnsi(text: string): AnsiText | undefined {
   const appended = text.length > prior.source.length && prior.source.length > 0;
   const delta = appended ? text.slice(prior.source.length) : text;
   const base = appended ? prior.parsed : undefined;
-  const parsed = !base && !hasControls(delta) ? undefined : parseAnsi(delta, base ?? (appended ? parseAnsi(prior.source) : undefined));
+  const parsed = !appended ? ansiOf(text) : !base && !hasControls(delta) ? undefined : parseAnsi(delta, base ?? parseAnsi(prior.source));
   cache.current = { source: text, parsed };
   return parsed;
 }
@@ -110,21 +143,42 @@ export const plainOutput = (text: string) => (hasControls(text) ? parseAnsi(text
  * given language, else JSON when the finished text parses as one JSON object or array. `pretty` indents compact JSON.
  * Logs `follow` their newest line; a document (`follow={false}`) starts at its top.
  */
-export function Output({ text, id, stream, done = true, language, pretty = false, follow = true }: { text: string; id: string; stream?: "stderr"; done?: boolean; language?: string; pretty?: boolean; follow?: boolean }) {
-  const ansi = useAnsi(text);
+type OutputProps = { text: string; id: string; stream?: "stderr"; done?: boolean; language?: string; pretty?: boolean; follow?: boolean };
+
+// What Output shows and how it is colored, from the text with its escape codes applied.
+function outputView(ansi: AnsiText | undefined, text: string, done: boolean, language: string | undefined, pretty: boolean) {
   const plain = ansi?.text ?? text;
-  const json = useMemo(() => (!ansi?.spans.length && done && (!language || language === "json") ? jsonText(plain) : undefined), [ansi?.spans.length, done, language, plain]);
+  const json = !ansi?.spans.length && done && (!language || language === "json") ? jsonOf(plain) : undefined;
   const shown = json?.json && pretty ? json.text : plain;
-  const format: TextFormat | undefined = ansi?.spans.length ? { spans: ansi.spans } : json?.json ? { language: "json" } : language ? { language } : undefined;
-  return <TextViewer text={shown} id={id} label={stream ?? "output"} appendOnly={shown === plain} follow={follow} stream={stream} format={format} done={done} />;
+  const format: TextFormat | undefined = ansi?.spans.length ? { spans: ansi.spans } : json?.json ? JSON_FORMAT : language ? { language } : undefined;
+  return { shown, format, appendOnly: shown === plain };
+}
+
+export function Output({ text, id, stream, done = true, language, pretty = false, follow = true }: OutputProps) {
+  const ansi = useAnsi(text);
+  const { shown, format, appendOnly } = useMemo(() => outputView(ansi, text, done, language, pretty), [ansi, text, done, language, pretty]);
+  return <TextViewer text={shown} id={id} label={stream ?? "output"} appendOnly={appendOnly} follow={follow} stream={stream} format={format} done={done} />;
+}
+
+/** The highlight blocks Output asks for when it first mounts; see viewerBlocks. */
+export function outputBlocks({ text, id, done = true, language, pretty = false }: OutputProps): Block[] {
+  const { shown, format } = outputView(ansiOf(text), text, done, language, pretty);
+  return viewerBlocks({ text: shown, id, format, done });
 }
 
 const Row = ({ number, children }: { number: number; children: ReactNode }) => (
   <div data-part="line"><span data-part="line-number">{number}</span><span data-part="line-text">{children}</span></div>
 );
 
+type NumberedProps = { text: string; start?: number; id: string; language?: string; done?: boolean };
+
+/** The highlight blocks NumberedLines asks for when it first mounts. */
+export function numberedBlocks({ text, id, language, done = true }: NumberedProps): Block[] {
+  return needsTextViewer(text) ? viewerBlocks({ text, id, format: language ? { language } : undefined, done }) : [{ code: text, language, id, done }];
+}
+
 /** Numbered text uses rich rows while small and the shared viewer while large. */
-export function NumberedLines({ text, start = 1, id, language, done = true }: { text: string; start?: number; id: string; language?: string; done?: boolean }) {
+export function NumberedLines({ text, start = 1, id, language, done = true }: NumberedProps) {
   const metrics = useTextMetrics(text, true);
   const large = needsTextViewer(text, metrics);
   const tokens = useTokens(large ? "" : text, language, id, done);

@@ -1,6 +1,7 @@
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
-import { Arguments, asking, boundText, bytes, Foot, NumberedLines, Output } from "./common.js";
+import type { Block } from "../highlight.js";
+import { Arguments, asking, boundText, bytes, Foot, NumberedLines, numberedBlocks, Output, outputBlocks } from "./common.js";
 
 export function WriteBody({ item, output, state }: ToolBodyProps) {
   if (item.view?.kind !== "write") return null;
@@ -16,4 +17,14 @@ export function WriteBody({ item, output, state }: ToolBodyProps) {
       </Foot>
     </>
   );
+}
+
+/** The highlight blocks WriteBody asks for when it first mounts. */
+export function writeBlocks({ item, output, state }: ToolBodyProps): Block[] {
+  if (item.view?.kind !== "write") return [];
+  const { path, content } = item.view;
+  return [
+    ...(content ? numberedBlocks({ text: content, id: `${item.id}:content`, language: languageForPath(path) }) : []),
+    ...(output ? outputBlocks({ text: output, id: `${item.id}:output`, done: state !== "streaming" }) : []),
+  ];
 }

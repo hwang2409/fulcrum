@@ -10,10 +10,11 @@
 // browser-default appearance, ButtonFace background, default border, or system font, at rest and under forced :hover,
 // :focus, :focus-visible, and :active. The large-output viewer opens in <16 ms, follows the bottom, and highlights a
 // 1,000,000-line file with no long tasks; scrolling it under 4x CPU throttling is reported. Needs a production build
-// (`bun run build`).
+// (`bun run build`). Collapsed tool bodies warm before they open (see warm-check.ts).
 import { chromium, type Page } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { checkWarmBodies } from "./warm-check.js";
 
 const widths = [390, 768, 1024, 1440];
 const touchWidth = 860; // the gallery's touch breakpoint
@@ -291,6 +292,7 @@ try {
     await Bun.sleep(100);
   }
   browser = await chromium.launch();
+  failures.push(...await checkWarmBodies(browser, port));
   const replay = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await replay.addInitScript(() => {
     const request = window.requestAnimationFrame.bind(window);

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Tokens, useTokens } from "../highlight.js";
+import { Tokens, useTokens, type Block } from "../highlight.js";
 import { useVirtualList } from "../virtual.js";
 import { spansIn, type AnsiSpan } from "./ansi.js";
 
@@ -28,7 +28,7 @@ export const ROW_CHARS = 10_000;
  * block: the compact view draws every row, the viewer only its mounted groups, through the same renderer. `part`
  * names the compact view's box.
  */
-export type RowModel = { count: number; part: string; language?: string; render: (start: number, end: number) => ReactNode };
+export type RowModel = { count: number; part: string; language?: string; render: (start: number, end: number) => ReactNode; blocks: (start: number, end: number) => Block[] };
 
 const safeEnd = (text: string, end: number) => {
   if (end >= text.length) return text.length;
@@ -133,10 +133,13 @@ const AnsiRun = ({ text, spans }: { text: string; spans: AnsiSpan[] }) => {
   return <>{out}</>;
 };
 
+const styledBlock = (text: string, start: number, end: number, format: TextFormat | undefined, id: string, done: boolean): Block =>
+  ({ code: text.slice(start, end), language: format?.spans ? undefined : format?.language, id: `${id}@${start}`, done });
+
 /** `text[start, end)` in its format. Each range is its own highlight block, so a viewer only highlights mounted rows. */
 export function Styled({ text, start = 0, end = text.length, format, id, done = true }: { text: string; start?: number; end?: number; format?: TextFormat; id: string; done?: boolean }) {
-  const slice = text.slice(start, end);
-  const tokens = useTokens(slice, format?.spans ? undefined : format?.language, `${id}@${start}`, done);
+  const { code: slice, language, id: block } = styledBlock(text, start, end, format, id, done);
+  const tokens = useTokens(slice, language, block, done);
   if (format?.spans) return <AnsiRun text={slice} spans={spansIn(format.spans, start, end)} />;
   return tokens ? <Tokens tokens={tokens} /> : <>{slice}</>;
 }
@@ -255,7 +258,6 @@ export type TextViewerProps = {
   id: string;
   appendOnly?: boolean;
   follow?: boolean;
-  preview?: ReactNode;
   part?: string;
   stream?: string;
   metrics?: TextMetrics;
@@ -267,7 +269,7 @@ export type TextViewerProps = {
 };
 
 /** One bounded, virtualized disclosure for every large tool text surface. */
-export function TextViewer({ text, label, id, appendOnly = false, follow = false, preview, part = "tool-output", stream, metrics: suppliedMetrics, format, done = true, rows }: TextViewerProps) {
+export function TextViewer({ text, label, id, appendOnly = false, follow = false, part = "tool-output", stream, metrics: suppliedMetrics, format, done = true, rows }: TextViewerProps) {
   const [open, setOpen] = useState(false);
   const measuredMetrics = useTextMetrics(suppliedMetrics ? "" : text, appendOnly);
   const metrics = suppliedMetrics ?? measuredMetrics;
@@ -294,18 +296,16 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
     );
   }
   // One child in the pre: tool-output is a column-reverse flex box, which would reverse several.
-  if (!large) return preview ?? <pre data-part={part} data-stream={stream} data-anchor={follow ? undefined : "start"}><span><Styled text={text} format={format} id={id} done={done} /></span></pre>;
+  if (!large) return <pre data-part={part} data-stream={stream} data-anchor={follow ? undefined : "start"}><span><Styled text={text} format={format} id={id} done={done} /></span></pre>;
   if (open) return <VirtualText text={text} label={label} follow={follow} metrics={metrics} segments={rows ? rowSegments : textSegments} rows={rows} format={format} id={id} done={done} />;
   const { headEnd, tailStart } = previewRanges(text);
   return (
     <>
-      {preview ?? (
-        <pre data-part={part} data-stream={stream} data-anchor={follow ? undefined : "start"}><span>
-          <Styled text={text} end={headEnd} format={format} id={id} />
-          <span data-part="tool-gap">… {count(metrics.lines)} lines / {count(metrics.characters)} characters; open to view all …{"\n"}</span>
-          <Styled text={text} start={tailStart} format={format} id={id} done={done} />
-        </span></pre>
-      )}
+      <pre data-part={part} data-stream={stream} data-anchor={follow ? undefined : "start"}><span>
+        <Styled text={text} end={headEnd} format={format} id={id} />
+        <span data-part="tool-gap">… {count(metrics.lines)} lines / {count(metrics.characters)} characters; open to view all …{"\n"}</span>
+        <Styled text={text} start={tailStart} format={format} id={id} done={done} />
+      </span></pre>
       <OpenButton metrics={metrics} open={() => setOpen(true)} />
     </>
   );
@@ -316,3 +316,15 @@ const OpenButton = ({ metrics, open }: { metrics: TextMetrics; open: () => void 
     open all {count(metrics.lines)} lines / {count(metrics.characters)} characters
   </button>
 );
+
+/**
+ * The highlight blocks a closed TextViewer asks for on its first render, for warming a body before it mounts. It mirrors
+ * TextViewer's closed branches above; a test renders every tool body and checks the two agree.
+ */
+export function viewerBlocks({ text, id, format, done = true, rows }: Pick<TextViewerProps, "text" | "id" | "format" | "done" | "rows">): Block[] {
+  const large = needsTextViewer(text);
+  if (rows) return large && rows.count > HEAD_ROWS + TAIL_ROWS ? [...rows.blocks(0, HEAD_ROWS), ...rows.blocks(rows.count - TAIL_ROWS, rows.count)] : rows.blocks(0, rows.count);
+  if (!large) return [styledBlock(text, 0, text.length, format, id, done)];
+  const { headEnd, tailStart } = previewRanges(text);
+  return [styledBlock(text, 0, headEnd, format, id, true), styledBlock(text, tailStart, text.length, format, id, done)];
+}

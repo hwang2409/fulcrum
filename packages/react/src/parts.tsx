@@ -1,11 +1,12 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
+import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
 import type { RunItem } from "@fulcrum/core";
 import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
-import { Code } from "./highlight.js";
+import { Code, HighlightContext } from "./highlight.js";
 import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
 import { ToolBody, toolSummary } from "./tools/index.js";
 import { useVirtualList } from "./virtual.js";
+import { useWarm, warmToolBody } from "./warm.js";
 
 export type ItemProps = { id: string; className?: string };
 export type MarkdownContentProps = { id: string; source: string; streaming: boolean };
@@ -154,6 +155,13 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
   const tool = item?.type === "tool" ? item : undefined;
   const [open, setOpen] = useState(() => openByDefault(tool, tool ? toolOutput(tool) : ""));
   const [bodyMounted, setBodyMounted] = useState(open);
+  const highlight = useContext(HighlightContext);
+  const summaryRef = useRef<HTMLElement>(null);
+  // The body mounts on first open (never-opened cards cost nothing on first paint); its data warms before that, so
+  // the first open paints colored. Only the default body is known to warm; a custom body renders as it is.
+  const warm = useWarm(summaryRef, tool && highlight && !bodyMounted && Body === ToolBody
+    ? () => warmToolBody({ item: tool, output: toolOutput(tool), state: toolState(tool) }, highlight)
+    : undefined, tool);
   if (!tool) return null;
   const state = toolState(tool);
   const output = toolOutput(tool);
@@ -173,7 +181,7 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
       data-tool-view={tool.view?.kind}
       data-state={state}
     >
-      <summary data-part="tool-header">
+      <summary data-part="tool-header" ref={summaryRef} onPointerEnter={warm} onFocus={warm} onPointerDown={warm}>
         <Header item={tool} state={state} summary={summary} />
       </summary>
       {bodyMounted ? <div data-part="tool-body">

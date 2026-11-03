@@ -1,6 +1,7 @@
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
-import { Arguments, asking, boundText, Empty, Foot, NumberedLines, Output } from "./common.js";
+import type { Block } from "../highlight.js";
+import { Arguments, asking, boundText, Empty, Foot, NumberedLines, numberedBlocks, Output, outputBlocks } from "./common.js";
 
 // A failed or canceled read returns a reason, not file lines, so it gets no line numbers.
 export function ReadBody({ item, output, state }: ToolBodyProps) {
@@ -18,4 +19,11 @@ export function ReadBody({ item, output, state }: ToolBodyProps) {
       <Foot copy={[["path", path], ["output", output]]} />
     </>
   );
+}
+
+/** The highlight blocks ReadBody asks for when it first mounts. */
+export function readBlocks({ item, output, state }: ToolBodyProps): Block[] {
+  if (item.view?.kind !== "read" || !output) return [];
+  const id = `${item.id}:content`;
+  return item.is_error || item.canceled ? outputBlocks({ text: output, id }) : numberedBlocks({ text: output, id, language: languageForPath(item.view.path), done: state !== "streaming" });
 }

@@ -1,6 +1,7 @@
 import { languageForContentType, languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
-import { Arguments, asking, boundText, bytes, Empty, Foot, Output } from "./common.js";
+import type { Block } from "../highlight.js";
+import { Arguments, asking, boundText, bytes, Empty, Foot, Output, outputBlocks } from "./common.js";
 
 // The body's language: the Content-Type's when it names one, else the url path's extension (`/data.json`), else none.
 const bodyLanguage = (url: string | undefined, contentType: string | undefined) => {
@@ -31,4 +32,10 @@ export function FetchBody({ item, output, state }: ToolBodyProps) {
       </Foot>
     </>
   );
+}
+
+/** The highlight blocks FetchBody asks for when it first mounts. */
+export function fetchBlocks({ item, output, state }: ToolBodyProps): Block[] {
+  if (item.view?.kind !== "fetch" || !output) return [];
+  return outputBlocks({ text: output, id: `${item.id}:body`, done: state !== "streaming", language: bodyLanguage(item.view.url, item.view.contentType), pretty: true });
 }
