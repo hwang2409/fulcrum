@@ -45,6 +45,10 @@ const tool = (value: unknown): ToolCall => {
   };
 };
 
+// zeta streams text as "assistant" and reasoning as "thinking".
+const deltaKind = (kind: string | undefined) => kind === undefined || kind === "assistant" ? "text" : kind === "thinking" ? "reasoning" : kind;
+const basename = (path: string) => path.split(/[\\/]/).pop() || undefined;
+// zeta's block types map onto fulcrum's: thinking is reasoning, an image's base64 data becomes a data URL.
 const contentBlock = (value: unknown, index: number): ContentBlock => {
   const input = object(value, `message.content[${index}]`);
   const type = string(input.type, `message.content[${index}].type`);
@@ -52,18 +56,23 @@ const contentBlock = (value: unknown, index: number): ContentBlock => {
     case "text":
     case "thinking":
       return {
-        type,
+        type: type === "thinking" ? "reasoning" : type,
         text: typeof input.text === "string" ? input.text : (() => { throw new Error(`message.content[${index}].text must be a string`); })(),
         ...(input.signature === undefined ? {} : { signature: string(input.signature, `message.content[${index}].signature`) }),
       };
-    case "image":
+    case "image": {
+      const mediaType = string(input.mimeType, `message.content[${index}].mimeType`);
+      const filename = input.path === undefined || input.path === null ? undefined : basename(string(input.path, `message.content[${index}].path`));
       return {
         type,
-        data: string(input.data, `message.content[${index}].data`),
-        mimeType: string(input.mimeType, `message.content[${index}].mimeType`),
+        url: `data:${mediaType};base64,${string(input.data, `message.content[${index}].data`)}`,
+        mediaType,
+        ...(filename ? { filename } : {}),
+        ...(typeof input.size === "number" && Number.isFinite(input.size) ? { size: input.size } : {}),
       };
+    }
     case "redacted_thinking":
-      return { type, data: string(input.data, `message.content[${index}].data`) };
+      return { type: "reasoning", text: "", redacted: true, data: string(input.data, `message.content[${index}].data`) };
     case "tool_use":
       return { type, tool_call: tool(input.tool_call) };
     default:
@@ -86,7 +95,8 @@ const message = (value: unknown): Message => {
   if (!Array.isArray(input.content)) throw new Error("message.content must be an array");
   const result: Message = {
     role: string(input.role, "message.role"),
-    content: Array.from(input.content, contentBlock),
+    // A tool_use block is its call's tool row, not message content.
+    content: Array.from(input.content, contentBlock).filter((block) => block.type !== "tool_use"),
   };
   if (input.tool_result !== undefined && input.tool_result !== null)
     result.tool_result = toolResult(input.tool_result);
@@ -234,7 +244,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       case "turn_start": return [{ type: "turn_start", data: turnData(data) }];
       case "turn_end": return [{ type: "turn_end", data: turnData(data) }];
       case "message_start": return [{ type: "message_start", data }];
-      case "assistant_delta": return [{ type: "message_delta", message_id: optionalString(data.message_id, "data.message_id"), delta: string(wire.delta, "delta"), kind: optionalString(wire.kind, "kind") ?? "assistant" }];
+      case "assistant_delta": return [{ type: "message_delta", message_id: optionalString(data.message_id, "data.message_id"), delta: string(wire.delta, "delta"), kind: deltaKind(optionalString(wire.kind, "kind")) }];
       case "assistant_message": return [{ type: "message_commit", message_id: optionalString(data.message_id, "data.message_id"), message: message(wire.message) }];
       case "assistant_reset": return [{ type: "message_reset", data }];
       case "retry": return [{ type: "retry" }];

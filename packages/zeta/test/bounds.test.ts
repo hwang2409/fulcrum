@@ -23,7 +23,7 @@ const fields: Record<string, string[]> = {
   compaction_end: ["event", "data"],
   message_start: ["event", "data"],
   assistant_delta: ["event", "data", "data.message_id", "delta", "kind"],
-  assistant_message: ["event", "data", "data.message_id", "message", "message.role", "message.content", "message.content.0", "message.content.0.type", "message.content.0.text", "message.content.1", "message.content.1.type", "message.content.1.text", "message.content.1.signature", "message.content.2", "message.content.2.type", "message.content.2.data", "message.content.2.mimeType", "message.content.3", "message.content.3.type", "message.content.3.data", "message.content.4", "message.content.4.type", "message.content.4.tool_call", "message.content.4.tool_call.id", "message.content.4.tool_call.name", "message.content.4.tool_call.arguments", "message.tool_result", "message.tool_result.tool_call_id", "message.tool_result.content", "message.tool_result.is_error", "message.tool_result.is_canceled", "message.metadata"],
+  assistant_message: ["event", "data", "data.message_id", "message", "message.role", "message.content", "message.content.0", "message.content.0.type", "message.content.0.text", "message.content.1", "message.content.1.type", "message.content.1.text", "message.content.1.signature", "message.content.2", "message.content.2.type", "message.content.2.data", "message.content.2.mimeType", "message.content.2.path", "message.content.2.size", "message.content.3", "message.content.3.type", "message.content.3.data", "message.content.4", "message.content.4.type", "message.content.4.tool_call", "message.content.4.tool_call.id", "message.content.4.tool_call.name", "message.content.4.tool_call.arguments", "message.tool_result", "message.tool_result.tool_call_id", "message.tool_result.content", "message.tool_result.is_error", "message.tool_result.is_canceled", "message.metadata"],
   retry: ["event", "data"],
   assistant_reset: ["event", "data"],
   approval_request: ["event", "data", "request_id", "tool_call", "tool_call.id", "tool_call.name", "tool_call.arguments", "delegated", "agent_instance_id", "data.summary", "data.question", "data.text", "data.preview", "data.notification_id", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
@@ -88,7 +88,7 @@ test("every consumed field is decoded or becomes a typed adapter error", () => {
       content: [
         { type: "text", text: "hello" },
         { type: "thinking", text: "think", signature: "signed" },
-        { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+        { type: "image", data: "aGVsbG8=", mimeType: "image/png", path: "/tmp/shot.png", size: 5 },
         { type: "redacted_thinking", data: "redacted" },
         { type: "tool_use", tool_call: { id: "tool-2", name: "read", arguments: {} } },
       ],
