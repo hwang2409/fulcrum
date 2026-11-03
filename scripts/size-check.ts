@@ -1,7 +1,7 @@
 const external = ["@fulcrum/core", "@fulcrum/highlight", "@fulcrum/markdown", "@fulcrum/react", "@fulcrum/zeta", "@fulcrum/virtual", "react", "react-dom"];
 const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external, ceiling: 8_500 },
-  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 18_100 }, // tool-card highlighting, ANSI, and JSON: ~15 kB
+  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 22_000 }, // tool-card highlighting, ANSI, and JSON: ~15 kB; sub-agent row and run navigator: ~2.5 kB
   { name: "zeta", entry: "packages/zeta/dist/index.js", external, ceiling: 8_500 },
   { name: "virtual", entry: "packages/virtual/dist/index.js", external, ceiling: 11_000 },
   { name: "markdown", entry: "packages/markdown/dist/react.js", external, reportOnly: true },
@@ -31,7 +31,7 @@ for (const file of highlightFiles) {
   console.log(`highlight/${file}: ${bytes} bytes gzipped (reporting only)`);
 }
 const styles = [
-  { name: "react styles.css", file: "packages/react/styles.css", ceiling: 8_000 },
+  { name: "react styles.css", file: "packages/react/styles.css", ceiling: 9_000 }, // sub-agent row and run bar: ~0.9 kB
   { name: "react themes.css", file: "packages/react/themes.css", ceiling: 6_000 },
 ];
 for (const sheet of styles) {
