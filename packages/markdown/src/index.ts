@@ -1,4 +1,5 @@
 import type { Highlight } from "@fulcrum/highlight";
+import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
 import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
@@ -390,13 +391,12 @@ function withoutOpenEmphasis(source: string) {
     while (range < codeRanges.length && codeRanges[range]![1] <= run.index) range++;
     if (range < codeRanges.length && run.index >= codeRanges[range]![0]) continue;
     const marker = run[0];
-    const previous = source[run.index - 1];
-    const next = source[run.index + marker.length];
-    if (previous === "\\" || marker[0] === "_" && /[\p{L}\p{N}]/u.test(previous ?? "") && /[\p{L}\p{N}]/u.test(next ?? "")) continue;
-    if (/\s/.test(next ?? "") && !/\S/.test(previous ?? "")) continue;
-    const match = lastMarkerIndex(stack, marker);
-    if (match >= 0 && /\S/.test(source.slice(stack[match]!.index + marker.length, run.index))) stack.splice(match, 1);
-    else stack.push({ marker, index: run.index });
+    if (source[run.index - 1] === "\\") continue;
+    const { canOpen, canClose } = delimiterRun(source, run.index, marker.length);
+    const match = canClose ? lastMarkerIndex(stack, marker) : -1;
+    if (match >= 0) stack.splice(match, 1);
+    // A run at the end can still grow into another run, so it stays hidden.
+    else if (canOpen || run.index + marker.length === source.length) stack.push({ marker, index: run.index });
   }
   if (!stack.length) return source;
   const pieces: string[] = [];
