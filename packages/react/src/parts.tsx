@@ -1,9 +1,12 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
+import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
 import type { RunItem } from "@fulcrum/core";
 import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
-import { boundText, duration, MAX_SUMMARY_CHARS } from "./tools/common.js";
+import { Code, HighlightContext } from "./highlight.js";
+import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
+import { diffStatText } from "./tools/diff.js";
 import { ToolBody, toolSummary } from "./tools/index.js";
 import { useVirtualList } from "./virtual.js";
+import { useWarm, warmToolBody } from "./warm.js";
 
 export type ItemProps = { id: string; className?: string };
 export type MarkdownContentProps = { id: string; source: string; streaming: boolean };
@@ -90,14 +93,39 @@ function ToolName({ name }: { name: string }) {
   return <span data-part="tool-name" data-blank={isBlank(name) ? "" : undefined} title={title}>{label}</span>;
 }
 
+const oneLine = (text: string) => boundText(text.replace(/\s+/g, " ").trim(), MAX_SUMMARY_CHARS).text;
+
+/** The default summary with each fact in its color: `$ command` highlighted, paths, ranges, +/- counts, patterns. */
+function ViewSummary({ item }: { item: ToolItem }) {
+  const view = item.view;
+  const path = (value: string) => <span data-part="summary-path">{oneLine(value)}</span>;
+  switch (view?.kind) {
+    case "shell":
+      return <><span data-part="shell-prompt">$ </span><Code text={oneLine(view.command)} language="shell" id={`${item.id}:summary`} /></>;
+    case "read": {
+      const summary = toolSummary(item);
+      return <>{path(view.path)}{summary.length > view.path.length ? <span data-part="summary-range">{summary.slice(view.path.length)}</span> : null}</>;
+    }
+    case "edit": {
+      const { insert, remove } = diffStatText(view.diff);
+      return <>{path(view.path)} <span data-part="diff-stat" data-change="insert">+{insert}</span> <span data-part="diff-stat" data-change="delete">-{remove}</span></>;
+    }
+    case "write":
+      return <>{path(view.path)}{view.content !== undefined ? <> <span data-part="diff-stat" data-change="insert">+{lineCount(view.content)}</span></> : null}</>;
+    case "search":
+      return <><span data-part="summary-pattern">"{oneLine(view.pattern)}"</span>{view.path ? <> {path(view.path)}</> : null}</>;
+    case "fetch":
+      return view.url !== undefined ? path(view.url.replace(/^https?:\/\//, "")) : <span data-part="summary-pattern">{oneLine(view.query)}</span>;
+  }
+  return <>{oneLine(toolSummary(item))}</>;
+}
+
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {
   const ms = item.view?.durationMs;
-  const rawSummary = (summary ?? toolSummary)(item);
-  const oneLineSummary = rawSummary.replace(/\s+/g, " ").trim();
   return (
     <>
       <ToolName name={item.tool_call.name} />
-      <span data-part="tool-summary">{boundText(oneLineSummary, MAX_SUMMARY_CHARS).text}</span>
+      <span data-part="tool-summary">{summary ? oneLine(summary(item)) : <ViewSummary item={item} />}</span>
       <span data-part="tool-status">
         {status ?? statusText[state]}
         {ms !== undefined ? <span data-part="tool-duration">{duration(ms)}</span> : null}
@@ -125,7 +153,15 @@ const toolState = (item: ToolItem): ItemState =>
 export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = ToolBody }: ItemProps & ToolViewProps) {
   const item = useItem(id);
   const tool = item?.type === "tool" ? item : undefined;
-  const [open] = useState(() => openByDefault(tool, tool ? toolOutput(tool) : ""));
+  const [open, setOpen] = useState(() => openByDefault(tool, tool ? toolOutput(tool) : ""));
+  const [bodyMounted, setBodyMounted] = useState(open);
+  const highlight = useContext(HighlightContext);
+  const summaryRef = useRef<HTMLElement>(null);
+  // The body mounts on first open (never-opened cards cost nothing on first paint); its data warms before that, so
+  // the first open paints colored. Only the default body is known to warm; a custom body renders as it is.
+  const warm = useWarm(summaryRef, tool && highlight && !bodyMounted && Body === ToolBody
+    ? () => warmToolBody({ item: tool, output: toolOutput(tool), state: toolState(tool) }, highlight)
+    : undefined, tool);
   if (!tool) return null;
   const state = toolState(tool);
   const output = toolOutput(tool);
@@ -133,6 +169,11 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
     <details
       className={className}
       open={open}
+      onToggle={(event) => {
+        const next = event.currentTarget.open;
+        setOpen(next);
+        if (next) setBodyMounted(true);
+      }}
       data-part="tool"
       data-kind="tool"
       data-id={id}
@@ -140,12 +181,12 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
       data-tool-view={tool.view?.kind}
       data-state={state}
     >
-      <summary data-part="tool-header">
+      <summary data-part="tool-header" ref={summaryRef} onPointerEnter={warm} onFocus={warm} onPointerDown={warm}>
         <Header item={tool} state={state} summary={summary} />
       </summary>
-      <div data-part="tool-body">
+      {bodyMounted ? <div data-part="tool-body">
         <Body item={tool} output={output} state={state} />
-      </div>
+      </div> : null}
     </details>
   );
 });

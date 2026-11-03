@@ -134,7 +134,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
       </header>
       <div className="demo-body" ref={body}>
         <ActContext.Provider value={act}>
-          <RunProvider key={generation} store={store}>
+          <RunProvider key={generation} store={store} highlight={highlight}>
             <Timeline renderers={renderers} />
           </RunProvider>
         </ActContext.Provider>
@@ -203,7 +203,7 @@ function Gallery() {
     history.replaceState(null, "", url);
   }, [theme, inspect]);
   // The page renders after load, so the browser cannot jump to a #demo link by itself.
-  useEffect(() => document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(), []);
+  useEffect(() => { document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(); }, []);
   useEffect(() => {
     if (!message) return;
     const timer = setTimeout(() => setMessage(undefined), 2000);
@@ -241,6 +241,23 @@ function Gallery() {
           </div>
         ))}
       </nav>
+      {/* Narrow screens hide the side nav; a sticky jump list keeps every demo one tap away. */}
+      <label className="jump">
+        <span>jump to</span>
+        <select
+          value={active}
+          onChange={(event) => {
+            history.replaceState(null, "", `#${event.target.value}`);
+            document.getElementById(event.target.value)?.scrollIntoView();
+          }}
+        >
+          {parts.map((part) => (
+            <optgroup key={part} label={part}>
+              {demos.filter((demo) => demo.part === part).map((demo) => <option key={demo.id} value={demo.id}>{demo.title}</option>)}
+            </optgroup>
+          ))}
+        </select>
+      </label>
       <main className="main">
         <header className="intro">
           <h1>Agent UI parts, in every state.</h1>

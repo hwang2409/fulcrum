@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
 import type { ToolCall } from "@fulcrum/core";
 import type { ToolBodyProps, ToolItem } from "../parts.js";
-import { diffRows, diffStat } from "./diff.js";
+import { diffStatText } from "./diff.js";
 import { EditBody } from "./edit.js";
 import { FetchBody } from "./fetch.js";
 import { GenericBody } from "./generic.js";
@@ -9,7 +9,7 @@ import { ReadBody } from "./read.js";
 import { SearchBody } from "./search.js";
 import { ShellBody } from "./shell.js";
 import { WriteBody } from "./write.js";
-import { splitLines } from "./common.js";
+import { lineCount } from "./common.js";
 
 export { EditBody, FetchBody, GenericBody, ReadBody, SearchBody, ShellBody, WriteBody };
 
@@ -46,11 +46,11 @@ export function toolSummary({ view, tool_call }: ToolItem): string {
       return limit !== undefined ? `${view.path}:${start}-${start + limit - 1}` : view.range?.offset ? `${view.path}:${start}` : view.path;
     }
     case "edit": {
-      const { insert, remove } = diffStat(diffRows(view.diff));
+      const { insert, remove } = diffStatText(view.diff);
       return `${view.path} +${insert} -${remove}`;
     }
     case "write":
-      return view.content !== undefined ? `${view.path} +${splitLines(view.content).length}` : view.path;
+      return view.content !== undefined ? `${view.path} +${lineCount(view.content)}` : view.path;
     case "search":
       return view.path ? `"${view.pattern}" ${view.path}` : `"${view.pattern}"`;
     case "fetch":

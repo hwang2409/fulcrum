@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { ToolCall } from "@fulcrum/core";
 import type { ItemState } from "../parts.js";
-import { needsTextViewer, TextViewer, useTextMetrics } from "./text-viewer.js";
+import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
+import { hasControls, parseAnsi, type AnsiText } from "./ansi.js";
+import { jsonText } from "./json.js";
+import { needsTextViewer, TextViewer, useTextMetrics, viewerBlocks, type TextFormat } from "./text-viewer.js";
 
+const JSON_FORMAT: TextFormat = { language: "json" };
 const HEAD_LINES = 40;
 const TAIL_LINES = 20;
 export const MAX_DOM_CHARS = 100_000;
@@ -41,6 +45,12 @@ export function boundText(value: string, limit = MAX_DOM_CHARS): BoundedText {
 
 export const asking = (state: ItemState) => state === "pending" || state === "submitting";
 export const splitLines = (text: string) => (text === "" ? [] : (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n"));
+export const lineCount = (text: string) => {
+  if (text === "") return 0;
+  let lines = text.endsWith("\n") ? 0 : 1;
+  for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n", at + 1)) lines++;
+  return lines;
+};
 
 type Window<T> = { head: T[]; tail: T[]; tailFrom: number; hidden: number; total: number; truncated: boolean };
 
@@ -79,29 +89,113 @@ export function Gap({ window, noun = "lines" }: { window: Window<unknown>; noun?
   return <span data-part="tool-gap">{text}</span>;
 }
 
-/** Plain text that switches to the shared virtual viewer above the preview budget. */
-export function Output({ text, stream }: { text: string; stream?: "stderr" }) {
-  return <TextViewer text={text} label={stream ?? "output"} appendOnly follow stream={stream} />;
+const MEMO_ENTRIES = 32;
+const MEMO_CHARS = 2_000_000;
+/**
+ * The latest results of a pure function of one text, so a body warmed before it opens and the body once mounted share
+ * one computation (JSON detection, ANSI parsing, row models). Least recently used entries go first; the kept texts
+ * total at most MEMO_CHARS, so a streaming body does not pin its old revisions.
+ */
+export function memoText<T>(compute: (text: string) => T): (text: string) => T {
+  const cache = new Map<string, T>();
+  let chars = 0;
+  return (text) => {
+    if (cache.has(text)) {
+      const hit = cache.get(text)!;
+      cache.delete(text);
+      cache.set(text, hit);
+      return hit;
+    }
+    const value = compute(text);
+    if (text.length > MEMO_CHARS) return value;
+    cache.set(text, value);
+    chars += text.length;
+    for (const [key] of cache) {
+      if (cache.size <= MEMO_ENTRIES && chars <= MEMO_CHARS) break;
+      cache.delete(key);
+      chars -= key.length;
+    }
+    return value;
+  };
 }
 
-const Row = ({ number, text }: { number: number; text: string }) => (
-  <div data-part="line"><span data-part="line-number">{number}</span><span data-part="line-text">{text}</span></div>
+const ansiOf = memoText((text) => (hasControls(text) ? parseAnsi(text) : undefined));
+const jsonOf = memoText(jsonText);
+
+/** Append-only terminal text with its escape codes applied; undefined while the text has no control characters. */
+function useAnsi(text: string): AnsiText | undefined {
+  const cache = useRef<{ source: string; parsed?: AnsiText }>({ source: "" });
+  const prior = cache.current;
+  if (text === prior.source) return prior.parsed;
+  const appended = text.length > prior.source.length && prior.source.length > 0;
+  const delta = appended ? text.slice(prior.source.length) : text;
+  const base = appended ? prior.parsed : undefined;
+  const parsed = !appended ? ansiOf(text) : !base && !hasControls(delta) ? undefined : parseAnsi(delta, base ?? parseAnsi(prior.source));
+  cache.current = { source: text, parsed };
+  return parsed;
+}
+
+/** Output text without its escape codes, for copying. */
+export const plainOutput = (text: string) => (hasControls(text) ? parseAnsi(text).text : text);
+
+/**
+ * Tool output in the shared viewer, colored by what it structurally is: ANSI escape codes as theme colors, else the
+ * given language, else JSON when the finished text parses as one JSON object or array. `pretty` indents compact JSON.
+ * Logs `follow` their newest line; a document (`follow={false}`) starts at its top.
+ */
+type OutputProps = { text: string; id: string; stream?: "stderr"; done?: boolean; language?: string; pretty?: boolean; follow?: boolean };
+
+// What Output shows and how it is colored, from the text with its escape codes applied.
+function outputView(ansi: AnsiText | undefined, text: string, done: boolean, language: string | undefined, pretty: boolean) {
+  const plain = ansi?.text ?? text;
+  const json = !ansi?.spans.length && done && (!language || language === "json") ? jsonOf(plain) : undefined;
+  const shown = json?.json && pretty ? json.text : plain;
+  const format: TextFormat | undefined = ansi?.spans.length ? { spans: ansi.spans } : json?.json ? JSON_FORMAT : language ? { language } : undefined;
+  return { shown, format, appendOnly: shown === plain };
+}
+
+export function Output({ text, id, stream, done = true, language, pretty = false, follow = true }: OutputProps) {
+  const ansi = useAnsi(text);
+  const { shown, format, appendOnly } = useMemo(() => outputView(ansi, text, done, language, pretty), [ansi, text, done, language, pretty]);
+  return <TextViewer text={shown} id={id} label={stream ?? "output"} appendOnly={appendOnly} follow={follow} stream={stream} format={format} done={done} />;
+}
+
+/** The highlight blocks Output asks for when it first mounts; see viewerBlocks. */
+export function outputBlocks({ text, id, done = true, language, pretty = false }: OutputProps): Block[] {
+  const { shown, format } = outputView(ansiOf(text), text, done, language, pretty);
+  return viewerBlocks({ text: shown, id, format, done });
+}
+
+const Row = ({ number, children }: { number: number; children: ReactNode }) => (
+  <div data-part="line"><span data-part="line-number">{number}</span><span data-part="line-text">{children}</span></div>
 );
 
+type NumberedProps = { text: string; start?: number; id: string; language?: string; done?: boolean };
+
+/** The highlight blocks NumberedLines asks for when it first mounts. */
+export function numberedBlocks({ text, id, language, done = true }: NumberedProps): Block[] {
+  return needsTextViewer(text) ? viewerBlocks({ text, id, format: language ? { language } : undefined, done }) : [{ code: text, language, id, done }];
+}
+
 /** Numbered text uses rich rows while small and the shared viewer while large. */
-export function NumberedLines({ text, start = 1 }: { text: string; start?: number }) {
+export function NumberedLines({ text, start = 1, id, language, done = true }: NumberedProps) {
   const metrics = useTextMetrics(text, true);
-  if (needsTextViewer(text, metrics)) return <TextViewer text={text} label="content" appendOnly metrics={metrics} />;
+  const large = needsTextViewer(text, metrics);
+  const tokens = useTokens(large ? "" : text, language, id, done);
+  if (large) return <TextViewer text={text} id={id} label="content" appendOnly metrics={metrics} format={language ? { language } : undefined} done={done} />;
   const lines = splitLines(text);
+  const tokenRows = tokens ? tokenLines(tokens) : undefined;
   const digits = String(start + lines.length).length;
   return (
-    <div data-part="tool-lines" style={{ "--gutter": `${digits}ch` } as CSSProperties}>
-      {lines.map((line, index) => <Row key={index} number={start + index} text={line} />)}
+    <div data-part="tool-lines" data-language={language} style={{ "--gutter": `${digits}ch` } as CSSProperties}>
+      {lines.map((line, index) => <Row key={index} number={start + index}>{tokenRows?.[index] ? <Tokens tokens={tokenRows[index]} /> : line}</Row>)}
     </div>
   );
 }
 
-export function CopyButton({ value, label }: { value: string; label: string }) {
+export type CopyValue = string | (() => string);
+
+export function CopyButton({ value, label }: { value: CopyValue; label: string }) {
   const [result, setResult] = useState<"copied" | "copy failed">();
   useEffect(() => {
     if (!result) return;
@@ -110,7 +204,7 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
   }, [result]);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(value);
+      await navigator.clipboard.writeText(typeof value === "function" ? value() : value);
       setResult("copied");
     } catch {
       setResult("copy failed"); // no clipboard (insecure context) or permission denied
@@ -120,8 +214,8 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
 }
 
 /** The last row of every body: facts on the left (exit code, cwd, size), copy buttons on the right. */
-export function Foot({ children, copy }: { children?: ReactNode; copy: Array<[label: string, value: string | undefined]> }) {
-  const buttons = copy.filter((entry): entry is [string, string] => !!entry[1]);
+export function Foot({ children, copy }: { children?: ReactNode; copy: Array<[label: string, value: CopyValue | undefined]> }) {
+  const buttons = copy.filter((entry): entry is [string, CopyValue] => !!entry[1]);
   if (!children && !buttons.length) return null;
   return (
     <div data-part="tool-foot">
@@ -134,14 +228,19 @@ export function Foot({ children, copy }: { children?: ReactNode; copy: Array<[la
 export function Empty({ state, noun = "output" }: { state: ItemState; noun?: string }) {
   if (asking(state)) return null;
   const text = state === "streaming" ? `waiting for ${noun}` : state === "error" ? `failed without ${noun}` : state === "canceled" ? `canceled before ${noun}` : `no ${noun}`;
-  return <p data-part="tool-empty">{text}</p>;
+  return <p data-part="tool-empty" data-state={state}>{text}</p>;
 }
 
 /** Raw arguments serialize only when visible, and only when their immutable value changes. */
-export function Arguments({ call, open }: { call: ToolCall; open?: boolean }) {
+export function Arguments({ call, id, open }: { call: ToolCall; id: string; open?: boolean }) {
   const [expanded, setExpanded] = useState(!!open);
   const value = useMemo(() => expanded ? JSON.stringify(call.arguments, null, 2) : undefined, [call.arguments, expanded]);
-  const content = value === undefined ? null : <><TextViewer text={value} label="arguments" part="tool-args" /><CopyButton label="arguments" value={value} /></>;
+  const content = value === undefined ? null : (
+    <>
+      <TextViewer text={value} id={`${id}:arguments`} label="arguments" part="tool-args" format={JSON_FORMAT} />
+      <div data-part="tool-foot"><span data-part="tool-meta" /><CopyButton label="arguments" value={value} /></div>
+    </>
+  );
   return open ? <div data-part="tool-args-wrap">{content}</div> : (
     <details data-part="tool-args-details" onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary>arguments</summary>
