@@ -24,7 +24,10 @@ try {
   await page.goto(`http://127.0.0.1:${port}/fold.html?rows=${rows}&folds=${folds}`);
   await page.waitForFunction(() => document.querySelector("[data-virtual-id]"), null, { timeout: 120_000 });
   const seedMs = await page.evaluate(() => (window as unknown as { __fold: Fold }).__fold.seedMs);
-  // Park the reader below every approval, then let measurement settle before throttling.
+  // Park the reader below every approval (a wheel up first: only user intent releases follow), then let it settle.
+  await page.mouse.move(640, 450);
+  await page.mouse.wheel(0, -2_000);
+  await Bun.sleep(300);
   await page.evaluate(() => { const scroll = document.querySelector<HTMLElement>("[data-testid=scroll]")!; scroll.scrollTop = scroll.scrollHeight * 0.6; });
   await Bun.sleep(1_500);
   const cdp = await page.context().newCDPSession(page);
@@ -58,6 +61,7 @@ try {
     const folded = foldTimes.every((_, index) => !document.querySelector(`[data-virtual-id="${CSS.escape(api.approvalId(index))}"]`));
     return { reference: id, folds: count, longTasks: tasks.length, foldLongTasks: fromFolds.length, worstFoldTaskMs: Math.max(0, ...fromFolds.map((task) => Math.round(task.duration))), driftPx: Math.round(drift * 10) / 10, folded };
   }, folds);
+  if (!result.reference.startsWith("message:m")) throw new Error(`the reader is not parked mid-session: ${result.reference}`);
   const pass = result.foldLongTasks === 0 && result.driftPx < 1 && result.folded;
   console.log(JSON.stringify({ rows, cpuThrottle: 4, seedMs: Math.round(seedMs), ...result, pass }, null, 2));
   process.exitCode = pass ? 0 : 1;
