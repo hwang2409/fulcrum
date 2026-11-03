@@ -1,4 +1,4 @@
-import type { GrammarState, HighlighterCore, ThemedToken } from "@shikijs/types";
+import type { GrammarState, HighlighterCore, LanguageInput, ThemedToken } from "@shikijs/types";
 import type { HighlightContext, Token } from "./types.js";
 import { loadLanguage } from "./languages.js";
 import { appendToken, semanticTheme } from "./scopes.js";
@@ -8,13 +8,66 @@ const MAX_LINE = 20_000;
 const MAX_SESSIONS = 32;
 const MAX_SESSION_BYTES = 8 * 1024 * 1024;
 const MAX_SLICE_MS = 4;
+// The tokenize policy, all of it. Shiki stops a line at TOKENIZE_TIME_LIMIT_MS without saying so, and that time also
+// counts compiling a pattern the line meets for the first time. Static patterns are compiled when the grammar loads
+// (warmGrammars), so a slow attempt that built scanners met a dynamic pattern (an end that backreferences its begin)
+// or an embedded grammar: it gets one retry while the line and the document still have time. Otherwise the line is
+// plain, exact text, and the document goes on.
 const TOKENIZE_TIME_LIMIT_MS = 10;
+const LINE_ATTEMPTS = 2;
+const LINE_BUDGET_MS = 25; // all attempts of one line
+const DOCUMENT_RETRY_BUDGET_MS = 100; // all retries of one tokenize call
 type Session = { language: string; version: number; code: string; finalizedLength: number; tokens: Token[]; state?: GrammarState; used: number; bytes: number };
 
 function nextCompleteLength(code: string, done: boolean): number {
   if (done) return code.length;
   const newline = code.lastIndexOf("\n");
   return newline < 0 ? 0 : newline + 1;
+}
+
+// Static patterns of every loaded grammar, compiled once per thread and shared by every runtime's engine. Compiling is
+// most of a cold grammar's cost (typescript: about 180 ms in V8), and done at load it is off every line's budget.
+const WARM_SAMPLE = 'x = f("s", 1); // c';
+const warmPatterns = new Map<string, RegExp | Error>();
+const warmed = new Map<string, Promise<void>>();
+// The engine's cache: its own map holds what a line compiled (dynamic patterns), so dispose frees those.
+class RegexCache extends Map<string, RegExp | Error> {
+  override get(pattern: string) { return super.get(pattern) ?? warmPatterns.get(pattern); }
+}
+
+function grammarPatterns(value: unknown, patterns: Set<string>): Set<string> {
+  if (Array.isArray(value)) for (const item of value) grammarPatterns(item, patterns);
+  else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (typeof item === "string" && (key === "match" || key === "begin" || key === "end" || key === "while")) patterns.add(item);
+      else grammarPatterns(item, patterns);
+    }
+  }
+  return patterns;
+}
+
+function warmGrammars(language: string, grammars: LanguageInput[]): Promise<void> {
+  let warming = warmed.get(language);
+  if (!warming) {
+    warming = (async () => {
+      const { defaultJavaScriptRegexConstructor } = await import("@shikijs/engine-javascript");
+      let sliceStart = performance.now();
+      for (const pattern of grammarPatterns(grammars, new Set())) {
+        if (warmPatterns.has(pattern)) continue;
+        // The engine caches a failed compile the same way and throws it at use.
+        try {
+          const regex = defaultJavaScriptRegexConstructor(pattern, { target: "auto" });
+          regex.exec(""); // a long pattern's RegExp compiles at its first use
+          regex.lastIndex = 0;
+          warmPatterns.set(pattern, regex);
+        }
+        catch (cause) { warmPatterns.set(pattern, cause instanceof Error ? cause : new Error(String(cause))); }
+        if (performance.now() - sliceStart >= MAX_SLICE_MS) { await yieldTask(); sliceStart = performance.now(); }
+      }
+    })();
+    warmed.set(language, warming);
+  }
+  return warming;
 }
 
 function sourceLines(source: string): string[] {
@@ -41,9 +94,9 @@ export class TokenizerRuntime {
       const [{ createHighlighterCore }, { createJavaScriptRegexEngine }] = await Promise.all([
         import("shiki/core"), import("@shikijs/engine-javascript"),
       ]);
-      // Counts scanners (textmate builds one per rule, once, and compiles its patterns then), so tokenizeLine can tell
-      // a cold grammar's one-time setup from a runaway line.
-      const engine = createJavaScriptRegexEngine();
+      // Counts scanners (textmate builds one per rule, and one per resolved dynamic end), so tokenizeLine can tell a
+      // slow attempt that compiled from a runaway line.
+      const engine = createJavaScriptRegexEngine({ cache: new RegexCache() });
       const createScanner = engine.createScanner.bind(engine);
       engine.createScanner = (patterns) => { this.scanners++; return createScanner(patterns); };
       this.highlighter = await createHighlighterCore({ engine, langs: [], themes: [semanticTheme] });
@@ -56,7 +109,13 @@ export class TokenizerRuntime {
     const highlighter = await this.engine();
     let loading = this.languages.get(language);
     if (!loading) {
-      loading = (async () => highlighter.loadLanguage(...await loadLanguage(language)))();
+      loading = (async () => {
+        const grammars = await loadLanguage(language);
+        await highlighter.loadLanguage(...grammars);
+        await warmGrammars(language, grammars);
+        // The first line through a grammar also builds its rules and runs the regex jit once; a sample does it here.
+        highlighter.codeToTokensBase(WARM_SAMPLE, { lang: language, theme: THEME });
+      })();
       this.languages.set(language, loading);
       loading.catch(() => this.languages.delete(language)); // a failed load can be retried
     }
@@ -114,6 +173,7 @@ export class TokenizerRuntime {
       appendToken(output, code.slice(completeLength));
       return output;
     };
+    const budget = { retryMs: DOCUMENT_RETRY_BUDGET_MS };
     const work = async () => {
       const tokens: Token[] = [];
       let grammarState = state;
@@ -123,7 +183,7 @@ export class TokenizerRuntime {
           appendToken(tokens, line);
           grammarState = undefined;
         } else {
-          const result = this.tokenizeLine(highlighter, line, language, grammarState);
+          const result = this.tokenizeLine(highlighter, line, language, grammarState, budget);
           if (!result) { appendToken(tokens, line); grammarState = undefined; }
           else { this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result); }
         }
@@ -140,7 +200,7 @@ export class TokenizerRuntime {
     for (const line of sourceLines(code.slice(start, completeLength))) {
       if (line.replace(/\n$/, "").length > MAX_LINE) { appendToken(tokens, line); grammarState = undefined; }
       else {
-        const result = this.tokenizeLine(highlighter, line, language, grammarState);
+        const result = this.tokenizeLine(highlighter, line, language, grammarState, budget);
         if (!result) { appendToken(tokens, line); grammarState = undefined; }
         else { this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result); }
       }
@@ -148,18 +208,20 @@ export class TokenizerRuntime {
     return finish(tokens, grammarState);
   }
 
-  /**
-   * One line's tokens, or undefined for a runaway line (one that stays over the time limit). Shiki stops a line at the
-   * limit without saying so, and the limit also counts building the scanners a cold grammar meets for the first time,
-   * so a slow attempt that built new scanners is tried again: each rule's scanner is built once, so this ends.
-   */
-  private tokenizeLine(highlighter: HighlighterCore, line: string, language: string, grammarState: GrammarState | undefined): ThemedToken[][] | undefined {
-    for (;;) {
+  /** One line's tokens under the tokenize policy (top of file), or undefined: the line is plain. */
+  private tokenizeLine(highlighter: HighlighterCore, line: string, language: string, grammarState: GrammarState | undefined, budget: { retryMs: number }): ThemedToken[][] | undefined {
+    let spent = 0;
+    for (let attempt = 1; ; attempt++) {
       const scanners = this.scanners;
       const started = performance.now();
       const result = highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
-      if (performance.now() - started < TOKENIZE_TIME_LIMIT_MS) return result;
-      if (this.scanners === scanners) return undefined;
+      const elapsed = performance.now() - started;
+      spent += elapsed;
+      if (attempt > 1) budget.retryMs -= elapsed;
+      if (elapsed < TOKENIZE_TIME_LIMIT_MS) return result;
+      const compiled = this.scanners > scanners;
+      const hasTime = spent + TOKENIZE_TIME_LIMIT_MS <= LINE_BUDGET_MS && budget.retryMs >= TOKENIZE_TIME_LIMIT_MS;
+      if (!compiled || attempt >= LINE_ATTEMPTS || !hasTime) return undefined;
     }
   }
 

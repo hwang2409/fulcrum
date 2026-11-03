@@ -176,6 +176,62 @@ describe("incremental tokenization", () => {
     }
   });
 
+  // Counts every tokenize attempt of a runtime; `extra` runs after each one.
+  const countAttempts = async (language: string, extra?: () => void) => {
+    const { TokenizerRuntime } = await import("../dist/runtime.js");
+    const runtime = new TokenizerRuntime();
+    const highlighter = await runtime["ensureLanguage"](language);
+    const attempt = highlighter.codeToTokensBase.bind(highlighter);
+    const counter = { attempts: 0, runtime };
+    highlighter.codeToTokensBase = (...args: Parameters<typeof attempt>) => { counter.attempts++; const result = attempt(...args); extra?.(); return result; };
+    return counter;
+  };
+
+  // Regression: the retry after a slow attempt that built scanners had no bound, and markdown builds a scanner per
+  // resolved dynamic end, so one such line ran up to seconds (and again on the main thread after the worker watchdog).
+  test("a hostile markdown line gets at most two attempts and stays exact", async () => {
+    const unit = "*a* _b_ ";
+    const line = unit.repeat(Math.floor(1000 / unit.length)) + "\n";
+    const counter = await countAttempts("markdown");
+    const tokens = await counter.runtime.tokenize(line, "markdown", { id: "hostile", version: 1, state: "done" }, false);
+    expect(text(tokens)).toBe(line);
+    expect(counter.attempts).toBeLessThanOrEqual(2);
+    counter.runtime.dispose();
+  });
+
+  // The grammar is warmed when it loads, so a cold document's first lines are colored on their first attempt.
+  test("a cold grammar needs no retry", async () => {
+    const source = "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n";
+    const counter = await countAttempts("go");
+    const tokens = await counter.runtime.tokenize(source, "go", { id: "cold-go", version: 1, state: "done" }, false);
+    expect(text(tokens)).toBe(source);
+    expect(counter.attempts).toBe(source.split("\n").length - 1);
+    expect(tokens.filter((token) => token.type).length).toBeGreaterThan(5);
+    counter.runtime.dispose();
+  });
+
+  // Every line here looks like a cold one (slow, and it built a scanner), as in a document that embeds many cold
+  // grammars: each line is tried at most twice, and the retries stop when the document's budget is spent.
+  test("cold compiles across a document stay inside the document budget", async () => {
+    const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
+    let clock = 0;
+    let counter: Awaited<ReturnType<typeof countAttempts>> | undefined;
+    counter = await countAttempts("typescript", () => { clock += 12; counter!.runtime["scanners"]++; });
+    Object.defineProperty(performance, "now", { configurable: true, value: () => clock });
+    try {
+      const lines = 50;
+      const source = "const a = 1;\n".repeat(lines);
+      const tokens = await counter.runtime.tokenize(source, "typescript", { id: "budget", version: 1, state: "done" }, false);
+      expect(tokens).toEqual([{ text: source }]);
+      // 100 ms of retries at 12 ms each: at most 9 retries in the document.
+      expect(counter.attempts).toBeGreaterThan(lines);
+      expect(counter.attempts).toBeLessThanOrEqual(lines + 9);
+    } finally {
+      if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
+      counter.runtime.dispose();
+    }
+  });
+
   test("keeps an incomplete line plain until it is complete", async () => {
     const highlighter = createHighlighter({ worker: false });
     const partial = await highlighter("const value", "typescript", { id: "partial", version: 1, state: "streaming" });

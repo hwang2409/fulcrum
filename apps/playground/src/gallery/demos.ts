@@ -213,6 +213,15 @@ const heredoc = "cat > scripts/release.sh <<'EOF'\n#!/usr/bin/env bash\nset -euo
 const huge = Array.from({ length: 40_000 }, (_, i) => `[${String(i).padStart(5, "0")}] GET /api/runs/${i % 97} 200 ${(i * 7) % 300}ms ${"·".repeat(20)}\n`).join("");
 const twoHunks = "--- a/packages/react/src/parts.tsx\n+++ b/packages/react/src/parts.tsx\n@@ -12,4 +12,4 @@\n const pre = { whiteSpace: \"pre-wrap\" } as const;\n-const SHORT_OUTPUT_LINES = 8;\n+const SHORT_OUTPUT_LINES = 12;\n \n export const Message = memo(function Message({ id }) {\n@@ -88,3 +88,5 @@\n   const state = toolState(tool);\n+  // The body reads the view; the header stays shared.\n+  const output = toolOutput(tool);\n   return (\n";
 
+// One read per grammar family the token check covers beyond the cards above.
+const languageFiles: Array<[string, string]> = [
+  ["crates/runs/src/main.rs", 'use std::collections::HashMap;\n\nfn main() {\n    let mut counts: HashMap<&str, u32> = HashMap::new();\n    *counts.entry("runs").or_insert(0) += 1;\n    println!("{counts:?}");\n}\n'],
+  ["cmd/runs/main.go", 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfor i := 0; i < 3; i++ {\n\t\tfmt.Println("run", i)\n\t}\n}\n'],
+  ["db/schema.sql", "CREATE TABLE runs (\n  id INTEGER PRIMARY KEY,\n  status TEXT NOT NULL DEFAULT 'running'\n);\nSELECT status, count(*) FROM runs GROUP BY status;\n"],
+  ["Dockerfile", 'FROM oven/bun:1 AS build\nWORKDIR /app\nCOPY package.json bun.lock ./\nRUN bun install --frozen-lockfile\nCMD ["bun", "run", "start"]\n'],
+  ["scripts/deploy.sh", '#!/usr/bin/env bash\nset -euo pipefail\nfor host in web-1 web-2; do\n  rsync -a dist/ "$host:/srv/app"\ndone\necho "deployed $(date +%s)"\n'],
+];
+
 const run = calls("run");
 const build = call("run-build", "bash", { command: "bun run --cwd apps/playground build" });
 const readConfig = call("run-config", "read", { path: "apps/playground/vite.config.ts" });
@@ -386,6 +395,16 @@ export const demos: Demo[] = [
       const tool = call("diff", "apply_patch", { patch: twoHunks });
       return [start(tool, { kind: "edit", path: "packages/react/src/parts.tsx", diff: twoHunks }), end(tool, "applied 1 patch")];
     })(),
+  },
+  {
+    id: "tool-languages",
+    part: "ToolCall",
+    title: "read, more languages",
+    description: "Rust, Go, SQL, a Dockerfile, and a shell script, each colored from its first line.",
+    events: languageFiles.flatMap(([path, source], index) => {
+      const tool = call(`lang-${index}`, "read", { path });
+      return [start(tool), end(tool, source)];
+    }),
   },
   {
     id: "tool-websearch",
