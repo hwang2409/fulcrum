@@ -258,7 +258,7 @@ export class TokenizerRuntime {
 
   /** Consume one maintenance-recycle request. It is deliberately separate from fatal worker recovery. */
   consumeRecycle(): boolean {
-    const requested = this.recycle;
+    const requested = this.recycle || this.languages.size >= MAX_RESIDENT_LANGUAGES;
     this.recycle = false;
     return requested;
   }
