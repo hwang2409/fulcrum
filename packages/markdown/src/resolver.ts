@@ -159,7 +159,7 @@ function stripPendingContainers(line: string) {
   }
 }
 
-function classifyLeaf(line: string): PendingClassification {
+function classifyLeaf(line: string, growing: boolean): PendingClassification {
   let content = stripPendingContainers(line);
   if (!content.trim()) return { content: "", kind: "empty", provisional: false, appendable: false };
   const heading = /^#{1,6}[ \t]+/.exec(content);
@@ -175,8 +175,9 @@ function classifyLeaf(line: string): PendingClassification {
     return { content: "", kind: "empty", provisional: false, appendable: false };
   const firstBracket = content.indexOf("[");
   const openBracket = content.lastIndexOf("[");
+  // An open `[` may still close on a later line; only a growing line can still turn `[label]` into `[label]:`.
   if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
-  else if (firstBracket >= 0 && content.trimEnd().endsWith("]")) content = content.slice(0, openBracket);
+  else if (growing && firstBracket >= 0 && content.trimEnd().endsWith("]")) content = content.slice(0, openBracket);
   const visibleContent = content.includes("|")
     ? content.split("|").map((cell) => cell.trim()).join("")
     : content;
@@ -248,7 +249,12 @@ export class MarkdownLineResolver {
         return { content: "", kind: "fence", provisional: false, appendable: false };
       return { content, kind: "fence", provisional: false, appendable: !/[\r\n]/.test(content) };
     }
-    return classifyLeaf(line);
+    return classifyLeaf(line, true);
+  }
+
+  /** Classifies a line that already ended, so only lines after it can change its meaning. */
+  classifyCommitted(line: string): Readonly<PendingClassification> {
+    return classifyLeaf(line, false);
   }
 
   get hasPendingLookahead() {
