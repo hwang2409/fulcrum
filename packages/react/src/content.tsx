@@ -97,7 +97,10 @@ const redacted = (
   </div>
 );
 const newestLine = (text: string) => text.slice(-400).split("\n").filter((line) => line.trim()).at(-1)?.trim() ?? "";
-const wordCount = (text: string) => text.split(/\s+/).filter(Boolean).length;
+const wordCount = (text: string) => {
+  const words = text.split(/\s+/).filter(Boolean).length;
+  return `${words} ${words === 1 ? "word" : "words"}`;
+};
 
 /** True once a block this component saw stream has finished. History (mounted finished) never turns it on. */
 function useFinishedAfterStreaming(streaming: boolean) {
@@ -121,21 +124,24 @@ export const ReasoningBlock = memo(function ReasoningBlock({ block, id, streamin
   const text = typeof block.text === "string" ? block.text : "";
   if (block.redacted === true) return redacted;
   if (!streaming && text.trim() === "") return null;
-  const words = streaming ? 0 : wordCount(text);
   return (
     <>
       <span data-part="reasoning-live" role="status" style={hidden}>{finished ? "reasoning finished" : ""}</span>
       <details data-part="reasoning" data-state={streaming ? "streaming" : "done"} onToggle={(event) => setOpen(event.currentTarget.open)}>
         <summary data-part="reasoning-header">
           <span data-part="reasoning-name">reasoning</span>
-          <span data-part="reasoning-status">{streaming ? "thinking" : `${words} ${words === 1 ? "word" : "words"}`}</span>
+          <span data-part="reasoning-status">{streaming ? "thinking" : wordCount(text)}</span>
           {streaming && !open ? <span data-part="reasoning-preview" aria-hidden="true"><span>{newestLine(text)}</span></span> : null}
         </summary>
-        {open ? <div data-part="reasoning-body" style={Markdown ? undefined : pre}>{Markdown ? <Markdown id={id} source={text} streaming={streaming} /> : text}</div> : null}
+        {open ? <ReasoningBody id={id} text={text} streaming={streaming} markdown={Markdown} /> : null}
       </details>
     </>
   );
 });
+
+function ReasoningBody({ id, text, streaming, markdown: Markdown }: { id: string; text: string; streaming: boolean; markdown: ContentBlockProps["markdown"] }) {
+  return <div data-part="reasoning-body" style={Markdown ? undefined : pre}>{Markdown ? <Markdown id={id} source={text} streaming={streaming} /> : text}</div>;
+}
 
 // A link's visible address: no scheme, no trailing slash, one bounded line.
 const address = (href: string) => label(href.replace(/^(?:https?:\/\/|mailto:)/i, "").replace(/\/$/, ""), 120);
