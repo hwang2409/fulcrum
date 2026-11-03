@@ -1,8 +1,9 @@
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ToolBodyProps } from "../parts.js";
 import { Code, type Block } from "../highlight.js";
 import { Arguments, asking, boundText, Empty, Foot, Output, outputBlocks, plainOutput } from "./common.js";
 
-// The header cuts long commands to one line; the body then repeats the command in full.
+// The header cuts long commands to one line (a few on narrow screens); the body then repeats the command in full.
 const LONG_COMMAND = 72;
 const showsCommand = (command: string, state: ToolBodyProps["state"]) => asking(state) || command.length > LONG_COMMAND || command.includes("\n");
 
@@ -27,9 +28,7 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
   const done = state !== "streaming";
   return (
     <>
-      {showsCommand(command, state) ? (
-        <pre data-part="shell-command"><Code text={boundText(command).text} language="shell" id={`${item.id}:command`} /></pre>
-      ) : null}
+      {showsCommand(command, state) ? <Command text={boundText(command).text} id={`${item.id}:command`} /> : null}
       {split ? (
         <>
           {stdout ? <Output text={stdout} id={`${item.id}:stdout`} done={done} /> : null}
@@ -42,6 +41,28 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
         {exitCode !== undefined ? <span data-part="tool-exit" data-exit-code={exitCode}>exit {exitCode}</span> : null}
         {cwd ? <span data-part="tool-cwd">{boundText(cwd).text}</span> : null}
       </Foot>
+    </>
+  );
+}
+
+/** The command, clamped to a few lines by styles.css; a longer one gets a control that shows the rest. */
+function Command({ text, id }: { text: string; id: string }) {
+  const ref = useRef<HTMLPreElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [clamped, setClamped] = useState(false);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node || expanded || typeof ResizeObserver === "undefined") return;
+    const measure = () => setClamped(node.scrollHeight > node.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [expanded, text]);
+  return (
+    <>
+      <pre ref={ref} data-part="shell-command" data-expanded={expanded ? "" : undefined}><Code text={text} language="shell" id={id} /></pre>
+      {clamped && !expanded ? <button type="button" data-action="show-command" onClick={() => setExpanded(true)}>show full command</button> : null}
     </>
   );
 }

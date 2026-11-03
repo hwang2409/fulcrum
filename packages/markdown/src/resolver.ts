@@ -36,23 +36,11 @@ export type PendingLine = {
   readonly scan: Readonly<PendingLineScan>;
 };
 
-export const PENDING_INLINE_SUFFIX_BUDGET = 256;
-
-export type PendingInlineOwner = {
-  readonly index: number;
-  readonly marker: string;
-  readonly closer?: string;
-};
-
 export type PendingClassification = {
   readonly content: string;
   readonly kind: "empty" | "fence" | "paragraph";
   readonly provisional: boolean;
-  readonly stableEnd: number;
-  readonly stable: string;
-  readonly suffix: string;
-  readonly owner?: Readonly<PendingInlineOwner>;
-  readonly incremental: boolean;
+  readonly appendable: boolean;
 };
 
 type MutablePendingLine = {
@@ -171,84 +159,34 @@ function stripPendingContainers(line: string) {
   }
 }
 
-const pendingClassification = (
-  content: string,
-  kind: PendingClassification["kind"],
-  owner?: PendingInlineOwner,
-  provisional = false,
-  incremental = false,
-): PendingClassification => {
-  let stableEnd = Math.max(0, content.length - PENDING_INLINE_SUFFIX_BUDGET);
-  if (owner && owner.index < stableEnd) stableEnd = Math.max(0, content.length - (PENDING_INLINE_SUFFIX_BUDGET - owner.marker.length));
-  return { content, kind, provisional, stableEnd, stable: content.slice(0, stableEnd), suffix: content.slice(stableEnd), owner, incremental };
-};
-
-function unresolvedInlineOwner(source: string): PendingInlineOwner | undefined {
-  const owners: PendingInlineOwner[] = [];
-  const brackets: number[] = [];
-  for (let index = 0; index < source.length; index++) {
-    if (source[index] === "[" && source[index - 1] !== "\\") brackets.push(index);
-    else if (source[index] === "]" && source[index - 1] !== "\\" && brackets.length) {
-      const opener = brackets.pop()!;
-      if (source[index + 1] === "(" && source.indexOf(")", index + 2) < 0)
-        owners.push({ index: opener, marker: "[", closer: ")" });
-    }
-  }
-  if (brackets.length) owners.push({ index: brackets[0]!, marker: "[" });
-  const angle = source.lastIndexOf("<");
-  if (angle > source.lastIndexOf(">") && !/[\s\n]/.test(source.slice(angle + 1)))
-    owners.push({ index: angle, marker: "<" });
-  const entity = /&(?:#(?:x[0-9a-f]*|[0-9]*)?|[a-z][a-z0-9]*)?$/i.exec(source);
-  if (entity?.index !== undefined) owners.push({ index: entity.index, marker: "&", closer: ";" });
-
-  let code: { index: number; marker: string } | undefined;
-  for (const match of source.matchAll(/`+/g)) {
-    if (match.index === undefined) continue;
-    if (!code) code = { index: match.index, marker: match[0] };
-    else if (code.marker.length === match[0].length) code = undefined;
-  }
-  if (code) owners.push(code);
-
-  const emphasis: PendingInlineOwner[] = [];
-  for (const match of source.matchAll(/(?:\*+|_+|~+)/g)) {
-    if (match.index === undefined || source[match.index - 1] === "\\") continue;
-    const marker = match[0];
-    let open = emphasis.length - 1;
-    while (open >= 0 && emphasis[open]!.marker !== marker) open--;
-    if (open >= 0 && /\S/.test(source.slice(emphasis[open]!.index + marker.length, match.index))) emphasis.splice(open, 1);
-    else emphasis.push({ index: match.index, marker });
-  }
-  owners.push(...emphasis);
-  return owners.sort((left, right) => left.index - right.index)[0];
-}
-
-function classifyLeaf(line: string): PendingClassification {
+function classifyLeaf(line: string, growing: boolean): PendingClassification {
   let content = stripPendingContainers(line);
-  if (!content.trim()) return pendingClassification("", "empty");
-  if (/^(?: {4}|\t)/.test(content)) content = content[0] === "\t" ? content.slice(1) : content.slice(4);
+  if (!content.trim()) return { content: "", kind: "empty", provisional: false, appendable: false };
   const heading = /^#{1,6}[ \t]+/.exec(content);
   if (heading) content = content.slice(heading[0].length);
   const task = /^\[([ xX])\][ \t]+/.exec(content);
-  if (/^[ \t]*\[[^\]\n]+\]:/.test(content)) return pendingClassification("", "empty");
+  if (/^[ \t]*\[[^\]\n]+\]:/.test(content)) return { content: "", kind: "empty", provisional: false, appendable: false };
   if (task) content = content.slice(task[0].length);
-  else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return pendingClassification("", "empty");
-  if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return pendingClassification("", "fence");
-  const possibleBlock = /[:-]/.test(content) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(content)
-    || /^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content);
-  if (possibleBlock && content.length <= PENDING_INLINE_SUFFIX_BUDGET) return pendingClassification("", "empty");
-  if (content.length <= PENDING_INLINE_SUFFIX_BUDGET
-    && (/^[ \t]*\[[^\]\n]*$/.test(content) || /^[ \t]*\[[^\]\n]+\][ \t]*$/.test(content)))
-    return pendingClassification("", "empty");
-  if (content.length <= PENDING_INLINE_SUFFIX_BUDGET) content = content.trimEnd();
-  const inlineOwner = unresolvedInlineOwner(content);
-  if (content.length <= PENDING_INLINE_SUFFIX_BUDGET && inlineOwner && content[inlineOwner.index - 1] === "]")
-    content = content.slice(0, inlineOwner.index);
-  else if (content.length <= PENDING_INLINE_SUFFIX_BUDGET && /\]\[[^\]\n]*\][ \t]*$/.test(content))
-    content = content.slice(0, content.lastIndexOf("["));
+  else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return { content: "", kind: "empty", provisional: false, appendable: false };
+  if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return { content: "", kind: "fence", provisional: false, appendable: false };
+  if (/[:-]/.test(content) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(content))
+    return { content: "", kind: "empty", provisional: false, appendable: false };
+  if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
+    return { content: "", kind: "empty", provisional: false, appendable: false };
+  const firstBracket = content.indexOf("[");
+  const openBracket = content.lastIndexOf("[");
+  // An open `[` may still close on a later line; only a growing line can still turn `[label]` into `[label]:`.
+  if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
+  else if (growing && firstBracket >= 0 && content.trimEnd().endsWith("]")) content = content.slice(0, openBracket);
   const visibleContent = content.includes("|")
     ? content.split("|").map((cell) => cell.trim()).join("")
     : content;
-  return pendingClassification(visibleContent, "paragraph", unresolvedInlineOwner(visibleContent));
+  return {
+    content: visibleContent,
+    kind: "paragraph",
+    provisional: false,
+    appendable: visibleContent.length > 0 && line.endsWith(visibleContent) && !/[\\[*_~`<!&#|>]/.test(visibleContent),
+  };
 }
 
 function referenceDefinition(line: string) {
@@ -283,9 +221,6 @@ export class MarkdownLineResolver {
   private readonly referenceIndex = new Map<string, ReferenceDefinition>();
   private pendingReferenceTitle?: { label: string };
   private previousContainerOnly = false;
-  private classifiedPendingSource = "";
-  private classifiedPending?: PendingClassification;
-  private classifiedContentOffset = -1;
 
   get references(): ReadonlyMap<string, ReferenceDefinition> {
     return this.referenceIndex;
@@ -305,55 +240,21 @@ export class MarkdownLineResolver {
     return cursor.line.slice(cursor.offset);
   }
 
-  classifyPending(line?: string): Readonly<PendingClassification> {
-    if (line !== undefined) return this.classifyLine(line);
-    line = this.pendingLine.content;
-    const prior = this.classifiedPending;
-    if (prior && prior.content.length > PENDING_INLINE_SUFFIX_BUDGET && this.classifiedContentOffset >= 0
-      && line.length >= this.classifiedPendingSource.length && prior.kind === "paragraph") {
-      const delta = line.slice(this.classifiedPendingSource.length);
-      const prefixLength = this.classifiedContentOffset;
-      const closesOwner = prior.owner && delta.includes(prior.owner.closer
-        ?? (prior.owner.marker === "[" ? "]" : prior.owner.marker === "<" ? ">" : prior.owner.marker));
-      if (!closesOwner && !delta.includes("|") && prefixLength >= 0) {
-        const content = prior.content + delta;
-        const tailStart = prior.stableEnd;
-        const tail = prior.suffix + delta;
-        const found = prior.owner ?? unresolvedInlineOwner(tail);
-        const owner = found && !prior.owner ? { ...found, index: found.index + tailStart } : found;
-        let stableEnd = Math.max(0, content.length - PENDING_INLINE_SUFFIX_BUDGET);
-        if (owner && owner.index < stableEnd) stableEnd = Math.max(0, content.length - (PENDING_INLINE_SUFFIX_BUDGET - owner.marker.length));
-        const stableLength = stableEnd - prior.stableEnd;
-        this.classifiedPendingSource = line;
-        return this.classifiedPending = {
-          content,
-          kind: "paragraph",
-          provisional: false,
-          stableEnd,
-          stable: tail.slice(0, stableLength),
-          suffix: tail.slice(stableLength),
-          owner,
-          incremental: true,
-        };
-      }
-    }
-    this.classifiedPendingSource = line;
-    this.classifiedPending = this.classifyLine(line);
-    this.classifiedContentOffset = line.endsWith(this.classifiedPending.content)
-      ? line.length - this.classifiedPending.content.length : -1;
-    return this.classifiedPending;
-  }
-
-  private classifyLine(line: string): PendingClassification {
+  classifyPending(line = this.pendingLine.content): Readonly<PendingClassification> {
     const { cursor, unmatched } = this.matchContinuations(line);
     if (!unmatched && this.openLeaf?.kind === "fence") {
       const content = line.slice(cursor.offset);
       const marker = this.openLeaf.marker;
       if (new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(content))
-        return pendingClassification("", "fence");
-      return pendingClassification(content, "fence");
+        return { content: "", kind: "fence", provisional: false, appendable: false };
+      return { content, kind: "fence", provisional: false, appendable: !/[\r\n]/.test(content) };
     }
-    return classifyLeaf(line);
+    return classifyLeaf(line, true);
+  }
+
+  /** Classifies a line that already ended, so only lines after it can change its meaning. */
+  classifyCommitted(line: string): Readonly<PendingClassification> {
+    return classifyLeaf(line, false);
   }
 
   get hasPendingLookahead() {
@@ -380,9 +281,6 @@ export class MarkdownLineResolver {
       advancePending(this.pendingLine, delta.slice(offset, newline));
       resolved.push(this.resolveLine(this.pendingLine.content, false));
       this.pendingLine = freshPending();
-      this.classifiedPendingSource = "";
-      this.classifiedPending = undefined;
-      this.classifiedContentOffset = -1;
       offset = newline + 1;
     }
     return resolved;
@@ -392,9 +290,6 @@ export class MarkdownLineResolver {
     if (!this.pendingLine.length) return undefined;
     const result = this.resolveLine(this.pendingLine.content, true);
     this.pendingLine = freshPending();
-    this.classifiedPendingSource = "";
-    this.classifiedPending = undefined;
-    this.classifiedContentOffset = -1;
     return result;
   }
 

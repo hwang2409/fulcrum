@@ -39,12 +39,21 @@ test("other control sequences are stripped; text is never lost", () => {
   expect(parseAnsi("no escapes here").spans).toEqual([]);
 });
 
+// Runs `run` and counts the calls it makes to `owner[method]`.
+function countCalls<T>(owner: object, method: string, run: () => T): { calls: number; result: T } {
+  const original = (owner as Record<string, (...args: unknown[]) => unknown>)[method]!;
+  let calls = 0;
+  Object.defineProperty(owner, method, { configurable: true, writable: true, value: function (this: unknown, ...args: unknown[]) { calls++; return original.apply(this, args); } });
+  try { return { result: run(), calls }; } finally { Object.defineProperty(owner, method, { configurable: true, writable: true, value: original }); }
+}
+
 test("malicious and huge sequences stay bounded and linear", () => {
   // An unterminated CSI with a megabyte of parameters is dropped at its bound; the rest stays text.
   const params = `${ESC}[${"1;".repeat(500_000)}`;
-  const started = performance.now();
-  const parsed = parseAnsi(`${params}tail`);
-  expect(performance.now() - started).toBeLessThan(500);
+  // Counted, not timed: the parser reads the parameters only up to its bound, not the megabyte.
+  const reads = countCalls(String.prototype, "charCodeAt", () => parseAnsi(`${params}tail`));
+  const parsed = reads.result;
+  expect(reads.calls).toBeLessThan(1_000);
   expect(parsed.text.endsWith("tail")).toBe(true);
   expect(parsed.text.includes(ESC)).toBe(false);
   // An unterminated OSC does not swallow the rest of the output.

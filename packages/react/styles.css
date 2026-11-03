@@ -33,6 +33,9 @@
 [data-part="timeline"] *,
 [data-part="timeline"] *::before,
 [data-part="timeline"] *::after { box-sizing: border-box; border-radius: 0; }
+/* The scroll root (the Timeline's parent) contains the hidden live region, which is absolutely positioned: unpositioned,
+   it would sit below the content and stretch the host page. Zero specificity, so a host's own position wins. */
+:where(:has(> [data-part="timeline"])) { position: relative; }
 
 /* Skip layout and paint for off-screen items in long timelines. */
 [data-part="timeline"][data-virtual="false"] > * {
@@ -231,7 +234,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 :is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]):hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
 :is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]):active { background: var(--fulcrum-border); }
 :is([data-part="tool"], [data-part="approval"]) button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
-[data-part="tool-body"] button[data-action="open-viewer"] { display: block; width: 100%; padding: 0 12px; color: var(--fulcrum-accent); text-align: left; }
+[data-part="tool-body"] button:is([data-action="open-viewer"], [data-action="show-command"]) { display: block; width: 100%; padding: 0 12px; color: var(--fulcrum-accent); text-align: left; }
 @media (pointer: coarse) { :is([data-part="tool"], [data-part="approval"]) button:not([data-action="approve"], [data-action="deny"]) { min-height: 44px; } }
 
 [data-part="approval-actions"] {
@@ -340,6 +343,14 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-tool-view="shell"] [data-part="tool-summary"] { color: var(--fulcrum-fg); }
 :is([data-part="shell-command"], [data-part="tool-path"]) { padding: 8px 12px; }
 [data-part="shell-command"] { color: var(--fulcrum-fg); }
+/* A long command shows 8 lines; the "show full command" button below it removes the clamp. The bottom space is a
+   border, not padding, so the clip does not show the top of line 9. */
+[data-part="shell-command"]:not([data-expanded]) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 8; line-clamp: 8; overflow: hidden; padding-bottom: 0; border-bottom: 8px solid transparent; }
+/* Narrow screens: the command is the main fact of a shell card, so the header wraps it to 4 lines, hung after the "$ ",
+   before it cuts it. A command cut there is longer than the body's repeat threshold, so the body still shows it in full. */
+@media (max-width: 860px) {
+  [data-tool-view="shell"] [data-part="tool-summary"] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; white-space: normal; overflow-wrap: anywhere; padding-left: 2ch; text-indent: -2ch; }
+}
 [data-part="shell-command"]::before { content: "$ "; color: var(--fulcrum-ok); font-weight: 700; }
 [data-tool-view="shell"] [data-part="tool-output"] { background: var(--fulcrum-bg); }
 [data-part="tool-output"][data-stream="stderr"] { border-left: 2px solid var(--fulcrum-danger); padding-left: 10px; }
@@ -678,13 +689,155 @@ ul[data-part="md-list"] { list-style: "- "; }
 .ansi-italic { font-style: italic; }
 .ansi-underline { text-decoration: underline; text-underline-offset: 3px; }
 
+/* Composer: one hairline box under the run. The rail and the primary action carry the state: accent to send (filled)
+   and to steer a running turn (outlined), danger to stop, muted while it cannot act. One inset pads the text and the
+   actions alike. The field grows with its text up to ten lines, then scrolls; a hidden copy of
+   the draft (data-value) sizes the grid cell, so growth needs no script. The status row has a fixed height, so an error
+   never moves the layout. */
+[data-part="composer"] {
+  --rail: var(--fulcrum-accent);
+  --inset: 10px;
+  display: block;
+  container-type: inline-size;
+  margin: 0;
+  border: 1px solid var(--fulcrum-border);
+  border-left: 2px solid var(--rail);
+  background: var(--fulcrum-bg);
+  color: var(--fulcrum-fg);
+  font: 14px/1.55 var(--fulcrum-font);
+  font-variant-ligatures: none;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+[data-part="composer"] *,
+[data-part="composer"] *::before,
+[data-part="composer"] *::after { box-sizing: border-box; border-radius: 0; }
+[data-part="composer"]:focus-within { --rail: var(--fulcrum-accent); border-color: var(--fulcrum-accent); }
+[data-part="composer"][data-state="running"] { --rail: var(--fulcrum-muted); }
+[data-part="composer"][data-error] { --rail: var(--fulcrum-danger); border-color: var(--fulcrum-danger); }
+[data-part="composer-field"] { display: grid; }
+[data-part="composer-field"] > textarea,
+[data-part="composer-field"]::after {
+  grid-area: 1 / 1;
+  /* Ten lines and the top padding, so the cut edge falls between lines while the field sits at its top. */
+  max-height: calc(10 * 1.55em + var(--inset));
+  margin: 0;
+  padding: var(--inset);
+  border: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+[data-part="composer-field"]::after { content: attr(data-value) " "; visibility: hidden; overflow: hidden; pointer-events: none; }
+[data-part="composer-field"] > textarea {
+  min-width: 0;
+  min-height: calc(1.55em + 2 * var(--inset));
+  appearance: none;
+  resize: none;
+  overflow-y: auto;
+  outline: none;
+  background: none;
+  color: inherit;
+  caret-color: var(--fulcrum-accent);
+}
+[data-part="composer-field"] > textarea::placeholder { color: var(--fulcrum-muted); opacity: 1; }
+[data-part="composer-bar"] { display: flex; align-items: center; gap: 8px; padding: 0 var(--inset) var(--inset); }
+[data-part="composer-status"] {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  margin: 0;
+  overflow: hidden;
+  color: var(--fulcrum-muted);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+[data-part="composer-status"][data-tone="busy"] { color: var(--fulcrum-accent); }
+[data-part="composer-status"][data-tone="danger"] { color: var(--fulcrum-danger); font-weight: 700; }
+[data-part="composer-message"]:not(:empty)::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  vertical-align: 1px;
+  background: currentColor;
+}
+[data-part="composer-status"][data-tone="busy"] > [data-part="composer-message"]::before { animation: fulcrum-pulse 0.6s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
+[data-part="composer"] button {
+  flex: none;
+  min-width: 72px;
+  min-height: 36px;
+  margin: 0;
+  padding: 0 14px;
+  appearance: none;
+  border: 1px solid var(--action);
+  border-radius: 0;
+  background: var(--action);
+  color: var(--fulcrum-bg);
+  font: 600 13px/1 var(--fulcrum-font);
+  cursor: pointer;
+  transition: transform 100ms cubic-bezier(0.2, 0, 0, 1);
+}
+[data-part="composer-submit"] { --action: var(--fulcrum-accent); }
+/* Steer is not a warning: the same accent as send, outlined, so it reads as "add to the turn", not as a new message. */
+[data-part="composer"] [data-part="composer-submit"][data-action="steer"] { background: var(--fulcrum-bg); color: var(--fulcrum-accent); }
+/* Stop is the quiet, destructive one: danger text on the page, never filled. Its min width holds "stopping". */
+[data-part="composer"] [data-part="composer-stop"] { --action: var(--fulcrum-danger); min-width: calc(8ch + 32px); background: var(--fulcrum-bg); color: var(--fulcrum-danger); }
+[data-part="composer"] button:hover { text-decoration: underline; text-underline-offset: 3px; }
+[data-part="composer"] button:active { transform: scale(0.96); }
+[data-part="composer"] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
+[data-part="composer"] button[aria-disabled="true"] {
+  border-color: var(--fulcrum-border);
+  background: var(--fulcrum-surface);
+  color: var(--fulcrum-muted);
+  cursor: not-allowed;
+  text-decoration: none;
+  transform: none;
+}
+[data-part="composer"][data-pending] button[aria-disabled="true"] { cursor: progress; }
+[data-part="composer-reason"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 var(--inset);
+  background: var(--fulcrum-surface);
+  color: var(--fulcrum-muted);
+  font-size: 12px;
+}
+[data-part="composer"][data-state="read-only"] { --rail: var(--fulcrum-muted); }
+[data-part="composer"][data-state="read-only"] [data-part="composer-field"] { color: var(--fulcrum-muted); }
+[data-part="composer-reason"]::before { content: ""; flex: none; width: 7px; height: 7px; outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
+@media (pointer: coarse) { [data-part="composer"] button { min-height: 44px; } }
+/* iOS zooms the page when a field under 16 px takes focus. */
+@media (pointer: coarse), (max-width: 640px) { [data-part="composer-field"] { font-size: 16px; } }
+/* Narrow: the status takes its own row of two fixed lines above the actions, so an error stays readable. */
+@container (max-width: 480px) {
+  [data-part="composer-bar"] { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; }
+  [data-part="composer-status"] {
+    flex: 1 0 100%;
+    display: -webkit-box;
+    height: 32px;
+    line-height: 16px;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
+
 @keyframes fulcrum-blink { 50% { opacity: 0; } }
 @keyframes fulcrum-pulse { to { opacity: 0.25; } }
 
 @media (prefers-reduced-motion: reduce) {
   [data-part="timeline"] *,
   [data-part="timeline"] *::before,
-  [data-part="timeline"] *::after { animation: none !important; transition: none !important; }
+  [data-part="timeline"] *::after,
+  [data-part="composer"] *,
+  [data-part="composer"] *::before { animation: none !important; transition: none !important; }
 }
 
 /* Forced colors (Windows high contrast): the system palette wins, so state rests on the status words and rails. */
@@ -701,6 +854,9 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }
   :is([data-part="sub-agent-status"], [data-part="run-state"])::before,
   [data-part="run-state"] { forced-color-adjust: none; background: CanvasText; }
+  [data-part="composer"] { --rail: CanvasText; border-color: CanvasText; }
+  [data-part="composer"] button { border-color: ButtonText; }
+  [data-part="composer-submit"]:not([aria-disabled="true"]) { forced-color-adjust: none; background: Highlight; color: HighlightText; }
 }
 
 [data-part="virtual-debug"] {

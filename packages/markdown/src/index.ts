@@ -1,6 +1,6 @@
 import type { Highlight } from "@fulcrum/highlight";
 import MarkdownIt from "./vendor/markdown-it.mjs";
-import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type PendingClassification, type ReferenceDefinition } from "./resolver.js";
+import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
 type MarkdownToken = {
   type: string;
@@ -328,11 +328,24 @@ function withoutOpenAngle(source: string) {
   return angle > source.lastIndexOf(">") && !/[\s\n]/.test(source.slice(angle + 1)) ? source.slice(0, angle) : source;
 }
 
+const escaped = (source: string, index: number) => {
+  let escapes = 0;
+  for (let at = index - 1; at >= 0 && source[at] === "\\"; at--) escapes++;
+  return escapes % 2 === 1;
+};
+
+// The last `marker` that a backslash does not escape, or -1.
+const lastUnescaped = (source: string, marker: string) => {
+  let index = source.lastIndexOf(marker);
+  while (index >= 0 && escaped(source, index)) index = index === 0 ? -1 : source.lastIndexOf(marker, index - 1);
+  return index;
+};
+
 function withoutOpenLink(source: string) {
-  if (source.endsWith("!") && !source.endsWith("\\!")) source = source.slice(0, -1);
-  const image = source.lastIndexOf("![");
+  if (source.endsWith("!") && !escaped(source, source.length - 1)) source = source.slice(0, -1);
+  const image = lastUnescaped(source, "![");
   if (image >= 0 && !/\]\([^\n)]*\)/.test(source.slice(image + 1))) return source.slice(0, image);
-  const bracket = source.lastIndexOf("[");
+  const bracket = lastUnescaped(source, "[");
   if (bracket < 0) return source;
   const rest = source.slice(bracket + 1);
   const close = rest.indexOf("]");
@@ -370,8 +383,12 @@ function lastMarkerIndex(stack: Array<{ marker: string }>, marker: string) {
 function withoutOpenEmphasis(source: string) {
   const codeRanges = closedCodeRanges(source);
   const stack: Array<{ marker: string; index: number }> = [];
+  // Runs and code ranges both ascend, so one cursor keeps the scan linear.
+  let range = 0;
   for (const run of source.matchAll(/(?:\*+|_+|~+)/g)) {
-    if (run.index === undefined || codeRanges.some(([start, end]) => run.index! >= start && run.index! < end)) continue;
+    if (run.index === undefined) continue;
+    while (range < codeRanges.length && codeRanges[range]![1] <= run.index) range++;
+    if (range < codeRanges.length && run.index >= codeRanges[range]![0]) continue;
     const marker = run[0];
     const previous = source[run.index - 1];
     const next = source[run.index + marker.length];
@@ -381,8 +398,15 @@ function withoutOpenEmphasis(source: string) {
     if (match >= 0 && /\S/.test(source.slice(stack[match]!.index + marker.length, run.index))) stack.splice(match, 1);
     else stack.push({ marker, index: run.index });
   }
-  for (const { marker, index } of stack.sort((a, b) => b.index - a.index)) source = source.slice(0, index) + source.slice(index + marker.length);
-  return source;
+  if (!stack.length) return source;
+  const pieces: string[] = [];
+  let offset = 0;
+  for (const { marker, index } of stack.sort((a, b) => a.index - b.index)) {
+    pieces.push(source.slice(offset, index));
+    offset = index + marker.length;
+  }
+  pieces.push(source.slice(offset));
+  return pieces.join("");
 }
 
 type SafeInlineContent = { source: string; openCode?: string };
@@ -392,7 +416,7 @@ function withoutTrailingLookahead(source: string) {
   const backslashes = /\\+$/.exec(source)?.[0].length ?? 0;
   if (backslashes % 2) return source.slice(0, -1);
   const entity = /&(?:#(?:x[0-9a-f]*|[0-9]*)?|[a-z][a-z0-9]*)?$/i.exec(source);
-  return entity ? source.slice(0, entity.index).trimEnd() : source;
+  return entity ? source.slice(0, entity.index) : source;
 }
 
 function safeInlineContent(source: string): SafeInlineContent {
@@ -563,22 +587,24 @@ type TableRecord = { header: string; delimiter: string; cells: TableCellRecord[]
 
 const normalizeReferenceLabel = (label: string) => label.trim().replace(/\s+/g, " ").toUpperCase();
 
-function hideProvisionalSyntax(inlines: Inline[]) {
+// The open paragraph's last line can still become a table header, which turns its pipes into cell borders.
+function hideTableCandidatePipes(inlines: Inline[]) {
   for (const inline of inlines) {
-    if (inline.type === "text") inline.value = inline.value.replace(/[|`[\]\\*]/g, "");
-    else if ("children" in inline) hideProvisionalSyntax(inline.children);
+    if (inline.type === "text") inline.value = inline.value.replace(/\|/g, "");
+    else if ("children" in inline) hideTableCandidatePipes(inline.children);
   }
 }
 
-function markPendingReferences(inlines: Inline[], blocked: ReadonlySet<string> = new Set<string>()) {
+// A `[label]` in text can still become a link while a later definition can arrive.
+function markPendingReferences(inlines: Inline[]) {
   for (let index = 0; index < inlines.length; index++) {
     const node = inlines[index]!;
-    if ("children" in node) { markPendingReferences(node.children, blocked); continue; }
+    if ("children" in node) { markPendingReferences(node.children); continue; }
     if (node.type !== "text" || !node.value.includes("[")) continue;
     const replacement: Inline[] = [];
     let offset = 0;
-    for (const match of node.value.matchAll(/!?\[([^\]\n]+)\](?:\[([^\]\n]*)\])?/g)) {
-      if (match.index === undefined || match.index > 0 && node.value[match.index - 1] === "\\" || node.value[match.index + match[0].length] === ":" || blocked.has(normalizeReferenceLabel(match[1]!))) continue;
+    for (const match of node.value.matchAll(/!?\[([^[\]\n]+)\](?:\[([^[\]\n]*)\])?/g)) {
+      if (match.index === undefined || match.index > 0 && node.value[match.index - 1] === "\\") continue;
       if (match.index > offset) replacement.push({ type: "text", value: node.value.slice(offset, match.index) });
       if (!match[0].startsWith("!")) replacement.push({ type: "text", value: match[1]! });
       offset = match.index + match[0].length;
@@ -590,27 +616,15 @@ function markPendingReferences(inlines: Inline[], blocked: ReadonlySet<string> =
   }
 }
 
-function markPendingReferenceBlocks(blocks: Block[], blocked = new Set<string>()) {
-  for (const block of blocks) {
-    if (block.type === "paragraph" || block.type === "heading") markPendingReferences(block.children, blocked);
-    else if (block.type === "blockquote") markPendingReferenceBlocks(block.children, blocked);
-    else if (block.type === "list") for (const item of block.items) markPendingReferenceBlocks(item.children, blocked);
-    else if (block.type === "table") {
-      for (const cell of block.header) markPendingReferences(cell, blocked);
-      for (const row of block.rows) for (const cell of row) markPendingReferences(cell, blocked);
-    }
-  }
-}
-
-function unresolvedReferenceLabels(source: string, references: Environment["references"], blocked = new Set<string>()) {
+function unresolvedReferenceLabels(source: string, references: Environment["references"]) {
   const labels = new Set<string>();
-  for (const match of source.matchAll(/!?\[([^\]\n]+)\]\[([^\]\n]*)\]/g)) {
+  for (const match of source.matchAll(/!?\[([^\]\n]+)\]\[([^[\]\n]*)\]/g)) {
     const label = normalizeReferenceLabel(match[2] || match[1]!);
-    if (!references?.[label] && !blocked.has(label)) labels.add(label);
+    if (!references?.[label]) labels.add(label);
   }
-  for (const match of source.matchAll(/(?<!!)\[([^\]\n]+)\](?![\[(:])/g)) {
+  for (const match of source.matchAll(/(?<!!)\[([^[\]\n]+)\](?![\[(])/g)) {
     const label = normalizeReferenceLabel(match[1]!);
-    if (!references?.[label] && !blocked.has(label)) labels.add(label);
+    if (!references?.[label]) labels.add(label);
   }
   return labels;
 }
@@ -731,24 +745,24 @@ function pendingInlineSource(content: string) {
   return content;
 }
 
-function appendPendingTableRow(blocks: Block[], source: string, references: Environment, blocked: ReadonlySet<string>) {
+function appendPendingTableRow(blocks: Block[], source: string, references: Environment) {
   const table = tailTable(blocks);
   if (!table) return false;
   const cells = tableCells(source);
   const row = Array.from({ length: table.header.length }, (_, index) => parseInline(cells[index]?.trim() ?? "", true, references));
-  row.forEach((cell) => markPendingReferences(cell, blocked));
+  row.forEach((cell) => markPendingReferences(cell));
   table.rows = [...table.rows, row];
   return true;
 }
 
-function appendPendingParagraph(blocks: Block[], pending: Inline[], continuesParagraph: boolean) {
+function appendPendingParagraph(blocks: Block[], pending: readonly Inline[], continuesParagraph: boolean) {
   if (!pending.length) return;
   const paragraph = continuesParagraph ? tailParagraph(blocks) : undefined;
   if (paragraph) {
     paragraph.children = [...paragraph.children, { type: "text", value: "\n" }, ...pending];
     return paragraph;
   }
-  const block = { type: "paragraph" as const, children: pending };
+  const block = { type: "paragraph" as const, children: pending.slice() };
   blocks.push(block);
   return block;
 }
@@ -826,7 +840,6 @@ export function createStreamingDocument(): StreamingDocument {
   const paragraphRecords = new WeakMap<Block, ParagraphRecord>();
   const allParagraphRecords = new Set<ParagraphRecord>();
   const referenceUsers = new Map<string, Set<ReferenceUser>>();
-  const blockedReferences = new Set<string>();
   const tables = new WeakMap<Block, TableRecord>();
   let openCode: Extract<Block, { type: "code" }> | undefined;
   let openIndentedCode = false;
@@ -836,11 +849,9 @@ export function createStreamingDocument(): StreamingDocument {
   let previewBlocks: readonly Block[] | undefined;
   let pendingReferenceApply = false;
   let trailingCarriageReturn = false;
-  let pendingPreviewContent = "";
-  let pendingPreviewStableEnd = 0;
+  let pendingPreviewLength = 0;
   let pendingPreviewNodes: Inline[] = [];
-  let pendingPreviewSuffixNodes = 0;
-  let pendingPreviewOwner: { index: number; marker: string; closer?: string } | undefined;
+  let pendingPreviewAppendable = false;
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
 
@@ -848,9 +859,15 @@ export function createStreamingDocument(): StreamingDocument {
 
   const publish = () => blocks.publish(openRoots);
 
+  // A closed paragraph can never continue, so it shows its final inline form from here on.
+  const closeParagraph = () => {
+    if (openParagraph) updateParagraph(openParagraph);
+    openParagraph = undefined;
+  };
+
   const freezeRoots = () => {
     if (!openRoots.length) return;
-    if (openParagraph) updateParagraph(openParagraph);
+    closeParagraph();
     if (openCode) openCode.open = false;
     openCode = undefined;
     openIndentedCode = false;
@@ -863,8 +880,8 @@ export function createStreamingDocument(): StreamingDocument {
   const closeTo = (depth: number) => {
     if (depth >= frames.length) return;
     if (depth <= 1) freezeRoots();
+    closeParagraph();
     frames.length = Math.max(1, depth);
-    openParagraph = undefined;
     openCode = undefined;
     openIndentedCode = false;
     openTable = undefined;
@@ -901,7 +918,7 @@ export function createStreamingDocument(): StreamingDocument {
   };
 
   const registerReferences = (record: ReferenceUser) => {
-    for (const label of unresolvedReferenceLabels(record.source, environment().references, blockedReferences)) {
+    for (const label of unresolvedReferenceLabels(record.source, environment().references)) {
       record.labels.add(label);
       let users = referenceUsers.get(label);
       if (!users) referenceUsers.set(label, users = new Set());
@@ -911,14 +928,14 @@ export function createStreamingDocument(): StreamingDocument {
 
   const updateParagraph = (record: ParagraphRecord, streaming = false, pendingReferences = true) => {
     unregister(record);
-    const classified = streaming && !record.source.includes("\n") ? resolver.classifyPending(record.source) : undefined;
+    const classified = streaming && !record.source.includes("\n") ? resolver.classifyCommitted(record.source) : undefined;
     let inlineSource = classified?.kind === "paragraph" ? classified.content : record.source;
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment())
       : [{ type: "text", value: inlineSource }];
-    if (pendingReferences) markPendingReferences(record.block.children, blockedReferences);
-    if (streaming) hideProvisionalSyntax(record.block.children);
+    if (pendingReferences) markPendingReferences(record.block.children);
+    if (streaming) hideTableCandidatePipes(record.block.children);
     registerReferences(record);
     tailParses++;
   };
@@ -959,7 +976,7 @@ export function createStreamingDocument(): StreamingDocument {
   const updateTableCell = (record: TableCellRecord) => {
     unregister(record);
     const children = parseInline(record.source, false, environment());
-    markPendingReferences(children, blockedReferences);
+    markPendingReferences(children);
     if (record.header) record.table.header[record.column] = children;
     else record.table.rows[record.row]![record.column] = children;
     registerReferences(record);
@@ -969,33 +986,23 @@ export function createStreamingDocument(): StreamingDocument {
   const createTableCell = (table: TableBlock, source: string, header: boolean, row: number, column: number) => {
     const record: TableCellRecord = { table, source, header, row, column, labels: new Set() };
     const children = header ? table.header[column] : table.rows[row]?.[column];
-    if (children) markPendingReferences(children, blockedReferences);
+    if (children) markPendingReferences(children);
     registerReferences(record);
     return record;
   };
 
-  const applyReferences = (retainUsers = false) => {
+  const applyReferences = () => {
     for (const [label, users] of referenceUsers) {
       if (!resolver.references.has(label)) continue;
-      const retained = retainUsers ? [...users] : [];
       for (const user of [...users]) {
         if ("block" in user) {
           let frozenIndex = -1;
           for (let index = 0; index < blocks.frozen; index++) if (blocks.at(index) === user.block) { frozenIndex = index; break; }
           updateParagraph(user);
-          if (frozenIndex >= 0) {
-            const prior = user.block;
-            user.block = { ...prior, children: [...prior.children] };
-            paragraphRecords.delete(prior);
-            paragraphRecords.set(user.block, user);
-            blocks.replace(frozenIndex, user.block);
-          }
+          if (frozenIndex >= 0) blocks.replace(frozenIndex, { ...user.block, children: [...user.block.children] });
         } else updateTableCell(user);
       }
-      if (retainUsers) {
-        for (const user of retained) user.labels.add(label);
-        referenceUsers.set(label, new Set(retained));
-      } else referenceUsers.delete(label);
+      referenceUsers.delete(label);
     }
   };
 
@@ -1026,8 +1033,6 @@ export function createStreamingDocument(): StreamingDocument {
       openCode = undefined;
       openIndentedCode = false;
     } else if (leaf.kind === "indented-code") {
-      const label = /^\s*\[([^\]\n]+)\]:/.exec(leaf.content)?.[1];
-      if (label) blockedReferences.add(normalizeReferenceLabel(label));
       if (!resolution.continued || !openCode) {
         openCode = { type: "code", language: undefined, value: "", open: true };
         openIndentedCode = true;
@@ -1079,12 +1084,10 @@ export function createStreamingDocument(): StreamingDocument {
     if (leaf.kind === "html-open") openParagraph = createParagraph(leaf.content);
     else if ((leaf.kind === "html-line" || leaf.kind === "html-close") && openParagraph) {
       appendParagraphLine(openParagraph, leaf.content);
-      if (leaf.kind === "html-close") openParagraph = undefined;
+      if (leaf.kind === "html-close") closeParagraph();
     } else if (leaf.kind === "reference-definition") {
-      const label = /^ {0,3}\[([^\]\n]+)\]:/.exec(leaf.content)?.[1];
-      if (label) blockedReferences.delete(normalizeReferenceLabel(label));
       pendingReferenceApply = !hasInlineReferenceTitle(leaf.content);
-      applyReferences(pendingReferenceApply);
+      if (!pendingReferenceApply) applyReferences();
     } else if (leaf.kind === "reference-title") {
       applyReferences();
       pendingReferenceApply = false;
@@ -1100,28 +1103,32 @@ export function createStreamingDocument(): StreamingDocument {
     }
     if (!leaf) {
       for (const frame of frames) if (frame.kind === "list") pendingLooseLists.add(frame.block);
-      openParagraph = undefined;
+      closeParagraph();
       if (frames.length === 1) freezeRoots();
       return;
     }
     if (leaf.kind === "paragraph") {
-      for (const match of leaf.content.matchAll(/\[([^\]\n]+)\]:/g)) blockedReferences.add(normalizeReferenceLabel(match[1]!));
       if (resolution.continued && openParagraph) appendParagraphLine(openParagraph, leaf.content);
-      else openParagraph = createParagraph(leaf.content);
+      else {
+        closeParagraph();
+        openParagraph = createParagraph(leaf.content);
+      }
       openCode = undefined;
       openIndentedCode = false;
       openTable = undefined;
       return;
     }
+    // A table delimiter turns the open paragraph into the header; every other leaf except HTML lines ends it.
+    if (leaf.kind === "table-delimiter") openParagraph = undefined;
+    else if (leaf.kind !== "html-line" && leaf.kind !== "html-close") closeParagraph();
     applyHeadingOrRule(leaf) || applyCodeLeaf(resolution) || applyTableLeaf(leaf) || applyMetadataLeaf(leaf);
-    if (leaf.kind !== "html-open" && leaf.kind !== "html-line") openParagraph = undefined;
   };
 
   const apply = (resolution: LineResolution) => {
     scannedCharacters += resolution.leaf?.path.length ?? resolution.closedToDepth;
     closeTo(resolution.closedToDepth);
     if (resolution.opened.length) {
-      openParagraph = undefined;
+      closeParagraph();
       openTable = undefined;
     }
     for (const container of resolution.opened) openContainer(container);
@@ -1145,66 +1152,35 @@ export function createStreamingDocument(): StreamingDocument {
     for (const piece of delta.match(/[^\n]*\n|[^\n]+$/g) ?? [])
       for (const resolution of resolver.append(piece)) apply(resolution);
     if (delta.includes("\n")) {
-      pendingPreviewContent = "";
-      pendingPreviewStableEnd = 0;
+      pendingPreviewLength = 0;
       pendingPreviewNodes = [];
-      pendingPreviewSuffixNodes = 0;
-      pendingPreviewOwner = undefined;
+      pendingPreviewAppendable = false;
     }
   };
 
-  const parsePendingPart = (value: string, streaming: boolean) => {
-    if (!value) return [];
-    previewScannedCharacters += value.length;
-    copiedCharacters += value.length;
-    const nodes: Inline[] = /[\\[*_~`<!&]/.test(value)
-      ? parseInline(value, streaming, environment())
-      : [{ type: "text", value }];
-    markPendingReferences(nodes, blockedReferences);
-    return nodes;
-  };
-
-  const appendPendingNodes = (nodes: Inline[]) => {
-    const first = nodes[0];
-    const last = pendingPreviewNodes.at(-1);
-    if (last?.type === "text" && first?.type === "text") {
-      last.value += first.value;
-      pendingPreviewNodes.push(...nodes.slice(1));
-    } else pendingPreviewNodes.push(...nodes);
-  };
-
-  const pendingPreview = (classification: Readonly<PendingClassification>) => {
-    if (pendingPreviewSuffixNodes) pendingPreviewNodes.splice(-pendingPreviewSuffixNodes);
-    pendingPreviewSuffixNodes = 0;
+  const pendingPreview = () => {
+    const pending = resolver.pending.content;
+    if (pendingPreviewAppendable && pending.length >= pendingPreviewLength) {
+      const suffix = pending.slice(pendingPreviewLength);
+      previewScannedCharacters += suffix.length;
+      if (!/[\\[*_~`<!&#|>\r\n]/.test(suffix)) {
+        if (suffix) pendingPreviewNodes.push({ type: "text", value: suffix });
+        copiedCharacters += suffix.length;
+        pendingPreviewLength = pending.length;
+        return pendingPreviewNodes;
+      }
+    }
+    const classification = resolver.classifyPending(pending);
     const inlineSource = pendingInlineSource(classification.content);
-    const owner = classification.owner;
-    const extendsPrior = classification.stableEnd >= pendingPreviewStableEnd
-      && inlineSource.length >= pendingPreviewContent.length
-      && (classification.incremental || inlineSource.startsWith(pendingPreviewContent));
-    const sameOwner = owner?.index === pendingPreviewOwner?.index && owner?.marker === pendingPreviewOwner?.marker
-      && owner?.closer === pendingPreviewOwner?.closer;
-    const closedOwner = pendingPreviewOwner !== undefined && owner === undefined;
-    const stableEnd = closedOwner ? inlineSource.length : classification.stableEnd;
-    const rebuild = !extendsPrior || !sameOwner;
-
-    if (rebuild) {
-      pendingPreviewNodes = [];
-      if (owner && owner.index < stableEnd) {
-        appendPendingNodes(parsePendingPart(inlineSource.slice(0, owner.index), false));
-        appendPendingNodes(parsePendingPart(inlineSource.slice(owner.index + owner.marker.length, stableEnd), false));
-      } else appendPendingNodes(parsePendingPart(inlineSource.slice(0, stableEnd), false));
-    } else if (stableEnd > pendingPreviewStableEnd) {
-      appendPendingNodes(parsePendingPart(classification.stable, false));
-    }
-
-    const suffixSource = owner?.closer === ")" ? classification.suffix.replace(/\]\([^)]*$/, "") : classification.suffix;
-    const suffix = parsePendingPart(closedOwner ? "" : suffixSource, true);
-    if (classification.provisional) markProvisional(suffix);
-    pendingPreviewNodes.push(...suffix);
-    pendingPreviewSuffixNodes = suffix.length;
-    pendingPreviewContent = inlineSource;
-    pendingPreviewStableEnd = stableEnd;
-    pendingPreviewOwner = owner ? { ...owner } : undefined;
+    previewScannedCharacters += pending.length;
+    copiedCharacters += inlineSource.length;
+    pendingPreviewNodes = inlineSource
+      ? /[\\[*_~`<!&]/.test(inlineSource) ? parseInline(inlineSource, true, environment()) : [{ type: "text", value: inlineSource }]
+      : [];
+    markPendingReferences(pendingPreviewNodes);
+    if (classification.provisional) markProvisional(pendingPreviewNodes);
+    pendingPreviewLength = pending.length;
+    pendingPreviewAppendable = classification.appendable;
     return pendingPreviewNodes;
   };
 
@@ -1247,7 +1223,7 @@ export function createStreamingDocument(): StreamingDocument {
       if (finished || pendingReferenceApply || !resolver.pending.length && !resolver.hasPendingLookahead) return blocks.view;
       if (previewBlocks && previewSource === source) return previewBlocks;
       const pending = resolver.pending.content;
-      const classification = resolver.classifyPending();
+      const classification = resolver.classifyPending(pending);
       const overlay = cloneOpenPath(openRoots, Boolean(openParagraph || openCode || openTable));
       if (classification.kind === "fence" && openCode && !openIndentedCode) {
         const disposition = resolver.pendingFenceDisposition;
@@ -1255,8 +1231,8 @@ export function createStreamingDocument(): StreamingDocument {
         else if (disposition === "none" && classification.content) appendOpenCode(overlay, classification.content);
       } else {
         const startsBlock = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
-        if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.content && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment(), blockedReferences)))
-          appendPendingParagraph(overlay, pendingPreview(classification), Boolean(openParagraph) && !startsBlock);
+        if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.content && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment())))
+          appendPendingParagraph(overlay, pendingPreview(), Boolean(openParagraph) && !startsBlock);
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];

@@ -11,6 +11,7 @@
     "stress": "bun scripts/stress.ts",
     "stress:ab": "bun scripts/stress-ab.ts",
     "layout": "bun scripts/layout.ts",
+    "highlight:fallback": "bun scripts/highlight-fallback.ts",
     "test:virtual": "bun scripts/virtual-test.ts"
   },
   "dependencies": {

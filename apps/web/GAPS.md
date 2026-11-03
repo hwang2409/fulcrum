@@ -4,7 +4,7 @@
 the library does not have, it is written down here. It is not worked around in the app. Each entry says what is
 missing, why the app needs it, and the proposed API.
 
-## added in this PR (small, generic, tested)
+## added (small, generic, tested)
 
 | export | why | test |
 | --- | --- | --- |
@@ -14,6 +14,8 @@ missing, why the app needs it, and the proposed API.
 | `discoverZeta()`, `zetaDiscoveryPath`, `ZetaDiscovery`, `ZetaClient` in `@fulcrum/zeta` | the playground fetched its discovery URL inline, and the client type had no name. | `packages/zeta/test/connect.test.ts` |
 | `@fulcrum/zeta/discovery` (`zetaDiscoveryPlugin`, `createZetaDiscoveryHandler`) | the dev-server token handoff was private to the playground. It moved into the package for both apps. It now also returns the `--ws-origin` allowlist, and it answers 404 when the discovery file names a process that has stopped. | `packages/zeta/test/discovery.test.ts`, `apps/playground/test/zeta-discovery.integration.test.ts` |
 | `themes` and `ThemeName` in `@fulcrum/react` | a theme picker needs the list. Parsing `themes.css?raw` is a bundler trick. | `packages/react/test/themes.test.ts` |
+| `Composer` in `@fulcrum/react` | the app had no input. Send, steer, and stop map to zeta `send`, `steer`, and `abort` in `src/delivery.ts`, with `delivery_id`. | `packages/react/test/composer.test.tsx`, `apps/web/test/delivery.test.ts` |
+| `Code` and `HighlightContext` in `@fulcrum/react` | the app colors text outside a run (the `zeta serve` command in the connection notices). Before this, only parts inside a `RunProvider` could highlight. | web gate ("the command is not highlighted") |
 | core reducer: a repeated `approval_request` updates its row | a status snapshot and the live event can both carry the same approval. Before this, two rows with one id crashed `Timeline` ("outline ids must be unique"). | `packages/core/test/reducer.test.ts` |
 
 ## open gaps
@@ -65,8 +67,22 @@ missing, why the app needs it, and the proposed API.
 - **why:** a reader who scrolled up loses their place on every reconnect.
 - **proposed api:** `Timeline` `anchor` / `onAnchor` (item id plus offset) that a caller can carry across a store swap.
 
-### 10. no composer (`@fulcrum/react`)
-- slice 1 is read-only by design. The composer (send, steer, stop, attach) is a library slice in the round 2 plan. The app shows no fake input.
+### 10. a steer can arrive after the last provider call (zeta)
+- **seen:** zeta delivers a steer at the next provider boundary of the running turn. A turn whose last answer has no
+  tool call has no such boundary, so zeta drops the steer when the turn ends (`delivery_status` says `dropped`). It has
+  already emitted the `user_message`, so the transcript shows a message the model never read. The zeta TUI sends a
+  late steer as the next turn instead.
+- **in the app:** the protocol leaves the resend to the client, so `src/delivery.ts` does what the TUI does: when a
+  turn ends without a stop, each steer it dropped goes out again as a new message. The `user_message` echo carries no
+  delivery id, so the client stamps the one it gets while the request is pending with the message's `intent`, and the
+  resend replaces the steer's row instead of adding one (`test/delivery.test.ts`, web gate, and a live check on real zeta).
+- **after a stop:** the user meant to drop the queued steers, so they are not resent. `turnEnded` still asks
+  `delivery_status` for each and returns the dropped ones; the app marks their rows "not delivered" (struck through,
+  danger rail, a note that the stop ended the turn first), so a steer the agent never read does not look delivered.
+  This is live state only: zeta's history has no row for a dropped steer, so after a reload it is gone.
+- **proposed api:** zeta echoes `delivery_id` in `user_message`, so a client can match the echo without a pending window.
+- **proposed api:** zeta keeps a dropped steer in history with its `dropped` outcome, so a reload can still show it.
+- **proposed api:** zeta serve delivers a late steer as the next turn, as the TUI does, so every client gets it.
 
 ## library bugs found
 
