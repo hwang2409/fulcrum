@@ -8,10 +8,12 @@ export type ContainerFrame =
 
 export type OpenedContainer = Exclude<ContainerFrame, { kind: "document" }>;
 
-export type ParagraphLeaf = {
-  kind: "paragraph";
+export type ResolvedLeaf = {
+  kind: "paragraph" | "fence-open" | "fence-line" | "fence-close" | "indented-code";
   content: string;
   path: readonly ContainerFrame[];
+  marker?: string;
+  language?: string;
 };
 
 export type LineResolution = {
@@ -19,7 +21,7 @@ export type LineResolution = {
   lazy: boolean;
   closedToDepth: number;
   opened: readonly OpenedContainer[];
-  leaf?: ParagraphLeaf;
+  leaf?: ResolvedLeaf;
 };
 
 export type PendingLineScan = {
@@ -138,7 +140,7 @@ const frameEqual = (left: ContainerFrame, right: ContainerFrame) => left.kind ==
 
 export class MarkdownLineResolver {
   private stack: ContainerFrame[] = [{ kind: "document" }];
-  private openParagraph = false;
+  private openLeaf?: { kind: "paragraph" } | { kind: "fence"; marker: string } | { kind: "indented-code" };
   private pendingLine: MutablePendingLine = freshPending();
 
   get pending(): PendingLine {
@@ -181,11 +183,24 @@ export class MarkdownLineResolver {
 
     const unmatched = matchedDepth < this.stack.length;
     const blank = isBlank(line, cursor.offset);
+    if (!unmatched && this.openLeaf?.kind === "fence") {
+      const content = line.slice(cursor.offset);
+      const marker = this.openLeaf.marker;
+      const closes = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(content);
+      if (closes) this.openLeaf = undefined;
+      return {
+        continued: !closes,
+        lazy: false,
+        closedToDepth: this.stack.length,
+        opened: [],
+        leaf: { kind: closes ? "fence-close" : "fence-line", content, marker, path: this.stack.map((frame) => ({ ...frame })) },
+      };
+    }
     const probe: Cursor = { ...cursor };
     const startsQuote = consumeQuote(probe);
     const marker = startsQuote ? undefined : listMarker(probe);
     const startsContainer = startsQuote || Boolean(marker);
-    const lazy = unmatched && this.openParagraph && !blank && !startsContainer;
+    const lazy = unmatched && this.openLeaf?.kind === "paragraph" && !blank && !startsContainer;
     let closedToDepth = lazy ? this.stack.length : matchedDepth;
     const unmatchedFrame = this.stack[matchedDepth];
     const parent = this.stack[matchedDepth - 1];
@@ -193,7 +208,7 @@ export class MarkdownLineResolver {
       && (!marker || marker.ordered !== parent.ordered)) closedToDepth--;
     if (!lazy) {
       this.stack.length = closedToDepth;
-      if (unmatched || blank) this.openParagraph = false;
+      if (unmatched || blank) this.openLeaf = undefined;
     }
 
     const opened: OpenedContainer[] = [];
@@ -221,16 +236,40 @@ export class MarkdownLineResolver {
       }
     }
 
+    const leafPath = () => this.stack.map((frame) => ({ ...frame }));
     if (blank) return { continued: false, lazy: false, closedToDepth, opened };
     const content = line.slice(cursor.offset);
-    const continued = this.openParagraph && opened.length === 0;
-    this.openParagraph = true;
+    const fence = /^ {0,3}(`{3,}|~{3,})([^\n]*)$/.exec(content);
+    if (fence && (fence[1]![0] !== "`" || !fence[2]!.includes("`"))) {
+      this.openLeaf = { kind: "fence", marker: fence[1]! };
+      return {
+        continued: false,
+        lazy: false,
+        closedToDepth,
+        opened,
+        leaf: { kind: "fence-open", content: "", marker: fence[1], language: fence[2]!.trim().split(/\s+/, 1)[0] || undefined, path: leafPath() },
+      };
+    }
+    const indented = { ...cursor };
+    if (consumeIndent(indented, 4) >= 4) {
+      const continued = this.openLeaf?.kind === "indented-code";
+      this.openLeaf = { kind: "indented-code" };
+      return {
+        continued,
+        lazy: false,
+        closedToDepth,
+        opened,
+        leaf: { kind: "indented-code", content: line.slice(indented.offset), path: leafPath() },
+      };
+    }
+    const continued = this.openLeaf?.kind === "paragraph" && opened.length === 0;
+    this.openLeaf = { kind: "paragraph" };
     return {
       continued,
       lazy,
       closedToDepth,
       opened,
-      leaf: { kind: "paragraph", content, path: this.stack.map((frame) => ({ ...frame })) },
+      leaf: { kind: "paragraph", content, path: leafPath() },
     };
   }
 }
