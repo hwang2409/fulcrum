@@ -10,6 +10,7 @@ import { createRunStore, type RunSource } from "@fulcrum/core";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
 import { Approval, Message, RunNavigator, RunProvider, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunLocation } from "@fulcrum/react";
+import { CodeCard, codeDemos } from "./code-demos";
 import { ComposerCard, composerDemos } from "./composer-demos";
 import { demos, type Demo } from "./demos";
 
@@ -183,8 +184,8 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
   );
 }
 
-// Every card in page order: the run parts, then the composer that sits under a run.
-const cards = [...demos, ...composerDemos];
+// Every card in page order: the run parts, the composer that sits under a run, then highlighted text outside a run.
+const cards = [...demos, ...composerDemos, ...codeDemos];
 const parts = [...new Set(cards.map((demo) => demo.part))];
 
 const paletteVars = ["bg", "fg", "accent", "ok", "warn", "danger", "tok-keyword", "tok-string", "tok-function"];
@@ -321,7 +322,9 @@ function Gallery() {
               .filter((demo) => demo.part === part)
               .map((demo) => "events" in demo
                 ? <DemoCard key={demo.id} demo={demo} toast={toast} inspect={inspect} />
-                : <ComposerCard key={demo.id} demo={demo} toast={toast} />)}
+                : demo.part === "Code"
+                  ? <CodeCard key={demo.id} demo={demo} highlight={highlight} />
+                  : <ComposerCard key={demo.id} demo={demo} toast={toast} />)}
           </section>
         ))}
       </main>
