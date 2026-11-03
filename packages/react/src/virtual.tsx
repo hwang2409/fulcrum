@@ -115,6 +115,9 @@ export function useVirtualList<Id extends string>(
         if (id !== undefined) pendingEntries.current.set(id, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
       }
       if (resizeFrame.current === null) resizeFrame.current = requestAnimationFrame(flushMeasurements);
+      // Rows are in flow, so the DOM already has the new end: a pinned reader sticks to it before this frame paints,
+      // not a frame later when the engine measures (and then agrees). Moving scroll resizes nothing: no observer loop.
+      if (engine.getSnapshot().pinned) container.scrollTop = container.scrollHeight - container.clientHeight;
     });
     observerRef.current = observer;
     for (const row of rows.current.values()) observer.observe(row);
