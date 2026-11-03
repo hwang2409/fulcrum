@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
 import { Markdown } from "../src/react.js";
-import { MarkdownLineResolver, PENDING_INLINE_SUFFIX_BUDGET } from "../src/resolver.js";
+import { PENDING_INLINE_SUFFIX as PENDING_INLINE_SUFFIX_BUDGET } from "../src/pending-inline.js";
+import { MarkdownLineResolver } from "../src/resolver.js";
 
 function inlineVisible(nodes: readonly Inline[], provisional: boolean): string {
   return nodes.map((node) => node.type === "pending-reference"
@@ -28,8 +29,8 @@ const json = (value: unknown) => JSON.stringify(value, (key, item) => key === "o
 test("pending classification is resolver-owned and settles marker suffixes", () => {
   const resolver = new MarkdownLineResolver();
   expect(resolver.classifyPending("> ")).toMatchObject({ kind: "empty", content: "" });
-  expect(resolver.classifyPending("> hello")).toMatchObject({ kind: "paragraph", content: "hello", provisional: false });
-  expect(resolver.classifyPending("- item")).toMatchObject({ kind: "paragraph", content: "item", provisional: false });
+  expect(resolver.classifyPending("> hello")).toMatchObject({ kind: "paragraph", content: "hello", offset: 2 });
+  expect(resolver.classifyPending("- item")).toMatchObject({ kind: "paragraph", content: "item", offset: 2 });
 });
 
 test("fence ownership does not reveal text that the next newline retracts", () => {

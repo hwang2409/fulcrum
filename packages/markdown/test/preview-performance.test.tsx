@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument } from "../src/index.js";
-import { PENDING_INLINE_SUFFIX_BUDGET } from "../src/resolver.js";
+import { PENDING_INLINE_SUFFIX as PENDING_INLINE_SUFFIX_BUDGET } from "../src/pending-inline.js";
 
 function streamPending(source: string, chunkSize: number) {
   const document = createStreamingDocument();

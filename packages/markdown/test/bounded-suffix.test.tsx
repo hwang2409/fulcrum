@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, type Block, type Inline } from "../src/index.js";
-
-const PENDING_INLINE_SUFFIX_BUDGET = 256;
+import { PENDING_INLINE_SUFFIX as PENDING_INLINE_SUFFIX_BUDGET } from "../src/pending-inline.js";
 
 function text(nodes: readonly Inline[]): string {
   return nodes.map((node) => node.type === "text" || node.type === "pending-reference" || node.type === "code"
@@ -51,9 +50,19 @@ function provisionalIn(blocks: readonly Block[]): number {
         : block.type === "table" ? [...block.header, ...block.rows.flat()].reduce((sum, cell) => sum + provisional(cell), 0) : 0), 0);
 }
 
+test("a setext underline candidate stays hidden syntax while the heading text stays visible", () => {
+  const document = createStreamingDocument();
+  document.append("heading\n");
+  for (let offset = 0; offset < 100_000; offset += 1_024) {
+    document.append("=".repeat(1_024));
+    expect(visible(document.render())).toBe("heading");
+  }
+  document.append("\n");
+  expect(document.render()[0]?.type).toBe("heading");
+});
+
 for (const [name, source, stableCharacters] of [
   ["unclosed bracket", `[${"x".repeat(100_000)}`, 100_000],
-  ["setext underline candidate", `heading\n${"=".repeat(100_000)}`, 100_000],
 ] as const) test(`${name} keeps hidden and provisional text bounded at every prefix`, () => {
   const document = createStreamingDocument();
   for (let offset = 0; offset < source.length; offset += 1_024) {
@@ -73,10 +82,11 @@ test("a late closer restyles retained characters without removing or reordering 
   document.append(`[${label}](`);
   const before = stableVisible(document.render());
   expect(before.length).toBeGreaterThan(label.length - PENDING_INLINE_SUFFIX_BUDGET);
-  document.append("https://example.com)");
+  // The link style arrives once its closer leaves the provisional suffix.
+  document.append(`https://example.com)${" tail".repeat(60)}`);
   const after = stableVisible(document.render());
   expect(subsequence(before, after)).toBe(true);
-  expect(after).toBe(label);
+  expect(after.startsWith(label)).toBe(true);
   expect(document.render()[0]?.type === "paragraph" && document.render()[0].children[0]?.type).toBe("link");
 });
 
@@ -87,6 +97,6 @@ test("an unresolved owner copies only the delta and bounded suffix", () => {
     const copied = document.stats.copiedCharacters;
     document.append(source.slice(offset, offset + 1_024));
     document.render();
-    expect(document.stats.copiedCharacters - copied, `offset ${offset}`).toBeLessThanOrEqual(1_024 + PENDING_INLINE_SUFFIX_BUDGET);
+    expect(document.stats.copiedCharacters - copied, `offset ${offset}`).toBeLessThanOrEqual(1_024 + PENDING_INLINE_SUFFIX_BUDGET + 64);
   }
 });

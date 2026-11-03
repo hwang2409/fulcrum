@@ -1004,18 +1004,29 @@ export function createStreamingDocument(): StreamingDocument {
     return record;
   };
 
-  const applyReferences = () => {
+  // `retainUsers` keeps users registered while a title on the next line can still change the definition.
+  const applyReferences = (retainUsers = false) => {
     for (const [label, users] of referenceUsers) {
       if (!resolver.references.has(label)) continue;
+      const retained = retainUsers ? [...users] : [];
       for (const user of [...users]) {
         if ("block" in user) {
           let frozenIndex = -1;
           for (let index = 0; index < blocks.frozen; index++) if (blocks.at(index) === user.block) { frozenIndex = index; break; }
           updateParagraph(user);
-          if (frozenIndex >= 0) blocks.replace(frozenIndex, { ...user.block, children: [...user.block.children] });
+          if (frozenIndex >= 0) {
+            const prior = user.block;
+            user.block = { ...prior, children: [...prior.children] };
+            paragraphRecords.delete(prior);
+            paragraphRecords.set(user.block, user);
+            blocks.replace(frozenIndex, user.block);
+          }
         } else updateTableCell(user);
       }
-      referenceUsers.delete(label);
+      if (retainUsers) {
+        for (const user of retained) user.labels.add(label);
+        referenceUsers.set(label, new Set(retained));
+      } else referenceUsers.delete(label);
     }
   };
 
@@ -1100,7 +1111,7 @@ export function createStreamingDocument(): StreamingDocument {
       if (leaf.kind === "html-close") closeParagraph();
     } else if (leaf.kind === "reference-definition") {
       pendingReferenceApply = !hasInlineReferenceTitle(leaf.content);
-      if (!pendingReferenceApply) applyReferences();
+      applyReferences(pendingReferenceApply);
     } else if (leaf.kind === "reference-title") {
       applyReferences();
       pendingReferenceApply = false;
