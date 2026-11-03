@@ -346,11 +346,30 @@ describe("worker liveness and restarts", () => {
     const next = highlighter("c\n", "cpp", block("next"));
     answer(workers[1], 1);
     expect(await next).toEqual(colored("c\n"));
-    // The blamed block stays plain and provisional in this controller, in any later revision.
-    expect(highlighter("a\nmore\n", "cpp", { id: "stuck", version: 2, state: "done" })).toEqual([{ text: "a\nmore\n" }]);
+    // Only the blamed revision stays plain in this controller: a newer revision of the same block is tried again.
+    expect(highlighter("a\n", "cpp", block("stuck"))).toEqual([{ text: "a\n" }]);
     expect(workers[1].posted.length).toBe(2);
+    const revised = highlighter("a\nmore\n", "cpp", { id: "stuck", version: 2, state: "done" });
+    answer(workers[1], 2);
+    expect(await revised).toEqual(colored("a\nmore\n"));
     await ticks();
     expect(told).toBe(0);
+    highlighter.dispose();
+  }));
+
+  test("silence poisons only the blamed revision: another pending revision of the same block is retried and colored", withFakeTimers(async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const stale = highlighter("a\n", "cpp", { id: "surface", version: 1, state: "streaming" });
+    const newer = highlighter("a\nb\n", "cpp", { id: "surface", version: 2, state: "done" });
+    workers[0].send({ progress: workers[0].posted[0].context });
+    jest.advanceTimersByTime(10_000);
+    jest.advanceTimersByTime(0);
+    expect(workers.length).toBe(2);
+    expect(workers[1].posted.map((request) => request.code)).toEqual(["a\nb\n"]);
+    answer(workers[1], 0);
+    expect(await newer).toEqual(colored("a\nb\n"));
+    expect(await stale).toEqual(colored("a\nb\n")); // an older revision resolves to the newest one, as without a hang
     highlighter.dispose();
   }));
 

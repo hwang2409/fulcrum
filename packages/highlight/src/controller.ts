@@ -22,8 +22,9 @@ type Pending = { resolve: (tokens: Token[]) => void; code: string; language: str
 // so a UI freeze would be worse than missing colors. This module must not import the tokenizer runtime (a test checks).
 // Liveness, not a deadline: the worker reports progress (protocol.ts) at least every PROGRESS_MS while it works, so long
 // valid work never trips this. Only this much silence while work is pending counts: one step that cannot be split (a
-// pathological line) ran away. The block being worked on is blamed, not the worker: it stays plain for this
-// controller's life, the worker is replaced at once, and every other pending request goes to the new one.
+// pathological line) ran away. The block revision (id and version) being worked on is blamed, not the worker: that
+// revision stays plain for this controller's life (a newer revision of the block is tried again), the worker is
+// replaced at once, and every other pending request, other revisions of the same block included, goes to the new one.
 const WORKER_SILENCE_MS = 10_000;
 // A crash (an error or messageerror event, a failed construction, or silence with no block to blame) restarts the
 // worker after these pauses, for the 1st, 2nd and 3rd crash in CRASH_WINDOW_MS. One more in that window: plain for good.
@@ -40,7 +41,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   let busyWith: HighlightContext | null = null; // the block the worker last said it works on
   let parts: Token[] = []; // a long reply's tokens so far (protocol.ts)
   const crashes: number[] = [];
-  const poisoned = new Set<string>();
+  const poisoned = new Set<string>(); // revisions (`revision()`) that went silent: plain for this controller's life
   let disposed = false;
   let clock = 0;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
@@ -57,6 +58,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const listeners = new Map<string, Set<() => void>>();
 
   const plain = (code: string): Token[] => code ? [{ text: code }] : [];
+  const revision = (context: HighlightContext) => `${context.id}\0${context.version}`;
   const cacheKey = (context: HighlightContext, language: string) => `${context.id}\0${context.version}\0${language}`;
   const dropCompleted = (key: string, entry: CacheEntry) => {
     cache.delete(key);
@@ -122,8 +124,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     const blamed = busyWith;
     if (!blamed) return crash();
     stop();
-    poisoned.add(blamed.id);
-    for (const [id, job] of pending) if (job.context.id === blamed.id) { pending.delete(id); job.resolve(plain(job.code)); }
+    poisoned.add(revision(blamed));
+    for (const [id, job] of pending) if (sameBlock(blamed, job.context)) { pending.delete(id); job.resolve(plain(job.code)); }
     scheduleRestart(0);
   };
   const sameBlock = (a: HighlightContext | null, b: HighlightContext) => a?.id === b.id && a.version === b.version;
@@ -168,7 +170,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (!language) return null;
     if (code.length > MAX_BLOCK || (code.match(/\n/g)?.length ?? 0) + 1 > MAX_LINES) return plain(code);
     const actual = context ?? { id: `finished:${language}:${code}`, version: 0, state: "done" as const };
-    if (poisoned.has(actual.id)) return plain(code);
+    if (poisoned.has(revision(actual))) return plain(code);
     const key = cacheKey(actual, language);
     if (actual.version >= (latestVersion.get(actual.id) ?? -Infinity)) {
       latestVersion.set(actual.id, actual.version);
@@ -193,7 +195,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
       if (newest) { inflight.delete(key); inflightIds.delete(key); inflightCode.delete(key); }
       const currentKey = current.get(actual.id);
       if (!disposed && currentKey === key) {
-        if (newest && !unavailable && !poisoned.has(actual.id)) remember(key, actual, code, tokens); // plain for want of a worker is never cached
+        if (newest && !unavailable && !poisoned.has(revision(actual))) remember(key, actual, code, tokens); // plain for want of a worker is never cached
         if ([...inflightIds].some(([otherKey, id]) => id === actual.id && otherKey !== key)) latestSettled.set(actual.id, { key, tokens });
         return tokens;
       }
