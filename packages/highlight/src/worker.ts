@@ -1,5 +1,5 @@
-import { PROGRESS_MS, type WorkerRequest, type WorkerResponse } from "./protocol.js";
-import type { HighlightContext } from "./types.js";
+import { PROGRESS_MS, TOKENS_PER_MESSAGE, type WorkerRequest, type WorkerResponse } from "./protocol.js";
+import type { HighlightContext, Token } from "./types.js";
 import { TokenizerRuntime } from "./runtime.js";
 
 const scope = globalThis as unknown as {
@@ -15,13 +15,19 @@ const progress = (context: HighlightContext | null) => {
   progressOf = context; progressAt = now;
   scope.postMessage({ progress: context });
 };
-const runtime = new TokenizerRuntime((update, language, tokens) => scope.postMessage({ update, language, tokens }), progress);
+// Messages from one worker arrive in order, so the page joins the parts to the reply or update that follows them.
+const send = <T extends WorkerResponse & { tokens: Token[] }>(message: T) => {
+  const last = Math.max(0, Math.ceil(message.tokens.length / TOKENS_PER_MESSAGE) - 1) * TOKENS_PER_MESSAGE;
+  for (let start = 0; start < last; start += TOKENS_PER_MESSAGE) scope.postMessage({ part: message.tokens.slice(start, start + TOKENS_PER_MESSAGE) });
+  scope.postMessage(last ? { ...message, tokens: message.tokens.slice(last) } : message);
+};
+const runtime = new TokenizerRuntime((update, language, tokens) => send({ update, language, tokens }), progress);
 scope.onmessage = async (event) => {
   if (event.data.type === "dispose") { runtime.dispose(); scope.close(); return; }
   const { requestId, code, language, context } = event.data;
   try {
     const tokens = await runtime.tokenize(code, language, context);
-    scope.postMessage({ requestId, tokens, provisional: runtime.willUpdate(context) });
+    send({ requestId, tokens, provisional: runtime.willUpdate(context) });
   } catch (cause) {
     scope.postMessage({ requestId, error: cause instanceof Error ? cause.message : String(cause) });
   }

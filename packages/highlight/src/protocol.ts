@@ -5,9 +5,13 @@ export type WorkerRequest = HighlightRequest | DisposeRequest;
 // `progress`: the worker is alive and busy, with this block (null: compiling a grammar). Sent when the block changes,
 // and otherwise at most every PROGRESS_MS.
 export const PROGRESS_MS = 100;
+// A reply or update with more than TOKENS_PER_MESSAGE tokens comes as `part` messages, then the reply or update with
+// the last part: the page's thread deserializes each message in one task (330k tokens took 133 ms in chromium).
+export const TOKENS_PER_MESSAGE = 16_384;
 // `provisional`: an update for the same block follows once its grammar is warm. An update carries the block's context.
 export type WorkerResponse =
   | { requestId: number; tokens: Token[]; provisional: boolean }
   | { requestId: number; error: string }
   | { update: HighlightContext; language: string; tokens: Token[] }
-  | { progress: HighlightContext | null };
+  | { progress: HighlightContext | null }
+  | { part: Token[] };

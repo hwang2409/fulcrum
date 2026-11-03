@@ -20,6 +20,7 @@ highlight.dispose();
 
 all tokenizing runs in the worker. compiling one cold regex or scanner cannot be split (568 ms for cpp in chromium), so a ui freeze would be worse than missing colors, and there is no main-thread tokenizer to fall back to.
 
+- a large result comes back in messages of at most 16,384 tokens, so the page's thread never reads one huge message in one task (a 330,000-token reply was a 133 ms task as one message).
 - long work is not a failure. while it works, the worker sends a small progress message when it starts a block, after each line, and between grammar compile steps, at most every 100 ms. the page counts only silence: a 440 kb, 10,000-line block that takes seconds never trips it.
 - if the worker says nothing for 10 s while work is pending, one step that cannot be split (for example one pathological line) ran away. the block it last reported is blamed, not the worker: that block stays exact plain text for the life of this highlighter and is never sent again. the worker is replaced at once, and every other pending request goes to the new worker, so one bad block never turns colors off for the others.
 - if the worker crashes (an `error` or `messageerror` event, or it cannot be built, as under a strict csp), or is silent with no block to blame, it is replaced after 250 ms, then 1 s, then 4 s, and gets every pending request again. up to 3 restarts in any 60 s are allowed.

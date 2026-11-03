@@ -391,6 +391,21 @@ describe("worker liveness and restarts", () => {
     highlighter.dispose();
   }));
 
+  test("a long reply arrives in parts and is joined in order, without leaking into the next reply", withFakeTimers(async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const long = highlighter("abc", "cpp", block("parts"));
+    const short = highlighter("d", "cpp", block("short"));
+    const [first, second] = workers[0].posted;
+    workers[0].send({ part: [{ text: "a", type: "keyword" }] });
+    workers[0].send({ part: [{ text: "b" }] });
+    workers[0].send({ requestId: first.requestId, tokens: [{ text: "c", type: "string" }], provisional: false });
+    workers[0].send({ requestId: second.requestId, tokens: [{ text: "d" }], provisional: false });
+    expect(await long).toEqual([{ text: "a", type: "keyword" }, { text: "b" }, { text: "c", type: "string" }]);
+    expect(await short).toEqual([{ text: "d" }]);
+    highlighter.dispose();
+  }));
+
   test("crashes spread out over time keep recovering", withFakeTimers(async () => {
     const workers: Scripted[] = [];
     let told = 0;

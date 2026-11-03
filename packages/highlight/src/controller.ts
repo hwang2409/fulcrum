@@ -38,6 +38,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   let requestId = 0;
   let unavailable = false;
   let busyWith: HighlightContext | null = null; // the block the worker last said it works on
+  let parts: Token[] = []; // a long reply's tokens so far (protocol.ts)
   const crashes: number[] = [];
   const poisoned = new Set<string>();
   let disposed = false;
@@ -92,7 +93,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   };
   // Any message from the worker proves it alive: the silence clock starts again while work is pending.
   const heard = () => { clearTimeout(watchdog); watchdog = pending.size ? setTimeout(onSilence, WORKER_SILENCE_MS) : undefined; };
-  const stop = () => { clearTimeout(watchdog); watchdog = undefined; worker?.terminate(); worker = undefined; busyWith = null; };
+  const stop = () => { clearTimeout(watchdog); watchdog = undefined; worker?.terminate(); worker = undefined; busyWith = null; parts = []; };
+  const joined = (last: Token[]) => { if (!parts.length) return last; const tokens = parts; parts = []; for (const token of last) tokens.push(token); return tokens; };
   const giveUp = () => {
     stop();
     unavailable = true;
@@ -133,14 +135,16 @@ export function createController(options: HighlighterOptions = {}): Highlight {
         if (worker !== next || disposed) return;
         const data = event.data;
         if ("progress" in data) busyWith = data.progress;
-        else if ("update" in data) { if (sameBlock(busyWith, data.update)) busyWith = null; update(data.update, data.language, data.tokens); }
+        else if ("part" in data) for (const token of data.part) parts.push(token);
+        else if ("update" in data) { if (sameBlock(busyWith, data.update)) busyWith = null; update(data.update, data.language, joined(data.tokens)); }
         else {
+          const tokens = "tokens" in data ? joined(data.tokens) : undefined; // joined even for a request no longer pending
           const job = pending.get(data.requestId);
           if (job) {
             pending.delete(data.requestId);
             if (sameBlock(busyWith, job.context)) busyWith = null;
             // An error for one block (the worker is alive) leaves that block plain.
-            job.resolve("tokens" in data ? data.tokens : plain(job.code));
+            job.resolve(tokens ?? plain(job.code));
           }
         }
         heard();
