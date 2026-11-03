@@ -1,5 +1,7 @@
 import type { Highlight } from "@fulcrum/highlight";
+import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
+import { PendingInline } from "./pending-inline.js";
 import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
 type MarkdownToken = {
@@ -21,7 +23,6 @@ export type HighlightResult = ReturnType<Highlight>;
 export type Inline =
   | { type: "text"; value: string }
   | { type: "pending-reference"; value: string }
-  | { type: "pending-text"; children: Inline[] }
   | { type: "code"; value: string }
   | { type: "break" }
   | { type: "emphasis"; children: Inline[] }
@@ -246,12 +247,8 @@ const unmatchedCodeSpan = (source: string) => {
   return opener;
 };
 
-const codeSpanValue = (value: string) => {
-  const normalized = value.replace(/\n/g, " ");
-  return normalized.startsWith(" ") && normalized.endsWith(" ") && /[^ ]/.test(normalized)
-    ? normalized.slice(1, -1)
-    : normalized;
-};
+// An open span's edge spaces hide: the closer may strip them, and a space that shows must never disappear.
+const codeSpanValue = (value: string) => value.replace(/\n/g, " ").replace(/^ | $/g, "");
 
 function tailInline(blocks: Block[]): Inline[] | undefined {
   const last = blocks.at(-1);
@@ -341,24 +338,48 @@ const lastUnescaped = (source: string, marker: string) => {
   return index;
 };
 
+// Unescaped `[` and `]` outside code spans, including a span that may still close: code binds tighter than brackets.
+function bracketMarks(source: string) {
+  const marks: number[] = [];
+  const code = closedCodeRanges(source);
+  const end = unmatchedCodeSpan(source)?.index ?? source.length;
+  let range = 0;
+  for (let index = 0; index < end; index++) {
+    while (range < code.length && code[range]![1] <= index) range++;
+    if (range < code.length && index >= code[range]![0]) index = code[range]![1] - 1;
+    else if (source[index] === "\\") index++;
+    else if (source[index] === "[" || source[index] === "]") marks.push(index);
+  }
+  return marks;
+}
+
 function withoutOpenLink(source: string) {
   if (source.endsWith("!") && !escaped(source, source.length - 1)) source = source.slice(0, -1);
   const image = lastUnescaped(source, "![");
   if (image >= 0 && !/\]\([^\n)]*\)/.test(source.slice(image + 1))) return source.slice(0, image);
-  const bracket = lastUnescaped(source, "[");
+  const marks = bracketMarks(source);
+  let last = marks.length - 1;
+  while (last >= 0 && source[marks[last]!] !== "[") last--;
+  const bracket = last < 0 ? -1 : marks[last]!;
   if (bracket < 0) return source;
   const rest = source.slice(bracket + 1);
-  const close = rest.indexOf("]");
-  if (close < 0) return source.slice(0, bracket) + rest;
+  const close = (marks[last + 1] ?? 0) - bracket - 1;
+  // The label of a trailing `[text][label` is never shown; plain open text stays visible.
+  const label = source[bracket - 1] === "]";
+  if (close < 0) return source.slice(0, bracket) + (label ? "" : rest);
   const destination = rest.slice(close + 1);
-  if (!destination) return source.slice(0, bracket) + rest.slice(0, close);
-  if (!destination.startsWith("(")) return source;
+  if (!destination) return source.slice(0, bracket) + (label ? "" : rest.slice(0, close));
+  return !destination.startsWith("(") || closesDestination(destination) ? source : source.slice(0, bracket) + rest.slice(0, close);
+}
+
+// Whether `(destination…` reaches its balancing `)`.
+function closesDestination(destination: string) {
   let depth = 0;
   for (const character of destination) {
     if (character === "(") depth++;
-    else if (character === ")" && --depth === 0) return source;
+    else if (character === ")" && --depth === 0) return true;
   }
-  return source.slice(0, bracket) + rest.slice(0, close);
+  return false;
 }
 
 function closedCodeRanges(source: string) {
@@ -390,13 +411,12 @@ function withoutOpenEmphasis(source: string) {
     while (range < codeRanges.length && codeRanges[range]![1] <= run.index) range++;
     if (range < codeRanges.length && run.index >= codeRanges[range]![0]) continue;
     const marker = run[0];
-    const previous = source[run.index - 1];
-    const next = source[run.index + marker.length];
-    if (previous === "\\" || marker[0] === "_" && /[\p{L}\p{N}]/u.test(previous ?? "") && /[\p{L}\p{N}]/u.test(next ?? "")) continue;
-    if (/\s/.test(next ?? "") && !/\S/.test(previous ?? "")) continue;
-    const match = lastMarkerIndex(stack, marker);
-    if (match >= 0 && /\S/.test(source.slice(stack[match]!.index + marker.length, run.index))) stack.splice(match, 1);
-    else stack.push({ marker, index: run.index });
+    if (source[run.index - 1] === "\\") continue;
+    const { canOpen, canClose } = delimiterRun(source, run.index, marker.length);
+    const match = canClose ? lastMarkerIndex(stack, marker) : -1;
+    if (match >= 0) stack.splice(match, 1);
+    // A run at the end can still grow into another run, so it stays hidden.
+    else if (canOpen || run.index + marker.length === source.length) stack.push({ marker, index: run.index });
   }
   if (!stack.length) return source;
   const pieces: string[] = [];
@@ -419,8 +439,10 @@ function withoutTrailingLookahead(source: string) {
   return entity ? source.slice(0, entity.index) : source;
 }
 
+const withoutOpenSyntax = (source: string) => withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(withoutOpenAngle(source))));
+
 function safeInlineContent(source: string): SafeInlineContent {
-  source = withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(withoutOpenAngle(source))));
+  source = withoutOpenSyntax(source);
   const opener = unmatchedCodeSpan(source);
   if (!opener) return { source };
   let content = source.slice(opener.index + opener.length);
@@ -433,7 +455,12 @@ function parseInline(source: string, streaming: boolean, environment: Environmen
   const safe = streaming ? safeInlineContent(source) : { source };
   const tokens = markdown.parseInline(safe.source, environment);
   const nodes = inlineNodes(tokens[0]?.children ?? []);
-  if (safe.openCode) nodes.push({ type: "code", value: codeSpanValue(safe.openCode) });
+  // An unclosed span may stay literal, so its preview shows only the text its content renders as markdown.
+  if (safe.openCode) {
+    const literal = inlineNodes(markdown.parseInline(withoutOpenSyntax(safe.openCode), environment)[0]?.children ?? []);
+    // Its brackets hide: as literal text they may still become a link or a reference.
+    nodes.push({ type: "code", value: codeSpanValue(literal.map(inlineText).join("")).replace(/[[\]]/g, "") });
+  }
   return nodes;
 }
 
@@ -479,6 +506,10 @@ export interface StreamingDocument {
   readonly stats: { readonly frozenParses: number; readonly tailParses: number; readonly scannedCharacters: number; readonly previewScannedCharacters: number; readonly copiedCharacters: number };
   append(delta: string): void;
   finish(): void;
+  /**
+   * The document so far. Blocks of an earlier frame are not snapshots: the growing paragraph's node list is updated
+   * in place by later appends, so diff frames by copying them first.
+   */
   render(): readonly Block[];
 }
 
@@ -571,6 +602,8 @@ type ParagraphRecord = {
   block: Extract<Block, { type: "paragraph" }>;
   source: string;
   labels: Set<string>;
+  /** The last line has pipes that stay hidden only while it is the last line. */
+  lastLinePipes?: boolean;
 };
 
 type TableBlock = Extract<Block, { type: "table" }>;
@@ -589,40 +622,59 @@ const normalizeReferenceLabel = (label: string) => label.trim().replace(/\s+/g, 
 
 // The open paragraph's last line can still become a table header, which turns its pipes into cell borders.
 function hideTableCandidatePipes(inlines: Inline[]) {
-  for (const inline of inlines) {
-    if (inline.type === "text") inline.value = inline.value.replace(/\|/g, "");
-    else if ("children" in inline) hideTableCandidatePipes(inline.children);
+  for (let index = inlines.length - 1; index >= 0; index--) {
+    const inline = inlines[index]!;
+    if (inline.type === "break") return;
+    if ("children" in inline) hideTableCandidatePipes(inline.children);
+    // A header row splits cells before inline parsing, so a pipe inside a code span is a border too.
+    if (inline.type === "code") inline.value = inline.value.replace(/\|/g, "");
+    if (inline.type !== "text") continue;
+    const lineStart = inline.value.lastIndexOf("\n") + 1;
+    const line = inline.value.slice(lineStart).replace(/[ \t]*\|[ \t]*/g, "");
+    // A last line of only pipes may become a table header, so its line break waits too.
+    inline.value = (line || index < inlines.length - 1 ? inline.value.slice(0, lineStart) : inline.value.slice(0, Math.max(0, lineStart - 1))) + line;
+    if (lineStart) return;
   }
 }
 
-// A `[label]` in text can still become a link while a later definition can arrive.
-function markPendingReferences(inlines: Inline[]) {
+// The text of `value` with each `[label]` that may still become a reference reduced to its link text.
+function pendingReferenceParts(value: string, labels?: ReadonlySet<string>): Inline[] {
+  const parts: Inline[] = [];
+  let offset = 0;
+  for (const match of value.matchAll(/!?\[([^[\]\n]+)\](?:\[([^[\]\n]*)\])?/g)) {
+    if (match.index > 0 && value[match.index - 1] === "\\") continue;
+    if (labels && !labels.has(normalizeReferenceLabel(match[2] || match[1]!))) continue;
+    if (match.index > offset) parts.push({ type: "text", value: value.slice(offset, match.index) });
+    if (!match[0].startsWith("!")) parts.push({ type: "text", value: match[1]! });
+    offset = match.index + match[0].length;
+  }
+  if (parts.length && offset < value.length) parts.push({ type: "text", value: value.slice(offset) });
+  return parts;
+}
+
+// `labels`, when given, are the unresolved labels of the parsed source; escaped brackets are not among them.
+function markPendingReferences(inlines: Inline[], labels?: ReadonlySet<string>) {
   for (let index = 0; index < inlines.length; index++) {
     const node = inlines[index]!;
-    if ("children" in node) { markPendingReferences(node.children); continue; }
-    if (node.type !== "text" || !node.value.includes("[")) continue;
-    const replacement: Inline[] = [];
-    let offset = 0;
-    for (const match of node.value.matchAll(/!?\[([^[\]\n]+)\](?:\[([^[\]\n]*)\])?/g)) {
-      if (match.index === undefined || match.index > 0 && node.value[match.index - 1] === "\\") continue;
-      if (match.index > offset) replacement.push({ type: "text", value: node.value.slice(offset, match.index) });
-      if (!match[0].startsWith("!")) replacement.push({ type: "text", value: match[1]! });
-      offset = match.index + match[0].length;
-    }
-    if (!replacement.length) continue;
-    if (offset < node.value.length) replacement.push({ type: "text", value: node.value.slice(offset) });
-    inlines.splice(index, 1, ...replacement);
-    index += replacement.length - 1;
+    if ("children" in node) markPendingReferences(node.children, labels);
+    const parts = node.type === "text" && node.value.includes("[") ? pendingReferenceParts(node.value, labels) : [];
+    if (!parts.length) continue;
+    inlines.splice(index, 1, ...parts);
+    index += parts.length - 1;
   }
 }
+
+// Labels of every unescaped `[label]` in `source`; parsed text has lost its escapes, so they are read here.
+const bracketLabels = (source: string) => !source.includes("[") ? new Set<string>() : new Set(Array.from(source.matchAll(/(?<!(?<!\\)(?:\\\\)*\\)\[([^[\]\n]+)\]/g), (match) => normalizeReferenceLabel(match[1]!)));
 
 function unresolvedReferenceLabels(source: string, references: Environment["references"]) {
   const labels = new Set<string>();
-  for (const match of source.matchAll(/!?\[([^\]\n]+)\]\[([^[\]\n]*)\]/g)) {
+  // A `[` after an odd number of backslashes is escaped and can never start a reference.
+  for (const match of source.matchAll(/(?<!(?<!\\)(?:\\\\)*\\)!?\[([^\]\n]+)\]\[([^[\]\n]*)\]/g)) {
     const label = normalizeReferenceLabel(match[2] || match[1]!);
     if (!references?.[label]) labels.add(label);
   }
-  for (const match of source.matchAll(/(?<!!)\[([^[\]\n]+)\](?![\[(])/g)) {
+  for (const match of source.matchAll(/(?<!!|(?<!\\)(?:\\\\)*\\)\[([^[\]\n]+)\](?![\[(])/g)) {
     const label = normalizeReferenceLabel(match[1]!);
     if (!references?.[label]) labels.add(label);
   }
@@ -741,10 +793,6 @@ function tailParagraph(blocks: Block[]): Extract<Block, { type: "paragraph" }> |
   }
 }
 
-function pendingInlineSource(content: string) {
-  return content;
-}
-
 function appendPendingTableRow(blocks: Block[], source: string, references: Environment) {
   const table = tailTable(blocks);
   if (!table) return false;
@@ -755,21 +803,17 @@ function appendPendingTableRow(blocks: Block[], source: string, references: Envi
   return true;
 }
 
-function appendPendingParagraph(blocks: Block[], pending: readonly Inline[], continuesParagraph: boolean) {
+function appendPendingParagraph(blocks: Block[], pending: Inline[], continuesParagraph: boolean) {
   if (!pending.length) return;
   const paragraph = continuesParagraph ? tailParagraph(blocks) : undefined;
   if (paragraph) {
     paragraph.children = [...paragraph.children, { type: "text", value: "\n" }, ...pending];
     return paragraph;
   }
-  const block = { type: "paragraph" as const, children: pending.slice() };
+  // `pending` is the growing line's live node list; each frame gets a new block object around it.
+  const block = { type: "paragraph" as const, children: pending };
   blocks.push(block);
   return block;
-}
-
-function markProvisional(nodes: Inline[]) {
-  if (!nodes.length || nodes.length === 1 && nodes[0]?.type === "pending-text") return;
-  nodes.splice(0, nodes.length, { type: "pending-text", children: nodes.slice() });
 }
 
 function hideOpenInlineLink(value: string) {
@@ -849,9 +893,10 @@ export function createStreamingDocument(): StreamingDocument {
   let previewBlocks: readonly Block[] | undefined;
   let pendingReferenceApply = false;
   let trailingCarriageReturn = false;
-  let pendingPreviewLength = 0;
-  let pendingPreviewNodes: Inline[] = [];
-  let pendingPreviewAppendable = false;
+  // The growing line's inline nodes; `pendingInlineOffset` is where its content starts in the pending line.
+  let pendingInline: PendingInline | undefined;
+  let pendingInlineOffset = 0;
+  let pendingInlineContinues = false;
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
 
@@ -926,15 +971,21 @@ export function createStreamingDocument(): StreamingDocument {
     }
   };
 
-  const updateParagraph = (record: ParagraphRecord, streaming = false, pendingReferences = true) => {
+  const updateParagraph = (record: ParagraphRecord, streaming = false, pendingReferences = true, committed?: Inline[]) => {
     unregister(record);
+    if (committed) {
+      record.block.children = committed;
+      registerReferences(record);
+      tailParses++;
+      return;
+    }
     const classified = streaming && !record.source.includes("\n") ? resolver.classifyCommitted(record.source) : undefined;
     let inlineSource = classified?.kind === "paragraph" ? classified.content : record.source;
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment())
       : [{ type: "text", value: inlineSource }];
-    if (pendingReferences) markPendingReferences(record.block.children);
+    if (pendingReferences) markPendingReferences(record.block.children, bracketLabels(inlineSource));
     if (streaming) hideTableCandidatePipes(record.block.children);
     registerReferences(record);
     tailParses++;
@@ -957,8 +1008,9 @@ export function createStreamingDocument(): StreamingDocument {
       item.checked = task[1]!.toLowerCase() === "x";
       content = content.slice(task[0].length);
     }
-    const record: ParagraphRecord = { block, source: content, labels: new Set() };
-    updateParagraph(record, true);
+    const record: ParagraphRecord = { block, source: content, labels: new Set(), lastLinePipes: content.includes("|") };
+    // The growing line already holds stable nodes for this text; only its unresolved tail is parsed again.
+    updateParagraph(record, true, true, pendingInline?.commit(content));
     paragraphRecords.set(block, record);
     allParagraphRecords.add(record);
     appendBlock(block);
@@ -969,8 +1021,9 @@ export function createStreamingDocument(): StreamingDocument {
     const addition = `\n${content}`;
     record.source += addition;
     const child = record.block.children.length === 1 ? record.block.children[0] : undefined;
-    if (child?.type === "text" && !/[\\&<>*_~`\[\]|]/.test(content)) child.value += addition;
+    if (child?.type === "text" && !record.lastLinePipes && !/[\\&<>*_~`\[\]|]/.test(content)) child.value += addition;
     else updateParagraph(record, true);
+    record.lastLinePipes = content.includes("|");
   };
 
   const updateTableCell = (record: TableCellRecord) => {
@@ -991,18 +1044,30 @@ export function createStreamingDocument(): StreamingDocument {
     return record;
   };
 
-  const applyReferences = () => {
+  // A frozen paragraph gets a new block object so memoized views see the change.
+  const refreshUser = (user: ReferenceUser) => {
+    if (!("block" in user)) return updateTableCell(user);
+    let frozenIndex = -1;
+    for (let index = 0; index < blocks.frozen; index++) if (blocks.at(index) === user.block) { frozenIndex = index; break; }
+    updateParagraph(user);
+    if (frozenIndex < 0) return;
+    const prior = user.block;
+    user.block = { ...prior, children: [...prior.children] };
+    paragraphRecords.delete(prior);
+    paragraphRecords.set(user.block, user);
+    blocks.replace(frozenIndex, user.block);
+  };
+
+  // `retainUsers` keeps users registered while a title on the next line can still change the definition.
+  const applyReferences = (retainUsers = false) => {
     for (const [label, users] of referenceUsers) {
       if (!resolver.references.has(label)) continue;
-      for (const user of [...users]) {
-        if ("block" in user) {
-          let frozenIndex = -1;
-          for (let index = 0; index < blocks.frozen; index++) if (blocks.at(index) === user.block) { frozenIndex = index; break; }
-          updateParagraph(user);
-          if (frozenIndex >= 0) blocks.replace(frozenIndex, { ...user.block, children: [...user.block.children] });
-        } else updateTableCell(user);
-      }
-      referenceUsers.delete(label);
+      const retained = retainUsers ? [...users] : [];
+      for (const user of [...users]) refreshUser(user);
+      if (retainUsers) {
+        for (const user of retained) user.labels.add(label);
+        referenceUsers.set(label, new Set(retained));
+      } else referenceUsers.delete(label);
     }
   };
 
@@ -1087,7 +1152,7 @@ export function createStreamingDocument(): StreamingDocument {
       if (leaf.kind === "html-close") closeParagraph();
     } else if (leaf.kind === "reference-definition") {
       pendingReferenceApply = !hasInlineReferenceTitle(leaf.content);
-      if (!pendingReferenceApply) applyReferences();
+      applyReferences(pendingReferenceApply);
     } else if (leaf.kind === "reference-title") {
       applyReferences();
       pendingReferenceApply = false;
@@ -1149,39 +1214,37 @@ export function createStreamingDocument(): StreamingDocument {
     source += delta;
     previewBlocks = undefined;
     scannedCharacters += delta.length * 3;
-    for (const piece of delta.match(/[^\n]*\n|[^\n]+$/g) ?? [])
+    for (const piece of delta.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
       for (const resolution of resolver.append(piece)) apply(resolution);
-    if (delta.includes("\n")) {
-      pendingPreviewLength = 0;
-      pendingPreviewNodes = [];
-      pendingPreviewAppendable = false;
+      if (piece.endsWith("\n")) pendingInline = undefined;
     }
   };
 
-  const pendingPreview = () => {
-    const pending = resolver.pending.content;
-    if (pendingPreviewAppendable && pending.length >= pendingPreviewLength) {
-      const suffix = pending.slice(pendingPreviewLength);
-      previewScannedCharacters += suffix.length;
-      if (!/[\\[*_~`<!&#|>\r\n]/.test(suffix)) {
-        if (suffix) pendingPreviewNodes.push({ type: "text", value: suffix });
-        copiedCharacters += suffix.length;
-        pendingPreviewLength = pending.length;
-        return pendingPreviewNodes;
-      }
+  const parsePending = (source: string, streaming: boolean) => {
+    const nodes = parseInline(source, streaming, environment());
+    markPendingReferences(nodes, bracketLabels(source));
+    hideTableCandidatePipes(nodes);
+    return nodes.filter((node) => node.type !== "text" || node.value);
+  };
+
+  const pendingPreview = (): Inline[] => {
+    const line = resolver.pending.content;
+    const classification = resolver.classifyPending(line);
+    if (classification.kind !== "paragraph") return [];
+    const continues = resolver.pendingContinuesParagraph(line);
+    if (!pendingInline || pendingInlineOffset !== classification.offset || pendingInlineContinues !== continues) {
+      // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
+      const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
+      const after = open && openParagraph!.source[open.index + open.length];
+      pendingInline = new PendingInline(parsePending, open && { marker: "`".repeat(open.length), leadingSpace: after === undefined || /\s/.test(after) });
+      pendingInlineOffset = classification.offset;
+      pendingInlineContinues = continues;
     }
-    const classification = resolver.classifyPending(pending);
-    const inlineSource = pendingInlineSource(classification.content);
-    previewScannedCharacters += pending.length;
-    copiedCharacters += inlineSource.length;
-    pendingPreviewNodes = inlineSource
-      ? /[\\[*_~`<!&]/.test(inlineSource) ? parseInline(inlineSource, true, environment()) : [{ type: "text", value: inlineSource }]
-      : [];
-    markPendingReferences(pendingPreviewNodes);
-    if (classification.provisional) markProvisional(pendingPreviewNodes);
-    pendingPreviewLength = pending.length;
-    pendingPreviewAppendable = classification.appendable;
-    return pendingPreviewNodes;
+    const copied = pendingInline.copiedCharacters;
+    previewScannedCharacters += line.length - pendingInlineOffset - pendingInline.content.length;
+    pendingInline.extend(line.slice(pendingInlineOffset));
+    copiedCharacters += pendingInline.copiedCharacters - copied;
+    return pendingInline.nodes;
   };
 
   const normalizeDelta = (delta: string) => {

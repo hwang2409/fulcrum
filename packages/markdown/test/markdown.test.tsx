@@ -17,7 +17,7 @@ const window = new Window();
 const visibleText = (source: string, streaming = false, includeProvisional = true) => {
   const element = window.document.createElement("div");
   element.innerHTML = renderToStaticMarkup(<Markdown source={source} streaming={streaming} />);
-  if (!includeProvisional) element.querySelectorAll('[data-part="md-text-pending"], [data-part="md-reference-pending"]').forEach((node) => node.remove());
+  if (!includeProvisional) element.querySelectorAll('[data-part="md-reference-pending"]').forEach((node) => node.remove());
   return element.textContent;
 };
 const isSubsequence = (value: string, expected: string) => {
@@ -414,7 +414,7 @@ test("every design row checks unfinished syntax at every character", () => {
       const visible = visibleText(document.source, true)!;
       expect(visible, `${name} at ${JSON.stringify(document.source)}`).not.toMatch(/(?:^|[^\\])\\$/);
       const openEntity = /&(?:#x?[0-9a-f]*)?$/i.exec(document.source);
-      if (openEntity) expect(visible).toBe(visibleText(document.source.slice(0, openEntity.index), true));
+      if (openEntity) expect(visible, `${name} at ${JSON.stringify(document.source)}`).toBe(visibleText(document.source.slice(0, openEntity.index), true));
     }
   }
 
@@ -449,7 +449,7 @@ test("a nested table stays in its list without flashing table syntax", () => {
   for (const size of [1, 20, 1000]) expect(json(streamed(source, size))).toBe(json(parseMarkdown(source)));
 });
 
-test("later reference definitions update frozen blocks and react", () => {
+test("later reference definitions update frozen blocks and react when committed", () => {
   const first = "Use [the reference][later].\n\n";
   const definition = "[later]: https://example.com";
   const document = createStreamingDocument();
@@ -461,7 +461,7 @@ test("later reference definitions update frozen blocks and react", () => {
   expect(pending?.type === "paragraph" && pending.children.some((node) => node.type === "link")).toBe(false);
   document.append("\n");
   const pendingContinuation = document.render()[0];
-  expect(pendingContinuation?.type === "paragraph" && pendingContinuation.children.some((node) => node.type === "link")).toBe(false);
+  expect(pendingContinuation?.type === "paragraph" && pendingContinuation.children.some((node) => node.type === "link")).toBe(true);
   document.append("next block\n");
   const after = document.render()[0];
   expect(after).not.toBe(before);
@@ -478,7 +478,7 @@ test("later reference definitions update frozen blocks and react", () => {
   act(() => root.render(<Markdown source={first + definition} streaming />));
   expect(host.querySelector("a")).toBeNull();
   act(() => root.render(<Markdown source={`${first}${definition}\n`} streaming />));
-  expect(host.querySelector("a")).toBeNull();
+  expect(host.querySelector("a")).not.toBeNull();
   act(() => root.render(<Markdown source={`${first}${definition}\nnext block\n`} streaming />));
   expect(host.querySelector("a")?.getAttribute("href")).toBe("https://example.com");
   act(() => root.unmount());
