@@ -246,7 +246,6 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "slow") await wait(60_000);
           return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
         }
-        if (catalogBusy) while (catalogBusy) await wait(10);
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
           if (running || rejectCreate) return reply({ error: { code: -32004, message: "a turn is already running" } });
