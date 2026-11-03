@@ -84,6 +84,19 @@ test("titles, times, and the top-level list", () => {
   expect(topLevel(sessions).map((session) => session.session_id)).toEqual(["b", "a"]);
 });
 
+test("a locally created session survives an older catalog snapshot", async () => {
+  let release!: () => void;
+  const catalog = new Promise<{ sessions: SessionMeta[]; next_offset: null }>((resolve) => { release = () => resolve({ sessions: [sessions[0]!], next_offset: null }); });
+  const fake = await server({ ...handlers("b"), list_sessions: () => catalog, new_session: () => ({ session: meta("new", "z", { name: "new" }) }) });
+  const view = createSessions(source(fake.client));
+  await tick();
+  void view.create();
+  await tick();
+  release();
+  await tick();
+  expect(view.state.sessions.map((item) => item.session_id)).toContain("new");
+});
+
 test("on connect opens the active session before requesting the catalog", async () => {
   let release!: () => void;
   const catalog = new Promise<{ sessions: SessionMeta[]; next_offset: null }>((resolve) => { release = () => resolve({ sessions, next_offset: null }); });
@@ -93,7 +106,7 @@ test("on connect opens the active session before requesting the catalog", async 
   expect(view.state.open?.id).toBe("b");
   expect(view.state.listLoading).toBe(true);
   expect(view.state.listReady).toBe(false);
-  expect(fake.calls.map(([method]) => method).filter((method) => method !== "hello")).toEqual(["status", "status", "session_history", "session_history", "status", "list_sessions"]);
+  expect(fake.calls.map(([method]) => method).filter((method) => method !== "hello")).toEqual(["status", "list_sessions", "status", "session_history", "session_history", "status"]);
   release();
   await tick();
   expect(view.state.listLoading).toBe(false);
@@ -119,7 +132,8 @@ test("selecting another session resumes it, releases the old one, and reports pr
   await tick();
   view.select("a");
   expect(view.state.opening).toEqual({ id: "a", messages: 0 });
-  expect(view.state.open).toBeNull();
+  expect(view.state.open?.id).toBe("b");
+  expect(view.state.opening).toEqual({ id: "a", messages: 0 });
   await tick();
   expect(selected).toEqual(["a"]);
   expect(view.state.open?.id).toBe("a");
@@ -136,6 +150,17 @@ test("the newest selection wins when opens overlap", async () => {
   await tick();
   expect(view.state.open?.id).toBe("b");
   expect(view.state.selected).toBe("b");
+});
+
+test("a failed replacement keeps the previous run usable", async () => {
+  const fake = await server(handlers("b", { resume: (params) => { if (params.session_id === "a") throw { code: -32602, message: "session log is invalid at line 12" }; return {}; } }));
+  const view = createSessions(source(fake.client));
+  await tick();
+  view.select("a");
+  await tick();
+  expect(view.state.open?.id).toBe("b");
+  expect(view.state.openError).toEqual({ id: "a", message: "session log is invalid at line 12", busy: false });
+  expect(view.state.opening).toBeNull();
 });
 
 test("a busy server is reported as busy and the selection stays", async () => {

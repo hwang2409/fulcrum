@@ -122,6 +122,20 @@ test("replay puts loaded history before live events that arrive while it loads, 
   lease.release();
 });
 
+test("replay buffers a live event while history is being committed", async () => {
+  const fake = fakeTransport();
+  let inject = true;
+  const client = createClient(fake.transport, (flush) => {
+    flush();
+    if (inject) {
+      inject = false;
+      fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "agent_start", session_id: "s1" } });
+    }
+  });
+  const lease = await client.replay("s1", async () => [{ type: "run_start" }, { type: "run_end" }]);
+  expect(lease.store.getState().agent).toBe("running");
+});
+
 test("an echoed user_message gets the intent of the pending request with the same text, never another one", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);

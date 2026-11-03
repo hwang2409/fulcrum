@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 
 type Json = Record<string, unknown>;
-export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog";
+export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog" | "broken-session";
 export type HistoryMode = "new" | "old";
 export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
@@ -271,6 +271,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           return reply({ result: { session: active ? sessions.find((session) => session.session_id === active) ?? null : null, state: running ? (decide ? "tool" : "running") : "idle", explicit_finish: false, pending_approvals: pending, usage: {}, compaction_markers: 0 } });
         }
         if (method === "resume") {
+          if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
           if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = String(params.session_id);
           delayedOpen = false;
@@ -290,7 +291,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
             turnStarted = true;
             running = true;
             const ask = () => new Promise<"approve" | "deny" | "abort">((resolve) => { decide = (decision) => { decide = null; resolve(decision); }; });
-            setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; }, currentHistoryMode)(), 1000);
+            setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; }, currentHistoryMode)(), 300);
           }
           return;
         }

@@ -120,6 +120,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const live = (target: ZetaClient) => client === target;
 
   let listInFlight: Promise<void> | null = null;
+  const localSessions = new Map<string, SessionMeta>();
   let listSlowTimer: ReturnType<typeof setTimeout> | null = null;
   const refresh = async () => {
     if (listInFlight) return listInFlight;
@@ -131,7 +132,9 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       try {
         const list = await listSessions(target);
         if (!live(target)) return;
-        set({ sessions: list.sessions, nextOffset: list.nextOffset, listError: null, listLoading: false, listSlow: false, listReady: true });
+        const visible = new Map(list.sessions.map((session) => [session.session_id, session]));
+        for (const [id, session] of localSessions) if (!visible.has(id)) visible.set(id, session);
+        set({ sessions: [...visible.values()], nextOffset: list.nextOffset, listError: null, listLoading: false, listSlow: false, listReady: true });
       } catch (error) {
         if (live(target)) set({ listLoading: false, listSlow: false, listError: message(error) });
       } finally {
@@ -148,8 +151,6 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     const mine = ++openGeneration;
     set({ selected: id, opening: { id, messages: 0 }, openError: null });
     if (!target) return;
-    // The view moves off the old session now, so its lease goes before the new store is built.
-    if (state.open && state.open.id !== id) { state.open.lease.release(); set({ open: null }); }
     try {
       const previous = state.open?.id === id ? state.open.lease.store : null;
       const lease = await openSession(target, id, (messages) => { if (mine === openGeneration) set({ opening: { id, messages } }); });
@@ -199,11 +200,11 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         if (!live(target)) return;
         set({ server: { id: status.session?.session_id ?? null, state: status.state, approvals: status.pending_approvals?.length ?? 0 } });
         const id = state.selected ?? status.session?.session_id ?? null;
+        void refresh();
         if (id) {
           await open(id);
           if (!live(target)) return;
         }
-        void refresh();
       } catch (error) {
         if (live(target)) set({ openError: { id: state.selected ?? "", message: message(error), busy: isBusyError(error) } });
       }
@@ -229,6 +230,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       try {
         const { session } = (await target.request("new_session", {}, { timeoutMs: 30_000 })) as { session: SessionMeta };
         if (!live(target)) return set({ creating: false });
+        localSessions.set(session.session_id, session);
         set({ creating: false, sessions: [session, ...state.sessions.filter((item) => item.session_id !== session.session_id)] });
         onSelect?.(session.session_id);
         await open(session.session_id);

@@ -96,6 +96,14 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     };
   };
   const buffers = new Map<string, RunEvent[]>();
+  const eventIdentity = (event: RunEvent): string | undefined => {
+    if (event.type === "approval_request" || event.type === "approval_end") return `${event.type}:${event.request_id}`;
+    if (event.type === "message_delta" || event.type === "message_block" || event.type === "message_commit") return event.message_id ? `${event.type}:${event.message_id}` : undefined;
+    if (event.type === "tool_start" || event.type === "tool_input" || event.type === "tool_output" || event.type === "tool_end") return `${event.type}:${event.tool_call.id}`;
+    if (event.type === "notification" && event.notification_id) return `notification:${event.notification_id}`;
+    if (event.type === "user_message" && event.intent) return `user:${event.intent}`;
+    return undefined;
+  };
   /**
    * Opens `session` on a fresh store: the cached store is dropped, live events for the session wait while `load`
    * runs, then the loaded history and the waiting events dispatch in that order. Without a server cursor, a message
@@ -109,13 +117,26 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     let history: RunEvent[];
     try {
       history = await load();
-    } finally {
+      const lease = { store: createSession(session), release() { const count = holders.get(session); if (count !== undefined) holders.set(session, Math.max(0, count - 1)); } };
+      holders.set(session, 1);
+      const seen = new Set<string>();
+      for (const event of history) {
+        const identity = eventIdentity(event);
+        if (identity) seen.add(identity);
+        lease.store.dispatch(event);
+      }
+      for (const event of waiting) {
+        const identity = eventIdentity(event);
+        if (identity && seen.has(identity)) continue;
+        if (identity) seen.add(identity);
+        lease.store.dispatch(event);
+      }
+      buffers.delete(session);
+      return lease;
+    } catch (error) {
       if (buffers.get(session) === waiting) buffers.delete(session);
+      throw error;
     }
-    const lease = forSession(session);
-    for (const event of history) lease.store.dispatch(event);
-    for (const event of waiting) lease.store.dispatch(event);
-    return lease;
   };
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;

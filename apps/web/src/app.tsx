@@ -186,7 +186,7 @@ function Sidebar({ state, view, sessions, onSelect, onCreate, open, onClose, foo
         {state.phase === "connected" && !rows.length && !view.listLoading && !view.listError ? <p className="note">no sessions yet. start one with new session.</p> : null}
         <ul ref={list}>
           {rows.map((session) => (
-            <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} server={state.phase === "connected" ? view.server : null} store={state.phase === "connected" && view.open?.id === session.session_id && !view.open.stale ? view.open.lease.store : null} onSelect={onSelect} />
+            <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} opening={view.opening?.id === session.session_id} server={state.phase === "connected" ? view.server : null} store={state.phase === "connected" && view.open?.id === session.session_id && !view.open.stale ? view.open.lease.store : null} onSelect={onSelect} />
           ))}
         </ul>
         {view.nextOffset !== null ? <button type="button" className="ghost more" onClick={() => void sessions.loadMore()}>load more sessions</button> : null}
@@ -206,12 +206,12 @@ function NewSession({ state, view, onCreate, className }: { state: ConnectionSta
 }
 
 type RowProps = { session: SessionMeta; now: number; selected: boolean; focusable: boolean; onSelect(id: string): void };
-type RowStatus = "open" | "running" | "approval" | null;
+type RowStatus = "open" | "running" | "approval" | "opening" | null;
 
 /** The open session's row follows its live run; other rows use the server's last `status`. */
-function SessionRow({ server, store, ...row }: RowProps & { server: SessionsState["server"]; store: SessionStore | null }) {
+function SessionRow({ server, store, opening, ...row }: RowProps & { server: SessionsState["server"]; store: SessionStore | null; opening: boolean }) {
   const live = server?.id === row.session.session_id;
-  const status = !live ? null : server.approvals ? "approval" : server.state === "idle" ? "open" : "running";
+  const status = opening ? "opening" : !live ? null : server.approvals ? "approval" : server.state === "idle" ? "open" : "running";
   return <Row {...row} status={status} store={store} />;
 }
 
