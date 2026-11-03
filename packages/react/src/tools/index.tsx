@@ -29,10 +29,32 @@ export function ToolBody(props: ToolBodyProps) {
 }
 
 // shortcut: the first string argument is the most telling one for common tools (command, path, pattern, url); adapters that set a view do better.
-const firstArgument = (call: ToolCall) => {
+const LABEL_KEYS = ["content", "title", "text", "name"];
+// An object's label: its content, title, text, or name, else its first string field.
+const labelOf = (value: unknown): string | undefined => {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const key = LABEL_KEYS.find((name) => typeof record[name] === "string");
+  return key ? record[key] as string : Object.values(record).find((field): field is string => typeof field === "string");
+};
+
+/**
+ * A generic tool's summary: its first string argument, else its first list as "N items" and the first item's label
+ * (a todo list reads `1 item · cap the pending queue`), else its arguments as JSON.
+ */
+export function argumentSummary(call: ToolCall): { count?: string; text: string } {
   const args = call.arguments ?? {};
-  const first = Object.values(args).find((value) => typeof value === "string");
-  return typeof first === "string" ? first : Object.keys(args).length ? JSON.stringify(args) : "";
+  const values = Object.values(args);
+  const first = values.find((value) => typeof value === "string");
+  if (typeof first === "string") return { text: first };
+  const list = values.find((value): value is unknown[] => Array.isArray(value) && value.length > 0);
+  if (list) return { count: `${list.length} ${list.length === 1 ? "item" : "items"}`, text: labelOf(list[0]) ?? JSON.stringify(list[0]) };
+  return { text: Object.keys(args).length ? JSON.stringify(args) : "" };
+}
+const firstArgument = (call: ToolCall) => {
+  const { count, text } = argumentSummary(call);
+  return count ? `${count} · ${text}` : text;
 };
 
 /** The default one-line header summary: `$ ls`, `src/a.ts:1-40`, `src/a.ts +3 -1`, `"TODO" packages/`, `example.com/a`. */

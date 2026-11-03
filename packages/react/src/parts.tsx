@@ -5,7 +5,7 @@ import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./ho
 import { Code, HighlightContext } from "./highlight.js";
 import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
-import { ToolBody, toolSummary } from "./tools/index.js";
+import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
 import { SubAgent, subAgentLabel, subAgentStatusText } from "./sub-agent.js";
 import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
@@ -119,7 +119,9 @@ function ViewSummary({ item }: { item: ToolItem }) {
     case "fetch":
       return view.url !== undefined ? path(view.url.replace(/^https?:\/\//, "")) : <span data-part="summary-pattern">{oneLine(view.query)}</span>;
   }
-  return <>{oneLine(toolSummary(item))}</>;
+  if (view) return <>{oneLine(toolSummary(item))}</>;
+  const { count, text } = argumentSummary(item.tool_call);
+  return <>{count ? <><span data-part="summary-count">{count}</span> · </> : null}{text ? path(text) : null}</>;
 }
 
 function Header({ item, state, status, summary }: { item: ToolItem; state: ItemState; status?: string; summary?: ToolViewProps["summary"] }) {

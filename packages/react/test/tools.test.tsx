@@ -489,3 +489,17 @@ test("a pending approval shows a short command once, and a footer without facts 
   expect(q('[data-id="approval:s1"] [data-part="shell-command"]')).toBeNull();
   expect(q('[data-id="approval:s1"] [data-part="tool-foot"] [data-part="tool-meta"]')).toBeNull();
 });
+
+test("a generic tool's summary is colored, and a list argument reads as a count and its first item", () => {
+  const store = (id: string, args: Record<string, unknown>): RunEvent => ({ type: "tool_start", tool_call: { id, name: id, arguments: args } });
+  render([
+    store("todo", { items: [{ content: "cap the pending queue", status: "in_progress" }] }),
+    store("todos", { items: [{ status: "done", content: "one" }, { content: "two" }] }),
+    store("write_file", { path: "fixtures/session.json", content: "{}" }),
+  ], ["tool:todo", "tool:todos", "tool:write_file"]);
+  const summary = (id: string) => q(`[data-id="tool:${id}"] [data-part="tool-summary"]`);
+  expect(summary("todo").textContent).toBe("1 item · cap the pending queue");
+  expect(summary("todos").textContent).toBe("2 items · one");
+  expect(summary("todo").querySelector('[data-part="summary-count"]')?.textContent).toBe("1 item");
+  expect(summary("write_file").querySelector('[data-part="summary-path"]')?.textContent).toBe("fixtures/session.json");
+});

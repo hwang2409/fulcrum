@@ -133,6 +133,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="tool-summary"] { min-width: 0; color: var(--fulcrum-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 [data-part="summary-path"] { color: var(--fulcrum-ui-path); }
 [data-part="summary-range"] { color: var(--fulcrum-muted); }
+[data-part="summary-count"] { color: var(--fulcrum-ui-number); }
 [data-part="summary-pattern"] { color: var(--fulcrum-ui-pattern); }
 [data-part="shell-prompt"] { color: var(--fulcrum-ok); font-weight: 700; user-select: none; }
 [data-part="diff-stat"][data-change="insert"] { color: var(--fulcrum-ui-added); }
