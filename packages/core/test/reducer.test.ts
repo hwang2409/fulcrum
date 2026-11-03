@@ -113,6 +113,18 @@ test("sub-agent lifecycle is monotonic for every status pair", () => {
   }
 });
 
+test("a sparse sub-agent update keeps the row facts, and the tool count never goes down", () => {
+  const store = replay([
+    { type: "sub_agent", childRunId: "child", status: "running", name: "reviewer", task: "audit auth", latestActivity: "$ bun test", toolCount: 3, startedAt: "2026-01-01T00:00:00Z" },
+    { type: "sub_agent", childRunId: "child", status: "waiting_approval", urgency: "approval", toolCount: 2 },
+  ]);
+  expect(store.getItem("sub-agent:child")).toMatchObject({ status: "waiting_approval", urgency: "approval", name: "reviewer", task: "audit auth", latestActivity: "$ bun test", toolCount: 3, startedAt: "2026-01-01T00:00:00Z" });
+  store.dispatch({ type: "sub_agent", childRunId: "child", status: "running", latestActivity: "read src/auth.ts", toolCount: 5 });
+  const item = store.getItem("sub-agent:child");
+  expect(item).toMatchObject({ status: "running", latestActivity: "read src/auth.ts", toolCount: 5, name: "reviewer" });
+  expect(item?.type === "sub_agent" ? item.urgency : "unset").toBeUndefined();
+});
+
 test("sub-agent lifecycle uses ordering metadata and clears resolved urgency", () => {
   const store = replay([
     { type: "sub_agent", childRunId: "child", status: "waiting_input", urgency: "input", updatedAt: "2026-01-02T00:00:00Z" },

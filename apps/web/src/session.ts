@@ -147,6 +147,12 @@ export function createSessions(connection: Source, { selected = null, onSelect }
           const item = lease.store.getItem(itemId);
           if (item?.type === "approval" && item.request.type === "approval_request") rebuilt.set(item.request.request_id, item);
         }
+        // zeta 1.2 does not negotiate approval-history support yet; use the old inference only for a tool-only history.
+        const hasHistoryApproval = lease.store.getOutline().some(({ id: itemId }) => {
+          const item = lease.store.getItem(itemId);
+          return item?.type === "approval";
+        });
+        const hasHistoryTool = lease.store.getOutline().some(({ id: itemId }) => lease.store.getItem(itemId)?.type === "tool");
         for (const { id: itemId } of previous.getOutline()) {
           const item = previous.getItem(itemId);
           if (item?.type !== "approval" || item.request.type !== "approval_request") continue;
@@ -154,7 +160,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
           if (current) continue;
           lease.store.dispatch(item.request);
           if (item.ended) lease.store.dispatch(item.ended);
-          else lease.store.dispatch({ type: "approval_end", request_id: item.request.request_id, data: { reason: "connection_lost" } });
+          else if (hasHistoryTool && !hasHistoryApproval) lease.store.dispatch({ type: "approval_end", request_id: item.request.request_id, data: { reason: "connection_lost" } });
         }
       }
       state.open?.lease.release();

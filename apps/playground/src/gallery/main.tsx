@@ -4,23 +4,25 @@ import "@fulcrum/react/themes.css";
 import "@fulcrum/highlight/styles.css";
 import themeSource from "@fulcrum/react/themes.css?raw";
 import "./gallery.css";
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createRunStore } from "@fulcrum/core";
+import { createRunStore, type RunSource } from "@fulcrum/core";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
-import { Approval, Message, RunProvider, Timeline, type Renderers } from "@fulcrum/react";
+import { Approval, Message, RunNavigator, RunProvider, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunLocation } from "@fulcrum/react";
 import { demos, type Demo } from "./demos";
 
 const highlight = createHighlighter();
 const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
 
-type Act = (action: "approve" | "deny", requestId: string) => void;
+/** `path` is the open run path when the approval renders inside a RunNavigator. */
+type Act = (action: "approve" | "deny", requestId: string, path?: readonly RunLocation[]) => void;
 const ActContext = createContext<Act>(() => {});
 
 function GalleryApproval({ id }: { id: string }) {
   const act = useContext(ActContext);
-  return <Approval id={id} onApprove={(r) => act("approve", r)} onDeny={(r) => act("deny", r)} />;
+  const path = useRunNavigation()?.path;
+  return <Approval id={id} onApprove={(r) => act("approve", r, path)} onDeny={(r) => act("deny", r, path)} />;
 }
 // Tools use ToolCall's default body; messages use the shared highlighted markdown renderer.
 const renderers: Renderers = {
@@ -29,11 +31,24 @@ const renderers: Renderers = {
 };
 
 // A live demo starts empty and plays; paused from the start (reduced motion), it shows its in-progress state instead.
+// A demo with child runs shows its finished state when paused, since it plays once and stops.
 const fresh = (demo: Demo, paused = false) => {
   const store = demo.id === "text-viewer-check" ? createRunStore((flush) => flush()) : createRunStore();
-  (demo.live ? (paused ? demo.events.slice(0, -1) : []) : demo.events).forEach(store.dispatch);
-  return store;
+  (demo.live ? (paused ? (demo.runs ? demo.events : demo.events.slice(0, -1)) : []) : demo.events).forEach(store.dispatch);
+  const runs = Object.fromEntries(Object.entries(demo.runs ?? {}).map(([runId, events]) => {
+    const child = createRunStore();
+    (!demo.live || paused ? events : []).forEach(child.dispatch);
+    return [runId, child];
+  }));
+  return { store, runs };
 };
+const steps = (demo: Demo) => Math.max(demo.events.length, ...Object.values(demo.runs ?? {}).map((events) => events.length));
+
+// The fake harness behind the sub-agent demos: child runs it has open, the rest say why they cannot.
+const sourceFor = (runs: Record<string, ReturnType<typeof createRunStore>>): RunSource => ({
+  open: (runId) => ({ store: runs[runId]!, release() {} }),
+  unavailable: (runId) => (runs[runId] ? undefined : "started before child runs were recorded"),
+});
 
 // The theme list comes from the shipped themes.css, so the picker never drifts from it.
 const themeNames = [...themeSource.matchAll(/^\[data-fulcrum-theme="([^"]+)"\] \{$/gm)].map((match) => match[1]);
@@ -58,32 +73,51 @@ function attributes(root: HTMLElement) {
 }
 
 function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: string) => void; inspect: boolean }) {
-  const [store, setStore] = useState(() => fresh(demo, reducedMotion));
+  const [stores, setStores] = useState(() => fresh(demo, reducedMotion));
+  const { store, runs } = stores;
+  const source = useMemo(() => sourceFor(runs), [runs]);
   const [generation, setGeneration] = useState(0);
   const [paused, setPaused] = useState(reducedMotion);
   const [touched, setTouched] = useState(false);
   const [caption, setCaption] = useState("");
-  const start = (isPaused: boolean) => (demo.live && isPaused ? demo.events.length - 1 : 0);
+  const start = (isPaused: boolean) => (demo.live && isPaused ? (demo.runs ? steps(demo) : demo.events.length - 1) : 0);
   const index = useRef(start(reducedMotion));
   const body = useRef<HTMLDivElement>(null);
+  // The open sub-agent path lives in the URL (?<demo id>=<run id>), so reload, links, and browser back work.
+  const runPath = useHistoryRunPath(demo.id);
 
   const reset = () => {
+    // New stores are new runs: the navigator corrects the URL to the root in place.
+    runPath.onPathChange([], { replace: true });
     index.current = start(paused);
     setTouched(false);
-    setStore(fresh(demo, paused));
+    setStores(fresh(demo, paused));
     setGeneration((value) => value + 1);
   };
-  const act: Act = (action, requestId) => {
-    store.dispatch({ type: "approval_end", request_id: requestId, data: { action } });
+  const act: Act = (action, requestId, path = []) => {
+    const storeOf = (location: RunLocation | undefined) => (location?.runId ? runs[location.runId]! : store);
+    storeOf(path.at(-1)).dispatch({ type: "approval_end", request_id: requestId, data: { action } });
+    // The fake harness clears the waiting badge on every ancestor row, as a real one would once the child resumes.
+    path.slice(1).forEach((location, index) => {
+      const row = storeOf(path[index]).getItem(`sub-agent:${location.runId}`);
+      if (row?.type === "sub_agent" && row.urgency === "approval")
+        storeOf(path[index]).dispatch({ type: "sub_agent", childRunId: location.runId!, status: "running", latestActivity: `${action === "approve" ? "approved" : "denied"}: resuming` });
+    });
     setTouched(true);
     toast(`${action} ${requestId}`);
   };
 
   useEffect(() => {
     if (!demo.live || paused) return;
+    const total = steps(demo);
     const timer = setInterval(() => {
-      if (index.current < demo.events.length) store.dispatch(demo.events[index.current]);
-      if (++index.current > demo.events.length + LOOP_PAUSE_MS / demo.live!) reset();
+      const at = index.current;
+      if (at < demo.events.length) store.dispatch(demo.events[at]);
+      for (const [runId, events] of Object.entries(demo.runs ?? {})) if (at < events.length) runs[runId]!.dispatch(events[at]);
+      if (++index.current > total + LOOP_PAUSE_MS / demo.live!) {
+        if (demo.runs) clearInterval(timer);
+        else reset();
+      }
     }, demo.live);
     return () => clearInterval(timer);
   }, [store, paused]);
@@ -134,9 +168,13 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
       </header>
       <div className="demo-body" ref={body}>
         <ActContext.Provider value={act}>
-          <RunProvider key={generation} store={store} highlight={highlight}>
-            <Timeline renderers={renderers} />
-          </RunProvider>
+          {demo.runs ? (
+            <RunNavigator key={generation} store={store} source={source} {...runPath} highlight={highlight} renderers={renderers} label="run" />
+          ) : (
+            <RunProvider key={generation} store={store} highlight={highlight}>
+              <Timeline renderers={renderers} />
+            </RunProvider>
+          )}
         </ActContext.Provider>
       </div>
       {inspect ? <pre className="demo-attrs" aria-label="rendered data attributes">{caption}</pre> : null}
@@ -200,7 +238,7 @@ function Gallery() {
     else url.searchParams.set("theme", theme);
     if (inspect) url.searchParams.set("inspect", "1");
     else url.searchParams.delete("inspect");
-    history.replaceState(null, "", url);
+    history.replaceState(history.state, "", url); // keeps the run paths in the URL
   }, [theme, inspect]);
   // The page renders after load, so the browser cannot jump to a #demo link by itself.
   useEffect(() => { document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView(); }, []);
@@ -247,7 +285,7 @@ function Gallery() {
         <select
           value={active}
           onChange={(event) => {
-            history.replaceState(null, "", `#${event.target.value}`);
+            history.replaceState(history.state, "", `#${event.target.value}`);
             document.getElementById(event.target.value)?.scrollIntoView();
           }}
         >
@@ -287,4 +325,7 @@ function Gallery() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(<Gallery />);
+const root = createRoot(document.getElementById("root")!);
+root.render(<Gallery />);
+// The layout check unmounts the gallery, as a host router leaving the page would, to prove that leaves history alone.
+(window as { unmountGallery?: () => void }).unmountGallery = () => root.unmount();

@@ -12,6 +12,7 @@ import {
   type OutlineItem,
   type OutlineUpdate,
   type VirtualOptions,
+  type VirtualCache,
   type VirtualSnapshot,
 } from "@fulcrum/virtual";
 
@@ -33,6 +34,8 @@ export type VirtualListState<Id extends string> = {
   observeRow(id: Id): RefCallback<HTMLElement>;
   scrollToId(id: Id, viewportOffset?: number): void;
   scrollToEnd(): void;
+  /** Measured row sizes, to seed a later list over the same outline through `cache`. */
+  snapshotCache(): VirtualCache<Id>;
 };
 
 /** React DOM adapter for the framework-neutral virtual engine. Options are fixed for the hook lifetime. */
@@ -244,5 +247,6 @@ export function useVirtualList<Id extends string>(
     observeRow,
     scrollToId,
     scrollToEnd,
+    snapshotCache: engine.snapshotCache,
   };
 }

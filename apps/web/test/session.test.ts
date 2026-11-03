@@ -146,7 +146,7 @@ test("a drop keeps the old transcript as stale; the reconnect rebuilds it on a f
   expect(pending && "ended" in pending ? pending.ended : undefined).toBeUndefined();
 });
 
-test("a dropped approval becomes connection lost only after reconnect proves it is absent", async () => {
+test("a dropped approval is not guessed when history has no tool rows", async () => {
   const first = await server(handlers("b"));
   const connection = source(first.client);
   const view = createSessions(connection);
@@ -158,7 +158,7 @@ test("a dropped approval becomes connection lost only after reconnect proves it 
   await tick();
   const ended = view.state.open!.lease.store.getItem("approval:r1");
   expect(ended?.type).toBe("approval");
-  expect(ended && "ended" in ended ? ended.ended : undefined).toMatchObject({ type: "approval_end", data: { reason: "connection_lost" } });
+  expect(ended && "ended" in ended ? ended.ended : undefined).toBeUndefined();
 });
 
 test("live events after the open land in the open store", async () => {

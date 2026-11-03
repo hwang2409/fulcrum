@@ -16,6 +16,7 @@
 import { chromium, type Page } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { checkSubAgents } from "./subagent-check.js";
 import { checkWarmBodies } from "./warm-check.js";
 import { checkLineTokens } from "./token-check.js";
 
@@ -130,7 +131,7 @@ function pageProblems(minHeight: number) {
     const key = `${where?.dataset.part}.${node.className || node.tagName.toLowerCase()} ${color}`;
     if (!textProblems.has(key)) textProblems.set(key, `text "${sample.trim().slice(0, 24)}" (${key}) is ${ratio.toFixed(2)}:1, needs ${min}:1`);
   };
-  for (const timeline of document.querySelectorAll<HTMLElement>('[data-part="timeline"]')) {
+  for (const timeline of document.querySelectorAll<HTMLElement>('[data-part="timeline"], [data-part="run-bar"]')) {
     const walker = document.createTreeWalker(timeline, NodeFilter.SHOW_TEXT);
     for (let text = walker.nextNode(); text; text = walker.nextNode()) {
       const node = text.parentElement!;
@@ -160,7 +161,7 @@ function controlProblems(forced: string) {
   const defaults = { background: base.backgroundColor, border: `${base.borderTopStyle} ${base.borderTopWidth} ${base.borderTopColor}`, font: base.fontFamily };
   reference.remove();
   const problems: string[] = [];
-  const controls = document.querySelectorAll<HTMLElement>('[data-part="timeline"] :is(button, summary, a[role="button"])');
+  const controls = document.querySelectorAll<HTMLElement>(':is([data-part="timeline"], [data-part="run-bar"]) :is(button, summary, a[role="button"])');
   if (!controls.length) return ["no controls inside the parts to check"];
   for (const control of controls) {
     const style = getComputedStyle(control);
@@ -182,7 +183,7 @@ async function checkControls(page: Page): Promise<string[]> {
   await cdp.send("DOM.enable");
   await cdp.send("CSS.enable");
   const { root } = await cdp.send("DOM.getDocument", { depth: -1 });
-  const { nodeIds } = await cdp.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: '[data-part="timeline"] :is(button, summary, a[role="button"])' });
+  const { nodeIds } = await cdp.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: ':is([data-part="timeline"], [data-part="run-bar"]) :is(button, summary, a[role="button"])' });
   const problems = await page.evaluate(controlProblems, "");
   for (const state of ["hover", "focus", "focus-visible", "active"]) {
     for (const nodeId of nodeIds) await cdp.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [state] });
@@ -305,6 +306,7 @@ try {
   }
   browser = await chromium.launch();
   failures.push(...await checkWarmBodies(browser, port));
+  failures.push(...await checkSubAgents(browser, port));
   const replay = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await replay.addInitScript(() => {
     const request = window.requestAnimationFrame.bind(window);

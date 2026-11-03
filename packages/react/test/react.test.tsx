@@ -387,7 +387,7 @@ test("approval is a labelled group and submits once until the handler fails or t
 
   send({ type: "approval_end", request_id: "r1" });
   expect(group.getAttribute("data-state")).toBe("done");
-  expect(q('[data-part="tool-status"]').textContent).toBe("resolved");
+  expect(q('[data-part="tool-status"]').textContent).toBe("ended");
   expect(group.querySelector("button")).toBeNull();
 });
 
