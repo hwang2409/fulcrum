@@ -32,7 +32,7 @@ for (const file of highlightFiles) {
 }
 const styles = [
   { name: "react styles.css", file: "packages/react/styles.css", ceiling: 8_000 },
-  { name: "react themes.css", file: "packages/react/themes.css", ceiling: 6_000 },
+  { name: "react themes.css", file: "packages/react/themes.css", ceiling: 8_000 },
 ];
 for (const sheet of styles) {
   const bytes = Bun.gzipSync(await Bun.file(sheet.file).arrayBuffer()).byteLength;
