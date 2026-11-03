@@ -64,7 +64,7 @@ const renderers: Renderers = {
 
 - styles: copy `packages/react/styles.css` (layout, states, markdown and code) and `packages/react/themes.css` (color) into your app and edit them. themes.css has 12 real palettes: gruvbox-dark, gruvbox-light, dracula, nord, tokyo-night, catppuccin-mocha, catppuccin-latte, solarized-dark, solarized-light, github-dark, github-light, one-dark. Set `data-fulcrum-theme="<name>"` on `<html>` or any subtree; with no attribute it follows the OS with github-light or github-dark. Each theme also sets `--fulcrum-tok-*` colors for `<span class="tok-<type>">` syntax tokens. The type is "JetBrains Mono" with monospace fallbacks; load the font yourself.
 - gallery: every part in every state, no server or session. Run `make dev`, then open `/gallery.html`.
-- performance checks: `bun run bench:check` and `bun run size:check`; run the production browser stress report with `bun run stress`.
+- performance checks: `bun run bench:check` and `bun run size:check`; run the production browser stress report with `bun run stress`. CI's stress gate runs the base and the candidate on the same runner and fails at a 1.20x median slowdown; it catches one large regression, not several small ones that add up (see `apps/playground/scripts/stress-ab.ts`).
 
 
 ## markdown
