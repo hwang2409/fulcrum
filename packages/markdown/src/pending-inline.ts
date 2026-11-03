@@ -185,9 +185,13 @@ export class PendingInline {
     return this.openers[0];
   }
 
-  /** Appends text to the line and returns the nodes of its suffix, which later text may still restyle. */
-  append(delta: string): Inline[] {
-    this.content += delta;
+  /**
+   * Takes the line so far, which extends the previous content, and returns the nodes of its suffix, which
+   * later text may still restyle. The caller passes a slice of its own line, because appending deltas to a
+   * string here would copy the whole line on the next read.
+   */
+  extend(content: string): Inline[] {
+    this.content = content;
     this.nodes.length -= this.suffixLength;
     const cut = cutPoint(this.content, this.content.length - PENDING_INLINE_SUFFIX);
     if (cut > this.emittedEnd) this.emitStable(cut);

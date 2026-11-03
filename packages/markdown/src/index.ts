@@ -1218,9 +1218,8 @@ export function createStreamingDocument(): StreamingDocument {
       pendingInlineOffset = classification.offset;
     }
     const copied = pendingInline.copiedCharacters;
-    const known = pendingInlineOffset + pendingInline.content.length;
-    previewScannedCharacters += line.length - known;
-    pendingInline.append(line.slice(known));
+    previewScannedCharacters += line.length - pendingInlineOffset - pendingInline.content.length;
+    pendingInline.extend(line.slice(pendingInlineOffset));
     copiedCharacters += pendingInline.copiedCharacters - copied;
     return pendingInline.nodes;
   };
