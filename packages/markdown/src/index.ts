@@ -800,7 +800,9 @@ export function createStreamingDocument(): StreamingDocument {
     unregister(record);
     let inlineSource = streaming ? safeTableText(safeBlockSource(record.source)) : record.source;
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
-    record.block.children = parseInline(inlineSource, streaming, environment());
+    record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
+      ? parseInline(inlineSource, streaming, environment())
+      : [{ type: "text", value: inlineSource }];
     if (pendingReferences) markPendingReferences(record.block.children, blockedReferences);
     for (const label of unresolvedReferenceLabels(record.source, environment().references, blockedReferences)) {
       record.labels.add(label);
@@ -836,6 +838,14 @@ export function createStreamingDocument(): StreamingDocument {
     return record;
   };
 
+  const appendParagraphLine = (record: ParagraphRecord, content: string) => {
+    const addition = `\n${content}`;
+    record.source += addition;
+    const child = record.block.children.length === 1 ? record.block.children[0] : undefined;
+    if (child?.type === "text" && !/[\\&<>*_~`\[\]|]/.test(content)) child.value += addition;
+    else updateParagraph(record, true);
+  };
+
   const applyReferences = () => {
     for (const [label, users] of referenceUsers) {
       if (!resolver.references.has(label)) continue;
@@ -864,8 +874,7 @@ export function createStreamingDocument(): StreamingDocument {
     if (leaf.kind === "paragraph") {
       for (const match of leaf.content.matchAll(/\[([^\]\n]+)\]:/g)) blockedReferences.add(normalizeReferenceLabel(match[1]!));
       if (resolution.continued && openParagraph) {
-        openParagraph.source += `\n${leaf.content}`;
-        updateParagraph(openParagraph, true);
+        appendParagraphLine(openParagraph, leaf.content);
       } else openParagraph = createParagraph(leaf.content);
       openCode = undefined;
       openIndentedCode = false;
@@ -927,8 +936,7 @@ export function createStreamingDocument(): StreamingDocument {
       openTable.rows.push(Array.from({ length: openTable.header.length }, (_, index) => parseInline(cells[index]?.trim() ?? "", false, environment())));
     } else if (leaf.kind === "html-open") openParagraph = createParagraph(leaf.content);
     else if ((leaf.kind === "html-line" || leaf.kind === "html-close") && openParagraph) {
-      openParagraph.source += `\n${leaf.content}`;
-      updateParagraph(openParagraph);
+      appendParagraphLine(openParagraph, leaf.content);
       if (leaf.kind === "html-close") openParagraph = undefined;
     } else if (leaf.kind === "reference-definition") {
       const label = /^ {0,3}\[([^\]\n]+)\]:/.exec(leaf.content)?.[1];
