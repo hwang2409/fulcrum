@@ -1,0 +1,38 @@
+{
+  "name": "@fulcrum/mermaid",
+  "version": "0.0.0",
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "files": [
+    "dist",
+    "styles.css",
+    "THIRD_PARTY_NOTICES.md",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./styles.css"
+  },
+  "scripts": {
+    "build": "bun src/build.ts && tsc -p tsconfig.types.json"
+  },
+  "peerDependencies": {
+    "@fulcrum/markdown": "*",
+    "@fulcrum/react": "*",
+    "react": ">=19"
+  },
+  "devDependencies": {
+    "@fulcrum/markdown": "workspace:*",
+    "@fulcrum/react": "workspace:*",
+    "@happy-dom/global-registrator": "^21.0.4",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "react": "^19",
+    "react-dom": "^19"
+  }
+}
