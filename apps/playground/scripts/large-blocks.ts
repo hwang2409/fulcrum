@@ -136,7 +136,9 @@ try {
   }
   const { queue } = results;
   if (!queue.smallColored || !queue.bigColored) failures.push(`queue: both blocks must color (${JSON.stringify(queue)})`);
-  if ((queue.behindMs as number) > (queue.ownMs as number) + 34) failures.push(`queue: the small block took ${queue.behindMs} ms behind the large one, ${queue.ownMs} ms on its own`);
+  // The regression this guards is the small block waiting for the whole large one: 325-335 ms on main before the fix.
+  // Two or three frames of scheduling (34-50 ms) are noise on a loaded CI runner, so the bound sits well between them.
+  if ((queue.behindMs as number) > (queue.ownMs as number) + 100) failures.push(`queue: the small block took ${queue.behindMs} ms behind the large one, ${queue.ownMs} ms on its own`);
   // The bounded view: keyboard scrolling, whole-text copy, find-in-page.
   const viewer = page.locator("[data-part=md-code-block] [data-part=text-viewer]");
   if (!(await viewer.count())) failures.push("markdown: the large fence has no bounded viewer");
