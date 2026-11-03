@@ -3,7 +3,7 @@ import { Tokens, useTokens, type Block } from "../highlight.js";
 import { useVirtualList } from "../virtual.js";
 import { spansIn, type AnsiSpan } from "./ansi.js";
 
-const SEGMENT_CHARS = 2_000;
+const SEGMENT_CHARS = 500;
 // The most text drawn as one highlighted block (one react commit of its tokens); larger text goes through the virtual
 // viewer. Measured in chromium with the page's CPU throttled 4x (apps/playground/scripts/large-blocks.ts): about 1,900
 // token spans cost one 50 ms frame. Real code has about 0.18 spans per character: 9,900 characters of typescript (157
