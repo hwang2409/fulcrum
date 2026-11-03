@@ -329,24 +329,31 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
   // Segments are built only for an open viewer: text in fixed-size ranges that start on a line, rows in fixed groups.
   const textSegments = useSegments(open && !rows ? text : "", appendOnly, segmentLines(text, metrics));
   const rowSegments = useMemo(() => open && rows ? rowGroups(rows) : [], [open, rows]);
+  const cap = useCap(rows ? rows.count : text);
   if (rows && !(large && open)) {
     const { head, tail } = previewRows(rows);
     const cut = large && head < tail;
     return (
       <>
-        <div data-part={rows.part} data-language={rows.language}>
+        <div ref={cap.ref} data-part={rows.part} data-language={rows.language} data-expanded={cap.expanded ? "" : undefined}>
           {cut ? <>
             {rows.render(0, head)}
             <div data-part="tool-gap">… {count(metrics.lines)} lines / {count(metrics.characters)} characters; open to view all …</div>
             {rows.render(tail, rows.count)}
           </> : rows.render(0, rows.count)}
         </div>
+        {cap.expand ? <ExpandButton lines={metrics.lines} expand={cap.expand} /> : null}
         {large ? <OpenButton metrics={metrics} open={() => setOpen(true)} /> : null}
       </>
     );
   }
   // One child in the pre: tool-output is a column-reverse flex box, which would reverse several.
-  if (!large) return <pre data-part={part} data-stream={stream} data-language={format?.language} data-anchor={follow ? undefined : "start"}><span><Styled text={text} format={format} id={id} done={done} /></span></pre>;
+  if (!large) return (
+    <>
+      <pre ref={cap.ref} data-part={part} data-stream={stream} data-language={format?.language} data-anchor={follow ? undefined : "start"} data-expanded={cap.expanded ? "" : undefined}><span><Styled text={text} format={format} id={id} done={done} /></span></pre>
+      {cap.expand ? <ExpandButton lines={metrics.lines} expand={cap.expand} /> : null}
+    </>
+  );
   if (open) return <VirtualText text={text} label={label} follow={follow} metrics={metrics} segments={rows ? rowSegments : textSegments} rows={rows} format={format} id={id} done={done} />;
   const { headEnd, tailStart } = previewRanges(text);
   return (
@@ -392,6 +399,43 @@ export function CodeViewer({ text, language, id, done = true, label = "code" }: 
   const format = useMemo(() => language ? { language } : undefined, [language]);
   return <VirtualText text={text} label={label} follow={false} metrics={metrics} segments={segments} format={format} id={id} done={done} copy />;
 }
+
+/**
+ * A box capped by styles.css (output, arguments, numbered lines) says when it cuts its content: a fade on each cut
+ * edge (`data-fade`, set on scroll without a render) and `expand`, which lifts the cap. `content` changes re-measure.
+ */
+function useCap(content: unknown) {
+  const [node, setNode] = useState<HTMLElement | null>(null);
+  const [cut, setCut] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  useLayoutEffect(() => {
+    if (!node || expanded || typeof ResizeObserver === "undefined") return;
+    const reverse = getComputedStyle(node).flexDirection === "column-reverse"; // a log scrolled from its bottom
+    const update = () => {
+      const hidden = node.scrollHeight - node.clientHeight;
+      const top = reverse ? hidden + node.scrollTop : node.scrollTop;
+      const fade = hidden > 1 ? `${top > 1 ? "top " : ""}${top < hidden - 1 ? "bottom" : ""}`.trim() : "";
+      if (fade) node.dataset.fade = fade;
+      else delete node.dataset.fade;
+      setCut(hidden > 1);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    for (const child of node.children) observer.observe(child); // the content grows inside a box held at its cap
+    node.addEventListener("scroll", update, { passive: true });
+    return () => {
+      observer.disconnect();
+      node.removeEventListener("scroll", update);
+      delete node.dataset.fade;
+    };
+  }, [node, expanded, content]);
+  return { ref: setNode, expanded, expand: cut && !expanded ? () => setExpanded(true) : undefined };
+}
+
+const ExpandButton = ({ lines, expand }: { lines: number; expand: () => void }) => (
+  <button type="button" data-action="expand" onClick={expand}>show all {count(lines)} lines</button>
+);
 
 const OpenButton = ({ metrics, open }: { metrics: TextMetrics; open: () => void }) => (
   <button type="button" data-action="open-viewer" onClick={open}>
