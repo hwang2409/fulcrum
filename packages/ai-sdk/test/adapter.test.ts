@@ -292,3 +292,14 @@ test("tool part titles are validated as wire strings", () => {
   expect(blank?.type === "tool_start" ? blank.tool_call.meta : undefined).toMatchObject({ title: "" });
   expect(adapter.decode({ type: "tool-input-start", toolCallId: "b", toolName: "x", title: 5 })[0]?.type).toBe("error");
 });
+
+test("an approval ends with fulcrum's decision: denied by tool-output-denied, approved once the tool returns", () => {
+  const ends = (parts: Record<string, unknown>[]) => {
+    const adapter = createAiSdkAdapter({ streamKey: "decisions" });
+    return parts.flatMap((part) => adapter.decode(part)).filter((event) => event.type === "approval_end");
+  };
+  const pinned = fixtures.filter((fixture) => fixture.sessionId === "approval").map((fixture) => fixture.part);
+  expect(ends(pinned)).toMatchObject([{ decision: "deny" }]);
+  const asked = pinned.filter((part) => part.type !== "tool-output-denied");
+  expect(ends([...asked, { type: "tool-output-available", toolCallId: "call-approval", output: { ok: true } }])).toMatchObject([{ decision: "approve" }]);
+});

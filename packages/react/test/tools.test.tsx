@@ -5,7 +5,7 @@ GlobalRegistrator.register();
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
+import { createRunStore, type ApprovalDecision, type RunEvent, type ToolView } from "@fulcrum/core";
 import { Approval, RunProvider, Timeline, ToolCall } from "../src/index.js";
 import { boundLines } from "../src/tools/common.js";
 import { segmentText } from "../src/tools/text-viewer.js";
@@ -464,13 +464,14 @@ test("output restarted into the same tool id (a replay, a reconnect, a demo loop
 test("a resolved approval says how it ended, and a folded one marks its tool card", () => {
   const call = (id: string) => ({ id, name: "bash", arguments: { command: "ls" } });
   const ask = (id: string): RunEvent => ({ type: "approval_request", request_id: id, tool_call: call(`${id}-call`), view: { kind: "shell", command: "ls" }, delegated: false });
-  const end = (id: string, data: Record<string, unknown>): RunEvent => ({ type: "approval_end", request_id: id, data });
+  // The adapter's raw data keeps the harness's own word (zeta says "allow"); the card reads only `decision`.
+  const end = (id: string, decision: ApprovalDecision, data: Record<string, unknown> = {}): RunEvent => ({ type: "approval_end", request_id: id, decision, data: { decision: decision === "approve" ? "allow" : decision, ...data } });
   render([
-    ask("yes"), end("yes", { decision: "approve" }),
-    ask("no"), end("no", { decision: "deny" }),
-    ask("lost"), end("lost", { decision: "abort", reason: "controller_disconnected" }),
-    ask("abort"), end("abort", { decision: "abort" }),
-    ask("ran"), end("ran", { decision: "approve" }), ...tool("ran-call", "bash", { kind: "shell", command: "ls" }, "a\n").map((event) => ({ ...event, tool_call: call("ran-call") }) as RunEvent),
+    ask("yes"), end("yes", "approve"),
+    ask("no"), end("no", "deny"),
+    ask("lost"), end("lost", "abort", { reason: "controller_disconnected" }),
+    ask("abort"), end("abort", "abort"),
+    ask("ran"), end("ran", "approve"), ...tool("ran-call", "bash", { kind: "shell", command: "ls" }, "a\n").map((event) => ({ ...event, tool_call: call("ran-call") }) as RunEvent),
   ], ["approval:yes", "approval:no", "approval:lost", "approval:abort", "tool:ran-call"]);
   const status = (id: string) => q(`[data-id="${id}"] [data-part="tool-status"]`).textContent;
   expect(status("approval:yes")).toBe("approved");

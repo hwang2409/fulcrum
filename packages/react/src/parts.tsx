@@ -1,5 +1,5 @@
 import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type RefObject } from "react";
-import type { RunEvent, RunItem } from "@fulcrum/core";
+import type { ApprovalDecision, RunEvent, RunItem } from "@fulcrum/core";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { HighlightContext, Tokens, useTokens } from "./highlight.js";
@@ -219,13 +219,12 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
 type Decide = (requestId: string) => void | Promise<unknown>;
 
 const endReasons: Record<string, string> = { controller_disconnected: "connection lost", connection_lost: "connection lost", grace_expired: "timed out while disconnected", turn_canceled: "turn canceled", timeout: "timed out", shutdown: "server shut down", child_cleanup: "cleaned up" };
-const decisionWords: Record<string, string> = { approve: "approved", approved: "approved", deny: "denied", denied: "denied" };
-/** How an approval ended: its decision ("approve" | "deny" | "abort"), then the reason, so every ending reads as words. */
+const decisionWords: Record<ApprovalDecision, string | undefined> = { approve: "approved", deny: "denied", abort: undefined };
+/** How an approval ended: its decision, then the reason, so every ending reads as words. */
 const approvalEnd = (ended: RunEvent | undefined) => {
-  const data = ended && "data" in ended ? ended.data : undefined;
-  const decision = String(data?.decision ?? "");
-  const reason = String(data?.reason ?? "");
-  return { decision, text: decisionWords[decision] ?? endReasons[reason] ?? (decision === "abort" ? "canceled" : "ended") };
+  const decision = ended?.type === "approval_end" ? ended.decision : undefined;
+  const reason = String(ended?.type === "approval_end" ? ended.data?.reason ?? "" : "");
+  return { decision, text: (decision && decisionWords[decision]) ?? endReasons[reason] ?? (decision === "abort" ? "canceled" : "ended") };
 };
 
 const ApprovalButton = ({ action, handler, sending, disabledReason, decide }: { action: "approve" | "deny"; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: "approve" | "deny", handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler || sending} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{action}</button> : null;

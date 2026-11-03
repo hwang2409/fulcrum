@@ -294,7 +294,7 @@ test("a repeated approval_request updates its one row and keeps a recorded end",
 
 test("a resolved approval folds into its tool's row, in the same place live and after a reload", () => {
   const request: RunEvent = { type: "approval_request", request_id: "approval-1", tool_call: toolCall, delegated: false };
-  const end: RunEvent = { type: "approval_end", request_id: "approval-1", data: { decision: "approve" } };
+  const end: RunEvent = { type: "approval_end", request_id: "approval-1", decision: "approve" };
   const result: RunEvent = { type: "tool_end", tool_call: toolCall, tool_result: { tool_call_id: toolCall.id, content: "ok", is_error: false } };
   const before: RunEvent = { type: "user_message", text: "go", mode: "normal" };
   const after: RunEvent = { type: "error", error: { code: "x", message: "later" } };
@@ -307,12 +307,12 @@ test("a resolved approval folds into its tool's row, in the same place live and 
     expect(ids(store)).toHaveLength(3);
     expect(ids(store).filter((id) => id.startsWith("approval:"))).toEqual([]);
     expect(ids(store)[1]).toBe(`tool:${toolCall.id}`);
-    expect(store.getItem(`tool:${toolCall.id}`)).toMatchObject({ approval: { type: "approval_end", data: { decision: "approve" } } });
+    expect(store.getItem(`tool:${toolCall.id}`)).toMatchObject({ approval: { type: "approval_end", decision: "approve" } });
   }
   // A pending approval keeps its own row (it carries the actions) even when the call already has a card.
   const pending = replay([{ type: "tool_start", tool_call: toolCall }, request]);
   expect(ids(pending)).toEqual([`tool:${toolCall.id}`, "approval:approval-1"]);
   // A denied call that never ran stays one approval row.
-  const denied = replay([request, { type: "approval_end", request_id: "approval-1", data: { decision: "deny" } }]);
+  const denied = replay([request, { type: "approval_end", request_id: "approval-1", decision: "deny" }]);
   expect(ids(denied)).toEqual(["approval:approval-1"]);
 });

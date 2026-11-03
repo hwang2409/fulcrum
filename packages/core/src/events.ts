@@ -60,6 +60,8 @@ export type SubAgentStatus =
   | "error"
   | "canceled";
 export type SubAgentUrgency = "approval" | "input" | "error";
+/** How an approval ended. Adapters map their harness's words (zeta's "allow") onto these; leave it unset when unknown. */
+export type ApprovalDecision = "approve" | "deny" | "abort";
 export interface SubAgentEvent {
   type: "sub_agent";
   childRunId: string;
@@ -147,7 +149,7 @@ export type RunEvent =
       view?: ToolView;
       delegated: boolean;
     }
-  | { type: "approval_end"; request_id: string; data?: Record<string, unknown> }
+  | { type: "approval_end"; request_id: string; decision?: ApprovalDecision; data?: Record<string, unknown> }
   | { type: "usage"; usage: Record<string, number> }
   | {
       type: "user_message";

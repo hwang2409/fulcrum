@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createRunStore } from "@fulcrum/core";
-import { fromZetaHistory } from "../src/index.js";
+import { fromZetaEvent, fromZetaHistory } from "../src/index.js";
 
 // Shapes from zeta's `session_history` (src/zeta/server/ergonomics.py): tool_use arguments are emptied and results are bounded.
 const rows = [
@@ -35,7 +35,7 @@ test("maps approval lifecycle history rows through the live adapter", () => {
   ]);
   expect(events).toEqual([
     { type: "approval_request", request_id: "r1", tool_call: { id: "t1", name: "bash", arguments: {} }, delegated: false },
-    { type: "approval_end", request_id: "r1", data: { decision: "abort", reason: "timeout" } },
+    { type: "approval_end", request_id: "r1", decision: "abort", data: { decision: "abort", reason: "timeout" } },
   ]);
 });
 
@@ -49,4 +49,19 @@ test("history and live approval events share one reducer item", () => {
 test("one invalid row becomes an error and the rest still map", () => {
   const events = fromZetaHistory([{ id: "x", role: "assistant", content: "nope" }, rows[0]]);
   expect(events.map((event) => event.type)).toEqual(["error", "user_message"]);
+});
+
+// zeta's decisions on the wire: `ApprovalDecision` (src/zeta/core/approval.py) is allow | deny | ask, and an aborted
+// approval says abort. tests/test_server.py `test_session_history_matches_live_approval_lifecycle` asserts
+// data.decision is "allow" | "deny" | "abort" both live and in session_history (abort also carries reason turn_canceled).
+test("zeta's allow/deny/abort decisions reach fulcrum as its one vocabulary, live and from history", () => {
+  const wire = { allow: "approve", deny: "deny", abort: "abort" } as const;
+  for (const [decision, expected] of Object.entries(wire)) {
+    const data = decision === "abort" ? { decision, reason: "turn_canceled" } : { decision };
+    const live = fromZetaEvent({ event: "approval_end", session_id: "s", request_id: "call-1", tool_call: { id: "call-1", name: "read", arguments: { path: "input.txt" } }, data });
+    const history = fromZetaHistory([{ id: "a2", role: "system", event: "approval_end", request_id: "call-1", tool_call: { id: "call-1", name: "read", arguments: {} }, data, ...(decision === "abort" ? { reason: "turn_canceled" } : {}) }]);
+    for (const [event] of [live, history]) expect(event).toMatchObject({ type: "approval_end", request_id: "call-1", decision: expected });
+  }
+  // "ask" is not an ending; an unknown value has no decision rather than a guessed one.
+  expect(fromZetaEvent({ event: "approval_end", session_id: "s", request_id: "r", data: { decision: "ask" } })[0]).not.toHaveProperty("decision");
 });

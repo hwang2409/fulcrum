@@ -840,6 +840,6 @@ test("with a pending approval, the timeline's first tab stop jumps to it and foc
   expect(first.textContent).toContain("rm -rf dist");
   await act(async () => first.click());
   expect(document.activeElement?.getAttribute("data-action")).toBe("approve");
-  act(() => store.dispatch({ type: "approval_end", request_id: "p", data: { decision: "deny" } }));
+  act(() => store.dispatch({ type: "approval_end", request_id: "p", decision: "deny" }));
   expect(container.querySelector('[data-part="jump-to-approval"]')).toBeNull();
 });

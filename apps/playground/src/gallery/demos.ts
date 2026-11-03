@@ -514,9 +514,9 @@ export const demos: Demo[] = [
     events: (() => {
       const c = calls("ap");
       return [
-        ask("r-done", c.edit), { type: "approval_end", request_id: "r-done", data: { decision: "approve" } }, start(c.edit), end(c.edit, "1 replacement"),
-        ask("r-deny", c.bash), { type: "approval_end", request_id: "r-deny", data: { decision: "deny" } },
-        ask("r-lost", c.write), { type: "approval_end", request_id: "r-lost", data: { decision: "abort", reason: "controller_disconnected" } },
+        ask("r-done", c.edit), { type: "approval_end", request_id: "r-done", decision: "approve" }, start(c.edit), end(c.edit, "1 replacement"),
+        ask("r-deny", c.bash), { type: "approval_end", request_id: "r-deny", decision: "deny" },
+        ask("r-lost", c.write), { type: "approval_end", request_id: "r-lost", decision: "abort", data: { reason: "controller_disconnected" } },
       ];
     })(),
   },
