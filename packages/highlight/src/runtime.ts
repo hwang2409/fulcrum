@@ -24,12 +24,12 @@ function sourceLines(source: string): string[] {
 
 export class TokenizerRuntime {
   private highlighter?: HighlighterCore;
-  private readonly warmed = new Set<string>();
   private readonly sessions = new Map<string, Session>();
   private readonly retired = new Set<HighlighterCore>();
   private clock = 0;
   private epoch = 0;
   private activeJobs = 0;
+  private scanners = 0;
 
   // Shared promises: concurrent first requests must wait for the one engine and the one grammar load, not race to
   // create their own (each racer would load its grammar into a different engine).
@@ -41,7 +41,12 @@ export class TokenizerRuntime {
       const [{ createHighlighterCore }, { createJavaScriptRegexEngine }] = await Promise.all([
         import("shiki/core"), import("@shikijs/engine-javascript"),
       ]);
-      this.highlighter = await createHighlighterCore({ engine: createJavaScriptRegexEngine(), langs: [], themes: [semanticTheme] });
+      // Counts scanners (textmate builds one per rule, once, and compiles its patterns then), so tokenizeLine can tell
+      // a cold grammar's one-time setup from a runaway line.
+      const engine = createJavaScriptRegexEngine();
+      const createScanner = engine.createScanner.bind(engine);
+      engine.createScanner = (patterns) => { this.scanners++; return createScanner(patterns); };
+      this.highlighter = await createHighlighterCore({ engine, langs: [], themes: [semanticTheme] });
       return this.highlighter;
     })();
     return this.enginePromise;
@@ -64,12 +69,6 @@ export class TokenizerRuntime {
     const epoch = this.epoch;
     this.activeJobs++;
     try {
-      if (!this.warmed.has(language)) {
-        const firstLine = sourceLines(code)[0] ?? "";
-        highlighter.codeToTokensBase(firstLine, { lang: language, theme: THEME, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
-        this.warmed.add(language);
-        if (cooperative) await yieldTask();
-      }
       return await this.tokenizeLoaded(code, language, context, cooperative, highlighter, epoch);
     } finally {
       this.activeJobs--;
@@ -124,9 +123,8 @@ export class TokenizerRuntime {
           appendToken(tokens, line);
           grammarState = undefined;
         } else {
-          const started = performance.now();
-          const result = highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
-          if (performance.now() - started >= TOKENIZE_TIME_LIMIT_MS) { appendToken(tokens, line); grammarState = undefined; }
+          const result = this.tokenizeLine(highlighter, line, language, grammarState);
+          if (!result) { appendToken(tokens, line); grammarState = undefined; }
           else { this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result); }
         }
         if (cooperative && performance.now() - yieldStart >= MAX_SLICE_MS) {
@@ -142,13 +140,27 @@ export class TokenizerRuntime {
     for (const line of sourceLines(code.slice(start, completeLength))) {
       if (line.replace(/\n$/, "").length > MAX_LINE) { appendToken(tokens, line); grammarState = undefined; }
       else {
-        const started = performance.now();
-        const result = highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
-        if (performance.now() - started >= TOKENIZE_TIME_LIMIT_MS) { appendToken(tokens, line); grammarState = undefined; }
+        const result = this.tokenizeLine(highlighter, line, language, grammarState);
+        if (!result) { appendToken(tokens, line); grammarState = undefined; }
         else { this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result); }
       }
     }
     return finish(tokens, grammarState);
+  }
+
+  /**
+   * One line's tokens, or undefined for a runaway line (one that stays over the time limit). Shiki stops a line at the
+   * limit without saying so, and the limit also counts building the scanners a cold grammar meets for the first time,
+   * so a slow attempt that built new scanners is tried again: each rule's scanner is built once, so this ends.
+   */
+  private tokenizeLine(highlighter: HighlighterCore, line: string, language: string, grammarState: GrammarState | undefined): ThemedToken[][] | undefined {
+    for (;;) {
+      const scanners = this.scanners;
+      const started = performance.now();
+      const result = highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
+      if (performance.now() - started < TOKENIZE_TIME_LIMIT_MS) return result;
+      if (this.scanners === scanners) return undefined;
+    }
   }
 
   private appendShiki(output: Token[], lines: ThemedToken[][], source: string): void {
@@ -180,7 +192,6 @@ export class TokenizerRuntime {
     this.highlighter = undefined;
     this.enginePromise = undefined;
     this.languages.clear();
-    this.warmed.clear();
   }
 }
 

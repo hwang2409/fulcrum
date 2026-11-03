@@ -141,6 +141,41 @@ describe("incremental tokenization", () => {
     highlighter.dispose();
   });
 
+  // Regression: a cold grammar compiles its patterns while it tokenizes; that time made short lines look like runaway
+  // lines, so they were cached as plain text (the gallery's vite.config.ts read lost the colors of line 1).
+  test("a cold grammar colors every line", async () => {
+    const highlighter = createHighlighter({ worker: false });
+    const source = 'import { defineConfig } from "vite";\nimport { resolve } from "node:path";\n\nexport default defineConfig({\n  build: { outDir: resolve("dist") },\n});\n';
+    for (const language of ["typescript", "javascript"]) {
+      const tokens = (await highlighter(source, language, { id: `cold-${language}`, version: 1, state: "done" }))!;
+      expect(text(tokens)).toBe(source);
+      const lines = tokens.flatMap((token) => token.text.split("\n").map((part, index) => ({ part, index, typed: !!token.type })));
+      const typedPerLine: boolean[] = [false];
+      for (const { part, index, typed } of lines) {
+        if (index) typedPerLine.push(false);
+        if (part.trim() && typed) typedPerLine[typedPerLine.length - 1] = true;
+      }
+      expect(typedPerLine.slice(0, 6)).toEqual([true, true, false, true, true, true]);
+    }
+    highlighter.dispose();
+  });
+
+  test("a line that stays over the time limit without compiling is plain and exact", async () => {
+    const { TokenizerRuntime } = await import("../dist/runtime.js");
+    const runtime = new TokenizerRuntime();
+    await runtime.tokenize("const warm = 1;\n", "typescript", { id: "warm", version: 1, state: "done" }, false);
+    const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
+    let clock = 0;
+    Object.defineProperty(performance, "now", { configurable: true, value: () => (clock += 50) });
+    try {
+      const tokens = await runtime.tokenize("const slow = 1;\n", "typescript", { id: "slow", version: 1, state: "done" }, false);
+      expect(tokens).toEqual([{ text: "const slow = 1;\n" }]);
+    } finally {
+      if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
+      runtime.dispose();
+    }
+  });
+
   test("keeps an incomplete line plain until it is complete", async () => {
     const highlighter = createHighlighter({ worker: false });
     const partial = await highlighter("const value", "typescript", { id: "partial", version: 1, state: "streaming" });
