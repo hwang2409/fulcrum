@@ -28,11 +28,12 @@ function blockChars(blocks: readonly Block[], out: Styled = { text: "", styles: 
 }
 
 /** The first frame where shown text moves or a shown style goes away, or undefined. */
-function styleRegression(source: string, delta: number) {
+function styleRegression(source: string, delta: number | (() => number)) {
   const document = createStreamingDocument();
   let previous: Styled = { text: "", styles: [] };
-  for (let offset = 0; offset < source.length; offset += delta) {
-    document.append(source.slice(offset, offset + delta));
+  for (let offset = 0; offset < source.length;) {
+    const size = typeof delta === "function" ? delta() : delta;
+    document.append(source.slice(offset, offset + size));
     const current = blockChars(document.render());
     if (!current.text.startsWith(previous.text)) return `at ${offset + delta}: text moved ${JSON.stringify(previous.text.slice(-40))} -> ${JSON.stringify(current.text.slice(previous.text.length - 40, previous.text.length + 2))}`;
     for (let index = 0; index < previous.styles.length; index++) {
@@ -40,6 +41,7 @@ function styleRegression(source: string, delta: number) {
       if (lost) return `at ${offset + delta}: char ${index} ${JSON.stringify(previous.text[index])} lost ${lost}`;
     }
     previous = current;
+    offset += size;
   }
 }
 
@@ -96,3 +98,12 @@ test("generated long lines with styled spans before and after the suffix cut hav
   }
   expect(`${failures.length} regressions\n${failures.slice(0, 5).join("\n")}`).toBe("0 regressions\n");
 }, 60_000);
+
+for (const file of ["doc-1-179.json", "doc-1-316.json", "doc-1-483.json", "doc-2-139.json", "doc-2-245.json", "doc-2-50.json"]) {
+  test(`reviewer round 2 fixture ${file} keeps styles`, async () => {
+    const fixture = await Bun.file(new URL(`./fixtures/pr44/${file}`, import.meta.url)).json() as { src: string; mode: number; dseed: number };
+    const dr = random(fixture.dseed);
+    const deltas = fixture.mode || (() => 1 + Math.floor(dr() * 80));
+    expect(styleRegression(fixture.src, deltas)).toBeUndefined();
+  });
+}
