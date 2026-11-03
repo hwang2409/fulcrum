@@ -1,0 +1,166 @@
+import { expect, test } from "bun:test";
+import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
+
+// Gates for the pending-line rule: a character the user has seen never disappears, a raw marker may
+// later become a style, and only the fixed suffix may be provisional.
+const SUFFIX = 256;
+
+function text(nodes: readonly Inline[], provisional: boolean): string {
+  return nodes.map((node) => node.type === "pending-text" ? provisional ? text(node.children, provisional) : ""
+    : node.type === "pending-reference" ? provisional ? node.value : ""
+      : node.type === "text" || node.type === "code" ? node.value
+        : node.type === "break" ? "\n"
+          : node.type === "image" ? node.alt
+            : "children" in node ? text(node.children, provisional) : "").join("");
+}
+
+function visible(blocks: readonly Block[], provisional = true): string {
+  return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? edges(text(block.children, provisional))
+    : block.type === "code" ? block.value
+      : block.type === "blockquote" ? visible(block.children, provisional)
+        : block.type === "list" ? block.items.map((item) => visible(item.children, provisional)).join("")
+          : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => text(cell, provisional)).join("") : "").join("");
+}
+
+// Line-edge spaces are syntax (as in fuzz.ts); markers may later become styles, so frame checks compare letters and digits only.
+const edges = (value: string) => value.replace(/(^|\n)[ \t]+/g, "$1").replace(/[ \t]+(?=\n|$)/g, "");
+const unmarked = (value: string) => value.replace(/[^\p{L}\p{N}]/gu, "");
+
+const subsequence = (needle: string, haystack: string) => {
+  let cursor = 0;
+  for (const character of haystack) if (character === needle[cursor]) cursor++;
+  return cursor === needle.length;
+};
+
+/** Streams `source` and checks every frame: nothing seen disappears and nothing is shown twice. */
+function stream(source: string, sizes: (step: number) => number, onFrame?: (blocks: Block[], received: number) => void) {
+  const final = visible(parseMarkdown(source));
+  const document = createStreamingDocument();
+  let previous = "";
+  for (let offset = 0, step = 0; offset < source.length; step++) {
+    const size = Math.max(1, sizes(step));
+    document.append(source.slice(offset, offset + size));
+    offset += size;
+    const blocks = document.render();
+    const current = visible(blocks);
+    if (!subsequence(unmarked(previous), unmarked(current))) throw new Error(`text vanished at ${offset}: ${JSON.stringify(previous.slice(-80))} -> ${JSON.stringify(current.slice(-80))}`);
+    if (!subsequence(unmarked(visible(blocks, false)), unmarked(final))) throw new Error(`stable text not in final at ${offset} in ${JSON.stringify(source.slice(0, offset + 40))}: ${JSON.stringify(visible(blocks, false).slice(-120))}`);
+    onFrame?.(blocks, offset);
+    previous = current;
+  }
+  document.finish();
+  expect(JSON.stringify(document.render())).toBe(JSON.stringify(parseMarkdown(source)));
+}
+
+const fixed = (size: number) => () => size;
+
+function random(seed: number) {
+  let state = seed >>> 0 || 0x9e3779b9;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return (state >>> 0) / 0x1_0000_0000;
+  };
+}
+
+function find(nodes: readonly Inline[], type: Inline["type"]): boolean {
+  return nodes.some((node) => node.type === type || "children" in node && find(node.children, type));
+}
+
+const paragraphChildren = (blocks: readonly Block[]) => blocks[0]?.type === "paragraph" ? blocks[0].children : [];
+
+test("a pipe line longer than the suffix never duplicates its stable prefix", () => {
+  stream("We compare a | b and c | d here; ".repeat(40), fixed(16));
+  stream("cell | ".repeat(400), fixed(16));
+});
+
+test("nested open brackets keep each word once", () => {
+  const source = `[ALPHA [BETA ${"w ".repeat(300)} c] d`;
+  for (const size of [1, 7]) stream(source, fixed(size));
+});
+
+test("300 unique-word rich lines never duplicate, reorder, or drop a word", () => {
+  const shapes = [(n: string) => `${n} `, (n: string) => `**${n}** `, (n: string) => `*${n}* `, (n: string) => `\`${n}\` `,
+    (n: string) => `[${n}](https://e.com/u) `, (n: string) => `**${n} `, (n: string) => `${n}** `, (n: string) => `*${n} `,
+    (n: string) => `\`${n} `, (n: string) => `${n}\` `, (n: string) => `snake_${n} `, (n: string) => `${n} * x `,
+    (n: string) => `<https://e.com/${n}> `, (n: string) => `👍${n} `, (n: string) => `[${n} `, (n: string) => `${n}] `];
+  const rng = random(7);
+  const ids = (value: string) => [...value.matchAll(/q(\d+)z/g)].map((match) => Number(match[1]));
+  for (let line = 0; line < 300; line++) {
+    const length = 200 + Math.floor(rng() * 1500);
+    let source = "";
+    for (let word = 0; source.length < length; word++) source += shapes[Math.floor(rng() * shapes.length)]!(`q${word}z`);
+    stream(source, () => 1 + Math.floor(rng() * 24), (blocks) => {
+      const seen = ids(visible(blocks));
+      expect(seen.every((id, index) => !index || id > seen[index - 1]!), source).toBe(true);
+    });
+  }
+});
+
+test("closers at and around the suffix budget never leak or drop their owner", () => {
+  for (const length of [255, 256, 257, 258]) {
+    const body = "a".repeat(length);
+    for (const source of [`lead **${body}** tail`, `lead \`${body}\` tail`, `lead [${body}](https://e.com) tail`, `see <https://e.com/${body}> tail`]) {
+      for (const size of [1, 13, 1_024]) stream(source, fixed(size), (blocks, received) => {
+        const stable = visible(blocks, false);
+        expect(stable.length, `${source.slice(0, 12)} ${length} at ${received}`).toBeGreaterThanOrEqual(received - SUFFIX - 30);
+      });
+    }
+  }
+});
+
+test("a late style persists for the rest of the line", () => {
+  const source = `See *note ${"on this ".repeat(40)}end* ${"and then the line keeps going ".repeat(40)}`;
+  let styled = false;
+  stream(source, fixed(1), (blocks) => {
+    const emphasis = find(paragraphChildren(blocks), "emphasis");
+    if (styled) expect(emphasis).toBe(true);
+    styled ||= emphasis;
+  });
+  expect(styled).toBe(true);
+});
+
+test("text between a bracket and a trailing closer stays visible on the growing line", () => {
+  stream("1. a\n   see map[key] foo] and more", fixed(1));
+  stream("see map[key] foo]", fixed(1), (blocks, received) => {
+    if (received >= "see map[key] foo".length) expect(visible(blocks)).toContain("key foo");
+  });
+});
+
+test("intraword underscores and spaced asterisks are never owners", () => {
+  for (const length of [250, 256, 300, 600]) {
+    for (const [key, source] of [["snake_case", `use snake_case ${"i".repeat(length)} _em_ done and more`], ["2 * 3", `use 2 * 3 ${"i".repeat(length)} *em* done and more`]]) {
+      for (const size of [1, 32]) stream(source!, fixed(size), (blocks, received) => {
+        if (received >= 4 + key!.length) expect(visible(blocks).replace(/\s+/g, " "), `${received}`).toContain(key!);
+      });
+    }
+  }
+});
+
+for (const [name, unit] of [
+  ["bench unit", "plain **strong** and *emphasis* with `code`. "],
+  ["must prose", "We **must** keep this fast. "],
+  ["arithmetic", "x * y = z and a_b. "],
+  ["code spans", "The function returns `null` when `value` is missing. "],
+] as const) test(`a 1 MB ${name} line copies only the delta and the suffix`, () => {
+  const source = unit.repeat(Math.ceil(1_000_000 / unit.length)).slice(0, 1_000_000);
+  const document = createStreamingDocument();
+  for (let offset = 0; offset < source.length; offset += 1_024) {
+    const copied = document.stats.copiedCharacters;
+    document.append(source.slice(offset, offset + 1_024));
+    document.render();
+    expect(document.stats.copiedCharacters - copied, `offset ${offset} total ${document.stats.copiedCharacters}`).toBeLessThanOrEqual(1_024 + SUFFIX + 64);
+  }
+});
+
+test("k late closers cost k suffixes plus their spans", () => {
+  const span = "word ".repeat(400);
+  const source = Array.from({ length: 20 }, () => `**${span}** `).join("");
+  const document = createStreamingDocument();
+  for (let offset = 0; offset < source.length; offset += 64) {
+    document.append(source.slice(offset, offset + 64));
+    document.render();
+  }
+  expect(document.stats.copiedCharacters).toBeLessThanOrEqual(2 * source.length + 20 * (SUFFIX + 64) + Math.ceil(source.length / 64) * (SUFFIX + 64));
+});

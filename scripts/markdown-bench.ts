@@ -90,6 +90,22 @@ if (failsGate(millionByteParagraph) || millionByteParagraph.maxCopied > 1_024) f
 
 // The newline that commits a long rich line parses it once; quadratic scans took 6-8 s at 1 MB.
 const richUnit = "plain **strong** and *emphasis* with `code`. ";
+
+// A growing 1 MB rich line copies only the delta plus the fixed pending suffix, whatever its markers do.
+const PENDING_SUFFIX = 256;
+const richLines = [
+  ["1 MB rich line", richUnit],
+  ["1 MB must prose", "We **must** keep this fast. "],
+  ["1 MB arithmetic", "x * y = z and a_b. "],
+  ["1 MB code spans", "The function returns `null` when `value` is missing. "],
+  ["1 MB rich unresolved [", `**strong** *emphasis* \`code\` [link](https://example.com) [${richUnit}`],
+] as const;
+for (const [name, unit] of richLines) {
+  const result = measure(unit.repeat(Math.ceil(1_000_000 / unit.length)).slice(0, 1_000_000), 1_024);
+  console.log(`1024 B  ${name.padEnd(22)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  max-copy ${result.maxCopied}`);
+  if (result.p99 > 5 || result.max > 16 || result.maxCopied > 1_024 + PENDING_SUFFIX + 64) failed = true;
+}
+
 const commitTime = (length: number) => {
   const samples = Array.from({ length: 3 }, () => {
     const document = createStreamingDocument();
