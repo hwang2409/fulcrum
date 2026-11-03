@@ -1030,7 +1030,7 @@ export function createStreamingDocument(): StreamingDocument {
         const listMarker = /(?:^|> ?)[ \t]{0,3}(?:[-+*]|\d{1,9}[.)])\s+/;
         const startsListHeader = listMarker.test(previousLine) || listMarker.test(pending);
         const hasTableDelimiter = !startsListHeader && currentSection.split("\n").some((line) => /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/.test(pendingLeafContent(line)));
-        if (openCode && !openIndentedCode || (pending && (pending.includes("|") && !completeTableDelimiter && !hasTableDelimiter || /^\[[ xX]\]\s*$/.test(pendingLeaf.trim()) || (pendingLeaf.trimStart().startsWith("[") && (!pendingLeaf.includes("]") || /^\[[^\]`]+\]$/.test(pendingLeaf.trim()))) || /^(?:`{3,}|~{3,})/.test(pendingLeaf.trimStart())))
+        if (openCode && !openIndentedCode && !/^(?:`+|~+)$/.test(pendingLeaf.trim()) || (pending && (pending.includes("|") && !completeTableDelimiter && !hasTableDelimiter || /^\[[ xX]\]\s*$/.test(pendingLeaf.trim()) || (pendingLeaf.trimStart().startsWith("[") && (!pendingLeaf.includes("]") || /^\[[^\]`]+\]$/.test(pendingLeaf.trim()))) || !openCode && /^(?:`{3,}|~{3,})/.test(pendingLeaf.trimStart())))
           || (!pendingLeaf.trim() && (/\\\n/.test(source) || openParagraph?.source.includes("|") || canContinueReferenceTitle(previousLine)))
           || (!pending && (openParagraph?.source.includes("|") || openParagraph?.source.endsWith("\\")))) {
           blocks.publish(openRoots);
@@ -1064,7 +1064,7 @@ export function createStreamingDocument(): StreamingDocument {
         if (pendingCodeValue) appendOpenCodeSpan(preview, pendingCodeValue);
         markPendingReferenceBlocks(preview, blockedReferences);
         const frozen = Array.from(blocks.values()).slice(0, blocks.frozen);
-        const structuralPreview = completeReferenceTitle || completeTableDelimiter || hasTableDelimiter || /(?:^|[ >])\d+[.)]\s/.test(pending) || !pending && source.endsWith("\n") || /^ {0,3}(?:=+|-+)\s*$/.test(pending);
+        const structuralPreview = completeReferenceTitle || completeTableDelimiter || hasTableDelimiter || openCode && /^(?:`+|~+)$/.test(pendingLeaf.trim()) || /(?:^|[ >])\d+[.)]\s/.test(pending) || !pending && source.endsWith("\n") || /^ {0,3}(?:=+|-+)\s*$/.test(pending);
         const reconciled = structuralPreview ? preview : reconcileBlocks([...frozen, ...openRoots], preview);
         const changesFrozen = reconciled.slice(0, blocks.frozen).some((block, index) => block !== frozen[index]);
         if (!changesFrozen) blocks.publish(reconciled.slice(blocks.frozen));
