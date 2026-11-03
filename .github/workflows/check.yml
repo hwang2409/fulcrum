@@ -15,12 +15,11 @@ jobs:
       - run: bun test
       - run: bun scripts/highlight-token-parity.ts check
       - name: check resolver contract against base
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then base="$GITHUB_BASE_REF"; base_sha=$(git merge-base "origin/$base" HEAD); else base_sha=HEAD^; fi
           cp packages/highlight/test/fixtures/resolver-contract.json /tmp/resolver-contract.json
-          bun scripts/highlight-resolver-contract.ts generate "$BASE_SHA"
+          bun scripts/highlight-resolver-contract.ts generate "$base_sha"
           cmp -s /tmp/resolver-contract.json packages/highlight/test/fixtures/resolver-contract.json
           status=$?
           cp /tmp/resolver-contract.json packages/highlight/test/fixtures/resolver-contract.json

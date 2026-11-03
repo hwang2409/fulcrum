@@ -168,7 +168,10 @@
     ".npmrc": "ini",
     "pipfile": "toml",
     "cargo.lock": "toml",
-    "Dockerfile.dev": "dockerfile"
+    "Dockerfile.dev": "dockerfile",
+    "unknown.extension": null,
+    ".unknown": null,
+    "README": null
   },
   "media": {
     "application/json": "json",
@@ -217,6 +220,5 @@
     "text/x-python; charset=utf-8": "python",
     "application/problem+json": "json",
     "application/problem+xml": "xml"
-  },
-  "improvements": {}
+  }
 }
