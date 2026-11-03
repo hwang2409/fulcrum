@@ -356,13 +356,17 @@ function withoutOpenLink(source: string) {
   if (close < 0) return source.slice(0, bracket) + (label ? "" : rest);
   const destination = rest.slice(close + 1);
   if (!destination) return source.slice(0, bracket) + (label ? "" : rest.slice(0, close));
-  if (!destination.startsWith("(")) return source;
+  return !destination.startsWith("(") || closesDestination(destination) ? source : source.slice(0, bracket) + rest.slice(0, close);
+}
+
+// Whether `(destination…` reaches its balancing `)`.
+function closesDestination(destination: string) {
   let depth = 0;
   for (const character of destination) {
     if (character === "(") depth++;
-    else if (character === ")" && --depth === 0) return source;
+    else if (character === ")" && --depth === 0) return true;
   }
-  return source.slice(0, bracket) + rest.slice(0, close);
+  return false;
 }
 
 function closedCodeRanges(source: string) {
@@ -605,25 +609,30 @@ function hideTableCandidatePipes(inlines: Inline[]) {
 }
 
 // A `[label]` in text can still become a link while a later definition can arrive.
+// The text of `value` with each `[label]` that may still become a reference reduced to its link text.
+function pendingReferenceParts(value: string, labels?: ReadonlySet<string>): Inline[] {
+  const parts: Inline[] = [];
+  let offset = 0;
+  for (const match of value.matchAll(/!?\[([^[\]\n]+)\](?:\[([^[\]\n]*)\])?/g)) {
+    if (match.index > 0 && value[match.index - 1] === "\\") continue;
+    if (labels && !labels.has(normalizeReferenceLabel(match[2] || match[1]!))) continue;
+    if (match.index > offset) parts.push({ type: "text", value: value.slice(offset, match.index) });
+    if (!match[0].startsWith("!")) parts.push({ type: "text", value: match[1]! });
+    offset = match.index + match[0].length;
+  }
+  if (parts.length && offset < value.length) parts.push({ type: "text", value: value.slice(offset) });
+  return parts;
+}
+
 // `labels`, when given, are the unresolved labels of the parsed source; escaped brackets are not among them.
 function markPendingReferences(inlines: Inline[], labels?: ReadonlySet<string>) {
   for (let index = 0; index < inlines.length; index++) {
     const node = inlines[index]!;
-    if ("children" in node) { markPendingReferences(node.children, labels); continue; }
-    if (node.type !== "text" || !node.value.includes("[")) continue;
-    const replacement: Inline[] = [];
-    let offset = 0;
-    for (const match of node.value.matchAll(/!?\[([^[\]\n]+)\](?:\[([^[\]\n]*)\])?/g)) {
-      if (match.index === undefined || match.index > 0 && node.value[match.index - 1] === "\\") continue;
-      if (labels && !labels.has(normalizeReferenceLabel(match[2] || match[1]!))) continue;
-      if (match.index > offset) replacement.push({ type: "text", value: node.value.slice(offset, match.index) });
-      if (!match[0].startsWith("!")) replacement.push({ type: "text", value: match[1]! });
-      offset = match.index + match[0].length;
-    }
-    if (!replacement.length) continue;
-    if (offset < node.value.length) replacement.push({ type: "text", value: node.value.slice(offset) });
-    inlines.splice(index, 1, ...replacement);
-    index += replacement.length - 1;
+    if ("children" in node) markPendingReferences(node.children, labels);
+    const parts = node.type === "text" && node.value.includes("[") ? pendingReferenceParts(node.value, labels) : [];
+    if (!parts.length) continue;
+    inlines.splice(index, 1, ...parts);
+    index += parts.length - 1;
   }
 }
 
@@ -1004,25 +1013,26 @@ export function createStreamingDocument(): StreamingDocument {
     return record;
   };
 
+  // A frozen paragraph gets a new block object so memoized views see the change.
+  const refreshUser = (user: ReferenceUser) => {
+    if (!("block" in user)) return updateTableCell(user);
+    let frozenIndex = -1;
+    for (let index = 0; index < blocks.frozen; index++) if (blocks.at(index) === user.block) { frozenIndex = index; break; }
+    updateParagraph(user);
+    if (frozenIndex < 0) return;
+    const prior = user.block;
+    user.block = { ...prior, children: [...prior.children] };
+    paragraphRecords.delete(prior);
+    paragraphRecords.set(user.block, user);
+    blocks.replace(frozenIndex, user.block);
+  };
+
   // `retainUsers` keeps users registered while a title on the next line can still change the definition.
   const applyReferences = (retainUsers = false) => {
     for (const [label, users] of referenceUsers) {
       if (!resolver.references.has(label)) continue;
       const retained = retainUsers ? [...users] : [];
-      for (const user of [...users]) {
-        if ("block" in user) {
-          let frozenIndex = -1;
-          for (let index = 0; index < blocks.frozen; index++) if (blocks.at(index) === user.block) { frozenIndex = index; break; }
-          updateParagraph(user);
-          if (frozenIndex >= 0) {
-            const prior = user.block;
-            user.block = { ...prior, children: [...prior.children] };
-            paragraphRecords.delete(prior);
-            paragraphRecords.set(user.block, user);
-            blocks.replace(frozenIndex, user.block);
-          }
-        } else updateTableCell(user);
-      }
+      for (const user of [...users]) refreshUser(user);
       if (retainUsers) {
         for (const user of retained) user.labels.add(label);
         referenceUsers.set(label, new Set(retained));
