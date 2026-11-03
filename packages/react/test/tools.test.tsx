@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type ApprovalDecision, type RunEvent, type ToolView } from "@fulcrum/core";
-import { Approval, RunProvider, Timeline, ToolCall } from "../src/index.js";
+import { Approval, Fallback, RunProvider, Timeline, ToolCall } from "../src/index.js";
 import { boundLines } from "../src/tools/common.js";
 import { segmentText } from "../src/tools/text-viewer.js";
 
@@ -172,7 +172,7 @@ test("large output opens in the shared bounded viewer", () => {
   const preview = () => q('[data-part="tool-output"]').textContent!;
   expect(preview()).toContain("line 0\n");
   expect(preview()).toContain("line 499");
-  expect(preview()).toContain("500 lines / 4,389 characters; open to view all");
+  expect(preview()).toContain("… 439 more lines of 500 …");
   expect(preview()).not.toContain("line 250");
   const button = q('[data-action="open-viewer"]') as HTMLButtonElement;
   expect(button.textContent).toBe("open all 500 lines / 4,389 characters");
@@ -282,7 +282,7 @@ test("every card and approval bounds multi-megabyte presentation surfaces", asyn
       expect(surface.textContent!.length).toBeLessThanOrEqual(100_000);
       expect(surface.textContent).not.toContain("\ud83d…");
     }
-    expect(container.textContent).toMatch(/(?:showing \d+ of \d+ characters|[\d,]+ lines \/ [\d,]+ characters; open to view all)/);
+    expect(container.textContent).toMatch(/(?:showing \d+ of \d+ characters|[\d,]+ more lines of [\d,]+ …)/);
     expect(container.querySelector('[data-action="show-more"]')).toBeNull();
     expect(container.querySelector('[data-action="open-viewer"]')).not.toBeNull();
     const copyArguments = container.querySelector<HTMLButtonElement>('[aria-label="copy arguments"]');
@@ -327,7 +327,7 @@ test("a large diff uses the shared viewer with an honest preview", () => {
   // The preview is the first 40 and last 20 diff rows, drawn as diff rows.
   expect(container.querySelectorAll('[data-part="tool-diff"] > [data-part="diff-line"]')).toHaveLength(60);
   expect(q('[data-part="tool-diff"]').textContent!.length).toBeLessThanOrEqual(50_100);
-  expect(q('[data-part="tool-diff"] > [data-part="tool-gap"]').textContent).toMatch(/6,001 lines \/ [\d,]+ characters; open to view all/);
+  expect(q('[data-part="tool-diff"] > [data-part="tool-gap"]').textContent).toMatch(/^… 5,941 more lines of 6,001 …$/);
   expect(q('[data-action="open-viewer"]')).not.toBeNull();
 });
 
@@ -481,7 +481,7 @@ test("a resolved approval says how it ended, and a folded one marks its tool car
   expect(status("approval:abort")).toBe("canceled");
   expect(q('[data-id="approval:no"]').getAttribute("data-decision")).toBe("deny");
   expect(q('[data-id="tool:ran-call"] [data-part="tool-approval"]').textContent).toBe("approved");
-  expect(status("tool:ran-call")).toBe("approveddone");
+  expect(status("tool:ran-call")).toBe("approved·done");
 });
 
 test("an approval's decision word is colored by styles.css: approved ok, denied danger, other endings muted", () => {
@@ -496,12 +496,18 @@ test("an approval's decision word is colored by styles.css: approved ok, denied 
       ask("no"), { type: "approval_end", request_id: "no", decision: "deny" },
       ask("abort"), { type: "approval_end", request_id: "abort", decision: "abort" },
       ask("ran"), { type: "approval_end", request_id: "ran", decision: "approve" }, { type: "tool_start", tool_call: call("ran-call") },
-    ], ["approval:yes", "approval:no", "approval:abort", "tool:ran-call"]);
+      // A call whose approval was lost, then canceled: the card's mark is hollow (transparent), its word is not.
+      ask("lost"), { type: "approval_end", request_id: "lost", decision: "abort", data: { reason: "controller_disconnected" } }, { type: "tool_start", tool_call: call("lost-call") },
+      { type: "tool_end", tool_call: call("lost-call"), tool_result: { tool_call_id: "lost-call", content: "", is_error: false, is_canceled: true } },
+    ], ["approval:yes", "approval:no", "approval:abort", "tool:ran-call", "tool:lost-call"]);
     const color = (selector: string) => getComputedStyle(q(selector)).color;
     expect(color('[data-id="approval:yes"] [data-part="tool-status"]')).toBe("rgb(0, 128, 0)");
     expect(color('[data-id="approval:no"] [data-part="tool-status"]')).toBe("rgb(255, 0, 0)");
     expect(color('[data-id="approval:abort"] [data-part="tool-status"]')).toBe("rgb(128, 128, 128)");
     expect(color('[data-id="tool:ran-call"] [data-part="tool-approval"]')).toBe("rgb(0, 128, 0)");
+    expect(q('[data-id="tool:lost-call"]').dataset.state).toBe("canceled");
+    expect(q('[data-id="tool:lost-call"] [data-part="tool-approval"]').textContent).toBe("connection lost");
+    expect(color('[data-id="tool:lost-call"] [data-part="tool-approval"]')).toBe("rgb(128, 128, 128)");
   } finally {
     style.remove();
   }
@@ -554,4 +560,22 @@ test("a generic tool's summary is colored, and a list argument reads as a count 
   expect(summary("todos").textContent).toBe("2 items · one");
   expect(summary("todo").querySelector('[data-part="summary-count"]')?.textContent).toBe("1 item");
   expect(summary("write_file").querySelector('[data-part="summary-path"]')?.textContent).toBe("fixtures/session.json");
+});
+
+test("a notification row says what the notification says", () => {
+  const store = createRunStore(() => {});
+  [
+    { type: "notification", notification_id: "n1", data: { text: "Context compacted" } },
+    { type: "notification", notification_id: "n2", data: { kind: "agent_completion", summary: "worker finished" } },
+    { type: "notification", notification_id: "n3", data: { count: 3 } },
+  ].forEach((event) => store.dispatch(event as RunEvent));
+  mount(<RunProvider store={store}>{[1, 2, 3].map((index) => <Fallback key={index} id={`notification:${index}`} />)}</RunProvider>);
+  expect(q('[data-id="notification:1"]').textContent).toBe("Context compacted");
+  expect(q('[data-id="notification:2"]').textContent).toBe("worker finished");
+  expect(q('[data-id="notification:3"]').textContent).toBe("notification");
+});
+
+test("a part asked for an id the store does not have renders nothing", () => {
+  mount(<RunProvider store={createRunStore(() => {})}><ToolCall id="tool:missing" /><Fallback id="notification:9" /></RunProvider>);
+  expect(container.innerHTML).toBe("");
 });

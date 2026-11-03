@@ -21,6 +21,10 @@ body {
 a { color: inherit; text-decoration: none; }
 .intro code { padding: 0 4px; border: 1px solid var(--fulcrum-border); background: var(--fulcrum-surface); font: 13px var(--gallery-font); }
 :focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
+/* The first tab stop skips the nav: hidden until focused, then drawn over the top bar. */
+.skip { position: fixed; top: 8px; left: 8px; z-index: 30; padding: 8px 12px; border: 1px solid var(--fulcrum-fg); background: var(--fulcrum-bg); color: var(--fulcrum-fg); font-size: 13px; font-weight: 700; }
+.skip:not(:focus) { clip-path: inset(50%); }
+.main:focus { outline: none; }
 
 .gallery {
   display: grid;
@@ -83,7 +87,8 @@ a { color: inherit; text-decoration: none; }
   font-size: 13px;
 }
 .nav-group { display: flex; flex-direction: column; margin-bottom: 16px; }
-.nav-group a { display: flex; align-items: center; min-height: 30px; padding: 0 16px 0 22px; border-left: 2px solid transparent; color: var(--fulcrum-muted); }
+/* A wrapped label keeps its lines closer to each other than to the next label. */
+.nav-group a { display: flex; align-items: center; min-height: 30px; padding: 5px 16px 5px 22px; border-left: 2px solid transparent; color: var(--fulcrum-muted); line-height: 1.4; }
 .nav-group a:hover { color: var(--fulcrum-fg); }
 .nav-group .nav-part { padding-left: 16px; color: var(--fulcrum-fg); font-weight: 700; }
 .nav-group a[aria-current] { border-left-color: var(--fulcrum-accent); color: var(--fulcrum-fg); }
@@ -110,6 +115,8 @@ a { color: inherit; text-decoration: none; }
 .demo-actions { display: flex; flex: none; gap: 8px; }
 .demo-body { min-width: 0; padding: 16px; }
 .demo-body > [data-part=run-navigator] { height: 600px; border: 1px solid var(--fulcrum-border); }
+/* "every state" shows every row: it is as tall as its rows, not a fixed panel that starts scrolled to its bottom. */
+#subagent-states .demo-body > [data-part=run-navigator] { height: auto; }
 .demo-body > [data-part=run-navigator] [data-part=run-scroll] { padding: 0 12px; }
 .demo-body > [data-part=timeline]:empty { display: grid; place-items: center; min-height: 80px; border: 1px dashed var(--fulcrum-border); }
 .demo-body > [data-part=timeline]:empty::after { content: "No events yet. The timeline renders nothing until the first event."; color: var(--fulcrum-muted); font-size: 13px; }

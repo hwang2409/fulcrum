@@ -61,8 +61,7 @@
 [data-part="jump-to-latest"]:hover { text-decoration: underline; text-underline-offset: 3px; }
 [data-part="jump-to-latest"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 /* A skip link: the timeline's first tab stop while an approval waits, in the timeline's own column. Hidden from sight,
-   not from screen readers, it takes no space until focused; focused, it takes its own band at the top, so it covers no
-   row there (a plain timeline's rows flow down; a virtual one's rows, placed by the engine, are shifted while it is). */
+   not from screen readers, it takes no space; focused, it is drawn over the top of the timeline, so no row moves. */
 [data-part="jump-to-approval"] {
   position: sticky;
   inset-block-start: 8px;
@@ -86,8 +85,6 @@
   cursor: pointer;
 }
 [data-part="jump-to-approval"]:not(:focus) { clip-path: inset(50%); }
-[data-part="jump-to-approval"]:focus { margin-bottom: 0; }
-[data-part="timeline"]:has(> [data-part="jump-to-approval"]:focus) > [data-virtual-id] { translate: 0 calc(36px + var(--fulcrum-gap, 12px)); }
 [data-part="jump-to-approval"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 
 /* Messages: plain prose, no bubbles. The user's turn is a surface band with a prompt mark. */
@@ -129,6 +126,9 @@
   font-size: 13px;
   line-height: 1.55;
 }
+/* A resolved approval takes focus from the buttons a decision removed. */
+[data-part="approval"]:focus { outline: none; }
+[data-part="approval"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 [data-part="tool-header"] {
   display: grid;
   grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr) auto;
@@ -243,11 +243,14 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 
 [data-part="approval"][data-state="done"] { --mark: var(--fulcrum-muted); }
 /* A resolved approval says its decision in color: approved in ok, denied in danger; other endings stay muted. */
-[data-part="approval"][data-decision="approve"], [data-part="tool-approval"][data-decision="approve"] { --mark: var(--fulcrum-ok); }
-[data-part="approval"][data-decision="deny"], [data-part="tool-approval"][data-decision="deny"] { --mark: var(--fulcrum-danger); }
-[data-part="approval"][data-decision] > [data-part="tool-header"] > [data-part="tool-status"], [data-part="tool-approval"][data-decision] { color: var(--mark); }
-/* A call's folded approval sits before its state mark: "approved ■ done". */
-[data-part="tool-approval"] { order: -1; color: var(--fulcrum-muted); }
+[data-part="approval"][data-decision="approve"] { --mark: var(--fulcrum-ok); }
+[data-part="approval"][data-decision="deny"] { --mark: var(--fulcrum-danger); }
+[data-part="approval"][data-decision] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--mark); }
+/* A call's folded approval is a word after the call's mark ("■ approved · done"). It takes its color from its own
+   decision, never from the card's mark: a canceled card's hollow mark is transparent. */
+[data-part="tool-approval"] { color: var(--fulcrum-muted); }
+[data-part="tool-approval"][data-decision="approve"] { color: var(--fulcrum-ok); }
+[data-part="tool-approval"][data-decision="deny"] { color: var(--fulcrum-danger); }
 [data-part="approval"][data-state="pending"],
 [data-part="approval"][data-state="submitting"] { --rail: var(--fulcrum-warn); --mark: var(--fulcrum-warn); border-color: var(--fulcrum-warn); }
 [data-part="approval"][data-state="pending"] > [data-part="tool-header"] > [data-part="tool-status"],
@@ -301,16 +304,19 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="approval-actions"] button:hover { text-decoration: underline; text-underline-offset: 3px; }
 [data-part="approval-actions"] button:active { transform: scale(0.96); }
 [data-part="approval-actions"] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
-[data-part="approval-actions"] button[aria-disabled="true"] { cursor: progress; text-decoration: none; transform: none; }
-/* Reconnecting approvals stay in the same styled system, but their disabled state is explicit in every theme. */
-[data-part="approval-actions"] button:disabled {
+/* Unavailable (reconnecting) and in flight look the same in every theme. In flight stays focusable (aria-disabled, not
+   disabled): a disabled button drops the keyboard user's focus to the page while the decision is sent. */
+[data-part="approval-actions"] button:is(:disabled, [aria-disabled="true"]) {
   border-color: var(--fulcrum-muted);
   background: var(--fulcrum-surface);
   color: var(--fulcrum-muted);
   cursor: not-allowed;
   opacity: 1;
+  text-decoration: none;
+  transform: none;
 }
-[data-part="approval-actions"] button[data-action="approve"]:disabled { background: var(--fulcrum-surface); color: var(--fulcrum-muted); }
+[data-part="approval-actions"] button[data-action="approve"]:is(:disabled, [aria-disabled="true"]) { background: var(--fulcrum-surface); color: var(--fulcrum-muted); }
+[data-part="approval-actions"] button[aria-disabled="true"]:not(:disabled) { cursor: progress; }
 [data-part="approval-actions"] [role="status"] { flex: 1 1 100%; color: var(--fulcrum-fg); font-size: 12px; }
 @media (pointer: coarse) { [data-part="approval-actions"] button { min-height: 44px; } }
 
@@ -336,11 +342,15 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 /* With no facts, the first button's text lines up with the body's text above it. */
 [data-part="tool-foot"] > button:first-child { margin-left: -8px; }
 [data-part="tool-meta"] { display: flex; flex: 1; flex-wrap: wrap; gap: 0 12px; min-width: 0; }
+/* A fact ("5 matches in 3 files") wraps as a whole, never inside itself. */
+[data-part="tool-meta"] > * { white-space: nowrap; }
 /* The open viewer: counts, where the view is, and a jump control above the scroll box. */
 [data-part="text-viewer-head"] {
+  container: text-viewer-head / inline-size;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 0 12px;
   padding: 0 4px 0 12px;
   background: var(--fulcrum-surface);
   color: var(--fulcrum-muted);
@@ -349,7 +359,10 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 /* The divider is the head's, not the scroll box's: a border on the scroller would leave follow-bottom a pixel short. */
 [data-part="tool-body"] > [data-part="text-viewer-head"] { border-bottom: 1px solid var(--fulcrum-border); }
 [data-part="tool-body"] > [data-part="text-viewer-head"] + [data-part="text-viewer"] { border-top: 0; }
-[data-part="text-viewer-count"] { flex: 1; min-width: 0; }
+[data-part="text-viewer-language"] { color: var(--fulcrum-ui-type); font-weight: 700; }
+[data-part="text-viewer-count"] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A narrow head keeps one row: "400 lines", the position, "bottom", "copy". The buttons keep their full aria-label. */
+@container text-viewer-head (max-width: 560px) { [data-part="text-viewer-wide"] { display: none; } }
 [data-part="text-viewer-position"] { white-space: nowrap; }
 [data-part="text-viewer-position"][data-position="at-bottom"] { color: var(--fulcrum-ok); }
 [data-part="text-viewer-position"][data-position="new-output"] { color: var(--fulcrum-warn); font-weight: 700; }
@@ -370,6 +383,7 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-part="text-viewer-row"] {
   box-sizing: border-box;
   width: 100%;
+  margin: 0; /* a <pre> row's browser margin would push it past the box the follow math measures */
   padding: 0 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -497,7 +511,8 @@ button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-a
 [data-part="sub-agent-head"] > * { flex: none; }
 [data-part="sub-agent-head"] > :is([data-part="sub-agent-name"], [data-part="sub-agent-task"], [data-part="sub-agent-meta"]) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* The name is short and says who; the task gives way first. */
-[data-part="sub-agent-head"] > [data-part="sub-agent-name"] { flex: 0 1 auto; min-width: 4ch; max-width: 16ch; }
+/* The name is what tells rows apart: it keeps up to 16 characters while the task and the counts give way. */
+[data-part="sub-agent-head"] > [data-part="sub-agent-name"] { flex: 0 0 auto; max-width: 16ch; }
 [data-part="sub-agent-head"] > [data-part="sub-agent-task"] { flex: 1 1 0; }
 /* At reflow widths (320 px) the elapsed time and tool count give way too; the state and the open mark never do. */
 [data-part="sub-agent-head"] > [data-part="sub-agent-meta"] { flex: 0 1 auto; margin-left: auto; }
@@ -642,7 +657,6 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="md-code-block"][data-size="large"] { padding: 0; white-space: normal; }
 /* As tall as the most lines an inline block shows (INLINE_LINES), so a fence that becomes the viewer keeps its height. */
 [data-part="md-code-block"][data-size="large"] [data-part="text-viewer"] { max-height: calc(40 * 1.55em); max-height: 40lh; }
-[data-part="md-code-block"][data-size="large"]::before { margin: 0; padding: 4px 12px; }
 /* A wrapped code line hangs 2ch past the start of its line, as tool bodies keep their text column. */
 [data-part="md-code-block"][data-size="large"] [data-part="text-viewer-row"] { text-indent: 2ch hanging each-line; }
 /* The language as a caption line: a float would sit on top of long lines when the block scrolls. */
@@ -653,6 +667,8 @@ ul[data-part="md-list"] { list-style: "- "; }
   color: var(--fulcrum-muted);
   font-size: 12px;
 }
+/* A large block's viewer head names the language in its own row: no caption band above it. */
+[data-part="md-code-block"][data-size="large"]::before { display: none; }
 /* Wide tables scroll inside their own box instead of widening the timeline. */
 [data-part="md-table"] {
   display: block;
@@ -834,7 +850,7 @@ ul[data-part="md-list"] { list-style: "- "; }
 }
 [data-part="composer-submit"] { --action: var(--fulcrum-accent); }
 /* Steer is not a warning: the same accent as send, outlined, so it reads as "add to the turn", not as a new message. */
-[data-part="composer"] [data-part="composer-submit"][data-action="steer"] { background: var(--fulcrum-bg); color: var(--fulcrum-accent); }
+[data-part="composer"] [data-part="composer-submit"][data-action="steer"]:not([aria-disabled="true"]) { background: var(--fulcrum-bg); color: var(--fulcrum-accent); }
 /* Stop is the quiet, destructive one: danger text on the page, never filled. Its min width holds "stopping". */
 [data-part="composer"] [data-part="composer-stop"] { --action: var(--fulcrum-danger); min-width: calc(8ch + 32px); background: var(--fulcrum-bg); color: var(--fulcrum-danger); }
 [data-part="composer"] button:hover { text-decoration: underline; text-underline-offset: 3px; }

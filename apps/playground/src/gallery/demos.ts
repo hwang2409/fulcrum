@@ -6,7 +6,8 @@ import { zetaTools } from "@fulcrum/zeta";
  * `runs` are child runs by id, shown in a RunNavigator: a sub-agent row whose run is missing here is unavailable. A
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]> };
+/** `open`: the demo's tool cards start open, for a demo about what their body says. */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean };
 
 const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({ id, name, arguments: args });
 const text = (role: string, value: string) => ({ role, content: [{ type: "text", text: value }] });
@@ -285,7 +286,7 @@ export const demos: Demo[] = [
       ...grepLines.map((line) => out(run.grep, line)),
       end(run.grep, grepLines.join("")),
       ask("r-edit", run.edit),
-      { type: "approval_end", request_id: "r-edit" },
+      { type: "approval_end", request_id: "r-edit", decision: "approve" },
       start(run.edit),
       end(run.edit, finished.edit),
       start(run.bash),
@@ -423,6 +424,7 @@ export const demos: Demo[] = [
   {
     id: "tool-huge",
     part: "ToolCall",
+    open: true,
     title: "shell, huge output",
     description: `${(huge.length / 1_000_000).toFixed(1)} MB of output: the first 40 and last 20 lines; show all puts at most 100 kB in the DOM and says what it left out. Copy still copies everything.`,
     events: (() => {
@@ -433,6 +435,7 @@ export const demos: Demo[] = [
   {
     id: "tool-empty",
     part: "ToolCall",
+    open: true,
     title: "empty output",
     description: "A shell call with no output and exit 0, and a search with no matches: the body says so in words.",
     events: (() => {
@@ -518,6 +521,23 @@ export const demos: Demo[] = [
         ask("r-deny", c.bash), { type: "approval_end", request_id: "r-deny", decision: "deny" },
         ask("r-lost", c.write), { type: "approval_end", request_id: "r-lost", decision: "abort", data: { reason: "controller_disconnected" } },
       ];
+    })(),
+  },
+  {
+    id: "approval-endings",
+    part: "Approval",
+    title: "every ending, on every card state",
+    description: "Each way an approval ends (approved, denied, a lost connection, an abort with no reason, an end with no decision), folded into a call that finished, failed, was canceled, or still runs. Every word is readable in every theme.",
+    events: (() => {
+      const endings = [{ decision: "approve" }, { decision: "deny" }, { decision: "abort", data: { reason: "controller_disconnected" } }, { decision: "abort" }, {}] as const;
+      const states = ["done", "error", "canceled", "running"] as const;
+      return endings.flatMap((ending, e) => states.flatMap((state, s): RunEvent[] => {
+        const tool = call(`ending-${e}-${s}`, "bash", { command: `bun run step-${e}-${s}` });
+        const id = `r-ending-${e}-${s}`;
+        const asked: RunEvent[] = [ask(id, tool), { type: "approval_end", request_id: id, ...ending }, start(tool)];
+        if (state === "running") return asked;
+        return [...asked, end(tool, state === "canceled" ? "canceled by user" : state === "error" ? "exit 1" : "ok\n", { error: state === "error", canceled: state === "canceled" })];
+      }));
     })(),
   },
   {
@@ -608,7 +628,7 @@ export const demos: Demo[] = [
     id: "fallback-notification",
     part: "Fallback",
     title: "notification",
-    description: "A notification event. The fallback shows only its kind.",
+    description: "A notification event: the fallback shows its text.",
     events: [{ type: "notification", notification_id: "n1", data: { text: "Context compacted" } }],
   },
   {

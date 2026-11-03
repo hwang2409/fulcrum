@@ -44,7 +44,7 @@ function useSelected<S, T>(
   >(undefined);
   const snapshot = () => {
     const source = read();
-    if (cache.current?.source === source && cache.current.selector === selector)
+    if (cache.current && cache.current.source === source && cache.current.selector === selector)
       return cache.current.value;
     const value = selector(source);
     if (cache.current && equal(cache.current.value, value)) {
