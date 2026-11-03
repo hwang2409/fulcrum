@@ -645,7 +645,7 @@ function markPendingReferences(inlines: Inline[], labels?: ReadonlySet<string>) 
 }
 
 // Labels of every unescaped `[label]` in `source`; parsed text has lost its escapes, so they are read here.
-const bracketLabels = (source: string) => new Set(Array.from(source.matchAll(/(?<!(?<!\\)(?:\\\\)*\\)\[([^[\]\n]+)\]/g), (match) => normalizeReferenceLabel(match[1]!)));
+const bracketLabels = (source: string) => !source.includes("[") ? new Set<string>() : new Set(Array.from(source.matchAll(/(?<!(?<!\\)(?:\\\\)*\\)\[([^[\]\n]+)\]/g), (match) => normalizeReferenceLabel(match[1]!)));
 
 function unresolvedReferenceLabels(source: string, references: Environment["references"]) {
   const labels = new Set<string>();
@@ -783,14 +783,15 @@ function appendPendingTableRow(blocks: Block[], source: string, references: Envi
   return true;
 }
 
-function appendPendingParagraph(blocks: Block[], pending: readonly Inline[], continuesParagraph: boolean) {
+function appendPendingParagraph(blocks: Block[], pending: Inline[], continuesParagraph: boolean) {
   if (!pending.length) return;
   const paragraph = continuesParagraph ? tailParagraph(blocks) : undefined;
   if (paragraph) {
     paragraph.children = [...paragraph.children, { type: "text", value: "\n" }, ...pending];
     return paragraph;
   }
-  const block = { type: "paragraph" as const, children: pending.slice() };
+  // `pending` is the growing line's live node list; each frame gets a new block object around it.
+  const block = { type: "paragraph" as const, children: pending };
   blocks.push(block);
   return block;
 }
@@ -1219,9 +1220,9 @@ export function createStreamingDocument(): StreamingDocument {
     const copied = pendingInline.copiedCharacters;
     const known = pendingInlineOffset + pendingInline.content.length;
     previewScannedCharacters += line.length - known;
-    const suffix = pendingInline.append(line.slice(known));
+    pendingInline.append(line.slice(known));
     copiedCharacters += pendingInline.copiedCharacters - copied;
-    return pendingInline.nodes.concat(suffix);
+    return pendingInline.nodes;
   };
 
   const normalizeDelta = (delta: string) => {

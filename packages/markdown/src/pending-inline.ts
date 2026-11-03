@@ -171,11 +171,13 @@ function cutPoint(source: string, target: number) {
  * the span after the opener it resolves.
  */
 export class PendingInline {
+  /** Stable nodes followed by the current suffix nodes; updated in place so a frame copies no node list. */
   readonly nodes: Inline[] = [];
   content = "";
   emittedEnd = 0;
   copiedCharacters = 0;
   private readonly openers: Opener[] = [];
+  private suffixLength = 0;
 
   constructor(private readonly parse: InlineParser) {}
 
@@ -186,15 +188,21 @@ export class PendingInline {
   /** Appends text to the line and returns the nodes of its suffix, which later text may still restyle. */
   append(delta: string): Inline[] {
     this.content += delta;
+    this.nodes.length -= this.suffixLength;
     const cut = cutPoint(this.content, this.content.length - PENDING_INLINE_SUFFIX);
     if (cut > this.emittedEnd) this.emitStable(cut);
-    return this.suffix();
+    const suffix = this.suffix();
+    for (const node of suffix) this.nodes.push(node);
+    this.suffixLength = suffix.length;
+    return suffix;
   }
 
   /** Final streaming nodes for the finished line, or undefined when `line` does not extend this line. */
   commit(line: string): Inline[] | undefined {
     if (!line.startsWith(this.content)) return undefined;
     this.content = line;
+    this.nodes.length -= this.suffixLength;
+    this.suffixLength = 0;
     const owner = this.openers[0];
     const kept = owner ? owner.node : this.nodes.length;
     const tail = this.parseText(owner ? owner.index : this.emittedEnd, line.length, true);

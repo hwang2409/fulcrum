@@ -172,7 +172,8 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   if (task) content = content.slice(task[0].length);
   else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
   if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
-  if (/[:-]/.test(content) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(content))
+  // The anchored row test fails on the first prose character, so the whole-line `[:-]` scan rarely runs.
+  if (/^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(content) && /[:-]/.test(content))
     return EMPTY;
   if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
     return EMPTY;
