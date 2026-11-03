@@ -249,17 +249,35 @@ test("a failed stop shows its error and can be retried", async () => {
   expect(status().textContent).toBe("");
 });
 
-test("read-only hides the field and every action and says why; the draft survives", () => {
+test("read-only hides every action and says why; the draft stays on screen, read-only, and survives", () => {
   const { onSubmit } = calls();
   mount(<Composer state="idle" onSubmit={onSubmit} onStop={() => {}} />);
   type("draft");
   render(<Composer state="read-only" reason="observing: another client controls this run" onSubmit={onSubmit} onStop={() => {}} />);
-  expect(q("textarea")).toBe(null);
+  expect(field().value).toBe("draft");
+  expect(field().readOnly).toBe(true);
   expect(container.querySelectorAll("button").length).toBe(0);
   expect(q('[data-part="composer"]')!.dataset.state).toBe("read-only");
   expect(q('[data-part="composer-reason"]')!.textContent).toBe("observing: another client controls this run");
   render(<Composer state="idle" onSubmit={onSubmit} />);
   expect(field().value).toBe("draft");
+  expect(field().readOnly).toBe(false);
+});
+
+test("read-only with no draft shows only the reason", () => {
+  mount(<Composer state="read-only" reason="observing" onSubmit={() => Promise.resolve()} />);
+  expect(q("textarea")).toBe(null);
+  expect(q('[data-part="composer-reason"]')!.textContent).toBe("observing");
+});
+
+test("when the focused stop button goes away at the end of the turn, focus moves to the field", () => {
+  mount(<Composer state="steerable" onSubmit={() => Promise.resolve()} onStop={() => {}} />);
+  act(() => stop()!.focus());
+  render(<Composer state="steerable" onSubmit={() => Promise.resolve()} onStop={() => {}} />);
+  expect(document.activeElement).toBe(stop());
+  render(<Composer state="idle" onSubmit={() => Promise.resolve()} onStop={() => {}} />);
+  expect(stop()).toBe(null);
+  expect(document.activeElement).toBe(field());
 });
 
 test("the field has a name, starts from defaultValue, and the grow mirror carries the draft", () => {

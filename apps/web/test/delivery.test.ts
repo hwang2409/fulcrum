@@ -109,13 +109,15 @@ test("a dropped steer and its resend are one user row, which becomes the sent me
   expect(users.map((item) => item?.type === "user" && item.event.type === "user_message" && `${item.event.mode}:${item.event.text}`)).toEqual(["send:run the tests", "send:also windows"]);
 });
 
-test("after a stop, dropped steers stay dropped", async () => {
-  const { client, calls } = await server((method) => (method === "delivery_status" ? { result: { status: "dropped" } } : ok));
+test("after a stop, dropped steers stay dropped and are reported by intent; delivered ones are not", async () => {
+  const status: Record<string, string> = { "id-1": "dropped", "id-2": "delivered" };
+  const { client, calls } = await server((method, params) => (method === "delivery_status" ? { result: { status: status[params.delivery_id as string] } } : ok));
   const delivery = createDelivery(ids());
   await delivery.submit(client, "never mind", true);
+  await delivery.submit(client, "this one landed", true);
   calls.length = 0;
-  await delivery.turnEnded(client, { stopped: true });
-  expect(calls).toEqual([]);
+  expect(await delivery.turnEnded(client, { stopped: true })).toEqual(["id-1"]);
+  expect(calls).toEqual([["delivery_status", { delivery_id: "id-1" }], ["delivery_status", { delivery_id: "id-2" }]]);
 });
 
 test("stop is a session abort", async () => {
