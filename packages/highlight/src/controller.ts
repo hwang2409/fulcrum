@@ -6,29 +6,40 @@ const MAX_BLOCK = 512 * 1024;
 const MAX_LINES = 10_000;
 const MAX_CACHE_BYTES = 8 * 1024 * 1024;
 const MAX_CACHE_BLOCKS = 512; // tool cards and mounted viewer rows each hold a block
-type WorkerLike = { postMessage(value: WorkerRequest): void; terminate(): void; onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null };
+type WorkerLike = {
+  postMessage(value: WorkerRequest): void; terminate(): void;
+  onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; onmessageerror?: ((event: MessageEvent) => unknown) | null;
+};
 /**
  * `onHighlightUnavailable` is called once, in a microtask, when highlighting stops for good: the environment has no
- * Worker (SSR, tests), the worker cannot be built (a strict CSP), or it failed again after its one restart. From then
- * on every block is its exact plain text. Nothing is announced to the user; an app may show its own notice here.
+ * Worker (SSR, tests), or the worker crashed (or could not be built, as under a strict CSP) more than
+ * MAX_CRASHES times in CRASH_WINDOW_MS. From then on every block is its exact plain text. Nothing is announced to the
+ * user; an app may show its own notice here.
  */
 export type HighlighterOptions = { workerFactory?: () => WorkerLike; onHighlightUnavailable?: () => void };
 type Pending = { resolve: (tokens: Token[]) => void; code: string; language: string; context: HighlightContext };
 // The page's thread never tokenizes: compiling one cold regex or scanner cannot be split (568 ms for cpp in Chromium),
 // so a UI freeze would be worse than missing colors. This module must not import the tokenizer runtime (a test checks).
-// The worker is hung only when it answers nothing for this long while work is pending. A per-request deadline would
-// misfire on a long backlog.
-const WORKER_SILENCE_MS = 2_000;
-// A failed, crashed, or silent worker is replaced once, after this pause, and gets every pending request again.
-const RESTART_BACKOFF_MS = 250;
+// Liveness, not a deadline: the worker reports progress (protocol.ts) at least every PROGRESS_MS while it works, so long
+// valid work never trips this. Only this much silence while work is pending counts: one step that cannot be split (a
+// pathological line) ran away. The block being worked on is blamed, not the worker: it stays plain for this
+// controller's life, the worker is replaced at once, and every other pending request goes to the new one.
+const WORKER_SILENCE_MS = 10_000;
+// A crash (an error or messageerror event, a failed construction, or silence with no block to blame) restarts the
+// worker after these pauses, for the 1st, 2nd and 3rd crash in CRASH_WINDOW_MS. One more in that window: plain for good.
+const RESTART_BACKOFF_MS = [250, 1_000, 4_000];
+const MAX_CRASHES = RESTART_BACKOFF_MS.length;
+const CRASH_WINDOW_MS = 60_000;
 // `code` is kept so a hit is checked against the exact source: an (id, version) pair from a caller is a hint, never proof of content.
 type CacheEntry = { tokens: Token[]; weight: number; used: number; done: boolean; id: string; code: string };
 
 export function createController(options: HighlighterOptions = {}): Highlight {
   let worker: WorkerLike | undefined;
   let requestId = 0;
-  let restarted = false;
   let unavailable = false;
+  let busyWith: HighlightContext | null = null; // the block the worker last said it works on
+  const crashes: number[] = [];
+  const poisoned = new Set<string>();
   let disposed = false;
   let clock = 0;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
@@ -76,10 +87,12 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     for (const listener of listeners.get(context.id) ?? []) listener();
   };
   const post = (id: number, job: Pending) => {
-    watchdog ??= setTimeout(failWorker, WORKER_SILENCE_MS);
+    watchdog ??= setTimeout(onSilence, WORKER_SILENCE_MS);
     worker!.postMessage({ type: "highlight", requestId: id, code: job.code, language: job.language, context: job.context });
   };
-  const stop = () => { clearTimeout(watchdog); watchdog = undefined; worker?.terminate(); worker = undefined; };
+  // Any message from the worker proves it alive: the silence clock starts again while work is pending.
+  const heard = () => { clearTimeout(watchdog); watchdog = pending.size ? setTimeout(onSilence, WORKER_SILENCE_MS) : undefined; };
+  const stop = () => { clearTimeout(watchdog); watchdog = undefined; worker?.terminate(); worker = undefined; busyWith = null; };
   const giveUp = () => {
     stop();
     unavailable = true;
@@ -87,36 +100,62 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     pending.clear();
     if (!disposed) queueMicrotask(() => options.onHighlightUnavailable?.());
   };
-  const failWorker = () => {
-    stop();
-    if (restarted) return giveUp();
-    restarted = true;
+  const scheduleRestart = (delay: number) => {
     restart = setTimeout(() => {
       restart = undefined;
       if (disposed) return;
-      if (!startWorker()) return giveUp();
+      if (!startWorker()) return crash();
       for (const [id, job] of pending) post(id, job);
-    }, RESTART_BACKOFF_MS);
+    }, delay);
   };
+  const crash = () => {
+    stop();
+    const now = Date.now();
+    while (crashes.length && now - crashes[0] >= CRASH_WINDOW_MS) crashes.shift();
+    if (crashes.length >= MAX_CRASHES) return giveUp();
+    crashes.push(now);
+    scheduleRestart(RESTART_BACKOFF_MS[crashes.length - 1]);
+  };
+  const onSilence = () => {
+    const blamed = busyWith;
+    if (!blamed) return crash();
+    stop();
+    poisoned.add(blamed.id);
+    for (const [id, job] of pending) if (job.context.id === blamed.id) { pending.delete(id); job.resolve(plain(job.code)); }
+    scheduleRestart(0);
+  };
+  const sameBlock = (a: HighlightContext | null, b: HighlightContext) => a?.id === b.id && a.version === b.version;
   const startWorker = (): boolean => {
-    if (typeof Worker === "undefined" && !options.workerFactory) return false;
     try {
       const next = options.workerFactory?.() ?? new Worker(new URL("./worker.js", import.meta.url), { type: "module" }) as unknown as WorkerLike;
       worker = next;
       next.onmessage = (event) => {
         if (worker !== next || disposed) return;
-        if ("update" in event.data) { update(event.data.update, event.data.language, event.data.tokens); return; }
-        const job = pending.get(event.data.requestId);
-        if (!job) return;
-        pending.delete(event.data.requestId);
-        clearTimeout(watchdog);
-        watchdog = pending.size ? setTimeout(failWorker, WORKER_SILENCE_MS) : undefined;
-        // An error for one block (the worker is alive) leaves that block plain.
-        job.resolve("tokens" in event.data ? event.data.tokens : plain(job.code));
+        const data = event.data;
+        if ("progress" in data) busyWith = data.progress;
+        else if ("update" in data) { if (sameBlock(busyWith, data.update)) busyWith = null; update(data.update, data.language, data.tokens); }
+        else {
+          const job = pending.get(data.requestId);
+          if (job) {
+            pending.delete(data.requestId);
+            if (sameBlock(busyWith, job.context)) busyWith = null;
+            // An error for one block (the worker is alive) leaves that block plain.
+            job.resolve("tokens" in data ? data.tokens : plain(job.code));
+          }
+        }
+        heard();
       };
-      next.onerror = () => { if (worker === next) failWorker(); };
+      next.onerror = next.onmessageerror = () => { if (worker === next) crash(); };
       return true;
     } catch { return false; }
+  };
+
+  // Whether a request can be posted now or after a pending restart; false: plain for good.
+  const ensureWorker = (): boolean => {
+    if (worker || restart) return true;
+    if (typeof Worker === "undefined" && !options.workerFactory) { giveUp(); return false; }
+    if (!startWorker()) crash();
+    return !unavailable;
   };
 
   const highlight = ((code: string, lang: string | undefined, context?: HighlightContext) => {
@@ -125,6 +164,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (!language) return null;
     if (code.length > MAX_BLOCK || (code.match(/\n/g)?.length ?? 0) + 1 > MAX_LINES) return plain(code);
     const actual = context ?? { id: `finished:${language}:${code}`, version: 0, state: "done" as const };
+    if (poisoned.has(actual.id)) return plain(code);
     const key = cacheKey(actual, language);
     if (actual.version >= (latestVersion.get(actual.id) ?? -Infinity)) {
       latestVersion.set(actual.id, actual.version);
@@ -135,7 +175,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (hit) dropCompleted(key, hit);
     const active = inflightCode.get(key) === code ? inflight.get(key) : undefined;
     if (active) return active;
-    if (!worker && !restart && !startWorker()) { giveUp(); return plain(code); }
+    if (!ensureWorker()) return plain(code);
     const result = new Promise<Token[]>((resolve) => {
       const id = ++requestId;
       const job = { resolve, code, language, context: actual };
@@ -149,7 +189,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
       if (newest) { inflight.delete(key); inflightIds.delete(key); inflightCode.delete(key); }
       const currentKey = current.get(actual.id);
       if (!disposed && currentKey === key) {
-        if (newest && !unavailable) remember(key, actual, code, tokens); // plain for want of a worker is never cached
+        if (newest && !unavailable && !poisoned.has(actual.id)) remember(key, actual, code, tokens); // plain for want of a worker is never cached
         if ([...inflightIds].some(([otherKey, id]) => id === actual.id && otherKey !== key)) latestSettled.set(actual.id, { key, tokens });
         return tokens;
       }
@@ -176,7 +216,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     stop();
     clearTimeout(restart);
     for (const job of pending.values()) job.resolve(plain(job.code));
-    pending.clear(); cache.clear(); inflight.clear(); inflightCode.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); listeners.clear();
+    pending.clear(); cache.clear(); inflight.clear(); inflightCode.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); listeners.clear(); poisoned.clear();
   };
   return highlight;
 }

@@ -1,4 +1,5 @@
-import type { WorkerRequest, WorkerResponse } from "./protocol.js";
+import { PROGRESS_MS, type WorkerRequest, type WorkerResponse } from "./protocol.js";
+import type { HighlightContext } from "./types.js";
 import { TokenizerRuntime } from "./runtime.js";
 
 const scope = globalThis as unknown as {
@@ -6,7 +7,15 @@ const scope = globalThis as unknown as {
   postMessage(value: WorkerResponse): void;
   close(): void;
 };
-const runtime = new TokenizerRuntime((update, language, tokens) => scope.postMessage({ update, language, tokens }));
+let progressOf: HighlightContext | null | undefined;
+let progressAt = 0;
+const progress = (context: HighlightContext | null) => {
+  const now = performance.now();
+  if (context === progressOf && now - progressAt < PROGRESS_MS) return;
+  progressOf = context; progressAt = now;
+  scope.postMessage({ progress: context });
+};
+const runtime = new TokenizerRuntime((update, language, tokens) => scope.postMessage({ update, language, tokens }), progress);
 scope.onmessage = async (event) => {
   if (event.data.type === "dispose") { runtime.dispose(); scope.close(); return; }
   const { requestId, code, language, context } = event.data;

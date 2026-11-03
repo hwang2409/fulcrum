@@ -61,6 +61,8 @@ type Provisional = { code: string; language: string; context: HighlightContext }
  * patterns in one call that cannot yield (a cold cpp document blocked the worker 335 ms in Chromium).
  */
 export type OnUpdate = (context: HighlightContext, language: string, tokens: Token[]) => void;
+/** Called as work goes on: with the block being tokenized (at its start and after each line), or null while a grammar compiles. */
+export type OnProgress = (context: HighlightContext | null) => void;
 
 // The sources textmate compiles for one grammar pattern (vscode-textmate's RegExpSource, pinned with shiki): `\z`
 // rewritten, and for `\A` or `\G` the variant for each of "A allowed" and "G allowed", the disallowed one as \uFFFF.
@@ -112,9 +114,9 @@ export class TokenizerRuntime {
 
   /**
    * The runtime warms each grammar it loads, in slices, answers blocks for a cold grammar with plain text, and sends
-   * each such block again, colored, through `onUpdate` once warm.
+   * each such block again, colored, through `onUpdate` once warm. `onProgress` lets a watchdog tell slow work from a hang.
    */
-  constructor(private readonly onUpdate: OnUpdate) {}
+  constructor(private readonly onUpdate: OnUpdate, private readonly onProgress: OnProgress = () => {}) {}
 
   // Shared promises: concurrent first requests must wait for the one engine and the one grammar load, not race to
   // create their own (each racer would load its grammar into a different engine).
@@ -171,6 +173,7 @@ export class TokenizerRuntime {
     let sliceStart = performance.now();
     for (const pattern of patterns) {
       if (epoch !== this.epoch) return;
+      this.onProgress(null);
       if (!cache.static.has(pattern)) {
         // The engine caches a failed compile the same way and throws it at use.
         try {
@@ -258,6 +261,7 @@ export class TokenizerRuntime {
     const budget = { retryMs: DOCUMENT_RETRY_BUDGET_MS };
     const tokens: Token[] = [];
     let grammarState = state;
+    this.onProgress(context);
     for (const line of sourceLines(code.slice(start, completeLength))) {
       if (line.replace(/\n$/, "").length > MAX_LINE) { appendToken(tokens, line); grammarState = undefined; }
       else {
@@ -265,6 +269,7 @@ export class TokenizerRuntime {
         if (!result) { appendToken(tokens, line); grammarState = undefined; }
         else { this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result); }
       }
+      this.onProgress(context);
     }
     return finish(tokens, grammarState);
   }

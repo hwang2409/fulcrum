@@ -20,9 +20,11 @@ highlight.dispose();
 
 all tokenizing runs in the worker. compiling one cold regex or scanner cannot be split (568 ms for cpp in chromium), so a ui freeze would be worse than missing colors, and there is no main-thread tokenizer to fall back to.
 
-- if the worker fails, crashes, or does not answer for 2 s while work is pending, it is replaced once, after a 250 ms pause, and gets every pending request again.
-- if the replacement also fails, or there is no worker at all (ssr, tests without a `Worker`, a strict csp that blocks it), every block is its exact plain text from then on, and is not cached as a final answer. nothing is announced to the user.
-- `createHighlighter({ onHighlightUnavailable })` is called once, in a microtask, when that happens, so an app can show its own notice if it wants to.
+- long work is not a failure. while it works, the worker sends a small progress message when it starts a block, after each line, and between grammar compile steps, at most every 100 ms. the page counts only silence: a 440 kb, 10,000-line block that takes seconds never trips it.
+- if the worker says nothing for 10 s while work is pending, one step that cannot be split (for example one pathological line) ran away. the block it last reported is blamed, not the worker: that block stays exact plain text for the life of this highlighter and is never sent again. the worker is replaced at once, and every other pending request goes to the new worker, so one bad block never turns colors off for the others.
+- if the worker crashes (an `error` or `messageerror` event, or it cannot be built, as under a strict csp), or is silent with no block to blame, it is replaced after 250 ms, then 1 s, then 4 s, and gets every pending request again. up to 3 restarts in any 60 s are allowed.
+- after a 4th crash in 60 s, or when there is no worker at all (ssr, tests without a `Worker`), every block is its exact plain text from then on, and is not cached as a final answer. nothing is announced to the user.
+- `createHighlighter({ onHighlightUnavailable })` is called once, in a microtask, when highlighting stops for good, so an app can show its own notice if it wants to.
 
 ```ts
 const highlight = createHighlighter({ onHighlightUnavailable: () => showNotice("syntax colors are off") });

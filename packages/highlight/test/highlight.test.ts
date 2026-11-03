@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, jest, test } from "bun:test";
 import type { Token } from "../src/index.js";
 import { semanticTheme } from "../src/scopes.js";
 
@@ -174,6 +174,9 @@ describe("incremental tokenization", () => {
       // time, the colors only have to arrive.
       expect(tokens.some((token) => token.type)).toBe(true);
     }
+    // Liveness for the controller's watchdog: the worker said it was compiling (null) and which block it tokenized.
+    const progress = replies.filter((item) => "progress" in item).map((item) => (item as { progress: { id: string } | null }).progress?.id ?? null);
+    expect([null, "cold-typescript", "cold-javascript"].every((id) => progress.includes(id))).toBe(true);
     highlighter.dispose();
   }, 60_000);
 
@@ -285,6 +288,130 @@ describe("incremental tokenization", () => {
   });
 });
 
+// Worker liveness and restarts, on fake timers and a scripted worker: no test here waits on the wall clock.
+describe("worker liveness and restarts", () => {
+  type Request = { requestId: number; code: string; context: { id: string } };
+  type Scripted = {
+    posted: Request[]; terminated: boolean; send(data: unknown): void; crash(kind?: "error" | "messageerror"): void;
+    onmessage: ((event: MessageEvent<never>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; onmessageerror: ((event: MessageEvent) => unknown) | null;
+    postMessage(value: Request): void; terminate(): void;
+  };
+  const scripted = (into: Scripted[]) => {
+    const worker: Scripted = {
+      posted: [], terminated: false, onmessage: null, onerror: null, onmessageerror: null,
+      postMessage(value) { worker.posted.push(value); }, terminate() { worker.terminated = true; },
+      send(data) { worker.onmessage?.({ data } as MessageEvent<never>); },
+      crash(kind = "error") { if (kind === "error") worker.onerror?.(new ErrorEvent("error")); else worker.onmessageerror?.(new MessageEvent("messageerror")); },
+    };
+    into.push(worker);
+    return worker;
+  };
+  const colored = (code: string): Token[] => [{ text: code, type: "keyword" }];
+  const answer = (worker: Scripted, index: number) => worker.send({ requestId: worker.posted[index].requestId, tokens: colored(worker.posted[index].code), provisional: false });
+  const block = (id: string) => ({ id, version: 1, state: "done" as const });
+  const ticks = async () => { for (let i = 0; i < 3; i++) await Promise.resolve(); };
+  const withFakeTimers = (run: () => Promise<void>) => async () => { jest.useFakeTimers(); try { await run(); } finally { jest.useRealTimers(); } };
+
+  test("steady progress for 30 s of long work never restarts the worker", withFakeTimers(async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const result = highlighter("int main() {}\n", "cpp", block("long"));
+    for (let elapsed = 0; elapsed < 30_000; elapsed += 100) {
+      jest.advanceTimersByTime(100);
+      workers[0].send({ progress: workers[0].posted[0].context });
+    }
+    expect(workers.map((worker) => worker.terminated)).toEqual([false]);
+    answer(workers[0], 0);
+    expect(await result).toEqual(colored("int main() {}\n"));
+    highlighter.dispose();
+  }));
+
+  test("a silent request is blamed: it stays plain, the others and new requests still color", withFakeTimers(async () => {
+    const workers: Scripted[] = [];
+    let told = 0;
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers), onHighlightUnavailable: () => told++ });
+    const stuck = highlighter("a\n", "cpp", block("stuck"));
+    const waiting = highlighter("b\n", "cpp", block("waiting"));
+    workers[0].send({ progress: workers[0].posted[0].context });
+    jest.advanceTimersByTime(9_999);
+    expect(workers.length).toBe(1);
+    jest.advanceTimersByTime(1);
+    expect(workers[0].terminated).toBe(true);
+    jest.advanceTimersByTime(0);
+    expect(workers.length).toBe(2);
+    expect(workers[1].posted.map((request) => request.context.id)).toEqual(["waiting"]); // the blamed one is never retried
+    expect(await stuck).toEqual([{ text: "a\n" }]);
+    answer(workers[1], 0);
+    expect(await waiting).toEqual(colored("b\n"));
+    const next = highlighter("c\n", "cpp", block("next"));
+    answer(workers[1], 1);
+    expect(await next).toEqual(colored("c\n"));
+    // The blamed block stays plain and provisional in this controller, in any later revision.
+    expect(highlighter("a\nmore\n", "cpp", { id: "stuck", version: 2, state: "done" })).toEqual([{ text: "a\nmore\n" }]);
+    expect(workers[1].posted.length).toBe(2);
+    await ticks();
+    expect(told).toBe(0);
+    highlighter.dispose();
+  }));
+
+  test("silence with no block to blame is a crash: the worker restarts and gets the request again", withFakeTimers(async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const result = highlighter("x\n", "cpp", block("quiet"));
+    jest.advanceTimersByTime(10_000 + 250);
+    expect(workers.length).toBe(2);
+    answer(workers[1], 0);
+    expect(await result).toEqual(colored("x\n"));
+    highlighter.dispose();
+  }));
+
+  test("3 crashes in 60 s recover with backoff; a 4th leaves plain text for good and tells the app once", withFakeTimers(async () => {
+    const before = mainThreadTokenizes;
+    const workers: Scripted[] = [];
+    let told = 0;
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers), onHighlightUnavailable: () => told++ });
+    const result = highlighter("one\n", "python", block("one"));
+    for (const [index, backoff] of [250, 1_000, 4_000].entries()) {
+      workers.at(-1)!.crash(index === 1 ? "messageerror" : "error");
+      jest.advanceTimersByTime(backoff - 1);
+      expect(workers.length).toBe(index + 1);
+      jest.advanceTimersByTime(1);
+      expect(workers.length).toBe(index + 2);
+      expect(workers.at(-1)!.posted.map((request) => request.context.id)).toEqual(["one"]);
+    }
+    answer(workers[3], 0);
+    expect(await result).toEqual(colored("one\n"));
+    const last = highlighter("two\n", "python", block("two"));
+    workers[3].crash();
+    expect(await last).toEqual([{ text: "two\n" }]);
+    expect(highlighter("three\n", "python", block("three"))).toEqual([{ text: "three\n" }]);
+    jest.advanceTimersByTime(60_000);
+    await ticks();
+    expect({ built: workers.length, told, tokenized: mainThreadTokenizes - before }).toEqual({ built: 4, told: 1, tokenized: 0 });
+    highlighter.dispose();
+  }));
+
+  test("crashes spread out over time keep recovering", withFakeTimers(async () => {
+    const workers: Scripted[] = [];
+    let told = 0;
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers), onHighlightUnavailable: () => told++ });
+    for (let crash = 0; crash < 6; crash++) {
+      const code = `round${crash}\n`;
+      const result = highlighter(code, "python", block(`spread-${crash}`));
+      workers.at(-1)!.crash();
+      jest.advanceTimersByTime(250);
+      expect(workers.length).toBe(crash + 2);
+      const worker = workers.at(-1)!;
+      for (let index = 0; index < worker.posted.length; index++) answer(worker, index);
+      expect(await result).toEqual(colored(code));
+      jest.advanceTimersByTime(61_000); // nothing pending: no watchdog runs
+    }
+    await ticks();
+    expect(told).toBe(0);
+    highlighter.dispose();
+  }));
+});
+
 describe("identity, failure, and caps", () => {
   test("never confuses same-length blocks", async () => {
     await warmLanguage("typescript");
@@ -330,32 +457,6 @@ describe("identity, failure, and caps", () => {
     highlighter.dispose();
   }, 30_000);
 
-  test("a silent worker is restarted by the watchdog, not replaced by the main thread", async () => {
-    const before = mainThreadTokenizes;
-    let built = 0;
-    let terminated = false;
-    const silent = { onmessage: null, onerror: null, postMessage() {}, terminate() { terminated = true; } };
-    const highlighter = createHighlighter({ workerFactory: () => ++built === 1 ? silent : recordingWorker([]) });
-    const code = "const restarted = 1;\n";
-    expect(text((await highlighter(code, "typescript", { id: "silent", version: 1, state: "done" }))!)).toBe(code);
-    expect([built, terminated, mainThreadTokenizes - before]).toEqual([2, true, 0]);
-    highlighter.dispose();
-  }, 30_000);
-
-  test("a second failure leaves exact plain text, never tokenizes on the main thread, and tells the app once", async () => {
-    const before = mainThreadTokenizes;
-    let built = 0;
-    let told = 0;
-    const highlighter = createHighlighter({ workerFactory: () => { built++; return crashingWorker(); }, onHighlightUnavailable: () => told++ });
-    const code = samples.python;
-    expect(await highlighter(code, "python", { id: "crash-twice", version: 1, state: "done" })).toEqual([{ text: code }]);
-    // From now on every block is plain at once, and nothing is cached or retried.
-    expect(highlighter(code, "python", { id: "after", version: 1, state: "done" })).toEqual([{ text: code }]);
-    await Bun.sleep(0);
-    expect({ built, told, tokenized: mainThreadTokenizes - before }).toEqual({ built: 2, told: 1, tokenized: 0 });
-    highlighter.dispose();
-  });
-
   test("without a Worker (ssr, tests) or when one cannot be built (a strict csp), blocks are exact plain text", async () => {
     const before = mainThreadTokenizes;
     const code = samples.typescript;
@@ -367,12 +468,21 @@ describe("identity, failure, and caps", () => {
       expect(highlighter(code, "typescript", { id: "no-worker", version: 1, state: "done" })).toEqual([{ text: code }]);
       highlighter.dispose();
     } finally { Object.defineProperty(globalThis, "Worker", descriptor); }
-    let built = 0;
-    const blocked = createHighlighter({ workerFactory: () => { built++; throw new Error("blocked by csp"); }, onHighlightUnavailable: () => told++ });
-    expect(blocked(code, "typescript", { id: "csp", version: 1, state: "done" })).toEqual([{ text: code }]);
-    await Bun.sleep(0);
-    expect({ built, told, tokenized: mainThreadTokenizes - before }).toEqual({ built: 1, told: 2, tokenized: 0 });
-    blocked.dispose();
+    await Promise.resolve();
+    expect(told).toBe(1);
+    // A worker that cannot be built is a crash: it is tried again with backoff (250 ms, 1 s, 4 s), then plain for good.
+    jest.useFakeTimers();
+    try {
+      let built = 0;
+      const blocked = createHighlighter({ workerFactory: () => { built++; throw new Error("blocked by csp"); }, onHighlightUnavailable: () => told++ });
+      const result = blocked(code, "typescript", { id: "csp", version: 1, state: "done" });
+      jest.advanceTimersByTime(250 + 1_000 + 4_000);
+      expect(await result).toEqual([{ text: code }]);
+      expect(blocked(code, "typescript", { id: "csp-after", version: 1, state: "done" })).toEqual([{ text: code }]);
+      await Promise.resolve();
+      expect({ built, told, tokenized: mainThreadTokenizes - before }).toEqual({ built: 4, told: 2, tokenized: 0 });
+      blocked.dispose();
+    } finally { jest.useRealTimers(); }
   });
 
   // The page's thread must never tokenize: one cold regex or scanner compile cannot be split. Only the worker may reach
