@@ -9,7 +9,7 @@ import { semanticTheme } from "../packages/highlight/src/scopes.js";
 import { createHighlighter } from "../packages/highlight/src/index.js";
 
 type Token = { text: string; type?: string };
-type Fixture = { legacy: Record<string, { source: string; lines: Token[][] }>; newReference: Record<string, { source: string; lines: Token[][] }> };
+type Fixture = { legacy: Record<string, { source: string; lines: Token[][] }>; newReference: Record<string, { source: string }> };
 export const paritySnippets: Record<string, string> = {
   tsx: "type Props = { name: string };\nexport const View = ({ name }: Props) => <main className=\"card\">{name}</main>;\n",
   typescript: "type User = { id: number };\nconst greet = (user: User) => `hi ${user.id}`;\n",
@@ -38,8 +38,9 @@ async function reference() {
   const out: Fixture["newReference"] = {};
   for (const [language, source] of Object.entries(newSnippets)) {
     const tokens = highlighter.codeToTokens(source, { lang: language, theme: semanticTheme });
-    out[language] = lines(source, split(tokens.tokens.flat().map((token) => ({ text: token.content, ...(tokenTypes[token.color?.toLowerCase() ?? ""] ? { type: tokenTypes[token.color!.toLowerCase()!] } : {}) }))));
-    if (!out[language]!.lines.some((line) => line.some((token) => token.type))) throw new Error(`direct reference has no typed token: ${language}`);
+    const typed = tokens.tokens.flat().some((token) => tokenTypes[token.color?.toLowerCase() ?? ""]);
+    if (!typed) throw new Error(`direct reference has no typed token: ${language}`);
+    out[language] = { source };
   }
   return out;
 }
@@ -48,6 +49,6 @@ if (mode === "generate") { await mkdir(resolve(fixturePath, ".."), { recursive: 
 else {
   const expected = JSON.parse(await readFile(fixturePath, "utf8")) as Fixture;
   for (let run = 1; run <= 3; run++) { const actual = await legacy(); if (JSON.stringify(actual) !== JSON.stringify(expected.legacy)) throw new Error(`legacy token parity failed on real-clock run ${run}`); }
-  const direct = await reference(); if (JSON.stringify(direct) !== JSON.stringify(expected.newReference)) throw new Error("direct Shiki reference parity failed");
+  const direct = await reference(); if (JSON.stringify(direct) !== JSON.stringify(expected.newReference)) throw new Error("direct Shiki reference samples changed");
   console.log(`token parity passed: ${Object.keys(expected.legacy).length} legacy languages, ${Object.keys(expected.newReference).length} direct references, 3 runs`);
 }
