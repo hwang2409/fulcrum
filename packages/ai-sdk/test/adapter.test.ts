@@ -239,8 +239,36 @@ test("commits source and file parts without losing their typed fields", () => {
   expect(commit?.type === "message_commit" ? commit.message.content : undefined).toEqual([
     { type: "source", kind: "source", url: "https://example.com", title: "Example", meta: { sourceId: "source-1", providerMetadata: [{ mock: { rank: 1 } }] } },
     { type: "source", kind: "source", mediaType: "application/pdf", title: "Guide", filename: "guide.pdf", meta: { sourceId: "source-2" } },
-    { type: "file", kind: "file", url: "data:image/png;base64,eA==", mediaType: "image/png" },
+    { type: "image", url: "data:image/png;base64,eA==", mediaType: "image/png" },
   ]);
+});
+
+test("reasoning, sources, files, and text stream into one message in their order, and the commit keeps it", () => {
+  const adapter = createAiSdkAdapter({ streamKey: "order" });
+  const store = createRunStore((flush) => flush());
+  const parts = [
+    { type: "start", messageId: "order" },
+    { type: "reasoning-start", id: "r" },
+    { type: "reasoning-delta", id: "r", delta: "look " },
+    { type: "reasoning-delta", id: "r", delta: "it up" },
+    { type: "reasoning-end", id: "r" },
+    { type: "source-url", sourceId: "s", url: "https://example.com/doc", title: "Doc" },
+    { type: "text-start", id: "t" },
+    { type: "text-delta", id: "t", delta: "the answer" },
+    { type: "text-end", id: "t" },
+    { type: "file", url: "https://example.com/report.pdf", mediaType: "application/pdf" },
+    { type: "source-document", sourceId: "d", mediaType: "text/markdown", title: "Notes", filename: "notes.md" },
+  ];
+  const types = () => {
+    const item = store.getItem(store.getOutline()[0]!.id);
+    if (item?.type !== "message") throw new Error("no message");
+    return [...item.message.content.map((block) => block.type), ...(item.text ? ["text"] : [])];
+  };
+  for (const part of parts) adapter.decode(part).forEach(store.dispatch);
+  expect(types()).toEqual(["reasoning", "source", "text", "file", "source"]);
+  adapter.decode({ type: "finish" }).forEach(store.dispatch);
+  expect(types()).toEqual(["reasoning", "source", "text", "file", "source"]);
+  expect(store.getOutline()).toHaveLength(1);
 });
 
 test("preserves block and tool protocol metadata in generic meta bags", () => {

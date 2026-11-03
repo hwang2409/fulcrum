@@ -1,3 +1,4 @@
+import { safeUrl } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
@@ -47,15 +48,6 @@ type Environment = { references?: Record<string, { href: string; title: string }
 
 const markdown = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
 
-const safeHref = (href: string | null) => {
-  if (href === null) return undefined;
-  const value = href.trim();
-  const normalized = value.replace(/[\u0000-\u0020]/g, "");
-  if (/^(https?:|mailto:)/i.test(normalized)) return value;
-  if (!/^[a-z][a-z\d+.-]*:/i.test(normalized) && !/^[\\/]{2}/.test(normalized)) return value;
-  return undefined;
-};
-
 const attr = (token: MarkdownToken, name: string) => token.attrGet(name) ?? undefined;
 
 type InlineContainer = Extract<Inline, { children: Inline[] }>;
@@ -69,7 +61,7 @@ function inlineContainer(token: MarkdownToken): InlineContainer | undefined {
   if (token.type === "em_open") return { type: "emphasis", children: [] };
   if (token.type === "strong_open") return { type: "strong", children: [] };
   if (token.type === "s_open") return { type: "strike", children: [] };
-  if (token.type === "link_open") return { type: "link", href: safeHref(attr(token, "href") ?? null), title: attr(token, "title"), children: [] };
+  if (token.type === "link_open") return { type: "link", href: safeUrl(attr(token, "href")), title: attr(token, "title"), children: [] };
 }
 
 function appendInlineToken(token: MarkdownToken, root: Inline[], stack: InlineStack) {
@@ -85,7 +77,7 @@ function appendInlineToken(token: MarkdownToken, root: Inline[], stack: InlineSt
   else if (token.type === "code_inline") target.push({ type: "code", value: token.content });
   else if (token.type === "image") {
     const alt = inlineNodes(token.children ?? []).map(inlineText).join("") || token.content;
-    target.push({ type: "image", src: safeHref(attr(token, "src") ?? null), title: attr(token, "title"), alt });
+    target.push({ type: "image", src: safeUrl(attr(token, "src"), "image"), title: attr(token, "title"), alt });
   } else if (token.nesting === 1) {
     const node = inlineContainer(token);
     if (node) {

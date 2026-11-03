@@ -1,4 +1,5 @@
 export { Composer, type ComposerIntent, type ComposerProps, type ComposerState } from "./composer.js";
+export * from "./content.js";
 export * from "./hooks.js";
 export { Code, HighlightContext } from "./code.js";
 export * from "./parts.js";

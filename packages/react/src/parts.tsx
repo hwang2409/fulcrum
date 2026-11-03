@@ -9,53 +9,14 @@ import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
 import { SubAgent, subAgentLabel, subAgentStatusText } from "./sub-agent.js";
 import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
+import { Message, ToolResultBlocks } from "./content.js";
 
 export type ItemProps = { id: string; className?: string };
-export type MarkdownContentProps = { id: string; source: string; streaming: boolean };
-export type MessageProps = ItemProps & {
-  /** Markdown is enabled for assistant messages when a renderer is supplied. */
-  markdown?: ComponentType<MarkdownContentProps> | false;
-  /** Use `all` to render user-role messages as markdown too. */
-  markdownFor?: "assistant" | "all";
-};
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
 export type Renderers = Partial<Record<string, ComponentType<{ id: string }>>>;
 export type ItemState = "streaming" | "done" | "error" | "canceled" | "pending" | "submitting";
 
 const pre = { whiteSpace: "pre-wrap" } as const;
-
-const messageText = (item: Extract<RunItem, { type: "message" }>) =>
-  item.text ??
-  item.message.content
-    .filter((block) => block.type === "text")
-    .map((block) => String(block.text))
-    .join("");
-
-export const Message = memo(function Message({
-  id,
-  className,
-  markdown: Markdown,
-  markdownFor = "assistant",
-}: MessageProps) {
-  const item = useItem(id);
-  if (item?.type !== "message") return null;
-  const text = messageText(item);
-  const rich = Markdown && (markdownFor === "all" || item.message.role === "assistant");
-  return (
-    <div
-      className={className}
-      style={rich ? undefined : pre}
-      data-part="message"
-      data-kind="message"
-      data-id={id}
-      data-role={item.message.role}
-      data-state={item.active ? "streaming" : "done"}
-      data-format={rich ? "markdown" : "text"}
-    >
-      {rich ? <Markdown id={id} source={text} streaming={item.active} /> : text}
-    </div>
-  );
-});
 
 export type ToolItem = Extract<RunItem, { type: "tool" }>;
 /**
@@ -168,7 +129,7 @@ const SHORT_OUTPUT_LINES = 8;
    answer ("1 replacement", "42 pass"). Long or empty output starts collapsed so the header row carries the run.
    Set once at mount, so the user's own toggle is never overridden while output streams in. */
 const openByDefault = (item: ToolItem | undefined, output: string) =>
-  !item || item.active || (!denied(item) && (item.is_error || (output !== "" && output.length < 1200 && output.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1)));
+  !item || item.active || (!denied(item) && (item.is_error || !!item.result?.blocks?.length || (output !== "" && output.length < 1200 && output.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1)));
 
 // A call its approval denied never ran: the header's "denied" is its status, and the harness's note stays closed.
 const denied = (item: ToolItem) => item.approval?.type === "approval_end" && item.approval.decision === "deny";
@@ -218,6 +179,7 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
       </summary>
       {bodyMounted ? <div data-part="tool-body">
         <Body item={tool} output={output} state={state} />
+        {tool.result?.blocks?.length ? <ToolResultBlocks id={id} blocks={tool.result.blocks} /> : null}
       </div> : null}
     </details>
   );

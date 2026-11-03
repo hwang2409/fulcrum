@@ -1,6 +1,7 @@
 import type {
   ApprovalDecision,
   ContentBlock,
+  ImageContentBlock,
   Message,
   RunEvent,
   SubAgentEvent,
@@ -45,6 +46,30 @@ const tool = (value: unknown): ToolCall => {
   };
 };
 
+// zeta streams text as "assistant" and reasoning as "thinking".
+const deltaKind = (kind: string | undefined) => kind === undefined || kind === "assistant" ? "text" : kind === "thinking" ? "reasoning" : kind;
+const basename = (path: string) => path.split(/[\\/]/).pop() || undefined;
+const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const positive = (value: unknown): value is number => finite(value) && value > 0;
+// zeta's message ImageContent (protocol/types.py): base64 data, mimeType, and an optional path and byte size.
+const image = (input: Record<string, unknown>, at: string): ImageContentBlock => {
+  const mediaType = string(input.mimeType, `${at}.mimeType`);
+  const filename = input.path === undefined || input.path === null ? undefined : basename(string(input.path, `${at}.path`));
+  return {
+    type: "image",
+    url: `data:${mediaType};base64,${string(input.data, `${at}.data`)}`,
+    mediaType,
+    ...(filename ? { filename } : {}),
+    ...(finite(input.size) ? { size: input.size } : {}),
+  };
+};
+// A tool's ToolImageBlock adds an optional caption and pixel size to the message image's fields.
+const toolImage = (input: Record<string, unknown>, at: string): ImageContentBlock => ({
+  ...image(input, at),
+  ...(typeof input.caption === "string" && input.caption.trim() ? { alt: input.caption } : {}),
+  ...(positive(input.width) && positive(input.height) ? { width: input.width, height: input.height } : {}),
+});
+// zeta's block types map onto fulcrum's: thinking is reasoning, an image's base64 data becomes a data URL.
 const contentBlock = (value: unknown, index: number): ContentBlock => {
   const input = object(value, `message.content[${index}]`);
   const type = string(input.type, `message.content[${index}].type`);
@@ -52,32 +77,39 @@ const contentBlock = (value: unknown, index: number): ContentBlock => {
     case "text":
     case "thinking":
       return {
-        type,
+        type: type === "thinking" ? "reasoning" : type,
         text: typeof input.text === "string" ? input.text : (() => { throw new Error(`message.content[${index}].text must be a string`); })(),
         ...(input.signature === undefined ? {} : { signature: string(input.signature, `message.content[${index}].signature`) }),
       };
     case "image":
-      return {
-        type,
-        data: string(input.data, `message.content[${index}].data`),
-        mimeType: string(input.mimeType, `message.content[${index}].mimeType`),
-      };
+      return image(input, `message.content[${index}]`);
+    // History replaces an image with its name and size (server/ergonomics.py), so it shows as a file without a link.
+    case "attachment":
+      return { type: "file", filename: string(input.name, `message.content[${index}].name`), ...(finite(input.size) ? { size: input.size } : {}) };
     case "redacted_thinking":
-      return { type, data: string(input.data, `message.content[${index}].data`) };
+      return { type: "reasoning", text: "", redacted: true, data: string(input.data, `message.content[${index}].data`) };
     case "tool_use":
       return { type, tool_call: tool(input.tool_call) };
     default:
-      throw new Error(`message.content[${index}].type is unsupported`);
+      // A block type this adapter does not know yet renders as the lossless unsupported block.
+      return { ...input, type };
   }
 };
 
 const toolResult = (value: unknown): ToolResult => {
   const input = object(value, "tool_result");
+  if (input.content_blocks !== undefined && input.content_blocks !== null && !Array.isArray(input.content_blocks)) throw new Error("tool_result.content_blocks must be an array");
+  // Only images: zeta already flattens text and resource blocks into `content`. History sends `content_blocks: []`.
+  const blocks = ((input.content_blocks ?? []) as unknown[]).flatMap((block, index) => {
+    const at = `tool_result.content_blocks[${index}]`;
+    return object(block, at).type === "image" ? [toolImage(block as Record<string, unknown>, at)] : [];
+  });
   return {
     tool_call_id: string(input.tool_call_id, "tool_result.tool_call_id"),
     content: typeof input.content === "string" ? input.content : (() => { throw new Error("tool_result.content must be a string"); })(),
     is_error: boolean(input.is_error, "tool_result.is_error"),
     ...(input.is_canceled === undefined ? {} : { is_canceled: boolean(input.is_canceled, "tool_result.is_canceled") }),
+    ...(blocks.length ? { blocks } : {}),
   };
 };
 
@@ -86,7 +118,8 @@ const message = (value: unknown): Message => {
   if (!Array.isArray(input.content)) throw new Error("message.content must be an array");
   const result: Message = {
     role: string(input.role, "message.role"),
-    content: Array.from(input.content, contentBlock),
+    // A tool_use block is its call's tool row, not message content.
+    content: Array.from(input.content, contentBlock).filter((block) => block.type !== "tool_use"),
   };
   if (input.tool_result !== undefined && input.tool_result !== null)
     result.tool_result = toolResult(input.tool_result);
@@ -234,7 +267,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       case "turn_start": return [{ type: "turn_start", data: turnData(data) }];
       case "turn_end": return [{ type: "turn_end", data: turnData(data) }];
       case "message_start": return [{ type: "message_start", data }];
-      case "assistant_delta": return [{ type: "message_delta", message_id: optionalString(data.message_id, "data.message_id"), delta: string(wire.delta, "delta"), kind: optionalString(wire.kind, "kind") ?? "assistant" }];
+      case "assistant_delta": return [{ type: "message_delta", message_id: optionalString(data.message_id, "data.message_id"), delta: string(wire.delta, "delta"), kind: deltaKind(optionalString(wire.kind, "kind")) }];
       case "assistant_message": return [{ type: "message_commit", message_id: optionalString(data.message_id, "data.message_id"), message: message(wire.message) }];
       case "assistant_reset": return [{ type: "message_reset", data }];
       case "retry": return [{ type: "retry" }];
@@ -326,10 +359,10 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] =>
     const attachments = content.filter((block) => (block as { type?: unknown } | null)?.type === "attachment");
     events.push({ type: "user_message", text: text(content), mode: "send", ...(attachments.length ? { attachments } : {}) });
   } else if (role === "assistant") {
-    // History keeps text and thinking; tool_use blocks become tool rows. An empty thinking header carries nothing to show.
+    // History keeps text, thinking, and image stubs; tool_use blocks become tool rows. An empty thinking header carries nothing to show.
     const shown = content.filter((block) => {
       const type = (block as { type?: unknown } | null)?.type;
-      return (type === "text" || type === "thinking") && (block as { text?: unknown }).text !== "";
+      return type === "attachment" || ((type === "text" || type === "thinking") && (block as { text?: unknown }).text !== "");
     });
     if (shown.length) events.push({ type: "message_commit", message_id: id, message: message({ role, content: shown }) });
     for (const block of content) {
