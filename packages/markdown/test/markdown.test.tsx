@@ -496,7 +496,7 @@ test("a stale streaming highlight cannot replace the done result", async () => {
   const pending: Array<(tokens: Token[]) => void> = [];
   const highlight: Highlight = Object.assign(
     () => new Promise<Token[]>((resolve) => pending.push(resolve)),
-    { dispose() {} },
+    { dispose() {}, subscribe: () => () => {} },
   );
 
   await act(async () => root.render(<Markdown source={'```ts\nconst value = 1;\n'} streaming highlight={highlight} />));
@@ -516,7 +516,7 @@ test("highlighter uses the shared cumulative source contract", async () => {
       calls.push({ code, context });
       return [{ type: "keyword" as const, text: code }];
     },
-    { dispose() {} },
+    { dispose() {}, subscribe: () => () => {} },
   );
   renderToStaticMarkup(<Markdown id="message:one" source={'```ts\nconst a = 1;\npartial'} streaming highlight={highlight} />);
   renderToStaticMarkup(<Markdown id="message:one" source={'```ts\nconst a = 1;\npartial\n```'} highlight={highlight} />);
@@ -541,4 +541,24 @@ test("a table followed by a whitespace-only partial line streams without throwin
       expect(plain(document.render())).toBe(plain(parseMarkdown(source)));
     }
   }
+});
+
+test("a code block repaints when the highlighter updates its tokens", async () => {
+  const browser = new Window();
+  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = browser.document.createElement("div");
+  const root = createRoot(container);
+  let tokens: Token[] = [{ text: "const a = 1;\n" }];
+  const listeners = new Map<string, () => void>();
+  const highlight: Highlight = Object.assign(() => tokens, {
+    dispose() {},
+    subscribe: (id: string, listener: () => void) => { listeners.set(id, listener); return () => listeners.delete(id); },
+  });
+  await act(async () => root.render(<Markdown id="m" source={'```ts\nconst a = 1;\n```'} highlight={highlight} />));
+  expect(container.querySelector(".tok-keyword")).toBeNull();
+  tokens = [{ text: "const", type: "keyword" }, { text: " a = 1;\n" }];
+  await act(async () => listeners.get("m:0")!());
+  expect(container.querySelector(".tok-keyword")?.textContent).toBe("const");
+  expect(container.querySelector("code")?.textContent).toBe("const a = 1;\n");
+  await act(async () => root.unmount());
 });

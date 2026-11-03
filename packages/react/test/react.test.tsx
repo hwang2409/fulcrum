@@ -100,10 +100,10 @@ test("highlighting passes cumulative source with stable identity and monotonic v
   type Token = { type?: "keyword"; text: string };
   const calls: Array<{ code: string; language: string | undefined; context: Context | undefined }> = [];
   const resolves: Array<(result: Token[]) => void> = [];
-  const highlight = (code: string, language: string | undefined, context?: Context) => {
+  const highlight = Object.assign((code: string, language: string | undefined, context?: Context) => {
     calls.push({ code, language, context });
     return new Promise<Token[]>((resolve) => resolves.push(resolve));
-  };
+  }, { dispose() {}, subscribe: () => () => {} });
   mount(<Markdown id="message:one" source={"```ts\na\n"} streaming highlight={highlight} />);
   act(() => root!.render(<Markdown id="message:one" source={"```ts\na\nb\npartial"} streaming highlight={highlight} />));
   expect(calls).toEqual([
@@ -125,7 +125,7 @@ test("highlighting passes cumulative source with stable identity and monotonic v
 
 test("async highlighting commits in strict mode", async () => {
   let resolve!: (tokens: Array<{ text: string; type?: "keyword" }>) => void;
-  const highlight = () => new Promise<Array<{ text: string; type?: "keyword" }>>((done) => { resolve = done; });
+  const highlight = Object.assign(() => new Promise<Array<{ text: string; type?: "keyword" }>>((done) => { resolve = done; }), { dispose() {}, subscribe: () => () => {} });
   mount(<StrictMode><Markdown source={"```ts\nconst x = 1;\n```"} highlight={highlight} /></StrictMode>);
   await act(async () => {
     resolve([{ text: "const x = 1;\n", type: "keyword" }]);
