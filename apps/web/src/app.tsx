@@ -79,13 +79,14 @@ export function App() {
   useEffect(() => { if (!drawer && returnFocus.current) { returnFocus.current = false; menu.current?.focus(); } }, [drawer]);
   const select = useCallback((id: string) => {
     runOpener.current = document.activeElement;
+    focusComposer.current = false;
     sessions.select(id);
     setDrawer(false);
   }, [sessions]);
   const create = useCallback(() => {
     focusComposer.current = true;
     setDrawer(false);
-    void sessions.create();
+    void sessions.create().then(() => { if (sessions.state.createError) focusComposer.current = false; });
   }, [sessions]);
   const current = view.sessions.find((session) => session.session_id === (view.open?.id ?? view.selected));
   useEffect(() => { document.title = current ? `${sessionTitle(current)} · zeta` : "zeta · fulcrum"; }, [current]);
