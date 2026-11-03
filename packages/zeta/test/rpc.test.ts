@@ -39,7 +39,29 @@ test("features are used only when echoed by the server", async () => {
 
   await hello;
   expect(client.features).toEqual(["projects"]);
+  expect(client.protocolVersion).toBe("1.2");
   expect(client.features).not.toContain("list_sessions_paging");
+});
+
+test("malformed feature lists are treated as empty", async () => {
+  for (const features of ["approval_history", ["approval_history", 4]]) {
+    const fake = fakeTransport();
+    const client = connect(fake.transport);
+    const hello = client.hello(["approval_history"]);
+    fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+    await hello;
+    expect(client.features).toEqual([]);
+  }
+});
+
+test("an older negotiated version disables features", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello(["approval_history"]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.0" } });
+  await hello;
+  expect(client.protocolVersion).toBe("1.0");
+  expect(client.features).toEqual([]);
 });
 
 test("hello, responses, errors, and events", async () => {
@@ -48,7 +70,7 @@ test("hello, responses, errors, and events", async () => {
   const hello = client.hello();
   fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.0" } });
   expect(await hello).toEqual({ protocol_version: "1.0" });
-  expect((fake.sent[0].params as Record<string, unknown>).protocol_version).toBe("1.0");
+  expect((fake.sent[0].params as Record<string, unknown>).protocol_version).toBe("1.2");
 
   const bad = client.request("status");
   fake.receive({ jsonrpc: "2.0", id: 2, error: { code: -32602, message: "bad" } });
