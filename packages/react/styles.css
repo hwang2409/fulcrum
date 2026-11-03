@@ -123,16 +123,17 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="tool"][open] > [data-part="tool-header"]::before { transform: translateY(-1px) rotate(90deg); }
 [data-part="approval"] > [data-part="tool-header"]::before { border-left-color: transparent; }
 
-/* Color carries meaning, one hue per kind of fact: the tool in accent, paths in the function color, +/- in diff colors,
-   patterns in the string color, the shell prompt in ok. */
+/* Color carries meaning, one hue per kind of fact: the tool in accent, the shell prompt in ok, and paths, numbers, +/-,
+   patterns, and content types in the --fulcrum-ui-* accents (themes.css). Those are UI text at 4.5:1; tok-* colors are
+   for code only, at 3:1, so tool facts never use them (test/themes.test.ts). */
 [data-part="tool-name"] { color: var(--fulcrum-accent); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 [data-part="tool-summary"] { min-width: 0; color: var(--fulcrum-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-[data-part="summary-path"] { color: var(--fulcrum-tok-function); }
+[data-part="summary-path"] { color: var(--fulcrum-ui-path); }
 [data-part="summary-range"] { color: var(--fulcrum-muted); }
-[data-part="summary-pattern"] { color: var(--fulcrum-tok-string); }
+[data-part="summary-pattern"] { color: var(--fulcrum-ui-pattern); }
 [data-part="shell-prompt"] { color: var(--fulcrum-ok); font-weight: 700; user-select: none; }
-[data-part="diff-stat"][data-change="insert"] { color: var(--fulcrum-tok-inserted); }
-[data-part="diff-stat"][data-change="delete"] { color: var(--fulcrum-tok-deleted); }
+[data-part="diff-stat"][data-change="insert"] { color: var(--fulcrum-ui-added); }
+[data-part="diff-stat"][data-change="delete"] { color: var(--fulcrum-ui-removed); }
 [data-part="tool-status"] { display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-muted); white-space: nowrap; }
 /* The state mark: a square in the state color next to the word. */
 [data-part="tool-status"]::before {
@@ -269,7 +270,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="approval-actions"] [role="status"] { flex: 1 1 100%; color: var(--fulcrum-fg); font-size: 12px; }
 @media (pointer: coarse) { [data-part="approval-actions"] button { min-height: 44px; } }
 
-[data-part="tool-duration"] { color: var(--fulcrum-tok-number); font-weight: 400; }
+[data-part="tool-duration"] { color: var(--fulcrum-ui-number); font-weight: 400; }
 
 /* Per-tool bodies (@fulcrum/react ToolBody). One grammar: the content, then a foot row with facts and copy buttons. */
 [data-part="tool-empty"],
@@ -330,8 +331,8 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-part="tool-exit"] { color: var(--fulcrum-ok); }
 [data-part="tool-exit"]:not([data-exit-code="0"]) { color: var(--fulcrum-danger); font-weight: 700; }
 [data-part="tool-cwd"],
-[data-part="tool-path"] { color: var(--fulcrum-tok-function); }
-[data-part="tool-size"] { color: var(--fulcrum-tok-number); }
+[data-part="tool-path"] { color: var(--fulcrum-ui-path); }
+[data-part="tool-size"] { color: var(--fulcrum-ui-number); }
 
 /* Shell: the header reads "$ command"; the tool name stays for screen readers. stderr gets a label and a danger edge. */
 [data-tool-view="shell"] > [data-part="tool-header"] { grid-template-columns: auto minmax(0, 1fr) auto; }
@@ -371,9 +372,9 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-part="line-text"] { white-space: pre-wrap; }
 [data-part="search-file"] + [data-part="search-file"] { margin-top: 4px; }
 [data-part="search-head"] { display: flex; gap: 1ch; padding: 0 12px; font-weight: 700; }
-[data-part="search-path"] { color: var(--fulcrum-tok-function); }
-[data-part="search-count"] { color: var(--fulcrum-tok-number); font-weight: 400; }
-[data-part="search-total"] { color: var(--fulcrum-tok-number); }
+[data-part="search-path"] { color: var(--fulcrum-ui-path); }
+[data-part="search-count"] { color: var(--fulcrum-ui-number); font-weight: 400; }
+[data-part="search-total"] { color: var(--fulcrum-ui-number); }
 [data-part="search-match"] { background: none; color: inherit; font-weight: 700; box-shadow: inset 0 -2px var(--fulcrum-warn); }
 [data-part="search-count"]::before { content: "("; }
 [data-part="search-count"]::after { content: ")"; }
@@ -384,7 +385,7 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-part="diff-sign"] { text-align: center; user-select: none; }
 [data-part="diff-text"] { padding-right: 12px; white-space: pre-wrap; }
 [data-part="diff-line"][data-change="hunk"] { color: var(--fulcrum-muted); }
-/* Rows are tinted 8%: every text color is checked at 4.5:1 on these tints (test/themes.test.ts). A stronger tint would
+/* Rows are tinted 8%: syntax colors are checked at 3:1 and UI text at 4.5:1 on these tints (test/themes.test.ts). A stronger tint would
    push low-contrast palettes (solarized, one dark) under it, so the changed span is marked with a line, not a fill. */
 [data-part="diff-line"][data-change="delete"] { background: color-mix(in srgb, var(--fulcrum-tok-deleted) 8%, var(--fulcrum-bg)); }
 [data-part="diff-line"][data-change="insert"] { background: color-mix(in srgb, var(--fulcrum-tok-inserted) 8%, var(--fulcrum-bg)); }
@@ -400,8 +401,8 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-part="fetch-status"][data-status-class="3xx"] { color: var(--fulcrum-accent); }
 [data-part="fetch-status"][data-status-class="4xx"] { color: var(--fulcrum-warn); }
 [data-part="fetch-status"][data-status-class="5xx"] { color: var(--fulcrum-danger); }
-[data-part="fetch-type"] { color: var(--fulcrum-tok-type); }
-[data-part="fetch-url"] { min-width: 0; color: var(--fulcrum-tok-function); overflow-wrap: anywhere; }
+[data-part="fetch-type"] { color: var(--fulcrum-ui-type); }
+[data-part="fetch-url"] { min-width: 0; color: var(--fulcrum-ui-path); overflow-wrap: anywhere; }
 [data-part="fetch-title"] { color: var(--fulcrum-muted); }
 
 /* Other items: errors get the danger rail, everything else is a quiet line. */
