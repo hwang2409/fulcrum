@@ -69,19 +69,25 @@ export function generateDocument(index: number, rng: Random) {
 
 function inlineVisible(nodes: readonly Inline[], includeProvisional = true): string {
   return nodes.map((node) => node.type === "pending-reference" ? includeProvisional ? node.value : ""
+    : node.type === "pending-text" ? includeProvisional ? inlineVisible(node.children, includeProvisional) : ""
     : node.type === "text" || node.type === "code" ? node.value
     : node.type === "image" ? node.alt
     : node.type === "break" ? "\n"
     : inlineVisible(node.children, includeProvisional)).join("");
 }
 
+const proseVisible = (nodes: readonly Inline[], includeProvisional: boolean) =>
+  inlineVisible(nodes, includeProvisional).replace(/\s+/g, " ").trim();
+
 function visible(blocks: readonly Block[], includeProvisional = true): string {
-  return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? inlineVisible(block.children, includeProvisional)
+  return blocks.map((block) => block.type === "paragraph" || block.type === "heading"
+    // HTML collapses prose whitespace; code whitespace remains exact below.
+    ? proseVisible(block.children, includeProvisional)
     : block.type === "code" ? block.value
     : block.type === "blockquote" ? visible(block.children, includeProvisional)
     : block.type === "list" ? block.items.map((item) => visible(item.children, includeProvisional)).join("")
-    : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => inlineVisible(cell, includeProvisional)).join("")
-    : "").join("").replace(/\s/g, "");
+    : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => proseVisible(cell, includeProvisional)).join("")
+    : "").join("");
 }
 
 function isSubsequence(needle: string, haystack: string) {
@@ -133,12 +139,13 @@ function checkSource(source: string, splitSeed: number, stats?: FuzzStats): stri
       document.append(source.slice(offset, offset + size));
       offset += size;
       const rendered = document.render();
-      const currentVisible = visible(rendered);
-      if (!isSubsequence(previousStableVisible, currentVisible)) {
+      // Block wrappers do not render separator text, so only AST text whitespace is compared here.
+      const currentStableVisible = visible(rendered, false);
+      if (!isSubsequence(previousStableVisible, currentStableVisible)) {
         if (stats) stats.visibilityFailures++;
-        return `visible text disappeared or reordered: ${JSON.stringify(previousStableVisible)} -> ${JSON.stringify(currentVisible)}`;
+        return `visible text disappeared or reordered: ${JSON.stringify(previousStableVisible)} -> ${JSON.stringify(currentStableVisible)}`;
       }
-      previousStableVisible = visible(rendered, false);
+      previousStableVisible = currentStableVisible;
     }
     const active = document.render();
     const expected = parseMarkdown(source);

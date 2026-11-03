@@ -21,6 +21,7 @@ export type HighlightResult = ReturnType<Highlight>;
 export type Inline =
   | { type: "text"; value: string }
   | { type: "pending-reference"; value: string }
+  | { type: "pending-text"; children: Inline[] }
   | { type: "code"; value: string }
   | { type: "break" }
   | { type: "emphasis"; children: Inline[] }
@@ -718,36 +719,34 @@ function tailParagraph(blocks: Block[]): Extract<Block, { type: "paragraph" }> |
   }
 }
 
-function pendingInlineSource(line: string) {
-  let leaf = pendingLeafContent(line);
-  if (!leaf.trim()) return "";
-  const heading = /^#{1,6}[ \t]+/.exec(leaf);
-  if (heading) leaf = leaf.slice(heading[0].length);
-  const task = /^\[([ xX])\][ \t]+/.exec(leaf);
-  if (/^[ \t]*\[[^\]\n]+\]:/.test(leaf)) return "";
-  if (task) leaf = leaf.slice(task[0].length);
-  else if (/^\[[ xX]?\]?[ \t]*$/.test(leaf)) return "";
-  if (/^[ \t]*(?:`{3,}|~{3,})/.test(leaf) || /^[ \t]*(?:[|#<]|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(leaf)) return "";
-  const firstBracket = leaf.indexOf("[");
-  const openBracket = leaf.lastIndexOf("[");
-  if (openBracket > leaf.lastIndexOf("]")) leaf = leaf.slice(0, openBracket);
-  else if (firstBracket >= 0 && leaf.trimEnd().endsWith("]")) leaf = leaf.slice(0, openBracket);
-  return safeTableText(safeBlockSource(leaf));
+function pendingInlineSource(content: string) {
+  return content;
 }
 
-function appendPendingParagraph(blocks: Block[], source: string, references: Environment, continuesParagraph: boolean, blocked: ReadonlySet<string>) {
+function appendPendingParagraph(blocks: Block[], source: string, references: Environment, continuesParagraph: boolean, blocked: ReadonlySet<string>, provisional: boolean) {
   if (!source) return;
-  const paragraph = continuesParagraph ? tailParagraph(blocks) : undefined;
+  const paragraph = continuesParagraph && !provisional ? tailParagraph(blocks) : undefined;
   const inlineSource = paragraph ? `${inlineTextFromNodes(paragraph.children)}\n${source}` : source;
   const children = /[\\[*_~`<!&]/.test(inlineSource) ? parseInline(inlineSource, true, references) : [{ type: "text" as const, value: inlineSource }];
   markPendingReferences(children, blocked);
+  if (provisional) markProvisional(children);
   if (paragraph) paragraph.children = children;
-  else blocks.push({ type: "paragraph", children });
+  else {
+    const pending = { type: "paragraph" as const, children };
+    blocks.push(pending);
+    return pending;
+  }
+  return paragraph;
 }
 
 function inlineTextFromNodes(nodes: readonly Inline[]): string {
   return nodes.map((node) => node.type === "text" || node.type === "pending-reference" || node.type === "code" ? node.value
     : node.type === "break" ? "\n" : node.type === "image" ? node.alt : inlineTextFromNodes(node.children)).join("");
+}
+
+function markProvisional(nodes: Inline[]) {
+  if (!nodes.length || nodes.length === 1 && nodes[0]?.type === "pending-text") return;
+  nodes.splice(0, nodes.length, { type: "pending-text", children: nodes.slice() });
 }
 
 function hideOpenInlineLink(value: string) {
@@ -900,7 +899,8 @@ export function createStreamingDocument(): StreamingDocument {
 
   const updateParagraph = (record: ParagraphRecord, streaming = false, pendingReferences = true) => {
     unregister(record);
-    let inlineSource = streaming ? safeTableText(safeBlockSource(record.source)) : record.source;
+    const classified = streaming ? resolver.classifyPending(record.source) : undefined;
+    let inlineSource = classified?.kind === "paragraph" ? classified.content : record.source;
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment())
@@ -1140,11 +1140,11 @@ export function createStreamingDocument(): StreamingDocument {
         return pendingPreviewText;
       }
     }
-    if (pendingPreviewLength && pending.length >= pendingPreviewLength) return pendingPreviewText;
+    const classification = resolver.classifyPending(pending);
     previewScannedCharacters += pending.length;
-    pendingPreviewText = pendingInlineSource(pending);
+    pendingPreviewText = pendingInlineSource(classification.content);
     pendingPreviewLength = pending.length;
-    pendingPreviewAppendable = pendingPreviewText.length > 0 && pending.endsWith(pendingPreviewText) && !/[\\[*_~`<!&#|>]/.test(pendingPreviewText);
+    pendingPreviewAppendable = classification.appendable;
     return pendingPreviewText;
   };
 
@@ -1184,17 +1184,19 @@ export function createStreamingDocument(): StreamingDocument {
       finished = true;
     },
     render() {
-      if (finished || !resolver.pending.length || pendingReferenceApply) return blocks.view;
+      if (finished || pendingReferenceApply || !resolver.pending.length && !resolver.hasPendingLookahead) return blocks.view;
       if (previewBlocks && previewSource === source) return previewBlocks;
       const pending = resolver.pending.content;
-      const pendingLeaf = openCode ? resolver.pendingLeafContent : pendingLeafContent(pending);
+      const classification = resolver.classifyPending(pending);
       const overlay = cloneOpenPath(openRoots, Boolean(openParagraph || openCode));
-      if (openCode && !openIndentedCode) {
+      if (classification.kind === "fence" && openCode && !openIndentedCode) {
         const disposition = resolver.pendingFenceDisposition;
         if (disposition === "closes") closeOpenCode(overlay);
-        else if (disposition === "none") appendOpenCode(overlay, pendingLeaf);
+        else if (disposition === "none" && classification.content) appendOpenCode(overlay, classification.content);
       } else {
-        appendPendingParagraph(overlay, pendingPreview(), environment(), Boolean(openParagraph), blockedReferences);
+        const lookaheadParagraph = resolver.hasPendingLookahead ? tailParagraph(overlay) : undefined;
+        appendPendingParagraph(overlay, pendingPreview(), environment(), Boolean(openParagraph), blockedReferences, classification.provisional);
+        if (lookaheadParagraph) markProvisional(lookaheadParagraph.children);
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];

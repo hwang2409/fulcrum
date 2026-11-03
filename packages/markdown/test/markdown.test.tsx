@@ -14,9 +14,10 @@ import corpus from "./fixtures/agent-corpus.json";
 
 const json = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
 const window = new Window();
-const visibleText = (source: string, streaming = false) => {
+const visibleText = (source: string, streaming = false, includeProvisional = true) => {
   const element = window.document.createElement("div");
   element.innerHTML = renderToStaticMarkup(<Markdown source={source} streaming={streaming} />);
+  if (!includeProvisional) element.querySelectorAll('[data-part="md-text-pending"], [data-part="md-reference-pending"]').forEach((node) => node.remove());
   return element.textContent;
 };
 const isSubsequence = (value: string, expected: string) => {
@@ -105,8 +106,8 @@ test("streaming never changes the source", () => {
 });
 
 test("holds unmatched emphasis and link syntax while rendering open code", () => {
-  expect(renderToStaticMarkup(<Markdown source="**bold" streaming />)).toBe('<p data-part="md-paragraph">bold</p>');
-  expect(renderToStaticMarkup(<Markdown source="[docs](https://example.com" streaming />)).toBe('<p data-part="md-paragraph">docs</p>');
+  expect(renderToStaticMarkup(<Markdown source="**bold" streaming />)).toBe('<p data-part="md-paragraph"><span data-part="md-text-pending">bold</span></p>');
+  expect(renderToStaticMarkup(<Markdown source="[docs](https://example.com" streaming />)).toBe('<p data-part="md-paragraph"><span data-part="md-text-pending">docs</span></p>');
   expect(renderToStaticMarkup(<Markdown source="use ``a ` b" streaming />)).toContain('<code data-part="md-code-inline">a ` b</code>');
   expect(renderToStaticMarkup(<Markdown source={'```ts\nconst x = 1;'} streaming />)).toContain('<pre data-part="md-code-block" data-language="ts">');
 });
@@ -309,7 +310,7 @@ test("every streamed prefix only reveals final visible text", () => {
   for (const source of [exactExample, ...corpus]) {
     const finalText = visibleText(source, true).replace(/\s/g, "");
     for (let length = 0; length <= source.length; length++) {
-      const prefixText = visibleText(source.slice(0, length), true).replace(/\s/g, "");
+      const prefixText = visibleText(source.slice(0, length), true, false).replace(/\s/g, "");
       expect(isSubsequence(prefixText, finalText), `visible prefix ${length} of ${JSON.stringify(source)}`).toBe(true);
     }
   }

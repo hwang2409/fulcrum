@@ -36,6 +36,13 @@ export type PendingLine = {
   readonly scan: Readonly<PendingLineScan>;
 };
 
+export type PendingClassification = {
+  readonly content: string;
+  readonly kind: "empty" | "fence" | "paragraph";
+  readonly provisional: boolean;
+  readonly appendable: boolean;
+};
+
 type MutablePendingLine = {
   content: string;
   length: number;
@@ -144,6 +151,43 @@ const isTableDelimiter = (line: string) => /^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$
 const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
 const normalizeReference = (label: string) => label.trim().replace(/\s+/g, " ").toUpperCase();
 
+function stripPendingContainers(line: string) {
+  for (;;) {
+    const marker = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)?.[0];
+    if (!marker) return line;
+    line = line.slice(marker.length);
+  }
+}
+
+function classifyLeaf(line: string): PendingClassification {
+  let content = stripPendingContainers(line);
+  if (!content.trim()) return { content: "", kind: "empty", provisional: false, appendable: false };
+  const heading = /^#{1,6}[ \t]+/.exec(content);
+  if (heading) content = content.slice(heading[0].length);
+  const task = /^\[([ xX])\][ \t]+/.exec(content);
+  if (/^[ \t]*\[[^\]\n]+\]:/.test(content)) return { content: "", kind: "empty", provisional: false, appendable: false };
+  if (task) content = content.slice(task[0].length);
+  else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return { content: "", kind: "empty", provisional: false, appendable: false };
+  if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return { content: "", kind: "fence", provisional: false, appendable: false };
+  if (/[:-]/.test(content) && /^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(content))
+    return { content: "", kind: "empty", provisional: false, appendable: false };
+  if (/^[ \t]*(?:[|<]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
+    return { content: "", kind: "empty", provisional: false, appendable: false };
+  const firstBracket = content.indexOf("[");
+  const openBracket = content.lastIndexOf("[");
+  if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
+  else if (firstBracket >= 0 && content.trimEnd().endsWith("]")) content = content.slice(0, openBracket);
+  const visibleContent = content.includes("|") && (content.trimStart().startsWith("|") || content.split("|").length > 2)
+    ? content.split("|").map((cell) => cell.trim()).join("")
+    : content.replaceAll("|", "");
+  return {
+    content: visibleContent,
+    kind: "paragraph",
+    provisional: true,
+    appendable: visibleContent.length > 0 && line.endsWith(visibleContent) && !/[\\[*_~`<!&#|>]/.test(visibleContent),
+  };
+}
+
 function referenceDefinition(line: string) {
   const match = /^ {0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))(?:[ \t]+(?:"([^"]*)"|'([^']*)'|\(([^)]*)\)))?[ \t]*$/.exec(line);
   if (!match) return undefined;
@@ -175,6 +219,7 @@ export class MarkdownLineResolver {
   private pendingLine: MutablePendingLine = freshPending();
   private readonly referenceIndex = new Map<string, ReferenceDefinition>();
   private pendingReferenceTitle?: { label: string };
+  private previousContainerOnly = false;
 
   get references(): ReadonlyMap<string, ReferenceDefinition> {
     return this.referenceIndex;
@@ -194,12 +239,28 @@ export class MarkdownLineResolver {
     return cursor.line.slice(cursor.offset);
   }
 
+  classifyPending(line = this.pendingLine.content): Readonly<PendingClassification> {
+    const { cursor, unmatched } = this.matchContinuations(line);
+    if (!unmatched && this.openLeaf?.kind === "fence") {
+      const content = line.slice(cursor.offset);
+      const marker = this.openLeaf.marker;
+      if (new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(content))
+        return { content: "", kind: "fence", provisional: false, appendable: false };
+      return { content, kind: "fence", provisional: false, appendable: !/[\r\n]/.test(content) };
+    }
+    return classifyLeaf(line);
+  }
+
+  get hasPendingLookahead() {
+    return this.openLeaf?.kind === "paragraph" && this.openLeaf.tableEligible;
+  }
+
   get pendingFenceDisposition(): "none" | "possible" | "closes" {
     if (this.openLeaf?.kind !== "fence") return "none";
     const marker = this.openLeaf.marker;
     const content = this.pendingLeafContent;
     if (new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(content)) return "closes";
-    return new RegExp(`^ {0,3}${marker[0]}+\\s*$`).test(content) ? "possible" : "none";
+    return /^ {0,3}$/.test(content) || new RegExp(`^ {0,3}${marker[0]}+\\s*$`).test(content) ? "possible" : "none";
   }
 
   append(delta: string): LineResolution[] {
@@ -227,6 +288,8 @@ export class MarkdownLineResolver {
   }
 
   resolveLine(line: string, _final: boolean): LineResolution {
+    const followsContainerOnly = this.previousContainerOnly;
+    this.previousContainerOnly = false;
     const { cursor, matchedDepth, unmatched, blank } = this.matchContinuations(line);
     const continuedLeaf = this.continueOpenLeaf(cursor, unmatched);
     if (continuedLeaf) return continuedLeaf;
@@ -252,10 +315,13 @@ export class MarkdownLineResolver {
 
     const opened = continuesParagraph || blank ? [] : this.openContainers(cursor);
 
-    if (blank) {
+    if (blank || isBlank(line, cursor.offset)) {
       this.pendingReferenceTitle = undefined;
+      this.previousContainerOnly = !blank && opened.length > 0;
       return { continued: false, lazy: false, closedToDepth, opened };
     }
+    if (followsContainerOnly && /^ {4}/.test(line))
+      return { continued: false, lazy: false, closedToDepth, opened };
     const content = line.slice(cursor.offset);
     return this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy);
   }
@@ -419,7 +485,8 @@ export class MarkdownLineResolver {
         leaf: { kind: "html-open", content, path: path },
       };
     }
-    const tableDelimiter = opened.length === 0 && this.openLeaf?.kind === "paragraph" && this.openLeaf.tableEligible && isTableDelimiter(content);
+    const tableDelimiter = opened.length === 0 && this.openLeaf?.kind === "paragraph" && this.openLeaf.tableEligible
+      && this.openLeaf.content.split("|").some((cell) => cell.trim()) && isTableDelimiter(content);
     if (tableDelimiter) {
       this.openLeaf = { kind: "table" };
       return {
