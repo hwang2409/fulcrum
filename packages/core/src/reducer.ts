@@ -74,39 +74,49 @@ export interface EntityDraft {
 }
 type SpliceOutline = (index: number, deleteCount: number, items: readonly OutlineItem[]) => void;
 
-export function createEntityDraft(entities: Map<string, RunItem>, aliases: Map<string, string>) {
-  const entityChanges = new Map<string, RunItem | undefined>();
-  const aliasChanges = new Map<string, string | undefined>();
-  const deletedEntities = new Set<string>();
+type JournalEntry = { map: Map<string, unknown>; key: string; had: boolean; value: unknown };
+
+export function createEntityJournal(entities: Map<string, RunItem>, aliases: Map<string, string>) {
+  const journal: JournalEntry[] = [];
   const edits: OutlineSplice[] = [];
   const changed = new Set<string>();
+  const write = <T>(map: Map<string, T>, key: string, value: T | undefined) => {
+    const had = map.has(key);
+    const prior = map.get(key);
+    if (had === (value !== undefined) && prior === value) return false;
+    const index = journal.length;
+    const entry = journal[index] ?? { map: map as Map<string, unknown>, key, had, value: prior };
+    if (!journal[index]) journal.push(entry);
+    entry.map = map as Map<string, unknown>;
+    entry.key = key;
+    entry.had = had;
+    entry.value = prior;
+    if (value === undefined) map.delete(key);
+    else map.set(key, value);
+    return true;
+  };
   const draft: EntityDraft = {
-    get: (id) => {
-      if (entityChanges.size === 0) return entities.get(id);
-      if (deletedEntities.has(id)) return undefined;
-      const item = entityChanges.get(id);
-      return item ?? entities.get(id);
-    },
-    set: (item) => { entityChanges.set(item.id, item); deletedEntities.delete(item.id); changed.add(item.id); },
-    delete: (id) => { entityChanges.set(id, undefined); deletedEntities.add(id); changed.add(id); },
+    get: (id) => entities.get(id),
+    set: (item) => { if (write(entities, item.id, item)) changed.add(item.id); },
+    delete: (id) => { if (write(entities, id, undefined)) changed.add(id); },
     splice: (edit) => edits.push(edit),
-    getMessageAlias: (key) => aliasChanges.size === 0 ? aliases.get(key) : aliasChanges.has(key) ? aliasChanges.get(key) : aliases.get(key),
-    setMessageAlias: (key, id) => aliasChanges.set(key, id),
+    getMessageAlias: (key) => aliases.get(key),
+    setMessageAlias: (key, id) => { write(aliases, key, id); },
   };
   return {
     draft,
     edits,
     changed,
-    reset() { entityChanges.clear(); aliasChanges.clear(); deletedEntities.clear(); edits.length = 0; changed.clear(); },
-    commit() {
-      for (const [id, item] of entityChanges) {
-        if (item === undefined) entities.delete(id);
-        else entities.set(id, item);
+    reset() { journal.length = 0; edits.length = 0; changed.clear(); },
+    rollback() {
+      for (let i = journal.length - 1; i >= 0; i--) {
+        const { map, key, had, value } = journal[i];
+        if (had) map.set(key, value);
+        else map.delete(key);
       }
-      for (const [key, id] of aliasChanges) {
-        if (id === undefined) aliases.delete(key);
-        else aliases.set(key, id);
-      }
+      journal.length = 0;
+      edits.length = 0;
+      changed.clear();
     },
   };
 }
@@ -122,6 +132,27 @@ const finishPriorMessage = (next: RunState, id: string, endActiveMessage: () => 
 const appendMessageOutline = (next: RunState, itemId: string, spliceOutline: SpliceOutline) => {
   spliceOutline(next.outline.length, 0, [{ id: itemId, kind: "message" }]);
   next.nextId += 1;
+};
+const reduceUserMessage = (
+  next: RunState,
+  event: Extract<RunEvent, { type: "user_message" }>,
+  getItem: EntityDraft["get"],
+  getMessageAlias: EntityDraft["getMessageAlias"],
+  setMessageAlias: EntityDraft["setMessageAlias"],
+  appendItem: (item: RunItem) => void,
+  setItem: EntityDraft["set"],
+) => {
+  const intentId = event.intent === undefined ? undefined : `user:intent:${event.intent}`;
+  const deliveryId = event.delivery_id === undefined ? undefined : messageAlias(event.delivery_id);
+  const deliveryItemId = event.delivery_id === undefined ? undefined : `user:delivery:${event.delivery_id}`;
+  const id = (deliveryId && getMessageAlias(deliveryId)) ||
+    (intentId && getMessageAlias(intentId)) ||
+    (intentId && getItem(intentId) ? intentId : undefined) ||
+    intentId || deliveryItemId || `user:${next.nextId++}`;
+  if (getItem(id)) setItem({ id, type: "user", event });
+  else appendItem({ id, type: "user", event });
+  if (deliveryId && getMessageAlias(deliveryId) !== id) setMessageAlias(deliveryId, id);
+  if (intentId && getMessageAlias(intentId) !== id) setMessageAlias(intentId, id);
 };
 /**
  * A streaming message reads as its content blocks, then its text tail. A block that is not text first moves the tail
@@ -455,20 +486,9 @@ export function reduceAllWithEntities(
         next.usage = usage;
         break;
       }
-      case "user_message": {
-        const intentId = event.intent === undefined ? undefined : `user:intent:${event.intent}`;
-        const deliveryId = event.delivery_id === undefined ? undefined : messageAlias(event.delivery_id);
-        const deliveryItemId = event.delivery_id === undefined ? undefined : `user:delivery:${event.delivery_id}`;
-        const id = (deliveryId && getMessageAlias(deliveryId)) ||
-          (intentId && getMessageAlias(intentId)) ||
-          (intentId && getItem(intentId) ? intentId : undefined) ||
-          intentId || deliveryItemId || `user:${next.nextId++}`;
-        if (getItem(id)) setItem({ id, type: "user", event });
-        else appendItem({ id, type: "user", event });
-        if (deliveryId && getMessageAlias(deliveryId) !== id) setMessageAlias(deliveryId, id);
-        if (intentId && getMessageAlias(intentId) !== id) setMessageAlias(intentId, id);
+      case "user_message":
+        reduceUserMessage(next, event, getItem, getMessageAlias, setMessageAlias, appendItem, setItem);
         break;
-      }
       case "error": {
         const id = `error:${next.nextId++}`;
         next.agent = "idle";

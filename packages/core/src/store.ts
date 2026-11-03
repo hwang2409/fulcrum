@@ -1,7 +1,7 @@
 import type { RunEvent, RunItem } from "./events.js";
 import {
   initialState,
-  createEntityDraft,
+  createEntityJournal,
   reduceAllWithEntities,
   type OutlineItem,
   type OutlineSplice,
@@ -66,15 +66,16 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   let queued = false;
   let running = false;
   let flushing = false;
+  let notifying = false;
   let disposed = false;
   let stateChanged = false;
   let outlineChanged = false;
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
-  const transaction = createEntityDraft(entities, messageAliases);
+  const transaction = createEntityJournal(entities, messageAliases);
 
   const flush = () => {
-    if (pending.length === 0 || disposed || flushing) return false;
+    if (pending.length === 0 || disposed || flushing || notifying) return false;
     flushing = true;
     const events = pending;
     pending = [];
@@ -84,12 +85,11 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
     try {
       next = reduceAllWithEntities(current, events, transaction.draft);
     } catch (error) {
-      transaction.reset();
+      transaction.rollback();
       flushing = false;
       throw error;
     }
-    if (disposed) { transaction.reset(); flushing = false; return false; }
-    transaction.commit();
+    if (disposed) { transaction.rollback(); flushing = false; return false; }
     for (const id of transaction.changed) changedItems.add(id);
     current = next;
     stateChanged = true;
@@ -106,12 +106,17 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   const notify = () => {
     if (!stateChanged) return;
     stateChanged = false;
-    listeners.forEach((listener) => listener());
-    if (outlineChanged) outlineListeners.forEach((listener) => listener());
-    outlineChanged = false;
-    for (const id of changedItems)
-      itemListeners.get(id)?.forEach((listener) => listener());
-    changedItems.clear();
+    notifying = true;
+    try {
+      listeners.forEach((listener) => listener());
+      if (outlineChanged) outlineListeners.forEach((listener) => listener());
+      outlineChanged = false;
+      for (const id of changedItems)
+        itemListeners.get(id)?.forEach((listener) => listener());
+      changedItems.clear();
+    } finally {
+      notifying = false;
+    }
   };
 
   function subscribe(listener: Listener): () => void;
@@ -133,23 +138,23 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
 
   return {
     getState() {
-      flush();
+      if (!notifying) flush();
       return current;
     },
     getItem(id: string) {
-      flush();
+      if (!notifying) flush();
       return entities.get(id);
     },
     getOutline(): readonly OutlineItem[] {
-      flush();
+      if (!notifying) flush();
       return current.outline;
     },
     getOutlineSnapshot(): OutlineSnapshot {
-      flush();
+      if (!notifying) flush();
       return outlineSnapshot;
     },
     hasMessageDelivery(deliveryId: string) {
-      flush();
+      if (!notifying) flush();
       return messageAliases.has(`delivery:${deliveryId}`);
     },
     subscribe,
@@ -184,6 +189,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       pending = [];
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
+      transaction.rollback();
       entities = new Map();
       messageAliases.clear();
       listeners.clear();

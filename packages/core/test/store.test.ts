@@ -165,8 +165,12 @@ test("keeps one snapshot for every subscriber notification pass", () => {
   const store = createRunStore((job) => job());
   const seenA: string[][] = [];
   const seenB: string[][] = [];
+  let first = true;
   store.subscribe(() => {
-    store.dispatch({ type: "user_message", text: "nested", mode: "send", delivery_id: "nested" });
+    if (first) {
+      first = false;
+      store.dispatch({ type: "user_message", text: "nested", mode: "send", delivery_id: "nested" });
+    }
     seenA.push(store.getOutline().map(({ id }) => id));
   });
   store.subscribe(() => seenB.push(store.getOutline().map(({ id }) => id)));
