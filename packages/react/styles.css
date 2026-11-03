@@ -449,7 +449,7 @@ button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-a
 [data-part="sub-agent-status"]::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--mark); transform: translateY(-1px); }
 [data-part="sub-agent-name"] { color: var(--fulcrum-accent); font-weight: 700; }
 [data-part="sub-agent-task"] { color: var(--fulcrum-fg); }
-[data-part="sub-agent-meta"] { color: var(--fulcrum-tok-number); font-size: 12px; }
+[data-part="sub-agent-meta"] { color: var(--fulcrum-ui-number); font-size: 12px; }
 [data-part="sub-agent-open"] { color: var(--fulcrum-accent); font-size: 12px; font-weight: 700; }
 [data-part="sub-agent-open"]::after { content: " \203A"; }
 [data-part="sub-agent-line"] { display: flex; gap: 12px; min-width: 0; padding-left: 13px; font-size: 12px; line-height: 18px; white-space: nowrap; }
@@ -464,7 +464,7 @@ button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-a
 [data-part="sub-agent"][data-state="error"] [data-part="sub-agent-status"] { font-weight: 700; }
 [data-part="sub-agent"][data-state="canceled"] { --rail: var(--fulcrum-muted); --mark: transparent; }
 [data-part="sub-agent"][data-state="canceled"] [data-part="sub-agent-status"]::before { outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
-[data-part="sub-agent"][data-state="idle"] { --mark: var(--fulcrum-tok-type); --state: var(--fulcrum-tok-type); }
+[data-part="sub-agent"][data-state="idle"] { --mark: var(--fulcrum-ui-type); --state: var(--fulcrum-ui-type); }
 /* Waiting on the user: warn on every edge and the state word as a boxed badge, so it stands out in a long run. */
 [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { --rail: var(--fulcrum-warn); --mark: var(--fulcrum-warn); --state: var(--fulcrum-warn); border-color: var(--fulcrum-warn); }
 [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) [data-part="sub-agent-status"],
@@ -518,7 +518,7 @@ span[data-part="run-crumb"] { color: var(--fulcrum-fg); font-weight: 700; outlin
 [data-part="run-state"]:is([data-state="waiting_approval"], [data-state="waiting_input"]) { background: var(--fulcrum-warn); }
 [data-part="run-state"][data-state="done"] { background: var(--fulcrum-ok); }
 [data-part="run-state"][data-state="error"] { background: var(--fulcrum-danger); }
-[data-part="run-state"][data-state="idle"] { background: var(--fulcrum-tok-type); }
+[data-part="run-state"][data-state="idle"] { background: var(--fulcrum-ui-type); }
 [data-part="run-urgency"] { font-size: 12px; }
 [data-part="run-notice"] { min-width: 0; overflow: hidden; color: var(--fulcrum-muted); font-size: 12px; text-overflow: ellipsis; }
 [data-part="run-notice"][data-tone="error"] { color: var(--fulcrum-danger); }
