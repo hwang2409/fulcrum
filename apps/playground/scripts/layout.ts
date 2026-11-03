@@ -324,9 +324,6 @@ try {
   await replay.selectOption("#mode", "zeta:unknown.jsonl");
   await replay.locator("#rate").fill("200");
   await replay.waitForFunction(() => Number(document.querySelector(".mode span")?.textContent?.match(/lap (\d+)/)?.[1] ?? 0) >= 9, undefined, { timeout: 60_000 });
-  // The Timeline's hidden live region must stay inside its scroll box in any host, so the page itself never scrolls.
-  const pageOverflow = await replay.evaluate(() => document.scrollingElement!.scrollHeight - innerHeight);
-  if (pageOverflow > 0) failures.push(`playground: the document is ${pageOverflow} px taller than the viewport; the Timeline must not stretch its host page`);
   const rotation = await replay.evaluate(() => ({
     mounted: Boolean(document.querySelector('[data-part="timeline"]')),
     items: Number(document.querySelector('[data-testid="readout"]')?.textContent?.match(/· (\d+) items/)?.[1] ?? -1),

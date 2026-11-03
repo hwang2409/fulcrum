@@ -332,16 +332,19 @@ try {
       await page.keyboard.press("Enter");
       await composer.and(page.locator('[data-state="idle"]')).waitFor({ timeout: 5000 });
       await settle(page);
-      const active = await page.evaluate(() => document.activeElement?.tagName);
-      if (active !== "TEXTAREA") throw new Error(`focus went to ${active} when the stop button went away`);
       await page.locator(".undelivered", { hasText: "not delivered" }).waitFor({ timeout: 3000 }).catch(() => { throw new Error("the dropped steer is not marked as not delivered"); });
       const marked = await page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: "steer: keep it short" }).evaluate((row) => row.nextElementSibling?.classList.contains("undelivered") ?? false);
       if (!marked) throw new Error("the not-delivered mark is not on the steer's row");
       await Bun.sleep(300);
       if (fake.sent.filter((entry) => entry.text === "steer: keep it short").length !== 1) throw new Error("a steer the user stopped was resent");
+      const active = await page.evaluate(() => document.activeElement?.tagName);
+      if (active !== "TEXTAREA") throw new Error(`focus went to ${active} when the stop button went away`);
       await shoot(page, "composer-steer-dropped-1440-tokyo-night");
     });
     await check("the page never scrolls: after IME typing the document fits the viewport and the headers stay in view", async () => {
+      // A tall run: the Timeline's hidden live region sits at the end of 400 rows.
+      await page.locator("button.session", { hasText: "400 rows" }).click();
+      await page.locator('[data-part="timeline"][data-virtual="true"]').waitFor({ timeout: 10_000 });
       const field = page.locator(".dock textarea");
       await field.click();
       const cdp = await context.newCDPSession(page);
