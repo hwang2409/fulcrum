@@ -1049,9 +1049,10 @@ export function createStreamingDocument(): StreamingDocument {
         const previewInput = pendingDefinition ? source.slice(0, -pending.length) : source;
         let safePreviewInput = previewInput.replace(/&(?:#(?:x[0-9a-f]*|[0-9]*)?|[a-z][a-z0-9]*)?$/i, "").replace(/<[^>\n]*$/, "");
         if (pendingLeaf.endsWith("\\")) safePreviewInput = safePreviewInput.slice(0, -1);
-        const safeEmphasis = withoutOpenEmphasis(pendingLeaf);
+        const safeEmphasis = /^(?:`{3,}|~{3,})\s*$/.test(pendingLeaf.trimStart()) ? pendingLeaf : withoutOpenEmphasis(pendingLeaf);
         if (safeEmphasis !== pendingLeaf) safePreviewInput = safePreviewInput.slice(0, -pendingLeaf.length) + safeEmphasis;
-        const pendingCode = unmatchedCodeSpan(pendingLeaf);
+        const pendingFenceClose = openCode && /^(?:`+|~+)\s*$/.test(pendingLeaf.trimStart());
+        const pendingCode = pendingFenceClose ? undefined : unmatchedCodeSpan(pendingLeaf);
         const imageBracket = pendingLeaf.lastIndexOf("![");
         const bracket = imageBracket >= 0 ? imageBracket : pendingLeaf.lastIndexOf("[");
         const openBracket = imageBracket >= 0 && pendingLeaf.indexOf(")", imageBracket) < 0 || bracket >= 0 && bracket >= pendingLeaf.lastIndexOf("]");
@@ -1072,7 +1073,7 @@ export function createStreamingDocument(): StreamingDocument {
         if (pendingCodeValue) appendOpenCodeSpan(preview, pendingCodeValue);
         markPendingReferenceBlocks(preview, blockedReferences);
         const frozen = Array.from(blocks.values()).slice(0, blocks.frozen);
-        const structuralPreview = completeReferenceTitle || completeTableDelimiter || hasTableDelimiter || openCode && /^(?:`+|~+)$/.test(pendingLeaf.trim()) || /(?:^|[ >])\d+[.)]\s/.test(pending) || !pending && source.endsWith("\n") || /^ {0,3}(?:=+|-+)\s*$/.test(pending);
+        const structuralPreview = completeReferenceTitle || completeTableDelimiter || hasTableDelimiter || /(?:`{3,}|~{3,})\s*$/.test(pending) || /(?:^|[ >])\d+[.)]\s/.test(pending) || !pending && source.endsWith("\n") || /^ {0,3}(?:=+|-+)\s*$/.test(pending);
         const reconciled = structuralPreview ? preview : reconcileBlocks([...frozen, ...openRoots], preview);
         const changesFrozen = reconciled.slice(0, blocks.frozen).some((block, index) => block !== frozen[index]);
         if (!changesFrozen) blocks.publish(reconciled.slice(blocks.frozen));
