@@ -161,7 +161,7 @@ function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): 
       if (delivery) chat?.steers.push(delivery);
       return { result: accepted };
     }
-    histories[active] = [...(histories[active] ?? []), { id: `sent-${sent.length}`, role: "user", content: [text(value)], tool_result: null }];
+    histories[active] = [...(histories[active] ?? []), { id: `sent-${sent.length}`, role: "user", content: [text(value)], ...(delivery ? { delivery_id: delivery } : {}), tool_result: null }];
     // After the reply, as zeta starts the turn once the send is persisted.
     queueMicrotask(() => void chatTurn(active, send));
     return { result: accepted };

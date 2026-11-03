@@ -1,5 +1,6 @@
 import type { RunEvent, RunItem, SubAgentEvent } from "./events.js";
 import { appendText } from "./stream.js";
+import { messageAlias } from "./message-identity.js";
 
 /** Maximum durable notification ids retained for replay dedupe. */
 export const RECEIPT_LIMIT = 1_000;
@@ -419,14 +420,14 @@ export function reduceAllWithEntities(
       }
       case "user_message": {
         const intentId = event.intent === undefined ? undefined : `user:intent:${event.intent}`;
-        const deliveryId = event.delivery_id === undefined ? undefined : `user:delivery:${event.delivery_id}`;
-        const existingDelivery = deliveryId === undefined ? undefined : next.outline.find(({ id: itemId }) => {
-          const item = getItem(itemId);
-          return item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === event.delivery_id;
-        })?.id;
-        const id = intentId !== undefined && getItem(intentId) ? intentId : existingDelivery ?? intentId ?? deliveryId ?? `user:${next.nextId++}`;
+        const deliveryId = event.delivery_id === undefined ? undefined : messageAlias(event.delivery_id);
+        const deliveryItemId = event.delivery_id === undefined ? undefined : `user:delivery:${event.delivery_id}`;
+        const id = (deliveryId && next.messageAliases[deliveryId]) || (intentId && getItem(intentId) ? intentId : undefined) || intentId || deliveryItemId || `user:${next.nextId++}`;
         if (getItem(id)) setItem({ id, type: "user", event });
         else appendItem({ id, type: "user", event });
+        if (deliveryId && next.messageAliases[deliveryId] !== id) {
+          next.messageAliases = { ...next.messageAliases, [deliveryId]: id };
+        }
         break;
       }
       case "error": {

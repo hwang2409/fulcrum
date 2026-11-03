@@ -5,7 +5,7 @@ import { createDelivery, stopTurn } from "../src/delivery";
 type Reply = { result?: unknown; error?: { code: number; message: string; data?: unknown } };
 
 /** A real zeta client over an in-memory transport; `answer` replies to each request by method. */
-async function server(answer: (method: string, params: Record<string, unknown>) => Reply, features = ["delivery_id", "user_message_event", "user_message_delivery_id"]) {
+async function server(answer: (method: string, params: Record<string, unknown>) => Reply, features = ["delivery_id", "user_message_event", "user_message_delivery_id"], echo = true) {
   let deliver!: (text: string) => void;
   const calls: Array<[string, Record<string, unknown>]> = [];
   const transport: Transport = {
@@ -18,7 +18,7 @@ async function server(answer: (method: string, params: Record<string, unknown>) 
       queueMicrotask(() => {
         // As zeta does, an accepted send or steer is echoed to the session before the reply.
         const reply = method === "hello" ? { result: { protocol_version: "1.2", capabilities: { features } } } : answer(method, params);
-        if ((method === "send" || method === "steer") && (reply.result as { accepted?: boolean } | undefined)?.accepted)
+        if (echo && (method === "send" || method === "steer") && (reply.result as { accepted?: boolean } | undefined)?.accepted)
           deliver(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: params.text, mode: method, attachments: [], ...(params.delivery_id === undefined ? {} : { delivery_id: params.delivery_id }) } }));
         deliver(JSON.stringify({ jsonrpc: "2.0", id, ...reply }));
       });
@@ -150,7 +150,7 @@ test("stop is a session abort", async () => {
 });
 
 test("accepted delivery without an echo reconciles one synthetic user event", async () => {
-  const { client } = await server(() => ok);
+  const { client } = await server(() => ok, ["delivery_id", "user_message_event", "user_message_delivery_id"], false);
   const events: unknown[] = [];
   const delivery = createDelivery(ids(), (event) => events.push(event));
   await delivery.submit(client, "hello", false);

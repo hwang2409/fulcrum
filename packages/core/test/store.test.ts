@@ -207,7 +207,27 @@ test("live and history user messages join one row through original and replaceme
   expect(liveFirst.getOutline().filter((item) => item.kind === "user")).toHaveLength(1);
 
   const historyFirst = createRunStore((flush) => flush());
-  historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", delivery_id: "delivery-1" });
+  historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-1" });
   historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-2" });
   expect(historyFirst.getOutline().filter((item) => item.kind === "user")).toHaveLength(1);
+});
+
+test("delivery-id reconciliation reads a constant number of entities in a 100k-row outline", async () => {
+  const { initialState, reduceAllWithEntities } = await import("../src/reducer.js");
+  const target = { id: "user:target", type: "user" as const, event: { type: "user_message" as const, text: "go", mode: "send", delivery_id: "other" } };
+  const entities = new Map<string, typeof target>();
+  entities.set(target.id, target);
+  const outline = [{ id: target.id, kind: "user" as const }];
+  for (let i = 0; i < 100_000; i++) {
+    const id = `user:${i}`;
+    entities.set(id, { id, type: "user", event: { type: "user_message", text: "x", mode: "send" } });
+    outline.push({ id, kind: "user" });
+  }
+  const state = { ...initialState, outline };
+  let reads = 0;
+  reduceAllWithEntities(state, [{ type: "user_message", text: "go", mode: "send", delivery_id: "target" }], {
+    get(id) { reads++; return entities.get(id); },
+    set() {}, delete() {}, splice() {},
+  });
+  expect(reads).toBeLessThan(10);
 });

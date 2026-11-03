@@ -368,7 +368,11 @@ const offline = () => Promise.reject(new Error("not connected to zeta serve"));
 /** The message box: send while idle, steer while a turn runs (zeta always takes steering), stop the turn. */
 function RunComposer({ client, onUndelivered }: { client: ZetaClient | null; onUndelivered(intents: string[]): void }) {
   const running = useRun((state) => state.agent === "running");
-  const delivery = useMemo(() => createDelivery(), []);
+  const store = useRunStore();
+  const delivery = useMemo(() => createDelivery(undefined, (event) => {
+    const deliveryId = event.type === "user_message" && event.delivery_id;
+    if (deliveryId && !store.getState().messageAliases[`delivery:${deliveryId}`]) store.dispatch(event);
+  }), [store]);
   const wasRunning = useRef(running);
   useEffect(() => {
     // shortcut: a resend that fails is not shown; upgrade when the composer can take a host-reported error.
