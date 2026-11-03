@@ -55,7 +55,7 @@ const histories: Record<string, Json[]> = {
 };
 
 /** The live turn that runs when the active session opens: prose, code, a shell call, an approval, then a summary. */
-const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "deny">, wait: (ms: number) => Promise<void>, done: () => void) => async () => {
+const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "deny" | "abort">, wait: (ms: number) => Promise<void>, done: () => void) => async () => {
   // Committed rows also land in history, as in zeta, so a reconnect rebuilds what the live stream showed.
   const history = histories[ACTIVE]!;
   const row = (id: string, role: string, content: Json[], toolResult: Json | null = null) => history.push({ id, role, content, tool_result: toolResult });
@@ -81,6 +81,7 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
   const approval = ask();
   e("approval_request", { request_id: "approval-1", tool_call: clean, delegated: false });
   const decision = await approval;
+  if (decision === "abort") return done();
   e("approval_end", { request_id: "approval-1", data: { decision } });
   if (decision === "approve") {
     e("tool_start", { tool_call: clean, data: {} });
@@ -101,10 +102,12 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
   const discovery = join(home, "run", "serve.ws.json");
   let token = crypto.randomUUID();
   let mode: Mode = "ok";
+  let liveEnabled = live;
   let allowed = origins;
   let active: string | null = ACTIVE;
-  let decide: ((decision: "approve" | "deny") => void) | null = null;
+  let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
   let turnStarted = false;
+  let approvalAborted = false;
   let running = false;
   const decisions: Json[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
@@ -121,7 +124,19 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
     },
     websocket: {
       open(socket) { sockets.add(socket); },
-      close(socket) { sockets.delete(socket); },
+      close(socket) {
+        if (!decide || approvalAborted) { sockets.delete(socket); return; }
+        approvalAborted = true;
+        const resolve = decide;
+        decide = null;
+        running = false;
+        for (const each of sockets) {
+          each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "approval_end", session_id: ACTIVE, request_id: "approval-1", data: { reason: "client_disconnected" } } }));
+          each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "turn_aborted", session_id: ACTIVE, message: "turn aborted" } }));
+        }
+        sockets.delete(socket);
+        resolve("abort");
+      },
       async message(socket, raw) {
         const { id, method, params = {} } = JSON.parse(String(raw)) as { id: number; method: string; params: Json };
         const reply = (body: Json) => socket.send(JSON.stringify({ jsonrpc: "2.0", id, ...body }));
@@ -139,7 +154,7 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
           return reply({ result: { sessions: page, next_offset: offset + limit < sessions.length ? offset + limit : null } });
         }
         if (method === "status") {
-          const pending = decide ? [{ request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, delegated: false }] : [];
+          const pending = decide && !approvalAborted ? [{ request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, delegated: false }] : [];
           return reply({ result: { session: active ? sessions.find((session) => session.session_id === active) ?? null : null, state: running ? (decide ? "tool" : "running") : "idle", explicit_finish: false, pending_approvals: pending, usage: {}, compaction_markers: 0 } });
         }
         if (method === "resume") {
@@ -153,10 +168,10 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
           const offset = Number(params.offset ?? 0);
           reply({ result: { messages: rows.slice(offset, offset + 8), next_offset: offset + 8 < rows.length ? offset + 8 : null } });
           // The run starts once, after the first open of the active session finishes its history.
-          if (live && active === ACTIVE && offset + 8 >= rows.length && !turnStarted) {
+          if (liveEnabled && active === ACTIVE && offset + 8 >= rows.length && !turnStarted) {
             turnStarted = true;
             running = true;
-            const ask = () => new Promise<"approve" | "deny">((resolve) => { decide = (decision) => { decide = null; resolve(decision); }; });
+            const ask = () => new Promise<"approve" | "deny" | "abort">((resolve) => { decide = (decision) => { decide = null; resolve(decision); }; });
             setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; })(), 300);
           }
           return;
@@ -182,12 +197,18 @@ export async function startFakeZeta({ origins, port = 0, live = true }: { origin
     drop() { for (const socket of sockets) socket.close(1012, "restart"); },
     /** Removes the discovery file and refuses upgrades, like a stopped server. */
     async stop() { allowed = []; await rm(discovery, { force: true }); this.drop(); },
-    async start() { allowed = origins; token = crypto.randomUUID(); await write({ port: server.port, token, pid: process.pid, origins: allowed }); },
+    async start() {
+      allowed = origins;
+      token = crypto.randomUUID();
+      if (!decide) { turnStarted = false; approvalAborted = false; running = false; }
+      await write({ port: server.port, token, pid: process.pid, origins: allowed });
+    },
     /** Lists other origins in the allowlist, so this page's origin is missing. */
     async foreignOrigin() { allowed = ["http://localhost:5173"]; await write({ port: server.port, token, pid: process.pid, origins: allowed }); },
     /** Hands out a token the server will refuse. */
     async wrongToken() { await write({ port: server.port, token: "stale-token", pid: process.pid, origins: allowed }); },
     setMode(next: Mode) { mode = next; },
+    setLive(next: boolean) { liveEnabled = next; },
     async close() { this.drop(); server.stop(true); await rm(home, { recursive: true, force: true }); },
   };
 }

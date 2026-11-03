@@ -158,14 +158,25 @@ try {
       if (!(await page.locator('[data-part="timeline"] [data-part="tool"]').count())) throw new Error("no tool card");
       if (await page.locator('[data-part="timeline"] [data-part="tool"][data-state="streaming"]').count() > 1) throw new Error("history tool left running");
     });
-    await check("live run streams a shell card, then an approval that approves", async () => {
+    await check("live run streams a shell card, then a dropped pending approval aborts", async () => {
       await page.locator('[data-tool-view="shell"]').first().waitFor({ timeout: 5000 });
+      await page.locator(".scroll").evaluate((element) => { element.scrollTop = element.scrollHeight; });
       const approval = page.locator('[data-part="approval"][data-state="pending"]');
       await approval.waitFor({ timeout: 5000 });
       await shoot(page, "connected-approval-1440-tokyo-night");
-      await approval.getByRole("button", { name: "approve" }).click();
-      await page.getByText("20 of 20").waitFor({ timeout: 5000 });
-      if (!fake.decisions.some((decision) => decision.method === "approve" && decision.request_id === "approval-1")) throw new Error("server got no approve");
+      await fake.start();
+      fake.drop();
+      await page.getByText(/connection lost|reconnecting/).first().waitFor({ timeout: 3000 });
+      if (!(await page.locator(".scroll[data-stale=true]").count())) throw new Error("old view was not marked stale");
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".notice").waitFor({ state: "detached" });
+      const rebuilt = page.locator('[data-part="approval"][data-id="approval:approval-1"]');
+      await rebuilt.waitFor({ timeout: 5000 });
+      if (await rebuilt.getByRole("button", { name: "approve" }).count() || await rebuilt.getByRole("button", { name: "deny" }).count()) throw new Error("aborted approval kept decision buttons");
+      if (await rebuilt.getByText("aborted", { exact: true }).count() !== 1) throw new Error("approval did not show aborted");
+      if (await page.locator('[data-part="approval"]').count() !== 1) throw new Error("duplicate approval rows after reconnect");
+      if (await page.locator('[data-tone="danger"]').count()) throw new Error("reconnect showed an app error");
+      if (fake.decisions.length) throw new Error("server received a decision for the aborted approval");
     });
     await check("follows the bottom while the run streams", async () => {
       await settle(page);
@@ -198,18 +209,17 @@ try {
       await page.getByRole("button", { name: "retry now" }).click();
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
       await page.locator(".notice").waitFor({ state: "detached" });
-      await page.getByText("20 of 20").waitFor({ timeout: 5000 });
+      await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
       const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));
       if (new Set(ids).size !== ids.length) throw new Error("duplicate rows after reconnect");
-      fake.drop();
-      await page.getByText(/connection lost|reconnecting/).first().waitFor({ timeout: 3000 });
-      await shoot(page, "state-dropped-1440");
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
-      await page.getByText("20 of 20").waitFor({ timeout: 5000 });
-      if (await page.locator('[data-part="approval"][data-state="pending"]').count()) throw new Error("a resolved approval came back as pending");
+      if (await page.locator('[data-part="approval"][data-state="pending"]').count()) throw new Error("an aborted approval came back as pending");
     });
 
     await check("keyboard: arrows move through sessions, Enter opens one, the theme picker works", async () => {
+      fake.setLive(false);
+      await fake.start();
+      await page.goto(`${origin}/?theme=tokyo-night`);
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
       await page.locator('button.session[tabindex="0"]').focus();
       await page.keyboard.press("ArrowDown");
       const focused = await page.evaluate(() => document.activeElement?.textContent ?? "");
@@ -240,12 +250,14 @@ try {
     await context.close();
 
     // Mobile: drawer, layout, contrast.
+    fake.setLive(true);
+    await fake.start();
     const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
     const mobile = await phone.newPage();
     const mobileErrors: string[] = [];
     mobile.on("pageerror", (error) => mobileErrors.push(error.message));
     await check("390: the run fills the width; the session list is a drawer", async () => {
-      await mobile.goto(`${origin}/?theme=gruvbox-dark#session=${ACTIVE}`);
+      await mobile.goto(`${origin}/?theme=gruvbox-dark#session=s-themes`);
       await mobile.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
       if (await mobile.locator("button.session").first().isVisible()) throw new Error("sidebar visible without the drawer");
       await shoot(mobile, "connected-390-gruvbox-dark");

@@ -138,8 +138,18 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     // The view moves off the old session now, so its lease goes before the new store is built.
     if (state.open && state.open.id !== id) { state.open.lease.release(); set({ open: null }); }
     try {
+      const previous = state.open?.id === id ? state.open.lease.store : null;
       const lease = await openSession(target, id, (messages) => { if (mine === openGeneration) set({ opening: { id, messages } }); });
       if (mine !== openGeneration || !live(target)) return lease.release();
+      if (previous) {
+        for (const { id: itemId } of previous.getOutline()) {
+          const item = previous.getItem(itemId);
+          if (item?.type === "approval" && item.ended) {
+            lease.store.dispatch(item.request);
+            lease.store.dispatch(item.ended);
+          }
+        }
+      }
       state.open?.lease.release();
       set({ open: { id, lease, stale: false }, opening: null });
       void refresh();
@@ -154,7 +164,14 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     client = connection.client;
     if (!client) {
       openGeneration++;
-      if (state.open) set({ open: { ...state.open, stale: true }, opening: null });
+      if (state.open) {
+        for (const { id } of state.open.lease.store.getOutline()) {
+          const item = state.open.lease.store.getItem(id);
+          if (item?.type === "approval" && !item.ended && item.request.type === "approval_request")
+            state.open.lease.store.dispatch({ type: "approval_end", request_id: item.request.request_id, data: { reason: "client_disconnected" } });
+        }
+        set({ open: { ...state.open, stale: true }, opening: null });
+      }
       return;
     }
     void (async () => {

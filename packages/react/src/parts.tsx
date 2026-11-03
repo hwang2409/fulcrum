@@ -180,7 +180,7 @@ export const Approval = memo(function Approval({
       throw error;
     }
   };
-  const status = !pending ? "resolved" : sending ? (sending === "approve" ? "approving" : "denying") : undefined;
+  const status = !pending ? ((item.ended && "data" in item.ended && item.ended.data?.reason === "client_disconnected") ? "aborted" : "resolved") : sending ? (sending === "approve" ? "approving" : "denying") : undefined;
   return (
     <div
       className={className}
