@@ -12,7 +12,7 @@ const count = Number(params.get("count") ?? 5_000);
 const auto = params.get("auto") === "1";
 let serial = count;
 let outline = Array.from({ length: count }, (_, index) => ({ id: `row:${index}`, kind: "message" as const }));
-let outlineSnapshot: OutlineSnapshot = { items: outline, change: { type: "append", count: outline.length } };
+let outlineSnapshot: OutlineSnapshot = { items: outline, change: null };
 const items = new Map<string, RunItem>();
 const outlineListeners = new Set<Listener>();
 const keyed = new Map<string, Set<Listener>>();
@@ -44,23 +44,17 @@ const store: RunStore = {
   subscribeOutline(listener) { outlineListeners.add(listener); return () => outlineListeners.delete(listener); },
 };
 const publishOutline = () => outlineListeners.forEach((listener) => listener());
+const rowsOf = (amount: number) => Array.from({ length: amount }, () => ({ id: `row:${serial++}`, kind: "message" as const }));
+const splice = (index: number, deleteCount: number, inserted: typeof outline) => {
+  const from = outline;
+  outline = [...from.slice(0, index), ...inserted, ...from.slice(index + deleteCount)];
+  outlineSnapshot = { items: outline, change: { from, splices: [{ index, deleteCount, items: inserted }] } };
+  publishOutline();
+};
 const controls = {
-  append(amount = 1) {
-    outline = [...outline, ...Array.from({ length: amount }, () => ({ id: `row:${serial++}`, kind: "message" as const }))];
-    outlineSnapshot = { items: outline, change: { type: "append", count: amount } };
-    publishOutline();
-  },
-  prepend(amount = 1) {
-    outline = [...Array.from({ length: amount }, () => ({ id: `row:${serial++}`, kind: "message" as const })), ...outline];
-    outlineSnapshot = { items: outline, change: { type: "prepend", count: amount } };
-    publishOutline();
-  },
-  // A middle insert has no incremental change type, so the engine rebuilds its layout and must still hold the anchor.
-  insert(index: number, amount = 1) {
-    outline = [...outline.slice(0, index), ...Array.from({ length: amount }, () => ({ id: `row:${serial++}`, kind: "message" as const })), ...outline.slice(index)];
-    outlineSnapshot = { items: outline, change: null };
-    publishOutline();
-  },
+  append: (amount = 1) => splice(outline.length, 0, rowsOf(amount)),
+  prepend: (amount = 1) => splice(0, 0, rowsOf(amount)),
+  insert: (index: number, amount = 1) => splice(index, 0, rowsOf(amount)),
   resize(id: string, height: number) {
     const prior = getItem(id);
     const next = item(id, height);

@@ -21,7 +21,8 @@ const isIOSWebKit = () => navigator.userAgent.includes("iP");
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
   enabled?: boolean;
-  outlineUpdate?: OutlineUpdate | null;
+  /** How `outline` came from the prior one; the engine edits in place when it holds that prior outline. */
+  outlineUpdate?: OutlineUpdate<Id> | null;
   /** Resets the virtual engine when the outline owner changes. */
   resetKey?: unknown;
 };
@@ -78,14 +79,9 @@ export function useVirtualList<Id extends string>(
       engine.reset();
     }
     if (appliedOutline.current !== outline) {
-      const priorLength = appliedOutline.current?.length;
       appliedOutline.current = outline;
       const token = engine.beforeMutation();
-      const update = options.outlineUpdate;
-      const validUpdate = !resetPending && update && priorLength !== undefined && outline.length === priorLength + update.count
-        ? update
-        : undefined;
-      engine.setOutline(outline, validUpdate);
+      engine.setOutline(outline, options.outlineUpdate);
       engine.setLoaded("all");
       if (initial.current) initial.current = false;
       else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });

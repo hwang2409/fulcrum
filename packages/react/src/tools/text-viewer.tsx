@@ -280,10 +280,14 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
   const [atBottom, setAtBottom] = useState(follow);
   const [newOutput, setNewOutput] = useState(false);
   const seenLength = useRef(text.length);
-  const priorCount = useRef(0);
-  const added = segments.length - priorCount.current;
-  const update = added > 0 && priorCount.current > 0 ? { type: "append" as const, count: added } : null;
-  priorCount.current = segments.length;
+  // useSegments either extends its array (old segments are the same objects) or builds a new one: an extension is an
+  // append from the prior segments.
+  const prior = useRef<TextSegment[]>([]);
+  const from = prior.current;
+  const update = from.length > 0 && segments.length > from.length && segments[from.length - 1] === from.at(-1)
+    ? { from, splices: [{ index: from.length, deleteCount: 0, items: segments.slice(from.length) }] }
+    : null;
+  prior.current = segments;
   const list = useVirtualList(segments, {
     estimateSize: (kind) => Number(kind) * ROW_HEIGHT,
     maxMounted: 200,
