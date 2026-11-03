@@ -68,7 +68,9 @@ export function useTokens(code: string, language: string | undefined, id: string
     return ready;
   }
   const prior = last.current;
-  if (prior && code.length > prior.code.length && code.startsWith(prior.code)) return [...prior.tokens, { text: code.slice(prior.code.length) }];
+  // The last tokens stay on their prefix while newer ones are pending: a block never drops to plain (no color blink at
+  // close, when the same text is asked for again as done).
+  if (prior && code.startsWith(prior.code)) return code === prior.code ? prior.tokens : [...prior.tokens, { text: code.slice(prior.code.length) }];
   return null;
 }
 

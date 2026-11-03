@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
 import type { Highlight, HighlightContext, Token } from "@fulcrum/highlight";
 import { createRoot, type Root } from "react-dom/client";
-import { RunProvider, ToolCall } from "../src/index.js";
+import { Code, HighlightContext as HighlightProvider, RunProvider, ToolCall } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
@@ -358,4 +358,18 @@ test("a multi-line command is tokenized as written, then joined onto the header'
   const summary = q('[data-id="tool:h"] [data-part="tool-summary"]');
   expect(summary.textContent).toBe("$ cat > release.sh <<'EOF' #!/usr/bin/env bash set -euo pipefail EOF");
   expect([...summary.querySelectorAll(".tok-comment")].map((node) => node.textContent)).toEqual(["#!/usr/bin/env bash"]);
+});
+
+test("a block whose done colors are pending keeps its streaming colors: no blink to plain at close", () => {
+  const pendingDone = ((code: string, _language: string | undefined, context?: HighlightContext) =>
+    context?.state === "done" ? new Promise<Token[]>(() => {}) : [{ text: code, type: "keyword" }]) as Highlight;
+  pendingDone.dispose = () => {};
+  pendingDone.subscribe = () => () => {};
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  act(() => root!.render(<HighlightProvider.Provider value={pendingDone}><Code text="let a = 1;" language="ts" id="c" done={false} /></HighlightProvider.Provider>));
+  expect(container.querySelector(".tok-keyword")).not.toBeNull();
+  act(() => root!.render(<HighlightProvider.Provider value={pendingDone}><Code text="let a = 1;" language="ts" id="c" /></HighlightProvider.Provider>));
+  expect(container.querySelector(".tok-keyword")?.textContent).toBe("let a = 1;");
 });
