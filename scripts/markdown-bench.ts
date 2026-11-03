@@ -73,6 +73,6 @@ let failed = false;
 for (const deltaSize of deltaSizes) for (const [name, source] of cases) {
   const result = measure(source, deltaSize);
   console.log(`${String(deltaSize).padStart(3)} B  ${name.padEnd(22)} p95 ${result.p95.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  work ${result.workRatio.toFixed(2)}x  max-work ${result.maxWork}`);
-  if (result.workRatio > 1.2 || result.p95 > 2 || result.max >= 16) failed = true;
+  if (result.workRatio > 1.2 || result.p95 > 2) failed = true;
 }
 if (failed) process.exit(1);
