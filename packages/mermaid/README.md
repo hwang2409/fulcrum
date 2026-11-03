@@ -15,11 +15,11 @@ const fences: Fences = { mermaid: MermaidFence }; // module scope: a stable obje
 
 ## what it does
 
-- **streaming**: while the fence is open, and until its diagram is ready, the box is the highlighted source, unchanged. the diagram draws only after the fence closes, and never again for later tokens of the message.
+- **streaming**: while the fence is open, and until its diagram is ready, the box is the highlighted source, unchanged (colored when `@fulcrum/highlight` has a `mermaid` grammar). the diagram draws only after the fence closes, and never again for later tokens of the message.
 - **one swap**: the svg goes in before paint in the commit that hides the source, so the box goes from the source's height to the diagram's in one layout, with no blank frame. the timeline's own anchoring keeps the reading position (`apps/playground/scripts/mermaid-check.ts` checks 1 px in virtual and plain timelines).
 - **controls**: diagram or source (a pressed toggle), copy source, and open full size (a modal `<dialog>`: Escape closes it and focus returns to `open`). the svg is `role="img"` with a label from the diagram: its `accTitle`, else its type and label texts.
 - **errors**: an invalid diagram keeps its source, with mermaid's parse error shortened under it. the rest of the message is unaffected.
-- **size**: a diagram is drawn at its natural size and scrolls inside its box when it is wider, so text never shrinks and the page never scrolls sideways.
+- **size**: a diagram is drawn at its natural size and scrolls inside its box when it is wider, so text never shrinks and the page never scrolls sideways. a crowded gantt axis keeps every nth date, so no two dates overlap.
 - **theme**: the diagram uses the `--fulcrum-*` tokens at the fence (bg, fg, muted, surface, border, accent, ok, warn, danger, and the syntax colors for series) through mermaid's `base` theme, the element's font (JetBrains Mono in fulcrum), no corner radius, gradient, or shadow. a `data-fulcrum-theme` change anywhere in the page, a `class` or `style` change on `<html>` or `<body>`, or an OS color scheme change, draws visible diagrams again in the new colors; the old diagram stays up until the new one is in.
 - **speed**: rendering waits for idle time (`requestIdleCallback`, 500 ms timeout) and for the box to come within 800 px of the view (an `IntersectionObserver`, which also watches the scroller that clips it). renders run one at a time, and each source and theme renders once: a cache of 128 diagrams serves remounts (virtual rows scrolling back) and theme switches back, in the commit that mounts them.
 
