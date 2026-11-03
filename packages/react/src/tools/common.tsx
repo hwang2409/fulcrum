@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Children, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { ToolCall } from "@fulcrum/core";
 import type { ItemState } from "../parts.js";
 import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
@@ -200,13 +200,15 @@ export function NumberedLines({ text, start = 1, id, language, done = true }: Nu
   );
 }
 
-/** The last row of every body: facts on the left (exit code, cwd, size), copy buttons on the right. */
+/** The last row of every body: facts on the left (exit code, cwd, size), copy buttons on the right; with no facts the
+ * buttons start at the left, so the row has no empty side. */
 export function Foot({ children, copy }: { children?: ReactNode; copy: Array<[label: string, value: CopyValue | undefined]> }) {
   const buttons = copy.filter((entry): entry is [string, CopyValue] => !!entry[1]);
-  if (!children && !buttons.length) return null;
+  const facts = Children.toArray(children).length > 0;
+  if (!facts && !buttons.length) return null;
   return (
     <div data-part="tool-foot">
-      <span data-part="tool-meta">{children}</span>
+      {facts ? <span data-part="tool-meta">{children}</span> : null}
       {buttons.map(([label, value]) => <CopyButton key={label} label={label} value={value} />)}
     </div>
   );
@@ -225,7 +227,7 @@ export function Arguments({ call, id, open }: { call: ToolCall; id: string; open
   const content = value === undefined ? null : (
     <>
       <TextViewer text={value} id={`${id}:arguments`} label="arguments" part="tool-args" format={JSON_FORMAT} />
-      <div data-part="tool-foot"><span data-part="tool-meta" /><CopyButton label="arguments" value={value} /></div>
+      <div data-part="tool-foot"><CopyButton label="arguments" value={value} /></div>
     </>
   );
   return open ? <div data-part="tool-args-wrap">{content}</div> : (

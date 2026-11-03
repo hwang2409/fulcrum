@@ -4,16 +4,17 @@ import { Code, type Block } from "../highlight.js";
 import { Arguments, asking, boundText, Empty, Foot, Output, outputBlocks, plainOutput } from "./common.js";
 import { CodeViewer, isLargeCode } from "./text-viewer.js";
 
-// The header cuts long commands to one line (a few on narrow screens); the body then repeats the command in full.
+// The header cuts long commands to one line (a few on narrow screens); the body then repeats the command in full. A
+// shorter one, approval or not, is whole in the header: the body would only repeat it.
 const LONG_COMMAND = 72;
-const showsCommand = (command: string, state: ToolBodyProps["state"]) => asking(state) || command.length > LONG_COMMAND || command.includes("\n");
+const showsCommand = (command: string) => command.length > LONG_COMMAND || command.includes("\n");
 
 /** The highlight blocks ShellBody asks for when it first mounts. */
 export function shellBlocks({ item, output, state }: ToolBodyProps): Block[] {
   if (item.view?.kind !== "shell") return [];
   const { command, stdout, stderr } = item.view;
   const done = state !== "streaming";
-  const blocks: Block[] = showsCommand(command, state) ? [{ code: boundText(command).text, language: "shell", id: `${item.id}:command` }] : [];
+  const blocks: Block[] = showsCommand(command) ? [{ code: boundText(command).text, language: "shell", id: `${item.id}:command` }] : [];
   if (stdout !== undefined && stderr !== undefined) {
     if (stdout) blocks.push(...outputBlocks({ text: stdout, id: `${item.id}:stdout`, done }));
     if (stderr) blocks.push(...outputBlocks({ text: stderr, id: `${item.id}:stderr`, done }));
@@ -29,7 +30,7 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
   const done = state !== "streaming";
   return (
     <>
-      {showsCommand(command, state) ? <Command text={boundText(command).text} id={`${item.id}:command`} /> : null}
+      {showsCommand(command) ? <Command text={boundText(command).text} id={`${item.id}:command`} /> : null}
       {split ? (
         <>
           {stdout ? <Output text={stdout} id={`${item.id}:stdout`} done={done} /> : null}

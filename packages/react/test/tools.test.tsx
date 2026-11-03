@@ -481,3 +481,11 @@ test("a resolved approval says how it ended, and a folded one marks its tool car
   expect(q('[data-id="tool:ran-call"] [data-part="tool-approval"]').textContent).toBe("approved");
   expect(status("tool:ran-call")).toBe("approveddone");
 });
+
+test("a pending approval shows a short command once, and a footer without facts has no empty left side", () => {
+  const tool_call = { id: "s1", name: "bash", arguments: { command: "rm -rf dist" } };
+  render([{ type: "approval_request", request_id: "s1", tool_call, view: { kind: "shell", command: "rm -rf dist" }, delegated: false }], ["approval:s1"]);
+  expect(q('[data-id="approval:s1"] [data-part="tool-summary"]').textContent).toBe("$ rm -rf dist");
+  expect(q('[data-id="approval:s1"] [data-part="shell-command"]')).toBeNull();
+  expect(q('[data-id="approval:s1"] [data-part="tool-foot"] [data-part="tool-meta"]')).toBeNull();
+});
