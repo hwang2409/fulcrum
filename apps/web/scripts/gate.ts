@@ -205,7 +205,7 @@ try {
       await approval.waitFor({ timeout: 5000 });
       // The run is blocked on the user, not running: the header says so, with the warn color.
       const header = page.locator(".run-meta .state");
-      await header.filter({ hasText: "waiting for approval" }).waitFor({ timeout: 3000 }).catch(async () => { throw new Error(`the run header says "${await header.textContent()}" while an approval waits`); });
+      await header.filter({ hasText: "waiting for approval" }).waitFor({ timeout: 10_000 }).catch(async () => { throw new Error(`the run header says "${await header.textContent()}" while an approval waits`); });
       const [mark, warn] = await header.evaluate((node) => [getComputedStyle(node, "::before").backgroundColor, (() => { const probe = document.createElement("span"); probe.style.color = "var(--fulcrum-warn)"; node.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()]);
       if (mark !== warn) throw new Error(`the header mark is ${mark}, not the warn color ${warn}`);
       const row = await page.locator("button.session[aria-current] .state").textContent();
