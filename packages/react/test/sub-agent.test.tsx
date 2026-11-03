@@ -528,6 +528,17 @@ test("back restores the parent's exact scroll anchor and released follow mode", 
   parent.send(commit("after-return"));
   await frames();
   expect(scroller().scrollTop).toBe(rowTop);
+
+  // A child read before reopens where it was left, not at its newest item.
+  act(() => q('[data-part="sub-agent"]').click());
+  await frames();
+  userScroll(scroller(), 1_000);
+  await frames();
+  act(() => q('[data-part="run-back"]').click());
+  await frames();
+  act(() => q('[data-part="sub-agent"]').click());
+  await frames();
+  expect(scroller().scrollTop).toBe(1_000);
 });
 
 test("back to a parent that was following resumes at its new bottom", async () => {
