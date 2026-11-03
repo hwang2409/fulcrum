@@ -128,3 +128,20 @@ test("a fence under the limits stays one inline block", () => {
   expect(container.querySelector('[data-part="text-viewer"]')).toBeNull();
   expect(container.querySelector("pre[data-part=md-code-block] > code")!.textContent).toBe(code);
 });
+
+// A stand-in grammar with state that spans lines: a /* */ comment and a """ """ docstring color everything inside them.
+const stateful: Highlight = Object.assign((code: string) => code.match(/\/\*[\s\S]*?(?:\*\/|$)|"""[\s\S]*?(?:"""|$)|\w+|\W/g)!.map((text): Token =>
+  text.startsWith("/*") ? { text, type: "comment" } : text.startsWith('"""') ? { text, type: "string" } : /\w/.test(text) ? { text, type: "keyword" } : { text }), { dispose() {}, subscribe: () => () => {} });
+
+test.each([
+  // A 2,000-character construct crosses three range edges; one long line after it puts the fence over INLINE_CHARS.
+  ["a 2,000-character block comment", "cpp", "/*" + " x".repeat(998) + " */\n" + "int a; ".repeat(1_500) + "\n"],
+  ["a 2,000-character python docstring", "python", '"""' + " x".repeat(998) + ' """\n' + "a = 1; ".repeat(1_500) + "\n"],
+])("%s that crosses range edges in a large fence gets the whole block's colors", (_, language, code) => {
+  mount(<Markdown id="m" source={"```" + language + "\n" + code + "```\n"} highlight={stateful} />);
+  expect(container.querySelector('[data-part="md-code-block"]')!.getAttribute("data-size")).toBe("large");
+  const rows = container.querySelectorAll('[data-part="text-viewer-row"]');
+  expect(rows[2]?.textContent).toContain(" x x"); // the third mounted range is still inside the construct
+  const miscolored = [...container.querySelectorAll(".tok-keyword")].filter((node) => node.textContent === "x");
+  expect(miscolored.length).toBe(0);
+});

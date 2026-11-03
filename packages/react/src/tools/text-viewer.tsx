@@ -1,5 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Tokens, useTokens, type Block } from "../highlight.js";
+import type { Token } from "@fulcrum/highlight";
 import { useVirtualList } from "../virtual.js";
 import { spansIn, type AnsiSpan } from "./ansi.js";
 
@@ -182,13 +183,52 @@ const AnsiRun = ({ text, spans }: { text: string; spans: AnsiSpan[] }) => {
   return <>{out}</>;
 };
 
+// The most text a viewer also asks for as one whole block, in the background: a construct longer than a range (a block
+// comment, a docstring, a template string) is colored from the grammar's real state, not restarted at each range edge.
+// The visible ranges color first; the whole block's tokens replace them when they arrive (about 3 MB held at the cap).
+// shortcut: a block over WHOLE_CHARS keeps range-local colors; upgrade by carrying grammar state across range requests.
+const WHOLE_CHARS = 100_000;
+type WholeTokens = { tokens: Token[]; starts: number[] };
+
+function useWholeTokens(text: string, format: TextFormat | undefined, id: string, done: boolean): WholeTokens | null {
+  const language = done && !format?.spans && text.length <= WHOLE_CHARS ? format?.language : undefined;
+  const tokens = useTokens(language ? text : "", language, `${id}:whole`);
+  return useMemo(() => {
+    if (!tokens) return null;
+    const starts: number[] = [];
+    let at = 0;
+    for (const token of tokens) { starts.push(at); at += token.text.length; }
+    return { tokens, starts };
+  }, [tokens]);
+}
+
+/** The whole block's tokens over [start, end), cut at the edges. */
+function sliceTokens({ tokens, starts }: WholeTokens, start: number, end: number): Token[] {
+  let low = 0;
+  let high = tokens.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (starts[mid]! + tokens[mid]!.text.length <= start) low = mid + 1;
+    else high = mid;
+  }
+  const out: Token[] = [];
+  for (let index = low; index < tokens.length && starts[index]! < end; index++) {
+    const token = tokens[index]!;
+    const from = Math.max(start - starts[index]!, 0);
+    const to = Math.min(end - starts[index]!, token.text.length);
+    out.push(from === 0 && to === token.text.length ? token : { ...token, text: token.text.slice(from, to) });
+  }
+  return out;
+}
+
 const styledBlock = (text: string, start: number, end: number, format: TextFormat | undefined, id: string, done: boolean): Block =>
   ({ code: text.slice(start, end), language: format?.spans ? undefined : format?.language, id: `${id}@${start}`, done });
 
 /** `text[start, end)` in its format. Each range is its own highlight block, so a viewer only highlights mounted rows. */
-export const Styled = memo(function Styled({ text, start = 0, end = text.length, format, id, done = true }: { text: string; start?: number; end?: number; format?: TextFormat; id: string; done?: boolean }) {
+export const Styled = memo(function Styled({ text, start = 0, end = text.length, format, id, done = true, whole }: { text: string; start?: number; end?: number; format?: TextFormat; id: string; done?: boolean; whole?: WholeTokens | null }) {
   const { code: slice, language, id: block } = styledBlock(text, start, end, format, id, done);
-  const tokens = useTokens(slice, language, block, done);
+  const own = useTokens(slice, whole ? undefined : language, block, done);
+  const tokens = whole ? sliceTokens(whole, start, end) : own;
   if (format?.spans) return <AnsiRun text={slice} spans={spansIn(format.spans, start, end)} />;
   return tokens ? <Tokens tokens={tokens} /> : <>{slice}</>;
 });
@@ -200,6 +240,7 @@ const count = (value: number) => counts.format(value);
 type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean };
 
 function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy }: ViewerProps) {
+  const whole = useWholeTokens(rows ? "" : text, format, id, done);
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(follow);
   const [atBottom, setAtBottom] = useState(follow);
@@ -278,7 +319,7 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
                 data-part="text-viewer-row"
                 data-language={rows?.language}
                 style={{ position: "absolute", insetInline: 0, transform: `translateY(${row.start}px)` } as CSSProperties}
-              >{rows ? rows.render(start, end) : <Styled text={text} start={start} end={end} format={format} id={id} done={done || !last} />}</Row>
+              >{rows ? rows.render(start, end) : <Styled text={text} start={start} end={end} format={format} id={id} done={done || !last} whole={whole} />}</Row>
             );
           })}
         </div>
