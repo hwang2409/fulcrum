@@ -747,6 +747,9 @@ export function createStreamingDocument(): StreamingDocument {
   const freezeRoots = () => {
     if (!openRoots.length) return;
     if (openParagraph) updateParagraph(openParagraph);
+    if (openCode) openCode.open = false;
+    openCode = undefined;
+    openIndentedCode = false;
     blocks.freeze(openRoots);
     openRoots = [];
     frames[0] = { kind: "document", children: openRoots };
@@ -889,6 +892,8 @@ export function createStreamingDocument(): StreamingDocument {
       openCode = undefined;
       openIndentedCode = false;
     } else if (leaf.kind === "indented-code") {
+      const label = /^\s*\[([^\]\n]+)\]:/.exec(leaf.content)?.[1];
+      if (label) blockedReferences.add(normalizeReferenceLabel(label));
       if (!resolution.continued || !openCode) {
         openCode = { type: "code", language: undefined, value: "", open: true };
         openIndentedCode = true;
