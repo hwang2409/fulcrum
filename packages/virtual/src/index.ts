@@ -568,16 +568,18 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     scrollToId(id, viewportOffset = 0) {
       const index = layout.indexOf(id);
       if (index === undefined) throw new Error("cannot scroll to an id outside the outline");
-      setViewport({ scrollTop: Math.max(0, layout.prefix(index) - viewportOffset), size: viewportSize, source: "programmatic" });
-      pinned = maxScroll() - scrollTop < 0.5;
+      // Follow mode is set before the viewport notifies, so subscribers never read a stale `pinned`.
+      const next = clampScroll(layout.prefix(index) - viewportOffset);
+      pinned = maxScroll() - next < 0.5;
       if (pinned) unseenIds.clear();
+      setViewport({ scrollTop: next, size: viewportSize, source: "programmatic" });
       log("scroll-to-id", { index, scrollTop });
       return scrollTop;
     },
     scrollToEnd() {
-      setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
       pinned = true;
       unseenIds.clear();
+      setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
       return scrollTop;
     },
     snapshotCache() {

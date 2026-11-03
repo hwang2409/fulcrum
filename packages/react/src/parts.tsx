@@ -1,10 +1,12 @@
 import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentType, type CSSProperties, type RefObject } from "react";
 import type { RunItem } from "@fulcrum/core";
+import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { Code, HighlightContext } from "./highlight.js";
 import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
 import { ToolBody, toolSummary } from "./tools/index.js";
+import { SubAgent, subAgentLabel, subAgentStatusText } from "./sub-agent.js";
 import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
 
@@ -296,7 +298,7 @@ export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
   );
 });
 
-const defaults: Renderers = { message: Message, tool: ToolCall, approval: Approval };
+const defaults: Renderers = { message: Message, tool: ToolCall, approval: Approval, sub_agent: SubAgent };
 
 export const announcementForItem = (item: RunItem): string | null => {
   switch (item.type) {
@@ -314,7 +316,7 @@ export const announcementForItem = (item: RunItem): string | null => {
     case "error": return item.event.type === "error" ? `error: ${item.event.error.message}` : null;
     case "notification": return "new notification";
     case "unknown": return "new activity";
-    case "sub_agent": return ["done", "error", "canceled"].includes(item.status) ? `sub-agent ${item.status}` : null;
+    case "sub_agent": return ["done", "error", "canceled"].includes(item.status) || item.urgency ? `sub-agent ${subAgentLabel(item)} ${subAgentStatusText[item.status]}` : null;
     case "user": return null;
   }
 };
@@ -384,7 +386,8 @@ const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Rende
   return <Part id={id} />;
 });
 
-const estimateRowSize = (kind: string) => kind === "tool" ? 120 : kind === "approval" ? 100 : kind === "message" ? 72 : 48;
+// A sub-agent row is fixed at 56 px; with the 12 px row gap the estimate is exact.
+const estimateRowSize = (kind: string) => kind === "tool" ? 120 : kind === "approval" ? 100 : kind === "message" ? 72 : kind === "sub_agent" ? 68 : 48;
 const virtualContainerStyle: CSSProperties = { position: "relative", display: "block", contain: "size style", overflowAnchor: "none" };
 const virtualRowStyle: CSSProperties = { position: "absolute", insetInline: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBlockEnd: "var(--fulcrum-gap, 12px)", contain: "layout style" };
 
@@ -397,7 +400,14 @@ export type TimelineProps = {
   scrollRef?: RefObject<HTMLElement | null>;
   /** Accessible name for the chronological activity log. */
   "aria-label"?: string;
+  /** Virtual mode: where a new store's timeline opens. Without it, it opens at the bottom and follows. */
+  initialViewport?: TimelineViewport;
+  /** Virtual mode: called once with the reading position when this store's timeline unmounts or its store changes. */
+  onViewport?: (viewport: TimelineViewport) => void;
 };
+
+/** A reading position by item id, not pixels: the item at the top, its offset, follow mode, and measured row sizes. */
+export type TimelineViewport = { anchorId?: string; offset: number; following: boolean; cache?: VirtualCache };
 
 const storeKeys = new WeakMap<object, number>();
 let nextStoreKey = 0;
@@ -413,18 +423,30 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
   return <TimelineForStore key={keyForStore(store)} {...props} store={store} />;
 });
 
-const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
+const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
   const { items, change } = useTimelineSnapshot();
   const enabled = virtual ?? items.length > 200;
-  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change, resetKey: store });
+  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change, resetKey: store, cache: initialViewport?.cache });
   const initialScroll = useRef(enabled);
+  const restore = useRef(initialViewport);
   useLayoutEffect(() => {
     if (!enabled) initialScroll.current = true;
     else if (initialScroll.current && list.snapshot.totalSize > 0) {
       initialScroll.current = false;
-      list.scrollToEnd();
+      const viewport = restore.current;
+      restore.current = undefined;
+      if (viewport && !viewport.following && viewport.anchorId && items.some(({ id }) => id === viewport.anchorId)) list.scrollToId(viewport.anchorId, viewport.offset);
+      else list.scrollToEnd();
     }
-  }, [enabled, list.scrollToEnd, list.snapshot.totalSize]);
+  }, [enabled, items, list.scrollToEnd, list.scrollToId, list.snapshot.totalSize]);
+  const leaving = useRef({ list, enabled, onViewport });
+  leaving.current = { list, enabled, onViewport };
+  useLayoutEffect(() => () => {
+    const { list, enabled, onViewport } = leaving.current;
+    if (!enabled || !onViewport) return;
+    const { anchor, pinned } = list.snapshot;
+    onViewport({ anchorId: anchor?.id, offset: anchor?.offset ?? 0, following: pinned, cache: list.snapshotCache() });
+  }, []);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const plainRef = useRef<HTMLDivElement>(null);
   const priorMode = useRef(enabled);

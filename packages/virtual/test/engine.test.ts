@@ -502,3 +502,13 @@ test("explicit upward intent releases follow until the user reaches the exact bo
   virtual.setViewport({ scrollTop: 290, size: 10, source: "user" });
   expect(virtual.getSnapshot()).toMatchObject({ pinned: true, unseenCount: 0 });
 });
+
+test("scrollToEnd and scrollToId notify with follow mode already updated", () => {
+  const virtual = engine(Array(50).fill(20), 100, 0);
+  virtual.setViewport({ scrollTop: 0, size: 100, source: "user" });
+  const seen: boolean[] = [];
+  virtual.subscribe(() => seen.push(virtual.getSnapshot().pinned));
+  virtual.scrollToEnd();
+  virtual.scrollToId("row-10");
+  expect(seen).toEqual([true, false]);
+});

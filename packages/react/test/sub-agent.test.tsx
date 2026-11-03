@@ -78,7 +78,7 @@ const userScroll = (scroller: HTMLElement, top: number) => act(() => {
 
 beforeEach(() => history.replaceState(null, ""));
 
-test("the default timeline renders a sub-agent as one named button with its facts", () => {
+test("the default timeline renders a sub-agent row with its facts, and with no navigator it has no drill-in", () => {
   const { store } = storeOf([
     child("a", { name: "reviewer", task: "audit auth", status: "done", toolCount: 7, latestActivity: "$ bun test", startedAt: "2026-01-01T00:00:00Z", endedAt: "2026-01-01T00:02:14Z" }),
   ]);
@@ -242,9 +242,7 @@ test("back to a parent that was following resumes at its new bottom", async () =
   parent.send(commit("while-away-1"), commit("while-away-2"));
   act(() => history.back());
   await frames();
-  expect(scroller(container)).toBe(true);
-  function scroller(root: HTMLElement) {
-    const node = root.querySelector<HTMLElement>('[data-part="run-scroll"]')!;
-    return Math.abs(node.scrollTop - (node.scrollHeight - node.clientHeight)) < 1;
-  }
+  const node = container.querySelector<HTMLElement>('[data-part="run-scroll"]')!;
+  expect(node.scrollTop).toBe(node.scrollHeight - node.clientHeight);
+  expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
 });

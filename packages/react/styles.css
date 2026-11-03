@@ -408,6 +408,125 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-part="item"][data-kind="notification"]::before,
 [data-part="item"][data-kind="unknown"]::before { content: "· "; }
 
+/* Sub-agent row: one fixed 56 px strip (the virtual timeline's estimate is exact), the same rail and mark grammar as
+   tools. Line one: state, name, task, elapsed and tools, open. Line two: the latest activity, or why it cannot open. */
+[data-part="sub-agent"] {
+  --rail: var(--fulcrum-border);
+  --mark: var(--fulcrum-muted);
+  --state: var(--fulcrum-muted);
+  appearance: none;
+  display: grid;
+  grid-template-rows: 20px 18px;
+  align-content: center;
+  width: 100%;
+  height: 56px;
+  margin: 0;
+  padding: 0 12px 0 10px;
+  overflow: hidden;
+  border: 1px solid var(--fulcrum-border);
+  border-left: 2px solid var(--rail);
+  border-radius: 0;
+  background: var(--fulcrum-bg);
+  color: var(--fulcrum-fg);
+  font: 13px/20px var(--fulcrum-font);
+  text-align: left;
+}
+button[data-part="sub-agent"] { cursor: pointer; }
+button[data-part="sub-agent"]:hover { background: var(--fulcrum-surface); }
+button[data-part="sub-agent"]:hover [data-part="sub-agent-open"] { text-decoration: underline; text-underline-offset: 3px; }
+button[data-part="sub-agent"]:active { background: var(--fulcrum-border); }
+button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+[data-part="sub-agent-head"] { display: flex; align-items: baseline; gap: 12px; min-width: 0; white-space: nowrap; }
+[data-part="sub-agent-head"] > * { flex: none; }
+[data-part="sub-agent-head"] > :is([data-part="sub-agent-name"], [data-part="sub-agent-task"]) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+[data-part="sub-agent-head"] > [data-part="sub-agent-task"] { flex-grow: 1; }
+[data-part="sub-agent-meta"] { margin-left: auto; }
+[data-part="sub-agent-status"] { display: inline-flex; align-items: baseline; gap: 6px; color: var(--state); }
+[data-part="sub-agent-status"]::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--mark); transform: translateY(-1px); }
+[data-part="sub-agent-name"] { color: var(--fulcrum-accent); font-weight: 700; }
+[data-part="sub-agent-task"] { color: var(--fulcrum-fg); }
+[data-part="sub-agent-meta"] { color: var(--fulcrum-tok-number); font-size: 12px; }
+[data-part="sub-agent-open"] { color: var(--fulcrum-accent); font-size: 12px; font-weight: 700; }
+[data-part="sub-agent-open"]::after { content: " \203A"; }
+[data-part="sub-agent-line"] { display: flex; gap: 12px; min-width: 0; padding-left: 13px; font-size: 12px; line-height: 18px; white-space: nowrap; }
+[data-part="sub-agent-line"] > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+[data-part="sub-agent-activity"] { flex: 1; color: var(--fulcrum-muted); }
+[data-part="sub-agent-reason"] { flex: none; max-width: 100%; color: var(--fulcrum-fg); }
+[data-part="sub-agent-reason"]::before { content: "no details: "; color: var(--fulcrum-muted); }
+[data-part="sub-agent"][data-state="running"] { --rail: var(--fulcrum-accent); --mark: var(--fulcrum-accent); --state: var(--fulcrum-accent); }
+[data-part="sub-agent"][data-state="running"] [data-part="sub-agent-status"]::before { animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
+[data-part="sub-agent"][data-state="done"] { --mark: var(--fulcrum-ok); --state: var(--fulcrum-ok); }
+[data-part="sub-agent"][data-state="error"] { --rail: var(--fulcrum-danger); --mark: var(--fulcrum-danger); --state: var(--fulcrum-danger); border-color: var(--fulcrum-danger); }
+[data-part="sub-agent"][data-state="error"] [data-part="sub-agent-status"] { font-weight: 700; }
+[data-part="sub-agent"][data-state="canceled"] { --rail: var(--fulcrum-muted); --mark: transparent; }
+[data-part="sub-agent"][data-state="canceled"] [data-part="sub-agent-status"]::before { outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
+[data-part="sub-agent"][data-state="idle"] { --mark: var(--fulcrum-tok-type); --state: var(--fulcrum-tok-type); }
+/* Waiting on the user: warn on every edge and the state word as a boxed badge, so it stands out in a long run. */
+[data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { --rail: var(--fulcrum-warn); --mark: var(--fulcrum-warn); --state: var(--fulcrum-warn); border-color: var(--fulcrum-warn); }
+[data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) [data-part="sub-agent-status"],
+[data-part="run-urgency"] { padding: 0 5px; border: 1px solid var(--fulcrum-warn); color: var(--fulcrum-warn); font-weight: 700; line-height: 16px; }
+
+/* Run navigator: a fixed run bar (back, breadcrumb, state) over one scrolling timeline. Give it a height. */
+[data-part="run-navigator"] { display: flex; flex-direction: column; min-height: 0; background: var(--fulcrum-bg); }
+[data-part="run-scroll"] { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+[data-part="run-bar"] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--fulcrum-border);
+  background: var(--fulcrum-surface);
+  color: var(--fulcrum-fg);
+  font: 13px/1 var(--fulcrum-font);
+  white-space: nowrap;
+}
+[data-part="run-bar"] button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--fulcrum-accent);
+  font: inherit;
+  cursor: pointer;
+}
+[data-part="run-bar"] button:hover { background: var(--fulcrum-bg); text-decoration: underline; text-underline-offset: 3px; }
+[data-part="run-bar"] button:focus-visible,
+[data-part="run-crumb"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+[data-part="run-bar"] [data-part="run-back"] { flex: none; border: 1px solid var(--fulcrum-border); font-weight: 700; }
+[data-part="run-back"]::before { content: "\2039"; }
+[data-part="run-breadcrumb"] { flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+[data-part="run-breadcrumb"] ol { display: flex; align-items: center; margin: 0; padding: 0; list-style: none; }
+[data-part="run-breadcrumb"] li { display: flex; align-items: center; min-width: 0; }
+[data-part="run-breadcrumb"] li + li::before { content: "\203A"; padding: 0 2px; color: var(--fulcrum-muted); }
+[data-part="run-crumb"] { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px; }
+span[data-part="run-crumb"] { color: var(--fulcrum-fg); font-weight: 700; outline: none; }
+[data-part="run-label"] { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; }
+[data-part="run-state"] { flex: none; width: 7px; height: 7px; background: var(--fulcrum-muted); }
+[data-part="run-state"][data-state="running"] { background: var(--fulcrum-accent); }
+[data-part="run-state"]:is([data-state="waiting_approval"], [data-state="waiting_input"]) { background: var(--fulcrum-warn); }
+[data-part="run-state"][data-state="done"] { background: var(--fulcrum-ok); }
+[data-part="run-state"][data-state="error"] { background: var(--fulcrum-danger); }
+[data-part="run-state"][data-state="idle"] { background: var(--fulcrum-tok-type); }
+[data-part="run-urgency"] { font-size: 12px; }
+[data-part="run-error"] { overflow: hidden; color: var(--fulcrum-danger); font-size: 12px; text-overflow: ellipsis; }
+@media (pointer: coarse) {
+  [data-part="run-bar"] { height: 48px; }
+  [data-part="run-bar"] button { min-height: 44px; }
+}
+@media (max-width: 480px) {
+  /* Narrow: the current run stays readable; the ancestry scrolls sideways in the breadcrumb. */
+  [data-part="run-label"] { max-width: 20ch; }
+  [data-part="sub-agent-head"] { gap: 8px; }
+}
+
 /* Markdown, for @fulcrum/markdown's data-part names. */
 [data-part="message"] > :first-child { margin-top: 0; }
 [data-part="message"] > :last-child { margin-bottom: 0; }
@@ -568,6 +687,10 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
   [data-part="message"][data-state="streaming"]::after { forced-color-adjust: none; background: CanvasText; }
+  [data-part="sub-agent"] { --rail: CanvasText; border-color: CanvasText; }
+  [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }
+  :is([data-part="sub-agent-status"], [data-part="run-state"])::before,
+  [data-part="run-state"] { forced-color-adjust: none; background: CanvasText; }
 }
 
 [data-part="virtual-debug"] {
