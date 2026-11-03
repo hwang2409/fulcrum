@@ -179,7 +179,7 @@ test("one user intent is one row: a dropped steer resent as a new message replac
 
 test("random streams with early reads: every snapshot's edits rebuild its items from its base", () => {
   let seed = 7;
-  const random = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+  const random = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), Math.floor((seed / 2 ** 31) * n));
   for (let run = 0; run < 50; run++) {
     const jobs: Array<() => void> = [];
     const store = createRunStore((job) => jobs.push(job));
@@ -193,7 +193,7 @@ test("random streams with early reads: every snapshot's edits rebuild its items 
       else if (choice === 3) store.dispatch({ type: "message_delta", delta: "x" });
       else if (choice === 4) store.dispatch({ type: "message_reset" });
       else if (choice === 5) store.dispatch({ type: "user_message", text: "u", mode: "normal" });
-      else if (choice === 6) applyChange(store.getOutlineSnapshot());
+      else if (choice === 6) store.getOutlineSnapshot().change && applyChange(store.getOutlineSnapshot());
       else jobs.splice(0).forEach((job) => job()), store.getOutlineSnapshot().change && applyChange(store.getOutlineSnapshot());
     }
   }
