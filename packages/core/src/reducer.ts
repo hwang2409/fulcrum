@@ -9,6 +9,13 @@ export interface OutlineItem {
   readonly kind: RunItem["type"];
 }
 
+/** One positional outline edit, as `Array.prototype.splice` takes it: remove `deleteCount` entries at `index`, insert `items` there. */
+export interface OutlineSplice {
+  readonly index: number;
+  readonly deleteCount: number;
+  readonly items: readonly OutlineItem[];
+}
+
 export interface RunState {
   turns: string[];
   outline: readonly OutlineItem[];
@@ -59,7 +66,10 @@ interface EntityDraft {
   get(id: string): RunItem | undefined;
   set(item: RunItem): void;
   delete(id: string): void;
+  /** Called once per outline edit, in order, as the reducer makes it. */
+  splice(splice: OutlineSplice): void;
 }
+type SpliceOutline = (index: number, deleteCount: number, items: readonly OutlineItem[]) => void;
 
 type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;
 type MessageBlock = Extract<RunEvent, { type: "message_block" }>;
@@ -69,8 +79,8 @@ const nextMessageId = (next: RunState, supplied?: string) => supplied ?? next.ac
 const finishPriorMessage = (next: RunState, id: string, endActiveMessage: () => void) => {
   if (next.activeMessageId && next.activeMessageId !== id) endActiveMessage();
 };
-const appendMessageOutline = (next: RunState, itemId: string) => {
-  next.outline = [...next.outline, { id: itemId, kind: "message" }];
+const appendMessageOutline = (next: RunState, itemId: string, spliceOutline: SpliceOutline) => {
+  spliceOutline(next.outline.length, 0, [{ id: itemId, kind: "message" }]);
   next.nextId += 1;
 };
 /**
@@ -88,12 +98,18 @@ const appendBlock = (prior: MessageItem | undefined, itemId: string, event: Mess
   else content.push({ type: event.kind!, text: event.delta });
   return { id: itemId, type: "message", message: { ...message, content }, version, active: true };
 };
+// Rows that change are usually recent: search from the end.
+const outlineIndex = (outline: readonly OutlineItem[], id: string) => {
+  for (let index = outline.length - 1; index >= 0; index--) if (outline[index]!.id === id) return index;
+  return -1;
+};
 const reduceMessageDelta = (
   next: RunState,
   event: MessageDelta | MessageBlock,
   getItem: EntityDraft["get"],
   setItem: EntityDraft["set"],
   endActiveMessage: () => void,
+  spliceOutline: SpliceOutline,
 ) => {
   const id = nextMessageId(next, event.message_id);
   finishPriorMessage(next, id, endActiveMessage);
@@ -115,7 +131,7 @@ const reduceMessageDelta = (
         event.delta,
       );
   setItem(item);
-  if (!prior) appendMessageOutline(next, itemId);
+  if (!prior) appendMessageOutline(next, itemId, spliceOutline);
   next.activeMessageId = id;
 };
 const reduceMessageCommit = (
@@ -124,6 +140,7 @@ const reduceMessageCommit = (
   getItem: EntityDraft["get"],
   setItem: EntityDraft["set"],
   endActiveMessage: () => void,
+  spliceOutline: SpliceOutline,
 ) => {
   const id = nextMessageId(next, event.message_id);
   finishPriorMessage(next, id, endActiveMessage);
@@ -131,7 +148,7 @@ const reduceMessageCommit = (
   const old = getItem(itemId);
   const prior = old?.type === "message" ? old : undefined;
   setItem({ id: itemId, type: "message", message: event.message, version: (prior?.version ?? 0) + 1, active: false });
-  if (!prior) appendMessageOutline(next, itemId);
+  if (!prior) appendMessageOutline(next, itemId, spliceOutline);
   next.activeMessageId = undefined;
 };
 
@@ -160,13 +177,22 @@ export function reduceAllWithEntities(
   };
   const getItem = (id: string) => entities.get(id);
   const setItem = (item: RunItem) => entities.set(item);
+  // The first edit copies the outline; later edits in the same batch write that copy in place.
+  let ownOutline = false;
+  const spliceOutline: SpliceOutline = (index, deleteCount, items) => {
+    if (!ownOutline) next.outline = next.outline.slice();
+    ownOutline = true;
+    (next.outline as OutlineItem[]).splice(index, deleteCount, ...items);
+    entities.splice({ index, deleteCount, items });
+  };
   const appendItem = (item: RunItem) => {
     setItem(item);
-    next.outline = [...next.outline, { id: item.id, kind: item.type }];
+    spliceOutline(next.outline.length, 0, [{ id: item.id, kind: item.type }]);
   };
   const deleteItem = (id: string) => {
     entities.delete(id);
-    next.outline = next.outline.filter((candidate) => candidate.id !== id);
+    const index = outlineIndex(next.outline, id);
+    if (index >= 0) spliceOutline(index, 1, []);
   };
   const setToolActive = (id: string, active: boolean) => {
     if (Boolean(next.activeToolIds[id]) === active) return;
@@ -176,6 +202,7 @@ export function reduceAllWithEntities(
   };
   // One row per call: once a call's approval has resolved and the call has a row, the approval's row folds into the
   // tool's row, which takes the earlier of the two places (live the approval comes first, a replayed history the tool).
+  // Positional edits only, so views keep every other row as it is.
   const foldApproval = (toolId: string) => {
     const approvalId = next.toolApprovals[toolId];
     const approval = approvalId ? getItem(approvalId) : undefined;
@@ -185,10 +212,12 @@ export function reduceAllWithEntities(
     // Folded once: later events of the call (a chatty command's output) skip the outline search.
     next.toolApprovals = { ...next.toolApprovals };
     delete next.toolApprovals[toolId];
-    if (!next.outline.some((entry) => entry.id === approvalId)) return;
-    const outline = next.outline.filter((entry) => entry.id !== tool.id);
-    outline.splice(outline.findIndex((entry) => entry.id === approvalId), 1, { id: tool.id, kind: "tool" });
-    next.outline = outline;
+    const approvalIndex = outlineIndex(next.outline, approvalId!);
+    if (approvalIndex < 0) return;
+    const toolIndex = outlineIndex(next.outline, tool.id);
+    if (toolIndex >= 0 && toolIndex < approvalIndex) return spliceOutline(approvalIndex, 1, []);
+    if (toolIndex >= 0) spliceOutline(toolIndex, 1, []);
+    spliceOutline(approvalIndex, 1, [{ id: tool.id, kind: "tool" }]);
   };
   const endActiveMessage = () => {
     if (!next.activeMessageId) return;
@@ -250,10 +279,10 @@ export function reduceAllWithEntities(
         break;
       case "message_delta":
       case "message_block":
-        reduceMessageDelta(next, event, getItem, setItem, endActiveMessage);
+        reduceMessageDelta(next, event, getItem, setItem, endActiveMessage, spliceOutline);
         break;
       case "message_commit":
-        reduceMessageCommit(next, event, getItem, setItem, endActiveMessage);
+        reduceMessageCommit(next, event, getItem, setItem, endActiveMessage, spliceOutline);
         break;
       case "message_reset": {
         if (!next.activeMessageId) break;

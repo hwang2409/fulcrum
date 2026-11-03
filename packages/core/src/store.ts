@@ -3,12 +3,19 @@ import {
   initialState,
   reduceAllWithEntities,
   type OutlineItem,
+  type OutlineSplice,
   type RunState,
 } from "./reducer.js";
 
 export type Scheduler = (callback: () => void) => void;
 type Listener = () => void;
-export type OutlineChange = { readonly type: "append" | "prepend"; readonly count: number };
+export type { OutlineSplice };
+/**
+ * How `items` came from `from`: apply `splices` to `from` in order. A view that holds exactly `from` applies them and
+ * keeps every other row; any other view (it missed a snapshot) takes `items` whole.
+ */
+export type OutlineChange = { readonly from: readonly OutlineItem[]; readonly splices: readonly OutlineSplice[] };
+/** `change` is null when there is nothing to edit from: the first snapshot and after `dispose`. */
 export type OutlineSnapshot = { readonly items: readonly OutlineItem[]; readonly change: OutlineChange | null };
 
 const defaultScheduler: Scheduler = (callback) =>
@@ -16,12 +23,35 @@ const defaultScheduler: Scheduler = (callback) =>
     ? requestAnimationFrame(callback)
     : queueMicrotask(callback);
 
-// An append keeps every old entry in place (the reducer reuses entry objects); a delete, a reset, or a fold that moves
-// a row is a rewrite, which views must take as a full change.
-const isAppend = (before: readonly OutlineItem[], after: readonly OutlineItem[]) => {
-  if (after.length < before.length) return false;
-  for (let index = 0; index < before.length; index++) if (before[index] !== after[index]) return false;
-  return true;
+type OpenSplice = { index: number; deleteCount: number; items: OutlineItem[] };
+// Adds `edits` after `base` without changing base's splices (a published snapshot holds them): inserts that continue
+// the last insert join it, and a delete of rows the last splice inserted takes them back out (a row appended and
+// folded in one frame is no edit at all).
+const mergeSplices = (base: readonly OutlineSplice[], edits: readonly OutlineSplice[]): readonly OutlineSplice[] => {
+  const merged: OutlineSplice[] = base.slice();
+  let open: OpenSplice | undefined;
+  const reopen = (last: OutlineSplice) => {
+    if (last === open) return open;
+    open = { index: last.index, deleteCount: last.deleteCount, items: last.items.slice() };
+    merged[merged.length - 1] = open;
+    return open;
+  };
+  for (const edit of edits) {
+    const last = merged.at(-1);
+    const end = last ? last.index + last.items.length : -1;
+    if (last && edit.deleteCount === 0 && edit.index === end) {
+      const target = reopen(last);
+      for (const item of edit.items) target.items.push(item);
+    } else if (last && edit.items.length === 0 && edit.deleteCount > 0 && edit.index >= last.index && edit.index + edit.deleteCount <= end) {
+      const target = reopen(last);
+      target.items.splice(edit.index - target.index, edit.deleteCount);
+      if (target.items.length === 0 && target.deleteCount === 0) merged.pop(), open = undefined;
+    } else {
+      open = { index: edit.index, deleteCount: edit.deleteCount, items: edit.items.slice() };
+      merged.push(open);
+    }
+  }
+  return merged;
 };
 
 export function createRunStore(scheduler: Scheduler = defaultScheduler) {
@@ -37,6 +67,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
   let outlineChanged = false;
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
+  let edits: OutlineSplice[] = [];
 
   const flush = () => {
     if (pending.length === 0 || disposed) return false;
@@ -53,19 +84,16 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
         entities.delete(id);
         changedItems.add(id);
       },
+      splice: (edit) => edits.push(edit),
     });
     stateChanged = true;
     if (current.outline !== beforeOutline) {
-      const appended = isAppend(beforeOutline, current.outline);
-      const priorChange = outlineChanged ? outlineSnapshot.change : { type: "append" as const, count: 0 };
-      outlineSnapshot = {
-        items: current.outline,
-        change: appended && priorChange?.type === "append"
-          ? { type: "append", count: priorChange.count + current.outline.length - beforeOutline.length }
-          : null,
-      };
+      // One change per notification: flushes before it (a read forces one) extend it, so subscribers see one edit list.
+      const prior = outlineChanged ? outlineSnapshot.change : { from: beforeOutline, splices: [] };
+      outlineSnapshot = { items: current.outline, change: prior && { from: prior.from, splices: mergeSplices(prior.splices, edits) } };
       outlineChanged = true;
     }
+    edits = [];
     return true;
   };
   const notify = () => {
