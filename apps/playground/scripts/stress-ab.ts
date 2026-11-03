@@ -64,7 +64,7 @@ async function injection(page: Page, url: string) {
     }
     if (mode === "render-work" || mode === "render-work-small") {
       // Pure render work: add CPU without changing rows, commits, or DOM output.
-      new MutationObserver(() => burn(mode === "render-work-small" ? 5 : 20)).observe(document, {
+      new MutationObserver(() => burn(mode === "render-work-small" ? 10 : 20)).observe(document, {
         subtree: true,
         childList: true,
         characterData: true,
