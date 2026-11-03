@@ -694,7 +694,7 @@ a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--f
   border: 1px solid var(--fulcrum-border);
   background: var(--fulcrum-surface);
 }
-[data-part="image-open"] { appearance: none; border-radius: 0; cursor: zoom-in; }
+[data-part="image-open"] { appearance: none; border-radius: 0; color: inherit; font: inherit; cursor: zoom-in; }
 [data-part="image-open"]:hover { border-color: var(--fulcrum-accent); }
 [data-part="image-open"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 [data-part="image-open"] > img { display: block; width: 100%; height: 100%; object-fit: contain; }
