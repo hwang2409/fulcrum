@@ -6,7 +6,7 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { act, Profiler, StrictMode, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { createRunStore, initialState, type OutlineChange, type RunEvent, type RunItem, type ToolCall as ToolCallData } from "@fulcrum/core";
+import { createRunStore, initialState, type OutlineSnapshot, type RunEvent, type RunItem, type ToolCall as ToolCallData } from "@fulcrum/core";
 import { Markdown } from "../../markdown/src/react.js";
 import {
   announcementForItem,
@@ -29,9 +29,9 @@ afterAll(() => GlobalRegistrator.unregister());
 const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
 const call = (id: string, name: string) => ({ id, name, arguments: {} });
 
-function timelineStore(initialItems: RunItem[], initialChange: OutlineChange | null = null) {
+function timelineStore(initialItems: RunItem[]) {
   let items = initialItems;
-  let snapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change: initialChange };
+  let snapshot: OutlineSnapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change: null };
   const entities = new Map(items.map((item) => [item.id, item]));
   const outlineListeners = new Set<() => void>();
   const itemListeners = new Map<string, Set<() => void>>();
@@ -54,10 +54,12 @@ function timelineStore(initialItems: RunItem[], initialChange: OutlineChange | n
   };
   return {
     store,
-    replace(next: RunItem[], change: OutlineChange | null) {
+    /** Publishes `next` as `splices` from the current outline (null: no edits, a whole new outline). */
+    replace(next: RunItem[], splices: { index: number; deleteCount: number; items: RunItem[] }[] | null) {
       items = next;
       for (const item of items) entities.set(item.id, item);
-      snapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change };
+      const entry = ({ id, type: kind }: RunItem) => ({ id, kind });
+      snapshot = { items: items.map(entry), change: splices && { from: snapshot.items, splices: splices.map((splice) => ({ ...splice, items: splice.items.map(entry) })) } };
       act(() => outlineListeners.forEach((listener) => listener()));
     },
   };
@@ -632,15 +634,17 @@ test("useVirtualList ignores a stale outline hint and resets when the outline ow
   const a = Array.from({ length: 201 }, (_, index) => ({ id: `a-${index}`, kind: "message" }));
   const b = Array.from({ length: 201 }, (_, index) => ({ id: `b-${index}`, kind: "message" }));
   const c = Array.from({ length: 201 }, (_, index) => ({ id: `c-${index}`, kind: "message" }));
-  const Harness = ({ outline, owner }: { outline: typeof a; owner: object }) => {
-    const list = useVirtualList(outline, { estimateSize: () => 20, outlineUpdate: { type: "append", count: outline.length }, resetKey: owner });
+  // Each render claims its outline replaced `from` whole; the engine applies it only when it holds `from`.
+  const Harness = ({ outline, from, owner }: { outline: typeof a; from: typeof a; owner: object }) => {
+    const list = useVirtualList(outline, { estimateSize: () => 20, outlineUpdate: { from, splices: [{ index: 0, deleteCount: from.length, items: outline }] }, resetKey: owner });
     return <div><div ref={list.timelineRef}>{list.snapshot.rows.map((row) => <div key={row.id} data-virtual-id={row.id} />)}</div></div>;
   };
   const ownerA = {};
   const ownerB = {};
-  mount(<Harness outline={a} owner={ownerA} />);
-  expect(() => act(() => root!.render(<Harness outline={b} owner={ownerA} />))).not.toThrow();
-  expect(() => act(() => root!.render(<Harness outline={c} owner={ownerB} />))).not.toThrow();
+  mount(<Harness outline={a} from={c} owner={ownerA} />);
+  expect(() => act(() => root!.render(<Harness outline={b} from={a} owner={ownerA} />))).not.toThrow();
+  expect(() => act(() => root!.render(<Harness outline={c} from={b} owner={ownerB} />))).not.toThrow();
+  expect(() => act(() => root!.render(<Harness outline={a} from={b} owner={ownerB} />))).not.toThrow();
 });
 
 test("virtual Timeline keeps its frame when a store is disposed, then replaces it mid-stream", () => {
@@ -669,9 +673,9 @@ test("virtual Timeline keeps its frame when a store is disposed, then replaces i
 
 test("virtual Timeline resets and follows when its RunProvider store changes during a pending user scroll", () => {
   const makeItems = (prefix: string, count: number) => Array.from({ length: count }, (_, index) => committedItem(`${prefix}-${index}`));
-  const a = timelineStore(makeItems("a", 5_000), { type: "append", count: 5_000 });
-  const b = timelineStore(makeItems("b", 100_000), { type: "append", count: 100_000 });
-  const c = timelineStore(makeItems("c", 201), { type: "append", count: 201 });
+  const a = timelineStore(makeItems("a", 5_000));
+  const b = timelineStore(makeItems("b", 100_000));
+  const c = timelineStore(makeItems("c", 201));
   const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
@@ -767,7 +771,7 @@ test("virtual history mount, scroll, and prepend never enter the live region", (
     container.dispatchEvent(new Event("scroll"));
   });
   expect(live.textContent).toBe("");
-  source.replace([...history, ...current], { type: "prepend", count: history.length });
+  source.replace([...history, ...current], [{ index: 0, deleteCount: 0, items: history }]);
   expect(live.textContent).toBe("");
   const row = q("[data-virtual-id]");
   expect(row.getAttribute("aria-setsize")).toBe("5500");
@@ -889,6 +893,40 @@ test("an approved call that folds into its tool row is still announced when it f
   send({ type: "tool_end", tool_call: call("t1", "bash"), tool_result: { tool_call_id: "t1", content: "ok", is_error: false } });
   await waitForAnnouncement();
   expect(live.textContent).toBe("tool bash finished");
+});
+
+test("a fast approved call that folds already finished (one frame) is still announced", async () => {
+  for (const virtual of [true, false]) {
+    const { store, send } = setup([]);
+    mount(<RunProvider store={store}><Timeline virtual={virtual} /></RunProvider>);
+    const live = q('[data-part="timeline-live"]');
+    send({ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false });
+    await waitForAnnouncement();
+    expect(live.textContent).toBe("approval needed: bash");
+    send(
+      { type: "approval_end", request_id: "r1", decision: "approve" },
+      { type: "tool_start", tool_call: call("t1", "bash") },
+      { type: "tool_end", tool_call: call("t1", "bash"), tool_result: { tool_call_id: "t1", content: "ok", is_error: false } },
+    );
+    await waitForAnnouncement();
+    expect(live.textContent).toBe("tool bash finished");
+    act(() => root!.unmount()); root = undefined; container.remove();
+  }
+});
+
+test("a finished call whose approval resolves later moves into the approval's place without speaking again", async () => {
+  const { store, send } = setup([]);
+  mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
+  const live = q('[data-part="timeline-live"]');
+  send({ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false });
+  send({ type: "tool_start", tool_call: call("t1", "bash") });
+  send({ type: "tool_end", tool_call: call("t1", "bash"), tool_result: { tool_call_id: "t1", content: "ok", is_error: false } });
+  await waitForAnnouncement();
+  const spoken = live.textContent;
+  send({ type: "approval_end", request_id: "r1", decision: "approve" });
+  expect(store.getOutline().map(({ id }) => id)).toEqual(["tool:t1"]);
+  // A new announcement clears the region first; a moved row that already spoke must not.
+  expect(live.textContent).toBe(spoken);
 });
 
 test("a store swap to a finished session announces nothing", async () => {

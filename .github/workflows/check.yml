@@ -24,6 +24,8 @@ jobs:
       - run: bun run check:mermaid-bundle
       - run: bun run --cwd apps/playground layout
       - run: bun run --cwd apps/playground mermaid
+      - run: bun run --cwd apps/playground fold-check
+        env: { FOLD_ROWS: 50000 }
       - run: bun run --cwd apps/playground highlight:fallback
       # The runner's CPU is about half as fast as a developer laptop (the 440 kB markdown parse in this gate: 22 ms here,
       # 10-12 ms there, both at 4x), so 2x here is about the laptop's 4x.

@@ -430,13 +430,29 @@ describe("incremental outline updates", () => {
       const added = Array.from({ length: count }, () => ({ id: `random-${serial++}`, kind: String(5 + Math.floor(random() * 40)) }));
       const operation = Math.floor(random() * 5);
       const wasPinned = incremental.getSnapshot().pinned;
+      const from = outline;
       if (operation < 2) {
         outline = [...outline, ...added];
-        incremental.setOutline(outline, { type: "append", count });
+        incremental.setOutline(outline, { from, splices: [{ index: from.length, deleteCount: 0, items: added }] });
         if (!wasPinned) for (const { id } of added) expectedUnseen.add(id);
-      } else if (operation < 4) {
+      } else if (operation < 3) {
         outline = [...added, ...outline];
-        incremental.setOutline(outline, { type: "prepend", count });
+        incremental.setOutline(outline, { from, splices: [{ index: 0, deleteCount: 0, items: added }] });
+      } else if (operation < 4 && from.length > 0) {
+        // A fold: one row is replaced in place (or a row inserted in the middle), then another row goes.
+        const index = Math.floor(random() * from.length);
+        const deleteCount = Math.min(from.length - index, Math.floor(random() * 3));
+        const insert = added.slice(0, 1);
+        const between = from.slice();
+        const replaced = between.splice(index, deleteCount, ...insert);
+        const removeAt = Math.floor(random() * between.length);
+        outline = between.slice();
+        const [gone] = outline.splice(removeAt, 1);
+        const replacedUnseen = replaced.some(({ id }) => expectedUnseen.has(id));
+        for (const { id } of replaced) expectedUnseen.delete(id);
+        if (!wasPinned && replacedUnseen) expectedUnseen.add(insert[0]!.id);
+        expectedUnseen.delete(gone!.id);
+        incremental.setOutline(outline, { from, splices: [{ index, deleteCount, items: insert }, { index: removeAt, deleteCount: 1, items: [] }] });
       } else {
         const kept = outline.filter(() => random() > 0.2);
         outline = [...kept.slice(0, Math.floor(kept.length / 2)), ...added, ...kept.slice(Math.floor(kept.length / 2))];
@@ -445,6 +461,13 @@ describe("incremental outline updates", () => {
         for (const id of expectedUnseen) if (!ids.has(id)) expectedUnseen.delete(id);
       }
       rebuilt.setOutline(outline);
+      // Measured rows keep their size through edits; per-kind medians must agree with a rebuild's.
+      if (outline.length && random() < 0.3) {
+        const { id } = outline[Math.floor(random() * outline.length)]!;
+        const size = 5 + Math.floor(random() * 60);
+        incremental.measure(id, size);
+        rebuilt.measure(id, size);
+      }
       const max = Math.max(0, rebuilt.getSnapshot().totalSize - 80);
       const top = random() * max;
       incremental.setViewport({ scrollTop: top, size: 80, source: "user" });
@@ -464,11 +487,12 @@ describe("incremental outline updates", () => {
     virtual.setViewport({ scrollTop: 0, size: 10, source: "user" });
 
     const history = Array.from({ length: 500 }, (_, index) => ({ id: `history-${index}`, kind: "x" }));
-    virtual.setOutline([...history, ...current], { type: "prepend", count: history.length });
+    const older = [...history, ...current];
+    virtual.setOutline(older, { from: current, splices: [{ index: 0, deleteCount: 0, items: history }] });
     expect(virtual.getSnapshot().unseenCount).toBe(0);
 
     const latest = [{ id: "latest-1", kind: "x" }, { id: "latest-2", kind: "x" }];
-    virtual.setOutline([...history, ...current, ...latest], { type: "append", count: latest.length });
+    virtual.setOutline([...older, ...latest], { from: older, splices: [{ index: older.length, deleteCount: 0, items: latest }] });
     expect(virtual.getSnapshot().unseenCount).toBe(2);
 
     virtual.setOutline([...current, latest[1]!]);
@@ -477,12 +501,77 @@ describe("incremental outline updates", () => {
     expect(virtual.getSnapshot().unseenCount).toBe(0);
   });
 
+  test("a fold replaces one row in place: no rebuild, every other measured size kept, the reading position held", () => {
+    let estimates = 0;
+    const virtual = createVirtualizer({ estimateSize: () => (estimates++, 40), overscan: 0 });
+    const outline = Array.from({ length: 10_000 }, (_, index) => ({ id: `row-${index}`, kind: index === 5_000 ? "approval" : "row" }));
+    outline.push({ id: "tool", kind: "tool" });
+    virtual.setOutline(outline);
+    virtual.setLoaded("all");
+    virtual.setViewport({ scrollTop: 0, size: 0, source: "user" });
+    for (let index = 4_990; index < 5_010; index++) virtual.measure(`row-${index}`, 10 + index % 7);
+    virtual.setViewport({ scrollTop: 0, size: 200, source: "user" });
+    virtual.scrollToId("row-5005");
+    virtual.setViewport({ scrollTop: virtual.getSnapshot().scrollTop, size: 200, source: "user" });
+    const before = virtual.getSnapshot();
+    const sizes = new Map(before.rows.map(({ id, size }) => [id, size]));
+    const anchorTop = before.rows.find(({ id }) => id === "row-5005")!.start - before.scrollTop;
+    estimates = 0;
+    // The tool row (last) folds into the approval's place: delete it at the end, replace the approval with it.
+    const folded = outline.slice(0, -1);
+    folded[5_000] = { id: "tool", kind: "tool" };
+    const result = mutate(virtual, () => virtual.setOutline(folded, {
+      from: outline,
+      splices: [{ index: outline.length - 1, deleteCount: 1, items: [] }, { index: 5_000, deleteCount: 1, items: [{ id: "tool", kind: "tool" }] }],
+    }));
+    // A rebuild estimates every unmeasured row again (about 10,000 calls); a replace estimates only what it adds.
+    expect(estimates).toBeLessThanOrEqual(1);
+    const after = virtual.getSnapshot();
+    for (const row of after.rows) if (row.id !== "tool" && sizes.has(row.id)) expect(row.size).toBe(sizes.get(row.id)!);
+    expect(after.rows.find(({ id }) => id === "row-5005")!.start - after.scrollTop).toBeCloseTo(anchorTop, 6);
+    expect(result.scrollTop).toBe(after.scrollTop);
+    // The tool row keeps its estimate and moves; the measured approval row goes.
+    expect(after.totalSize).toBe(before.totalSize - (10 + 5_000 % 7));
+  });
+
+  test("an update from an outline the engine did not receive rebuilds from the full outline", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10 });
+    const first = [{ id: "a", kind: "x" }];
+    const missed = [...first, { id: "b", kind: "x" }];
+    virtual.setOutline(first);
+    virtual.setOutline([...missed, { id: "c", kind: "x" }], { from: missed, splices: [{ index: 2, deleteCount: 0, items: [{ id: "c", kind: "x" }] }] });
+    expect(virtual.getSnapshot().totalSize).toBe(30);
+  });
+
+  test("a bad splice throws and leaves the layout whole", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10 });
+    const outline = [{ id: "a", kind: "x" }, { id: "b", kind: "x" }];
+    virtual.setOutline(outline);
+    expect(() => virtual.setOutline([{ id: "b", kind: "x" }, { id: "b", kind: "x" }], { from: outline, splices: [{ index: 0, deleteCount: 1, items: [{ id: "b", kind: "x" }] }] })).toThrow("unique");
+    expect(() => virtual.setOutline(outline, { from: outline, splices: [{ index: 3, deleteCount: 0, items: [] }] })).toThrow("outside");
+    expect(() => virtual.setOutline(outline, { from: outline, splices: [{ index: 0, deleteCount: 1, items: [] }] })).toThrow("does not match");
+    virtual.setViewport({ scrollTop: 0, size: 100, source: "user" });
+    expect(virtual.getSnapshot().rows.map(({ id }) => id)).toEqual(["a", "b"]);
+  });
+
+  test("a later bad splice after an applied one makes the next update rebuild, never edit a half-edited layout", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10 });
+    const outline = [{ id: "a", kind: "x" }, { id: "b", kind: "x" }];
+    virtual.setOutline(outline);
+    const next = [{ id: "c", kind: "x" }, { id: "a", kind: "x" }, { id: "b", kind: "x" }, { id: "c", kind: "x" }];
+    expect(() => virtual.setOutline(next, { from: outline, splices: [{ index: 0, deleteCount: 0, items: [{ id: "c", kind: "x" }] }, { index: 3, deleteCount: 0, items: [{ id: "c", kind: "x" }] }] })).toThrow("unique");
+    const good = [{ id: "a", kind: "x" }, { id: "b", kind: "x" }, { id: "d", kind: "x" }];
+    virtual.setOutline(good, { from: outline, splices: [{ index: 2, deleteCount: 0, items: [{ id: "d", kind: "x" }] }] });
+    virtual.setViewport({ scrollTop: 0, size: 100, source: "user" });
+    expect(virtual.getSnapshot().rows.map(({ id }) => id)).toEqual(["a", "b", "d"]);
+  });
+
   test("all-loaded mode follows incremental outline updates", () => {
     const virtual = createVirtualizer({ estimateSize: () => 10 });
     const outline = [{ id: "a", kind: "x" }];
     virtual.setOutline(outline);
     virtual.setLoaded("all");
-    virtual.setOutline([...outline, { id: "b", kind: "x" }], { type: "append", count: 1 });
+    virtual.setOutline([...outline, { id: "b", kind: "x" }], { from: outline, splices: [{ index: 1, deleteCount: 0, items: [{ id: "b", kind: "x" }] }] });
     virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
     expect(virtual.getSnapshot().rows.map((row) => row.loaded)).toEqual([true, true]);
   });
@@ -493,11 +582,9 @@ test("explicit upward intent releases follow until the user reaches the exact bo
   virtual.setFollow(false);
   virtual.setViewport({ scrollTop: 189, size: 10, source: "user" });
   expect(virtual.getSnapshot().pinned).toBe(false);
-  virtual.setOutline([
-    { id: "row-0", kind: "100:0" },
-    { id: "row-1", kind: "100:1" },
-    { id: "row-2", kind: "100:2" },
-  ], { type: "append", count: 1 });
+  const two = [{ id: "row-0", kind: "100:0" }, { id: "row-1", kind: "100:1" }];
+  virtual.setOutline(two);
+  virtual.setOutline([...two, { id: "row-2", kind: "100:2" }], { from: two, splices: [{ index: 2, deleteCount: 0, items: [{ id: "row-2", kind: "100:2" }] }] });
   expect(virtual.getSnapshot().unseenCount).toBe(1);
   virtual.setViewport({ scrollTop: 290, size: 10, source: "user" });
   expect(virtual.getSnapshot()).toMatchObject({ pinned: true, unseenCount: 0 });

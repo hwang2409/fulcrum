@@ -21,7 +21,8 @@ const isIOSWebKit = () => navigator.userAgent.includes("iP");
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
   enabled?: boolean;
-  outlineUpdate?: OutlineUpdate | null;
+  /** How `outline` came from the prior one; the engine edits in place when it holds that prior outline. */
+  outlineUpdate?: OutlineUpdate<Id> | null;
   /** Resets the virtual engine when the outline owner changes. */
   resetKey?: unknown;
 };
@@ -78,14 +79,9 @@ export function useVirtualList<Id extends string>(
       engine.reset();
     }
     if (appliedOutline.current !== outline) {
-      const priorLength = appliedOutline.current?.length;
       appliedOutline.current = outline;
       const token = engine.beforeMutation();
-      const update = options.outlineUpdate;
-      const validUpdate = !resetPending && update && priorLength !== undefined && outline.length === priorLength + update.count
-        ? update
-        : undefined;
-      engine.setOutline(outline, validUpdate);
+      engine.setOutline(outline, options.outlineUpdate);
       engine.setLoaded("all");
       if (initial.current) initial.current = false;
       else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
@@ -177,7 +173,14 @@ export function useVirtualList<Id extends string>(
     container.addEventListener("touchmove", onTouchMove, { passive: true });
     container.addEventListener("touchend", onTouchEnd, { passive: true });
     container.addEventListener("touchcancel", onTouchEnd, { passive: true });
-    const viewportObserver = new ResizeObserver(() => updateViewport("programmatic"));
+    // A scroll box that changes size (a banner above it, a composer below it) keeps a pinned reader at the bottom.
+    const viewportObserver = new ResizeObserver(() => {
+      const pinned = engine.getSnapshot().pinned;
+      updateViewport("programmatic");
+      if (!pinned) return;
+      container.scrollTop = engine.scrollToEnd();
+      ignoreScrollUntil.current = performance.now() + 50;
+    });
     viewportObserver.observe(container);
     return () => {
       observer.disconnect();
