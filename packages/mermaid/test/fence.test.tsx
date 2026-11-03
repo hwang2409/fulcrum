@@ -184,3 +184,26 @@ test("a fence that leaves before its turn is not drawn", async () => {
   await settle();
   expect(calls).toHaveLength(0);
 });
+
+test("a crowded gantt axis keeps every nth date and every grid line", async () => {
+  const { thinAxis } = await import("../src/sanitize.ts");
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg") as SVGSVGElement;
+  const axis = svg.appendChild(document.createElementNS(ns, "g"));
+  axis.setAttribute("class", "grid");
+  axis.setAttribute("font-size", "10");
+  for (let i = 0; i < 19; i++) {
+    const tick = axis.appendChild(document.createElementNS(ns, "g"));
+    tick.setAttribute("class", "tick");
+    tick.setAttribute("transform", `translate(${i * 27},0)`);
+    tick.append(document.createElementNS(ns, "line"), Object.assign(document.createElementNS(ns, "text"), { textContent: "10-01" }));
+  }
+  thinAxis(svg);
+  // 5 characters at 6 px plus a 10 px gap need 40 px: every 2nd of the 27 px ticks
+  expect(svg.querySelectorAll(".tick text").length).toBe(10);
+  expect(svg.querySelectorAll(".tick line").length).toBe(19);
+  axis.setAttribute("font-size", "1");
+  const before = svg.querySelectorAll(".tick text").length;
+  thinAxis(svg); // labels that fit stay
+  expect(svg.querySelectorAll(".tick text").length).toBe(before);
+});

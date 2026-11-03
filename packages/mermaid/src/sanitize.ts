@@ -36,7 +36,25 @@ export function sanitizeSvg(markup: string): SVGSVGElement | null {
     svg.setAttribute("height", String(Math.ceil(box.height)));
     svg.style.removeProperty("max-width");
   }
+  thinAxis(svg);
   return svg;
+}
+
+/**
+ * A gantt axis gets d3's 10 to 20 ticks whatever its width, so its dates overlap in a narrow box: keep every nth label
+ * (and every grid line) so that none overlap. A label is at most its length in 0.6 em characters (a monospace font).
+ */
+export function thinAxis(svg: SVGSVGElement) {
+  for (const axis of svg.querySelectorAll("g.grid")) {
+    const ticks = [...axis.children].filter((child) => child.classList.contains("tick"));
+    const xs = ticks.map((tick) => Number(/translate\(\s*(-?[\d.]+)/.exec(tick.getAttribute("transform") ?? "")?.[1]));
+    const gap = Math.min(...xs.slice(1).map((x, index) => x - xs[index]!));
+    if (!(gap > 0)) continue;
+    const size = Number(axis.getAttribute("font-size")) || 10;
+    const widest = Math.max(...ticks.map((tick) => tick.textContent?.trim().length ?? 0)) * size * 0.6;
+    const every = Math.ceil((widest + size) / gap);
+    if (every > 1) ticks.forEach((tick, index) => { if (index % every) tick.querySelector("text")?.remove(); });
+  }
 }
 
 /** A short parse error: mermaid's first line ("Parse error on line 2:") and its last ("Expecting ..., got ..."). */
