@@ -3,7 +3,7 @@ GlobalRegistrator.register({ url: "http://localhost:3000/gallery.html" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { act, type ReactNode } from "react";
+import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type RunSource, type SubAgentEvent } from "@fulcrum/core";
 import { Approval, RunNavigator, RunProvider, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunNavigatorProps } from "../src/index.js";
@@ -394,18 +394,25 @@ test("a new root store while drilled in returns to the root, releases the childr
   expect(held.get("a")).toBe(1);
 });
 
-function HistoryNavigator(props: Omit<RunNavigatorProps, "path" | "onPathChange">) {
-  return <RunNavigator {...props} {...useHistoryRunPath("run")} />;
+function HistoryNavigator({ historyKey = "run", ...props }: Omit<RunNavigatorProps, "path" | "onPathChange"> & { historyKey?: string }) {
+  return <RunNavigator {...props} {...useHistoryRunPath(historyKey)} />;
 }
-
-test("useHistoryRunPath: opening pushes, browser back pops, reload and deep links reconcile, unmount leaves no ghosts", async () => {
+const historyRuns = () => {
   const runs = { a: storeOf([commit("in-a"), child("a1", { name: "tester" })]), a1: storeOf([commit("in-a1")]) };
-  const { source, held } = fakeSource(runs);
-  const store = storeOf([child("a", { name: "reviewer" })]).store;
-  const crumbs = () => all('[data-part="run-breadcrumb"] li').length;
-  const runParams = () => new URL(location.href).searchParams.getAll("run");
-  history.replaceState({ app: 1 }, "", "/gallery.html?theme=dracula#demo");
+  return { ...fakeSource(runs), store: storeOf([child("a", { name: "reviewer" })]).store };
+};
+const crumbs = (scope: ParentNode = container) => scope.querySelectorAll('[data-part="run-breadcrumb"] li').length;
+const runParams = (key = "run") => new URL(location.href).searchParams.getAll(key);
+const escape = () => act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+const browserBack = async () => {
+  act(() => history.back());
+  await frames();
+};
 
+test("useHistoryRunPath: every user move pushes like a link, browser back follows the URL, other URL parts stay", async () => {
+  const { source, store } = historyRuns();
+  history.replaceState({ app: 1 }, "", "/gallery.html?theme=dracula#demo");
+  const start = history.length;
   mount(<HistoryNavigator store={store} source={source} virtual={false} />);
   act(() => q('[data-part="sub-agent"]').click());
   act(() => q('[data-part="sub-agent"]').click());
@@ -414,57 +421,119 @@ test("useHistoryRunPath: opening pushes, browser back pops, reload and deep link
   expect(new URL(location.href).searchParams.get("theme")).toBe("dracula");
   expect(location.hash).toBe("#demo");
   expect(history.state.app).toBe(1);
-  act(() => history.back());
-  await frames();
+  expect(history.length).toBe(start + 2);
+  await browserBack();
   expect(crumbs()).toBe(2);
   expect(runParams()).toEqual(["a"]);
-  // Escape pops the entry the hook pushed, so browser back is not left with a ghost.
-  act(() => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  // Escape is a move up, like a link to the parent: one new entry, and browser back returns to where it was.
+  escape();
   await frames();
   expect(crumbs()).toBe(1);
   expect(runParams()).toEqual([]);
-
-  // Unmounting while drilled in walks back over exactly the entries the hook pushed.
-  act(() => q('[data-part="sub-agent"]').click());
-  act(() => q('[data-part="sub-agent"]').click());
-  act(() => root!.unmount());
-  root = undefined;
+  expect(history.state.app).toBe(1);
+  await browserBack();
+  expect(crumbs()).toBe(2);
+  expect(runParams()).toEqual(["a"]);
+  act(() => q('[data-part="run-back"]').click());
   await frames();
   expect(runParams()).toEqual([]);
-  expect(history.state.app).toBe(1);
-  expect([held.get("a"), held.get("a1")]).toEqual([0, 0]);
+  expect(location.hash).toBe("#demo");
+});
 
-  // A deep link (no entries of ours behind it) opens the whole path; back replaces instead of leaving the page.
+test("useHistoryRunPath: unmounting after a host router moved on leaves the router's URL", async () => {
+  const { source, store, held } = historyRuns();
+  history.replaceState(null, "", "/route-a");
+  mount(<HistoryNavigator store={store} source={source} virtual={false} />);
+  act(() => q('[data-part="sub-agent"]').click());
+  expect(location.pathname + location.search).toBe("/route-a?run=a");
+  // A router opens its next route, keeping the query and merging history state, then unmounts the old page.
+  history.pushState({ ...history.state, router: "b" }, "", "/route-b?run=a");
+  const length = history.length;
+  act(() => root!.unmount());
+  root = undefined;
+  await frames(5);
+  expect(location.pathname + location.search).toBe("/route-b?run=a");
+  expect(history.state.router).toBe("b");
+  expect(history.length).toBe(length);
+  expect(held.get("a")).toBe(0);
+});
+
+test("useHistoryRunPath: a hash entry made after opening a run does not stop back from closing it", async () => {
+  const { source, store } = historyRuns();
+  history.replaceState(null, "", "/gallery.html");
+  mount(<HistoryNavigator store={store} source={source} virtual={false} />);
+  act(() => q('[data-part="sub-agent"]').click());
+  act(() => { location.hash = "section"; });
+  await frames();
+  expect(runParams()).toEqual(["a"]);
+  expect(crumbs()).toBe(2);
+  act(() => q('[data-part="run-back"]').click());
+  await frames();
+  expect(crumbs()).toBe(1);
+  expect(runParams()).toEqual([]);
+  expect(location.hash).toBe("#section");
+});
+
+test("useHistoryRunPath: reload and deep links open the URL's path without writing; a run that cannot open is corrected in place", async () => {
+  const { source, store } = historyRuns();
   history.replaceState({ app: 1 }, "", "/gallery.html?run=a&run=a1");
-  const before = history.length;
+  const length = history.length;
   mount(<HistoryNavigator store={store} source={source} virtual={false} />);
   await frames(1);
   expect(crumbs()).toBe(3);
   expect(q('[data-part="message"]').textContent).toBe("in-a1");
-  act(() => q('[data-part="run-back"]').click());
-  await frames();
-  expect(crumbs()).toBe(2);
-  expect(runParams()).toEqual(["a"]);
-  expect(history.length).toBe(before);
-  // An entry someone else pushed is never stepped back over.
-  act(() => q('[data-part="sub-agent"]').click());
-  history.pushState({ other: true }, "", location.href);
-  act(() => q('[data-part="run-back"]').click());
-  await frames();
-  expect(history.state.other).toBe(true);
-  expect(runParams()).toEqual(["a"]);
+  expect(history.length).toBe(length);
   act(() => root!.unmount());
   root = undefined;
+  expect(location.search).toBe("?run=a&run=a1");
 
-  // A deep link to a run that is gone falls back, and the URL is corrected in place.
   history.replaceState(null, "", "/gallery.html?run=a&run=nope");
-  const length = history.length;
   mount(<HistoryNavigator store={store} source={source} virtual={false} />);
   await frames(1);
   expect(crumbs()).toBe(2);
   expect(runParams()).toEqual(["a"]);
   expect(history.length).toBe(length);
   expect(q('[data-part="run-notice"]').textContent).toBe("could not open nope: started before child runs were recorded");
+});
+
+test("useHistoryRunPath: two navigators with different keys each follow their own parameter", async () => {
+  const left = historyRuns();
+  const right = historyRuns();
+  history.replaceState(null, "", "/gallery.html");
+  mount(<>
+    <div id="left"><HistoryNavigator historyKey="left" store={left.store} source={left.source} virtual={false} /></div>
+    <div id="right"><HistoryNavigator historyKey="right" store={right.store} source={right.source} virtual={false} /></div>
+  </>);
+  const [one, two] = [q("#left"), q("#right")];
+  act(() => one.querySelector<HTMLElement>('[data-part="sub-agent"]')!.click());
+  act(() => two.querySelector<HTMLElement>('[data-part="sub-agent"]')!.click());
+  expect([runParams("left"), runParams("right")]).toEqual([["a"], ["a"]]);
+  expect([crumbs(one), crumbs(two)]).toEqual([2, 2]);
+  await browserBack();
+  expect([runParams("left"), runParams("right")]).toEqual([["a"], []]);
+  expect([crumbs(one), crumbs(two)]).toEqual([2, 1]);
+});
+
+test("useHistoryRunPath: strict mode's double mount writes nothing and unmount leaves the URL", async () => {
+  const { source, store } = historyRuns();
+  history.replaceState(null, "", "/gallery.html?run=a");
+  const length = history.length;
+  mount(<StrictMode><HistoryNavigator store={store} source={source} virtual={false} /></StrictMode>);
+  await frames();
+  expect(crumbs()).toBe(2);
+  expect(history.length).toBe(length);
+  act(() => q('[data-part="sub-agent"]').click());
+  expect(runParams()).toEqual(["a", "a1"]);
+  act(() => root!.unmount());
+  root = undefined;
+  await frames(5);
+  expect(runParams()).toEqual(["a", "a1"]);
+  expect(history.length).toBe(length + 1);
+});
+
+test("run-history.ts never moves through the history list", async () => {
+  const source = await Bun.file(new URL("../src/run-history.ts", import.meta.url)).text();
+  expect(["history.back", "history.go(", "traverseTo", "history.forward"].filter((call) => source.includes(call))).toEqual([]);
 });
 
 test("a pending approval in a child shows on the parent row and the breadcrumb, and resolves from inside the child", async () => {
