@@ -7,7 +7,6 @@ test("themes lists every palette in themes.css, in file order", () => {
   expect([...css.matchAll(/^\[data-fulcrum-theme="([^"]+)"\] \{$/gm)].map((match) => match[1])).toEqual([...themes]);
 });
 
-
 // UI text must reach 4.5:1 on every background text sits on: bg, surface, and the 8% diff row tints of styles.css.
 // Syntax (tok-*) and terminal (ansi-*) colors keep each palette's official hex where it reaches 3:1 on the backgrounds
 // they sit on (tok-*: bg, surface, diff rows; ansi-*: bg, surface). Otherwise the value carries an
@@ -18,7 +17,7 @@ const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body
   vars: Object.fromEntries([...body!.matchAll(/--fulcrum-([\w-]+):\s*([^;]+);/g)].map(([, name, value]) => [name!, value!.trim()])),
   official: Object.fromEntries([...body!.matchAll(/--fulcrum-([\w-]+):[^;]+;\s*\/\*\s*official (#[0-9a-f]{6})\b/g)].map(([, name, hex]) => [name!, hex!])),
 }));
-const themes = blocks.filter((block) => block.vars.bg);
+const palettes = blocks.filter((block) => block.vars.bg);
 const UI = ["fg", "muted", "accent", "ok", "warn", "danger"];
 const ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"].flatMap((name) => [`ansi-${name}`, `ansi-bright-${name}`]);
 const TOKENS = ["keyword", "string", "number", "comment", "function", "type", "variable", "constant", "operator", "punctuation", "tag", "attribute", "regexp", "inserted", "deleted"].map((name) => `tok-${name}`);
@@ -63,13 +62,13 @@ function backgrounds(vars: Record<string, string>, key: string): Record<string, 
 const worst = (rgb: Rgb, on: Record<string, Rgb>) => Math.min(...Object.values(on).map((bg) => contrast(rgb, bg)));
 
 test("there are 12 named themes and the OS-dark default, and each defines every text color", () => {
-  expect(themes.length).toBe(13);
-  expect(themes.flatMap(({ name, vars }) => [...UI, ...TOKENS, ...ANSI].filter((key) => !vars[key]).map((key) => `${name}: --fulcrum-${key}`))).toEqual([]);
+  expect(palettes.length).toBe(13);
+  expect(palettes.flatMap(({ name, vars }) => [...UI, ...TOKENS, ...ANSI].filter((key) => !vars[key]).map((key) => `${name}: --fulcrum-${key}`))).toEqual([]);
 });
 
 test("UI text reaches 4.5:1 on bg, surface, and diff rows in every theme", () => {
   const problems: string[] = [];
-  for (const { name, vars } of themes) {
+  for (const { name, vars } of palettes) {
     for (const key of UI) {
       for (const [background, rgb] of Object.entries(backgrounds(vars, key))) {
         const ratio = contrast(color(vars[key]!, vars), rgb);
@@ -82,7 +81,7 @@ test("UI text reaches 4.5:1 on bg, surface, and diff rows in every theme", () =>
 
 test("syntax and ANSI colors reach 3:1 where they sit, as the official hex or its smallest OKLCH lightness change", () => {
   const problems: string[] = [];
-  for (const { name, vars, official } of themes) {
+  for (const { name, vars, official } of palettes) {
     for (const key of [...TOKENS, ...ANSI]) {
       const where = `${name}: --fulcrum-${key} ${vars[key]}`;
       if (!/^#[0-9a-f]{6}$/i.test(vars[key]!)) { problems.push(`${where} is not a palette hex`); continue; }
@@ -105,7 +104,7 @@ test("syntax and ANSI colors reach 3:1 where they sit, as the official hex or it
 });
 
 test("the OS-dark default is github-dark", () => {
-  const dark = themes.find((theme) => theme.name === '[data-fulcrum-theme="github-dark"]')!;
-  const fallback = themes.find((theme) => theme.name === ":root:not([data-fulcrum-theme])")!;
+  const dark = palettes.find((theme) => theme.name === '[data-fulcrum-theme="github-dark"]')!;
+  const fallback = palettes.find((theme) => theme.name === ":root:not([data-fulcrum-theme])")!;
   expect(fallback.vars).toEqual(dark.vars);
 });
