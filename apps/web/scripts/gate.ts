@@ -274,6 +274,7 @@ try {
       await fake.start();
       await page.goto(`${origin}/?theme=tokyo-night`);
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator("button.session", { hasText: "check every theme" }).waitFor({ timeout: 5000 });
       await page.locator('button.session[tabindex="0"]').focus();
       await page.keyboard.press("ArrowDown");
       const focused = await page.evaluate(() => document.activeElement?.textContent ?? "");
