@@ -1,14 +1,11 @@
 import { expect, test } from "bun:test";
-import { renderToStaticMarkup } from "react-dom/server";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
-import { Markdown } from "../src/react.js";
 import { PENDING_INLINE_SUFFIX as PENDING_INLINE_SUFFIX_BUDGET } from "../src/pending-inline.js";
 import { MarkdownLineResolver } from "../src/resolver.js";
 
 function inlineVisible(nodes: readonly Inline[], provisional: boolean): string {
   return nodes.map((node) => node.type === "pending-reference"
     ? provisional ? node.value : ""
-    : node.type === "pending-text" ? provisional ? inlineVisible(node.children, provisional) : ""
     : node.type === "text" || node.type === "code" ? node.value
     : node.type === "image" ? node.alt
     : node.type === "break" ? "\n"
@@ -51,13 +48,6 @@ test("an empty pipe header never takes ownership of later paragraph text", () =>
   expect(visible(document.render())).toContain("t");
   document.finish();
   expect(json(document.render())).toBe(json(parseMarkdown(source)));
-});
-
-test("block lookahead keeps plain text stable without provisional styling", () => {
-  for (const source of ["left | right\n", "heading\n"]) {
-    const markup = renderToStaticMarkup(<Markdown source={source} streaming />);
-    expect(markup).not.toContain('data-part="md-text-pending"');
-  }
 });
 
 test("preview copy work stays bounded for 10 KB, 100 KB, and 1 MB leaves", () => {

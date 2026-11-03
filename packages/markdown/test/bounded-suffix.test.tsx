@@ -10,7 +10,7 @@ function text(nodes: readonly Inline[]): string {
 }
 
 function stableText(nodes: readonly Inline[]): string {
-  return nodes.map((node) => node.type === "pending-text" || node.type === "pending-reference" ? ""
+  return nodes.map((node) => node.type === "pending-reference" ? ""
     : node.type === "text" || node.type === "code" ? node.value
       : node.type === "break" ? "\n"
         : "children" in node ? stableText(node.children) : node.type === "image" ? node.alt : "").join("");
@@ -38,18 +38,6 @@ function visible(blocks: readonly Block[]): string {
           : block.type === "table" ? [...block.header, ...block.rows.flat()].map(text).join("") : "").join("");
 }
 
-function provisional(nodes: readonly Inline[]): number {
-  return nodes.reduce((total, node) => total + (node.type === "pending-text" ? text(node.children).length
-    : "children" in node ? provisional(node.children) : 0), 0);
-}
-
-function provisionalIn(blocks: readonly Block[]): number {
-  return blocks.reduce((total, block) => total + (block.type === "paragraph" || block.type === "heading" ? provisional(block.children)
-    : block.type === "blockquote" ? provisionalIn(block.children)
-      : block.type === "list" ? block.items.reduce((sum, item) => sum + provisionalIn(item.children), 0)
-        : block.type === "table" ? [...block.header, ...block.rows.flat()].reduce((sum, cell) => sum + provisional(cell), 0) : 0), 0);
-}
-
 test("a setext underline candidate stays hidden syntax while the heading text stays visible", () => {
   const document = createStreamingDocument();
   document.append("heading\n");
@@ -71,7 +59,7 @@ for (const [name, source, stableCharacters] of [
     const received = Math.min(offset + 1_024, source.length);
     const expectedStable = name === "unclosed bracket" ? Math.max(0, received - 1) : Math.max(0, received - "heading\n".length);
     const hiddenStable = expectedStable - visible(blocks).replace("heading", "").length;
-    expect(hiddenStable + provisionalIn(blocks), `prefix ${received}`).toBeLessThanOrEqual(PENDING_INLINE_SUFFIX_BUDGET);
+    expect(hiddenStable, `prefix ${received}`).toBeLessThanOrEqual(PENDING_INLINE_SUFFIX_BUDGET);
   }
   expect(visible(document.render())).toContain("x".repeat(name === "unclosed bracket" ? stableCharacters : 0));
 });

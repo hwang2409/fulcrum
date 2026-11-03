@@ -69,7 +69,6 @@ export function generateDocument(index: number, rng: Random) {
 
 function inlineVisible(nodes: readonly Inline[], includeProvisional = true): string {
   return nodes.map((node) => node.type === "pending-reference" ? includeProvisional ? node.value : ""
-    : node.type === "pending-text" ? includeProvisional ? inlineVisible(node.children, includeProvisional) : ""
     : node.type === "text" || node.type === "code" ? node.value
     : node.type === "image" ? node.alt
     : node.type === "break" ? "\n"

@@ -4,7 +4,6 @@ import { createStreamingDocument, parseMarkdown, type Block, type Inline } from 
 const json = (value: unknown) => JSON.stringify(value, (key, child) => key === "open" ? undefined : child);
 function inlineVisible(nodes: readonly Inline[], includeProvisional = true): string {
   return nodes.map((node) => node.type === "pending-reference" ? includeProvisional ? node.value : ""
-    : node.type === "pending-text" ? includeProvisional ? inlineVisible(node.children, includeProvisional) : ""
     : node.type === "text" || node.type === "code" ? node.value
     : node.type === "image" ? node.alt : node.type === "break" ? "\n"
     : inlineVisible(node.children, includeProvisional)).join("");
@@ -18,7 +17,6 @@ function visible(blocks: readonly Block[], includeProvisional = true): string {
 function provisionalCharacters(blocks: readonly Block[]): number {
   const inline = (nodes: readonly Inline[]): number => nodes.reduce((count, node) => count
     + (node.type === "pending-reference" ? node.value.length
-      : node.type === "pending-text" ? inlineVisible(node.children).length
       : "children" in node ? inline(node.children) : 0), 0);
   return blocks.reduce((count, block) => count
     + (block.type === "paragraph" || block.type === "heading" ? inline(block.children)

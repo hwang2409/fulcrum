@@ -17,7 +17,7 @@ const window = new Window();
 const visibleText = (source: string, streaming = false, includeProvisional = true) => {
   const element = window.document.createElement("div");
   element.innerHTML = renderToStaticMarkup(<Markdown source={source} streaming={streaming} />);
-  if (!includeProvisional) element.querySelectorAll('[data-part="md-text-pending"], [data-part="md-reference-pending"]').forEach((node) => node.remove());
+  if (!includeProvisional) element.querySelectorAll('[data-part="md-reference-pending"]').forEach((node) => node.remove());
   return element.textContent;
 };
 const isSubsequence = (value: string, expected: string) => {

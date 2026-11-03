@@ -23,7 +23,6 @@ export type HighlightResult = ReturnType<Highlight>;
 export type Inline =
   | { type: "text"; value: string }
   | { type: "pending-reference"; value: string }
-  | { type: "pending-text"; children: Inline[] }
   | { type: "code"; value: string }
   | { type: "break" }
   | { type: "emphasis"; children: Inline[] }
@@ -507,6 +506,10 @@ export interface StreamingDocument {
   readonly stats: { readonly frozenParses: number; readonly tailParses: number; readonly scannedCharacters: number; readonly previewScannedCharacters: number; readonly copiedCharacters: number };
   append(delta: string): void;
   finish(): void;
+  /**
+   * The document so far. Blocks of an earlier frame are not snapshots: the growing paragraph's node list is updated
+   * in place by later appends, so diff frames by copying them first.
+   */
   render(): readonly Block[];
 }
 

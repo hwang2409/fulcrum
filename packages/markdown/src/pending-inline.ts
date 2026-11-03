@@ -198,12 +198,16 @@ export class PendingInline {
   private suffixLength = 0;
 
   /** `openCode` is the backtick run of a code span that an earlier line of the paragraph left open. */
-  constructor(private readonly parse: InlineParser, openCode?: { marker: string; leadingSpace: boolean }) {
-    if (openCode) this.openers.push({ index: 0, end: 0, kind: "code", node: 0, state: "text", ...openCode });
+  constructor(private readonly parse: InlineParser, private readonly openCode?: { marker: string; leadingSpace: boolean }) {
+    this.reset();
   }
 
-  get owner(): Readonly<Opener> | undefined {
-    return this.openers[0];
+  private reset() {
+    this.nodes.length = 0;
+    this.openers.length = 0;
+    if (this.openCode) this.openers.push({ index: 0, end: 0, kind: "code", node: 0, state: "text", ...this.openCode });
+    this.emittedEnd = 0;
+    this.suffixLength = 0;
   }
 
   /**
@@ -212,6 +216,9 @@ export class PendingInline {
    * string here would copy the whole line on the next read.
    */
   extend(content: string): Inline[] {
+    // Invariant: `content` extends the previous content (the caller resets at each line end). A shorter line breaks
+    // it, so the stable nodes start over; a full prefix check would cost O(line) per delta.
+    if (content.length < this.content.length) this.reset();
     this.content = content;
     this.nodes.length -= this.suffixLength;
     const cut = cutPoint(this.content, this.content.length - PENDING_INLINE_SUFFIX);

@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
+import { PendingInline } from "../src/pending-inline.js";
 
 // Gates for the pending-line rule: a character the user has seen never disappears, a raw marker may
 // later become a style, and only the fixed suffix may be provisional.
 const SUFFIX = 256;
 
 function text(nodes: readonly Inline[], provisional: boolean): string {
-  return nodes.map((node) => node.type === "pending-text" ? provisional ? text(node.children, provisional) : ""
-    : node.type === "pending-reference" ? provisional ? node.value : ""
+  return nodes.map((node) => node.type === "pending-reference" ? provisional ? node.value : ""
       : node.type === "text" || node.type === "code" ? node.value
         : node.type === "break" ? "\n"
           : node.type === "image" ? node.alt
@@ -213,4 +213,19 @@ test("a cut at the line start never splits an intraword underscore", () => {
 
 test("pipes in a growing-line code span stay hidden when an earlier line has an open backtick", () => {
   for (const size of [1, 4, 16]) stream("x\nopen `code\nuse `a | b` in shell\nmore\n", fixed(size));
+});
+
+test("a growing line in a paragraph pairs backticks as the paragraph will", () => {
+  for (const source of [
+    "> open `code an *em* word\n> a\\b use `a | b` in shell\nfoo] foo]\n",
+    "1. \\[not link\\] x | y | z open `code\n   use `a | b` in shell foo] cite [1] and [2]\n\n> foo]\n",
+    "open `code\nuse `a | b` in shell then `more` and *em*\n",
+  ]) for (const size of [1, 4, 16]) stream(source, fixed(size));
+});
+
+test("a line that does not extend the previous one starts its stable nodes over", () => {
+  const pending = new PendingInline((source) => [{ type: "text", value: source }]);
+  pending.extend("a ".repeat(400));
+  pending.extend("b c");
+  expect(pending.nodes).toEqual([{ type: "text", value: "b c" }]);
 });
