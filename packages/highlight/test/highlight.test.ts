@@ -357,3 +357,26 @@ test("a cache hit never returns tokens for different code under the same id and 
   expect(second.map((token: Token) => token.text).join("")).toBe("var b = 2;");
   highlighter.dispose();
 });
+
+test("an older same-key request that lands last does not replace the newer cached result", async () => {
+  const posted: Array<{ requestId: number; code: string }> = [];
+  let onmessage: ((event: { data: unknown }) => void) | undefined;
+  const fakeWorker = {
+    postMessage(message: { type: string; requestId: number; code: string }) { if (message.type === "highlight") posted.push(message); },
+    terminate() {},
+    set onmessage(handler: (event: { data: unknown }) => void) { onmessage = handler; },
+    set onerror(_handler: unknown) {},
+  };
+  const highlighter = createHighlighter({ workerFactory: () => fakeWorker });
+  const context = { id: "race", version: 3, state: "done" as const };
+  const older = highlighter("aaa", "typescript", context) as Promise<Token[]>;
+  const newer = highlighter("bbb", "typescript", context) as Promise<Token[]>;
+  onmessage!({ data: { requestId: posted[1]!.requestId, tokens: [{ text: "bbb", type: "keyword" }] } });
+  await newer;
+  onmessage!({ data: { requestId: posted[0]!.requestId, tokens: [{ text: "aaa", type: "keyword" }] } });
+  await older;
+  const again = highlighter("bbb", "typescript", context);
+  expect(Array.isArray(again)).toBe(true);
+  expect(posted.length).toBe(2);
+  highlighter.dispose();
+});

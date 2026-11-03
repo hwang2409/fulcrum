@@ -114,10 +114,13 @@ export function createController(options: HighlighterOptions = {}): Highlight {
       target.postMessage({ type: "highlight", requestId: id, code, language, context: actual });
     }) : fallback(code, language, actual);
     const tracked = result.then((tokens): Token[] | Promise<Token[]> => {
-      if (inflight.get(key) === tracked) { inflight.delete(key); inflightIds.delete(key); inflightCode.delete(key); }
+      // Only the newest request under a key may fill its cache entry: an older one for other content that lands later
+      // must not replace a newer, already-cached result (that would only cost a needless retokenize, never wrong colors).
+      const newest = inflight.get(key) === tracked;
+      if (newest) { inflight.delete(key); inflightIds.delete(key); inflightCode.delete(key); }
       const currentKey = current.get(actual.id);
       if (!disposed && currentKey === key) {
-        remember(key, actual, code, tokens);
+        if (newest) remember(key, actual, code, tokens);
         if ([...inflightIds].some(([otherKey, id]) => id === actual.id && otherKey !== key)) latestSettled.set(actual.id, { key, tokens });
         return tokens;
       }
