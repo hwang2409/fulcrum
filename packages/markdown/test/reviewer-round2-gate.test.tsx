@@ -21,9 +21,10 @@ function visible(blocks: readonly Block[], includeProvisional = true): string {
 }
 
 function isSubsequence(needle: string, haystack: string) {
+  const wanted = [...needle];
   let offset = 0;
-  for (const character of haystack) if (character === needle[offset]) offset++;
-  return offset === needle.length;
+  for (const character of haystack) if (character === wanted[offset]) offset++;
+  return offset === wanted.length;
 }
 
 function expectMonotonic(source: string) {

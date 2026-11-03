@@ -15,9 +15,10 @@ function visible(blocks: readonly Block[], includeProvisional = true): string {
     : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => inlineVisible(cell, includeProvisional)).join("") : "").join("").replace(/\s/g, "");
 }
 function subsequence(needle: string, haystack: string) {
+  const wanted = [...needle];
   let offset = 0;
-  for (const character of haystack) if (character === needle[offset]) offset++;
-  return offset === needle.length;
+  for (const character of haystack) if (character === wanted[offset]) offset++;
+  return offset === wanted.length;
 }
 
 type Case = { name: string; source: string };
@@ -59,10 +60,12 @@ test("reviewer 25-family generator preserves visible order and final output", ()
   for (const current of cases) for (const plan of chunkPlans) {
     const document = createStreamingDocument();
     let previousStable = "";
+    let prefix = "";
     for (const chunk of plan.chunks(current.source)) {
       document.append(chunk);
+      prefix += chunk;
       const blocks = document.render();
-      expect(subsequence(previousStable, visible(blocks)), `${current.name}/${plan.name}`).toBe(true);
+      expect(subsequence(previousStable, visible(blocks)), `${current.name}/${plan.name}: ${JSON.stringify(prefix)}: ${JSON.stringify(previousStable)} -> ${JSON.stringify(visible(blocks))}`).toBe(true);
       previousStable = visible(blocks, false);
     }
     document.finish();

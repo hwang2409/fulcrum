@@ -31,13 +31,13 @@ export type PendingLineScan = {
 };
 
 export type PendingLine = {
-  readonly pieces: readonly string[];
+  readonly content: string;
   readonly length: number;
   readonly scan: Readonly<PendingLineScan>;
 };
 
 type MutablePendingLine = {
-  pieces: string[];
+  content: string;
   length: number;
   scan: PendingLineScan;
   atLineStart: boolean;
@@ -55,7 +55,7 @@ type Marker = {
 };
 
 const freshPending = (): MutablePendingLine => ({
-  pieces: [],
+  content: "",
   length: 0,
   scan: { indentColumns: 0, marker: "possible" },
   atLineStart: true,
@@ -63,7 +63,7 @@ const freshPending = (): MutablePendingLine => ({
 });
 
 function advancePending(scan: MutablePendingLine, delta: string) {
-  scan.pieces.push(delta);
+  scan.content += delta;
   scan.length += delta.length;
   for (const character of delta) {
     if (!scan.atLineStart) continue;
@@ -181,7 +181,7 @@ export class MarkdownLineResolver {
   }
 
   get pending(): PendingLine {
-    return { pieces: this.pendingLine.pieces, length: this.pendingLine.length, scan: this.pendingLine.scan };
+    return { content: this.pendingLine.content, length: this.pendingLine.length, scan: this.pendingLine.scan };
   }
 
   append(delta: string): LineResolution[] {
@@ -194,7 +194,7 @@ export class MarkdownLineResolver {
         break;
       }
       advancePending(this.pendingLine, delta.slice(offset, newline));
-      resolved.push(this.resolveLine(this.pendingLine.pieces.join(""), false));
+      resolved.push(this.resolveLine(this.pendingLine.content, false));
       this.pendingLine = freshPending();
       offset = newline + 1;
     }
@@ -203,7 +203,7 @@ export class MarkdownLineResolver {
 
   finish(): LineResolution | undefined {
     if (!this.pendingLine.length) return undefined;
-    const result = this.resolveLine(this.pendingLine.pieces.join(""), true);
+    const result = this.resolveLine(this.pendingLine.content, true);
     this.pendingLine = freshPending();
     return result;
   }

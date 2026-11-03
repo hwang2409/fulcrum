@@ -85,9 +85,10 @@ function visible(blocks: readonly Block[], includeProvisional = true): string {
 }
 
 function isSubsequence(needle: string, haystack: string) {
+  const wanted = [...needle];
   let offset = 0;
-  for (const character of haystack) if (character === needle[offset]) offset++;
-  return offset === needle.length;
+  for (const character of haystack) if (character === wanted[offset]) offset++;
+  return offset === wanted.length;
 }
 
 function equalValue(active: unknown, expected: unknown, pending: { count: number }, allowPending = false): boolean {
@@ -141,11 +142,9 @@ function checkSource(source: string, splitSeed: number, stats?: FuzzStats): stri
     }
     const active = document.render();
     const expected = parseMarkdown(source);
-    if (!equalValue(active, expected, { count: 0 })) {
-      if (!matchesActiveException(active, expected, source))
-        return `active render differs: ${JSON.stringify(active)} != ${JSON.stringify(expected)}`;
-      if (stats) stats.eofReferences++;
-    }
+    if (!isSubsequence(visible(active, false), visible(expected)))
+      return `active render reveals non-final text: ${JSON.stringify(active)} != ${JSON.stringify(expected)}`;
+    if (!equalValue(active, expected, { count: 0 }) && matchesActiveException(active, expected, source) && stats) stats.eofReferences++;
     document.finish();
     const finished = document.render();
     if (!equalValue(finished, expected, { count: 0 }))
