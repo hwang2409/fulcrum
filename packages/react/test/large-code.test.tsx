@@ -123,9 +123,9 @@ test("a large fence shows an honest line count and copies the whole text", async
 });
 
 test("a fence under the limits stays one inline block", () => {
-  const code = line.repeat(199);
+  const code = "int a = 1;\n".repeat(39);
   mount(<Markdown id="m" source={"```cpp\n" + code + "```\n"} highlight={highlight} />);
-  expect(container.querySelector('[data-part="text-viewer"]')).toBeNull();
+  expect(container.querySelector('[data-part="text-viewer"]') === null).toBe(true);
   expect(container.querySelector("pre[data-part=md-code-block] > code")!.textContent).toBe(code);
 });
 
@@ -149,4 +149,28 @@ test.each([
 test("a streaming fence over the limits follows its newest line", () => {
   mount(<Markdown id="m" source={"```cpp\n" + line.repeat(300)} streaming highlight={highlight} />);
   expect(container.querySelector('[data-part="text-viewer-position"]')!.textContent).toBe("at bottom");
+});
+
+// Streaming answers at once; any other request (a viewer range, the whole block) stays pending, so only colors carried
+// over from the inline block can show.
+const streamingOnly: Highlight = Object.assign((code: string, _language: string | undefined, context?: { state?: string }) =>
+  context?.state === "streaming" ? tokens(code) : new Promise<Token[]>(() => {}), { dispose() {}, subscribe: () => () => {} });
+
+test("a streaming fence that crosses the line limit keeps its colors as it becomes the viewer", () => {
+  const code = "int a = 1;\n".repeat(39);
+  mount(<Markdown id="m" source={"```cpp\n" + code} streaming highlight={streamingOnly} />);
+  expect(container.querySelector('[data-part="md-code-block"]')!.getAttribute("data-size")).toBe(null);
+  expect(spans()).toBeGreaterThan(0);
+  act(() => root!.render(<Markdown id="m" source={"```cpp\n" + code + "int b = 2;\nint c"} streaming highlight={streamingOnly} />));
+  expect(container.querySelector('[data-part="md-code-block"]')!.getAttribute("data-size")).toBe("large");
+  expect(container.querySelector('[data-part="text-viewer-row"] .tok-keyword')).not.toBeNull();
+});
+
+test("a fence under the line limit with more than INLINE_SPANS tokens is the viewer, colored from its own tokens", () => {
+  const dense = line.repeat(35); // 35 lines of the densest code: about 1,150 tokens
+  mount(<Markdown id="m" source={"```cpp\n" + dense + "```\n"} highlight={highlight} />);
+  const block = container.querySelector('[data-part="md-code-block"]')!;
+  expect(block.getAttribute("data-size")).toBe("large");
+  expect(spans()).toBeLessThan(1_000);
+  expect(block.querySelector('[data-part="text-viewer-row"] .tok-keyword')).not.toBeNull();
 });

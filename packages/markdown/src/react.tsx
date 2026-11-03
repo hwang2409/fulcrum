@@ -15,7 +15,7 @@ import {
   type ListBlock,
   type Token,
 } from "./index.js";
-import { CodeViewer, HighlightContext, isLargeCode, Tokens } from "@fulcrum/react/code";
+import { CodeViewer, HighlightContext, INLINE_SPANS, isLargeCode, Tokens } from "@fulcrum/react/code";
 
 export interface MarkdownProps {
   source: string;
@@ -44,9 +44,8 @@ const InlineView = ({ nodes }: { nodes: Inline[] }): ReactNode => nodes.map((nod
 
 // A large block is the shared bounded viewer: one react commit of every token of a 330k-token block froze the page
 // for seconds. Each mounted range of it is highlighted on its own, through the same highlighter.
-const CodeBlock = ({ id, block, highlight }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) => isLargeCode(block.value)
-  ? <HighlightContext.Provider value={highlight}><div data-part="md-code-block" data-language={block.language} data-size="large"><CodeViewer text={block.value} language={block.language} id={id} done={!block.open} /></div></HighlightContext.Provider>
-  : <InlineCodeBlock id={id} block={block} highlight={highlight} />;
+const LargeCodeBlock = ({ id, block, highlight, seed }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter; seed?: Token[] | null }) =>
+  <HighlightContext.Provider value={highlight}><div data-part="md-code-block" data-language={block.language} data-size="large"><CodeViewer text={block.value} language={block.language} id={id} done={!block.open} seed={seed} /></div></HighlightContext.Provider>;
 
 // Tokens for `code`: tokens of an older revision that spell a prefix of it keep their colors and get the rest as plain
 // text, so a block never shows fewer characters than its source (a closing fence waits on its done colors).
@@ -57,7 +56,10 @@ function covering(tokens: Token[] | null, code: string): Token[] | null {
   return code.startsWith(spelled) ? [...tokens, { text: code.slice(spelled.length) }] : null;
 }
 
-function InlineCodeBlock({ id, block, highlight }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) {
+// One component for a fence's whole life, so the tokens it has carry over when it becomes the viewer (over isLargeCode's
+// limits, or with more than INLINE_SPANS tokens): its colors never blink and the commit stays bounded.
+function CodeBlock({ id, block, highlight }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter }) {
+  const large = isLargeCode(block.value);
   const version = useRef(0);
   const previous = useRef("");
   const mounted = useRef(false);
@@ -74,7 +76,7 @@ function InlineCodeBlock({ id, block, highlight }: { id: string; block: Extract<
   }
   const currentVersion = version.current;
   const key = `${currentVersion}:${state}:${block.language ?? ""}`;
-  if (highlight && request.current?.key !== key) {
+  if (highlight && !large && request.current?.key !== key) {
     request.current = { id: ++nextRequestId.current, key, result: highlight(block.value, block.language, { id, version: currentVersion, state }) };
   }
   const immediate = request.current?.result && !(request.current.result instanceof Promise) ? request.current.result : null;
@@ -93,7 +95,9 @@ function InlineCodeBlock({ id, block, highlight }: { id: string; block: Extract<
     return () => { mounted.current = false; };
   }, [currentVersion, highlight, key]);
 
-  const shown = covering(immediate ?? tokens, block.value);
+  const latest = immediate ?? tokens;
+  const shown = covering(latest, block.value);
+  if (large || (shown && shown.length > INLINE_SPANS)) return <LargeCodeBlock id={id} block={block} highlight={highlight} seed={latest} />;
   return <pre data-part="md-code-block" data-language={block.language}><code>{shown ? <Tokens tokens={shown} /> : block.value}</code></pre>;
 }
 

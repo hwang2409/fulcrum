@@ -15,8 +15,14 @@ const CODE_SEGMENT_CHARS = 500;
 // lines, 1,636 spans) committed with no long task and a 44-63 ms worst gap. The densest code (0.72 spans per character)
 // at this cap costs about 175 ms at 4x, about 45 ms unthrottled.
 const INLINE_CHARS = 10_000;
-// A code block of this many lines or more is a scrolling viewer rather than a page-long box.
-const INLINE_LINES = 200;
+// A code block of this many lines or more is a scrolling viewer rather than a page-long box. The markdown viewer is
+// this many lines tall (styles.css), so a block that crosses the limit keeps its height.
+const INLINE_LINES = 40;
+/**
+ * The most token spans drawn inline in one react commit: about 50 ms at 4x CPU throttling for the densest code (the
+ * cost follows spans, not characters). A block whose tokens are more than this is drawn by CodeViewer instead.
+ */
+export const INLINE_SPANS = 1_000;
 const MAX_PREVIEW_LINES = 60;
 const HEAD_CHARS = INLINE_CHARS * 0.8;
 const TAIL_CHARS = INLINE_CHARS * 0.2;
@@ -188,18 +194,26 @@ const AnsiRun = ({ text, spans }: { text: string; spans: AnsiSpan[] }) => {
 // The visible ranges color first; the whole block's tokens replace them when they arrive (about 3 MB held at the cap).
 // shortcut: a block over WHOLE_CHARS keeps range-local colors; upgrade by carrying grammar state across range requests.
 const WHOLE_CHARS = 100_000;
-type WholeTokens = { tokens: Token[]; starts: number[] };
+type WholeTokens = { tokens: Token[]; starts: number[]; length: number };
 
-function useWholeTokens(text: string, format: TextFormat | undefined, id: string, done: boolean): WholeTokens | null {
+const indexed = (tokens: Token[]): WholeTokens => {
+  const starts: number[] = [];
+  let at = 0;
+  for (const token of tokens) { starts.push(at); at += token.text.length; }
+  return { tokens, starts, length: at };
+};
+
+// The whole block's tokens once they arrive; until then `seed` (tokens an inline block already had for a prefix of the
+// text), so a block that becomes a viewer keeps its colors.
+function useWholeTokens(text: string, format: TextFormat | undefined, id: string, done: boolean, seed?: Token[] | null): WholeTokens | null {
   const language = done && !format?.spans && text.length <= WHOLE_CHARS ? format?.language : undefined;
   const tokens = useTokens(language ? text : "", language, `${id}:whole`);
-  return useMemo(() => {
-    if (!tokens) return null;
-    const starts: number[] = [];
-    let at = 0;
-    for (const token of tokens) { starts.push(at); at += token.text.length; }
-    return { tokens, starts };
-  }, [tokens]);
+  const whole = useMemo(() => tokens && indexed(tokens), [tokens]);
+  const seeded = useMemo(() => {
+    const prefix = seed && indexed(seed);
+    return prefix && text.startsWith(seed!.map((token) => token.text).join("")) ? prefix : null;
+  }, [seed, text]);
+  return whole ?? seeded ?? null;
 }
 
 /** The whole block's tokens over [start, end), cut at the edges. */
@@ -227,8 +241,9 @@ const styledBlock = (text: string, start: number, end: number, format: TextForma
 /** `text[start, end)` in its format. Each range is its own highlight block, so a viewer only highlights mounted rows. */
 export const Styled = memo(function Styled({ text, start = 0, end = text.length, format, id, done = true, whole }: { text: string; start?: number; end?: number; format?: TextFormat; id: string; done?: boolean; whole?: WholeTokens | null }) {
   const { code: slice, language, id: block } = styledBlock(text, start, end, format, id, done);
-  const own = useTokens(slice, whole ? undefined : language, block, done);
-  const tokens = whole ? sliceTokens(whole, start, end) : own;
+  const covered = whole && whole.length >= end ? whole : null; // a seed may cover only a prefix of the text
+  const own = useTokens(slice, covered ? undefined : language, block, done);
+  const tokens = covered ? sliceTokens(covered, start, end) : own;
   if (format?.spans) return <AnsiRun text={slice} spans={spansIn(format.spans, start, end)} />;
   return tokens ? <Tokens tokens={tokens} /> : <>{slice}</>;
 });
@@ -237,10 +252,10 @@ export const Styled = memo(function Styled({ text, start = 0, end = text.length,
 const counts = new Intl.NumberFormat("en-US");
 const count = (value: number) => counts.format(value);
 
-type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean };
+type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean; seed?: Token[] | null };
 
-function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy }: ViewerProps) {
-  const whole = useWholeTokens(rows ? "" : text, format, id, done);
+function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy, seed }: ViewerProps) {
+  const whole = useWholeTokens(rows ? "" : text, format, id, done, seed);
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(follow);
   const [atBottom, setAtBottom] = useState(follow);
@@ -432,14 +447,15 @@ export function CopyButton({ value, label }: { value: CopyValue; label: string }
 /**
  * A code block over isLargeCode's limits: the virtual viewer, open at once, with a control that copies the whole text.
  * Only mounted ranges are in the DOM, so find-in-page reaches the visible lines; each range is highlighted on its own,
- * so the visible lines color without waiting for the whole block.
+ * so the visible lines color without waiting for the whole block. `seed`: tokens the block already has for a prefix of
+ * `text` (an inline block that became this viewer), shown until the viewer's own colors arrive.
  */
-export function CodeViewer({ text, language, id, done = true, label = "code" }: { text: string; language: string | undefined; id: string; done?: boolean; label?: string }) {
+export function CodeViewer({ text, language, id, done = true, label = "code", seed }: { text: string; language: string | undefined; id: string; done?: boolean; label?: string; seed?: Token[] | null }) {
   const metrics = useTextMetrics(text, !done);
   const segments = useSegments(text, !done, segmentLines(text, metrics, CODE_SEGMENT_CHARS), CODE_SEGMENT_CHARS);
   const format = useMemo(() => language ? { language } : undefined, [language]);
   // A block still streaming in follows its newest line, as the timeline follows the run; a finished one starts at its top.
-  return <VirtualText text={text} label={label} follow={!done} metrics={metrics} segments={segments} format={format} id={id} done={done} copy />;
+  return <VirtualText text={text} label={label} follow={!done} metrics={metrics} segments={segments} format={format} id={id} done={done} copy seed={seed} />;
 }
 
 /**
