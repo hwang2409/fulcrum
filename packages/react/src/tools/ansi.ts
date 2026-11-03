@@ -23,12 +23,13 @@ const classes = (style: Style) => {
   // background becomes the text color. With no set background the text is the page background (the badge rule in
   // styles.css), which keeps the contrast every theme is checked for.
   if (style.inverse) {
-    out.push(style.fg === undefined ? "ansi-inverse" : `ansi-bg-${color(style.fg)}`);
+    if (style.fg === undefined) out.push("ansi-inverse");
+    else out.push("ansi-has-bg", `ansi-bg-${color(style.fg)}`);
     if (style.bg !== undefined) out.push(`ansi-text-${color(style.bg)}`);
   }
   else {
     if (style.fg !== undefined) out.push(`ansi-${color(style.fg)}`);
-    if (style.bg !== undefined) out.push(`ansi-bg-${color(style.bg)}`);
+    if (style.bg !== undefined) out.push("ansi-has-bg", `ansi-bg-${color(style.bg)}`);
   }
   if (style.bold) out.push("ansi-bold");
   if (style.dim) out.push("ansi-dim");

@@ -45,6 +45,12 @@ export function boundText(value: string, limit = MAX_DOM_CHARS): BoundedText {
 
 export const asking = (state: ItemState) => state === "pending" || state === "submitting";
 export const splitLines = (text: string) => (text === "" ? [] : (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n"));
+export const lineCount = (text: string) => {
+  if (text === "") return 0;
+  let lines = text.endsWith("\n") ? 0 : 1;
+  for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n", at + 1)) lines++;
+  return lines;
+};
 
 type Window<T> = { head: T[]; tail: T[]; tailFrom: number; hidden: number; total: number; truncated: boolean };
 

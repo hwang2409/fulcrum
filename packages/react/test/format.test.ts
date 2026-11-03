@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { parseAnsi } from "../src/tools/ansi.js";
+import { lineCount } from "../src/tools/common.js";
+import { diffStatText } from "../src/tools/diff.js";
 import { jsonText } from "../src/tools/json.js";
 
 const ESC = "\x1b";
@@ -14,17 +16,17 @@ test("SGR colors, bold, and underline become themed spans; reset ends them", () 
     spans: [["error", "ansi-red"], ["file.ts", "ansi-bold ansi-underline"], [":3", "ansi-underline"]],
   });
   expect(styled(`${ESC}[92mpass${ESC}[39m ${ESC}[41;30m FAIL ${ESC}[49m${ESC}[2mdim${ESC}[0m`).spans).toEqual([
-    ["pass", "ansi-bright-green"], [" FAIL ", "ansi-black ansi-bg-red"], ["dim", "ansi-black ansi-dim"],
+    ["pass", "ansi-bright-green"], [" FAIL ", "ansi-black ansi-has-bg ansi-bg-red"], ["dim", "ansi-black ansi-dim"],
   ]);
   // Inverse (7) swaps foreground and background: the default colors swap through ansi-inverse, a colored foreground
   // becomes that color's badge; 27 and 0 end it.
   expect(styled(`${ESC}[7mA${ESC}[27mB${ESC}[31;7mC${ESC}[27mD${ESC}[39;1;7mE${ESC}[0mF`).spans).toEqual([
-    ["A", "ansi-inverse"], ["C", "ansi-bg-red"], ["D", "ansi-red"], ["E", "ansi-inverse ansi-bold"],
+    ["A", "ansi-inverse"], ["C", "ansi-has-bg ansi-bg-red"], ["D", "ansi-red"], ["E", "ansi-inverse ansi-bold"],
   ]);
   // With a set background, inverse draws that background's color as the text (review 2): red on blue inverts to
   // blue text on a red badge; a set background alone inverts to its color on the default foreground.
   expect(styled(`${ESC}[31;44mX${ESC}[7mY${ESC}[0m${ESC}[44;7mZ${ESC}[0m`).spans).toEqual([
-    ["X", "ansi-red ansi-bg-blue"], ["Y", "ansi-bg-red ansi-text-blue"], ["Z", "ansi-inverse ansi-text-blue"],
+    ["X", "ansi-red ansi-has-bg ansi-bg-blue"], ["Y", "ansi-has-bg ansi-bg-red ansi-text-blue"], ["Z", "ansi-inverse ansi-text-blue"],
   ]);
   // 256-color indexes below 16 are the theme's 16 colors; others and truecolor keep the theme's text color.
   expect(styled(`${ESC}[38;5;9mA${ESC}[38;5;200mB${ESC}[38;2;1;2;3mC${ESC}[0m`).spans).toEqual([["A", "ansi-bright-red"]]);
@@ -58,11 +60,17 @@ test("malicious and huge sequences stay bounded and linear", () => {
 test("streamed chunks parse the same as the whole, even when a chunk splits an escape", () => {
   const input = `${ESC}[1;31mFAIL${ESC}[0m src/a.test.ts\n${ESC}[32m✓${ESC}[39m ok ${ESC}[7mselected${ESC}[27m ${ESC}[33;7mwarn${ESC}[27mback\n`;
   const whole = parseAnsi(input);
-  expect(whole.spans.map(({ start, end, style }) => [whole.text.slice(start, end), style]).slice(-3)).toEqual([["selected", "ansi-inverse"], ["warn", "ansi-bg-yellow"], ["back\n", "ansi-yellow"]]);
+  expect(whole.spans.map(({ start, end, style }) => [whole.text.slice(start, end), style]).slice(-3)).toEqual([["selected", "ansi-inverse"], ["warn", "ansi-has-bg ansi-bg-yellow"], ["back\n", "ansi-yellow"]]);
   for (let cut = 0; cut <= input.length; cut++) {
     const first = parseAnsi(input.slice(0, cut));
     expect([cut, parseAnsi(input.slice(cut), first)]).toEqual([cut, whole]);
   }
+});
+
+test("header counts do not build body rows", () => {
+  expect(lineCount("")).toBe(0);
+  expect(lineCount("one\ntwo\n")).toBe(2);
+  expect(diffStatText("--- a.ts\n+++ a.ts\n@@ -1,2 +1,3 @@\n same\n-old\n+new\n+++content\n")).toEqual({ insert: 2, remove: 1 });
 });
 
 test("JSON is detected structurally, never by guessing; compact JSON is pretty-printed losslessly", () => {

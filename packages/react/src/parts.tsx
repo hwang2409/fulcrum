@@ -2,8 +2,8 @@ import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState,
 import type { RunItem } from "@fulcrum/core";
 import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { Code } from "./highlight.js";
-import { boundText, duration, MAX_SUMMARY_CHARS, splitLines } from "./tools/common.js";
-import { diffRows, diffStat } from "./tools/diff.js";
+import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
+import { diffStatText } from "./tools/diff.js";
 import { ToolBody, toolSummary } from "./tools/index.js";
 import { useVirtualList } from "./virtual.js";
 
@@ -106,11 +106,11 @@ function ViewSummary({ item }: { item: ToolItem }) {
       return <>{path(view.path)}{summary.length > view.path.length ? <span data-part="summary-range">{summary.slice(view.path.length)}</span> : null}</>;
     }
     case "edit": {
-      const { insert, remove } = diffStat(diffRows(view.diff));
+      const { insert, remove } = diffStatText(view.diff);
       return <>{path(view.path)} <span data-part="diff-stat" data-change="insert">+{insert}</span> <span data-part="diff-stat" data-change="delete">-{remove}</span></>;
     }
     case "write":
-      return <>{path(view.path)}{view.content !== undefined ? <> <span data-part="diff-stat" data-change="insert">+{splitLines(view.content).length}</span></> : null}</>;
+      return <>{path(view.path)}{view.content !== undefined ? <> <span data-part="diff-stat" data-change="insert">+{lineCount(view.content)}</span></> : null}</>;
     case "search":
       return <><span data-part="summary-pattern">"{oneLine(view.pattern)}"</span>{view.path ? <> {path(view.path)}</> : null}</>;
     case "fetch":
@@ -152,7 +152,8 @@ const toolState = (item: ToolItem): ItemState =>
 export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = ToolBody }: ItemProps & ToolViewProps) {
   const item = useItem(id);
   const tool = item?.type === "tool" ? item : undefined;
-  const [open] = useState(() => openByDefault(tool, tool ? toolOutput(tool) : ""));
+  const [open, setOpen] = useState(() => openByDefault(tool, tool ? toolOutput(tool) : ""));
+  const [bodyMounted, setBodyMounted] = useState(open);
   if (!tool) return null;
   const state = toolState(tool);
   const output = toolOutput(tool);
@@ -160,6 +161,11 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
     <details
       className={className}
       open={open}
+      onToggle={(event) => {
+        const next = event.currentTarget.open;
+        setOpen(next);
+        if (next) setBodyMounted(true);
+      }}
       data-part="tool"
       data-kind="tool"
       data-id={id}
@@ -170,9 +176,9 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
       <summary data-part="tool-header">
         <Header item={tool} state={state} summary={summary} />
       </summary>
-      <div data-part="tool-body">
+      {bodyMounted ? <div data-part="tool-body">
         <Body item={tool} output={output} state={state} />
-      </div>
+      </div> : null}
     </details>
   );
 });

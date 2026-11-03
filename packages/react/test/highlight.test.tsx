@@ -83,6 +83,30 @@ test("with no highlighter every card renders the same text, plain", () => {
   expect(container.querySelector(".tok-keyword")).toBeNull();
 });
 
+test("collapsed output does no JSON or highlight work until it is opened", () => {
+  const output = JSON.stringify({ value: "x".repeat(2_000) });
+  const { highlight, calls } = fakeHighlighter();
+  const parse = JSON.parse;
+  let parses = 0;
+  JSON.parse = ((...args: Parameters<typeof JSON.parse>) => { parses++; return parse(...args); }) as typeof JSON.parse;
+  try {
+    render(done("lazy", "custom", undefined, output), ["tool:lazy"], highlight);
+    const card = q('[data-id="tool:lazy"]') as HTMLDetailsElement;
+    expect(card.open).toBe(false);
+    expect(card.querySelector('[data-part="tool-body"]')).toBeNull();
+    expect(parses).toBe(0);
+    expect(calls).toHaveLength(0);
+    act(() => {
+      card.open = true;
+      card.dispatchEvent(new Event("toggle"));
+    });
+    expect(parses).toBe(1);
+    expect(calls).toHaveLength(1);
+  } finally {
+    JSON.parse = parse;
+  }
+});
+
 test("shell output renders ANSI colors as themed spans and copies plain text", async () => {
   const copied: string[] = [];
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
@@ -120,6 +144,8 @@ test("the large viewer highlights only its mounted rows, never the whole text", 
   const line = "export const value = 1; // padding padding padding padding\n";
   const text = line.repeat(Math.ceil(2_000_000 / line.length));
   render(done("big", "read", { kind: "read", path: "src/big.ts" }, text), ["tool:big"], highlight);
+  expect(calls).toHaveLength(0);
+  openCard();
   expect(calls.reduce((sum, call) => sum + call.code.length, 0)).toBeLessThan(100_000); // the preview: head and tail only
   const start = calls.length;
   act(() => q('[data-action="open-viewer"]').click());
@@ -134,10 +160,20 @@ test("the large viewer highlights only its mounted rows, never the whole text", 
   if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
 });
 
+function openCard() {
+  const card = q('[data-part="tool"]') as HTMLDetailsElement;
+  if (card.open) return;
+  act(() => {
+    card.open = true;
+    card.dispatchEvent(new Event("toggle"));
+  });
+}
+
 // Opens the large viewer of the rendered card with a 320 px viewport.
 function openViewer() {
   const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 320 });
+  openCard();
   act(() => q('[data-action="open-viewer"]').click());
   if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
   return q('[data-part="text-viewer"]');

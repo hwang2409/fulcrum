@@ -44,6 +44,14 @@ function render(events: RunEvent[], ids: string[]) {
 }
 const q = (selector: string) => container.querySelector(selector) as HTMLElement;
 const all = (selector: string) => [...container.querySelectorAll<HTMLElement>(selector)].map((el) => el.textContent);
+const openCard = (id: string) => {
+  const card = q(`[data-id="${id}"]`) as HTMLDetailsElement;
+  if (card.open) return;
+  act(() => {
+    card.open = true;
+    card.dispatchEvent(new Event("toggle"));
+  });
+};
 
 const views: ToolView[] = [
   { kind: "shell", command: "bun test" },
@@ -81,6 +89,7 @@ test("shell with only streamed output shows it; empty output says so in words", 
     ...tool("b", "bash", { kind: "shell", command: "true", exitCode: 0 }),
     ...tool("c", "bash", { kind: "shell", command: "sleep 9" }, "", false),
   ], ["tool:a", "tool:b", "tool:c"]);
+  openCard("tool:b");
   expect(q('[data-id="tool:a"] [data-part="tool-output"]').textContent).toBe("README.md\n");
   expect(q('[data-id="tool:b"] [data-part="tool-empty"]').textContent).toBe("no output");
   expect(q('[data-id="tool:b"] [data-part="tool-exit"]').textContent).toBe("exit 0");
@@ -101,6 +110,7 @@ test("read numbers lines from the range start", () => {
 test("edit renders a unified diff with gutters, line numbers, and changed words", () => {
   const diff = "--- a/a.ts\n+++ b/a.ts\n@@ -10,3 +10,3 @@\n keep\n-const limit = 10;\n+const limit = 20;\n end";
   render(tool("e", "edit", { kind: "edit", path: "a.ts", diff }), ["tool:e"]);
+  openCard("tool:e");
   const rows = [...container.querySelectorAll('[data-part="diff-line"]')].map((row) => [
     row.getAttribute("data-change"),
     ...[...row.querySelectorAll('[data-part="diff-gutter"]')].map((cell) => cell.textContent),
@@ -118,6 +128,7 @@ test("edit renders a unified diff with gutters, line numbers, and changed words"
   act(() => root!.unmount());
   root = undefined;
   render(tool("ending", "edit", { kind: "edit", path: "a.ts", diff: "\\ Line endings changed from CRLF to LF" }), ["tool:ending"]);
+  openCard("tool:ending");
   expect(q('[data-change="notice"] [data-part="diff-text"]').textContent).toBe("Line endings changed from CRLF to LF");
 });
 
@@ -145,6 +156,7 @@ test("copy buttons copy the command, the path, and the full output", async () =>
     ...tool("c1", "bash", { kind: "shell", command: "ls -la" }, long),
     ...tool("c2", "read", { kind: "read", path: "src/a.ts" }, "x"),
   ], ["tool:c1", "tool:c2"]);
+  openCard("tool:c1");
   const buttons = [...container.querySelectorAll<HTMLButtonElement>('[data-action="copy"]')];
   expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual(["copy command", "copy output", "copy path", "copy output"]);
   for (const button of buttons) await act(async () => button.click());
@@ -155,6 +167,7 @@ test("copy buttons copy the command, the path, and the full output", async () =>
 test("large output opens in the shared bounded viewer", () => {
   const output = Array.from({ length: 500 }, (_, index) => `line ${index}`).join("\n");
   render(tool("large", "bash", { kind: "shell", command: "log" }, output), ["tool:large"]);
+  openCard("tool:large");
   const preview = () => q('[data-part="tool-output"]').textContent!;
   expect(preview()).toContain("line 0\n");
   expect(preview()).toContain("line 499");
@@ -217,6 +230,7 @@ test("the compact line preview stays bounded", () => {
 test("multi-megabyte output stays bounded in the dom and says what it left out", () => {
   const output = Array.from({ length: 30_000 }, (_, index) => `${index} ${"x".repeat(60)}`).join("\n");
   render(tool("huge", "bash", { kind: "shell", command: "log" }, output), ["tool:huge"]);
+  openCard("tool:huge");
   expect(output.length).toBeGreaterThan(1_000_000);
   expect(container.textContent!.length).toBeLessThan(110_000);
   act(() => (q('[data-action="open-viewer"]') as HTMLButtonElement).click());
@@ -227,6 +241,7 @@ test("multi-megabyte output stays bounded in the dom and says what it left out",
   act(() => root!.unmount());
   root = undefined;
   render(tool("wide", "bash", { kind: "shell", command: "cat min.js" }, "y".repeat(2_000_000)), ["tool:wide"]);
+  openCard("tool:wide");
   expect(container.textContent!.length).toBeLessThan(110_000);
 });
 
@@ -252,6 +267,7 @@ test("every card and approval bounds multi-megabyte presentation surfaces", asyn
       { type: "tool_end", tool_call, tool_result: { tool_call_id: name, content: huge, is_error: false } },
       { type: "approval_request", request_id: name, tool_call: { ...tool_call, id: `${name}-approval` }, view, delegated: false },
     ], [`tool:${name}`, `approval:${name}`]);
+    openCard(`tool:${name}`);
 
     act(() => {
       for (const details of container.querySelectorAll<HTMLDetailsElement>('[data-part="tool-args-details"]')) {
@@ -288,6 +304,7 @@ test("large write, edit, and grouped search bodies all open the shared viewer", 
     ...tool("search-viewer", "search", { kind: "search", pattern: "x", path: "src" }, grep),
   ];
   render(events, ["approval:write-viewer", "approval:edit-viewer", "tool:search-viewer"]);
+  openCard("tool:search-viewer");
   for (const id of ["approval:write-viewer", "approval:edit-viewer", "tool:search-viewer"]) {
     const card = q(`[data-id="${id}"]`);
     const open = card.querySelector<HTMLButtonElement>('[data-action="open-viewer"]');
