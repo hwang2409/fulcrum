@@ -7,6 +7,8 @@ import {
   type ReactNode,
 } from "react";
 import type { createRunStore, RunItem, RunState } from "@fulcrum/core";
+import type { Highlight } from "@fulcrum/highlight";
+import { HighlightContext } from "./highlight.js";
 
 export type RunStore = Pick<
   ReturnType<typeof createRunStore>,
@@ -20,8 +22,9 @@ export type RunStore = Pick<
 
 const StoreContext = createContext<RunStore | null>(null);
 
-export function RunProvider({ store, children }: { store: RunStore; children?: ReactNode }) {
-  return createElement(StoreContext.Provider, { value: store }, children);
+/** `highlight` (from `createHighlighter()` in @fulcrum/highlight) colors commands, files, diffs, and JSON in tool cards. */
+export function RunProvider({ store, highlight, children }: { store: RunStore; highlight?: Highlight; children?: ReactNode }) {
+  return createElement(StoreContext.Provider, { value: store }, createElement(HighlightContext.Provider, { value: highlight }, children));
 }
 
 export const useRunStore = () => {

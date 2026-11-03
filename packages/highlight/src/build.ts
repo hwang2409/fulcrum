@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 await rm(new URL("../dist", import.meta.url), { recursive: true, force: true });
 const result = await Bun.build({
-  entrypoints: [new URL("./index.ts", import.meta.url).pathname, new URL("./worker.ts", import.meta.url).pathname, new URL("./runtime.ts", import.meta.url).pathname],
+  entrypoints: [new URL("./index.ts", import.meta.url).pathname, new URL("./worker.ts", import.meta.url).pathname, new URL("./runtime.ts", import.meta.url).pathname, new URL("./names.ts", import.meta.url).pathname],
   outdir: new URL("../dist", import.meta.url).pathname,
   root: new URL(".", import.meta.url).pathname,
   target: "browser",

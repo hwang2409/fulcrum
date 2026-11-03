@@ -1,15 +1,19 @@
-import { normalizeLanguage } from "./languages.js";
+import { normalizeLanguage } from "./names.js";
 import type { Highlight, HighlightContext, Token } from "./types.js";
 import type { WorkerRequest, WorkerResponse } from "./protocol.js";
 
 const MAX_BLOCK = 512 * 1024;
 const MAX_LINES = 10_000;
 const MAX_CACHE_BYTES = 8 * 1024 * 1024;
-const MAX_CACHE_BLOCKS = 64;
+const MAX_CACHE_BLOCKS = 512; // tool cards and mounted viewer rows each hold a block
 type WorkerLike = { postMessage(value: WorkerRequest): void; terminate(): void; onmessage: ((event: MessageEvent<WorkerResponse>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null };
 export type HighlighterOptions = { worker?: false; workerFactory?: () => WorkerLike };
-type Pending = { resolve: (tokens: Token[]) => void; timer: ReturnType<typeof setTimeout>; code: string; language: string; context: HighlightContext };
-type CacheEntry = { tokens: Token[]; weight: number; used: number; done: boolean; id: string };
+type Pending = { resolve: (tokens: Token[]) => void; code: string; language: string; context: HighlightContext };
+// The worker is hung only when it answers nothing for this long while work is pending. A per-request deadline would
+// misfire on a long backlog and move all highlighting onto the main thread.
+const WORKER_SILENCE_MS = 2_000;
+// `code` is kept so a hit is checked against the exact source: an (id, version) pair from a caller is a hint, never proof of content.
+type CacheEntry = { tokens: Token[]; weight: number; used: number; done: boolean; id: string; code: string };
 
 export function createController(options: HighlighterOptions = {}): Highlight {
   let worker: WorkerLike | undefined;
@@ -18,9 +22,11 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   let failures = 0;
   let disposed = false;
   let clock = 0;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
   const pending = new Map<number, Pending>();
   const cache = new Map<string, CacheEntry>();
   const inflight = new Map<string, Promise<Token[]>>();
+  const inflightCode = new Map<string, string>();
   const inflightIds = new Map<string, string>();
   const latestSettled = new Map<string, { key: string; tokens: Token[] }>();
   const versions = new Map<string, string[]>();
@@ -37,7 +43,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   };
   const remember = (key: string, context: HighlightContext, code: string, tokens: Token[]) => {
     const weight = code.length * 2 + tokens.reduce((sum, token) => sum + token.text.length * 2 + 32, 0);
-    cache.set(key, { tokens, weight, used: ++clock, done: context.state === "done", id: context.id });
+    cache.set(key, { tokens, weight, used: ++clock, done: context.state === "done", id: context.id, code });
     const keys = [...(versions.get(context.id) ?? []).filter((item) => item !== key), key];
     while (keys.length > 2) cache.delete(keys.shift()!);
     versions.set(context.id, keys);
@@ -57,9 +63,10 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   };
   const failWorker = () => {
     failures++;
+    clearTimeout(watchdog); watchdog = undefined;
     worker?.terminate(); worker = undefined;
     for (const [id, job] of pending) {
-      clearTimeout(job.timer); pending.delete(id);
+      pending.delete(id);
       void fallback(job.code, job.language, job.context).then(job.resolve, () => job.resolve(plain(job.code)));
     }
   };
@@ -72,7 +79,9 @@ export function createController(options: HighlighterOptions = {}): Highlight {
       next.onmessage = (event) => {
         const job = pending.get(event.data.requestId);
         if (!job) return;
-        clearTimeout(job.timer); pending.delete(event.data.requestId);
+        pending.delete(event.data.requestId);
+        clearTimeout(watchdog);
+        watchdog = pending.size ? setTimeout(failWorker, WORKER_SILENCE_MS) : undefined;
         if ("tokens" in event.data) job.resolve(event.data.tokens);
         else void fallback(job.code, job.language, job.context).then(job.resolve, () => job.resolve(plain(job.code)));
       };
@@ -93,22 +102,25 @@ export function createController(options: HighlighterOptions = {}): Highlight {
       current.set(actual.id, key);
     }
     const hit = cache.get(key);
-    if (hit) { hit.used = ++clock; return hit.tokens; }
-    const active = inflight.get(key);
+    if (hit && hit.code === code) { hit.used = ++clock; return hit.tokens; }
+    if (hit) dropCompleted(key, hit);
+    const active = inflightCode.get(key) === code ? inflight.get(key) : undefined;
     if (active) return active;
     const target = getWorker();
     const result = target ? new Promise<Token[]>((resolve) => {
       const id = ++requestId;
-      const timer = setTimeout(() => { pending.delete(id); failWorker(); resolve(plain(code)); }, 500);
-      pending.set(id, { resolve, timer, code, language, context: actual });
+      pending.set(id, { resolve, code, language, context: actual });
+      watchdog ??= setTimeout(failWorker, WORKER_SILENCE_MS);
       target.postMessage({ type: "highlight", requestId: id, code, language, context: actual });
     }) : fallback(code, language, actual);
     const tracked = result.then((tokens): Token[] | Promise<Token[]> => {
-      inflight.delete(key);
-      inflightIds.delete(key);
+      // Only the newest request under a key may fill its cache entry: an older one for other content that lands later
+      // must not replace a newer, already-cached result (that would only cost a needless retokenize, never wrong colors).
+      const newest = inflight.get(key) === tracked;
+      if (newest) { inflight.delete(key); inflightIds.delete(key); inflightCode.delete(key); }
       const currentKey = current.get(actual.id);
       if (!disposed && currentKey === key) {
-        remember(key, actual, code, tokens);
+        if (newest) remember(key, actual, code, tokens);
         if ([...inflightIds].some(([otherKey, id]) => id === actual.id && otherKey !== key)) latestSettled.set(actual.id, { key, tokens });
         return tokens;
       }
@@ -121,13 +133,15 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     });
     inflight.set(key, tracked);
     inflightIds.set(key, actual.id);
+    inflightCode.set(key, code);
     return tracked;
   }) as Highlight;
   highlight.dispose = () => {
     disposed = true;
     if (worker) { worker.postMessage({ type: "dispose" }); worker.terminate(); }
-    for (const job of pending.values()) { clearTimeout(job.timer); job.resolve(plain(job.code)); }
-    pending.clear(); cache.clear(); inflight.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); runtime?.dispose();
+    clearTimeout(watchdog);
+    for (const job of pending.values()) job.resolve(plain(job.code));
+    pending.clear(); cache.clear(); inflight.clear(); inflightCode.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); runtime?.dispose();
   };
   return highlight;
 }

@@ -297,15 +297,86 @@ describe("identity, failure, and caps", () => {
     highlighter.dispose();
   });
 
-  test("completed cache is capped at 64 blocks", async () => {
+  test("concurrent first requests share one engine and one grammar load", async () => {
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    try {
+      const highlighter = createHighlighter({ worker: false });
+      const results = await Promise.all(Array.from({ length: 24 }, (_, index) => highlighter(`const n${index} = ${index};\n`, index % 2 ? "typescript" : "json", { id: `concurrent-${index}`, version: 1, state: "done" })));
+      // A cold first line may hit the tokenize time limit and stay plain on a slow runner, so assert the text here
+      // (the one-engine check is below), then that the shared engine colors both languages once warm.
+      expect(results.map((tokens) => tokens!.map((token) => token.text).join(""))).toEqual(Array.from({ length: 24 }, (_, index) => `const n${index} = ${index};\n`));
+      const warm = await Promise.all(["typescript", "json"].map((language) => highlighter(language === "json" ? '{"a": 1}\n' : "const a = 1;\n", language, { id: `warm-${language}`, version: 1, state: "done" })));
+      expect(warm.every((tokens) => tokens!.some((token) => token.type))).toBe(true);
+      highlighter.dispose();
+    } finally {
+      console.warn = warn;
+    }
+    expect(warnings.filter((warning) => warning.includes("instances have been created"))).toEqual([]);
+  });
+
+  test("a busy worker that keeps answering is not treated as hung", async () => {
+    // A backlog posted at once takes longer than one request's patience, but the worker answers steadily.
+    let terminated = false;
+    const queue: Array<{ requestId: number; code: string }> = [];
+    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() { terminated = true; }, postMessage(value) { if (value.requestId) queue.push({ requestId: value.requestId, code: value.code! }); },
+    };
+    const pump = setInterval(() => {
+      const next = queue.shift();
+      if (next) fake.onmessage!({ data: { requestId: next.requestId, tokens: [{ text: next.code, type: "keyword" }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    }, 150);
+    const highlighter = createHighlighter({ workerFactory: () => fake });
+    const results = await Promise.all(Array.from({ length: 6 }, (_, index) => highlighter(`const n = ${index};\n`, "typescript", { id: `busy-${index}`, version: 1, state: "done" })));
+    clearInterval(pump);
+    expect(terminated).toBe(false);
+    expect(results.every((tokens) => tokens![0]!.type === "keyword")).toBe(true);
+    highlighter.dispose();
+  });
+
+  test("completed cache is capped at 512 blocks", async () => {
     let calls = 0;
     const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
       onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) { calls++; queueMicrotask(() => fake.onmessage!({ data: { requestId: value.requestId!, tokens: [{ text: value.code! }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>)); } },
     };
     const highlighter = createHighlighter({ workerFactory: () => fake });
-    for (let index = 0; index < 65; index++) await highlighter(`const n = ${index};\n`, "typescript", { id: `cap-${index}`, version: 1, state: "done" });
+    for (let index = 0; index < 513; index++) await highlighter(`const n = ${index};\n`, "typescript", { id: `cap-${index}`, version: 1, state: "done" });
     await highlighter("const n = 0;\n", "typescript", { id: "cap-0", version: 1, state: "done" });
-    expect(calls).toBe(66);
+    expect(calls).toBe(514);
     highlighter.dispose();
   });
+});
+
+test("a cache hit never returns tokens for different code under the same id and version", async () => {
+  const highlighter = createHighlighter({ worker: false });
+  const context = { id: "same-surface", version: 7, state: "done" as const };
+  const first = await highlighter("let a = 1;", "typescript", context);
+  expect(first.map((token: Token) => token.text).join("")).toBe("let a = 1;");
+  const second = await highlighter("var b = 2;", "typescript", context);
+  expect(second.map((token: Token) => token.text).join("")).toBe("var b = 2;");
+  highlighter.dispose();
+});
+
+test("an older same-key request that lands last does not replace the newer cached result", async () => {
+  const posted: Array<{ requestId: number; code: string }> = [];
+  let onmessage: ((event: { data: unknown }) => void) | undefined;
+  const fakeWorker = {
+    postMessage(message: { type: string; requestId: number; code: string }) { if (message.type === "highlight") posted.push(message); },
+    terminate() {},
+    set onmessage(handler: (event: { data: unknown }) => void) { onmessage = handler; },
+    set onerror(_handler: unknown) {},
+  };
+  const highlighter = createHighlighter({ workerFactory: () => fakeWorker });
+  const context = { id: "race", version: 3, state: "done" as const };
+  const older = highlighter("aaa", "typescript", context) as Promise<Token[]>;
+  const newer = highlighter("bbb", "typescript", context) as Promise<Token[]>;
+  onmessage!({ data: { requestId: posted[1]!.requestId, tokens: [{ text: "bbb", type: "keyword" }] } });
+  await newer;
+  onmessage!({ data: { requestId: posted[0]!.requestId, tokens: [{ text: "aaa", type: "keyword" }] } });
+  await older;
+  const again = highlighter("bbb", "typescript", context);
+  expect(Array.isArray(again)).toBe(true);
+  expect(posted.length).toBe(2);
+  highlighter.dispose();
 });

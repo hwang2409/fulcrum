@@ -24,7 +24,6 @@ function sourceLines(source: string): string[] {
 
 export class TokenizerRuntime {
   private highlighter?: HighlighterCore;
-  private readonly loaded = new Set<string>();
   private readonly warmed = new Set<string>();
   private readonly sessions = new Map<string, Session>();
   private readonly retired = new Set<HighlighterCore>();
@@ -32,22 +31,31 @@ export class TokenizerRuntime {
   private epoch = 0;
   private activeJobs = 0;
 
-  private async engine(): Promise<HighlighterCore> {
-    if (!this.highlighter) {
+  // Shared promises: concurrent first requests must wait for the one engine and the one grammar load, not race to
+  // create their own (each racer would load its grammar into a different engine).
+  private enginePromise?: Promise<HighlighterCore>;
+  private readonly languages = new Map<string, Promise<void>>();
+
+  private engine(): Promise<HighlighterCore> {
+    this.enginePromise ??= (async () => {
       const [{ createHighlighterCore }, { createJavaScriptRegexEngine }] = await Promise.all([
         import("shiki/core"), import("@shikijs/engine-javascript"),
       ]);
       this.highlighter = await createHighlighterCore({ engine: createJavaScriptRegexEngine(), langs: [], themes: [semanticTheme] });
-    }
-    return this.highlighter;
+      return this.highlighter;
+    })();
+    return this.enginePromise;
   }
 
   private async ensureLanguage(language: string): Promise<HighlighterCore> {
     const highlighter = await this.engine();
-    if (!this.loaded.has(language)) {
-      await highlighter.loadLanguage(...await loadLanguage(language));
-      this.loaded.add(language);
+    let loading = this.languages.get(language);
+    if (!loading) {
+      loading = (async () => highlighter.loadLanguage(...await loadLanguage(language)))();
+      this.languages.set(language, loading);
+      loading.catch(() => this.languages.delete(language)); // a failed load can be retried
     }
+    await loading;
     return highlighter;
   }
 
@@ -170,7 +178,8 @@ export class TokenizerRuntime {
       else this.highlighter.dispose();
     }
     this.highlighter = undefined;
-    this.loaded.clear();
+    this.enginePromise = undefined;
+    this.languages.clear();
     this.warmed.clear();
   }
 }

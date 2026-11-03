@@ -61,50 +61,151 @@ const end = (tool: ToolCall, content: string, flags: { error?: boolean; canceled
 const ask = (id: string, tool: ToolCall, view?: ToolView): RunEvent => ({ type: "approval_request", request_id: id, tool_call: tool, view: viewOf(tool, view), delegated: false });
 
 const config = 'import { defineConfig } from "vite";\nimport { resolve } from "node:path";\n\nexport default defineConfig({\n  build: { outDir: resolve("dist") },\n});\n';
+const storeSource = [
+  'import type { RunEvent } from "./events.js";',
+  'import { reduce, type RunState } from "./reducer.js";',
+  "",
+  "/** Batches events and notifies subscribers once per frame. */",
+  "export function createRunStore(schedule = requestAnimationFrame) {",
+  "  let state: RunState = { items: [], itemsById: new Map() };",
+  "  const pending: RunEvent[] = [];",
+  "  const listeners = new Set<() => void>();",
+  "  let scheduled = false;",
+  "",
+  "  const flush = () => {",
+  "    scheduled = false;",
+  "    for (const event of pending.splice(0)) state = reduce(state, event);",
+  "    listeners.forEach((listener) => listener());",
+  "  };",
+  "",
+  "  return {",
+  "    dispatch(event: RunEvent) {",
+  "      pending.push(event);",
+  "      if (!scheduled) { scheduled = true; schedule(flush); }",
+  "    },",
+  "    getState: () => (pending.length ? (flush(), state) : state),",
+  "    subscribe(listener: () => void) {",
+  "      listeners.add(listener);",
+  "      return () => listeners.delete(listener);",
+  "    },",
+  "  };",
+  "}",
+  "",
+].join("\n");
+const benchSource = [
+  "#!/usr/bin/env python3",
+  '"""Replays a fixture and reports p50/p95 frame times."""',
+  "import json",
+  "import statistics",
+  "from pathlib import Path",
+  "",
+  "",
+  "def load(path: Path) -> list[dict]:",
+  "    with path.open() as handle:",
+  "        return [json.loads(line) for line in handle if line.strip()]",
+  "",
+  "",
+  "def report(frames: list[float]) -> str:",
+  "    p95 = statistics.quantiles(frames, n=20)[18]",
+  '    return f"p50 {statistics.median(frames):.1f} ms, p95 {p95:.1f} ms"',
+  "",
+  "",
+  'if __name__ == "__main__":',
+  '    events = load(Path("fixtures/run.jsonl"))',
+  '    print(report([e["ms"] for e in events if e.get("kind") == "frame"]))',
+  "",
+].join("\n");
+const ESC = "\x1b";
+const testOutput = [
+  `${ESC}[1mbun test${ESC}[22m ${ESC}[2mv1.3.13${ESC}[22m`,
+  "",
+  `${ESC}[7m${ESC}[1m${ESC}[32m PASS ${ESC}[39m${ESC}[22m${ESC}[27m packages/core/test/store.test.ts:`, // inverse (SGR 7), as jest prints it
+  `${ESC}[32m✓${ESC}[39m batches events per frame ${ESC}[2m[0.41ms]${ESC}[22m`,
+  `${ESC}[32m✓${ESC}[39m flushes on read ${ESC}[2m[0.08ms]${ESC}[22m`,
+  `${ESC}[32m✓${ESC}[39m unsubscribes ${ESC}[2m[0.03ms]${ESC}[22m`,
+  "",
+  `${ESC}[32m 42 pass${ESC}[39m`,
+  `${ESC}[2m 0 fail${ESC}[22m`,
+  `Ran 42 tests across 4 files. ${ESC}[2m[380.00ms]${ESC}[22m`,
+  "",
+].join("\n");
+const buildStdout = `${ESC}[36mvite v8.3.5${ESC}[39m ${ESC}[32mbuilding for production...${ESC}[39m\ntransforming...\n${ESC}[32m✓${ESC}[39m 41 modules transformed.\n`;
+const buildStderr = [
+  `${ESC}[31m✗${ESC}[39m Build failed in 312ms`,
+  `${ESC}[1m${ESC}[31merror${ESC}[39m${ESC}[22m: ${ESC}[31m[vite]: Rollup failed to resolve import ${ESC}[1m"node:path"${ESC}[22m from ${ESC}[36m"apps/playground/vite.config.ts"${ESC}[39m.${ESC}[39m`,
+  `${ESC}[2mThis is most likely unintended because it can break your application at runtime.${ESC}[22m`,
+  `${ESC}[33mhint${ESC}[39m: move the import into the config's server block`,
+  `${ESC}[41m${ESC}[30m FAIL ${ESC}[39m${ESC}[49m script ${ESC}[1m"build"${ESC}[22m exited with code ${ESC}[31m1${ESC}[39m`,
+  "",
+].join("\n");
+const repoJson = JSON.stringify({ id: 912345678, name: "fulcrum", full_name: "hwang2409/fulcrum", private: true, description: "fast, minimal react components for agent runs", default_branch: "main", stargazers_count: 0, topics: ["agents", "react", "virtualization"], license: null, pushed_at: "2026-11-02T21:59:13Z" });
+const exampleHtml = '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8">\n  <title>Example Domain</title>\n  <style>body { margin: 0 auto; max-width: 40em; }</style>\n</head>\n<body>\n  <h1>Example Domain</h1>\n  <p>This domain is for use in illustrative examples in documents.</p>\n  <p><a href="https://www.iana.org/domains/example">More information...</a></p>\n</body>\n</html>\n';
 const grepLines = [
-  "packages/core/src/store.ts:12:  // TODO: cap pending queue\n",
+  "packages/core/src/store.ts:12:  // TODO: cap the pending queue\n",
   "packages/core/src/store.ts:57:  // TODO: drop listeners on dispose\n",
-  "packages/core/src/reducer.ts:88:  // TODO: bounded receipts\n",
-  "packages/zeta/src/client.ts:41:  // TODO: retry with backoff\n",
+  "packages/core/src/reducer.ts:88:  const receipts = new Map<string, number>(); // TODO: bounded receipts\n",
+  "docs/roadmap.md:14:- [ ] TODO: retry with backoff in `connectZeta`\n",
+  "docs/roadmap.md:15:- [ ] **TODO**: history pager for long runs\n",
 ];
 const testLines = Array.from(
   { length: 120 },
-  (_, i) => `${String(i + 1).padStart(4, "0")}  ok  packages/core/test/reducer.test.ts > case ${i + 1} (${(i % 7) + 1}ms)\n`,
+  (_, i) => `${String(i + 1).padStart(4, "0")}  ${ESC}[32mok${ESC}[39m  packages/core/test/reducer.test.ts > case ${i + 1} ${ESC}[2m(${(i % 7) + 1}ms)${ESC}[22m\n`,
 );
-const page = "Example Domain\n\nThis domain is for use in illustrative examples in documents. You may use this domain in literature without prior coordination or asking for permission.\n";
 
 // One call per card, reused across the state demos. Ids are per demo, since every demo has its own store.
 const calls = (p: string) => ({
   bash: call(`${p}-bash`, "bash", { command: "bun test packages/core", timeout: 120 }),
-  read: call(`${p}-read`, "read", { path: "apps/playground/vite.config.ts", offset: 0, limit: 40 }),
-  edit: call(`${p}-edit`, "edit", { path: "packages/core/src/store.ts", old_string: "  pending.push(event);\n  schedule();", new_string: "  if (pending.length < MAX_PENDING) pending.push(event);\n  schedule();" }),
-  write: call(`${p}-write`, "write", { path: "docs/notes.md", content: "# notes\n\n- cap the pending queue\n- retry with backoff\n" }),
-  grep: call(`${p}-grep`, "grep", { pattern: "TODO", path: "packages/" }),
-  fetch: call(`${p}-fetch`, "fetch", { url: "https://example.com/" }),
+  read: call(`${p}-read`, "read", { path: "packages/core/src/store.ts", offset: 0, limit: 40 }),
+  readPy: call(`${p}-read-py`, "read", { path: "scripts/bench.py" }),
+  edit: call(`${p}-edit`, "edit", { path: "packages/core/src/store.ts", old_string: "      pending.push(event);\n      if (!scheduled) { scheduled = true; schedule(flush); }", new_string: "      if (pending.length < MAX_PENDING) pending.push(event);\n      if (!scheduled) { scheduled = true; schedule(flush); }" }),
+  write: call(`${p}-write`, "write", { path: "docs/notes.md", content: "# notes\n\n- cap the **pending** queue at `MAX_PENDING`\n- retry with backoff\n\n```ts\nconst MAX_PENDING = 10_000;\n```\n" }),
+  grep: call(`${p}-grep`, "grep", { pattern: "TODO", path: "packages/ docs/" }),
+  fetch: call(`${p}-fetch`, "fetch", { url: "https://api.github.com/repos/hwang2409/fulcrum" }),
+  fetchHtml: call(`${p}-fetch-html`, "fetch", { url: "https://example.com/" }),
   todo: call(`${p}-todo`, "todo", { items: [{ content: "cap the pending queue", status: "in_progress" }] }),
 });
 const grepView = (tool: ToolCall): ToolView => ({ kind: "search", pattern: String(tool.arguments.pattern), path: String(tool.arguments.path) });
 const every = (p: string) => {
   const c = calls(p);
-  return [c.bash, c.read, c.edit, c.write, c.grep, c.fetch, c.todo].map((tool) => ({ tool, view: tool.name === "grep" ? grepView(tool) : undefined }));
+  return [c.bash, c.read, c.readPy, c.edit, c.write, c.grep, c.fetch, c.fetchHtml, c.todo].map((tool) => ({ tool, view: tool.name === "grep" ? grepView(tool) : undefined }));
 };
+const key = (tool: ToolCall) => tool.id.slice(tool.id.indexOf("-") + 1);
 const finished: Record<string, string> = {
-  bash: " 42 pass\n 0 fail\nRan 42 tests across 4 files. [380.00ms]\n",
-  read: config,
+  bash: testOutput,
+  read: storeSource,
+  "read-py": benchSource,
   edit: "edited packages/core/src/store.ts: 2.1 kB → 2.1 kB",
   write: "wrote docs/notes.md",
   grep: grepLines.join(""),
-  fetch: page,
-  todo: "1 todo in progress",
+  fetch: repoJson,
+  "fetch-html": exampleHtml,
+  todo: JSON.stringify({ todos: [{ content: "cap the pending queue", status: "in_progress" }], updated: 1 }),
+};
+// The view a harness reports at the end: exit codes, split streams, HTTP status and type.
+const finishedView = (tool: ToolCall): ToolView | undefined => {
+  const name = key(tool);
+  if (name === "bash") return { kind: "shell", command: String(tool.arguments.command), exitCode: 0, durationMs: 1840 };
+  if (name === "fetch") return { kind: "fetch", url: String(tool.arguments.url), status: 200, contentType: "application/json; charset=utf-8", bytes: repoJson.length, durationMs: 212 };
+  if (name === "fetch-html") return { kind: "fetch", url: String(tool.arguments.url), status: 200, contentType: "text/html; charset=UTF-8", title: "Example Domain", bytes: exampleHtml.length, durationMs: 96 };
+  return undefined;
 };
 const failed: Record<string, string> = {
-  bash: "error: script \"test\" exited with code 1",
-  read: "could not read file: apps/playground/vite.config.ts: permission denied",
+  bash: "",
+  read: "could not read file: packages/core/src/store.ts: permission denied",
+  "read-py": "could not read file: scripts/bench.py: no such file or directory",
   edit: "old_string not found in packages/core/src/store.ts",
   write: "could not write file: docs/notes.md: read-only file system",
   grep: "grep: packages/: No such file or directory",
-  fetch: "request failed: HTTP 503 Service Unavailable",
+  fetch: '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}',
+  "fetch-html": "request failed: HTTP 503 Service Unavailable",
   todo: "invalid todo status",
+};
+const failedView = (tool: ToolCall): ToolView | undefined => {
+  const name = key(tool);
+  if (name === "bash") return { kind: "shell", command: "bun run --cwd apps/playground build", exitCode: 1, stdout: buildStdout, stderr: buildStderr, durationMs: 312 };
+  if (name === "fetch") return { kind: "fetch", url: String(tool.arguments.url), status: 404, contentType: "application/json", durationMs: 88 };
+  if (name === "fetch-html") return { kind: "fetch", url: String(tool.arguments.url), status: 503, durationMs: 30_000 };
+  return undefined;
 };
 
 const longCommand = "rg --json --hidden --glob '!node_modules' --glob '!dist' 'TODO|FIXME' packages apps scripts | jq -r 'select(.type == \"match\") | \"\\(.data.path.text):\\(.data.line_number)\"' | sort | uniq -c | sort -rn | head -50";
@@ -113,6 +214,7 @@ const twoHunks = "--- a/packages/react/src/parts.tsx\n+++ b/packages/react/src/p
 
 const run = calls("run");
 const build = call("run-build", "bash", { command: "bun run --cwd apps/playground build" });
+const readConfig = call("run-config", "read", { path: "apps/playground/vite.config.ts" });
 const deploy = call("ap-deploy", "bash", { command: "rm -rf dist && bun run build && rsync -a --delete dist/ prod:/srv/app", cwd: "/srv/checkout" });
 const bigArgs = call("ap-big", "write_file", {
   path: "fixtures/session.json",
@@ -135,10 +237,10 @@ export const demos: Demo[] = [
       out(build, "vite v8.3.5 building for production...\n"),
       end(build, "", {
         error: true,
-        view: { kind: "shell", command: String(build.arguments.command), exitCode: 1, stdout: "vite v8.3.5 building for production...\n", stderr: '[vite]: Rollup failed to resolve import "node:path" from "vite.config.ts".\nerror: script "build" exited with code 1\n' },
+        view: { kind: "shell", command: String(build.arguments.command), exitCode: 1, stdout: buildStdout, stderr: buildStderr, durationMs: 312 },
       }),
-      start(run.read),
-      end(run.read, config),
+      start(readConfig),
+      end(readConfig, config),
       start(run.grep, grepView(run.grep)),
       ...grepLines.map((line) => out(run.grep, line)),
       end(run.grep, grepLines.join("")),
@@ -147,8 +249,7 @@ export const demos: Demo[] = [
       start(run.edit),
       end(run.edit, finished.edit),
       start(run.bash),
-      out(run.bash, "bun test v1.3.13\n"),
-      out(run.bash, finished.bash),
+      out(run.bash, testOutput),
       end(run.bash, "", { view: { kind: "shell", command: String(run.bash.arguments.command), exitCode: 0, durationMs: 1840 } }),
       { type: "message_commit", message_id: "m2", message: text("assistant", answer) },
       { type: "turn_end" },
@@ -221,7 +322,7 @@ export const demos: Demo[] = [
     part: "ToolCall",
     title: "every card, done",
     description: "The same calls finished: shell output, numbered lines, a unified diff, the written file, matches by file, the page, and generic json.",
-    events: every("done").flatMap(({ tool, view }) => [start(tool, view), end(tool, finished[tool.name]!)]),
+    events: every("done").flatMap(({ tool, view }) => [start(tool, view), end(tool, finished[key(tool)]!, { view: finishedView(tool) })]),
   },
   {
     id: "tools-error",
@@ -230,7 +331,7 @@ export const demos: Demo[] = [
     description: "Each result has is_error=true: the reason shows in the body, the rail and the status word say failed.",
     events: every("error").flatMap(({ tool, view }) => [
       start(tool, view),
-      end(tool, failed[tool.name]!, { error: true, view: tool.name === "bash" ? { kind: "shell", command: String(tool.arguments.command), exitCode: 1, stdout: " 41 pass\n", stderr: " 1 fail\nerror: script \"test\" exited with code 1\n" } : tool.name === "fetch" ? { kind: "fetch", url: String(tool.arguments.url), status: 503 } : undefined }),
+      end(tool, failed[key(tool)]!, { error: true, view: failedView(tool) }),
     ]),
   },
   {
@@ -364,14 +465,31 @@ export const demos: Demo[] = [
 ];
 
 const viewerFixture = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("viewerFixture");
-if (viewerFixture === "single" || viewerFixture === "lines") {
-  const fixture = viewerFixture === "single" ? "x".repeat(2_000_000) : "x\n".repeat(1_000_000);
+// `read` is a 1,000,000-line TypeScript file, highlighted row by row as the viewer mounts them.
+if (viewerFixture === "single" || viewerFixture === "lines" || viewerFixture === "read") {
+  const statements = ["let a = 1;\n", "a++;\n", "f(a);\n", "// c\n"];
+  const fixture = viewerFixture === "single" ? "x".repeat(2_000_000) : viewerFixture === "lines" ? "x\n".repeat(1_000_000) : Array.from({ length: 1_000_000 }, (_, i) => statements[i % 4]).join("");
   const tool = call("viewer-check", "bash", { command: "stream fixture" });
+  const view: ToolView = viewerFixture === "read" ? { kind: "read", path: "src/huge.ts" } : { kind: "shell", command: "stream fixture" };
   demos.splice(0, demos.length, {
     id: "text-viewer-check",
     part: "ToolCall",
     title: `${viewerFixture} text viewer check`,
     description: "browser-only layout fixture for measured text viewer behavior",
-    events: [start(tool, { kind: "shell", command: "stream fixture" }), out(tool, fixture)],
+    events: [start(tool, view), out(tool, fixture)],
+  });
+}
+// `edit` is a 40,000-line TypeScript diff and `search` 20,000 matches in 400 files: the viewer keeps their structure.
+if (viewerFixture === "edit" || viewerFixture === "search") {
+  const tool = call("viewer-check", viewerFixture === "edit" ? "edit" : "grep", {});
+  const diff = Array.from({ length: 10_000 }, (_, i) => `@@ -${i * 3 + 1},2 +${i * 3 + 1},2 @@\n const a${i} = 1;\n-let count = ${i};\n+let count = ${i + 1};\n`).join("");
+  const matches = Array.from({ length: 20_000 }, (_, i) => (i % 100 < 50 ? `src/f${(i / 50) | 0}.ts:${i}:  const todo = "TODO ${i}";` : `docs/n${(i / 50) | 0}.md:${i}:- FIXME **later** ${i}`)).join("\n");
+  const view: ToolView = viewerFixture === "edit" ? { kind: "edit", path: "src/huge.ts", diff } : { kind: "search", pattern: "TODO|FIXME" };
+  demos.splice(0, demos.length, {
+    id: "text-viewer-check",
+    part: "ToolCall",
+    title: `${viewerFixture} structured viewer check`,
+    description: "browser-only layout fixture: a large structured tool output keeps its rows in the viewer",
+    events: viewerFixture === "edit" ? [start(tool, view)] : [start(tool, view), out(tool, matches)],
   });
 }

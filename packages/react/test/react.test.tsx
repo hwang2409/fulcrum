@@ -417,6 +417,11 @@ test("tool header shows name, a one-line summary, and status; json loads when ex
   ]);
   expect(header.textContent).not.toContain("{");
   expect(tool.open).toBe(false);
+  expect(tool.querySelector('[data-part="tool-body"]')).toBeNull();
+  act(() => {
+    tool.open = true;
+    tool.dispatchEvent(new Event("toggle"));
+  });
   const body = tool.querySelector('[data-part="tool-body"]')!;
   expect(body.firstElementChild!.getAttribute("data-part")).toBe("tool-output");
   expect(body.querySelector('[data-part="tool-output"]')!.textContent).toBe(big);

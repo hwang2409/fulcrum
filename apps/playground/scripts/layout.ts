@@ -4,10 +4,17 @@
 // elsewhere), when a theme's fg or muted text misses 4.5:1 on its bg, or when a state indicator is hard to see: every
 // rendered status word needs 4.5:1 and every state mark and state rail 3:1 against the background it is drawn on, and
 // ok, warn, danger, and accent (running) need 3:1 on bg, when a capped output box cuts through a line, or when
-// the keyword, string, comment, function, and type token colors are not all distinct. Needs a production build (`bun run build`).
+// the keyword, string, comment, function, and type token colors are not all distinct. Every visible text inside the
+// parts (syntax tokens, ANSI spans, labels drawn by ::before/::after) must reach 4.5:1 on the background it is drawn on,
+// in every theme. Every button, summary, and a[role=button] inside the parts must be a styled fulcrum control, with no
+// browser-default appearance, ButtonFace background, default border, or system font, at rest and under forced :hover,
+// :focus, :focus-visible, and :active. The large-output viewer opens in <16 ms, follows the bottom, and highlights a
+// 1,000,000-line file with no long tasks; scrolling it under 4x CPU throttling is reported. Needs a production build
+// (`bun run build`). Collapsed tool bodies warm before they open (see warm-check.ts).
 import { chromium, type Page } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { checkWarmBodies } from "./warm-check.js";
 
 const widths = [390, 768, 1024, 1440];
 const touchWidth = 860; // the gallery's touch breakpoint
@@ -94,18 +101,99 @@ function pageProblems(minHeight: number) {
     const lines = (box.clientHeight - pad) / parseFloat(style.lineHeight);
     if (Math.abs(lines - Math.round(lines)) > 0.05) problems.push(`${box.dataset.part} in ${box.closest<HTMLElement>("[data-id]")?.dataset.id} shows ${lines.toFixed(2)} lines, cuts through a line`);
   }
+  // Every visible text in the parts, and the text labels drawn by ::before and ::after, at 4.5:1 on what is behind it.
+  const styles = new Map<Element, CSSStyleDeclaration>();
+  const style = (node: Element) => styles.get(node) ?? styles.set(node, getComputedStyle(node)).get(node)!;
+  const opacityOf = (node: Element | null) => {
+    let opacity = 1;
+    for (; node; node = node.parentElement) opacity *= Number(style(node).opacity);
+    return opacity;
+  };
+  const textProblems = new Map<string, string>();
+  const checkText = (node: HTMLElement, color: string, sample: string) => {
+    const [r, g, b, a] = rgba(color);
+    const ratio = contrastOn(`rgba(${r}, ${g}, ${b}, ${a! * opacityOf(node)})`, backgroundOf(node));
+    if (ratio >= 4.5) return;
+    const where = node.closest<HTMLElement>("[data-part]");
+    const key = `${where?.dataset.part}.${node.className || node.tagName.toLowerCase()} ${color}`;
+    if (!textProblems.has(key)) textProblems.set(key, `text "${sample.trim().slice(0, 24)}" (${key}) is ${ratio.toFixed(2)}:1, needs 4.5:1`);
+  };
+  for (const timeline of document.querySelectorAll<HTMLElement>('[data-part="timeline"]')) {
+    const walker = document.createTreeWalker(timeline, NodeFilter.SHOW_TEXT);
+    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+      const node = text.parentElement!;
+      if (!text.textContent!.trim() || !node.getClientRects().length || style(node).visibility !== "visible") continue;
+      checkText(node, style(node).color, text.textContent!);
+    }
+    for (const node of timeline.querySelectorAll<HTMLElement>("*")) {
+      for (const pseudo of ["::before", "::after"]) {
+        const label = getComputedStyle(node, pseudo).content;
+        if (/^"[^"]*\S[^"]*"$/.test(label) && node.getClientRects().length) checkText(node, getComputedStyle(node, pseudo).color, label.slice(1, -1));
+      }
+    }
+  }
+  problems.push(...textProblems.values());
   for (const state of ["tool:done", "tool:streaming", "tool:error", "tool:canceled", "approval:pending"]) {
     if (!seen.has(state)) problems.push(`no ${state.replace(":", " in state ")} on the page to check`);
   }
   return problems;
 }
 
-type ViewerMeasurement = { fixture: string; width: number; openMs: number; appendMs: number; bottomGap: number; appendGap: number; middleMoved: boolean; outerMiddleDelta: number; outerBoundaryDelta: number };
+// Runs in the page: every control inside the parts against a fresh unstyled button's computed defaults.
+function controlProblems(forced: string) {
+  const reference = document.createElement("button");
+  reference.textContent = "reference";
+  document.body.append(reference);
+  const base = getComputedStyle(reference);
+  const defaults = { background: base.backgroundColor, border: `${base.borderTopStyle} ${base.borderTopWidth} ${base.borderTopColor}`, font: base.fontFamily };
+  reference.remove();
+  const problems: string[] = [];
+  const controls = document.querySelectorAll<HTMLElement>('[data-part="timeline"] :is(button, summary, a[role="button"])');
+  if (!controls.length) return ["no controls inside the parts to check"];
+  for (const control of controls) {
+    const style = getComputedStyle(control);
+    const name = `${control.closest<HTMLElement>("[data-id]")?.dataset.id ?? "timeline"} ${control.tagName.toLowerCase()} "${control.textContent?.trim().slice(0, 30)}"${forced ? ` :${forced}` : ""}`;
+    if (control.tagName === "SUMMARY") {
+      if (style.display === "list-item") problems.push(`${name} keeps the default disclosure marker`);
+      continue;
+    }
+    if (style.appearance !== "none") problems.push(`${name} has appearance ${style.appearance}`);
+    if (style.backgroundColor === defaults.background) problems.push(`${name} has the default button background`);
+    if (`${style.borderTopStyle} ${style.borderTopWidth} ${style.borderTopColor}` === defaults.border) problems.push(`${name} has the default button border`);
+    if (style.fontFamily === defaults.font) problems.push(`${name} uses the default button font`);
+  }
+  return problems;
+}
 
-async function measureViewer(page: Page, width: number, fixture: "single" | "lines"): Promise<ViewerMeasurement> {
+async function checkControls(page: Page): Promise<string[]> {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("DOM.enable");
+  await cdp.send("CSS.enable");
+  const { root } = await cdp.send("DOM.getDocument", { depth: -1 });
+  const { nodeIds } = await cdp.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: '[data-part="timeline"] :is(button, summary, a[role="button"])' });
+  const problems = await page.evaluate(controlProblems, "");
+  for (const state of ["hover", "focus", "focus-visible", "active"]) {
+    for (const nodeId of nodeIds) await cdp.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [state] });
+    problems.push(...await page.evaluate(controlProblems, state));
+    for (const nodeId of nodeIds) await cdp.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [] });
+  }
+  await cdp.detach();
+  return problems;
+}
+
+type ViewerMeasurement = { fixture: string; width: number; openMs: number; appendMs: number; bottomGap: number; appendGap: number; middleMoved: boolean; outerMiddleDelta: number; outerBoundaryDelta: number; longTasks: number[]; tokens: number; scroll: { median: number; p95: number; over33: number } };
+
+async function measureViewer(page: Page, width: number, fixture: "single" | "lines" | "read"): Promise<ViewerMeasurement> {
   await page.goto(`http://127.0.0.1:${port}/gallery.html?viewerFixture=${fixture}`);
   const button = page.getByRole("button", { name: /^open all/ });
   await button.waitFor();
+  await page.waitForTimeout(500);
+  // Long tasks from opening the viewer and highlighting its mounted rows, counted from the click.
+  await page.evaluate(() => {
+    const target = window as typeof window & { __longTasks: number[] };
+    target.__longTasks = [];
+    new PerformanceObserver((list) => { for (const entry of list.getEntries()) target.__longTasks.push(entry.duration); }).observe({ type: "longtask" });
+  });
   const openMs = await page.evaluate(() => new Promise<number>((resolve) => requestAnimationFrame(() => {
     const root = document.querySelector('[data-part="tool-body"]')!;
     const observer = new MutationObserver(() => {
@@ -119,9 +207,11 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
   })));
   const viewer = page.locator('[data-part="text-viewer"]');
   await viewer.waitFor();
-  await page.waitForTimeout(1_000);
-  const bottomGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
-
+  await page.waitForTimeout(1_500);
+  const longTasks = await page.evaluate(() => (window as typeof window & { __longTasks: number[] }).__longTasks);
+  const tokens = await viewer.evaluate((node) => node.querySelectorAll("[class^=tok-]").length);
+  // A log opens at its newest line; a file (read) opens at its first.
+  const bottomGap = await viewer.evaluate((node, file) => (file ? node.scrollTop : node.scrollHeight - node.scrollTop - node.clientHeight), fixture === "read");
   await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight / 2; });
   const middleBefore = await viewer.evaluate((node) => node.scrollTop);
   await viewer.hover();
@@ -150,7 +240,47 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
   })));
   await page.waitForTimeout(500);
   const appendGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
-  return { fixture, width, openMs, appendMs, bottomGap, appendGap, middleMoved: middleAfter > middleBefore, outerMiddleDelta, outerBoundaryDelta };
+  // Frame times while the viewer scrolls 48 px a frame from the top, on a CPU four times slower.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  const frames = await viewer.evaluate((node) => new Promise<number[]>((resolve) => {
+    node.scrollTop = 0;
+    const times: number[] = [];
+    const step = (time: number) => {
+      times.push(time);
+      node.scrollTop += 48;
+      if (times.length < 120) requestAnimationFrame(step);
+      else resolve(times.slice(1).map((value, index) => value - times[index]!));
+    };
+    requestAnimationFrame(step);
+  }));
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+  await cdp.detach();
+  const sorted = [...frames].sort((a, b) => a - b);
+  const scroll = { median: sorted[sorted.length >> 1]!, p95: sorted[Math.floor(sorted.length * 0.95)]!, over33: frames.filter((frame) => frame > 33.4).length };
+
+  return { fixture, width, openMs, appendMs, bottomGap, appendGap, middleMoved: middleAfter > middleBefore, outerMiddleDelta, outerBoundaryDelta, longTasks, tokens, scroll };
+}
+
+// A large edit or search keeps its structure in the open viewer: language tokens, row kinds, and marks.
+async function checkStructuredViewer(page: Page, fixture: "edit" | "search") {
+  await page.goto(`http://127.0.0.1:${port}/gallery.html?viewerFixture=${fixture}`);
+  const button = page.getByRole("button", { name: /^open all/ });
+  await button.waitFor();
+  await button.click();
+  const viewer = page.locator('[data-part="text-viewer"]');
+  await viewer.waitFor();
+  await page.waitForTimeout(1_500);
+  const selectors = fixture === "edit"
+    ? { tokens: "[class^=tok-]", inserted: '[data-part="diff-line"][data-change="insert"]', deleted: '[data-part="diff-line"][data-change="delete"]', marks: 'mark[data-part="diff-word"]' }
+    : { tokens: "[class^=tok-]", heads: '[data-part="search-head"]', lines: '[data-part="line"][data-match]', marks: 'mark[data-part="search-match"]' };
+  const found = await viewer.evaluate((node, selectors) => Object.fromEntries(Object.entries(selectors).map(([name, selector]) => [name, node.querySelectorAll(selector).length])), selectors);
+  // Every fixture row is one short line: a taller row means a line-number column too narrow for 5-digit numbers.
+  const wrapped = await viewer.evaluate((node) => [...node.querySelectorAll('[data-part="diff-line"], [data-part="line"]')].filter((row) => row.getBoundingClientRect().height > 30).length);
+  return [
+    ...Object.entries(found).filter(([, count]) => !count).map(([name]) => `viewer ${fixture}: no ${name} in the open viewer (${JSON.stringify(found)})`),
+    ...(wrapped ? [`viewer ${fixture}: ${wrapped} rows wrap; line-number columns must fit the largest number`] : []),
+  ];
 }
 
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -162,6 +292,7 @@ try {
     await Bun.sleep(100);
   }
   browser = await chromium.launch();
+  failures.push(...await checkWarmBodies(browser, port));
   const replay = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await replay.addInitScript(() => {
     const request = window.requestAnimationFrame.bind(window);
@@ -268,6 +399,8 @@ try {
       else console.log(`ok   ${line}`);
       const minHeight = width <= touchWidth ? 44 : 36;
       for (const problem of await page.evaluate(pageProblems, minHeight)) failures.push(`${theme} @ ${width}: ${problem}`);
+      // Control styling does not depend on the palette: one light and one dark theme at each width.
+      if (theme === "github-light" || theme === "gruvbox-dark") for (const problem of await checkControls(page)) failures.push(`${theme} @ ${width}: ${problem}`);
     }
     // The other playground pages share one shell: no sideways scroll, and every control is named and big enough to hit.
     for (const path of ["/", "/virtual.html", "/highlight.html"]) {
@@ -290,18 +423,27 @@ try {
     await page.close();
   }
   for (const width of [390, 1440]) {
-    for (const fixture of ["single", "lines"] as const) {
+    for (const fixture of ["single", "lines", "read"] as const) {
       const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
       const measured = await measureViewer(page, width, fixture);
-      console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms, append ${measured.appendMs.toFixed(1)} ms, gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px`);
+      console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms, append ${measured.appendMs.toFixed(1)} ms, gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px, long tasks [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}], ${measured.tokens} token spans, 4x-throttled scroll frames median ${measured.scroll.median.toFixed(1)} ms / p95 ${measured.scroll.p95.toFixed(1)} ms / ${measured.scroll.over33} over 33 ms`);
+      if (fixture === "read" && measured.longTasks.length) failures.push(`viewer read @ ${width}: long tasks while opening and highlighting [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}] ms`);
+      if (fixture === "read" && !measured.tokens) failures.push(`viewer read @ ${width}: the mounted rows of a .ts file were not highlighted`);
       if (measured.openMs >= 16) failures.push(`viewer ${fixture} @ ${width}: open took ${measured.openMs.toFixed(1)} ms, needs <16 ms`);
       if (measured.appendMs >= 16) failures.push(`viewer ${fixture} @ ${width}: append took ${measured.appendMs.toFixed(1)} ms, needs <16 ms`);
-      if (Math.abs(measured.bottomGap) > 1) failures.push(`viewer ${fixture} @ ${width}: initial bottom gap ${measured.bottomGap.toFixed(1)} px, needs <=1 px`);
-      if (Math.abs(measured.appendGap) > 1) failures.push(`viewer ${fixture} @ ${width}: append bottom gap ${measured.appendGap.toFixed(1)} px, needs <=1 px`);
+      if (Math.abs(measured.bottomGap) > 1) failures.push(`viewer ${fixture} @ ${width}: initial ${fixture === "read" ? "top" : "bottom"} gap ${measured.bottomGap.toFixed(1)} px, needs <=1 px`);
+      if (Math.abs(measured.appendGap) > 1 && fixture !== "read") failures.push(`viewer ${fixture} @ ${width}: append bottom gap ${measured.appendGap.toFixed(1)} px, needs <=1 px`);
       if (!measured.middleMoved || measured.outerMiddleDelta !== 0) failures.push(`viewer ${fixture} @ ${width}: middle wheel did not stay inside viewer`);
       if (measured.outerBoundaryDelta !== 0) failures.push(`viewer ${fixture} @ ${width}: boundary wheel moved outer page ${measured.outerBoundaryDelta}px`);
       await page.close();
     }
+  }
+  for (const fixture of ["edit", "search"] as const) {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+    const problems = await checkStructuredViewer(page, fixture);
+    failures.push(...problems);
+    if (!problems.length) console.log(`ok   viewer ${fixture}: tokens, row kinds, and marks`);
+    await page.close();
   }
 } finally {
   await browser?.close();

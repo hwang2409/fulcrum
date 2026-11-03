@@ -309,7 +309,7 @@ function Live() {
         <select aria-label="session" value={session ?? ""} onChange={(e) => setSession(e.target.value)}><option value="">session</option>{sessions.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>
         {error && <span role="alert">{error}</span>}
       </div>
-      <div className="scroll"><RunProvider store={store}><Timeline renderers={renderers} /></RunProvider></div>
+      <div className="scroll"><RunProvider store={store} highlight={highlight}><Timeline renderers={renderers} /></RunProvider></div>
       {client && session && <form className="toolbar composer" onSubmit={(e) => { e.preventDefault(); if (text.trim()) { void client.request("send", { session_id: session, text }); setText(""); } }}><textarea aria-label="message" value={text} onChange={(e) => setText(e.target.value)} placeholder="send a message" /><button type="submit">send</button></form>}
     </Shell>
   );
@@ -328,7 +328,7 @@ function App() {
   const rate = mode === STRESS ? STRESS_RATE : speed;
   const label = mode === STRESS ? "stress" : mode.startsWith(STATIC) ? "static" : "replay";
   return (
-    <RunProvider store={store}>
+    <RunProvider store={store} highlight={highlight}>
       <Shell page="playground">
         <div className="toolbar">
           <label className="field">

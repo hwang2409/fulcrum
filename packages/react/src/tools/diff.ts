@@ -74,3 +74,20 @@ export function diffStat(rows: DiffRow[]) {
   for (const row of rows) row.change === "insert" ? insert++ : row.change === "delete" ? remove++ : 0;
   return { insert, remove };
 }
+
+/** Counts changed lines for the header without building the body row model or its word ranges. */
+export function diffStatText(diff: string) {
+  let insert = 0;
+  let remove = 0;
+  let inHunk = false;
+  for (let start = 0; start < diff.length; ) {
+    const end = diff.indexOf("\n", start);
+    const first = diff[start];
+    if (diff.startsWith("@@ ", start)) inHunk = true;
+    else if (first === "+" && (inHunk || !diff.startsWith("+++", start))) { insert++; inHunk = true; }
+    else if (first === "-" && (inHunk || !diff.startsWith("---", start))) { remove++; inHunk = true; }
+    else if (first === " ") inHunk = true;
+    start = end < 0 ? diff.length : end + 1;
+  }
+  return { insert, remove };
+}
