@@ -47,7 +47,8 @@ function request(key: string, code: string): Promise<Rendered | null> {
   return job;
 }
 
-// One watcher for every fence: a theme attribute anywhere, or the OS color scheme that themes.css follows.
+// One watcher for every fence: `data-fulcrum-theme` anywhere, a class or style on <html> or <body> (where apps put a
+// theme class or token overrides), or the OS color scheme that themes.css follows. Fences re-read once per frame.
 const themeListeners = new Set<() => void>();
 let stopWatching: (() => void) | undefined;
 function watchTheme(listener: () => void) {
@@ -55,11 +56,13 @@ function watchTheme(listener: () => void) {
   if (!stopWatching && typeof MutationObserver === "function") {
     let frame = 0;
     const changed = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => themeListeners.forEach((each) => each())); };
-    const observer = new MutationObserver(changed);
-    observer.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ["data-fulcrum-theme", "class"] });
+    const themes = new MutationObserver(changed);
+    themes.observe(document.documentElement, { attributes: true, subtree: true, attributeFilter: ["data-fulcrum-theme"] });
+    const page = new MutationObserver(changed);
+    for (const node of [document.documentElement, document.body]) page.observe(node, { attributes: true, attributeFilter: ["class", "style"] });
     const scheme = matchMedia("(prefers-color-scheme: dark)");
     scheme.addEventListener("change", changed);
-    stopWatching = () => { observer.disconnect(); scheme.removeEventListener("change", changed); cancelAnimationFrame(frame); stopWatching = undefined; };
+    stopWatching = () => { themes.disconnect(); page.disconnect(); scheme.removeEventListener("change", changed); cancelAnimationFrame(frame); stopWatching = undefined; };
   }
   return () => {
     themeListeners.delete(listener);

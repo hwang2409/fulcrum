@@ -13,6 +13,8 @@
     "layout": "bun scripts/layout.ts",
     "highlight:fallback": "bun scripts/highlight-fallback.ts",
     "large-blocks": "bun scripts/large-blocks.ts",
+    "mermaid": "bun scripts/mermaid-check.ts",
+    "mermaid:shots": "bun scripts/mermaid-shots.ts",
     "test:virtual": "bun scripts/virtual-test.ts"
   },
   "dependencies": {

@@ -10,17 +10,20 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bunx tsc -b
       - run: bun run --cwd packages/highlight build # @fulcrum/react imports its built entry
+      - run: bun run --cwd packages/mermaid build # the playground and web apps import its built entry
       - run: bun test
       - run: bun run bench:check
       - run: bun run bench:markdown
       - run: bun run size:check
       - run: bun run check:highlight-consumer
-      - run: bun run check:highlight-notices
+      - run: bun run check:notices
       - run: bun run check:pack-consumer
       - run: cd apps/playground && bunx playwright install --with-deps chromium
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground smoke
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
+      - run: bun run check:mermaid-bundle
       - run: bun run --cwd apps/playground layout
+      - run: bun run --cwd apps/playground mermaid
       - run: bun run --cwd apps/playground highlight:fallback
       # The runner's CPU is about half as fast as a developer laptop (the 440 kB markdown parse in this gate: 22 ms here,
       # 10-12 ms there, both at 4x), so 2x here is about the laptop's 4x.

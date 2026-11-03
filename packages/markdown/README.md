@@ -9,3 +9,7 @@ visible streaming text is monotonic: a character the reader has seen never disap
 `test/recursive-containers.test.tsx` covers generated nesting through depth 6 and the 100 kb `blockquote > list > blockquote` regression. `test/pending-inline.test.tsx` and `test/bounded-suffix.test.tsx` gate duplication, lost text, closers around the suffix budget, late styles, intraword markers, and copied characters. `bun run bench:markdown` takes the median of five runs and enforces the 1.2 work ratio, 2 ms p95, 4 ms p99, 50 ms isolated-pause, and delta-plus-suffix copy budgets, plus five 1 MB inline-rich lines (p99 <= 5 ms, max <= 16 ms) with and without an early unresolved bracket.
 
 `finish()` must equal the one-shot `parseMarkdown` result for every fuzz document.
+
+## fence renderers
+
+`<Markdown fences={{ mermaid: MermaidFence }} />` draws a fenced block with the component registered for its language (matched in lowercase); every other fence is the highlighted code block, unchanged. the component gets `FenceProps`: `id`, `code`, `language`, `done` (false while the fence streams), and `source`, the code block markdown would draw, to show while it is not ready or as a source view. a closed fence renders its component once, not again for later tokens of the message. pass a stable `fences` object (module scope), as with `highlight`. `@fulcrum/mermaid` is the first renderer; math or other diagram renderers plug in the same way.
