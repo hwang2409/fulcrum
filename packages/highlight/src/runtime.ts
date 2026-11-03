@@ -7,6 +7,7 @@ const THEME = "fulcrum-semantic";
 const MAX_LINE = 20_000;
 const MAX_SESSIONS = 32;
 const MAX_SESSION_BYTES = 8 * 1024 * 1024;
+export const MAX_RESIDENT_LANGUAGES = 32;
 // The tokenize policy, all of it. Shiki stops a line at TOKENIZE_TIME_LIMIT_MS without saying so, and that time also
 // counts compiling a pattern the line meets for the first time, and any pause of the thread (a garbage collection, a
 // busy machine). A slow attempt gets one retry while the document still has retry time; otherwise the line is
@@ -105,10 +106,12 @@ export class TokenizerRuntime {
   private clock = 0;
   private epoch = 0;
   private readonly warming = new Map<string, Promise<void>>();
-  // Grammars warm one at a time, in the order they were first asked for: the first grammar asked for is colored first,
-  // and a request waits behind one slice, not one slice per grammar warming at once.
-  private warmQueue = Promise.resolve();
+  // Warm one grammar at a time, choosing the newest demand first so a visible late block is not buried by preload work.
+  private readonly warmTasks = new Map<string, { patterns: Set<string>; highlighter: HighlighterCore; cache: RegexCache; epoch: number; order: number; resolve: () => void }>();
+  private warmingActive = false;
+  private warmOrder = 0;
   private readonly warmed = new Set<string>();
+  private recycle = false;
   // The newest revision of each block asked for while its grammar was cold, until that grammar is warm.
   private readonly provisional = new Map<string, Provisional>();
 
@@ -146,15 +149,37 @@ export class TokenizerRuntime {
         const grammars = await loadLanguage(language);
         await highlighter.loadLanguage(...grammars);
         const patterns = grammarPatterns(grammars, new Set());
+        if (this.languages.size >= MAX_RESIDENT_LANGUAGES) this.recycle = true;
         for (const pattern of patterns) cache.grammar.add(pattern);
         // Not awaited: requests are answered while the grammar warms, with plain text until it is warm.
-        this.warming.set(language, this.warmQueue = this.warmQueue.then(() => this.warm(language, patterns, highlighter, cache, epoch)).catch(() => {}));
+        this.scheduleWarm(language, patterns, highlighter, cache, epoch);
       })();
       this.languages.set(language, loading);
       loading.catch(() => this.languages.delete(language)); // a failed load can be retried
     }
     await loading;
     return highlighter;
+  }
+
+  private scheduleWarm(language: string, patterns: Set<string>, highlighter: HighlighterCore, cache: RegexCache, epoch: number): void {
+    let resolve!: () => void;
+    const done = new Promise<void>((finish) => { resolve = finish; });
+    this.warming.set(language, done);
+    this.warmTasks.set(language, { patterns, highlighter, cache, epoch, order: ++this.warmOrder, resolve });
+    void this.pumpWarm();
+  }
+
+  private async pumpWarm(): Promise<void> {
+    if (this.warmingActive) return;
+    this.warmingActive = true;
+    try {
+      while (this.warmTasks.size) {
+        const task = [...this.warmTasks.entries()].sort((a, b) => b[1].order - a[1].order)[0]!;
+        this.warmTasks.delete(task[0]);
+        await this.warm(task[0], task[1].patterns, task[1].highlighter, task[1].cache, task[1].epoch);
+        task[1].resolve();
+      }
+    } finally { this.warmingActive = false; }
   }
 
   // `epoch` is the one the grammar was loaded in: a warm-up queued before dispose must not run after it.
@@ -205,6 +230,8 @@ export class TokenizerRuntime {
   }
 
   /** Entries in the regex cache: a loaded grammar's own patterns, and patterns built while tokenizing (at most MAX_DYNAMIC_REGEXES). */
+  shouldRecycle(): boolean { return this.recycle; }
+
   cacheSize(): { static: number; dynamic: number } {
     return { static: this.cache?.static.size ?? 0, dynamic: this.cache?.size ?? 0 };
   }
@@ -316,8 +343,11 @@ export class TokenizerRuntime {
     this.cache?.clear();
     this.cache = undefined;
     this.warming.clear();
+    this.warmTasks.clear();
     this.warmed.clear();
+    this.warmingActive = false;
     this.provisional.clear();
+    this.recycle = false;
   }
 }
 

@@ -317,7 +317,7 @@ export const aliases: Record<string, string> = {
   "tsp": "typespec",
   "typst": "typst",
   "typ": "typst",
-  "v": "v",
+  "v": "verilog",
   "vala": "vala",
   "vb": "vb",
   "verilog": "verilog",
@@ -344,7 +344,14 @@ export const aliases: Record<string, string> = {
   "yaml": "yaml",
   "yml": "yaml",
   "zenscript": "zenscript",
-  "zig": "zig"
+  "zig": "zig",
+  "patch": "diff",
+  "htm": "html",
+  "h": "c",
+  "cc": "cpp",
+  "hpp": "cpp",
+  "m": "objective-c",
+  "pl": "perl"
 };
 const extensions: Record<string, string> = {
   "pyi": "python",
@@ -399,7 +406,23 @@ const extensions: Record<string, string> = {
   "cs": "csharp",
   "cmake": "cmake",
   "nginx": "nginx",
-  "http": "http"
+  "http": "http",
+  "ksh": "shell",
+  "plist": "xml",
+  "xhtml": "html",
+  "ndjson": "json",
+  "geojson": "json",
+  "cxx": "cpp",
+  "hh": "cpp",
+  "hxx": "cpp",
+  "rake": "ruby",
+  "gemspec": "ruby",
+  "pgsql": "sql",
+  "editorconfig": "ini",
+  "npmrc": "ini",
+  "h": "c",
+  "m": "objective-c",
+  "pl": "perl"
 };
 const fileNames: Record<string, string> = {
   "dockerfile": "dockerfile",
@@ -421,7 +444,13 @@ const fileNames: Record<string, string> = {
   ".zshenv": "shell",
   ".profile": "shell",
   "gemfile": "ruby",
-  "rakefile": "ruby"
+  "rakefile": "ruby",
+  "makefile.am": "makefile",
+  ".env.local": "dotenv",
+  ".editorconfig": "ini",
+  ".npmrc": "ini",
+  "pipfile": "toml",
+  "cargo.lock": "toml"
 };
 const mediaTypes: Record<string, string> = {
   "application/json": "json",
@@ -445,7 +474,11 @@ const mediaTypes: Record<string, string> = {
   "text/x-patch": "diff",
   "text/x-python": "python",
   "application/x-sh": "shell",
-  "application/protobuf": "protobuf"
+  "application/protobuf": "protobuf",
+  "text/json": "json",
+  "application/ecmascript": "javascript",
+  "text/ecmascript": "javascript",
+  "application/x-yaml": "yaml"
 };
 export const advertisedLanguages = [
   "abap",

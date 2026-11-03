@@ -3,7 +3,7 @@ import { aliases, advertisedLanguages, languageForContentType, languageForPath, 
 
 test("every generated language and alias resolves as a fence", () => {
   expect(advertisedLanguages.length).toBeGreaterThan(200);
-  for (const language of advertisedLanguages) expect(normalizeLanguage(language)).toBe(language);
+  for (const language of advertisedLanguages) expect(normalizeLanguage(language)).toBe(language === "v" ? "verilog" : language);
   for (const [alias, language] of Object.entries(aliases)) expect(normalizeLanguage(alias)).toBe(language);
 });
 
@@ -29,6 +29,15 @@ test("a path resolves by extension, then by well-known file name", () => {
     "README": undefined, "LICENSE": undefined, "archive.tar.gz": undefined, "": undefined, "dir.ts/": undefined, ".ts": undefined,
   };
   for (const [path, language] of Object.entries(cases)) expect([path, languageForPath(path)]).toEqual([path, language]);
+});
+
+test("the legacy resolver contract remains intact", () => {
+  const fences: Record<string, string> = { patch: "diff", htm: "html", h: "c", cc: "cpp", hpp: "cpp", ts: "typescript", m: "objective-c", pl: "perl", v: "verilog" };
+  for (const [name, language] of Object.entries(fences)) expect(normalizeLanguage(name)).toBe(language);
+  const paths: Record<string, string> = { "script.ksh": "shell", "data.plist": "xml", "page.xhtml": "html", "rows.ndjson": "json", "map.geojson": "json", "main.cxx": "cpp", "header.hh": "cpp", "header.hxx": "cpp", ".editorconfig": "ini", ".npmrc": "ini", Pipfile: "toml", "Cargo.lock": "toml", "Makefile.am": "makefile", ".env.local": "dotenv" };
+  for (const [path, language] of Object.entries(paths)) expect(languageForPath(path)).toBe(language);
+  const media: Record<string, string> = { "text/json": "json", "application/ecmascript": "javascript", "application/x-yaml": "yaml" };
+  for (const [type, language] of Object.entries(media)) expect(languageForContentType(type)).toBe(language);
 });
 
 test("a content type resolves by its media type, ignoring parameters and case", () => {

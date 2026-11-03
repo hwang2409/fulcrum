@@ -38,6 +38,8 @@ const examples = [
   ["csv", "name,status\nAda,ready\n"],
   ["latex", "\\section{Fulcrum}\nFast highlighting for agents.\n"],
   ["log", "2026-11-02T12:00:00Z INFO worker ready\n"],
+  ["rust", "fn main() { println!(\"hello\"); }\n"],
+  ["typescript", "const ready: boolean = true;\n"],
 ] as const;
 
 function Block({ id, language, source }: { id: string; language: string; source: string }) {

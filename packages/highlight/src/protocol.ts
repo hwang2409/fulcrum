@@ -16,7 +16,7 @@ export const PROGRESS_MS = 100;
 export const TOKENS_PER_MESSAGE = 16_384;
 // `provisional`: an update for the same block follows once its grammar is warm. An update carries the block's context.
 export type WorkerResponse =
-  | { requestId: number; tokens: Token[]; provisional: boolean; of: number }
+  | { requestId: number; tokens: Token[]; provisional: boolean; recycle?: boolean; of: number }
   | { requestId: number; error: string }
   | { update: HighlightContext; language: string; tokens: Token[]; of: number }
   | { progress: HighlightContext | null }

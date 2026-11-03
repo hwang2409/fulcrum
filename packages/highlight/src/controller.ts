@@ -155,6 +155,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
             if (sameBlock(busyWith, job.context)) busyWith = null;
             // An error for one block (the worker is alive) leaves that block plain.
             job.resolve(tokens ?? plain(job.code));
+            if ("recycle" in data && data.recycle) crash();
           }
         }
         heard();
