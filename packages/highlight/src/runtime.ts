@@ -55,6 +55,11 @@ class RegexCache extends Map<string, RegExp | Error> {
 // costly bundled pattern, in cpp, converts and compiles in about 21 ms).
 const WARM_SLICE_MS = 8;
 const WARM_SAMPLE = 'x = f("s", 1); // c';
+function warmSample(language: string): string {
+  if (language === "html") return '<style>body { color: red; }</style>\n<script>const x = 1;</script>\n';
+  if (language === "css") return '.card { color: red; }\n';
+  return WARM_SAMPLE;
+}
 type Provisional = { code: string; language: string; context: HighlightContext };
 /**
  * Where the runtime sends a block again, colored, once its grammar is warm. Until then a block is answered at once
@@ -190,7 +195,7 @@ export class TokenizerRuntime {
     if (epoch !== this.epoch) return;
     // The sample initializes the scanner without compiling every dormant rule. Demand tokenization must stay independent
     // of warm-up; compiling the full grammar here made common languages wait several seconds behind background work.
-    highlighter.codeToTokensBase(WARM_SAMPLE, { lang: language, theme: THEME });
+    highlighter.codeToTokensBase(warmSample(language), { lang: language, theme: THEME });
     this.warmed.add(language);
     await this.flushProvisional(language, epoch);
   }
