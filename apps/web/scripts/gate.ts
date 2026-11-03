@@ -152,6 +152,32 @@ try {
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
     });
 
+    await check("slow catalog keeps the selected transcript and composer usable", async () => {
+      fake.setLive(false);
+      fake.setMode("slow-catalog");
+      fake.drop();
+      await fake.start();
+      await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+      await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 10_000 });
+      await page.getByText(/loading sessions/).waitFor({ timeout: 10_000 });
+      await page.locator(".dock textarea").fill("sent while the catalog loads");
+      await page.locator(".dock textarea").press("Enter");
+      await page.getByText("sent while the catalog loads", { exact: true }).waitFor({ timeout: 2000 });
+      await shoot(page, "slow-catalog-1440");
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.locator(".menu").click();
+      await page.getByRole("button", { name: "new session" }).waitFor();
+      await shoot(page, "slow-catalog-390");
+      await page.setViewportSize({ width: 1440, height: 900 });
+      fake.setMode("ok");
+      await Bun.sleep(31_000);
+      fake.clearSent();
+      await fake.start();
+      fake.setLive(true);
+      await page.goto(`${origin}/?theme=tokyo-night`);
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+    });
+
     // Connected: list, history, live run, approval, follow-bottom.
     await check("session list shows top-level sessions with title, time, and status", async () => {
       const rows = page.locator("button.session");

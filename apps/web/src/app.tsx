@@ -173,9 +173,10 @@ function Sidebar({ state, view, sessions, onSelect, onCreate, open, onClose, foo
         <NewSession state={state} view={view} onCreate={onCreate} className="accent" />
       </div>
       <nav className="list" aria-label="sessions">
-        {view.listError ? <p className="note" data-tone="danger">could not list sessions: {view.listError}</p> : null}
+        {view.listError ? <p className="note" data-tone="danger">could not list sessions: {view.listError} <button type="button" className="ghost" onClick={() => void sessions.refresh()}>retry</button></p> : null}
         {view.createError ? <p className="note" data-tone="danger" role="alert">could not start a session: {view.createError}</p> : null}
-        {state.phase === "connected" && !rows.length && !view.listError ? <p className="note">no sessions yet. start one with new session.</p> : null}
+        {view.listLoading ? <p className="note" role="status">{view.listSlow ? "still loading sessions…" : "loading sessions…"}</p> : null}
+        {state.phase === "connected" && !rows.length && !view.listLoading && !view.listError ? <p className="note">no sessions yet. start one with new session.</p> : null}
         <ul ref={list}>
           {rows.map((session) => (
             <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} server={state.phase === "connected" ? view.server : null} store={state.phase === "connected" && view.open?.id === session.session_id && !view.open.stale ? view.open.lease.store : null} onSelect={onSelect} />

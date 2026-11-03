@@ -45,7 +45,7 @@ export const topLevel = (sessions: readonly SessionMeta[]) =>
 
 export async function listSessions(client: ZetaClient, offset = 0): Promise<{ sessions: SessionMeta[]; nextOffset: number | null }> {
   const paged = client.features.includes("list_sessions_paging");
-  const result = (await client.request("list_sessions", paged ? { offset, limit: PAGE_SIZE } : {}, { timeoutMs: 15_000 })) as { sessions?: SessionMeta[]; next_offset?: number | null };
+  const result = (await client.request("list_sessions", paged ? { offset, limit: PAGE_SIZE } : {})) as { sessions?: SessionMeta[]; next_offset?: number | null };
   return { sessions: result.sessions ?? [], nextOffset: paged ? result.next_offset ?? null : null };
 }
 
@@ -87,6 +87,8 @@ export type SessionsState = {
   sessions: SessionMeta[];
   nextOffset: number | null;
   listError: string | null;
+  listLoading: boolean;
+  listSlow: boolean;
   /** The server's own session from `status` and what it is doing. */
   server: { id: string | null; state: ServerStatus["state"]; approvals: number } | null;
   selected: string | null;
@@ -109,28 +111,35 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
  * opens are released.
  */
 export function createSessions(connection: Source, { selected = null, onSelect }: { selected?: string | null; onSelect?: (id: string) => void } = {}) {
-  let state: SessionsState = { sessions: [], nextOffset: null, listError: null, server: null, selected, open: null, opening: null, openError: null, creating: false, createError: null };
+  let state: SessionsState = { sessions: [], nextOffset: null, listError: null, listLoading: false, listSlow: false, server: null, selected, open: null, opening: null, openError: null, creating: false, createError: null };
   const listeners = new Set<() => void>();
   const set = (patch: Partial<SessionsState>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); };
   let client: ZetaClient | null = null;
   let openGeneration = 0;
   const live = (target: ZetaClient) => client === target;
 
+  let listInFlight: Promise<void> | null = null;
+  let listSlowTimer: ReturnType<typeof setTimeout> | null = null;
   const refresh = async () => {
+    if (listInFlight) return listInFlight;
     const target = client;
     if (!target) return;
-    try {
-      const [list, status] = await Promise.all([listSessions(target), getStatus(target)]);
-      if (!live(target)) return;
-      set({
-        sessions: list.sessions,
-        nextOffset: list.nextOffset,
-        listError: null,
-        server: { id: status.session?.session_id ?? null, state: status.state, approvals: status.pending_approvals?.length ?? 0 },
-      });
-    } catch (error) {
-      if (live(target)) set({ listError: message(error) });
-    }
+    set({ listLoading: true, listSlow: false, listError: null });
+    listSlowTimer = setTimeout(() => { if (live(target)) set({ listSlow: true }); }, 5_000);
+    listInFlight = (async () => {
+      try {
+        const list = await listSessions(target);
+        if (!live(target)) return;
+        set({ sessions: list.sessions, nextOffset: list.nextOffset, listError: null, listLoading: false, listSlow: false });
+      } catch (error) {
+        if (live(target)) set({ listLoading: false, listSlow: false, listError: message(error) });
+      } finally {
+        if (listSlowTimer !== null) clearTimeout(listSlowTimer);
+        listSlowTimer = null;
+        listInFlight = null;
+      }
+    })();
+    return listInFlight;
   };
 
   const open = async (id: string) => {
@@ -167,7 +176,6 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       }
       state.open?.lease.release();
       set({ open: { id, lease, stale: false }, opening: null });
-      void refresh();
     } catch (error) {
       if (mine !== openGeneration || !live(target)) return;
       set({ opening: null, openError: { id, message: message(error), busy: isBusyError(error) } });
@@ -184,10 +192,19 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     }
     void (async () => {
       const target = client!;
-      await refresh();
-      if (!live(target)) return;
-      const id = state.selected ?? state.server?.id ?? null;
-      if (id) void open(id);
+      try {
+        const status = await getStatus(target);
+        if (!live(target)) return;
+        set({ server: { id: status.session?.session_id ?? null, state: status.state, approvals: status.pending_approvals?.length ?? 0 } });
+        const id = state.selected ?? status.session?.session_id ?? null;
+        if (id) {
+          await open(id);
+          if (!live(target)) return;
+        }
+        void refresh();
+      } catch (error) {
+        if (live(target)) set({ openError: { id: state.selected ?? "", message: message(error), busy: isBusyError(error) } });
+      }
     })();
   };
   const unsubscribe = connection.subscribe(onConnection);
@@ -213,6 +230,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         set({ creating: false, sessions: [session, ...state.sessions.filter((item) => item.session_id !== session.session_id)] });
         onSelect?.(session.session_id);
         await open(session.session_id);
+        void refresh();
       } catch (error) {
         set({ creating: false, createError: live(target) ? message(error) : null });
       }
@@ -229,6 +247,8 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     },
     dispose() {
       unsubscribe();
+      if (listSlowTimer !== null) clearTimeout(listSlowTimer);
+      listSlowTimer = null;
       openGeneration++;
       state.open?.lease.release();
     },

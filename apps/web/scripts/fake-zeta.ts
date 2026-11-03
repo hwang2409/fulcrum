@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 
 type Json = Record<string, unknown>;
-export type Mode = "ok" | "busy" | "incompatible" | "slow";
+export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog";
 export type HistoryMode = "new" | "old";
 export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
@@ -177,6 +177,7 @@ function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): 
   return {
     /** Every accepted send and steer, in order. */
     sent,
+    clearSent() { sent.splice(0); },
     get aborts() { return aborts; },
     /** The reply body for a composer method, or undefined for any other method. */
     handle(method: string, params: Json, active: string | null, send: Send): Json | undefined {
@@ -206,6 +207,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let running = false;
   let rejectCreate = false;
   let delayedOpen = false;
+  let catalogBusy = false;
   const decisions: Json[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -244,6 +246,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "slow") await wait(60_000);
           return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
         }
+        if (catalogBusy) while (catalogBusy) await wait(10);
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
           if (running || rejectCreate) return reply({ error: { code: -32004, message: "a turn is already running" } });
@@ -254,10 +257,14 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           return reply({ result: { session: created } });
         }
         if (method === "list_sessions") {
-          const offset = Number(params.offset ?? 0);
-          const limit = Number(params.limit ?? sessions.length);
-          const page = sessions.slice(offset, offset + limit);
-          return reply({ result: { sessions: page, next_offset: offset + limit < sessions.length ? offset + limit : null } });
+          catalogBusy = true;
+          try {
+            if (mode === "slow-catalog") await wait(30_000);
+            const offset = Number(params.offset ?? 0);
+            const limit = Number(params.limit ?? sessions.length);
+            const page = sessions.slice(offset, offset + limit);
+            return reply({ result: { sessions: page, next_offset: offset + limit < sessions.length ? offset + limit : null } });
+          } finally { catalogBusy = false; }
         }
         if (method === "status") {
           const pending = decide && !approvalAborted ? [{ request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, delegated: false }] : [];
@@ -308,6 +315,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     decisions,
     /** Every accepted send and steer, in order. */
     sent: composer.sent,
+    clearSent() { composer.clearSent(); },
     get aborts() { return composer.aborts; },
     /** Closes every socket, like a network blip; the server keeps running. */
     drop() { for (const socket of sockets) socket.close(1012, "restart"); },

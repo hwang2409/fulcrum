@@ -16,9 +16,9 @@ async function server(handlers: Record<string, Handler>, features = ["list_sessi
     send(text) {
       const { id, method, params } = JSON.parse(text);
       calls.push([method, params]);
-      queueMicrotask(() => {
+      queueMicrotask(async () => {
         try {
-          const result = method === "hello" ? { protocol_version: "1.2", capabilities: { features } } : handlers[method]!(params);
+          const result = method === "hello" ? { protocol_version: "1.2", capabilities: { features } } : await handlers[method]!(params);
           deliver(JSON.stringify({ jsonrpc: "2.0", id, result }));
         } catch (error) {
           deliver(JSON.stringify({ jsonrpc: "2.0", id, error: error as object }));
@@ -82,6 +82,21 @@ test("titles, times, and the top-level list", () => {
   expect(["2026-11-02T11:59:30Z", "2026-11-02T11:15:00Z", "2026-11-02T07:00:00Z", "2026-10-30T12:00:00Z", "2026-10-01T12:00:00Z", "2025-10-01T12:00:00Z"].map((iso) => ago(iso, now)))
     .toEqual(["now", "45m", "5h", "3d", "Oct 1", "Oct 1, 2025"]);
   expect(topLevel(sessions).map((session) => session.session_id)).toEqual(["b", "a"]);
+});
+
+test("on connect opens the active session before requesting the catalog", async () => {
+  let release!: () => void;
+  const catalog = new Promise<{ sessions: SessionMeta[]; next_offset: null }>((resolve) => { release = () => resolve({ sessions, next_offset: null }); });
+  const fake = await server({ ...handlers("b"), list_sessions: () => catalog });
+  const view = createSessions(source(fake.client));
+  await tick();
+  expect(view.state.open?.id).toBe("b");
+  expect(view.state.listLoading).toBe(true);
+  expect(fake.calls.map(([method]) => method).filter((method) => method !== "hello")).toEqual(["status", "status", "session_history", "session_history", "status", "list_sessions"]);
+  release();
+  await tick();
+  expect(view.state.listLoading).toBe(false);
+  expect(view.state.sessions).toHaveLength(3);
 });
 
 test("on connect it opens the server's own session without resume, with every history page and its approval", async () => {
