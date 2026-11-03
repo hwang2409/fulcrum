@@ -86,7 +86,8 @@ for (const deltaSize of deltaSizes) for (const [name, source] of cases) {
 }
 const millionByteParagraph = measure("a".repeat(1_000_000), 1_024);
 console.log(`1024 B  ${"1 MB soft-wrapped paragraph".padEnd(22)} p95 ${millionByteParagraph.p95.toFixed(3)} ms  p99 ${millionByteParagraph.p99.toFixed(3)} ms  max ${millionByteParagraph.max.toFixed(3)} ms  work ${millionByteParagraph.workRatio.toFixed(2)}x  max-work ${millionByteParagraph.maxWork}  max-copy ${millionByteParagraph.maxCopied}`);
-if (failsGate(millionByteParagraph) || millionByteParagraph.maxCopied > 1_024) failed = true;
+// The growing line re-parses its fixed provisional suffix (256 plus at most 64 characters of cut slack).
+if (failsGate(millionByteParagraph) || millionByteParagraph.maxCopied > 1_024 + 256 + 64) failed = true;
 
 // The newline that commits a long rich line parses it once; quadratic scans took 6-8 s at 1 MB.
 const richUnit = "plain **strong** and *emphasis* with `code`. ";

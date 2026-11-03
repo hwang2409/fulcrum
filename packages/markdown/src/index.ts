@@ -584,6 +584,8 @@ type ParagraphRecord = {
   block: Extract<Block, { type: "paragraph" }>;
   source: string;
   labels: Set<string>;
+  /** The last line has pipes that stay hidden only while it is the last line. */
+  lastLinePipes?: boolean;
 };
 
 type TableBlock = Extract<Block, { type: "table" }>;
@@ -602,13 +604,17 @@ const normalizeReferenceLabel = (label: string) => label.trim().replace(/\s+/g, 
 
 // The open paragraph's last line can still become a table header, which turns its pipes into cell borders.
 function hideTableCandidatePipes(inlines: Inline[]) {
-  for (const inline of inlines) {
-    if (inline.type === "text") inline.value = inline.value.replace(/[ \t]*\|[ \t]*/g, "");
-    else if ("children" in inline) hideTableCandidatePipes(inline.children);
+  for (let index = inlines.length - 1; index >= 0; index--) {
+    const inline = inlines[index]!;
+    if (inline.type === "break") return;
+    if ("children" in inline) hideTableCandidatePipes(inline.children);
+    if (inline.type !== "text") continue;
+    const lineStart = inline.value.lastIndexOf("\n") + 1;
+    inline.value = inline.value.slice(0, lineStart) + inline.value.slice(lineStart).replace(/[ \t]*\|[ \t]*/g, "");
+    if (lineStart) return;
   }
 }
 
-// A `[label]` in text can still become a link while a later definition can arrive.
 // The text of `value` with each `[label]` that may still become a reference reduced to its link text.
 function pendingReferenceParts(value: string, labels?: ReadonlySet<string>): Inline[] {
   const parts: Inline[] = [];
@@ -978,7 +984,7 @@ export function createStreamingDocument(): StreamingDocument {
       item.checked = task[1]!.toLowerCase() === "x";
       content = content.slice(task[0].length);
     }
-    const record: ParagraphRecord = { block, source: content, labels: new Set() };
+    const record: ParagraphRecord = { block, source: content, labels: new Set(), lastLinePipes: content.includes("|") };
     // The growing line already holds stable nodes for this text; only its unresolved tail is parsed again.
     updateParagraph(record, true, true, pendingInline?.commit(content));
     paragraphRecords.set(block, record);
@@ -991,8 +997,9 @@ export function createStreamingDocument(): StreamingDocument {
     const addition = `\n${content}`;
     record.source += addition;
     const child = record.block.children.length === 1 ? record.block.children[0] : undefined;
-    if (child?.type === "text" && !/[\\&<>*_~`\[\]|]/.test(content)) child.value += addition;
+    if (child?.type === "text" && !record.lastLinePipes && !/[\\&<>*_~`\[\]|]/.test(content)) child.value += addition;
     else updateParagraph(record, true);
+    record.lastLinePipes = content.includes("|");
   };
 
   const updateTableCell = (record: TableCellRecord) => {

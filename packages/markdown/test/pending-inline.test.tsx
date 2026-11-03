@@ -167,3 +167,9 @@ test("k late closers cost k suffixes plus their spans", () => {
   }
   expect(document.stats.copiedCharacters).toBeLessThanOrEqual(2 * source.length + 20 * (SUFFIX + 64) + Math.ceil(source.length / 64) * (SUFFIX + 64));
 });
+
+test("only the open paragraph's last line hides its table-candidate pipes", () => {
+  const document = createStreamingDocument();
+  document.append("run a | b first\nthen more\nand | more");
+  expect(visible(document.render())).toBe("run a | b first\nthen more\nandmore");
+});
