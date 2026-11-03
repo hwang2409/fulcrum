@@ -93,3 +93,24 @@ test("committing a long rich line is linear in its length", () => {
   // Quadratic commits took ~200 ms at 100k and 6-8 s at 1 MB; linear ones take tens of ms.
   expect(large, `1 MB commit ${large.toFixed(1)} ms, 100k commit ${small.toFixed(1)} ms`).toBeLessThan(1_000);
 });
+
+test("an escaped bracket pair never shows a backslash that later disappears", () => {
+  for (const source of ["see \\[x\\]\n\nnext\n", "\\[ A = \\pi \\]\n\nnext\n", "a \\[b] and \\\\[c]\n\nnext\n"]) {
+    const final = paragraphs(parseMarkdown(source)).join(" ").replace(/\s+/g, " ").trim();
+    for (const split of splits) {
+      const document = streamed(source, split);
+      expect(isSubsequence(paragraphs(document.render()).join(" ").replace(/\s+/g, " ").trim(), final), `${JSON.stringify(source)}, split ${split}`).toBe(true);
+    }
+  }
+});
+
+test("a later definition resolves a label after a stray bracket in the closed paragraph", () => {
+  const document = createStreamingDocument();
+  document.append("x [s[shared] y\n\n");
+  // The line after the definition confirms it (a definition may continue with a title).
+  document.append("[shared]: https://example.com\n\nmore\n");
+  const first = document.render()[0]!;
+  expect(first.type).toBe("paragraph");
+  const links = JSON.stringify(first).match(/"type":"link"/g) ?? [];
+  expect(links.length).toBe(1);
+});

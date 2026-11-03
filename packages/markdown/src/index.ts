@@ -328,11 +328,24 @@ function withoutOpenAngle(source: string) {
   return angle > source.lastIndexOf(">") && !/[\s\n]/.test(source.slice(angle + 1)) ? source.slice(0, angle) : source;
 }
 
+const escaped = (source: string, index: number) => {
+  let escapes = 0;
+  for (let at = index - 1; at >= 0 && source[at] === "\\"; at--) escapes++;
+  return escapes % 2 === 1;
+};
+
+// The last `marker` that a backslash does not escape, or -1.
+const lastUnescaped = (source: string, marker: string) => {
+  let index = source.lastIndexOf(marker);
+  while (index >= 0 && escaped(source, index)) index = index === 0 ? -1 : source.lastIndexOf(marker, index - 1);
+  return index;
+};
+
 function withoutOpenLink(source: string) {
-  if (source.endsWith("!") && !source.endsWith("\\!")) source = source.slice(0, -1);
-  const image = source.lastIndexOf("![");
+  if (source.endsWith("!") && !escaped(source, source.length - 1)) source = source.slice(0, -1);
+  const image = lastUnescaped(source, "![");
   if (image >= 0 && !/\]\([^\n)]*\)/.test(source.slice(image + 1))) return source.slice(0, image);
-  const bracket = source.lastIndexOf("[");
+  const bracket = lastUnescaped(source, "[");
   if (bracket < 0) return source;
   const rest = source.slice(bracket + 1);
   const close = rest.indexOf("]");
@@ -605,11 +618,11 @@ function markPendingReferences(inlines: Inline[]) {
 
 function unresolvedReferenceLabels(source: string, references: Environment["references"]) {
   const labels = new Set<string>();
-  for (const match of source.matchAll(/!?\[([^\]\n]+)\]\[([^\]\n]*)\]/g)) {
+  for (const match of source.matchAll(/!?\[([^\]\n]+)\]\[([^[\]\n]*)\]/g)) {
     const label = normalizeReferenceLabel(match[2] || match[1]!);
     if (!references?.[label]) labels.add(label);
   }
-  for (const match of source.matchAll(/(?<!!)\[([^\]\n]+)\](?![\[(])/g)) {
+  for (const match of source.matchAll(/(?<!!)\[([^[\]\n]+)\](?![\[(])/g)) {
     const label = normalizeReferenceLabel(match[1]!);
     if (!references?.[label]) labels.add(label);
   }
