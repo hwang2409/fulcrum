@@ -173,7 +173,14 @@ export function useVirtualList<Id extends string>(
     container.addEventListener("touchmove", onTouchMove, { passive: true });
     container.addEventListener("touchend", onTouchEnd, { passive: true });
     container.addEventListener("touchcancel", onTouchEnd, { passive: true });
-    const viewportObserver = new ResizeObserver(() => updateViewport("programmatic"));
+    // A scroll box that changes size (a banner above it, a composer below it) keeps a pinned reader at the bottom.
+    const viewportObserver = new ResizeObserver(() => {
+      const pinned = engine.getSnapshot().pinned;
+      updateViewport("programmatic");
+      if (!pinned) return;
+      container.scrollTop = engine.scrollToEnd();
+      ignoreScrollUntil.current = performance.now() + 50;
+    });
     viewportObserver.observe(container);
     return () => {
       observer.disconnect();
