@@ -4,7 +4,7 @@
 the library does not have, it is written down here. It is not worked around in the app. Each entry says what is
 missing, why the app needs it, and the proposed API.
 
-## added in this PR (small, generic, tested)
+## added (small, generic, tested)
 
 | export | why | test |
 | --- | --- | --- |
@@ -14,6 +14,7 @@ missing, why the app needs it, and the proposed API.
 | `discoverZeta()`, `zetaDiscoveryPath`, `ZetaDiscovery`, `ZetaClient` in `@fulcrum/zeta` | the playground fetched its discovery URL inline, and the client type had no name. | `packages/zeta/test/connect.test.ts` |
 | `@fulcrum/zeta/discovery` (`zetaDiscoveryPlugin`, `createZetaDiscoveryHandler`) | the dev-server token handoff was private to the playground. It moved into the package for both apps. It now also returns the `--ws-origin` allowlist, and it answers 404 when the discovery file names a process that has stopped. | `packages/zeta/test/discovery.test.ts`, `apps/playground/test/zeta-discovery.integration.test.ts` |
 | `themes` and `ThemeName` in `@fulcrum/react` | a theme picker needs the list. Parsing `themes.css?raw` is a bundler trick. | `packages/react/test/themes.test.ts` |
+| `Composer` in `@fulcrum/react` | the app had no input. Send, steer, and stop map to zeta `send`, `steer`, and `abort` in `src/delivery.ts`, with `delivery_id`. | `packages/react/test/composer.test.tsx`, `apps/web/test/delivery.test.ts` |
 | core reducer: a repeated `approval_request` updates its row | a status snapshot and the live event can both carry the same approval. Before this, two rows with one id crashed `Timeline` ("outline ids must be unique"). | `packages/core/test/reducer.test.ts` |
 
 ## open gaps
@@ -65,8 +66,15 @@ missing, why the app needs it, and the proposed API.
 - **why:** a reader who scrolled up loses their place on every reconnect.
 - **proposed api:** `Timeline` `anchor` / `onAnchor` (item id plus offset) that a caller can carry across a store swap.
 
-### 10. no composer (`@fulcrum/react`)
-- slice 1 is read-only by design. The composer (send, steer, stop, attach) is a library slice in the round 2 plan. The app shows no fake input.
+### 10. a steer can arrive after the last provider call (zeta)
+- **seen:** zeta delivers a steer at the next provider boundary of the running turn. A turn whose last answer has no
+  tool call has no such boundary, so zeta drops the steer when the turn ends (`delivery_status` says `dropped`). It has
+  already emitted the `user_message`, so the transcript shows a message the model never read. The zeta TUI sends a
+  late steer as the next turn instead.
+- **in the app:** the protocol leaves the resend to the client, so `src/delivery.ts` does what the TUI does: when a
+  turn ends without a stop, each steer it dropped goes out again as a new message (`test/delivery.test.ts`, web gate,
+  and a live check on real zeta).
+- **proposed api:** zeta serve delivers a late steer as the next turn, as the TUI does, so every client gets it.
 
 ## library bugs found
 

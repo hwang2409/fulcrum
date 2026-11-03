@@ -118,13 +118,14 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let delayedOpen = false;
   const decisions: Json[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
-  // The composer's turns: a reply that streams for about 5 s, long enough to steer and to stop.
+  // The composer's turns: a text-only reply that streams for about 2.5 s, long enough to steer and to stop.
   const sent: Json[] = [];
   const deliveries = new Map<string, Json>();
   let aborts = 0;
+  const statuses = new Map<string, "queued" | "delivered" | "dropped">();
   let chat: { session: string; steers: string[]; aborted: boolean } | null = null;
   const chatTurn = async (session: string, send: (event: Json) => void) => {
-    const turn = { session, steers: [] as string[], aborted: false };
+    const turn = { session, steers: [] as string[], aborted: false }; // steers holds delivery ids
     chat = turn;
     running = true;
     const e = (event: string, body: Json = {}) => { if (!turn.aborted) send({ event, session_id: session, ...body }); };
@@ -137,13 +138,10 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
       reply += word;
       e("assistant_delta", { delta: word, kind: "assistant" });
     }
-    if (turn.steers.length) {
-      const steered = `\n\nSteered: ${turn.steers.join("; ")}.`;
-      reply += steered;
-      e("assistant_delta", { delta: steered, kind: "assistant" });
-    }
     e("assistant_message", { message: { role: "assistant", content: [text(reply)] } });
     histories[session] = [...(histories[session] ?? []), { id: `reply-${sent.length}`, role: "assistant", content: [text(reply)], tool_result: null }];
+    // As in zeta: a turn with no tool call reaches no provider boundary, so steering still queued at its end is dropped.
+    for (const id of turn.steers) statuses.set(id, "dropped");
     e("turn_end", { data: { turn: sent.length } });
     chat = null;
     running = false;
@@ -227,7 +225,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         if (method === "send" || method === "steer") {
           const delivery = typeof params.delivery_id === "string" ? params.delivery_id : null;
           const seen = delivery ? deliveries.get(delivery) : undefined;
-          if (seen) return reply({ result: { ...seen, duplicate: true } });
+          if (seen) return reply({ result: statuses.get(delivery!) === "dropped" ? { accepted: false, duplicate: true, status: "dropped" } : { ...seen, duplicate: true } });
           if (!active) return reply({ error: { code: -32003, message: "no active session" } });
           if (method === "send" && running) return reply({ error: { code: -32004, message: "a turn is already running" } });
           if (method === "steer" && !running) return reply({ error: { code: -32005, message: "no turn is running for steering" } });
@@ -237,13 +235,19 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           histories[active] = [...(histories[active] ?? []), { id: `sent-${sent.length}`, role: "user", content: [{ type: "text", text }], tool_result: null }];
           const accepted = method === "send" ? { accepted: true, session_id: active } : { accepted: true };
           if (delivery) deliveries.set(delivery, accepted);
-          if (method === "steer") { chat?.steers.push(text); return reply({ result: accepted }); }
+          if (delivery) statuses.set(delivery, method === "steer" ? "queued" : "delivered");
+          if (method === "steer") { if (delivery) chat?.steers.push(delivery); return reply({ result: accepted }); }
           reply({ result: accepted });
           return void chatTurn(active, send);
+        }
+        if (method === "delivery_status") {
+          const status = statuses.get(String(params.delivery_id));
+          return reply(status ? { result: { delivery_id: params.delivery_id, status } } : { error: { code: -32602, message: "unknown delivery_id" } });
         }
         if (method === "abort") {
           if (!chat) return reply({ result: { aborted: false } });
           const turn = chat;
+          for (const id of turn.steers) statuses.set(id, "dropped");
           chat = null;
           running = false;
           turn.aborted = true;

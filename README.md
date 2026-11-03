@@ -86,6 +86,18 @@ const renderers: Renderers = {
   <RunNavigator store={rootStore} source={source} {...useHistoryRunPath("run")} />
   ```
 
+- composer: `Composer` is the message box under a run. It imports no transport; the host maps its callbacks to the harness:
+
+  ```tsx
+  <Composer
+    state={running ? (canSteer ? "steerable" : "running") : "idle"} // or state="read-only" reason="observing"
+    onSubmit={(text, { steer }) => (steer ? harness.steer(text) : harness.send(text))} // a promise
+    onStop={() => harness.abort()}
+  />
+  ```
+
+  The rules: Enter submits, Shift+Enter adds a newline, and Enter never submits during IME composition (`isComposing` or keyCode 229). A blank draft does not submit, and nothing calls `onSubmit` again while its promise is pending. A rejected promise keeps the draft and shows `could not send: <message>` in a polite status line; Enter or the button retries. A resolved one clears only what was sent: text appended meanwhile stays, and a rewritten draft stays whole. The action reads `send` when idle and `steer` in `steerable`. In `running` (the harness cannot take input mid-turn) the action is disabled and the draft waits; nothing is queued. Stop shows only while a turn runs, with `stopping` and `could not stop: <message>` states. `read-only` hides the field and every action and shows `reason`; the draft survives the switch. The field is never disabled, so focus stays in it; it grows to ten lines, then scrolls, and the status line has a fixed height, so an error never moves the layout. `defaultValue` sets the first draft; give the composer a `key` per conversation.
+
 - playground: `make dev` rebuilds every workspace package plus the highlight bundle before it starts every playground page, so a fresh clone cannot use missing or stale `dist` output.
 
 - styles: copy `packages/react/styles.css` (layout, states, markdown and code) and `packages/react/themes.css` (color) into your app and edit them. themes.css has 12 real palettes: gruvbox-dark, gruvbox-light, dracula, nord, tokyo-night, catppuccin-mocha, catppuccin-latte, solarized-dark, solarized-light, github-dark, github-light, one-dark. Set `data-fulcrum-theme="<name>"` on `<html>` or any subtree; with no attribute it follows the OS with github-light or github-dark. Each theme also sets `--fulcrum-tok-*` colors for `<span class="tok-<type>">` syntax tokens and the 16 `--fulcrum-ansi-*` terminal colors (its official terminal palette). UI text (fg, muted, accent, ok, warn, danger) reaches 4.5:1 on bg, surface, and the diff row tints in every theme. Syntax and terminal colors keep the official hex where it reaches 3:1 on the backgrounds they sit on; where it does not, they take the smallest OKLCH lightness change at the same hue that does, and a comment names the official value (`packages/react/test/themes.test.ts`). The type is "JetBrains Mono" with monospace fallbacks; load the font yourself.

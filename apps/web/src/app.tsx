@@ -284,8 +284,20 @@ const offline = () => Promise.reject(new Error("not connected to zeta serve"));
 function RunComposer({ client }: { client: ZetaClient | null }) {
   const running = useRun((state) => state.agent === "running");
   const delivery = useMemo(() => createDelivery(), []);
+  // Whether the user stopped the current turn: then the steers it dropped were meant to go.
+  const stopped = useRef(false);
+  const wasRunning = useRef(running);
+  useEffect(() => {
+    if (running && !wasRunning.current) stopped.current = false;
+    // shortcut: a resend that fails is not shown; upgrade when the composer can take a host-reported error.
+    if (!running && wasRunning.current && client) delivery.turnEnded(client, { stopped: stopped.current }).catch(() => {});
+    wasRunning.current = running;
+  }, [running, client, delivery]);
   const onSubmit = useCallback((text: string, { steer }: { steer: boolean }) => (client ? delivery.submit(client, text, steer) : offline()), [client, delivery]);
-  const onStop = useCallback(() => (client ? stopTurn(client) : offline()), [client]);
+  const onStop = useCallback(() => {
+    stopped.current = true;
+    return client ? stopTurn(client) : offline();
+  }, [client]);
   return (
     <div className="dock">
       {client ? (

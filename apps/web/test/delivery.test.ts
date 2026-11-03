@@ -71,6 +71,36 @@ test("a dropped steer is an error and the retry gets a fresh id; an evicted id r
   expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-2", "id-3"]);
 });
 
+test("a steer the turn dropped at its end is resent as a new message, in order; delivered ones are not", async () => {
+  const status: Record<string, string> = { "id-1": "delivered", "id-2": "dropped", "id-3": "dropped" };
+  const { client, calls } = await server((method, params) => (method === "delivery_status" ? { result: { delivery_id: params.delivery_id, status: status[params.delivery_id as string] } } : ok));
+  const delivery = createDelivery(ids());
+  await delivery.submit(client, "read first", true);
+  await delivery.submit(client, "then this", true);
+  await delivery.submit(client, "and this", true);
+  calls.length = 0;
+  await delivery.turnEnded(client, { stopped: false });
+  expect(calls).toEqual([
+    ["delivery_status", { delivery_id: "id-1" }],
+    ["delivery_status", { delivery_id: "id-2" }],
+    ["send", { text: "then this", delivery_id: "id-4" }],
+    ["delivery_status", { delivery_id: "id-3" }],
+    ["send", { text: "and this", delivery_id: "id-5" }],
+  ]);
+  calls.length = 0;
+  await delivery.turnEnded(client, { stopped: false });
+  expect(calls).toEqual([]);
+});
+
+test("after a stop, dropped steers stay dropped", async () => {
+  const { client, calls } = await server((method) => (method === "delivery_status" ? { result: { status: "dropped" } } : ok));
+  const delivery = createDelivery(ids());
+  await delivery.submit(client, "never mind", true);
+  calls.length = 0;
+  await delivery.turnEnded(client, { stopped: true });
+  expect(calls).toEqual([]);
+});
+
 test("stop is a session abort", async () => {
   const { client, calls } = await server(() => ({ result: { aborted: true } }));
   expect(await stopTurn(client)).toEqual({ aborted: true });

@@ -256,7 +256,7 @@ try {
       await page.getByText("frame 399 took").waitFor({ timeout: 5000 });
       if (!(await page.evaluate(() => location.hash.includes("s-long")))) throw new Error("selection not in the url");
     });
-    await check("composer: Enter sends, the action steers while the turn runs, stop ends it, all with delivery ids", async () => {
+    await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
       await page.locator("button.session", { hasText: "check every theme" }).click();
       await page.locator('[data-part="md-table"]').waitFor({ timeout: 5000 });
       const composer = page.locator('.dock [data-part="composer"]');
@@ -274,11 +274,17 @@ try {
       await submit.click();
       await page.waitForFunction(() => document.querySelector<HTMLTextAreaElement>(".dock textarea")?.value === "", undefined, { timeout: 3000 });
       await shoot(page, "composer-running-1440-tokyo-night");
+      // The fake turn has no tool call, so it ends with the steer still queued and drops it, as zeta does; the app
+      // resends it as the next message, which starts a new turn.
+      for (let i = 0; i < 100 && fake.sent.length < 3; i++) await Bun.sleep(100);
+      await composer.and(page.locator('[data-state="steerable"]')).waitFor({ timeout: 5000 });
       await composer.locator('[data-part="composer-stop"]').click();
       await composer.and(page.locator('[data-state="idle"]')).waitFor({ timeout: 5000 });
       await page.locator('[data-part="timeline"]').getByText("turn aborted").first().waitFor({ timeout: 3000 });
-      const sent = fake.sent.map((entry) => `${entry.method}:${entry.text}:${typeof entry.delivery_id === "string" && entry.delivery_id.length > 0}`);
-      if (sent.join(",") !== "send:run the focused tests:true,steer:also check the windows path:true") throw new Error(`server saw ${sent.join(", ")}`);
+      const sent = fake.sent.map((entry) => `${entry.method}:${entry.text}`);
+      if (sent.join(",") !== "send:run the focused tests,steer:also check the windows path,send:also check the windows path") throw new Error(`server saw ${sent.join(", ")}`);
+      const ids = fake.sent.map((entry) => entry.delivery_id);
+      if (ids.some((id) => typeof id !== "string" || !id) || new Set(ids).size !== ids.length) throw new Error(`delivery ids ${ids.join(", ")}`);
       if (fake.aborts !== 1) throw new Error(`${fake.aborts} aborts`);
       await shoot(page, "composer-stopped-1440-tokyo-night");
     });

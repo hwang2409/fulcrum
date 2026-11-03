@@ -14,9 +14,15 @@ type Accepted = { accepted?: boolean; status?: string };
  * or a dropped socket can never deliver the message twice (docs/serve-protocol.md, "client delivery IDs"). The id is
  * dropped once the server has accepted or definitely dropped the message, so the next message gets a fresh one. When
  * the turn starts or ends between the click and the server, the other method runs once with the same id.
+ *
+ * Zeta delivers a steer at the next provider boundary of the running turn. A turn that ends first (a final answer with
+ * no tool call) drops it, and the protocol leaves the resend to the client. `turnEnded` does that, as the zeta TUI does:
+ * each dropped steer goes out again as a new message, in order. After a stop the user meant to drop them, so they stay
+ * dropped.
  */
 export function createDelivery(newId: () => string = () => `web-${crypto.randomUUID()}`) {
   let last: { text: string; id: string } | null = null;
+  let steers: Array<{ text: string; id: string }> = [];
   const request = async (client: ZetaClient, method: "send" | "steer", text: string, id: string | null) => {
     try {
       return (await client.request(method, { text, ...(id ? { delivery_id: id } : {}) }, { timeoutMs: 15_000 })) as Accepted;
@@ -40,7 +46,18 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
         result = await request(client, steer ? "send" : "steer", text, id);
       }
       if (last?.id === id) last = null;
+      if (steer && id && result.accepted !== false) steers.push({ text, id });
       if (result.accepted === false) throw new Error(result.status === "dropped" ? "the server dropped this message before the turn took it; send it again" : "the server did not accept this message");
+    },
+    /** Call when the running turn ends. Resends the steers it dropped, unless the user stopped it. */
+    async turnEnded(client: ZetaClient, { stopped }: { stopped: boolean }) {
+      const ended = steers;
+      steers = [];
+      if (stopped) return;
+      for (const { text, id } of ended) {
+        const { status, outcome } = (await client.request("delivery_status", { delivery_id: id }, { timeoutMs: 15_000 })) as { status?: string; outcome?: string };
+        if (status === "dropped" || (status === "evicted" && outcome === "dropped")) await this.submit(client, text, false);
+      }
     },
   };
 }
