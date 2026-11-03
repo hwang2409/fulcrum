@@ -13,7 +13,8 @@
     "layout": "bun scripts/layout.ts",
     "highlight:fallback": "bun scripts/highlight-fallback.ts",
     "large-blocks": "bun scripts/large-blocks.ts",
-    "test:virtual": "bun scripts/virtual-test.ts"
+    "test:virtual": "bun scripts/virtual-test.ts",
+    "fold-check": "bun scripts/fold-check.ts"
   },
   "dependencies": {
     "@fulcrum/core": "workspace:*",

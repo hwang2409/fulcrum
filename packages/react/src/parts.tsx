@@ -1,5 +1,5 @@
 import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type RefObject } from "react";
-import type { ApprovalDecision, RunEvent, RunItem } from "@fulcrum/core";
+import type { ApprovalDecision, OutlineChange, RunEvent, RunItem } from "@fulcrum/core";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { HighlightContext, Tokens, useTokens } from "./highlight.js";
@@ -453,15 +453,17 @@ function ApprovalSkip({ items, reveal }: { items: readonly { id: string; kind?: 
 
 const silent = (item: RunItem | undefined) => !item || announcementForItem(item) === null;
 
-function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; change: { type: "append" | "prepend"; count: number } | null }) {
-  const initialized = useRef(false);
+function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; change: OutlineChange | null }) {
   const pending = useRef<string[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const store = useRunStore();
-  const previous = useRef<ReadonlySet<string>>(new Set());
+  const previous = useRef<readonly { id: string }[] | null>(null);
   const [watched, setWatched] = useState<readonly string[]>([]);
   const [text, setText] = useState("");
+  // Rows that already spoke their final words: a row that moves (or folds back in) must not speak again.
+  const spoken = useRef(new Set<string>());
   const announce = useCallback((id: string, next: string) => {
+    spoken.current.add(id);
     pending.current.push(next);
     setWatched((current) => current.filter((candidate) => candidate !== id));
     if (timer.current !== null) return;
@@ -473,21 +475,31 @@ function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; ch
     }, 1_000);
   }, []);
   useLayoutEffect(() => {
-    const present = new Set(items.map(({ id }) => id));
     const before = previous.current;
-    previous.current = present;
-    if (!initialized.current) {
-      initialized.current = true;
+    previous.current = items;
+    if (before === null || before === items) return;
+    // Rows added at the end are new: watch them all. A row that replaces rows (an approval folding into its tool row)
+    // is watched too, so a fast call that folds already finished still says so; a row that already spoke stays silent. Rows put anywhere else (an older page, a store swap) speak only if they have
+    // nothing to say yet, so a swapped-in finished session stays silent.
+    const added: string[] = [];
+    if (change?.from === before) {
+      let length = before.length;
+      for (const { index, deleteCount, items: inserted } of change.splices) {
+        const atEnd = index === length && deleteCount === 0;
+        for (const { id } of inserted) if (!spoken.current.has(id) && (atEnd || deleteCount > 0 || silent(store.getItem(id)))) added.push(id);
+        length += inserted.length - deleteCount;
+      }
+      // A removed row's item is gone too; an edit touches few rows, so this skips scanning the outline.
+      setWatched((current) => [...new Set([...current.filter((id) => store.getItem(id) !== undefined), ...added])]);
       return;
     }
-    // An append announces its rows. A rewrite in place (an approval folding into its tool row, a store swap) arrives as a
-    // full change: watch only rows that are new and still have nothing to say, so they speak when they finish and a
-    // swapped-in finished session stays silent.
-    const added = change?.type === "append" && change.count > 0
-      ? items.slice(-change.count).map(({ id }) => id)
-      : change === null
-        ? items.map(({ id }) => id).filter((id) => !before.has(id) && silent(store.getItem(id)))
-        : [];
+    // No edits from what this saw: compare whole outlines. New rows after the last row that stayed are new at the end;
+    // when no row stayed (a store swap) nothing is.
+    const present = new Set(items.map(({ id }) => id));
+    const prior = new Set(before.map(({ id }) => id));
+    let lastKept = -1;
+    items.forEach(({ id }, index) => { if (prior.has(id)) lastKept = index; });
+    items.forEach(({ id }, index) => { if (!prior.has(id) && ((lastKept >= 0 && index > lastKept) || silent(store.getItem(id)))) added.push(id); });
     setWatched((current) => [...new Set([...current.filter((id) => present.has(id)), ...added])]);
   }, [change, items, store]);
   useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current); }, []);

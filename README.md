@@ -35,7 +35,7 @@ open the live zeta panel and paste the discovery url from `$ZETA_HOME/run/serve.
 
 ## store
 
-`createRunStore()` owns one run. Dispatch generic `RunEvent` values, read ordered `{ id, kind }` entries with `getOutline()`, and read the current entity with `getItem(id)`. The store batches reduction and subscriber notification through its scheduler; synchronous reads flush pending events. Use keyed subscriptions for entity rows and `subscribeOutline()` for the ordered timeline. `fromZetaEvent` maps Zeta wire events to generic events, and `connect(transport)` adds JSON-RPC request matching. A `user_message` may carry an `intent`, the client's id for what the user asked: a later user message with the same intent replaces that row in place, so a message the harness dropped and the client resent shows once.
+`createRunStore()` owns one run. Dispatch generic `RunEvent` values, read ordered `{ id, kind }` entries with `getOutline()`, and read the current entity with `getItem(id)`. The store batches reduction and subscriber notification through its scheduler; synchronous reads flush pending events. Use keyed subscriptions for entity rows and `subscribeOutline()` for the ordered timeline. `getOutlineSnapshot()` returns `{ items, change }`: `change` is `{ from, splices }`, the edits (`{ index, deleteCount, items }`, applied in order) that turn the outline `from` into `items`, merged across one notification; it is `null` on the first snapshot and after dispose. An approval that folds into its tool row is one splice, not a new outline. `fromZetaEvent` maps Zeta wire events to generic events, and `connect(transport)` adds JSON-RPC request matching. A `user_message` may carry an `intent`, the client's id for what the user asked: a later user message with the same intent replaces that row in place, so a message the harness dropped and the client resent shows once.
 
 build with `bun install --frozen-lockfile`, `bunx tsc -b`, and `bun test`.
 
@@ -128,7 +128,7 @@ The headless renderer has no visual styles. Its stable styling hooks are `data-p
 
 ## virtual
 
-`@fulcrum/virtual` is a zero-dependency, framework-agnostic vertical windowing engine. `createVirtualizer` accepts generic `{ id, kind }` outlines, kind-based estimates, and an optional cache from `snapshotCache()`. Its small interface owns measured per-kind medians, capped overscan ranges, stable or end-relative anchor corrections, deferred momentum-scroll jumps, pinned-bottom decisions, and a bounded structured action log. Callers apply the returned rows, spacers, and scroll decisions in their own renderer; the package does not use React, the DOM, or browser APIs.
+`@fulcrum/virtual` is a zero-dependency, framework-agnostic vertical windowing engine. `createVirtualizer` accepts generic `{ id, kind }` outlines, kind-based estimates, and an optional cache from `snapshotCache()`. Its small interface owns measured per-kind medians, capped overscan ranges, stable or end-relative anchor corrections, deferred momentum-scroll jumps, pinned-bottom decisions, and a bounded structured action log. Callers apply the returned rows, spacers, and scroll decisions in their own renderer; the package does not use React, the DOM, or browser APIs. `setOutline(items, { from, splices })` edits the layout in place when `from` is the outline it last received, keeping measured sizes and the anchor; any other call (no update, or a `from` it did not see) rebuilds.
 
 ## render an AI SDK stream
 

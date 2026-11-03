@@ -172,7 +172,7 @@ try {
       const colors = await summary.evaluate((node) => new Set([...node.querySelectorAll('[class*="tok-"]')].map((span) => getComputedStyle(span).color)).size);
       if (colors < 2) throw new Error(`the shell header has ${colors} token color(s)`);
     });
-    await check("live run streams a shell card, then a dropped pending approval aborts", async () => {
+    await check("live run streams a shell card; a server stop keeps the bottom pin and the pending approval in view, then the approval aborts", async () => {
       await page.locator('[data-tool-view="shell"]').first().waitFor({ timeout: 5000 });
       await page.locator(".scroll").evaluate((element) => { element.scrollTop = element.scrollHeight; });
       const approval = page.locator('[data-part="approval"][data-state="pending"]');
@@ -186,14 +186,27 @@ try {
       if (row !== "needs approval") throw new Error(`the session row says "${row}" while an approval waits`);
       await shoot(page, "connected-approval-1440-tokyo-night");
       await fake.start();
-      fake.drop();
+      // A stopped server (not a blip): the banner and the offline composer resize the scroll box while it waits.
+      await fake.stop();
       await page.getByText(/connection lost|reconnecting/).first().waitFor({ timeout: 3000 });
+      // A drop keeps the reader where they were: still pinned to the bottom, the pending approval still in view.
+      await page.getByText(/sending is paused/).first().waitFor({ timeout: 3000 });
+      await settle(page);
+      await page.waitForTimeout(500);
+      const kept = await page.locator(".scroll").evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const row = element.querySelector('[data-part="approval"][data-state="pending"]')?.getBoundingClientRect();
+        return { gap: element.scrollHeight - element.clientHeight - element.scrollTop, scrollTop: element.scrollTop, inView: !!row && row.bottom > box.top && row.top < box.bottom };
+      });
       if (!(await page.locator(".scroll[data-stale=true]").count())) throw new Error("old view was not marked stale");
       const staleApproval = page.locator('[data-part="approval"][data-state="pending"]');
       await staleApproval.getByRole("button", { name: "approve" }).waitFor();
       await staleApproval.getByRole("button", { name: "deny" }).waitFor();
       if (!(await staleApproval.getByRole("button", { name: "approve" }).isDisabled()) || !(await staleApproval.getByRole("button", { name: "deny" }).isDisabled())) throw new Error("stale approval buttons were not disabled");
       await staleApproval.getByText(/decisions are disabled/).waitFor();
+      await fake.start();
+      // The client's retry backoff grows while the server is down; retry at once, as a user would.
+      await page.locator(".notice").getByRole("button", { name: "retry now" }).click({ timeout: 2000 }).catch(() => {});
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
       await page.locator(".notice").waitFor({ state: "detached" });
       // One row per call: the ended approval folds into its tool card's header, which says how it ended.
@@ -204,6 +217,8 @@ try {
       if (await rebuilt.count() !== 1 || await page.locator('[data-part="approval"]').count()) throw new Error("duplicate approval rows after reconnect");
       if (await page.locator('[data-tone="danger"]').count()) throw new Error("reconnect showed an app error");
       if (fake.decisions.length) throw new Error("server received a decision for the aborted approval");
+      // Reported after the reconnect, so a failure here does not leave the server stopped for later checks.
+      if (kept.gap > 4 || !kept.inView) throw new Error(`the stop moved the view: ${Math.round(kept.gap)} px from the bottom at scrollTop ${Math.round(kept.scrollTop)}, pending approval in view: ${kept.inView}`);
     });
     await check("follows the bottom while the run streams", async () => {
       await settle(page);
