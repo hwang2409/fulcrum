@@ -11,7 +11,7 @@ scope.onmessage = async (event) => {
   if (event.data.type === "dispose") { runtime.dispose(); scope.close(); return; }
   const { requestId, code, language, context } = event.data;
   try {
-    const tokens = await runtime.tokenize(code, language, context, false);
+    const tokens = await runtime.tokenize(code, language, context);
     scope.postMessage({ requestId, tokens, provisional: runtime.willUpdate(context) });
   } catch (cause) {
     scope.postMessage({ requestId, error: cause instanceof Error ? cause.message : String(cause) });

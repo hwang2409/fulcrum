@@ -6,14 +6,16 @@ const { TokenizerRuntime } = await import("../dist/runtime.js");
 const line = "export const value: number = items.map((item) => item.id).length;\n";
 const targets = new Set([100, 1_000, 5_000]);
 const samples: number[] = [];
-const runtime = new TokenizerRuntime();
+const runtime = new TokenizerRuntime(() => {});
+await runtime.tokenize("x\n", "typescript", { id: "load", version: 0, state: "done" });
+await runtime["warming"].get("typescript");
 let code = "";
-await runtime.tokenize(line, "typescript", { id: "warm", version: 0, state: "done" }, false);
+await runtime.tokenize(line, "typescript", { id: "warm", version: 0, state: "done" });
 console.log("lines\tp50-ms\tp95-ms\tmax-ms");
 for (let count = 1; count <= 5_000; count++) {
   code += line;
   const started = performance.now();
-  await runtime.tokenize(code, "typescript", { id: "scaling", version: count, state: "streaming" }, false);
+  await runtime.tokenize(code, "typescript", { id: "scaling", version: count, state: "streaming" });
   samples.push(performance.now() - started);
   if (samples.length > 100) samples.shift();
   if (targets.has(count)) {

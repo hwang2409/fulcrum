@@ -479,7 +479,7 @@ test("renders a real typescript fence with the shared highlighter", async () => 
   Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
   const container = browser.document.createElement("div");
   const root = createRoot(container);
-  const highlight = createHighlighter({ worker: false });
+  const highlight = createHighlighter();
   await act(async () => root.render(<Markdown source={'```typescript\nconst value: string = "ok";\n```'} highlight={highlight} />));
   await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
   expect(container.querySelector('[data-language="typescript"]')?.textContent).toBe('const value: string = "ok";\n');

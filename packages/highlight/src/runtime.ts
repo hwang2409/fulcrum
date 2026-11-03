@@ -7,12 +7,11 @@ const THEME = "fulcrum-semantic";
 const MAX_LINE = 20_000;
 const MAX_SESSIONS = 32;
 const MAX_SESSION_BYTES = 8 * 1024 * 1024;
-const MAX_SLICE_MS = 4;
 // The tokenize policy, all of it. Shiki stops a line at TOKENIZE_TIME_LIMIT_MS without saying so, and that time also
 // counts compiling a pattern the line meets for the first time, and any pause of the thread (a garbage collection, a
 // busy machine). A slow attempt gets one retry while the document still has retry time; otherwise the line is
-// plain, exact text, and the document goes on. A worker runtime tokenizes only with a warm grammar (see OnUpdate), so
-// there a plain line is final: a line that a pause made slow once must get its retry.
+// plain, exact text, and the document goes on. The runtime tokenizes only with a warm grammar (see OnUpdate), so a
+// plain line is final: a line that a pause made slow once must get its retry.
 const TOKENIZE_TIME_LIMIT_MS = 10;
 const LINE_ATTEMPTS = 2; // shiki stops each attempt near TOKENIZE_TIME_LIMIT_MS, so a line costs about 2 x 10 ms
 const DOCUMENT_RETRY_BUDGET_MS = 100; // all retries of one tokenize call
@@ -50,14 +49,14 @@ class RegexCache extends Map<string, RegExp | Error> {
   override clear() { super.clear(); this.static.clear(); this.grammar.clear(); }
 }
 
-// Warm-up compiles a grammar's patterns in the worker, so the page's thread never runs it. It yields to the worker's
+// The runtime runs only in the highlight worker: the page's thread never tokenizes (see controller.ts). Warm-up yields to the worker's
 // message queue after WARM_SLICE_MS, so a new request waits at most one slice plus one pattern (in Chromium the most
 // costly bundled pattern, in cpp, converts and compiles in about 21 ms).
 const WARM_SLICE_MS = 8;
 const WARM_SAMPLE = 'x = f("s", 1); // c';
 type Provisional = { code: string; language: string; context: HighlightContext };
 /**
- * Where a worker runtime sends a block again, colored, once its grammar is warm. Until then a block is answered at once
+ * Where the runtime sends a block again, colored, once its grammar is warm. Until then a block is answered at once
  * with its exact plain text: tokenizing with a cold grammar builds each rule's scanner, which compiles all of that rule's
  * patterns in one call that cannot yield (a cold cpp document blocked the worker 335 ms in Chromium).
  */
@@ -101,10 +100,8 @@ export class TokenizerRuntime {
   private highlighter?: HighlighterCore;
   private cache?: RegexCache;
   private readonly sessions = new Map<string, Session>();
-  private readonly retired = new Set<HighlighterCore>();
   private clock = 0;
   private epoch = 0;
-  private activeJobs = 0;
   private readonly warming = new Map<string, Promise<void>>();
   // Grammars warm one at a time, in the order they were first asked for: the first grammar asked for is colored first,
   // and a request waits behind one slice, not one slice per grammar warming at once.
@@ -114,11 +111,10 @@ export class TokenizerRuntime {
   private readonly provisional = new Map<string, Provisional>();
 
   /**
-   * Only a worker passes `onUpdate`: such a runtime warms each grammar it loads, in slices, answers blocks for a cold
-   * grammar with plain text, and sends each such block again, colored, once warm. Without it, nothing is warmed: warm-up
-   * compiles regexes, and one compile cannot be split, so it must never run on the page's thread.
+   * The runtime warms each grammar it loads, in slices, answers blocks for a cold grammar with plain text, and sends
+   * each such block again, colored, through `onUpdate` once warm.
    */
-  constructor(private readonly onUpdate?: OnUpdate) {}
+  constructor(private readonly onUpdate: OnUpdate) {}
 
   // Shared promises: concurrent first requests must wait for the one engine and the one grammar load, not race to
   // create their own (each racer would load its grammar into a different engine).
@@ -150,7 +146,7 @@ export class TokenizerRuntime {
         const patterns = grammarPatterns(grammars, new Set());
         for (const pattern of patterns) cache.grammar.add(pattern);
         // Not awaited: requests are answered while the grammar warms, with plain text until it is warm.
-        if (this.onUpdate) this.warming.set(language, this.warmQueue = this.warmQueue.then(() => this.warm(language, patterns, highlighter, cache, epoch)).catch(() => {}));
+        this.warming.set(language, this.warmQueue = this.warmQueue.then(() => this.warm(language, patterns, highlighter, cache, epoch)).catch(() => {}));
       })();
       this.languages.set(language, loading);
       loading.catch(() => this.languages.delete(language)); // a failed load can be retried
@@ -161,6 +157,16 @@ export class TokenizerRuntime {
 
   // `epoch` is the one the grammar was loaded in: a warm-up queued before dispose must not run after it.
   private async warm(language: string, patterns: Set<string>, highlighter: HighlighterCore, cache: RegexCache, epoch: number): Promise<void> {
+    await this.compile(patterns, cache, epoch);
+    if (epoch !== this.epoch) return;
+    // The first line through a grammar also builds its rules and runs the regex jit once; a sample does it here.
+    highlighter.codeToTokensBase(WARM_SAMPLE, { lang: language, theme: THEME });
+    this.warmed.add(language);
+    await this.flushProvisional(language, epoch);
+  }
+
+  // Compiles each pattern not yet cached, yielding to the worker's queue after each WARM_SLICE_MS.
+  private async compile(patterns: Set<string>, cache: RegexCache, epoch: number): Promise<void> {
     const { defaultJavaScriptRegexConstructor } = await import("@shikijs/engine-javascript");
     let sliceStart = performance.now();
     for (const pattern of patterns) {
@@ -176,16 +182,16 @@ export class TokenizerRuntime {
       }
       if (performance.now() - sliceStart >= WARM_SLICE_MS) { await nextTask(); sliceStart = performance.now(); }
     }
-    if (epoch !== this.epoch) return;
-    // The first line through a grammar also builds its rules and runs the regex jit once; a sample does it here.
-    highlighter.codeToTokensBase(WARM_SAMPLE, { lang: language, theme: THEME });
-    this.warmed.add(language);
+  }
+
+  // Sends each block answered plain while `language` was cold again, colored, one per task.
+  private async flushProvisional(language: string, epoch: number): Promise<void> {
     for (const [id, block] of this.provisional) {
       if (block.language !== language) continue;
       this.provisional.delete(id);
-      const tokens = await this.tokenize(block.code, language, block.context, false);
+      const tokens = await this.tokenize(block.code, language, block.context);
       if (epoch !== this.epoch) return;
-      this.onUpdate!(block.context, language, tokens);
+      this.onUpdate(block.context, language, tokens);
       await nextTask();
     }
   }
@@ -200,30 +206,21 @@ export class TokenizerRuntime {
     return { static: this.cache?.static.size ?? 0, dynamic: this.cache?.size ?? 0 };
   }
 
-  async tokenize(code: string, language: string, context: HighlightContext, cooperative = true): Promise<Token[]> {
+  async tokenize(code: string, language: string, context: HighlightContext): Promise<Token[]> {
+    const epoch = this.epoch;
     const highlighter = await this.ensureLanguage(language);
+    if (epoch !== this.epoch) return code ? [{ text: code }] : []; // disposed while the grammar loaded
     const known = this.provisional.get(context.id);
     const newest = !known || known.context.version <= context.version;
-    if (this.onUpdate && !this.warmed.has(language)) {
+    if (!this.warmed.has(language)) {
       if (newest) this.provisional.set(context.id, { code, language, context });
       return code ? [{ text: code }] : [];
     }
     if (newest) this.provisional.delete(context.id); // this revision replaces the plain one
-
-    const epoch = this.epoch;
-    this.activeJobs++;
-    try {
-      return await this.tokenizeLoaded(code, language, context, cooperative, highlighter, epoch);
-    } finally {
-      this.activeJobs--;
-      if (this.activeJobs === 0) {
-        for (const retired of this.retired) retired.dispose();
-        this.retired.clear();
-      }
-    }
+    return this.tokenizeLoaded(code, language, context, highlighter, epoch);
   }
 
-  private tokenizeLoaded(code: string, language: string, context: HighlightContext, cooperative: boolean, highlighter: HighlighterCore, epoch: number): Token[] | Promise<Token[]> {
+  private tokenizeLoaded(code: string, language: string, context: HighlightContext, highlighter: HighlighterCore, epoch: number): Token[] {
     const previous = this.sessions.get(context.id);
     const append = previous?.language === language && context.version > previous.version && code.startsWith(previous.code);
     const session: Session = append
@@ -259,27 +256,6 @@ export class TokenizerRuntime {
       return output;
     };
     const budget = { retryMs: DOCUMENT_RETRY_BUDGET_MS };
-    const work = async () => {
-      const tokens: Token[] = [];
-      let grammarState = state;
-      let yieldStart = performance.now();
-      for (const line of sourceLines(code.slice(start, completeLength))) {
-        if (line.replace(/\n$/, "").length > MAX_LINE) {
-          appendToken(tokens, line);
-          grammarState = undefined;
-        } else {
-          const result = this.tokenizeLine(highlighter, line, language, grammarState, budget);
-          if (!result) { appendToken(tokens, line); grammarState = undefined; }
-          else { this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result); }
-        }
-        if (cooperative && performance.now() - yieldStart >= MAX_SLICE_MS) {
-          await yieldTask();
-          yieldStart = performance.now();
-        }
-      }
-      return finish(tokens, grammarState);
-    };
-    if (cooperative) return work();
     const tokens: Token[] = [];
     let grammarState = state;
     for (const line of sourceLines(code.slice(start, completeLength))) {
@@ -328,10 +304,7 @@ export class TokenizerRuntime {
   dispose(): void {
     this.epoch++;
     this.sessions.clear();
-    if (this.highlighter) {
-      if (this.activeJobs) this.retired.add(this.highlighter);
-      else this.highlighter.dispose();
-    }
+    this.highlighter?.dispose();
     this.highlighter = undefined;
     this.enginePromise = undefined;
     this.languages.clear();
@@ -351,9 +324,4 @@ function nextTask(): Promise<void> {
     channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
     channel.port2.postMessage(undefined);
   });
-}
-
-async function yieldTask(): Promise<void> {
-  const scheduler = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
-  return scheduler?.yield ? scheduler.yield() : nextTask();
 }

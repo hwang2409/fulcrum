@@ -1,3 +1,5 @@
+// The page's thread never tokenizes. In real chromium: with the worker blocked, and with the worker killed (restarted
+// once, colors still arrive; killed again, plain text), no main-thread task may reach 50 ms.
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -6,29 +8,70 @@ import { rm, writeFile } from "node:fs/promises";
 const app = new URL("../", import.meta.url);
 const fixture = new URL(".highlight-fallback-test.html", app);
 const port = 4175;
-await writeFile(fixture, `<!doctype html><pre id="plain"></pre><script type="module">
+const languages = ["typescript", "tsx", "javascript", "jsx", "python", "shell", "json", "diff", "rust", "go", "sql", "yaml", "css", "html", "markdown", "toml", "dockerfile", "c", "cpp", "java", "kotlin", "swift", "ruby", "php", "lua", "makefile", "ini", "xml", "graphql", "protobuf"];
+await writeFile(fixture, `<!doctype html><script type="module">
 import { createHighlighter } from "@fulcrum/highlight";
-const line = "export const value: number = items.map((item) => item.id).length;\\n";
-const results = [];
-const highlight = createHighlighter();
-for (const count of [50, 500]) {
-  const code = line.repeat(count);
-  document.querySelector("#plain").textContent = code;
-  await new Promise(requestAnimationFrame);
+const languages = ${JSON.stringify(languages)};
+const line = "export const value = items.map((item) => item.id).length; // x\\n";
+const code = (language) => line.repeat(language === "cpp" || language === "ruby" ? 500 : 50);
+const text = (tokens) => tokens.map((token) => token.text).join("");
+const typed = (tokens) => tokens.some((token) => token.type);
+const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+// Long tasks, and the longest gap between 5 ms probes, while run() is busy.
+async function measure(run) {
   const tasks = [];
   const observer = new PerformanceObserver((list) => tasks.push(...list.getEntries().map((entry) => entry.duration)));
   observer.observe({ type: "longtask", buffered: false });
-  const started = performance.now();
-  const tokens = await highlight(code, "typescript", { id: "fallback-" + count, version: 1, state: "done" });
-  await new Promise(requestAnimationFrame);
-  observer.disconnect();
-  results.push({ lines: count, elapsed: performance.now() - started, longTasks: tasks, exact: tokens.map((token) => token.text).join("") === code, plainVisibleFirst: document.querySelector("#plain").textContent === code });
+  let last = performance.now(), gap = 0;
+  const probe = setInterval(() => { const now = performance.now(); gap = Math.max(gap, now - last); last = now; }, 5);
+  try { return { ...(await run()), longTasks: tasks, maxLongTask: Math.max(0, ...tasks), maxProbeGap: gap }; }
+  finally { clearInterval(probe); await nextFrame(); observer.disconnect(); }
 }
-highlight.dispose();
-window.__highlightResults = results;
+const all = (highlight, tag) => Promise.all(languages.map(async (language) => {
+  const source = code(language);
+  const tokens = await highlight(source, language, { id: tag + ":" + language, version: 1, state: "done" });
+  return { language, exact: text(tokens) === source, typed: typed(tokens) };
+}));
+const results = {};
+if (window.__mode === "blocked") {
+  let told = 0;
+  const highlight = createHighlighter({ onHighlightUnavailable: () => told++ });
+  results.blocked = await measure(async () => {
+    const blocks = await all(highlight, "blocked");
+    await nextFrame();
+    return { told, exact: blocks.every((block) => block.exact), plain: blocks.every((block) => !block.typed) };
+  });
+  highlight.dispose();
+} else {
+  let told = 0;
+  const highlight = createHighlighter({ onHighlightUnavailable: () => told++ });
+  const kill = () => { const worker = window.__workers.at(-1); worker.terminate(); worker.onerror?.(new ErrorEvent("error")); };
+  // First kill: the worker dies with every grammar's request pending; the replacement answers them, and colors arrive.
+  results.restart = await measure(async () => {
+    const id = "restart:cpp";
+    const updated = new Promise((resolve) => { const stop = highlight.subscribe(id, () => { stop(); resolve(); }); });
+    const pending = all(highlight, "restart");
+    kill();
+    const blocks = await pending;
+    await updated;
+    const cpp = highlight(code("cpp"), "cpp", { id, version: 1, state: "done" });
+    return { workers: window.__workers.length, exact: blocks.every((block) => block.exact), cppColored: Array.isArray(cpp) && text(cpp) === code("cpp") && typed(cpp) };
+  });
+  // Second kill: no more restarts; every block is exact plain text, and the app is told once.
+  results.dead = await measure(async () => {
+    const pending = all(highlight, "dead");
+    kill();
+    const blocks = await pending;
+    await nextFrame();
+    return { workers: window.__workers.length, told, exact: blocks.every((block) => block.exact), plain: blocks.every((block) => !block.typed) };
+  });
+  highlight.dispose();
+}
+window.__results = results;
 </script>`);
 const vite = spawn("bun", ["x", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: app.pathname, stdio: "ignore" });
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+type Measured = { longTasks: number[]; maxLongTask: number; maxProbeGap: number; [key: string]: unknown };
 try {
   for (let attempt = 0; ; attempt++) {
     try { if ((await fetch(`http://127.0.0.1:${port}/.highlight-fallback-test.html`)).ok) break; } catch {}
@@ -36,14 +79,34 @@ try {
     await Bun.sleep(100);
   }
   browser = await chromium.launch();
-  const page = await browser.newPage();
-  await page.addInitScript(() => { Object.defineProperty(window, "Worker", { value: class { constructor() { throw new Error("worker blocked"); } } }); });
-  await page.goto(`http://127.0.0.1:${port}/.highlight-fallback-test.html`);
-  const results = await page.waitForFunction(() => (window as typeof window & { __highlightResults?: unknown }).__highlightResults, undefined, { timeout: 120_000 }).then((handle) => handle.jsonValue()) as Array<{ lines: number; elapsed: number; longTasks: number[]; exact: boolean; plainVisibleFirst: boolean }>;
-  for (const result of results) {
-    console.log(`${result.lines} lines\t${result.elapsed.toFixed(1)} ms\tlong tasks ${result.longTasks.length}\tmax ${Math.max(0, ...result.longTasks).toFixed(1)} ms`);
-    if (!result.exact || !result.plainVisibleFirst || result.longTasks.some((duration) => duration > 50)) throw new Error(`${result.lines}-line fallback failed: ${JSON.stringify(result)}`);
+  const failures: string[] = [];
+  for (const mode of ["blocked", "killed"] as const) {
+    const page = await browser.newPage();
+    await page.addInitScript((mode) => {
+      const scope = window as typeof window & { __mode: string; __workers: Worker[] };
+      scope.__mode = mode;
+      scope.__workers = [];
+      const Native = window.Worker;
+      Object.defineProperty(window, "Worker", { value: mode === "blocked"
+        ? class { constructor() { throw new Error("worker blocked"); } }
+        : class extends Native { constructor(...args: ConstructorParameters<typeof Worker>) { super(...args); scope.__workers.push(this); } } });
+    }, mode);
+    await page.goto(`http://127.0.0.1:${port}/.highlight-fallback-test.html`);
+    const results = await page.waitForFunction(() => (window as typeof window & { __results?: unknown }).__results, undefined, { timeout: 120_000 }).then((handle) => handle.jsonValue()) as Record<string, Measured>;
+    for (const [name, result] of Object.entries(results)) {
+      const { longTasks, ...rest } = result;
+      console.log(`${name}\tlong tasks ${longTasks.length}\tmax ${result.maxLongTask.toFixed(1)} ms\tmax probe gap ${result.maxProbeGap.toFixed(1)} ms\t${JSON.stringify(rest)}`);
+      if (longTasks.length) failures.push(`${name}: a main-thread task reached 50 ms`);
+    }
+    const expected = mode === "blocked"
+      ? { blocked: { told: 1, exact: true, plain: true } }
+      : { restart: { workers: 2, exact: true, cppColored: true }, dead: { workers: 2, told: 1, exact: true, plain: true } };
+    for (const [name, fields] of Object.entries(expected))
+      for (const [field, value] of Object.entries(fields))
+        if (results[name]?.[field] !== value) failures.push(`${name}.${field}: expected ${value}, got ${results[name]?.[field]}`);
+    await page.close();
   }
+  if (failures.length) throw new Error(failures.join("\n"));
 } finally {
   await browser?.close();
   vite.kill("SIGTERM");

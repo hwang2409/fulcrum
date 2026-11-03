@@ -8,8 +8,34 @@ const { createHighlighter } = await import("../dist/index.js");
 // Unit tests never depend on how fast this machine is: the clock stands still unless a test moves it, so no line is ever
 // over the time limit by chance. Only a real worker (its own clock) runs on real time.
 Object.defineProperty(performance, "now", { configurable: true, value: () => 0 });
-const directHighlighter = createHighlighter({ worker: false });
+const { TokenizerRuntime } = await import("../dist/runtime.js");
+// Every tokenize call on this (the main) thread. The page's thread must never tokenize: a test asserts this stays 0.
+let mainThreadTokenizes = 0;
+const tokenizeOnMainThread = TokenizerRuntime.prototype.tokenize;
+TokenizerRuntime.prototype.tokenize = function (...args: Parameters<typeof tokenizeOnMainThread>) { mainThreadTokenizes++; return tokenizeOnMainThread.apply(this, args); };
+// Tests that drive a runtime directly count their own calls; the shared highlighter runs a real worker.
+const directHighlighter = createHighlighter();
 afterAll(() => directHighlighter.dispose());
+// A shared-worker grammar, warm: its first block is answered plain (cold, provisional), then once more, colored.
+const warmed = new Map<string, Promise<void>>();
+const warmLanguage = (language: string) => {
+  if (!warmed.has(language)) warmed.set(language, (async () => {
+    const context = { id: `warm-${language}`, version: 1, state: "done" as const };
+    const updated = new Promise<void>((resolve) => { const stop = directHighlighter.subscribe(context.id, () => { stop(); resolve(); }); });
+    await directHighlighter("x\n", language, context);
+    await updated;
+  })());
+  return warmed.get(language)!;
+};
+// A runtime with `languages` warm, so a tokenize call tokenizes (a cold grammar answers plain).
+async function warmRuntime(...languages: string[]) {
+  const runtime = new TokenizerRuntime(() => {});
+  for (const language of languages) {
+    await runtime.tokenize("x\n", language, { id: `load-${language}`, version: 1, state: "done" });
+    await runtime["warming"].get(language);
+  }
+  return runtime;
+}
 
 const samples: Record<string, string> = {
   typescript: "type User = { id: number };\nconst greet = (user: User) => `hi ${user.id}`;\n",
@@ -45,7 +71,6 @@ const samples: Record<string, string> = {
 };
 
 const text = (tokens: Token[]) => tokens.map((token) => token.text).join("");
-const fallbackSource = (label: string, lines = 120) => Array.from({ length: lines }, (_, index) => `const ${label}_${index} = ${index}; // ${"x".repeat(32)}\n`).join("");
 const viteConfig = 'import { defineConfig } from "vite";\nimport { resolve } from "node:path";\n\nexport default defineConfig({\n  build: { outDir: resolve("dist") },\n});\n';
 const typedPerLine = (tokens: Token[]) => {
   const lines: boolean[] = [false];
@@ -67,44 +92,8 @@ function recordingWorker(replies: unknown[]) {
   };
 }
 
-async function controlledFallback(
-  requests: Array<{ code: string; language: string; context: { id: string; version: number; state: "streaming" | "done" } }>,
-  options: { first?: "oldest" | "newest"; afterFirstYield?: (runtime: { dispose(): void }) => void; prime?: { code: string; language: string; context: { id: string; version: number; state: "streaming" | "done" } } } = {},
-) {
-  const { TokenizerRuntime } = await import("../dist/runtime.js");
-  const runtime = new TokenizerRuntime();
-  for (const language of new Set(requests.map(({ language }) => language)))
-    await runtime.tokenize("const warm = 1;\n", language, { id: `warm-${language}`, version: 1, state: "done" }, false);
-  if (options.prime) await runtime.tokenize(options.prime.code, options.prime.language, options.prime.context, false);
-  const schedulerDescriptor = Object.getOwnPropertyDescriptor(globalThis, "scheduler");
-  const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
-  const yields: Array<() => void> = [];
-  let clock = 0;
-  Object.defineProperty(globalThis, "scheduler", { configurable: true, value: { yield: () => new Promise<void>((resolve) => yields.push(resolve)) } });
-  Object.defineProperty(performance, "now", { configurable: true, value: () => (clock += 5) });
-  let settled = 0;
-  const jobs = requests.map(({ code, language, context }) => runtime.tokenize(code, language, context).finally(() => settled++));
-  try {
-    while (!yields.length) await Bun.sleep(0);
-    options.afterFirstYield?.(runtime);
-    let first = true;
-    while (settled < jobs.length) {
-      if (!yields.length) { await Bun.sleep(0); continue; }
-      const index = first && options.first === "newest" ? yields.length - 1 : 0;
-      yields.splice(index, 1)[0]!();
-      first = false;
-      await Bun.sleep(0);
-    }
-    return await Promise.all(jobs);
-  } finally {
-    runtime.dispose();
-    if (schedulerDescriptor) Object.defineProperty(globalThis, "scheduler", schedulerDescriptor);
-    else delete (globalThis as { scheduler?: unknown }).scheduler;
-    if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
-  }
-}
-
 async function full(language: string, code: string) {
+  await warmLanguage(language);
   return (await directHighlighter(code, language, { id: `full-${language}-${code}`, version: 1, state: "done" }))!;
 }
 
@@ -132,36 +121,34 @@ describe("language and scope mapping", () => {
 describe("incremental tokenization", () => {
   for (const [language, code] of Object.entries(samples)) {
     test(`${language} incremental output equals full output`, async () => {
-      const highlighter = createHighlighter({ worker: false });
+      await warmLanguage(language);
       let streamed: Token[] | null = null;
       const lines = code.match(/.*(?:\n|$)/g)!.filter(Boolean);
       let input = "";
       for (let version = 0; version < lines.length; version++) {
         input += lines[version];
-        streamed = await highlighter(input, language, { id: language, version, state: version === lines.length - 1 ? "done" : "streaming" });
+        streamed = await directHighlighter(input, language, { id: `incremental-${language}`, version, state: version === lines.length - 1 ? "done" : "streaming" });
       }
       expect(text(streamed!)).toBe(code);
-      highlighter.dispose();
     });
   }
 
   test("reuses the completed token prefix when a line is appended", async () => {
-    const highlighter = createHighlighter({ worker: false });
-    const first = await highlighter("const first = 1;\n", "typescript", { id: "prefix", version: 1, state: "streaming" });
-    const firstToken = first![0];
-    const second = await highlighter("const first = 1;\nconst second = 2;\n", "typescript", { id: "prefix", version: 2, state: "streaming" });
-    expect(second![0]).toBe(firstToken);
-    highlighter.dispose();
+    const runtime = await warmRuntime("typescript");
+    const first = await runtime.tokenize("const first = 1;\n", "typescript", { id: "prefix", version: 1, state: "streaming" });
+    const second = await runtime.tokenize("const first = 1;\nconst second = 2;\n", "typescript", { id: "prefix", version: 2, state: "streaming" });
+    expect(second[0]).toBe(first[0]);
+    runtime.dispose();
   });
 
   test("returns exactly the streamed text when an incomplete line follows complete ones", async () => {
-    const highlighter = createHighlighter({ worker: false });
+    await warmLanguage("diff");
+    const highlighter = directHighlighter;
     const source = "--- a/run.ts\n+++ b/run.ts\n-const delay = 100;\n+const delay = 16;\n";
     for (let length = 1; length <= source.length; length++) {
       const code = source.slice(0, length);
       expect(text((await highlighter(code, "diff", { id: "tail", version: length, state: length === source.length ? "done" : "streaming" }))!)).toBe(code);
     }
-    highlighter.dispose();
   });
 
   // Regression: a cold grammar compiles its patterns while it tokenizes; that time made short lines look like runaway
@@ -191,14 +178,13 @@ describe("incremental tokenization", () => {
   }, 60_000);
 
   test("a line that stays over the time limit without compiling is plain and exact", async () => {
-    const { TokenizerRuntime } = await import("../dist/runtime.js");
-    const runtime = new TokenizerRuntime();
-    await runtime.tokenize("const warm = 1;\n", "typescript", { id: "warm", version: 1, state: "done" }, false);
+    const runtime = await warmRuntime("typescript");
+    await runtime.tokenize("const warm = 1;\n", "typescript", { id: "warm", version: 1, state: "done" });
     const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
     let clock = 0;
     Object.defineProperty(performance, "now", { configurable: true, value: () => (clock += 50) });
     try {
-      const tokens = await runtime.tokenize("const slow = 1;\n", "typescript", { id: "slow", version: 1, state: "done" }, false);
+      const tokens = await runtime.tokenize("const slow = 1;\n", "typescript", { id: "slow", version: 1, state: "done" });
       expect(tokens).toEqual([{ text: "const slow = 1;\n" }]);
     } finally {
       if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
@@ -208,8 +194,7 @@ describe("incremental tokenization", () => {
 
   // Counts every tokenize attempt of a runtime; `extra` runs after each one.
   const countAttempts = async (language: string, extra?: () => void) => {
-    const { TokenizerRuntime } = await import("../dist/runtime.js");
-    const runtime = new TokenizerRuntime();
+    const runtime = await warmRuntime(language);
     const highlighter = await runtime["ensureLanguage"](language);
     const attempt = highlighter.codeToTokensBase.bind(highlighter);
     const counter = { attempts: 0, runtime };
@@ -223,7 +208,7 @@ describe("incremental tokenization", () => {
     const unit = "*a* _b_ ";
     const line = unit.repeat(Math.floor(1000 / unit.length)) + "\n";
     const counter = await countAttempts("markdown");
-    const tokens = await counter.runtime.tokenize(line, "markdown", { id: "hostile", version: 1, state: "done" }, false);
+    const tokens = await counter.runtime.tokenize(line, "markdown", { id: "hostile", version: 1, state: "done" });
     expect(text(tokens)).toBe(line);
     expect(counter.attempts).toBeLessThanOrEqual(2);
     counter.runtime.dispose();
@@ -233,14 +218,13 @@ describe("incremental tokenization", () => {
   // pattern in every form textmate compiles it (anchor variants, `\z` rewritten). Regression: cpp's anchor variants were
   // missed, and its first line then compiled 51 patterns in one scanner build that cannot yield (272 ms in Chromium).
   test("after warm-up a document compiles no regex", async () => {
-    const { TokenizerRuntime } = await import("../dist/runtime.js");
     const documents = [["cpp", "#include <vector>\nstd::vector<int> values;\nint main() { return values.size(); }\n"], ["typescript", viteConfig]] as const;
     for (const [language, source] of documents) {
       const runtime = new TokenizerRuntime(() => {});
-      await runtime.tokenize("x\n", language, { id: "load", version: 1, state: "done" }, false);
+      await runtime.tokenize("x\n", language, { id: "load", version: 1, state: "done" });
       await runtime["warming"].get(language);
       const before = runtime.cacheSize();
-      const tokens = await runtime.tokenize(source, language, { id: "warm", version: 1, state: "done" }, false);
+      const tokens = await runtime.tokenize(source, language, { id: "warm", version: 1, state: "done" });
       expect(text(tokens)).toBe(source);
       expect({ language, ...runtime.cacheSize() }).toEqual({ language, ...before });
       runtime.dispose();
@@ -256,11 +240,11 @@ describe("incremental tokenization", () => {
     const counter = await countAttempts("typescript", () => { if (counter.attempts === 2) clock += 30; });
     const source = "const a = 1;\nconst MAX_PENDING = 10_000;\n";
     // The same document once before, so the slow attempt below builds no scanner: only the pause made it slow.
-    await counter.runtime.tokenize(source, "typescript", { id: "warm", version: 1, state: "done" }, false);
+    await counter.runtime.tokenize(source, "typescript", { id: "warm", version: 1, state: "done" });
     counter.attempts = 0;
     Object.defineProperty(performance, "now", { configurable: true, value: () => clock });
     try {
-      const tokens = await counter.runtime.tokenize(source, "typescript", { id: "paused", version: 1, state: "done" }, false);
+      const tokens = await counter.runtime.tokenize(source, "typescript", { id: "paused", version: 1, state: "done" });
       expect(counter.attempts).toBe(3);
       expect(typedPerLine(tokens).slice(0, 2)).toEqual([true, true]);
     } finally {
@@ -280,7 +264,7 @@ describe("incremental tokenization", () => {
     try {
       const lines = 50;
       const source = "const a = 1;\n".repeat(lines);
-      const tokens = await counter.runtime.tokenize(source, "typescript", { id: "budget", version: 1, state: "done" }, false);
+      const tokens = await counter.runtime.tokenize(source, "typescript", { id: "budget", version: 1, state: "done" });
       expect(tokens).toEqual([{ text: source }]);
       // 100 ms of retries at 12 ms each: at most 9 retries in the document.
       expect(counter.attempts).toBeGreaterThan(lines);
@@ -292,126 +276,124 @@ describe("incremental tokenization", () => {
   });
 
   test("keeps an incomplete line plain until it is complete", async () => {
-    const highlighter = createHighlighter({ worker: false });
+    await warmLanguage("typescript");
+    const highlighter = directHighlighter;
     const partial = await highlighter("const value", "typescript", { id: "partial", version: 1, state: "streaming" });
     expect(partial).toEqual([{ text: "const value" }]);
     const complete = await highlighter("const value = 1;\n", "typescript", { id: "partial", version: 2, state: "streaming" });
     expect(text(complete!)).toBe("const value = 1;\n");
-    highlighter.dispose();
-  });
-});
-
-describe("cooperative fallback concurrency", () => {
-  test("concurrent versions return only their requested source", async () => {
-    const base = fallbackSource("base", 20);
-    const older = `${base}${fallbackSource("older")}`;
-    const newer = `${older}${fallbackSource("newer")}`;
-    const [olderTokens, newerTokens] = await controlledFallback([
-      { code: older, language: "typescript", context: { id: "concurrent", version: 2, state: "streaming" } },
-      { code: newer, language: "typescript", context: { id: "concurrent", version: 3, state: "streaming" } },
-    ], { prime: { code: base, language: "typescript", context: { id: "concurrent", version: 1, state: "streaming" } } });
-    expect(text(olderTokens)).toBe(older);
-    expect(text(newerTokens)).toBe(newer);
-  });
-
-  test("an older job finishing last cannot overwrite a newer version", async () => {
-    const older = fallbackSource("old");
-    const newer = fallbackSource("new");
-    const [olderTokens, newerTokens] = await controlledFallback([
-      { code: older, language: "typescript", context: { id: "out-of-order", version: 1, state: "done" } },
-      { code: newer, language: "typescript", context: { id: "out-of-order", version: 2, state: "done" } },
-    ], { first: "newest" });
-    expect(text(olderTokens)).toBe(older);
-    expect(text(newerTokens)).toBe(newer);
-  });
-
-  test("a version bump started mid-slice keeps both requests exact", async () => {
-    const first = fallbackSource("mid");
-    const second = `${first}${fallbackSource("bump", 20)}`;
-    const [firstTokens, secondTokens] = await controlledFallback([
-      { code: first, language: "typescript", context: { id: "mid-slice", version: 1, state: "streaming" } },
-      { code: second, language: "typescript", context: { id: "mid-slice", version: 2, state: "streaming" } },
-    ], { first: "oldest" });
-    expect(text(firstTokens)).toBe(first);
-    expect(text(secondTokens)).toBe(second);
-  });
-
-  test("a language change mid-stream isolates grammar state and tokens", async () => {
-    const typescript = fallbackSource("language");
-    const python = Array.from({ length: 120 }, (_, index) => `value_${index}: int = ${index}\n`).join("");
-    const [typescriptTokens, pythonTokens] = await controlledFallback([
-      { code: typescript, language: "typescript", context: { id: "language-change", version: 1, state: "streaming" } },
-      { code: python, language: "python", context: { id: "language-change", version: 2, state: "streaming" } },
-    ], { first: "newest" });
-    expect(text(typescriptTokens)).toBe(typescript);
-    expect(text(pythonTokens)).toBe(python);
-  });
-
-  test("done after streaming does not share a mutable prefix", async () => {
-    const streaming = fallbackSource("done");
-    const done = `${streaming}const final = true;`;
-    const [streamingTokens, doneTokens] = await controlledFallback([
-      { code: streaming, language: "typescript", context: { id: "done", version: 1, state: "streaming" } },
-      { code: done, language: "typescript", context: { id: "done", version: 2, state: "done" } },
-    ]);
-    expect(text(streamingTokens)).toBe(streaming);
-    expect(text(doneTokens)).toBe(done);
-  });
-
-  test("dispose while fallback work is pending still returns exact text", async () => {
-    const source = fallbackSource("dispose");
-    const [tokens] = await controlledFallback([
-      { code: source, language: "typescript", context: { id: "dispose", version: 1, state: "done" } },
-    ], { afterFirstYield: (runtime) => runtime.dispose() });
-    expect(text(tokens)).toBe(source);
-  });
-
-  test("concatenated token text equals source over random interleavings", async () => {
-    let seed = 0x5eed;
-    for (let run = 0; run < 12; run++) {
-      seed = (seed * 1664525 + 1013904223) >>> 0;
-      const base = fallbackSource(`property_${run}`, 20 + seed % 20);
-      const sources = [base, `${base}// ${seed}\n`, fallbackSource(`replacement_${run}`, 20 + (seed >>> 8) % 20)];
-      const requests = sources.map((code, index) => ({ code, language: index === 2 && seed % 2 ? "javascript" : "typescript", context: { id: `property-${run}`, version: index + 1, state: index === 2 ? "done" as const : "streaming" as const } }));
-      const results = await controlledFallback(requests, { first: seed % 2 ? "newest" : "oldest" });
-      expect(results.map(text)).toEqual(sources);
-    }
   });
 });
 
 describe("identity, failure, and caps", () => {
   test("never confuses same-length blocks", async () => {
-    const highlighter = createHighlighter({ worker: false });
+    await warmLanguage("typescript");
+    const highlighter = directHighlighter;
     const left = await highlighter("const a = 1;\n", "typescript", { id: "left", version: 1, state: "done" });
     const right = await highlighter("const b = 2;\n", "typescript", { id: "right", version: 1, state: "done" });
     expect(text(left!)).not.toBe(text(right!));
-    highlighter.dispose();
   });
 
   test("unknown and oversized input use exact plain fallback", async () => {
-    const highlighter = createHighlighter({ worker: false });
+    await warmLanguage("typescript");
+    const highlighter = directHighlighter;
     expect(highlighter("hello", "unknown")).toBeNull();
     const huge = "x".repeat(512 * 1024 + 1);
     expect(await highlighter(huge, "typescript", { id: "huge", version: 1, state: "done" })).toEqual([{ text: huge }]);
     const long = `${"x".repeat(20_001)}\nconst ok = 1;\n`;
     expect(text((await highlighter(long, "typescript", { id: "long", version: 1, state: "done" }))!)).toBe(long);
+  });
+
+  // A worker that fails at its first request, as a crash does.
+  const crashingWorker = () => {
+    const worker: { onmessage: ((event: MessageEvent<never>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() {}, postMessage() { queueMicrotask(() => worker.onerror?.(new ErrorEvent("error"))); },
+    };
+    return worker;
+  };
+  const updateOf = (highlighter: { subscribe(id: string, listener: () => void): () => void }, id: string) =>
+    new Promise<void>((resolve) => { const stop = highlighter.subscribe(id, () => { stop(); resolve(); }); });
+
+  test("a crashed worker is restarted once, gets the pending request again, and the colors still arrive", async () => {
+    const before = mainThreadTokenizes;
+    let built = 0;
+    const highlighter = createHighlighter({ workerFactory: () => ++built === 1 ? crashingWorker() : recordingWorker([]) });
+    const context = { id: "restarted", version: 1, state: "done" as const };
+    const updated = updateOf(highlighter, context.id);
+    expect(text((await highlighter(samples.python, "python", context))!)).toBe(samples.python);
+    await updated; // the new worker answered the replayed request plain (cold), then colored once warm
+    const tokens = highlighter(samples.python, "python", context) as Token[];
+    expect(text(tokens)).toBe(samples.python);
+    expect(tokens.some((token) => token.type)).toBe(true);
+    expect(built).toBe(2);
+    expect(mainThreadTokenizes).toBe(before);
+    highlighter.dispose();
+  }, 30_000);
+
+  test("a silent worker is restarted by the watchdog, not replaced by the main thread", async () => {
+    const before = mainThreadTokenizes;
+    let built = 0;
+    let terminated = false;
+    const silent = { onmessage: null, onerror: null, postMessage() {}, terminate() { terminated = true; } };
+    const highlighter = createHighlighter({ workerFactory: () => ++built === 1 ? silent : recordingWorker([]) });
+    const code = "const restarted = 1;\n";
+    expect(text((await highlighter(code, "typescript", { id: "silent", version: 1, state: "done" }))!)).toBe(code);
+    expect([built, terminated, mainThreadTokenizes - before]).toEqual([2, true, 0]);
+    highlighter.dispose();
+  }, 30_000);
+
+  test("a second failure leaves exact plain text, never tokenizes on the main thread, and tells the app once", async () => {
+    const before = mainThreadTokenizes;
+    let built = 0;
+    let told = 0;
+    const highlighter = createHighlighter({ workerFactory: () => { built++; return crashingWorker(); }, onHighlightUnavailable: () => told++ });
+    const code = samples.python;
+    expect(await highlighter(code, "python", { id: "crash-twice", version: 1, state: "done" })).toEqual([{ text: code }]);
+    // From now on every block is plain at once, and nothing is cached or retried.
+    expect(highlighter(code, "python", { id: "after", version: 1, state: "done" })).toEqual([{ text: code }]);
+    await Bun.sleep(0);
+    expect({ built, told, tokenized: mainThreadTokenizes - before }).toEqual({ built: 2, told: 1, tokenized: 0 });
     highlighter.dispose();
   });
 
-  test("worker construction and runtime failure use the cooperative fallback", async () => {
-    const blocked = createHighlighter({ workerFactory: () => { throw new Error("blocked by csp"); } });
-    const code = samples.python;
-    expect(text((await blocked(code, "python", { id: "worker-construction", version: 1, state: "done" }))!)).toBe(code);
+  test("without a Worker (ssr, tests) or when one cannot be built (a strict csp), blocks are exact plain text", async () => {
+    const before = mainThreadTokenizes;
+    const code = samples.typescript;
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Worker")!;
+    delete (globalThis as { Worker?: unknown }).Worker;
+    let told = 0;
+    try {
+      const highlighter = createHighlighter({ onHighlightUnavailable: () => told++ });
+      expect(highlighter(code, "typescript", { id: "no-worker", version: 1, state: "done" })).toEqual([{ text: code }]);
+      highlighter.dispose();
+    } finally { Object.defineProperty(globalThis, "Worker", descriptor); }
+    let built = 0;
+    const blocked = createHighlighter({ workerFactory: () => { built++; throw new Error("blocked by csp"); }, onHighlightUnavailable: () => told++ });
+    expect(blocked(code, "typescript", { id: "csp", version: 1, state: "done" })).toEqual([{ text: code }]);
+    await Bun.sleep(0);
+    expect({ built, told, tokenized: mainThreadTokenizes - before }).toEqual({ built: 1, told: 2, tokenized: 0 });
     blocked.dispose();
+  });
 
-    const failedWorker: { onmessage: ((event: MessageEvent<never>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(): void; terminate(): void } = {
-      onmessage: null, onerror: null, terminate() {}, postMessage() { queueMicrotask(() => failedWorker.onerror?.(new ErrorEvent("error"))); },
-    };
-    const crashed = createHighlighter({ workerFactory: () => failedWorker });
-    const tokens = await crashed(code, "python", { id: "worker-crash", version: 1, state: "done" });
-    expect(text(tokens!)).toBe(code);
-    expect(tokens!.some((token) => token.type)).toBe(true);
-    crashed.dispose();
+  // The page's thread must never tokenize: one cold regex or scanner compile cannot be split. Only the worker may reach
+  // the tokenizer runtime or shiki; nothing the package entry imports, statically or lazily, may.
+  test("the package entry never imports the tokenizer runtime", async () => {
+    const src = new URL("../src/", import.meta.url);
+    const seen = new Set<string>();
+    const external = new Set<string>();
+    const queue = ["index.ts"];
+    while (queue.length) {
+      const file = queue.pop()!;
+      if (seen.has(file)) continue;
+      seen.add(file);
+      for (const [, spec] of (await Bun.file(new URL(file, src)).text()).matchAll(/(?:from|import\(?)\s*["']([^"']+)["']/g)) {
+        if (spec!.startsWith("./")) queue.push(spec!.slice(2).replace(/\.js$/, ".ts"));
+        else external.add(spec!);
+      }
+    }
+    expect(seen.has("controller.ts")).toBe(true);
+    expect([...seen].filter((file) => file === "runtime.ts" || file === "worker.ts" || file === "languages.ts")).toEqual([]);
+    expect([...external].filter((spec) => spec.includes("shiki"))).toEqual([]);
   });
 
   test("an older equal-length reply delivers the newest requested revision", async () => {
@@ -452,11 +434,16 @@ describe("identity, failure, and caps", () => {
     const warn = console.warn;
     console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
     try {
-      const highlighter = createHighlighter({ worker: false });
-      const results = await Promise.all(Array.from({ length: 24 }, (_, index) => highlighter(`const n${index} = ${index};\n`, index % 2 ? "typescript" : "json", { id: `concurrent-${index}`, version: 1, state: "done" })));
-      expect(results.map((tokens) => tokens!.map((token) => token.text).join(""))).toEqual(Array.from({ length: 24 }, (_, index) => `const n${index} = ${index};\n`));
-      expect(results.every((tokens) => tokens!.some((token) => token.type))).toBe(true);
-      highlighter.dispose();
+      const runtime = new TokenizerRuntime(() => {});
+      const sources = Array.from({ length: 24 }, (_, index) => `const n${index} = ${index};\n`);
+      const language = (index: number) => index % 2 ? "typescript" : "json";
+      const results = await Promise.all(sources.map((code, index) => runtime.tokenize(code, language(index), { id: `concurrent-${index}`, version: 1, state: "done" })));
+      expect(results.map(text)).toEqual(sources);
+      expect([...runtime["languages"].keys()].sort()).toEqual(["json", "typescript"]);
+      await Promise.all([runtime["warming"].get("json"), runtime["warming"].get("typescript")]);
+      const colored = await Promise.all(sources.map((code, index) => runtime.tokenize(code, language(index), { id: `colored-${index}`, version: 1, state: "done" })));
+      expect(colored.every((tokens) => tokens.some((token) => token.type))).toBe(true);
+      runtime.dispose();
     } finally {
       console.warn = warn;
     }
@@ -496,13 +483,13 @@ describe("identity, failure, and caps", () => {
 });
 
 test("a cache hit never returns tokens for different code under the same id and version", async () => {
-  const highlighter = createHighlighter({ worker: false });
+  await warmLanguage("typescript");
+  const highlighter = directHighlighter;
   const context = { id: "same-surface", version: 7, state: "done" as const };
   const first = await highlighter("let a = 1;", "typescript", context);
   expect(first.map((token: Token) => token.text).join("")).toBe("let a = 1;");
   const second = await highlighter("var b = 2;", "typescript", context);
   expect(second.map((token: Token) => token.text).join("")).toBe("var b = 2;");
-  highlighter.dispose();
 });
 
 test("an older same-key request that lands last does not replace the newer cached result", async () => {
@@ -537,21 +524,7 @@ describe("grammar warm-up and regex caches", () => {
     try { return await run(); } finally { if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor); }
   };
 
-  test("the main thread never warms a grammar: it compiles only the patterns its lines meet", async () => {
-    const { TokenizerRuntime } = await import("../dist/runtime.js");
-    const page = new TokenizerRuntime();
-    await page.tokenize("x = 1\n", "ruby", { id: "page", version: 1, state: "done" }, true);
-    expect(page["warming"].size).toBe(0);
-    const worker = new TokenizerRuntime(() => {});
-    await worker.tokenize("x = 1\n", "ruby", { id: "worker", version: 1, state: "done" }, false);
-    await worker["warming"].get("ruby");
-    expect(page.cacheSize().static).toBeLessThan(worker.cacheSize().static / 4);
-    page.dispose();
-    worker.dispose();
-  }, 60_000);
-
   test("a worker answers between warm-up slices, and re-sends each provisional block once when warm", async () => {
-    const { TokenizerRuntime } = await import("../dist/runtime.js");
     const updates: Array<{ id: string; language: string; tokens: Token[] }> = [];
     const runtime = new TokenizerRuntime((context, language, tokens) => updates.push({ id: context.id, language, tokens }));
     const cold = viteConfig;
@@ -560,8 +533,8 @@ describe("grammar warm-up and regex caches", () => {
     const tokenize = highlighter.codeToTokensBase.bind(highlighter);
     highlighter.codeToTokensBase = (...args: Parameters<typeof tokenize>) => { tokenized++; return tokenize(...args); };
     const [first, second, warming] = await withClock(10, async () => {
-      const first = await runtime.tokenize(cold, "typescript", { id: "cold", version: 1, state: "done" }, false);
-      const second = await runtime.tokenize("[1]\n", "typescript", { id: "other", version: 1, state: "done" }, false);
+      const first = await runtime.tokenize(cold, "typescript", { id: "cold", version: 1, state: "done" });
+      const second = await runtime.tokenize("[1]\n", "typescript", { id: "other", version: 1, state: "done" });
       return [first, second, runtime["warming"].get("typescript")!] as const;
     });
     // Both requests were answered while warm-up was still running, with exact plain text, marked provisional, and
@@ -578,7 +551,7 @@ describe("grammar warm-up and regex caches", () => {
     expect(runtime.willUpdate({ id: "cold", version: 1, state: "done" })).toBe(false);
 
     // Once warm, a line over the limit is really slow: it stays plain, final, and is never re-sent.
-    const slow = await withClock(50, () => runtime.tokenize("[2]\n", "typescript", { id: "slow", version: 1, state: "done" }, false));
+    const slow = await withClock(50, () => runtime.tokenize("[2]\n", "typescript", { id: "slow", version: 1, state: "done" }));
     expect(slow).toEqual([{ text: "[2]\n" }]);
     expect(runtime.willUpdate({ id: "slow", version: 1, state: "done" })).toBe(false);
     expect(runtime["provisional"].size).toBe(0);
@@ -586,21 +559,20 @@ describe("grammar warm-up and regex caches", () => {
   }, 60_000);
 
   test("the dynamic regex cache stays at its cap over 200 documents, and dispose frees every regex", async () => {
-    const { TokenizerRuntime, MAX_DYNAMIC_REGEXES } = await import("../dist/runtime.js");
-    for (const runtime of [new TokenizerRuntime(), new TokenizerRuntime(() => {})]) {
-      // A fence of N backticks ends at N backticks: textmate builds a new end pattern per fence length.
-      for (let index = 0; index < 200; index++) {
-        const fence = "`".repeat(3 + index);
-        const tildes = "~".repeat(3 + index);
-        await runtime.tokenize(`${fence}\nplain ${index}\n${fence}\n${tildes}\nplain\n${tildes}\n`, "markdown", { id: `fence-${index}`, version: 1, state: "done" }, false);
-      }
-      await runtime["warming"].get("markdown");
-      const size = runtime.cacheSize();
-      expect(size.dynamic).toBe(MAX_DYNAMIC_REGEXES);
-      expect(size.static).toBeGreaterThan(0);
-      runtime.dispose();
-      expect(runtime.cacheSize()).toEqual({ static: 0, dynamic: 0 });
+    const { MAX_DYNAMIC_REGEXES } = await import("../dist/runtime.js");
+    const runtime = new TokenizerRuntime(() => {});
+    // A fence of N backticks ends at N backticks: textmate builds a new end pattern per fence length.
+    for (let index = 0; index < 200; index++) {
+      const fence = "`".repeat(3 + index);
+      const tildes = "~".repeat(3 + index);
+      await runtime.tokenize(`${fence}\nplain ${index}\n${fence}\n${tildes}\nplain\n${tildes}\n`, "markdown", { id: `fence-${index}`, version: 1, state: "done" });
     }
+    await runtime["warming"].get("markdown");
+    const size = runtime.cacheSize();
+    expect(size.dynamic).toBe(MAX_DYNAMIC_REGEXES);
+    expect(size.static).toBeGreaterThan(0);
+    runtime.dispose();
+    expect(runtime.cacheSize()).toEqual({ static: 0, dynamic: 0 });
   }, 60_000);
 
   test("a worker update replaces the cached tokens of its exact block and tells that block's subscribers", async () => {

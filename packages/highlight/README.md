@@ -14,7 +14,19 @@ const tokens = await highlight(code, "typescript", {
 highlight.dispose();
 ```
 
-`highlight.subscribe(id, listener)` calls `listener` when the cached tokens of block `id` were replaced, and returns the unsubscribe function. the worker warms a grammar in the background when a block first asks for it, in slices of at most 8 ms, and answers new requests between slices. a block asked for while its grammar is still cold is answered at once with its exact plain text; once the grammar is warm, the worker tokenizes that block and the cache gets the colored tokens (same text, new spans), so ask again on that call. `@fulcrum/react` and `@fulcrum/markdown` do this already. the main-thread fallback never warms a grammar: one regex compile cannot be split, so it must not run on the page's thread, and a line over its time budget there stays plain. regexes are cached per highlighter: a grammar's own patterns until `dispose()`, and at most 256 patterns built while tokenizing (for example a markdown fence's end), least recently used first.
+`highlight.subscribe(id, listener)` calls `listener` when the cached tokens of block `id` were replaced, and returns the unsubscribe function. the worker warms a grammar in the background when a block first asks for it, in slices of at most 8 ms, and answers new requests between slices. a block asked for while its grammar is still cold is answered at once with its exact plain text; once the grammar is warm, the worker tokenizes that block and the cache gets the colored tokens (same text, new spans), so ask again on that call. `@fulcrum/react` and `@fulcrum/markdown` do this already. regexes are cached per highlighter: a grammar's own patterns until `dispose()`, and at most 256 patterns built while tokenizing (for example a markdown fence's end), least recently used first.
+
+## the page's thread never tokenizes
+
+all tokenizing runs in the worker. compiling one cold regex or scanner cannot be split (568 ms for cpp in chromium), so a ui freeze would be worse than missing colors, and there is no main-thread tokenizer to fall back to.
+
+- if the worker fails, crashes, or does not answer for 2 s while work is pending, it is replaced once, after a 250 ms pause, and gets every pending request again.
+- if the replacement also fails, or there is no worker at all (ssr, tests without a `Worker`, a strict csp that blocks it), every block is its exact plain text from then on, and is not cached as a final answer. nothing is announced to the user.
+- `createHighlighter({ onHighlightUnavailable })` is called once, in a microtask, when that happens, so an app can show its own notice if it wants to.
+
+```ts
+const highlight = createHighlighter({ onHighlightUnavailable: () => showNotice("syntax colors are off") });
+```
 
 `languageForPath("src/a.ts")` and `languageForContentType("application/json; charset=utf-8")` resolve a file path (extension or well-known name such as `Makefile`, `Dockerfile`, `.bashrc`) or an HTTP media type (including `+json` and `+xml` suffixes) to a language name, or undefined. Both are also exported from `@fulcrum/highlight/languages`, which imports no worker or grammar, so a bundler emits neither for code that only resolves names (`@fulcrum/react` uses it).
 
@@ -26,7 +38,7 @@ the worker and each grammar load through static `new URL("...", import.meta.url)
 
 - vite (and rollup with its standard asset handling): works with no configuration. grammars load only when a block in that language is highlighted.
 - esbuild: it keeps the urls but does not emit the files. copy `node_modules/@fulcrum/highlight/dist/worker.js`, `dist/chunks/`, and `dist/langs/` next to your bundle output (for example with an asset-copy plugin or a build step), keeping the same relative layout.
-- other bundlers: if the worker cannot load, highlighting falls back to sliced main-thread work and shows plain text first, so code is never lost.
+- other bundlers: if the worker cannot load, code shows as exact plain text (see above), so code is never lost.
 
 ## scope mapping
 
