@@ -290,7 +290,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
             turnStarted = true;
             running = true;
             const ask = () => new Promise<"approve" | "deny" | "abort">((resolve) => { decide = (decision) => { decide = null; resolve(decision); }; });
-            setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; }, currentHistoryMode)(), 300);
+            setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; }, currentHistoryMode)(), 1000);
           }
           return;
         }
