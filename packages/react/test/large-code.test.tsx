@@ -174,16 +174,3 @@ test("a fence under the line limit with more than INLINE_SPANS tokens is the vie
   expect(spans()).toBeLessThan(1_000);
   expect(block.querySelector('[data-part="text-viewer-row"] .tok-keyword')).not.toBeNull();
 });
-
-test.each([
-  ["read", () => card(tool("r", { kind: "read", path: "a.cpp" }, large), "tool:r")],
-  ["write", () => card(tool("w", { kind: "write", path: "a.cpp", content: large }), "tool:w")],
-  ["plain shell output", () => card(tool("p", { kind: "shell", command: "seq" }, "plain line of output\n".repeat(20_000)), "tool:p")],
-] as Array<[string, () => void]>)("an opened %s viewer draws ranges by the one rule: 500 characters highlighted, 2,000 plain", (name, show) => {
-  show();
-  act(() => container.querySelector<HTMLButtonElement>('[data-action="open-viewer"]')!.click());
-  const rows = [...container.querySelectorAll('[data-part="text-viewer-row"]')].map((row) => row.textContent!.length);
-  // a range ends at a line end, so it can pass its size by up to one line
-  if (name === "plain shell output") expect(Math.max(...rows)).toBeGreaterThan(1_000);
-  else expect(rows.length > 1 && Math.max(...rows) <= 500 + line.length * 2).toBe(true);
-});

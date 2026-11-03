@@ -115,7 +115,8 @@ results.read = await measure(async () => {
     readViewer.scrollTop += readViewer.clientHeight;
     await new Promise((resolve) => requestAnimationFrame(resolve));
   }
-  return { rows: readViewer.querySelectorAll("[data-part=text-viewer-row]").length, colored: !!readViewer.querySelector("[class^=tok-]") };
+  const colored = await until(() => readViewer.querySelector("[class^=tok-]"), 10_000).then(() => true, () => false);
+  return { rows: readViewer.querySelectorAll("[data-part=text-viewer-row]").length, colored };
 });
 root.render(createElement(Markdown, { id: "large", source: fence, highlight }));
 await nextFrame();
@@ -163,6 +164,7 @@ try {
     // guards froze the page for 5,388 ms, so the gap bound is 100 ms; real 50 ms tasks still fail through longTasks.
     if (name !== "markdown" && result.maxProbeGap >= 100) failures.push(`${name}: the main thread was busy for ${result.maxProbeGap.toFixed(1)} ms`);
   }
+  if (!results.read?.colored) failures.push("read: the scrolled-to rows of the opened read viewer never colored");
   const { queue } = results;
   if (!queue.smallColored || !queue.bigColored) failures.push(`queue: both blocks must color (${JSON.stringify(queue)})`);
   // The regression this guards is the small block waiting for the whole large one: 325-335 ms on main before the fix.

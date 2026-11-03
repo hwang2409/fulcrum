@@ -9,7 +9,7 @@ const SEGMENT_CHARS = 2_000;
 // about 1,400 spans per 2,000 characters (a 57-97 ms gap per fast-scrolled frame on a CI runner, 38-46 ms with 500).
 // Plain and ANSI text keeps 2,000: four times the ranges made opening a 1,000,000-line output take 17 ms instead of 3.
 const CODE_SEGMENT_CHARS = 500;
-/** The one range rule: highlighted text in 500-character ranges, plain and ANSI text in 2,000. */
+/** A code fence's range rule: highlighted text in 500-character ranges, plain text in 2,000. */
 const rangeChars = (language: string | undefined) => language ? CODE_SEGMENT_CHARS : SEGMENT_CHARS;
 // The most text drawn as one highlighted block (one react commit of its tokens); larger text goes through the virtual
 // viewer. Measured in chromium with the page's CPU throttled 4x (apps/playground/scripts/large-blocks.ts): about 1,900
@@ -385,8 +385,9 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
   const metrics = suppliedMetrics ?? measuredMetrics;
   const large = needsTextViewer(text, metrics);
   // Segments are built only for an open viewer: text in fixed-size ranges that start on a line, rows in fixed groups.
-  const size = rangeChars(format?.language);
-  const textSegments = useSegments(open && !rows ? text : "", appendOnly, segmentLines(text, metrics, size), size);
+  // shortcut: the tool viewer keeps 2,000 even for highlighted text; 500 made opening a 1,000,000-line .ts read take
+  // 20 ms (the layout gate's bound is 16). Upgrade when segments are built lazily, so their count no longer costs the open.
+  const textSegments = useSegments(open && !rows ? text : "", appendOnly, segmentLines(text, metrics));
   const rowSegments = useMemo(() => open && rows ? rowGroups(rows) : [], [open, rows]);
   const cap = useCap(rows ? rows.count : text);
   if (rows && !(large && open)) {
