@@ -72,8 +72,10 @@ missing, why the app needs it, and the proposed API.
   already emitted the `user_message`, so the transcript shows a message the model never read. The zeta TUI sends a
   late steer as the next turn instead.
 - **in the app:** the protocol leaves the resend to the client, so `src/delivery.ts` does what the TUI does: when a
-  turn ends without a stop, each steer it dropped goes out again as a new message (`test/delivery.test.ts`, web gate,
-  and a live check on real zeta).
+  turn ends without a stop, each steer it dropped goes out again as a new message. The `user_message` echo carries no
+  delivery id, so the client stamps the one it gets while the request is pending with the message's `intent`, and the
+  resend replaces the steer's row instead of adding one (`test/delivery.test.ts`, web gate, and a live check on real zeta).
+- **proposed api:** zeta echoes `delivery_id` in `user_message`, so a client can match the echo without a pending window.
 - **proposed api:** zeta serve delivers a late steer as the next turn, as the TUI does, so every client gets it.
 
 ## library bugs found
