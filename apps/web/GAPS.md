@@ -18,7 +18,7 @@ missing, why the app needs it, and the proposed API.
 
 ## open gaps
 
-- approval_reconnect: not negotiated yet; slice after zeta grace design ships (design-serve-approval-grace.md)
+- approval_reconnect: negotiated `approval_history` now distinguishes current servers from older ones. Older servers still use the documented tool-only `connection_lost` inference until they ship durable approval rows; zeta grace design remains separate (design-serve-approval-grace.md).
 
 ### 1. reconnect with backoff is app code (`@fulcrum/zeta`)
 - **missing:** `connectZeta` connects once. It does not retry, it has no backoff, and it does not reconnect after a drop.
