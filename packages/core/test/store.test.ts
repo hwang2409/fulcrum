@@ -161,6 +161,22 @@ test("serializes dispatches that re-enter during a reduction", () => {
   expect(store.hasMessageDelivery("nested")).toBe(true);
 });
 
+test("keeps one snapshot for every subscriber notification pass", () => {
+  const store = createRunStore((job) => job());
+  const seenA: string[][] = [];
+  const seenB: string[][] = [];
+  store.subscribe(() => {
+    store.dispatch({ type: "user_message", text: "nested", mode: "send", delivery_id: "nested" });
+    seenA.push(store.getOutline().map(({ id }) => id));
+  });
+  store.subscribe(() => seenB.push(store.getOutline().map(({ id }) => id)));
+
+  store.dispatch({ type: "user_message", text: "outer", mode: "send", delivery_id: "outer" });
+
+  expect(seenA).toEqual([["user:delivery:outer"], ["user:delivery:outer", "user:delivery:nested"]]);
+  expect(seenB).toEqual([["user:delivery:outer"], ["user:delivery:outer", "user:delivery:nested"]]);
+});
+
 test("queues subscriber dispatches until after the current notification", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));
