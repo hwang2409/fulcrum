@@ -14,7 +14,7 @@ on:
         description: "known-fail sensitivity injection"
         required: false
         type: choice
-        options: ["", row-subscription, frame-work, render-work]
+        options: ["", row-subscription, frame-work, render-work, render-work-small]
 jobs:
   stress:
     runs-on: ubuntu-latest
