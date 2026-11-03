@@ -248,12 +248,8 @@ const unmatchedCodeSpan = (source: string) => {
   return opener;
 };
 
-const codeSpanValue = (value: string) => {
-  const normalized = value.replace(/\n/g, " ");
-  return normalized.startsWith(" ") && normalized.endsWith(" ") && /[^ ]/.test(normalized)
-    ? normalized.slice(1, -1)
-    : normalized;
-};
+// An open span's edge spaces hide: the closer may strip them, and a space that shows must never disappear.
+const codeSpanValue = (value: string) => value.replace(/\n/g, " ").replace(/^ | $/g, "");
 
 function tailInline(blocks: Block[]): Inline[] | undefined {
   const last = blocks.at(-1);
@@ -343,14 +339,32 @@ const lastUnescaped = (source: string, marker: string) => {
   return index;
 };
 
+// Unescaped `[` and `]` outside code spans, including a span that may still close: code binds tighter than brackets.
+function bracketMarks(source: string) {
+  const marks: number[] = [];
+  const code = closedCodeRanges(source);
+  const end = unmatchedCodeSpan(source)?.index ?? source.length;
+  let range = 0;
+  for (let index = 0; index < end; index++) {
+    while (range < code.length && code[range]![1] <= index) range++;
+    if (range < code.length && index >= code[range]![0]) index = code[range]![1] - 1;
+    else if (source[index] === "\\") index++;
+    else if (source[index] === "[" || source[index] === "]") marks.push(index);
+  }
+  return marks;
+}
+
 function withoutOpenLink(source: string) {
   if (source.endsWith("!") && !escaped(source, source.length - 1)) source = source.slice(0, -1);
   const image = lastUnescaped(source, "![");
   if (image >= 0 && !/\]\([^\n)]*\)/.test(source.slice(image + 1))) return source.slice(0, image);
-  const bracket = lastUnescaped(source, "[");
+  const marks = bracketMarks(source);
+  let last = marks.length - 1;
+  while (last >= 0 && source[marks[last]!] !== "[") last--;
+  const bracket = last < 0 ? -1 : marks[last]!;
   if (bracket < 0) return source;
   const rest = source.slice(bracket + 1);
-  const close = rest.indexOf("]");
+  const close = (marks[last + 1] ?? 0) - bracket - 1;
   // The label of a trailing `[text][label` is never shown; plain open text stays visible.
   const label = source[bracket - 1] === "]";
   if (close < 0) return source.slice(0, bracket) + (label ? "" : rest);

@@ -27,10 +27,16 @@ function visible(blocks: readonly Block[], provisional = true): string {
 const edges = (value: string) => value.replace(/(^|\n)[ \t]+/g, "$1").replace(/[ \t]+(?=\n|$)/g, "");
 const unmarked = (value: string) => value.replace(/[*_`~]/g, "").replace(/\n/g, " ");
 
-const subsequence = (needle: string, haystack: string) => {
+// How much of `needle` is a subsequence of `haystack`, in UTF-16 units (an emoji is two).
+const matched = (needle: string, haystack: string) => {
   let cursor = 0;
-  for (const character of haystack) if (character === needle[cursor]) cursor++;
-  return cursor === needle.length;
+  for (let index = 0; index < haystack.length; index++) if (haystack[index] === needle[cursor]) cursor++;
+  return cursor;
+};
+const subsequence = (needle: string, haystack: string) => matched(needle, haystack) === needle.length;
+const lostAt = (needle: string, haystack: string) => {
+  const cursor = matched(needle, haystack);
+  return `${JSON.stringify(needle.slice(Math.max(0, cursor - 40), cursor))} lost ${JSON.stringify(needle.slice(cursor, cursor + 20))}`;
 };
 
 /** Streams `source` and checks every frame: nothing seen disappears and nothing is shown twice. */
@@ -46,7 +52,7 @@ function stream(source: string, sizes: (step: number) => number, onFrame?: (bloc
     offset = Math.min(source.length, offset + size);
     const blocks = document.render();
     const current = visible(blocks);
-    if (!subsequence(unmarked(previous), unmarked(current))) throw new Error(`text vanished at ${offset}: ${JSON.stringify(previous.slice(-80))} -> ${JSON.stringify(current.slice(-80))}`);
+    if (!subsequence(unmarked(previous), unmarked(current))) throw new Error(`text vanished at ${offset}: ${lostAt(unmarked(previous), unmarked(current))}`);
     if (checkFinal && !subsequence(unmarked(visible(blocks, false)), unmarked(final))) throw new Error(`stable text not in final at ${offset} in ${JSON.stringify(source.slice(0, offset + 40))}: ${JSON.stringify(visible(blocks, false).slice(-120))}`);
     onFrame?.(blocks, offset);
     previous = current;
