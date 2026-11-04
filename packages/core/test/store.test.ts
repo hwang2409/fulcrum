@@ -295,6 +295,78 @@ test("prepend keeps a current approval resolution when its request is older", ()
   expect(store.getItem("approval:split")).toMatchObject({ ended: { decision: "approve" } });
 });
 
+test("prepend folds an older completed tool with its newer approval resolution", () => {
+  const call = { id: "split", name: "bash", arguments: { command: "true" } };
+  const store = createRunStore((flush) => flush());
+  store.resync([{ type: "approval_end", request_id: "split", decision: "approve" }]);
+
+  store.prepend([
+    { type: "approval_request", request_id: "split", tool_call: call, delegated: false },
+    { type: "tool_end", tool_call: call, tool_result: { tool_call_id: "split", content: "done", is_error: false } },
+  ]);
+
+  expect(store.getOutline()).toEqual([{ id: "tool:split", kind: "tool" }]);
+  expect(store.getItem("tool:split")).toMatchObject({ approval: { decision: "approve" }, version: 2 });
+  expect(store.getState().toolApprovals).toEqual({});
+});
+
+test("prepend assigns generated ids as a whole chronological reduction", () => {
+  const store = createRunStore((flush) => flush());
+  store.resync([{ type: "error", error: { code: "newer", message: "newer" } }]);
+
+  store.prepend([{ type: "message_commit", message_id: "fixed", message: message("older") }]);
+
+  expect(store.getOutline()).toEqual([
+    { id: "message:fixed", kind: "message" },
+    { id: "error:2", kind: "error" },
+  ]);
+  expect(store.getItem("error:1")).toBeUndefined();
+  expect(store.getItem("error:2")).toMatchObject({ event: { error: { message: "newer" } } });
+  expect(store.getOutlineSnapshot().change?.splices).toEqual([{
+    index: 0,
+    deleteCount: 1,
+    items: [{ id: "message:fixed", kind: "message" }, { id: "error:2", kind: "error" }],
+  }]);
+});
+
+test("prepend rejection keeps the last good state and visibly desyncs", () => {
+  const errors: unknown[] = [];
+  const store = createRunStore((flush) => flush(), { onError: (error) => errors.push(error) });
+  store.resync([{ type: "message_commit", message_id: "kept", message: message("kept") }]);
+  const kept = store.getItem("message:kept");
+  let reads = 0;
+  const broken = new Proxy({ type: "retry" }, {
+    get(target, key, receiver) {
+      if (key === "type" && ++reads > 3) throw new Error("broken history");
+      return Reflect.get(target, key, receiver);
+    },
+  }) as RunEvent;
+
+  store.prepend([broken]);
+
+  expect(store.getOutline()).toEqual([{ id: "message:kept", kind: "message" }]);
+  expect(store.getItem("message:kept")).toBe(kept);
+  expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "broken history" });
+  expect(errors).toHaveLength(1);
+});
+
+test("prepend coalesces pages queued in one frame", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((flush) => jobs.push(flush));
+  store.resync([{ type: "message_commit", message_id: "new", message: message("new") }]);
+  store.prepend([{ type: "message_commit", message_id: "middle", message: message("middle") }]);
+  store.prepend([{ type: "message_commit", message_id: "old", message: message("old") }]);
+
+  expect(jobs).toHaveLength(1);
+  jobs.shift()!();
+  expect(store.getOutline().map(({ id }) => id)).toEqual(["message:old", "message:middle", "message:new"]);
+  expect(store.getOutlineSnapshot().change?.splices).toEqual([{
+    index: 0,
+    deleteCount: 0,
+    items: [{ id: "message:old", kind: "message" }, { id: "message:middle", kind: "message" }],
+  }]);
+});
+
 const prependView = (store: ReturnType<typeof createRunStore>) => ({
   state: store.getState(),
   items: store.getOutline().map(({ id }) => store.getItem(id)),
@@ -304,10 +376,10 @@ const generatedHistory = (seed: number) => {
   const next = seededRandom(seed);
   const random = (max: number) => Math.floor(next() * max);
   const events: Parameters<ReturnType<typeof createRunStore>["dispatch"]>[0][] = [];
-  const groups = 2 + random(5);
+  const groups = 8 + random(11);
   for (let group = 0; group < groups; group++) {
     const id = `${seed}-${group}`;
-    const kind = random(6);
+    const kind = random(8);
     if (kind === 0) {
       const deltas = 1 + random(4);
       const streamKind = ["text", "reasoning", "user"][random(3)]!;
@@ -328,8 +400,12 @@ const generatedHistory = (seed: number) => {
     } else if (kind === 4) {
       events.push({ type: "sub_agent", childRunId: id, status: "running", toolCount: random(5), sequence: 1 });
       events.push({ type: "sub_agent", childRunId: id, status: "done", summary: `done:${id}`, toolCount: 5, sequence: 2 });
-    } else {
+    } else if (kind === 5) {
       events.push({ type: "run_start" }, { type: "turn_start", data: { turn: id } }, { type: "turn_end" }, { type: "run_end" });
+    } else if (kind === 6) {
+      events.push({ type: "error", error: { code: id, message: `error:${id}` } });
+    } else {
+      events.push({ type: "notification", data: { message: id } });
     }
   }
   return events;
@@ -337,7 +413,7 @@ const generatedHistory = (seed: number) => {
 
 test("prepend equals whole-log reduction at every page seam", () => {
   let cases = 0;
-  for (let seed = 1; seed <= 600; seed++) {
+  for (let seed = 10_001; seed <= 11_100; seed++) {
     const events = generatedHistory(seed);
     const expected = createRunStore((flush) => flush());
     expected.resync(events);
@@ -358,7 +434,7 @@ test("prepend equals whole-log reduction at every page seam", () => {
     expect(prependView(actual), `seed ${seed}, splits ${first}/${second}`).toEqual(expectedView);
     cases++;
   }
-  expect(cases).toBeGreaterThan(5_000);
+  expect(cases).toBeGreaterThan(30_000);
 });
 
 test("prepend inserts older rows without resetting or replacing the live tail", () => {

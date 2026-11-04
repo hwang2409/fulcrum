@@ -1,8 +1,6 @@
 import type { RunEvent, RunItem } from "./events.js";
 import {
-  composeBefore,
   initialState,
-  RECEIPT_LIMIT,
   reduceAllWithEntities,
   type OutlineItem,
   type OutlineSplice,
@@ -69,98 +67,28 @@ export interface StoreDiagnostics {
 }
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-type CompositionTracker = {
-  readonly messageContinuations: Map<string, boolean>;
-  readonly approvalRequests: Set<string>;
-  readonly approvalEnds: Map<string, Extract<RunEvent, { type: "approval_end" }>>;
-  activeMessageId?: string;
-  endsPriorMessage: boolean;
-  agentTouched: boolean;
-  turnTouched: boolean;
-  readonly toolTouched: Set<string>;
-  endsPriorTools: boolean;
+const structurallyEqual = (left: unknown, right: unknown): boolean => {
+  if (Object.is(left, right)) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length && leftKeys.every((key) =>
+    Object.prototype.hasOwnProperty.call(right, key)
+      && structurallyEqual((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]));
 };
-const compositionTracker = (): CompositionTracker => ({
-  messageContinuations: new Map(),
-  approvalRequests: new Set(),
-  approvalEnds: new Map(),
-  endsPriorMessage: false,
-  agentTouched: false,
-  turnTouched: false,
-  toolTouched: new Set(),
-  endsPriorTools: false,
-});
-const trackComposition = (tracker: CompositionTracker, event: RunEvent) => {
-  if (event === null || typeof event !== "object") return;
-  switch (event.type) {
-    case "message_delta":
-    case "message_block": {
-      tracker.endsPriorMessage = true;
-      if (!event.message_id) break;
-      const id = `message:${event.message_id}`;
-      if (tracker.activeMessageId !== event.message_id) tracker.messageContinuations.set(id, true);
-      tracker.activeMessageId = event.message_id;
-      break;
-    }
-    case "message_commit":
-      tracker.endsPriorMessage = true;
-      if (event.message_id) tracker.messageContinuations.set(`message:${event.message_id}`, false);
-      tracker.activeMessageId = undefined;
-      break;
-    case "message_reset":
-      tracker.endsPriorMessage = true;
-      if (tracker.activeMessageId) tracker.messageContinuations.delete(`message:${tracker.activeMessageId}`);
-      tracker.activeMessageId = undefined;
-      break;
-    case "retry":
-      tracker.endsPriorMessage = true;
-      tracker.activeMessageId = undefined;
-      break;
-    case "turn_end":
-      tracker.turnTouched = true;
-      tracker.endsPriorMessage = true;
-      tracker.activeMessageId = undefined;
-      break;
-    case "run_end":
-      tracker.agentTouched = true;
-      tracker.turnTouched = true;
-      tracker.endsPriorMessage = true;
-      tracker.endsPriorTools = true;
-      tracker.activeMessageId = undefined;
-      break;
-    case "approval_request":
-      tracker.approvalRequests.add(event.request_id);
-      tracker.approvalEnds.delete(event.request_id);
-      break;
-    case "approval_end":
-      if (!tracker.approvalRequests.has(event.request_id)) tracker.approvalEnds.set(event.request_id, event);
-      break;
-    case "run_start":
-      tracker.agentTouched = true;
-      break;
-    case "turn_start":
-      tracker.turnTouched = true;
-      break;
-    case "tool_start": case "tool_input": case "tool_output": case "tool_end":
-      if (event.tool_call && typeof event.tool_call.id === "string") tracker.toolTouched.add(event.tool_call.id);
-      break;
-    case "error":
-      tracker.agentTouched = true;
-      tracker.turnTouched = true;
-      tracker.endsPriorMessage = true;
-      tracker.endsPriorTools = true;
-      break;
-    case "message_start": case "usage": case "user_message": case "notification": case "unknown": case "sub_agent":
-      break;
-    default: event satisfies never;
-  }
+
+const outlineSuffixLength = (older: readonly OutlineItem[], newer: readonly OutlineItem[]) => {
+  if (newer.length < older.length) return -1;
+  const offset = newer.length - older.length;
+  return older.every((item, index) => item.id === newer[offset + index]?.id) ? offset : -1;
 };
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
   let entities = new Map<string, RunItem>();
-  const messageAliases = new Map<string, string>();
+  let messageAliases = new Map<string, string>();
   let current: RunState = structuredClone(initialState);
   let pending: RunEvent[] = [];
-  let composition = compositionTracker();
+  let acceptedLog: RunEvent[] = [];
+  let pendingOlder: RunEvent[] = [];
   const listeners = new Set<Listener>();
   const outlineListeners = new Set<Listener>();
   const itemListeners = new Map<string, Set<Listener>>();
@@ -193,6 +121,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     pending = [];
     const beforeOutline = current.outline;
     let next: RunState;
+    const accepted: RunEvent[] = [];
     try {
       next = reduceAllWithEntities(current, events, {
         get: (id) => entities.get(id),
@@ -201,7 +130,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
         splice: (edit) => edits.push(edit),
         getMessageAlias: (key) => messageAliases.get(key),
         setMessageAlias: (key, id) => { messageAliases.set(key, id); },
-      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, (event) => trackComposition(composition, event));
+      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, (event) => accepted.push(event));
     } catch (error) {
       desynced = true;
       pending = [];
@@ -221,6 +150,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       return false;
     }
     current = next;
+    acceptedLog.push(...accepted);
     stateChanged = true;
     if (current.outline !== beforeOutline) {
       // One change per notification: flushes before it (a read forces one) extend it, so subscribers see one edit list.
@@ -230,6 +160,53 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     }
     edits = [];
     flushing = false;
+    setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
+    return true;
+  };
+  const flushPrepend = () => {
+    if (pendingOlder.length === 0 || disposed || desynced) return false;
+    const older = pendingOlder;
+    pendingOlder = [];
+    const beforeOutline = current.outline;
+    const nextEntities = new Map<string, RunItem>();
+    const nextAliases = new Map<string, string>();
+    const nextLog: RunEvent[] = [];
+    let next: RunState;
+    try {
+      next = reduceAllWithEntities(structuredClone(initialState), [...older, ...acceptedLog], {
+        get: (id) => nextEntities.get(id),
+        set: (item) => nextEntities.set(item.id, item),
+        delete: (id) => nextEntities.delete(id),
+        splice() {},
+        getMessageAlias: (key) => nextAliases.get(key),
+        setMessageAlias: (key, id) => nextAliases.set(key, id),
+      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, (event) => nextLog.push(event));
+    } catch (error) {
+      desynced = true;
+      setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
+      options.onError?.(error);
+      return false;
+    }
+    for (const [id, item] of nextEntities) {
+      const prior = entities.get(id);
+      if (prior && structurallyEqual(prior, item)) nextEntities.set(id, prior);
+      else changedItems.add(id);
+    }
+    for (const id of entities.keys()) if (!nextEntities.has(id)) changedItems.add(id);
+    const prefix = outlineSuffixLength(beforeOutline, next.outline);
+    if (prefix >= 0) next.outline = [...next.outline.slice(0, prefix), ...beforeOutline];
+    const splice = prefix >= 0
+      ? { index: 0, deleteCount: 0, items: next.outline.slice(0, prefix) }
+      : { index: 0, deleteCount: beforeOutline.length, items: next.outline };
+    current = next;
+    entities = nextEntities;
+    messageAliases = nextAliases;
+    acceptedLog = nextLog;
+    stateChanged = true;
+    if (splice.deleteCount > 0 || splice.items.length > 0) {
+      outlineSnapshot = { items: current.outline, change: { from: beforeOutline, splices: [splice] } };
+      outlineChanged = true;
+    }
     setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
     return true;
   };
@@ -246,6 +223,25 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     } finally {
       notifying = false;
     }
+  };
+
+  const scheduleFlush = () => {
+    if (queued) return;
+    queued = true;
+    scheduler(() => {
+      queued = false;
+      if (running) return;
+      running = true;
+      try {
+        do {
+          flush();
+          flushPrepend();
+          notify();
+        } while ((pending.length > 0 || pendingOlder.length > 0) && !disposed && !desynced);
+      } finally {
+        running = false;
+      }
+    });
   };
 
   function subscribe(listener: Listener): () => void;
@@ -267,23 +263,23 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
 
   return {
     getState() {
-      if (!notifying) flush();
+      if (!notifying) flush(), flushPrepend();
       return current;
     },
     getItem(id: string) {
-      if (!notifying) flush();
+      if (!notifying) flush(), flushPrepend();
       return entities.get(id);
     },
     getOutline(): readonly OutlineItem[] {
-      if (!notifying) flush();
+      if (!notifying) flush(), flushPrepend();
       return current.outline;
     },
     getOutlineSnapshot(): OutlineSnapshot {
-      if (!notifying) flush();
+      if (!notifying) flush(), flushPrepend();
       return outlineSnapshot;
     },
     hasMessageDelivery(deliveryId: string) {
-      if (!notifying) flush();
+      if (!notifying) flush(), flushPrepend();
       return messageAliases.has(`delivery:${deliveryId}`);
     },
     getDiagnostics(): StoreDiagnostics { return diagnostics; },
@@ -298,6 +294,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     resync(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
       pending = [];
+      pendingOlder = [];
       entities.clear();
       messageAliases.clear();
       current = structuredClone(initialState);
@@ -307,105 +304,24 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       stateChanged = false;
       outlineChanged = false;
       desynced = false;
-      composition = compositionTracker();
+      acceptedLog = [];
       pending.push(...events);
       flush();
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
     },
     /**
-     * Reduces one older page, composes entities that cross the live-copy seam, then emits one index-0 splice.
-     * An indeterminate composition desyncs before publication. Cost is O(page) plus one O(n) outline pointer copy.
+     * Re-reduces `older` followed by every accepted event from empty, so the result exactly matches chronological
+     * reduction and accepted live events win naturally. Rejection publishes nothing and visibly desyncs the store.
+     * Cost is O(older + applied log) per prepend, at most once per page; pages queued in one frame share a reduction.
      */
     prepend(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
       refuseDesynced();
       flush();
       notify();
-      const olderEntities = new Map<string, RunItem>();
-      const olderAliases = new Map<string, string>();
-      const olderComposition = compositionTracker();
-      let older = { ...structuredClone(initialState), nextId: current.nextId };
-      const updates = new Map<string, RunItem>();
-      try {
-        older = reduceAllWithEntities(older, events.slice(), {
-          get: (id) => olderEntities.get(id),
-          set: (item) => olderEntities.set(item.id, item),
-          delete: (id) => olderEntities.delete(id),
-          splice() {},
-          getMessageAlias: (key) => olderAliases.get(key),
-          setMessageAlias: (key, id) => olderAliases.set(key, id),
-        }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, (event) => trackComposition(olderComposition, event));
-        for (const [id, olderItem] of olderEntities) {
-          const currentItem = entities.get(id);
-          if (currentItem) updates.set(id, composeBefore(olderItem, currentItem, composition.messageContinuations.get(id) === true));
-          else if (olderItem.type === "approval") {
-            const ended = composition.approvalEnds.get(olderItem.id.slice("approval:".length));
-            updates.set(id, ended ? { ...olderItem, ended } : olderItem);
-          } else if (olderItem.type === "message" && composition.endsPriorMessage && olderItem.active) updates.set(id, { ...olderItem, active: false });
-          else updates.set(id, olderItem);
-        }
-      } catch (error) {
-        desynced = true;
-        setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
-        options.onError?.(error);
-        return;
-      }
-      const inserted = older.outline.filter(({ id }) => !entities.has(id));
-      const insertedIds = new Set(inserted.map(({ id }) => id));
-      const reusedGeneratedIds = older.outline.reduce((count, { id, kind }) =>
-        count + (entities.has(id) && (kind === "message" || kind === "error" || kind === "notification" || kind === "unknown" || (kind === "user" && /^user:\\d+$/.test(id))) ? 1 : 0), 0);
-      for (const [id, item] of updates) {
-        entities.set(id, item);
-        changedItems.add(id);
-      }
-      for (const [key, id] of olderAliases) if (!messageAliases.has(key) && (entities.has(id) || updates.has(id))) messageAliases.set(key, id);
-      composition.endsPriorMessage ||= olderComposition.endsPriorMessage;
-      composition.agentTouched ||= olderComposition.agentTouched;
-      composition.turnTouched ||= olderComposition.turnTouched;
-      composition.endsPriorTools ||= olderComposition.endsPriorTools;
-      for (const toolId of olderComposition.toolTouched) composition.toolTouched.add(toolId);
-      for (const [id, continued] of olderComposition.messageContinuations) {
-        if (insertedIds.has(id) || composition.messageContinuations.get(id) === true) composition.messageContinuations.set(id, continued);
-      }
-      for (const requestId of olderComposition.approvalRequests) {
-        composition.approvalRequests.add(requestId);
-        composition.approvalEnds.delete(requestId);
-      }
-      for (const [requestId, end] of olderComposition.approvalEnds) if (!composition.approvalRequests.has(requestId)) composition.approvalEnds.set(requestId, end);
-      const before = current.outline;
-      const nextId = older.nextId - reusedGeneratedIds;
-      const toolApprovals = { ...older.toolApprovals, ...current.toolApprovals };
-      for (const [toolId, approvalId] of Object.entries(toolApprovals)) if (!entities.has(approvalId)) delete toolApprovals[toolId];
-      const usage = { ...older.usage };
-      for (const [key, amount] of Object.entries(current.usage)) usage[key] = (usage[key] ?? 0) + amount;
-      const activeToolIds = composition.endsPriorTools ? { ...current.activeToolIds } : { ...older.activeToolIds, ...current.activeToolIds };
-      for (const toolId of composition.toolTouched) if (!current.activeToolIds[toolId]) delete activeToolIds[toolId];
-      const receiptOrder = [...new Set([...older.receiptOrder, ...current.receiptOrder])].slice(-RECEIPT_LIMIT);
-      const receipts = Object.fromEntries(receiptOrder.map((id) => [id, true]));
-      const composedState = {
-        ...current,
-        agent: composition.agentTouched ? current.agent : older.agent,
-        turn: composition.turnTouched ? current.turn : older.turn,
-        turns: [...older.turns, ...current.turns],
-        usage,
-        receipts,
-        receiptOrder,
-        activeMessageId: composition.endsPriorMessage ? current.activeMessageId : current.activeMessageId ?? older.activeMessageId,
-        activeToolIds,
-        nextId,
-        toolApprovals,
-      };
-      current = inserted.length === 0
-        ? composedState
-        : { ...composedState, outline: [...inserted, ...before] };
-      if (inserted.length > 0) {
-        outlineSnapshot = { items: current.outline, change: { from: before, splices: [{ index: 0, deleteCount: 0, items: inserted }] } };
-        outlineChanged = true;
-      }
-      stateChanged = updates.size > 0;
-      setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
-      notify();
+      pendingOlder = [...events, ...pendingOlder];
+      scheduleFlush();
     },
     subscribe,
     subscribeOutline(listener: Listener) {
@@ -416,28 +332,14 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (disposed) throw new Error("store is disposed");
       refuseDesynced();
       pending.push(event);
-      if (!queued) {
-        queued = true;
-        scheduler(() => {
-          queued = false;
-          if (running) return;
-          running = true;
-          try {
-            do {
-              flush();
-              notify();
-            } while (pending.length > 0 && !disposed && !desynced);
-          } finally {
-            running = false;
-          }
-        });
-      }
+      scheduleFlush();
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       pending = [];
-      composition = compositionTracker();
+      pendingOlder = [];
+      acceptedLog = [];
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
       entities = new Map();
