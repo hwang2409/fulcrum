@@ -59,6 +59,17 @@ const composeMessageContent = (older: RunItem & { type: "message" }, current: Ru
   return content;
 };
 
+type ToolItem = RunItem & { type: "tool" };
+const composeToolCall = (older: ToolItem["tool_call"], current: ToolItem["tool_call"]) => ({
+  ...older,
+  ...current,
+  name: current.name || older.name,
+  arguments: Object.keys(current.arguments).length === 0 ? older.arguments : current.arguments,
+  meta: current.meta ?? older.meta,
+});
+
+const currentWins = (_older: RunItem, current: RunItem) => current;
+
 const composeByKind = {
   message(older: RunItem & { type: "message" }, current: RunItem & { type: "message" }, beganMidstream: boolean) {
     if (!beganMidstream) return { ...current, version: older.version + current.version };
@@ -69,37 +80,24 @@ const composeByKind = {
       ...((older.text || current.text) ? { text: (older.text ?? "") + (current.text ?? "") } : {}),
     };
   },
-  tool(older: RunItem & { type: "tool" }, current: RunItem & { type: "tool" }) {
-    const tool_call = {
-      ...older.tool_call,
-      ...current.tool_call,
-      name: current.tool_call.name || older.tool_call.name,
-      arguments: Object.keys(current.tool_call.arguments).length === 0 ? older.tool_call.arguments : current.tool_call.arguments,
-      meta: current.tool_call.meta ?? older.tool_call.meta,
-    };
-    return { ...current, tool_call, view: current.view ?? older.view, version: older.version + current.version };
+  tool(older: ToolItem, current: ToolItem) {
+    return { ...current, tool_call: composeToolCall(older.tool_call, current.tool_call), view: current.view ?? older.view, version: older.version + current.version };
   },
   approval(older: RunItem & { type: "approval" }, current: RunItem & { type: "approval" }) {
     const request = older.request.type === "approval_request" && current.request.type === "approval_request"
       ? {
           ...older.request,
           ...current.request,
-          tool_call: {
-            ...older.request.tool_call,
-            ...current.request.tool_call,
-            name: current.request.tool_call.name || older.request.tool_call.name,
-            arguments: Object.keys(current.request.tool_call.arguments).length === 0 ? older.request.tool_call.arguments : current.request.tool_call.arguments,
-            meta: current.request.tool_call.meta ?? older.request.tool_call.meta,
-          },
+          tool_call: composeToolCall(older.request.tool_call, current.request.tool_call),
           view: current.request.view ?? older.request.view,
         }
       : current.request;
     return { ...older, ...current, request, ended: current.ended ?? older.ended };
   },
-  user(_older: RunItem & { type: "user" }, current: RunItem & { type: "user" }) { return current; },
-  error(_older: RunItem & { type: "error" }, current: RunItem & { type: "error" }) { return current; },
-  notification(_older: RunItem & { type: "notification" }, current: RunItem & { type: "notification" }) { return current; },
-  unknown(_older: RunItem & { type: "unknown" }, current: RunItem & { type: "unknown" }) { return current; },
+  user: currentWins,
+  error: currentWins,
+  notification: currentWins,
+  unknown: currentWins,
   sub_agent(older: RunItem & { type: "sub_agent" }, current: RunItem & { type: "sub_agent" }) {
     const toolCount = older.toolCount === undefined || current.toolCount === undefined ? current.toolCount ?? older.toolCount : Math.max(older.toolCount, current.toolCount);
     return { ...older, ...current, urgency: current.urgency, toolCount };
