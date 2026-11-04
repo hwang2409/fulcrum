@@ -1335,7 +1335,7 @@
       ]
     },
     "markdown": {
-      "source": "# title\n\n- **fast**\n- `minimal`\n",
+      "source": "# title\n\n```typescript\nconst answer: number = 42;\n```\n",
       "lines": [
         [
           {
@@ -1350,43 +1350,63 @@
         [],
         [
           {
-            "text": "-",
+            "text": "```",
             "type": "punctuation"
           },
           {
-            "text": " "
+            "text": "typescript",
+            "type": "string"
+          }
+        ],
+        [
+          {
+            "text": "const",
+            "type": "keyword"
           },
           {
-            "text": "**",
-            "type": "punctuation"
+            "text": " ",
+            "type": "string"
           },
           {
-            "text": "fast",
+            "text": "answer",
             "type": "constant"
           },
           {
-            "text": "**",
+            "text": ":",
+            "type": "operator"
+          },
+          {
+            "text": " ",
+            "type": "string"
+          },
+          {
+            "text": "number",
+            "type": "type"
+          },
+          {
+            "text": " ",
+            "type": "string"
+          },
+          {
+            "text": "=",
+            "type": "operator"
+          },
+          {
+            "text": " ",
+            "type": "string"
+          },
+          {
+            "text": "42",
+            "type": "number"
+          },
+          {
+            "text": ";",
             "type": "punctuation"
           }
         ],
         [
           {
-            "text": "-",
-            "type": "punctuation"
-          },
-          {
-            "text": " "
-          },
-          {
-            "text": "`",
-            "type": "punctuation"
-          },
-          {
-            "text": "minimal",
-            "type": "string"
-          },
-          {
-            "text": "`",
+            "text": "```",
             "type": "punctuation"
           }
         ],
@@ -2511,7 +2531,7 @@
   },
   "newReference": {
     "vue": {
-      "source": "<template><button @click=\"count++\">{{ count }}</button></template>\n<script setup>const count = ref(0);</script>\n",
+      "source": "<template><button @click=\"count++\">{{ count }}</button></template>\n<script setup lang=\"ts\">const count = ref(0);</script>\n",
       "lines": [
         [
           {
@@ -2596,6 +2616,29 @@
             "type": "attribute"
           },
           {
+            "text": " "
+          },
+          {
+            "text": "lang",
+            "type": "attribute"
+          },
+          {
+            "text": "=",
+            "type": "punctuation"
+          },
+          {
+            "text": "\"",
+            "type": "punctuation"
+          },
+          {
+            "text": "ts",
+            "type": "string"
+          },
+          {
+            "text": "\"",
+            "type": "punctuation"
+          },
+          {
             "text": ">",
             "type": "punctuation"
           },
@@ -2650,7 +2693,7 @@
       ]
     },
     "svelte": {
-      "source": "<script>let count = 0;</script>\n<button on:click={() => count++}>{count}</button>\n",
+      "source": "<script lang=\"ts\">let count: number = 0;</script>\n<button on:click={() => count++}>{count}</button>\n",
       "lines": [
         [
           {
@@ -2660,6 +2703,29 @@
           {
             "text": "script",
             "type": "tag"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "lang",
+            "type": "attribute"
+          },
+          {
+            "text": "=",
+            "type": "punctuation"
+          },
+          {
+            "text": "\"",
+            "type": "punctuation"
+          },
+          {
+            "text": "ts",
+            "type": "string"
+          },
+          {
+            "text": "\"",
+            "type": "punctuation"
           },
           {
             "text": ">",
@@ -2675,6 +2741,17 @@
           {
             "text": "count",
             "type": "variable"
+          },
+          {
+            "text": ":",
+            "type": "operator"
+          },
+          {
+            "text": " "
+          },
+          {
+            "text": "number",
+            "type": "type"
           },
           {
             "text": " "
