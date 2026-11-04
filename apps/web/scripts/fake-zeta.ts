@@ -377,7 +377,12 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           const pageSize = active === LARGE ? 128 : 8;
           if (Object.hasOwn(params, "before")) {
             const validator = params.history_validator as { end?: unknown; entry_id?: unknown } | undefined;
-            const end = params.before === null ? groups.length : Number(params.before);
+            const before = params.before;
+            const malformed = Object.hasOwn(params, "offset") ||
+              (before !== null && (!Number.isInteger(before) || Number(before) < 0 || !validator)) ||
+              (before === null && validator !== undefined);
+            if (malformed) return reply({ error: { code: -32602, message: "invalid session_history parameters" } });
+            const end = before === null ? groups.length : Number(before);
             const snapshotEnd = params.before === null ? groups.length : Number(validator?.end);
             const endpoint = snapshotEnd ? String(groups[snapshotEnd - 1]?.findLast((row) => row.event !== "approval_request" && row.event !== "approval_end")?.id ?? "") : null;
             if (params.before !== null && (validator?.end !== snapshotEnd || validator?.entry_id !== endpoint))
