@@ -22,6 +22,7 @@ const meta = (id: string, minutesAgo: number, extra: Json = {}) => ({
 
 export const ACTIVE = "s-reconnect";
 export const LONG = "s-long";
+export const MANY = "s-many";
 const seeded = [
   meta(ACTIVE, 2, { name: "fix the flaky reconnect test in packages/zeta" }),
   meta("s-themes", 45, { first_message_preview: "check every theme's muted text against 4.5:1 on the surface color" }),
@@ -200,7 +201,9 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let currentHistoryMode = historyMode;
   let allowed = origins;
   let active: string | null = ACTIVE;
-  let sessions = [...seeded];
+  const manyPages = Number(process.env.FAKE_ZETA_MANY_PAGES ?? 0);
+  if (manyPages > 0) histories[MANY] = Array.from({ length: manyPages * 8 }, (_, index) => ({ id: `many-${index}`, role: index % 2 ? "assistant" : "user", content: [text(`many-page row ${index}`)], tool_result: null }));
+  let sessions = [...seeded, ...(manyPages > 0 ? [meta(MANY, 1, { name: `${manyPages.toLocaleString("en")} pages of history` })] : [])];
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
   let turnStarted = false;
   let approvalAborted = false;

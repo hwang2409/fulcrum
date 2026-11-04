@@ -49,35 +49,72 @@ export async function listSessions(client: ZetaClient, offset = 0): Promise<{ se
   return { sessions: result.sessions ?? [], nextOffset: paged ? result.next_offset ?? null : null };
 }
 
-export const getStatus = (client: ZetaClient) => client.request("status", {}, { timeoutMs: 15_000 }) as Promise<ServerStatus>;
+export const getStatus = (client: ZetaClient, signal?: AbortSignal) => client.request("status", {}, { timeoutMs: 15_000, signal }) as Promise<ServerStatus>;
 
-export type OpenProgress = (messages: number) => void;
+export type OpenProgress = (messages: number, complete: boolean) => void;
+export type OpenResult = { lease: SessionLease; syncing: boolean; complete: Promise<{ lease?: SessionLease; syncing: boolean }> };
 
-/**
- * Makes `id` the server's session and rebuilds it on a fresh store: every `session_history` page, then pending
- * approvals from `status`, then the live events that arrived meanwhile. `resume` is skipped when the session is
- * already the server's: zeta's resume ends pending approvals.
- */
-export async function openSession(client: ZetaClient, id: string, progress?: OpenProgress): Promise<SessionLease> {
-  return client.replay(id, async () => {
-    const before = await getStatus(client);
-    if (before.session?.session_id !== id) await client.request("resume", { session_id: id }, { timeoutMs: 30_000 });
-    const rows: unknown[] = [];
+type HistoryPage = { messages?: unknown[]; next_offset?: number | null };
+const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus): RunEvent[] => {
+  const events = fromZetaHistory(rows);
+  for (const approval of status.pending_approvals ?? [])
+    events.push(...fromZetaEvent({ event: "approval_request", session_id: id, ...approval }));
+  events.push({ type: status.state === "idle" ? "run_end" : "run_start" });
+  return events;
+};
+const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) return reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
+  const timer = setTimeout(resolve, ms);
+  signal?.addEventListener("abort", () => { clearTimeout(timer); reject(Object.assign(new Error("request aborted"), { name: "AbortError" })); }, { once: true });
+});
+
+/** Opens the first history page immediately. Older pages continue in the same quarantined snapshot. */
+export async function openSession(client: ZetaClient, id: string, progress?: OpenProgress, signal?: AbortSignal): Promise<OpenResult> {
+  if (client.features.includes("session_replay_seq")) throw new Error("session_replay_seq needs the sequence replay coordinator");
+  let rows: unknown[] = [];
+  let nextOffset: number | null = null;
+  let initialStatus!: ServerStatus;
+  const lease = await client.replay(id, async () => {
+    const before = await getStatus(client, signal);
+    if (before.session?.session_id !== id) await client.request("resume", { session_id: id }, { timeoutMs: 30_000, signal });
+    const page = await client.request("session_history", { session_id: id, offset: 0 }, { timeoutMs: 15_000, signal }) as HistoryPage;
+    rows = page.messages ?? [];
+    nextOffset = page.next_offset ?? null;
+    initialStatus = await getStatus(client, signal);
+    progress?.(rows.length, nextOffset === null);
+    return [...fromZetaHistory(rows), { type: initialStatus.state === "idle" ? "run_end" as const : "run_start" as const }];
+  }, true);
+
+  const complete = (async (): Promise<{ lease?: SessionLease; syncing: boolean }> => {
+    for (let offset = nextOffset; offset !== null; ) {
+      const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal }) as HistoryPage;
+      const pageRows = page.messages ?? [];
+      rows.push(...pageRows);
+      for (const event of fromZetaHistory(pageRows)) lease.store.dispatch(event);
+      offset = page.next_offset ?? null;
+      progress?.(rows.length, offset === null);
+    }
+    let status = await getStatus(client, signal);
+    for (const event of snapshotEvents(id, [], status)) lease.store.dispatch(event);
+    if (status.state === "idle") {
+      client.finishReplay(id);
+      return { syncing: false };
+    }
+    while (status.state !== "idle") {
+      await wait(500, signal);
+      status = await getStatus(client, signal);
+    }
+    const finalRows: unknown[] = [];
     for (let offset: number | null = 0; offset !== null; ) {
-      const page = (await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000 })) as { messages?: unknown[]; next_offset?: number | null };
-      rows.push(...(page.messages ?? []));
-      progress?.(rows.length);
+      const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal }) as HistoryPage;
+      finalRows.push(...(page.messages ?? []));
       offset = page.next_offset ?? null;
     }
-    const status = await getStatus(client);
-    const events: RunEvent[] = fromZetaHistory(rows);
-    for (const approval of status.pending_approvals ?? [])
-      events.push(...fromZetaEvent({ event: "approval_request", session_id: id, ...approval }));
-    // History has no "turn ended" marker: an idle server means no call from history still runs.
-    if (status.state === "idle") events.push({ type: "run_end" });
-    else events.push({ type: "run_start" });
-    return events;
-  });
+    const finalStatus = await getStatus(client, signal);
+    const finalLease = await client.replay(id, async () => snapshotEvents(id, finalRows, finalStatus));
+    return { lease: finalLease, syncing: false };
+  })();
+  return { lease, syncing: initialStatus.state !== "idle", complete };
 }
 
 /** Zeta answers `resume` with -32004 while another session's turn runs. */
@@ -94,7 +131,7 @@ export type SessionsState = {
   server: { id: string | null; state: ServerStatus["state"]; approvals: number } | null;
   selected: string | null;
   /** The rebuilt session on screen. After a drop it stays until a reconnect replaces it; `stale` marks that. */
-  open: { id: string; lease: SessionLease; stale: boolean } | null;
+  open: { id: string; lease: SessionLease; stale: boolean; history: { messages: number; complete: boolean }; syncing: boolean } | null;
   opening: { id: string; messages: number } | null;
   openError: { id: string; message: string; busy: boolean; restored?: boolean } | null;
   /** A `new_session` in flight, and why the last one failed. */
@@ -117,6 +154,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const set = (patch: Partial<SessionsState>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); };
   let client: ZetaClient | null = null;
   let openGeneration = 0;
+  let openAbort: AbortController | null = null;
   const live = (target: ZetaClient) => client === target;
 
   let listInFlight: Promise<void> | null = null;
@@ -154,36 +192,34 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const open = async (id: string) => {
     const target = client;
     const mine = ++openGeneration;
+    openAbort?.abort();
+    const abort = new AbortController();
+    openAbort = abort;
     set({ selected: id, opening: { id, messages: 0 }, openError: null });
     if (!target) return;
     const previousId = state.open?.id !== id ? state.open?.id : null;
     try {
-      const previous = state.open?.id === id ? state.open.lease.store : null;
-      const lease = await openSession(target, id, (messages) => { if (mine === openGeneration) set({ opening: { id, messages } }); });
+      let history = { messages: 0, complete: false };
+      const opened = await openSession(target, id, (messages, complete) => {
+        history = { messages, complete };
+        if (mine !== openGeneration) return;
+        if (state.open?.id === id) set({ open: { ...state.open, history } });
+        else set({ opening: { id, messages } });
+      }, abort.signal);
+      const { lease } = opened;
       if (mine !== openGeneration || !live(target)) return lease.release();
-      if (previous) {
-        // Approvals by request id, with the ones folded into their tool's row (the core folds a resolved approval).
-        const approvals = (store: typeof previous) => store.getOutline().flatMap(({ id: itemId }) => {
-          const item = store.getItem(itemId);
-          const folded = item?.type === "tool" && item.approval?.type === "approval_end" ? store.getItem(`approval:${item.approval.request_id}`) : item;
-          return folded?.type === "approval" && folded.request.type === "approval_request" ? [folded] : [];
-        });
-        const rebuilt = new Map(approvals(lease.store).map((item) => [item.request.type === "approval_request" ? item.request.request_id : "", item]));
-        // Older servers did not advertise approval_history. Keep their old tool-only inference; negotiated servers are authoritative.
-        const oldServer = !target.features.includes("approval_history");
-        const hasHistoryApproval = rebuilt.size > 0;
-        const hasHistoryTool = lease.store.getOutline().some(({ id: itemId }) => lease.store.getItem(itemId)?.type === "tool");
-        for (const item of approvals(previous)) {
-          if (item.type !== "approval" || item.request.type !== "approval_request") continue;
-          const current = rebuilt.get(item.request.request_id);
-          if (current) continue;
-          lease.store.dispatch(item.request);
-          if (item.ended) lease.store.dispatch(item.ended);
-          else if (oldServer && hasHistoryTool && !hasHistoryApproval) lease.store.dispatch({ type: "approval_end", request_id: item.request.request_id, data: { reason: "connection_lost" } });
-        }
-      }
       state.open?.lease.release();
-      set({ open: { id, lease, stale: false }, opening: null });
+      set({ open: { id, lease, stale: false, history, syncing: opened.syncing }, opening: null });
+      void opened.complete.then((result) => {
+        if (mine !== openGeneration || !live(target)) return result.lease?.release();
+        if (result.lease) {
+          state.open?.lease.release();
+          set({ open: { id, lease: result.lease, stale: false, history: { ...history, complete: true }, syncing: result.syncing } });
+        } else if (state.open?.id === id) set({ open: { ...state.open, history: { ...history, complete: true }, syncing: result.syncing } });
+      }).catch((error) => {
+        if (mine === openGeneration && live(target) && (error as { name?: string }).name !== "AbortError")
+          set({ openError: { id, message: message(error), busy: isBusyError(error) } });
+      });
     } catch (error) {
       if (mine !== openGeneration || !live(target)) return;
       let restored = false;
@@ -204,6 +240,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     client = connection.client;
     if (!client) {
       openGeneration++;
+      openAbort?.abort();
       if (state.open) set({ open: { ...state.open, stale: true }, opening: null });
       return;
     }
@@ -270,6 +307,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       if (listSlowTimer !== null) clearTimeout(listSlowTimer);
       listSlowTimer = null;
       openGeneration++;
+      openAbort?.abort();
       state.open?.lease.release();
     },
   };

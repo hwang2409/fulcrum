@@ -137,7 +137,7 @@ test("on connect opens the active session before requesting the catalog", async 
   expect(view.state.open?.id).toBe("b");
   expect(view.state.listLoading).toBe(true);
   expect(view.state.listReady).toBe(false);
-  expect(fake.calls.map(([method]) => method).filter((method) => method !== "hello")).toEqual(["status", "list_sessions", "status", "session_history", "session_history", "status"]);
+  expect(fake.calls.map(([method]) => method).filter((method) => method !== "hello")).toEqual(["status", "list_sessions", "status", "session_history", "status", "session_history", "status"]);
   release();
   await tick();
   expect(view.state.listLoading).toBe(false);
@@ -154,6 +154,24 @@ test("on connect it opens the server's own session without resume, with every hi
   expect(kinds(view.state)).toEqual(["user", "message", "approval"]);
   expect(fake.calls.map(([method]) => method)).not.toContain("resume");
   expect(fake.calls.filter(([method]) => method === "session_history").map(([, params]) => params.offset)).toEqual([0, 1]);
+});
+
+test("the first history page makes the session usable while later pages load", async () => {
+  let release!: () => void;
+  const later = new Promise<{ messages: unknown[]; next_offset: null }>((resolve) => {
+    release = () => resolve({ messages: [{ id: "late", role: "assistant", content: [{ type: "text", text: "later page" }], tool_result: null }], next_offset: null });
+  });
+  const fake = await server(handlers("b", { session_history: (params) => params.offset === 0
+    ? { messages: [{ id: "first", role: "user", content: [{ type: "text", text: "first page" }], tool_result: null }], next_offset: 1 }
+    : later }));
+  const view = createSessions(source(fake.client));
+  await tick();
+  expect(view.state.open).toMatchObject({ id: "b", history: { messages: 1, complete: false } });
+  expect(kinds(view.state)).toEqual(["user"]);
+  release();
+  await tick();
+  expect(view.state.open?.history).toEqual({ messages: 2, complete: true });
+  expect(kinds(view.state)).toEqual(["user", "message", "approval"]);
 });
 
 test("selecting another session resumes it, releases the old one, and reports progress", async () => {
@@ -223,7 +241,7 @@ test("a drop keeps the old transcript as stale; the reconnect rebuilds it on a f
   expect(pending && "ended" in pending ? pending.ended : undefined).toBeUndefined();
 });
 
-test("a dropped approval is not guessed when history has no tool rows", async () => {
+test("a fresh idle snapshot removes a formerly pending approval", async () => {
   const first = await server(handlers("b"));
   const connection = source(first.client);
   const view = createSessions(connection);
@@ -233,12 +251,10 @@ test("a dropped approval is not guessed when history has no tool rows", async ()
   const second = await server(handlers("b", { status: () => ({ session: meta("b", "x"), state: "idle", pending_approvals: [] }) }));
   connection.set(second.client);
   await tick();
-  const ended = view.state.open!.lease.store.getItem("approval:r1");
-  expect(ended?.type).toBe("approval");
-  expect(ended && "ended" in ended ? ended.ended : undefined).toBeUndefined();
+  expect(view.state.open!.lease.store.getItem("approval:r1")).toBeUndefined();
 });
 
-test("advertised approval history does not infer connection lost", async () => {
+test("advertised approval history trusts the fresh snapshot", async () => {
   const first = await server(handlers("c"), ["list_sessions_paging", "approval_history"]);
   const connection = source(first.client);
   const view = createSessions(connection);
@@ -247,9 +263,33 @@ test("advertised approval history does not infer connection lost", async () => {
   const second = await server(handlers("c", { status: () => ({ session: meta("c", "x"), state: "idle", pending_approvals: [] }) }), ["list_sessions_paging", "approval_history"]);
   connection.set(second.client);
   await tick();
-  const approval = view.state.open!.lease.store.getItem("approval:r1");
-  expect(approval?.type).toBe("approval");
-  expect(approval && "ended" in approval ? approval.ended : undefined).toBeUndefined();
+  expect(view.state.open!.lease.store.getItem("approval:r1")).toBeUndefined();
+});
+
+test("a running open stays snapshot-only until idle, then reloads one complete message", async () => {
+  let statusCalls = 0;
+  let historyCalls = 0;
+  let emit: ((params: Record<string, unknown>) => void) | null = null;
+  const fake = await server(handlers("b", {
+    status: () => ({ session: meta("b", "x"), state: ++statusCalls < 5 ? "running" : "idle", pending_approvals: [] }),
+    session_history: () => {
+      historyCalls++;
+      if (historyCalls === 1) queueMicrotask(() => {
+        emit?.({ event: "assistant_delta", session_id: "b", delta: " duplicated tail", kind: "assistant" });
+        emit?.({ event: "assistant_message", session_id: "b", message: { role: "assistant", content: [{ type: "text", text: "partial duplicated tail" }] } });
+      });
+      return { messages: [{ id: "m", role: "assistant", content: [{ type: "text", text: historyCalls === 1 ? "partial" : "complete" }], tool_result: null }], next_offset: null };
+    },
+  }));
+  emit = fake.event;
+  const view = createSessions(source(fake.client));
+  await tick();
+  expect(view.state.open?.syncing).toBe(true);
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  const messages = view.state.open!.lease.store.getOutline().map(({ id }) => view.state.open!.lease.store.getItem(id)).filter((item) => item?.type === "message");
+  expect(messages).toHaveLength(1);
+  expect(messages[0]).toMatchObject({ type: "message", message: { content: [{ type: "text", text: "complete" }] } });
+  expect(view.state.open?.syncing).toBe(false);
 });
 
 test("live events after the open land in the open store", async () => {

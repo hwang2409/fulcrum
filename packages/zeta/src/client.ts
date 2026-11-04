@@ -36,13 +36,16 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const pending = new Map<number, Pending>();
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
+  const replaying = new Set<string>();
+  const quarantined = new Set<string>();
   const store = createRunStore(scheduler);
   let evictionCount = 0;
   const evict = (id: string) => {
     const value = stores.get(id);
-    if (!value) return false;
+    if (!value) { quarantined.delete(id); return false; }
     stores.delete(id);
     holders.delete(id);
+    quarantined.delete(id);
     value.dispose();
     evictionCount++;
     return true;
@@ -95,49 +98,31 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       },
     };
   };
-  const buffers = new Map<string, RunEvent[]>();
-  const eventIdentity = (event: RunEvent): string | undefined => {
-    if (event.type === "approval_request" || event.type === "approval_end") return `${event.type}:${event.request_id}`;
-    if (event.type === "message_delta" || event.type === "message_block" || event.type === "message_commit") return event.message_id ? `${event.type}:${event.message_id}` : undefined;
-    if (event.type === "tool_start" || event.type === "tool_input" || event.type === "tool_output" || event.type === "tool_end") return `${event.type}:${event.tool_call.id}`;
-    if (event.type === "notification" && event.notification_id) return `notification:${event.notification_id}`;
-    if (event.type === "user_message" && event.intent) return `user:${event.intent}`;
-    return undefined;
-  };
-  /**
-   * Opens `session` on a fresh store: the cached store is dropped, live events for the session wait while `load`
-   * runs, then the loaded history and the waiting events dispatch in that order. Without a server cursor, a message
-   * that commits while `load` runs can appear in both the history and the live events.
-   */
-  const replay = async (session: string, load: () => Promise<RunEvent[]>): Promise<SessionLease> => {
-    if (buffers.has(session)) throw new Error(`session ${session} is already replaying`);
-    evict(session);
-    const waiting: RunEvent[] = [];
-    buffers.set(session, waiting);
-    let history: RunEvent[];
+  // Without session_replay_seq, live events that overlap a history snapshot are ambiguous. Quarantine them.
+  const replay = async (session: string, load: () => Promise<RunEvent[]>, keepQuarantined = false): Promise<SessionLease> => {
+    if (replaying.has(session)) throw new Error(`session ${session} is already replaying`);
+    replaying.add(session);
+    const wasQuarantined = quarantined.has(session);
+    quarantined.add(session);
     try {
-      history = await load();
-      const lease = { store: createSession(session), release() { const count = holders.get(session); if (count !== undefined) holders.set(session, Math.max(0, count - 1)); } };
+      const history = await load();
+      evict(session);
+      if (keepQuarantined) quarantined.add(session);
+      const value = createSession(session);
       holders.set(session, 1);
-      const seen = new Set<string>();
-      for (const event of history) {
-        const identity = eventIdentity(event);
-        if (identity) seen.add(identity);
-        lease.store.dispatch(event);
-      }
-      for (const event of waiting) {
-        const identity = eventIdentity(event);
-        if (identity && seen.has(identity)) continue;
-        if (identity) seen.add(identity);
-        lease.store.dispatch(event);
-      }
-      buffers.delete(session);
+      let released = false;
+      const lease = { store: value, release() { if (released) return; released = true; const count = holders.get(session); if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1)); } };
+      for (const event of history) lease.store.dispatch(event);
+      if (!keepQuarantined) quarantined.delete(session);
       return lease;
     } catch (error) {
-      if (buffers.get(session) === waiting) buffers.delete(session);
+      if (!wasQuarantined) quarantined.delete(session);
       throw error;
+    } finally {
+      replaying.delete(session);
     }
   };
+  const finishReplay = (session: string) => { quarantined.delete(session); };
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;
     // Fallback until zeta echoes delivery_id: the echo belongs to a pending request with an intent and the same text.
@@ -161,8 +146,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       if (!message.params || typeof message.params !== "object") { store.dispatch(adapterError("event params are invalid")); return; }
       const events = fromZetaEvent(message.params).map(stampIntent);
       const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
-      const waiting = session === undefined ? undefined : buffers.get(session);
-      if (waiting) { waiting.push(...events); return; }
+      if (session !== undefined && quarantined.has(session)) return;
       const sessionStore = eventStore(session);
       for (const event of events) sessionStore.dispatch(event);
       return;
@@ -208,7 +192,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return result;
     });
   };
-  return { store, stores, forSession, replay, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
+  return { store, stores, forSession, replay, finishReplay, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }

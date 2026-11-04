@@ -289,6 +289,8 @@ function Body({ state, view, connection, sessions, opener, focusComposer, onCrea
       <>
         {offline ? <ConnectionNotice state={state} connection={connection} compact /> : null}
         {replacing ? <p className="note" data-tone="busy" role="status">opening {view.sessions.find((item) => item.session_id === view.opening!.id) ? sessionTitle(view.sessions.find((item) => item.session_id === view.opening!.id)!) : "session"}…</p> : null}
+        {!replacing && !view.open.history.complete ? <p className="note" data-tone="busy" role="status">loading earlier messages… {view.open.history.messages.toLocaleString("en")} loaded</p> : null}
+        {!replacing && view.open.syncing ? <p className="note" data-tone="busy" role="status">this turn is in progress; it will appear when it finishes</p> : null}
         {failed ? <div className="note" data-tone="danger" role="alert"><span>could not open {view.sessions.find((item) => item.session_id === view.openError!.id) ? sessionTitle(view.sessions.find((item) => item.session_id === view.openError!.id)!) : "session"}: {view.openError!.message}</span> <button type="button" className="ghost" onClick={() => sessions.dismissOpenError()}>dismiss</button> <button type="button" className="ghost" onClick={() => sessions.select(view.openError!.id)}>try again</button></div> : null}
         <Run client={offline ? null : connection.client} sessions={sessions} open={view.open} opener={opener} focusComposer={focusComposer} readOnly={Boolean(replacing || (failed && !view.openError?.restored))} ready={view.open.id === view.selected && !view.opening} />
       </>
