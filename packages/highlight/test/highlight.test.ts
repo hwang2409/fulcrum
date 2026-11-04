@@ -16,6 +16,7 @@ TokenizerRuntime.prototype.tokenize = function (...args: Parameters<typeof token
 // Tests that drive a runtime directly count their own calls; the shared highlighter runs a real worker.
 const directHighlighter = createHighlighter();
 afterAll(() => directHighlighter.dispose());
+
 // A shared-worker grammar, warm: its first block is answered plain (cold, provisional), then once more, colored.
 const warmed = new Map<string, Promise<void>>();
 const warmLanguage = (language: string) => {
@@ -71,6 +72,29 @@ const samples: Record<string, string> = {
 };
 
 const text = (tokens: Token[]) => tokens.map((token) => token.text).join("");
+const embeddedSamples = {
+  markdown: "```ts\nconst answer: number = 42;\n```\n\n```python\nvalue: int = 42\n```\n\n```not-a-language\nplain <text>\n```\n",
+  html: "<script>const answer = 42;</script><style>.answer { color: red; }</style>\n",
+  tsx: "const View = () => <section>{42}</section>;\n",
+} as const;
+
+let isolatedRuntimeId = 0;
+async function finalRuntimeTokens(language: string, code: string, preload: string[] = []): Promise<Token[]> {
+  let resolve!: (tokens: Token[]) => void;
+  const final = new Promise<Token[]>((done) => { resolve = done; });
+  const context = { id: `${language}-${++isolatedRuntimeId}`, version: 1, state: "done" as const };
+  const runtime = new TokenizerRuntime((update, provenance, tokens) => {
+    if (update.id === context.id && update.version === context.version && provenance.fullyLoaded) resolve(tokens);
+  });
+  for (const dependency of preload) {
+    await runtime.tokenize("x\n", dependency, { id: `preload-${dependency}`, version: 1, state: "done" });
+    await runtime["warming"].get(dependency);
+  }
+  const first = await runtime.tokenizeWithProvenance(code, context, language, 1);
+  const tokens = first.provenance.fullyLoaded ? first.tokens : await final;
+  runtime.dispose();
+  return tokens;
+}
 type RecordedRequest = { requestId: number; code: string; grammar: { language: string; generation: number } };
 const completeReply = (request: RecordedRequest, tokens: Token[]) => ({ requestId: request.requestId, tokens, provenance: { ...request.grammar, fullyLoaded: true }, completion: { status: "complete" as const } });
 const viteConfig = 'import { defineConfig } from "vite";\nimport { resolve } from "node:path";\n\nexport default defineConfig({\n  build: { outDir: resolve("dist") },\n});\n';
@@ -1100,5 +1124,70 @@ describe("grammar warm-up and regex caches", () => {
     expect(told).toBe(1);
     expect(requests).toHaveLength(1);
     highlighter.dispose();
+  });
+});
+
+describe("embedded grammar completion", () => {
+  test.each(Object.entries(embeddedSamples))("%s is order-independent in an isolated runtime", async (language, code) => {
+    const isolated = await finalRuntimeTokens(language, code);
+    const fullyPreloaded = await finalRuntimeTokens(language, code, ["typescript", "python", "javascript", "css", "html", "tsx", "markdown"]);
+    expect(isolated).toEqual(fullyPreloaded);
+  });
+
+  test("unknown markdown fences are final as plain fenced content", async () => {
+    const code = "```not-a-language\nconst answer = 42;\n```\n";
+    const isolated = await finalRuntimeTokens("markdown", code);
+    const preloaded = await finalRuntimeTokens("markdown", code, ["typescript", "python", "javascript", "css"]);
+    expect(isolated).toEqual(preloaded);
+  });
+
+  test("random grammar load orders produce the same embedded tokens", async () => {
+    const languages = ["typescript", "python", "javascript", "css", "html", "tsx", "markdown"];
+    const expected = await finalRuntimeTokens("markdown", embeddedSamples.markdown, languages);
+    let seed = 0x51f15e;
+    for (let run = 0; run < 8; run++) {
+      const order = [...languages];
+      for (let index = order.length - 1; index > 0; index--) {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        const swap = seed % (index + 1);
+        [order[index], order[swap]] = [order[swap]!, order[index]!];
+      }
+      expect(await finalRuntimeTokens("markdown", embeddedSamples.markdown, order.slice(0, run % order.length))).toEqual(expected);
+    }
+  });
+
+  test.each(Object.entries(embeddedSamples))("%s awaitCompletion resolves only after isolated tokens are final", async (language, code) => {
+    const highlighter = createHighlighter();
+    const context = { id: `isolated-${language}-completion`, version: 1, state: "done" as const };
+    const first = await highlighter(code, language, context);
+    expect(first).not.toBeNull();
+    expect(await highlighter.awaitCompletion(context.id, context.version)).toEqual({ version: 1, status: "complete" });
+    const final = await highlighter(code, language, context);
+    const expected = await finalRuntimeTokens(language, code, ["typescript", "python", "javascript", "css", "html", "tsx", "markdown"]);
+    expect(final).toEqual(expected);
+    highlighter.dispose();
+  });
+
+  test("a streaming markdown fence re-tokenizes at most once per embedded grammar load", async () => {
+    const counts = new Map<number, number>();
+    let resolve!: (tokens: Token[]) => void;
+    const complete = new Promise<Token[]>((done) => { resolve = done; });
+    const runtime = new TokenizerRuntime((context, provenance, tokens) => {
+      if (context.id === "stream-embedded" && context.version === 1 && provenance.fullyLoaded) resolve(tokens);
+    });
+    const tokenizeLoaded = runtime["tokenizeLoaded"].bind(runtime);
+    runtime["tokenizeLoaded"] = ((code, language, context, highlighter, epoch) => {
+      counts.set(context.version, (counts.get(context.version) ?? 0) + 1);
+      return tokenizeLoaded(code, language, context, highlighter, epoch);
+    }) as typeof runtime["tokenizeLoaded"];
+    const open = "```ts\nconst answer: number = 42;\n";
+    const first = await runtime.tokenizeWithProvenance(open, { id: "stream-embedded", version: 1, state: "streaming" }, "markdown", 1);
+    const colored = first.provenance.fullyLoaded ? first.tokens : await complete;
+    expect(colored.some((token) => token.type === "keyword" && token.text === "const")).toBeTrue();
+    const closed = await runtime.tokenizeWithProvenance(`${open}\`\`\`\n`, { id: "stream-embedded", version: 2, state: "done" }, "markdown", 1);
+    expect(closed.provenance.fullyLoaded).toBeTrue();
+    expect(counts.get(1) ?? 0).toBeLessThanOrEqual(2);
+    expect(counts.get(2)).toBe(1);
+    runtime.dispose();
   });
 });
