@@ -3,8 +3,6 @@ import type { Token } from "../src/index.js";
 import type { RegexRecipeOptions } from "../src/regex.js";
 import { semanticTheme } from "../src/scopes.js";
 
-const build = Bun.spawnSync(["bun", "run", "build"], { cwd: new URL("..", import.meta.url).pathname });
-if (build.exitCode !== 0) throw new Error(build.stderr.toString());
 const { createHighlighter } = await import("../dist/index.js");
 // Unit tests never depend on how fast this machine is: the clock stands still unless a test moves it, so no line is ever
 // over the time limit by chance. Only a real worker (its own clock) runs on real time.

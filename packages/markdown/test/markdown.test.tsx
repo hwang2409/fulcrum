@@ -485,8 +485,6 @@ test("later reference definitions update frozen blocks and react when committed"
 });
 
 test("renders a real typescript fence with the shared highlighter", async () => {
-  const build = Bun.spawnSync(["bun", "run", "build"], { cwd: new URL("../../highlight/", import.meta.url).pathname });
-  if (build.exitCode !== 0) throw new Error(build.stderr.toString());
   const { createHighlighter } = await import("../../highlight/dist/index.js");
   const browser = new Window();
   Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
