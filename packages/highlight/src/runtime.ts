@@ -2,6 +2,7 @@ import type { GrammarState, HighlighterCore, LanguageInput, ThemedToken } from "
 import type { HighlightContext, Token } from "./types.js";
 import type { GrammarProvenance } from "./protocol.js";
 import { loadLanguage } from "./languages.js";
+import { normalizeLanguage } from "./names.js";
 import { appendToken, semanticTheme } from "./scopes.js";
 
 const THEME = "fulcrum-semantic";
@@ -48,7 +49,7 @@ class RegexCache extends Map<string, RegExp | Error> {
 // costly bundled pattern, in cpp, converts and compiles in about 21 ms).
 const WARM_SLICE_MS = 8;
 const WARM_SAMPLE = 'x = f("s", 1); // c';
-type Provisional = { code: string; context: HighlightContext; provenance: GrammarProvenance };
+type Provisional = { code: string; context: HighlightContext; provenance: GrammarProvenance; dependencies: string[] };
 export type TokenizeResult = { tokens: Token[]; provenance: GrammarProvenance };
 /**
  * Where the runtime sends a block again, colored, once its grammar is warm. Until then a block is answered at once
@@ -91,6 +92,27 @@ function grammarPatterns(value: unknown, patterns: Set<string>): Set<string> {
 function sourceLines(source: string): string[] {
   const lines = source.match(/.*(?:\n|$)/g)?.filter(Boolean) ?? [];
   return lines;
+}
+
+// Markdown can reach dozens of grammars, so load only supported languages named by fences in this source.
+function embeddedLanguages(code: string, language: string): string[] {
+  if (language !== "markdown") return [];
+  const dependencies = new Set<string>();
+  let fence: { marker: "`" | "~"; length: number } | undefined;
+  for (const line of sourceLines(code)) {
+    if (fence) {
+      const close = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*(?:\n)?$/);
+      if (close && close[1]![0] === fence.marker && close[1]!.length >= fence.length) fence = undefined;
+      continue;
+    }
+    const open = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`~]+)?/);
+    if (!open) continue;
+    const marker = open[1]!;
+    fence = { marker: marker[0] as "`" | "~", length: marker.length };
+    const dependency = normalizeLanguage(open[2]);
+    if (dependency && dependency !== language) dependencies.add(dependency);
+  }
+  return [...dependencies];
 }
 
 export class TokenizerRuntime {
@@ -184,8 +206,8 @@ export class TokenizerRuntime {
 
   // Sends each block answered plain while `language` was cold again, colored, one per task.
   private async flushProvisional(language: string, epoch: number): Promise<void> {
-    for (const [id, block] of this.provisional) {
-      if (block.provenance.language !== language) continue;
+    for (const [id, block] of [...this.provisional]) {
+      if (block.provenance.language !== language && !block.dependencies.includes(language)) continue;
       this.provisional.delete(id);
       const result = await this.tokenizeWithProvenance(block.code, block.context, block.provenance.language, block.provenance.generation);
       if (epoch !== this.epoch) return;
@@ -210,14 +232,16 @@ export class TokenizerRuntime {
 
   async tokenizeWithProvenance(code: string, context: HighlightContext, language: string, generation: number): Promise<TokenizeResult> {
     const epoch = this.epoch;
+    const dependencies = embeddedLanguages(code, language);
     const highlighter = await this.ensureLanguage(language);
-    const fullyLoaded = this.warmed.has(language);
+    if (dependencies.length) await Promise.all(dependencies.map((dependency) => this.ensureLanguage(dependency)));
+    const fullyLoaded = this.warmed.has(language) && dependencies.every((dependency) => this.warmed.has(dependency));
     const provenance = { language, generation, fullyLoaded };
     if (epoch !== this.epoch) return { tokens: code ? [{ text: code }] : [], provenance: { ...provenance, fullyLoaded: false } };
     const known = this.provisional.get(context.id);
     const newest = !known || known.context.version <= context.version;
     if (!fullyLoaded) {
-      if (newest) this.provisional.set(context.id, { code, context, provenance });
+      if (newest) this.provisional.set(context.id, { code, context, provenance, dependencies });
       return { tokens: code ? [{ text: code }] : [], provenance };
     }
     if (newest) this.provisional.delete(context.id); // this revision replaces the plain one
