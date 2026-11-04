@@ -221,8 +221,11 @@ if (mode === "generate") {
       if (changed.length) failedScenarios.push(`${name}: ${changed.join(", ")}`);
     } finally { highlighter.dispose(); }
   };
-  for (const language of Object.keys(inputs)) await checkRun(`isolation-${language}`, { [language]: inputs[language]! });
-  for (const [name, order] of orders) await checkRun(name, Object.fromEntries(order.map((language) => [language, inputs[language]!])));
+  const languages = Object.keys(inputs);
+  for (let index = 0; index < languages.length; index += 8) {
+    await Promise.all(languages.slice(index, index + 8).map((language) => checkRun(`isolation-${language}`, { [language]: inputs[language]! })));
+  }
+  await Promise.all(orders.map(([name, order]) => checkRun(name, Object.fromEntries(order.map((language) => [language, inputs[language]!])))));
   if (failures.size) {
     await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(runs, null, 2) + "\n");
     throw new Error(`legacy token parity failed: ${[...failures].join(", ")} (shuffle seed ${seed}; ${failedScenarios.join("; ")}; actual: /tmp/highlight-token-parity-actual.json)`);
