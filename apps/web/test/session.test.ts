@@ -113,15 +113,18 @@ test("a newer catalog retires a locally created session", async () => {
   expect(view.state.sessions.map((item) => item.session_id)).not.toContain("new");
 });
 
-test("a failed replacement restores the old active session", async () => {
+test("a failed replacement restores the old active session and its readiness", async () => {
   const resumed: string[] = [];
+  const selected: string[] = [];
   const fake = await server(handlers("b", { resume: (params) => { resumed.push(params.session_id as string); if (params.session_id === "a") { return { session: meta("a", "x") }; } return { session: meta("b", "x") }; }, session_history: (params) => { if (params.session_id === "a") throw { code: -32602, message: "session log is invalid at line 12" }; return { messages: [], next_offset: null }; } }));
-  const view = createSessions(source(fake.client));
+  const view = createSessions(source(fake.client), { onSelect: (id) => selected.push(id) });
   await tick();
   view.select("a");
   await tick();
   expect(resumed).toEqual(["a", "b"]);
   expect(view.state.open?.id).toBe("b");
+  expect(view.state.selected).toBe("b");
+  expect(selected).toEqual(["a", "b"]);
   expect(view.state.openError?.message).toBe("session log is invalid at line 12");
 });
 

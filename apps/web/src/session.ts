@@ -194,7 +194,8 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         } catch { /* keep the retained run read-only with an explicit reopen action */ }
       }
       if (mine !== openGeneration || !live(target)) return;
-      set({ opening: null, openError: { id, message: message(error), busy: isBusyError(error), ...(restored ? { restored: true } : {}) } });
+      if (restored && previousId) onSelect?.(previousId);
+      set({ ...(restored && previousId ? { selected: previousId } : {}), opening: null, openError: { id, message: message(error), busy: isBusyError(error), ...(restored ? { restored: true } : {}) } });
     }
   };
 
