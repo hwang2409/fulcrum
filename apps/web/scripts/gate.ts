@@ -155,6 +155,7 @@ try {
     await check("slow catalog keeps the selected transcript and composer usable", async () => {
       fake.setLive(false);
       fake.setMode("slow-catalog");
+      await page.goto("about:blank");
       fake.drop();
       await fake.start();
       await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
