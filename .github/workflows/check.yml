@@ -1,5 +1,8 @@
 name: check
 on: [push, pull_request]
+concurrency:
+  group: check-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -33,6 +36,7 @@ jobs:
       - run: bun run check:notices
       - run: bun run check:pack-consumer
       - run: cd apps/playground && bunx playwright install --with-deps chromium
+      - run: bun run --cwd apps/playground highlight:recipes
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground smoke
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
       - run: bun run check:mermaid-bundle

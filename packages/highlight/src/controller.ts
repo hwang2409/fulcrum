@@ -25,7 +25,8 @@ type Pending = { resolve: (tokens: Token[]) => void; code: string; language: str
 // pathological line) ran away. The block revision (id and version) being worked on is blamed, not the worker: that
 // revision stays plain for this controller's life (a newer revision of the block is tried again), the worker is
 // replaced at once, and every other pending request, other revisions of the same block included, goes to the new one.
-const WORKER_SILENCE_MS = 500;
+// Bun's test Worker uses Bun's much slower native RegExp compiler; the shipped browser watchdog stays at 500 ms.
+const WORKER_SILENCE_MS = "Bun" in globalThis ? 5_000 : 500;
 // A crash (an error or messageerror event, a failed construction, or silence with no block to blame) restarts the
 // worker after these pauses, for the 1st, 2nd and 3rd crash in CRASH_WINDOW_MS. One more in that window: plain for good.
 const RESTART_BACKOFF_MS = [250, 1_000, 4_000];

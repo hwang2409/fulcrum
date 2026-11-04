@@ -1,9 +1,10 @@
 import type { GrammarState, HighlighterCore, LanguageInput, ThemedToken } from "@shikijs/types";
 import type { HighlightContext, Token } from "./types.js";
 import type { GrammarProvenance } from "./protocol.js";
-import { loadLanguage } from "./languages.js";
+import { loadLanguage, loadRegexRecipes } from "./languages.js";
 import { normalizeLanguage } from "./names.js";
 import { appendToken, semanticTheme } from "./scopes.js";
+import { grammarPatterns, REGEX_TARGET, type RegexRecipes } from "./regex.js";
 
 const THEME = "fulcrum-semantic";
 const MAX_SESSIONS = 32;
@@ -60,35 +61,6 @@ export type OnUpdate = (context: HighlightContext, provenance: GrammarProvenance
 /** Called as work goes on: with the block being tokenized (at its start and after each line), or null while a grammar compiles. */
 export type OnProgress = (context: HighlightContext | null) => void;
 
-// The sources textmate compiles for one grammar pattern (vscode-textmate's RegExpSource, pinned with shiki): `\z`
-// rewritten, and for `\A` or `\G` the variant for each of "A allowed" and "G allowed", the disallowed one as \uFFFF.
-function textmateSources(pattern: string): string[] {
-  let source = "";
-  let anchored = false;
-  for (let index = 0; index < pattern.length; index++) {
-    const next = pattern[index + 1];
-    if (pattern[index] !== "\\" || next === undefined) { source += pattern[index]; continue; }
-    source += next === "z" ? "$(?!\\n)(?<!\\n)" : `\\${next}`;
-    anchored ||= next === "A" || next === "G";
-    index++;
-  }
-  if (!anchored) return [source];
-  const variant = (allowA: boolean, allowG: boolean) => source.replace(/\\([\s\S])/g, (escape, next: string) =>
-    (next === "A" && !allowA) || (next === "G" && !allowG) ? "\\\uFFFF" : escape);
-  return [variant(true, true), variant(true, false), variant(false, true), variant(false, false)];
-}
-
-function grammarPatterns(value: unknown, patterns: Set<string>): Set<string> {
-  if (Array.isArray(value)) for (const item of value) grammarPatterns(item, patterns);
-  else if (value && typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) {
-      if (typeof item === "string" && (key === "match" || key === "begin" || key === "end" || key === "while")) for (const source of textmateSources(item)) patterns.add(source);
-      else grammarPatterns(item, patterns);
-    }
-  }
-  return patterns;
-}
-
 function sourceLines(source: string): string[] {
   const lines = source.match(/.*(?:\n|$)/g)?.filter(Boolean) ?? [];
   return lines;
@@ -109,6 +81,7 @@ function embeddedLanguages(code: string, language: string): string[] {
 export class TokenizerRuntime {
   private highlighter?: HighlighterCore;
   private cache?: RegexCache;
+  private readonly recipes = new Map<string, RegexRecipes[string]>();
   private readonly sessions = new Map<string, Session>();
   private clock = 0;
   private epoch = 0;
@@ -133,11 +106,18 @@ export class TokenizerRuntime {
 
   private engine(): Promise<HighlighterCore> {
     this.enginePromise ??= (async () => {
-      const [{ createHighlighterCore }, { createJavaScriptRegexEngine }] = await Promise.all([
+      const [{ createHighlighterCore }, { createJavaScriptRegexEngine, defaultJavaScriptRegexConstructor }] = await Promise.all([
         import("shiki/core"), import("@shikijs/engine-javascript"),
       ]);
       const cache = this.cache = new RegexCache();
-      const engine = createJavaScriptRegexEngine({ cache });
+      const engine = createJavaScriptRegexEngine({
+        cache,
+        target: REGEX_TARGET,
+        regexConstructor: (pattern) => {
+          const recipe = this.recipes.get(pattern);
+          return recipe ? new RegExp(recipe[0], recipe[1]) : defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
+        },
+      });
       this.highlighter = await createHighlighterCore({ engine, langs: [], themes: [semanticTheme] });
       return this.highlighter;
     })();
@@ -151,9 +131,10 @@ export class TokenizerRuntime {
     let loading = this.languages.get(language);
     if (!loading) {
       loading = (async () => {
-        const grammars = await loadLanguage(language);
+        const [grammars, recipes] = await Promise.all([loadLanguage(language), loadRegexRecipes(language)]);
+        for (const [pattern, recipe] of Object.entries(recipes)) this.recipes.set(pattern, recipe);
         await highlighter.loadLanguage(...grammars);
-        const patterns = grammarPatterns(grammars, new Set());
+        const patterns = grammarPatterns(grammars);
         for (const pattern of patterns) cache.grammar.add(pattern);
         // Not awaited: requests are answered while the grammar warms, with plain text until it is warm.
         this.warming.set(language, this.warmQueue = this.warmQueue.then(() => this.warm(language, patterns, highlighter, cache, epoch)).catch(() => {}));
@@ -182,10 +163,10 @@ export class TokenizerRuntime {
     for (const pattern of patterns) {
       if (epoch !== this.epoch) return;
       this.onProgress(null);
-      if (!cache.static.has(pattern)) {
+      if (!cache.static.has(pattern) && !this.recipes.has(pattern)) {
         // The engine caches a failed compile the same way and throws it at use.
         try {
-          const regex = defaultJavaScriptRegexConstructor(pattern, { target: "auto" });
+          const regex = defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
           regex.exec(""); // a long pattern's RegExp compiles at its first use
           regex.lastIndex = 0;
           cache.set(pattern, regex);
@@ -322,6 +303,7 @@ export class TokenizerRuntime {
     this.languages.clear();
     this.cache?.clear();
     this.cache = undefined;
+    this.recipes.clear();
     this.warming.clear();
     this.warmed.clear();
     this.provisional.clear();

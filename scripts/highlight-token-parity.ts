@@ -1,10 +1,12 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 import { dirname, resolve } from "node:path";
 import { createHighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript";
 import vue from "@shikijs/langs/vue";
 import svelte from "@shikijs/langs/svelte";
 import julia from "@shikijs/langs/julia";
+import { REGEX_TARGET } from "../packages/highlight/src/regex.js";
 import { semanticTheme } from "../packages/highlight/src/scopes.js";
 import type { CompletionNotice, Highlight } from "../packages/highlight/src/types.js";
 
@@ -118,7 +120,7 @@ async function assertLegacyCoverage() {
 async function reference() {
   const out: Fixture["newReference"] = {};
   for (const [language, source] of Object.entries(newSamples)) {
-    const engine = createJavaScriptRegexEngine();
+    const engine = createJavaScriptRegexEngine({ target: REGEX_TARGET });
     const grammar = language === "vue" ? vue : language === "svelte" ? svelte : julia;
     const highlighter = await createHighlighterCore({ engine, langs: [grammar], themes: [semanticTheme] });
     try {
@@ -174,6 +176,11 @@ const mode = process.argv[2] ?? "check";
 if (mode === "generate") {
   if (process.argv[3] !== "--from" || !process.argv[4]) throw new Error("usage: bun scripts/highlight-token-parity.ts generate --from <main-ref>");
   const ref = process.argv[4];
+  const sha = await capture(["git", "rev-parse", "--verify", `${ref}^{commit}`]);
+  const mainSha = await capture(["git", "merge-base", "HEAD", "origin/main"]);
+  const exactSha = /^[0-9a-f]{40}$/.test(ref) && ref === sha;
+  if ((ref !== "origin/main" && !exactSha) || sha !== mainSha)
+    throw new Error(`--from must be origin/main or its exact current merge-base sha (${mainSha})`);
   await withBuiltRef(ref, async (packageRoot, sha) => {
     const { createHighlighter } = await import(`${packageRoot}/dist/index.js`) as { createHighlighter: () => Highlight };
     const newReference = await reference();
@@ -206,14 +213,19 @@ if (mode === "generate") {
     ["shuffle", shuffled(Object.keys(inputs), seed)],
   ] as const;
   const scenario = process.env.HIGHLIGHT_PARITY_SCENARIO;
-  if (scenario) {
-    const isolatedLanguage = scenario.startsWith("isolation-") ? scenario.slice("isolation-".length) : undefined;
-    const order = isolatedLanguage ? [isolatedLanguage] : orders.find(([name]) => name === scenario)?.[1];
-    if (!order?.length || order.some((language) => !inputs[language])) throw new Error(`unknown parity scenario: ${scenario}`);
-    const orderedInputs = Object.fromEntries(order.map((language) => [language, inputs[language]!]));
-    const highlighter = createHighlighter();
-    try { console.log(JSON.stringify(await controllerSamples(highlighter, orderedInputs, `parity-${scenario}`))); }
-    finally { highlighter.dispose(); }
+  const wave = process.env.HIGHLIGHT_PARITY_WAVE ? JSON.parse(process.env.HIGHLIGHT_PARITY_WAVE) as string[] : scenario ? [scenario] : undefined;
+  if (wave) {
+    const results: Record<string, Record<string, Sample>> = {};
+    for (const name of wave) {
+      const isolatedLanguage = name.startsWith("isolation-") ? name.slice("isolation-".length) : undefined;
+      const order = isolatedLanguage ? [isolatedLanguage] : orders.find(([orderName]) => orderName === name)?.[1];
+      if (!order?.length || order.some((language) => !inputs[language])) throw new Error(`unknown parity scenario: ${name}`);
+      const orderedInputs = Object.fromEntries(order.map((language) => [language, inputs[language]!]));
+      const highlighter = createHighlighter();
+      try { results[name] = await controllerSamples(highlighter, orderedInputs, `parity-${name}`); }
+      finally { highlighter.dispose(); }
+    }
+    console.log(JSON.stringify(scenario ? results[scenario] : results));
     process.exit(0);
   }
   const direct = await reference();
@@ -228,20 +240,23 @@ if (mode === "generate") {
     for (const language of changed) failures.add(language);
     if (changed.length) failedScenarios.push(`${name}: ${changed.join(", ")}`);
   };
-  const checkScenario = async (name: string, order: readonly string[]) => {
-    const proc = Bun.spawn([process.execPath, import.meta.path], {
-      env: { ...process.env, HIGHLIGHT_PARITY_SCENARIO: name }, stdout: "pipe", stderr: "pipe",
-    });
-    const [stdout, stderr, status] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    if (status) throw new Error(`${name} failed: ${stderr.trim()}`);
-    compare(name, JSON.parse(stdout) as Record<string, Sample>, Object.fromEntries(order.map((language) => [language, inputs[language]!])));
-  };
   const scenarios: [string, readonly string[]][] = [
     ...Object.keys(inputs).map((language): [string, string[]] => [`isolation-${language}`, [language]]), ...orders,
   ];
-  for (let index = 0; index < scenarios.length; index += 12) {
-    await Promise.all(scenarios.slice(index, index + 12).map(([name, order]) => checkScenario(name, order)));
-  }
+  // Reuse one Bun process per CPU wave; every scenario still creates a fresh controller and worker realm.
+  const processCount = Math.min(availableParallelism(), scenarios.length);
+  const waves = Array.from({ length: processCount }, () => [] as typeof scenarios);
+  scenarios.forEach((entry, index) => waves[index % processCount]!.push(entry));
+  await Promise.all(waves.map(async (wave) => {
+    const proc = Bun.spawn([process.execPath, import.meta.path], {
+      env: { ...process.env, HIGHLIGHT_PARITY_WAVE: JSON.stringify(wave.map(([name]) => name)) }, stdout: "pipe", stderr: "pipe",
+    });
+    const [stdout, stderr, status] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    if (status) throw new Error(`parity wave failed: ${stderr.trim()}`);
+    const actual = JSON.parse(stdout) as Record<string, Record<string, Sample>>;
+    for (const [name, order] of wave)
+      compare(name, actual[name]!, Object.fromEntries(order.map((language) => [language, inputs[language]!])));
+  }));
   if (failures.size) {
     await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(runs, null, 2) + "\n");
     throw new Error(`legacy token parity failed: ${[...failures].join(", ")} (shuffle seed ${seed}; ${failedScenarios.join("; ")}; actual: /tmp/highlight-token-parity-actual.json)`);

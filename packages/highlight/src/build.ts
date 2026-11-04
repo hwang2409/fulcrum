@@ -17,20 +17,24 @@ if (!result.success) {
   process.exit(1);
 }
 
-const grammarEntries = new URL("../.grammar-entries/", import.meta.url);
-const grammarNames = (await readdir(grammarEntries)).filter((name) => name.endsWith(".ts")).map((name) => name.slice(0, -3));
-const grammars = await Bun.build({
-  entrypoints: grammarNames.map((name) => new URL(`${name}.ts`, grammarEntries).pathname),
-  outdir: new URL("../dist/langs", import.meta.url).pathname,
-  target: "browser",
-  format: "esm",
-  splitting: false,
-  minify: true,
-  sourcemap: "external",
-  naming: { entry: "[name].js" },
-});
-await rm(grammarEntries, { recursive: true, force: true });
-if (!grammars.success) {
-  for (const log of grammars.logs) console.error(log);
-  process.exit(1);
-}
+const buildAssets = async (source: string, output: string) => {
+  const entries = new URL(source, import.meta.url);
+  const names = (await readdir(entries)).filter((name) => name.endsWith(".ts"));
+  const built = await Bun.build({
+    entrypoints: names.map((name) => new URL(name, entries).pathname),
+    outdir: new URL(output, import.meta.url).pathname,
+    target: "browser",
+    format: "esm",
+    splitting: false,
+    minify: true,
+    sourcemap: "external",
+    naming: { entry: "[name].js" },
+  });
+  await rm(entries, { recursive: true, force: true });
+  if (!built.success) {
+    for (const log of built.logs) console.error(log);
+    process.exit(1);
+  }
+};
+await buildAssets("../.grammar-entries/", "../dist/langs");
+await buildAssets("../.recipe-entries/", "../dist/recipes");

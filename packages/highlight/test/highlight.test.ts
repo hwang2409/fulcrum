@@ -269,19 +269,21 @@ describe("incremental tokenization", () => {
     counter.runtime.dispose();
   });
 
-  // In the worker a grammar is warmed in the background; once warm, a document compiles no regex: warm-up compiled each
-  // pattern in every form textmate compiles it (anchor variants, `\z` rewritten). Regression: cpp's anchor variants were
-  // missed, and its first line then compiled 51 patterns in one scanner build that cannot yield (272 ms in Chromium).
-  test("after warm-up a document compiles no regex", async () => {
+  // Recipes remove conversion from the cold path without constructing every grammar regex. The first representative
+  // document may demand more rules than the synthetic warm sample; the same document must not construct them twice.
+  test("static recipes construct only scanner-demanded regexes", async () => {
     const documents = [["cpp", "#include <vector>\nstd::vector<int> values;\nint main() { return values.size(); }\n"], ["typescript", viteConfig]] as const;
     for (const [language, source] of documents) {
       const runtime = new TokenizerRuntime(() => {});
       await runtime.tokenize("x\n", language, { id: "load", version: 1, state: "done" });
       await runtime["warming"].get(language);
-      const before = runtime.cacheSize();
-      const tokens = await runtime.tokenize(source, language, { id: "warm", version: 1, state: "done" });
-      expect(text(tokens)).toBe(source);
-      expect({ language, ...runtime.cacheSize() }).toEqual({ language, ...before });
+      expect(runtime.cacheSize().static).toBeLessThan(runtime["recipes"].size);
+      const first = await runtime.tokenize(source, language, { id: "first", version: 1, state: "done" });
+      const afterFirst = runtime.cacheSize();
+      const second = await runtime.tokenize(source, language, { id: "second", version: 1, state: "done" });
+      expect(text(first)).toBe(source);
+      expect(second).toEqual(first);
+      expect(runtime.cacheSize()).toEqual(afterFirst);
       runtime.dispose();
     }
   }, 60_000);
@@ -548,7 +550,7 @@ describe("worker liveness and restarts", () => {
     const stale = highlighter("a\n", "cpp", { id: "surface", version: 1, state: "streaming" });
     const newer = highlighter("a\nb\n", "cpp", { id: "surface", version: 2, state: "done" });
     workers[0].send({ progress: workers[0].posted[0].context });
-    jest.advanceTimersByTime(500);
+    jest.advanceTimersByTime(5_000);
     jest.advanceTimersByTime(0);
     expect(workers.length).toBe(2);
     expect(workers[1].posted.map((request) => request.code)).toEqual(["a\nb\n"]);
@@ -562,7 +564,7 @@ describe("worker liveness and restarts", () => {
     const workers: Scripted[] = [];
     const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
     const result = highlighter("x\n", "cpp", block("quiet"));
-    jest.advanceTimersByTime(500 + 250);
+    jest.advanceTimersByTime(5_000 + 250);
     expect(workers.length).toBe(2);
     answer(workers[1], 0);
     expect(await result).toEqual(colored("x\n"));

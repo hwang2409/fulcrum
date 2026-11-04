@@ -8,6 +8,7 @@
     "./languages": { "types": "./dist/names.d.ts", "bun": "./src/names.ts", "import": "./dist/names.js" },
     "./worker.js": "./dist/worker.js",
     "./chunks/*": "./dist/chunks/*",
+    "./recipes/*": "./dist/recipes/*",
     "./styles.css": "./styles.css"
   },
   "scripts": {

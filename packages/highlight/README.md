@@ -1,6 +1,6 @@
 # @fulcrum/highlight
 
-lazy, worker-first syntax highlighting for streamed agent output. the published package bundles its javascript regex engine and textmate grammars, has no runtime dependencies, and uses no wasm, html injection, blob url, `eval`, or `new Function`.
+lazy, worker-first syntax highlighting for streamed agent output. the published package bundles its javascript regex engine and textmate grammars, has no runtime dependencies, and uses no wasm, html injection, blob url, `eval`, or `new Function`. grammar regex recipes are generated for the explicit ES2024 target, which uses the `v` flag available in Safari 17 and Chromium 112 without newer ES2025 flag groups or build-host feature detection.
 
 ```ts
 import { createHighlighter } from "@fulcrum/highlight";
@@ -37,10 +37,10 @@ render typed fragments as text in `<span class="tok-<type>">` and untyped fragme
 
 ## bundlers
 
-the worker and each grammar load through static `new URL("...", import.meta.url)` references, so bundlers that understand that pattern emit them as separate lazy assets.
+the worker, each grammar, and its matching regex recipe load through static `new URL("...", import.meta.url)` references, so bundlers that understand that pattern emit them as separate lazy assets. recipes contain converted static grammar patterns but construct a native `RegExp` only when the scanner demands that pattern. capture-derived dynamic patterns use the pinned runtime converter and its 256-entry lru.
 
 - vite (and rollup with its standard asset handling): works with no configuration. grammars load only when a block in that language is highlighted.
-- esbuild: it keeps the urls but does not emit the files. copy `node_modules/@fulcrum/highlight/dist/worker.js`, `dist/chunks/`, and `dist/langs/` next to your bundle output (for example with an asset-copy plugin or a build step), keeping the same relative layout.
+- esbuild: it keeps the urls but does not emit the files. copy `node_modules/@fulcrum/highlight/dist/worker.js`, `dist/chunks/`, `dist/langs/`, and `dist/recipes/` next to your bundle output (for example with an asset-copy plugin or a build step), keeping the same relative layout.
 - other bundlers: if the worker cannot load, code shows as exact plain text (see above), so code is never lost.
 
 ## scope mapping
