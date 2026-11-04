@@ -149,9 +149,10 @@ export const eventSchemas = {
   },
 } satisfies { readonly [T in RunEvent["type"]]: EventSchema<Extract<RunEvent, { type: T }>> };
 
+const DROP_EVENT = Symbol("drop invalid event");
 const OMIT = Symbol("omit invalid optional field");
-type Sanitized = { readonly value?: Record<string, unknown>; readonly count: number };
-type SanitizedField = { readonly invalid?: true; readonly changed?: unknown; readonly count: number };
+const MISSING = Symbol("missing optional field");
+type Sanitized = Record<string, unknown> | typeof DROP_EVENT | { readonly value: Record<string, unknown>; readonly count: number };
 const copyWithChanges = (input: Record<string, unknown>, changes: ReadonlyMap<string, unknown>) => {
   try {
     const descriptors = Object.getOwnPropertyDescriptors(input);
@@ -164,31 +165,39 @@ const copyWithChanges = (input: Record<string, unknown>, changes: ReadonlyMap<st
     return undefined;
   }
 };
-const sanitizeField = (input: Record<string, unknown>, field: string, rule: FieldSchema): SanitizedField => {
-  let value: unknown;
+const readField = (input: Record<string, unknown>, field: string, rule: FieldSchema) => {
   try {
-    value = input[field];
-    if (value === undefined) return rule.required ? { invalid: true, count: 0 } : { count: 0 };
-    if (!rule.validate(value)) return rule.required ? { invalid: true, count: 0 } : { changed: OMIT, count: 1 };
+    const value = input[field];
+    if (value === undefined) return rule.required ? DROP_EVENT : MISSING;
+    if (!rule.validate(value)) return rule.required ? DROP_EVENT : OMIT;
+    return value;
   } catch {
-    return rule.required ? { invalid: true, count: 0 } : { changed: OMIT, count: 1 };
+    return rule.required ? DROP_EVENT : OMIT;
   }
-  if (!rule.inspectFields || !rule.fields) return { count: 0 };
-  const nested = sanitizeFields(value as Record<string, unknown>, rule.fields);
-  if (!nested.value) return { invalid: true, count: 0 };
-  return { count: nested.count, ...(nested.value === value ? {} : { changed: nested.value }) };
 };
 const sanitizeFields = (input: Record<string, unknown>, schema: Readonly<Record<string, FieldSchema>>): Sanitized => {
   let count = 0;
   let changes: Map<string, unknown> | undefined;
   for (const field in schema) {
-    const result = sanitizeField(input, field, schema[field]!);
-    if (result.invalid) return { count: 0 };
-    count += result.count;
-    if (result.changed !== undefined) (changes ??= new Map()).set(field, result.changed);
+    const rule = schema[field]!;
+    const value = readField(input, field, rule);
+    if (value === DROP_EVENT) return DROP_EVENT;
+    if (value === OMIT) {
+      (changes ??= new Map()).set(field, OMIT);
+      count++;
+      continue;
+    }
+    if (value === MISSING || !rule.inspectFields || !rule.fields) continue;
+    const nested = sanitizeFields(value as Record<string, unknown>, rule.fields);
+    if (nested === DROP_EVENT) return DROP_EVENT;
+    if (nested === value) continue;
+    const changed = nested as { readonly value: Record<string, unknown>; readonly count: number };
+    (changes ??= new Map()).set(field, changed.value);
+    count += changed.count;
   }
-  if (!changes) return { value: input, count };
-  return { value: copyWithChanges(input, changes), count };
+  if (!changes) return input;
+  const value = copyWithChanges(input, changes);
+  return value ? { value, count } : DROP_EVENT;
 };
 
 const validateEvent = (input: unknown, onSanitized?: (count: number) => void): RunEvent | undefined => {
@@ -198,9 +207,11 @@ const validateEvent = (input: unknown, onSanitized?: (count: number) => void): R
   if (!schema)
     return { type: "unknown", name: type, data: record(input.data) ? input.data : {} };
   const sanitized = sanitizeFields(input, schema);
-  if (!sanitized.value) return undefined;
-  if (sanitized.count) onSanitized?.(sanitized.count);
-  return sanitized.value as unknown as RunEvent;
+  if (sanitized === DROP_EVENT) return undefined;
+  if (sanitized === input) return input as unknown as RunEvent;
+  const changed = sanitized as { readonly value: Record<string, unknown>; readonly count: number };
+  onSanitized?.(changed.count);
+  return changed.value as unknown as RunEvent;
 };
 
 type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;
