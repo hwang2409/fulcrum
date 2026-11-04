@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { createHighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript";
 import vue from "@shikijs/langs/vue";
@@ -10,7 +10,7 @@ import type { CompletionNotice, Highlight } from "../packages/highlight/src/type
 
 type Token = { text: string; type?: string };
 type Sample = { source: string; lines: Token[][] };
-type Fixture = { legacy: Record<string, Sample>; newReference: Record<string, Sample> };
+type Fixture = { source: { ref: string; sha: string }; legacy: Record<string, Sample>; newReference: Record<string, Sample> };
 type ResolverContract = { aliases: Record<string, string | null> };
 const samples: Record<string, string> = {
   tsx: "type Props = { name: string };\nexport const View = ({ name }: Props) => <main className=\"card\">{name}</main>;\n",
@@ -134,42 +134,98 @@ async function reference() {
 function differences(actual: Record<string, Sample>, expected: Record<string, Sample>) {
   return Object.keys(expected).filter((language) => JSON.stringify(actual[language]) !== JSON.stringify(expected[language]));
 }
+function shuffled<T>(values: T[], seed: number): T[] {
+  const out = [...values];
+  let state = seed >>> 0;
+  for (let index = out.length - 1; index > 0; index--) {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    const swap = state % (index + 1);
+    [out[index], out[swap]] = [out[swap]!, out[index]!];
+  }
+  return out;
+}
+async function capture(command: string[], cwd = import.meta.dir): Promise<string> {
+  const proc = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, status] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  if (status) throw new Error(`${command.join(" ")} failed: ${stderr.trim()}`);
+  return stdout.trim();
+}
+async function run(command: string[], cwd: string): Promise<void> {
+  const proc = Bun.spawn(command, { cwd, stdout: "inherit", stderr: "inherit" });
+  if (await proc.exited) throw new Error(`${command.join(" ")} failed`);
+}
+async function withBuiltRef<T>(ref: string, use: (root: string, sha: string) => Promise<T>): Promise<T> {
+  const sha = await capture(["git", "rev-parse", "--verify", `${ref}^{commit}`]);
+  const commonDir = resolve(await capture(["git", "rev-parse", "--git-common-dir"]));
+  const worktrees = resolve(dirname(commonDir), ".worktrees");
+  await mkdir(worktrees, { recursive: true });
+  const path = await mkdtemp(resolve(worktrees, "token-parity-"));
+  await rm(path, { recursive: true });
+  await run(["git", "worktree", "add", "--detach", path, sha], dirname(commonDir));
+  try {
+    await run(["bun", "run", "--cwd", resolve(path, "packages/highlight"), "build"], path);
+    return await use(resolve(path, "packages/highlight"), sha);
+  } finally {
+    await run(["git", "worktree", "remove", "--force", path], dirname(commonDir));
+  }
+}
 await assertLegacyCoverage();
 const mode = process.argv[2] ?? "check";
-const packageRoot = resolve(process.env.HIGHLIGHT_ROOT ?? resolve(import.meta.dir, "../packages/highlight"));
-const { createHighlighter } = await import(`${packageRoot}/dist/index.js`) as { createHighlighter: () => Highlight };
 if (mode === "generate") {
-  const newReference = await reference();
-  const highlighter = createHighlighter();
-  try {
-    const fixture: Fixture = { legacy: await controllerSamples(highlighter, samples, "fixture"), newReference };
-    await mkdir(resolve(fixturePath, ".."), { recursive: true });
-    await writeFile(fixturePath, JSON.stringify(fixture, null, 2) + "\n");
-  } finally { highlighter.dispose(); }
-  console.log(`wrote token parity fixture: ${Object.keys(samples).length} legacy languages, ${Object.keys(newSamples).length} direct references`);
+  if (process.argv[3] !== "--from" || !process.argv[4]) throw new Error("usage: bun scripts/highlight-token-parity.ts generate --from <main-ref>");
+  const ref = process.argv[4];
+  await withBuiltRef(ref, async (packageRoot, sha) => {
+    const { createHighlighter } = await import(`${packageRoot}/dist/index.js`) as { createHighlighter: () => Highlight };
+    const newReference = await reference();
+    const highlighter = createHighlighter();
+    try {
+      const fixture: Fixture = { source: { ref, sha }, legacy: await controllerSamples(highlighter, samples, "fixture"), newReference };
+      await mkdir(resolve(fixturePath, ".."), { recursive: true });
+      await writeFile(fixturePath, JSON.stringify(fixture, null, 2) + "\n");
+    } finally { highlighter.dispose(); }
+  });
+  console.log(`wrote token parity fixture from ${ref}: ${Object.keys(samples).length} legacy languages, ${Object.keys(newSamples).length} direct references`);
 } else {
+  const packageRoot = resolve(process.env.HIGHLIGHT_ROOT ?? resolve(import.meta.dir, "../packages/highlight"));
+  const { createHighlighter } = await import(`${packageRoot}/dist/index.js`) as { createHighlighter: () => Highlight };
   const expected = JSON.parse(await readFile(fixturePath, "utf8")) as Fixture;
+  const mainSha = await capture(["git", "merge-base", "HEAD", "origin/main"]);
+  if (expected.source?.sha !== mainSha) throw new Error(`token fixture source ${expected.source?.sha ?? "missing"} is not main ${mainSha}; regenerate from origin/main`);
   const direct = await reference();
   const referenceDifferences = differences(direct, expected.newReference);
   if (referenceDifferences.length) throw new Error(`direct Shiki reference changed: ${referenceDifferences.join(", ")}`);
-  const highlighter = createHighlighter();
-  try {
-    const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof highlighter.awaitCompletion !== "function";
-    const allInputs = { ...samples, ...newSamples };
-    const historicalOrder = [...regressionOrder, ...Object.keys(allInputs).filter((language) => !regressionOrder.includes(language))];
-    const inputs = historical ? Object.fromEntries(historicalOrder.map((language) => [language, allInputs[language]!])) : samples;
-    const expectedTokens = historical ? { ...expected.legacy, ...expected.newReference } : expected.legacy;
-    const failures = new Set<string>();
-    const runs: Record<string, Record<string, Sample>> = {};
-    for (let run = 1; run <= 3; run++) {
-      const actual = await controllerSamples(highlighter, inputs, `parity-${run}`);
-      runs[String(run)] = actual;
-      for (const language of differences(actual, expectedTokens)) failures.add(language);
-    }
-    if (failures.size) {
-      await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(runs, null, 2) + "\n");
-      throw new Error(`legacy token parity failed: ${[...failures].join(", ")} (actual: /tmp/highlight-token-parity-actual.json)`);
-    }
-  } finally { highlighter.dispose(); }
-  console.log(`token parity passed: ${Object.keys(expected.legacy).length} main-registry languages, ${Object.keys(expected.newReference).length} direct references, exact completed revisions`);
+  const probe = createHighlighter();
+  const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof probe.awaitCompletion !== "function";
+  probe.dispose();
+  const allInputs = { ...samples, ...newSamples };
+  const historicalOrder = [...regressionOrder, ...Object.keys(allInputs).filter((language) => !regressionOrder.includes(language))];
+  const inputs = historical ? Object.fromEntries(historicalOrder.map((language) => [language, allInputs[language]!])) : samples;
+  const expectedTokens = historical ? { ...expected.legacy, ...expected.newReference } : expected.legacy;
+  const seed = Number(process.env.HIGHLIGHT_PARITY_SEED ?? "51");
+  if (!Number.isSafeInteger(seed)) throw new Error("HIGHLIGHT_PARITY_SEED must be an integer");
+  const orders = [
+    ["forward", Object.keys(inputs)],
+    ["reverse", Object.keys(inputs).reverse()],
+    ["shuffle", shuffled(Object.keys(inputs), seed)],
+  ] as const;
+  const failures = new Set<string>();
+  const failedScenarios: string[] = [];
+  const runs: Record<string, Record<string, Sample>> = {};
+  const checkRun = async (name: string, orderedInputs: Record<string, string>) => {
+    const highlighter = createHighlighter();
+    try {
+      const actual = await controllerSamples(highlighter, orderedInputs, `parity-${name}`);
+      runs[name] = actual;
+      const changed = differences(actual, Object.fromEntries(Object.keys(orderedInputs).map((language) => [language, expectedTokens[language]!])));
+      for (const language of changed) failures.add(language);
+      if (changed.length) failedScenarios.push(`${name}: ${changed.join(", ")}`);
+    } finally { highlighter.dispose(); }
+  };
+  for (const language of Object.keys(inputs)) await checkRun(`isolation-${language}`, { [language]: inputs[language]! });
+  for (const [name, order] of orders) await checkRun(name, Object.fromEntries(order.map((language) => [language, inputs[language]!])));
+  if (failures.size) {
+    await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(runs, null, 2) + "\n");
+    throw new Error(`legacy token parity failed: ${[...failures].join(", ")} (shuffle seed ${seed}; ${failedScenarios.join("; ")}; actual: /tmp/highlight-token-parity-actual.json)`);
+  }
+  console.log(`token parity passed: ${Object.keys(expected.legacy).length} main-registry languages, ${Object.keys(expected.newReference).length} direct references, isolated plus forward/reverse/shuffle order (seed ${seed}), exact completed revisions`);
 }

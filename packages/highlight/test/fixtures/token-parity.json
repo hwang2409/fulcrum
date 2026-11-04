@@ -1,4 +1,8 @@
 {
+  "source": {
+    "ref": "origin/main",
+    "sha": "6a9f50e14461a8e5c7db3e0d14a56ae17f31af12"
+  },
   "legacy": {
     "tsx": {
       "source": "type Props = { name: string };\nexport const View = ({ name }: Props) => <main className=\"card\">{name}</main>;\n",
