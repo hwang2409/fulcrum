@@ -191,9 +191,6 @@ if (mode === "generate") {
   const expected = JSON.parse(await readFile(fixturePath, "utf8")) as Fixture;
   const mainSha = await capture(["git", "merge-base", "HEAD", "origin/main"]);
   if (expected.source?.sha !== mainSha) throw new Error(`token fixture source ${expected.source?.sha ?? "missing"} is not main ${mainSha}; regenerate from origin/main`);
-  const direct = await reference();
-  const referenceDifferences = differences(direct, expected.newReference);
-  if (referenceDifferences.length) throw new Error(`direct Shiki reference changed: ${referenceDifferences.join(", ")}`);
   const probe = createHighlighter();
   const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof probe.awaitCompletion !== "function";
   probe.dispose();
@@ -208,24 +205,43 @@ if (mode === "generate") {
     ["reverse", Object.keys(inputs).reverse()],
     ["shuffle", shuffled(Object.keys(inputs), seed)],
   ] as const;
+  const scenario = process.env.HIGHLIGHT_PARITY_SCENARIO;
+  if (scenario) {
+    const isolatedLanguage = scenario.startsWith("isolation-") ? scenario.slice("isolation-".length) : undefined;
+    const order = isolatedLanguage ? [isolatedLanguage] : orders.find(([name]) => name === scenario)?.[1];
+    if (!order?.length || order.some((language) => !inputs[language])) throw new Error(`unknown parity scenario: ${scenario}`);
+    const orderedInputs = Object.fromEntries(order.map((language) => [language, inputs[language]!]));
+    const highlighter = createHighlighter();
+    try { console.log(JSON.stringify(await controllerSamples(highlighter, orderedInputs, `parity-${scenario}`))); }
+    finally { highlighter.dispose(); }
+    process.exit(0);
+  }
+  const direct = await reference();
+  const referenceDifferences = differences(direct, expected.newReference);
+  if (referenceDifferences.length) throw new Error(`direct Shiki reference changed: ${referenceDifferences.join(", ")}`);
   const failures = new Set<string>();
   const failedScenarios: string[] = [];
   const runs: Record<string, Record<string, Sample>> = {};
-  const checkRun = async (name: string, orderedInputs: Record<string, string>) => {
-    const highlighter = createHighlighter();
-    try {
-      const actual = await controllerSamples(highlighter, orderedInputs, `parity-${name}`);
-      runs[name] = actual;
-      const changed = differences(actual, Object.fromEntries(Object.keys(orderedInputs).map((language) => [language, expectedTokens[language]!])));
-      for (const language of changed) failures.add(language);
-      if (changed.length) failedScenarios.push(`${name}: ${changed.join(", ")}`);
-    } finally { highlighter.dispose(); }
+  const compare = (name: string, actual: Record<string, Sample>, orderedInputs: Record<string, string>) => {
+    runs[name] = actual;
+    const changed = differences(actual, Object.fromEntries(Object.keys(orderedInputs).map((language) => [language, expectedTokens[language]!])))
+    for (const language of changed) failures.add(language);
+    if (changed.length) failedScenarios.push(`${name}: ${changed.join(", ")}`);
   };
-  const languages = Object.keys(inputs);
-  for (let index = 0; index < languages.length; index += 8) {
-    await Promise.all(languages.slice(index, index + 8).map((language) => checkRun(`isolation-${language}`, { [language]: inputs[language]! })));
+  const checkScenario = async (name: string, order: readonly string[]) => {
+    const proc = Bun.spawn([process.execPath, import.meta.path], {
+      env: { ...process.env, HIGHLIGHT_PARITY_SCENARIO: name }, stdout: "pipe", stderr: "pipe",
+    });
+    const [stdout, stderr, status] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    if (status) throw new Error(`${name} failed: ${stderr.trim()}`);
+    compare(name, JSON.parse(stdout) as Record<string, Sample>, Object.fromEntries(order.map((language) => [language, inputs[language]!])));
+  };
+  const scenarios: [string, readonly string[]][] = [
+    ...Object.keys(inputs).map((language): [string, string[]] => [`isolation-${language}`, [language]]), ...orders,
+  ];
+  for (let index = 0; index < scenarios.length; index += 12) {
+    await Promise.all(scenarios.slice(index, index + 12).map(([name, order]) => checkScenario(name, order)));
   }
-  await Promise.all(orders.map(([name, order]) => checkRun(name, Object.fromEntries(order.map((language) => [language, inputs[language]!])))));
   if (failures.size) {
     await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(runs, null, 2) + "\n");
     throw new Error(`legacy token parity failed: ${[...failures].join(", ")} (shuffle seed ${seed}; ${failedScenarios.join("; ")}; actual: /tmp/highlight-token-parity-actual.json)`);
