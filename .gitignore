@@ -5,4 +5,4 @@ dist/
 apps/playground/stress-artifacts/
 packages/highlight/.grammar-entries/
 packages/highlight/.recipe-entries/
-packages/highlight/.recipe-generation-hash
+packages/highlight/.recipe-generation-manifest.json

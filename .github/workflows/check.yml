@@ -19,7 +19,7 @@ jobs:
           path: |
             packages/highlight/.grammar-entries
             packages/highlight/.recipe-entries
-            packages/highlight/.recipe-generation-hash
+            packages/highlight/.recipe-generation-manifest.json
           key: highlight-recipes-${{ runner.os }}-${{ steps.highlight-recipes.outputs.hash }}
       - run: bunx tsc -b
       - run: bun run --cwd packages/highlight build # @fulcrum/react imports its built entry

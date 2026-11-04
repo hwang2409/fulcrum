@@ -1,5 +1,13 @@
 import { readdir, rm } from "node:fs/promises";
+import { generationDigest, verifyBuiltLanguages, verifyGenerationCache } from "./generation-cache.js";
+import { generationEntries } from "./generation-config.js";
+
+const entries = generationEntries();
+const expectedFiles = entries.flatMap((entry) => [`.grammar-entries/${entry.actual}.ts`, `.recipe-entries/${entry.actual}.ts`]).sort();
 await Bun.$`bun ${new URL("./generate.ts", import.meta.url).pathname}`;
+if (!await verifyGenerationCache(new URL("../", import.meta.url), new URL("../.recipe-generation-manifest.json", import.meta.url), await generationDigest(), expectedFiles)) {
+  throw new Error("highlight recipe cache failed verification after generation");
+}
 await rm(new URL("../dist", import.meta.url), { recursive: true, force: true });
 const result = await Bun.build({
   entrypoints: [new URL("./index.ts", import.meta.url).pathname, new URL("./worker.ts", import.meta.url).pathname, new URL("./runtime.ts", import.meta.url).pathname, new URL("./names.ts", import.meta.url).pathname],
@@ -37,3 +45,4 @@ const buildAssets = async (source: string, output: string) => {
 };
 await buildAssets("../.grammar-entries/", "../dist/langs");
 await buildAssets("../.recipe-entries/", "../dist/recipes");
+await verifyBuiltLanguages(new URL("../dist/", import.meta.url), entries.map((entry) => entry.actual));
