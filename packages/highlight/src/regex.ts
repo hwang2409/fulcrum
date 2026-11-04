@@ -26,13 +26,19 @@ export function textmateSources(pattern: string): string[] {
   return [variant(true, true), variant(true, false), variant(false, true), variant(false, false)];
 }
 
-export function grammarPatterns(value: unknown, patterns = new Set<string>()): Set<string> {
-  if (Array.isArray(value)) for (const item of value) grammarPatterns(item, patterns);
-  else if (value && typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) {
-      if (typeof item === "string" && (key === "match" || key === "begin" || key === "end" || key === "while"))
-        for (const source of textmateSources(item)) patterns.add(source);
-      else grammarPatterns(item, patterns);
+const patternFields = new Set(["match", "begin", "end", "while"]);
+const isPatternField = (key: string, value: unknown): value is string => typeof value === "string" && patternFields.has(key);
+
+export function grammarPatterns(value: unknown): Set<string> {
+  const patterns = new Set<string>();
+  const pending = [value];
+  while (pending.length) {
+    const current = pending.pop();
+    if (Array.isArray(current)) { pending.push(...current); continue; }
+    if (!current || typeof current !== "object") continue;
+    for (const [key, item] of Object.entries(current)) {
+      if (isPatternField(key, item)) for (const source of textmateSources(item)) patterns.add(source);
+      else pending.push(item);
     }
   }
   return patterns;

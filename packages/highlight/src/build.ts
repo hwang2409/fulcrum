@@ -30,7 +30,6 @@ const buildAssets = async (source: string, output: string) => {
     sourcemap: "external",
     naming: { entry: "[name].js" },
   });
-  await rm(entries, { recursive: true, force: true });
   if (!built.success) {
     for (const log of built.logs) console.error(log);
     process.exit(1);
