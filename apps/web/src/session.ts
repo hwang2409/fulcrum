@@ -318,36 +318,43 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   let openAbort: AbortController | null = null;
   const live = (target: ZetaClient) => client === target;
 
-  let listInFlight: Promise<void> | null = null;
+  type Catalog = { client: ZetaClient; inFlight: Promise<void> | null; slowTimer: ReturnType<typeof setTimeout> | null };
+  let catalog: Catalog | null = null;
   const localSessions = new Map<string, { session: SessionMeta; createdGeneration: number }>();
   let listGeneration = 0;
-  let listSlowTimer: ReturnType<typeof setTimeout> | null = null;
+  const currentCatalog = (owner: Catalog) => catalog === owner;
+  const retireCatalog = () => {
+    const timer = catalog?.slowTimer;
+    if (timer !== null && timer !== undefined) clearTimeout(timer);
+    catalog = null;
+  };
   const refresh = async () => {
-    if (listInFlight) return listInFlight;
-    const target = client;
-    if (!target) return;
+    const owner = catalog;
+    if (!owner) return;
+    if (owner.inFlight) return owner.inFlight;
     const generation = ++listGeneration;
     set({ listLoading: true, listSlow: false, listError: null, listReady: false });
-    listSlowTimer = setTimeout(() => { if (live(target)) set({ listSlow: true }); }, 5_000);
-    listInFlight = (async () => {
+    owner.slowTimer = setTimeout(() => { if (currentCatalog(owner)) set({ listSlow: true }); }, 5_000);
+    owner.inFlight = (async () => {
       try {
-        const list = await listSessions(target);
-        if (!live(target)) return;
+        const list = await listSessions(owner.client);
+        if (!currentCatalog(owner)) return;
         const visible = new Map(list.sessions.map((session) => [session.session_id, session]));
         for (const [id, local] of localSessions) {
           if (local.createdGeneration < generation) localSessions.delete(id);
           else if (!visible.has(id)) visible.set(id, local.session);
         }
-        set({ sessions: [...visible.values()], nextOffset: list.nextOffset, listError: null, listLoading: false, listSlow: false, listReady: true });
+        set({ sessions: [...visible.values()], nextOffset: list.nextOffset, listError: null, listReady: true });
       } catch (error) {
-        if (live(target)) set({ listLoading: false, listSlow: false, listError: message(error) });
+        if (currentCatalog(owner)) set({ listError: message(error) });
       } finally {
-        if (listSlowTimer !== null) clearTimeout(listSlowTimer);
-        listSlowTimer = null;
-        listInFlight = null;
+        if (owner.slowTimer !== null) clearTimeout(owner.slowTimer);
+        owner.slowTimer = null;
+        owner.inFlight = null;
+        if (currentCatalog(owner)) set({ listLoading: false, listSlow: false });
       }
     })();
-    return listInFlight;
+    return owner.inFlight;
   };
 
   const open = async (id: string, knownStatus?: ServerStatus) => {
@@ -401,43 +408,51 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     }
   };
 
+  const markApprovalsReconnecting = (disconnected: ZetaClient | null) => {
+    const run = transitionRun(state.transition);
+    if (!run || !disconnected?.features.includes("approval_reconnect")) return;
+    for (const { id: itemId } of run.lease.store.getOutline()) {
+      const item = run.lease.store.getItem(itemId);
+      if (item?.type === "approval" && !item.ended && item.request.type === "approval_request")
+        run.lease.store.dispatch({ ...item.request, state: "reconnecting", status: "reconnecting…", disabled_reason: "decisions are disabled while disconnected" });
+    }
+  };
+  const disconnect = (disconnected: ZetaClient | null) => {
+    retireCatalog();
+    set({ listLoading: false, listSlow: false, listReady: false });
+    openGeneration++;
+    openAbort?.abort();
+    markApprovalsReconnecting(disconnected);
+    transition({ type: "stale" });
+  };
+  const loadConnection = async (target: ZetaClient) => {
+    try {
+      const status = await getStatus(target);
+      if (!live(target)) return;
+      set({ server: { id: status.session?.session_id ?? null, state: status.state, approvals: status.pending_approvals?.length ?? 0 } });
+      const id = transitionSelected(state.transition) ?? status.session?.session_id ?? null;
+      if (id) {
+        await open(id, status);
+        if (!live(target)) return;
+      } else void refresh();
+    } catch (error) {
+      if (!live(target)) return;
+      const id = transitionSelected(state.transition) ?? "";
+      transition({ type: "failed", id, error: { id, message: message(error), busy: isBusyError(error) } });
+    }
+  };
+  const connect = (target: ZetaClient) => {
+    retireCatalog();
+    catalog = { client: target, inFlight: null, slowTimer: null };
+    set({ listLoading: false, listSlow: false, listReady: false, listError: null });
+    void loadConnection(target);
+  };
   const onConnection = () => {
     if (connection.client === client) return;
     const disconnected = client;
     client = connection.client;
-    if (!client) {
-      openGeneration++;
-      openAbort?.abort();
-      const run = transitionRun(state.transition);
-      if (run && disconnected?.features.includes("approval_reconnect")) {
-        for (const { id: itemId } of run.lease.store.getOutline()) {
-          const item = run.lease.store.getItem(itemId);
-          if (item?.type === "approval" && !item.ended && item.request.type === "approval_request")
-            run.lease.store.dispatch({ ...item.request, state: "reconnecting", status: "reconnecting…", disabled_reason: "decisions are disabled while disconnected" });
-        }
-      }
-      transition({ type: "stale" });
-      return;
-    }
-    set({ listReady: false, listError: null });
-    void (async () => {
-      const target = client!;
-      try {
-        const status = await getStatus(target);
-        if (!live(target)) return;
-        set({ server: { id: status.session?.session_id ?? null, state: status.state, approvals: status.pending_approvals?.length ?? 0 } });
-        const id = transitionSelected(state.transition) ?? status.session?.session_id ?? null;
-        if (id) {
-          await open(id, status);
-          if (!live(target)) return;
-        } else void refresh();
-      } catch (error) {
-        if (live(target)) {
-          const id = transitionSelected(state.transition) ?? "";
-          transition({ type: "failed", id, error: { id, message: message(error), busy: isBusyError(error) } });
-        }
-      }
-    })();
+    if (client) connect(client);
+    else disconnect(disconnected);
   };
   const unsubscribe = connection.subscribe(onConnection);
   onConnection();
@@ -482,8 +497,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     },
     dispose() {
       unsubscribe();
-      if (listSlowTimer !== null) clearTimeout(listSlowTimer);
-      listSlowTimer = null;
+      retireCatalog();
       openGeneration++;
       openAbort?.abort();
       transitionRun(state.transition)?.lease.release();

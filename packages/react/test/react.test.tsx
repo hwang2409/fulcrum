@@ -384,6 +384,30 @@ test("a pending approval exposes adapter-supplied reconnect and resolving states
   expect(card.textContent).toContain("resolving…");
 });
 
+test("a reconnect keeps focus in the pending approval row", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false });
+  const root = mount(<RunProvider store={store}><Approval id="approval:r1" onApprove={() => {}} onDeny={() => {}} /></RunProvider>);
+  const card = root.querySelector<HTMLElement>('[data-part="approval"]')!;
+  const approve = root.querySelector<HTMLButtonElement>('[data-action="approve"]')!;
+  approve.focus();
+  expect(document.activeElement).toBe(approve);
+
+  act(() => store.dispatch({
+    type: "approval_request", request_id: "r1", delegated: false,
+    tool_call: call("t1", "bash"), state: "reconnecting", status: "reconnecting…",
+    disabled_reason: "decisions are disabled while disconnected",
+  } as RunEvent));
+
+  expect(document.activeElement).toBe(card);
+  expect(card.contains(document.activeElement)).toBe(true);
+  expect([...card.querySelectorAll('[data-part="approval-actions"] button')].every((button) => button.disabled)).toBe(true);
+  expect(card.textContent).toContain("decisions are disabled while disconnected");
+
+  act(() => store.dispatch({ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false }));
+  expect(document.activeElement).toBe(card);
+});
+
 test("a rejected late decision shows its adapter-supplied message and re-enables the actions", async () => {
   const store = createRunStore((flush) => flush());
   store.dispatch({ type: "approval_request", request_id: "r1", tool_call: { id: "t1", name: "bash", arguments: {} }, delegated: false });

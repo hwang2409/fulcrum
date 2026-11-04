@@ -227,9 +227,10 @@ const ApprovalActions = function ApprovalActions({
  * moves to the next pending approval's row (Tab then reaches its actions), else to this row, or to the card it folded
  * into; never to the page.
  */
-function useDecisionFocus(pending: boolean, callId: string) {
+function useDecisionFocus(pending: boolean, available: boolean, callId: string) {
   const card = useRef<HTMLDivElement>(null);
   const scope = useRef<Element | null>(null); // the timeline, while focus is in this card after a decision
+  const wasAvailable = useRef(available);
   const lost = () => !document.activeElement || document.activeElement === document.body;
   const move = () => {
     const root = scope.current;
@@ -241,12 +242,27 @@ function useDecisionFocus(pending: boolean, callId: string) {
     if (target !== card.current) scope.current = null;
     target?.focus({ preventScroll: !next });
   };
+  useLayoutEffect(() => {
+    if (pending && wasAvailable.current && !available && scope.current && (lost() || card.current?.contains(document.activeElement)))
+      card.current?.focus({ preventScroll: true });
+    wasAvailable.current = available;
+  }, [pending, available]);
   useLayoutEffect(() => { if (!pending) move(); }, [pending]);
   useLayoutEffect(() => () => { if (scope.current) requestAnimationFrame(move); }, []);
   const remember = () => {
     if (card.current?.contains(document.activeElement)) scope.current = card.current.closest('[data-part="timeline"]') ?? document.body;
   };
   return { card, remember };
+}
+
+function approvalState(item: Extract<RunItem, { type: "approval" }>, sending: "approve" | "deny" | undefined, disabledReason: string | undefined) {
+  const pending = !item.ended;
+  const end = approvalEnd(item.ended);
+  const reason = item.request.type === "approval_request" ? item.request.disabled_reason ?? disabledReason : disabledReason;
+  const buttonsEnabled = !reason && item.request.type === "approval_request" && item.request.state !== "resolving";
+  const state = !pending ? "done" : sending ? "submitting" : item.request.type === "approval_request" ? item.request.state ?? "pending" : "pending";
+  const label = pending ? sending ? (sending === "approve" ? "approving" : "denying") : item.request.type === "approval_request" ? item.request.status : undefined : end.text;
+  return { pending, end, reason, buttonsEnabled, state, label } as const;
 }
 
 export const Approval = memo(function Approval({
@@ -263,14 +279,12 @@ export const Approval = memo(function Approval({
   const [decisionError, setDecisionError] = useState<string>();
   const labelId = useId();
   const request = item?.type === "approval" && item.request.type === "approval_request" ? item.request : undefined;
-  const focus = useDecisionFocus(!item || (item.type === "approval" && !item.ended), request?.tool_call.id ?? "");
+  const focusAvailable = Boolean(request && !(request.disabled_reason ?? disabledReason) && request.state !== "resolving");
+  const focus = useDecisionFocus(!item || (item.type === "approval" && !item.ended), focusAvailable, request?.tool_call.id ?? "");
   if (item?.type !== "approval" || item.request.type !== "approval_request") return null;
   const { request_id, tool_call, view } = item.request;
   const requested: ToolItem = { id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false };
-  const pending = !item.ended;
-  const state = !pending ? "done" : sending ? "submitting" : item.request.state ?? "pending";
-  const reason = item.request.disabled_reason ?? disabledReason;
-  const available = !reason && item.request.state !== "resolving";
+  const { pending, end, reason, buttonsEnabled, state, label } = approvalState(item, sending, disabledReason);
   // One decision per request: later clicks are ignored until the handler fails or the request resolves.
   const decide = (action: "approve" | "deny", handler: Decide) => () => {
     if (sending) return;
@@ -287,11 +301,10 @@ export const Approval = memo(function Approval({
       retry(error);
     }
   };
-  const end = approvalEnd(item.ended);
-  const status = pending ? sending ? (sending === "approve" ? "approving" : "denying") : item.request.status : end.text;
   return (
     <div
       ref={focus.card}
+      onFocusCapture={focus.remember}
       className={className}
       role="group"
       tabIndex={-1}
@@ -306,14 +319,14 @@ export const Approval = memo(function Approval({
       data-decision={pending ? undefined : end.decision || undefined}
     >
       <div data-part="tool-header" id={labelId}>
-        <Header item={requested} state={state} status={status} summary={summary} />
+        <Header item={requested} state={state} status={label} summary={summary} />
       </div>
       {pending ? (
         <>
           <div data-part="tool-body">
             <Body item={requested} output="" state={state} />
           </div>
-          <ApprovalActions sending={sending} onApprove={available ? onApprove : undefined} onDeny={available ? onDeny : undefined} disabledReason={reason} decide={decide} />
+          <ApprovalActions sending={sending} onApprove={buttonsEnabled ? onApprove : undefined} onDeny={buttonsEnabled ? onDeny : undefined} disabledReason={reason} decide={decide} />
           {decisionError ? <span role="alert" data-part="approval-error">{decisionError}</span> : null}
         </>
       ) : null}
