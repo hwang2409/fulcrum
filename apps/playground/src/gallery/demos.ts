@@ -775,11 +775,14 @@ export const demos: Demo[] = [
   },
 ];
 
-const viewerFixture = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("viewerFixture");
+const viewerParams = typeof location === "undefined" ? null : new URLSearchParams(location.search);
+const viewerFixture = viewerParams?.get("viewerFixture") ?? null;
 // `read` is a 1,000,000-line TypeScript file, highlighted row by row as the viewer mounts them.
 if (viewerFixture === "single" || viewerFixture === "lines" || viewerFixture === "read") {
   const statements = ["let a = 1;\n", "a++;\n", "f(a);\n", "// c\n"];
-  const fixture = viewerFixture === "single" ? "x".repeat(2_000_000) : viewerFixture === "lines" ? "x\n".repeat(1_000_000) : Array.from({ length: 1_000_000 }, (_, i) => statements[i % 4]).join("");
+  const requestedLines = Number(viewerParams?.get("viewerLines"));
+  const readLines = Number.isInteger(requestedLines) && requestedLines > 0 ? Math.min(requestedLines, 1_000_000) : 1_000_000;
+  const fixture = viewerFixture === "single" ? "x".repeat(2_000_000) : viewerFixture === "lines" ? "x\n".repeat(1_000_000) : Array.from({ length: readLines }, (_, i) => statements[i % 4]).join("");
   const tool = call("viewer-check", "bash", { command: "stream fixture" });
   const view: ToolView = viewerFixture === "read" ? { kind: "read", path: "src/huge.ts" } : { kind: "shell", command: "stream fixture" };
   demos.splice(0, demos.length, {

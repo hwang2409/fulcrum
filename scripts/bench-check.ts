@@ -51,6 +51,24 @@ const measurements = [
   report("enforced 800-event flush", collectRuns(800)),
   report("enforced 3-event flush", collectRuns(3)),
 ];
+
+const prependBudget = 500;
+const prependStore = createRunStore(() => {});
+prependStore.beginHistory();
+for (let i = 0; i < 100_000; i++)
+  prependStore.dispatch({ type: "message_commit", message_id: `current-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
+prependStore.getState();
+const prependStart = performance.now();
+for (let page = 0; page < 50; page++)
+  prependStore.prepend(Array.from({ length: 200 }, (_, row) => ({ type: "message_commit" as const, message_id: `older-${page}-${row}`, message: { role: "assistant", content: [{ type: "text", text: "old" }] } })));
+const prependRows = prependStore.getOutline().length;
+const prependElapsed = performance.now() - prependStart;
+console.log(`prepend: 50 x 200-row pages into 100000 rows ${prependElapsed.toFixed(2)} ms (${(prependElapsed / 50).toFixed(2)} ms/page, budget ${prependBudget} ms total)`);
+if (prependRows !== 110_000 || prependElapsed > prependBudget) {
+  console.error("prepend performance budget failed");
+  process.exit(1);
+}
+
 if (measurements.some(({ ratioMedian, largeMedian }) => ratioMedian > scalingBudget || largeMedian > absoluteBudget)) {
   console.error("enforced performance budget failed");
   process.exit(1);

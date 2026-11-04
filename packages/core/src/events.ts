@@ -197,6 +197,8 @@ export type RunEvent =
       text: string;
       mode: string;
       attachments?: unknown[];
+      /** The harness's stable identity for this message, when replay supplies one. */
+      message_id?: string;
       /** The server's durable identity for this accepted message, when client delivery IDs were negotiated. */
       delivery_id?: string;
       /**

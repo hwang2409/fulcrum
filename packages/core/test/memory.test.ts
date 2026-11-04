@@ -7,6 +7,27 @@ const DELTA = "x".repeat(100);
 const FINAL_TEXT_BYTES = DELTAS * DELTA.length;
 const RETAINED_HEAP_LIMIT = FINAL_TEXT_BYTES * 3 + 8_000_000;
 
+test("ending history releases accepted event objects and later dispatches are not retained", () => {
+  const store = createRunStore((flush) => flush());
+  let first: WeakRef<object>;
+  let after: WeakRef<object>;
+  (() => {
+    store.beginHistory();
+    const retained = { type: "usage" as const, usage: { input: 1, output: 1 } };
+    first = new WeakRef(retained);
+    store.dispatch(retained);
+    store.endHistory();
+    const ordinary = { type: "usage" as const, usage: { input: 2, output: 2 } };
+    after = new WeakRef(ordinary);
+    store.dispatch(ordinary);
+  })();
+
+  Bun.gc(true);
+  expect(first!.deref()).toBeUndefined();
+  expect(after!.deref()).toBeUndefined();
+  expect(store.getState().usage).toEqual({ input: 3, output: 3 });
+});
+
 test(
   "frame reads do not retain historical full strings",
   () => {

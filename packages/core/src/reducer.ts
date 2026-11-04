@@ -48,6 +48,7 @@ export const initialState: RunState = {
 const messageItemId = (id: string) => `message:${id}`;
 const toolItemId = (id: string) => `tool:${id}`;
 const approvalItemId = (id: string) => `approval:${id}`;
+
 const terminalSubAgentStatuses = new Set(["done", "error", "canceled"]);
 const subAgentTime = (event: SubAgentEvent) => {
   const value = event.endedAt ?? event.updatedAt ?? event.startedAt;
@@ -128,7 +129,7 @@ export const eventSchemas = {
   approval_request: { request_id: required(string), tool_call: required(toolCall, toolCallFields), view: optional(object), delegated: required(boolean), state: optional(oneOf("reconnecting", "resolving")), status: optional(string), disabled_reason: optional(string) },
   approval_end: { request_id: required(string), decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
   usage: { usage: required(usage) },
-  user_message: { text: required(string), mode: required(string), attachments: optional(array), delivery_id: optional(string), intent: optional(string) },
+  user_message: { text: required(string), mode: required(string), attachments: optional(array), message_id: optional(string), delivery_id: optional(string), intent: optional(string) },
   error: { error: required(error, { code: required(string), message: required(string) }) },
   notification: { notification_id: optional(string), data: optional(object) },
   unknown: { name: required(string), data: required(object, { notification_id: optional(string) }, true) },
@@ -233,13 +234,14 @@ const reduceUserMessage = (
   appendItem: (item: RunItem) => void,
   setItem: EntityDraft["set"],
 ) => {
+  const messageId = event.message_id === undefined ? undefined : `user:message:${event.message_id}`;
   const intentId = event.intent === undefined ? undefined : `user:intent:${event.intent}`;
   const deliveryId = event.delivery_id === undefined ? undefined : messageAlias(event.delivery_id);
   const deliveryItemId = event.delivery_id === undefined ? undefined : `user:delivery:${event.delivery_id}`;
   const id = (deliveryId && entities.getMessageAlias(deliveryId)) ||
     (intentId && entities.getMessageAlias(intentId)) ||
     (intentId && entities.get(intentId) ? intentId : undefined) ||
-    intentId || deliveryItemId || `user:${next.nextId++}`;
+    intentId || deliveryItemId || messageId || `user:${next.nextId++}`;
   if (entities.get(id)) setItem({ id, type: "user", event });
   else appendItem({ id, type: "user", event });
   if (deliveryId) entities.setMessageAlias(deliveryId, id);
@@ -321,6 +323,7 @@ export function reduceAllWithEntities(
   entities: EntityDraft,
   onInvalid?: (event: RunEvent) => void,
   onSanitized?: (count: number) => void,
+  onAccepted?: (event: RunEvent) => void,
 ): RunState {
   // An empty delta carries no text: it must not open a row or publish a new state.
   const isEmptyDelta = (event: RunEvent | null) => event?.type === "message_delta" && event.delta === "";
@@ -421,6 +424,7 @@ export function reduceAllWithEntities(
       next.receipts = receipts;
       next.receiptOrder = order;
     }
+    onAccepted?.(event);
 
     switch (event.type) {
       case "run_start":

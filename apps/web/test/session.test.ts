@@ -277,6 +277,27 @@ test("a busy server is reported as busy and the selection stays", async () => {
   expect(present(view).selected).toBe("a");
 });
 
+test("a reconnect retires a backward walk before it can write the new generation", async () => {
+  let release!: () => void;
+  const held = new Promise((resolve) => { release = () => resolve({ messages: [{ id: "old", role: "user", content: [{ type: "text", text: "old generation" }], tool_result: null }], next_before: null, history_validator: { end: 2, entry_id: "old-new" } }); });
+  const backward = ["list_sessions_paging", "session_history_backward"];
+  const old = await server(handlers("a", { session_history: (params) => params.before === null
+    ? { messages: [{ id: "old-new", role: "assistant", content: [{ type: "text", text: "old newest" }], tool_result: null }], next_before: 1, history_validator: { end: 2, entry_id: "old-new" } }
+    : held }), backward);
+  const fresh = await server(handlers("a", { session_history: (params) => ({ messages: [{ id: "fresh", role: "assistant", content: [{ type: "text", text: "fresh generation" }], tool_result: null }], next_before: null, history_validator: { end: 1, entry_id: "fresh" } }) }), backward);
+  const connection = source(old.client);
+  const view = createSessions(connection, { selected: "a" });
+  await tick();
+  connection.set(fresh.client);
+  await tick();
+  release();
+  await tick();
+  const run = present(view).open!;
+  const messages = run.lease.store.getOutline().map(({ id }) => run.lease.store.getItem(id)).filter((item) => item?.type === "message");
+  expect(messages.flatMap((item) => item?.type === "message" ? item.message.content.flatMap((block) => block.type === "text" ? [block.text] : []) : [])).toEqual(["fresh generation"]);
+  view.dispose();
+});
+
 test("a drop keeps the old transcript as stale; the reconnect rebuilds it on a fresh store without duplicates", async () => {
   const first = await server(handlers("b"));
   const connection = source(first.client);

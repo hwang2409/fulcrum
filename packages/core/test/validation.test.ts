@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { createRunStore, initialState, type RunEvent } from "../src/index.js";
 import { eventSchemas } from "../src/reducer.js";
+import { seededRandom } from "./fuzz.js";
 
 const seeds = [11, 29, 101, 2027, 65537];
-const rng = (seed: number) => () => ((seed = Math.imul(seed ^ seed >>> 15, 1 | seed), seed ^= seed + Math.imul(seed ^ seed >>> 7, 61 | seed)), ((seed ^ seed >>> 14) >>> 0) / 4294967296);
 const good = (index: number): RunEvent => {
   const id = String(index % 113);
   switch (index % 12) {
@@ -15,7 +15,7 @@ const good = (index: number): RunEvent => {
     case 5: return { type: "tool_output", tool_call: { id: `t${id}`, name: "bash", arguments: {} }, output: `o${index}` };
     case 6: return { type: "tool_end", tool_call: { id: `t${id}`, name: "bash", arguments: {} }, tool_result: { tool_call_id: `t${id}`, content: "ok", is_error: false } };
     case 7: return { type: "approval_end", request_id: `absent${id}`, decision: "approve" };
-    case 8: return { type: "user_message", text: `u${index}`, mode: "send", delivery_id: `d${index}`, intent: `i${index % 37}` };
+    case 8: return { type: "user_message", text: `u${index}`, mode: "send", message_id: `m${index}`, delivery_id: `d${index}`, intent: `i${index % 37}` };
     case 9: return { type: "notification", notification_id: `n${index}`, data: { text: `n${index}` } };
     case 10: return { type: "sub_agent", childRunId: `c${id}`, status: index % 2 ? "running" : "done", sequence: index };
     default: return { type: "turn_end" };
@@ -98,7 +98,7 @@ test("nested optional sanitization copies only changed levels", () => {
 
 test("malformed event fuzz is total and equals a valid-only replay", () => {
   for (const seed of seeds) {
-    const random = rng(seed);
+    const random = seededRandom(seed);
     const actual = createRunStore((flush) => flush());
     const expected = createRunStore((flush) => flush());
     for (let index = 0; index < 10_000; index++) {
@@ -128,7 +128,7 @@ const fieldCases: Array<{ event: Record<string, unknown>; fields: Array<[string,
   { event: { type: "approval_request", request_id: "r", tool_call: structuredClone(tool), delegated: false, view: {} }, fields: [["type", 1], ["request_id", 1], ["tool_call.id", 1], ["tool_call.name", 1], ["tool_call.arguments", null], ["delegated", "wrong"], ["view", 1], ["state", "wrong"], ["status", 1], ["disabled_reason", 1]] },
   { event: { type: "approval_end", request_id: "r", decision: "approve", data: {} }, fields: [["type", 1], ["request_id", 1], ["decision", "wrong"], ["data", 1]] },
   { event: { type: "usage", usage: { input: 1 } }, fields: [["type", 1], ["usage", null], ["usage.input", Number.NaN]] },
-  { event: { type: "user_message", text: "x", mode: "send", attachments: [], delivery_id: "d", intent: "i" }, fields: [["type", 1], ["text", 1], ["mode", 1], ["attachments", {}], ["delivery_id", 1], ["intent", 1]] },
+  { event: { type: "user_message", text: "x", mode: "send", attachments: [], message_id: "m", delivery_id: "d", intent: "i" }, fields: [["type", 1], ["text", 1], ["mode", 1], ["attachments", {}], ["message_id", 1], ["delivery_id", 1], ["intent", 1]] },
   { event: { type: "error", error: { code: "x", message: "x" } }, fields: [["type", 1], ["error", null], ["error.code", 1], ["error.message", 1]] },
   { event: { type: "notification", notification_id: "n", data: {} }, fields: [["type", 1], ["notification_id", 1], ["data", 1]] },
   { event: { type: "unknown", name: "future", data: {} }, fields: [["type", 1], ["name", 1], ["data", 1]] },

@@ -67,11 +67,29 @@ export interface StoreDiagnostics {
 }
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+const structurallyEqual = (left: unknown, right: unknown): boolean => {
+  if (Object.is(left, right)) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length && leftKeys.every((key) =>
+    Object.prototype.hasOwnProperty.call(right, key)
+      && structurallyEqual((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]));
+};
+
+const outlineSuffixLength = (older: readonly OutlineItem[], newer: readonly OutlineItem[]) => {
+  if (newer.length < older.length) return -1;
+  const offset = newer.length - older.length;
+  return older.every((item, index) => item.id === newer[offset + index]?.id) ? offset : -1;
+};
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
   let entities = new Map<string, RunItem>();
-  const messageAliases = new Map<string, string>();
+  let messageAliases = new Map<string, string>();
   let current: RunState = structuredClone(initialState);
   let pending: RunEvent[] = [];
+  let acceptedLog: RunEvent[] = [];
+  let historyOpen = false;
+  let pendingOlder: RunEvent[] = [];
   const listeners = new Set<Listener>();
   const outlineListeners = new Set<Listener>();
   const itemListeners = new Map<string, Set<Listener>>();
@@ -104,6 +122,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     pending = [];
     const beforeOutline = current.outline;
     let next: RunState;
+    const accepted = historyOpen ? [] as RunEvent[] : undefined;
     try {
       next = reduceAllWithEntities(current, events, {
         get: (id) => entities.get(id),
@@ -112,7 +131,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
         splice: (edit) => edits.push(edit),
         getMessageAlias: (key) => messageAliases.get(key),
         setMessageAlias: (key, id) => { messageAliases.set(key, id); },
-      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; });
+      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, accepted && ((event) => accepted.push(event)));
     } catch (error) {
       desynced = true;
       pending = [];
@@ -132,6 +151,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       return false;
     }
     current = next;
+    if (accepted) acceptedLog.push(...accepted);
     stateChanged = true;
     if (current.outline !== beforeOutline) {
       // One change per notification: flushes before it (a read forces one) extend it, so subscribers see one edit list.
@@ -141,6 +161,53 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     }
     edits = [];
     flushing = false;
+    setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
+    return true;
+  };
+  const flushPrepend = () => {
+    if (pendingOlder.length === 0 || disposed || desynced) return false;
+    const older = pendingOlder;
+    pendingOlder = [];
+    const beforeOutline = current.outline;
+    const nextEntities = new Map<string, RunItem>();
+    const nextAliases = new Map<string, string>();
+    const nextLog: RunEvent[] = [];
+    let next: RunState;
+    try {
+      next = reduceAllWithEntities(structuredClone(initialState), [...older, ...acceptedLog], {
+        get: (id) => nextEntities.get(id),
+        set: (item) => nextEntities.set(item.id, item),
+        delete: (id) => nextEntities.delete(id),
+        splice() {},
+        getMessageAlias: (key) => nextAliases.get(key),
+        setMessageAlias: (key, id) => nextAliases.set(key, id),
+      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, (event) => nextLog.push(event));
+    } catch (error) {
+      desynced = true;
+      setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
+      options.onError?.(error);
+      return false;
+    }
+    for (const [id, item] of nextEntities) {
+      const prior = entities.get(id);
+      if (prior && structurallyEqual(prior, item)) nextEntities.set(id, prior);
+      else changedItems.add(id);
+    }
+    for (const id of entities.keys()) if (!nextEntities.has(id)) changedItems.add(id);
+    const prefix = outlineSuffixLength(beforeOutline, next.outline);
+    if (prefix >= 0) next.outline = [...next.outline.slice(0, prefix), ...beforeOutline];
+    const splice = prefix >= 0
+      ? { index: 0, deleteCount: 0, items: next.outline.slice(0, prefix) }
+      : { index: 0, deleteCount: beforeOutline.length, items: next.outline };
+    current = next;
+    entities = nextEntities;
+    messageAliases = nextAliases;
+    acceptedLog = nextLog;
+    stateChanged = true;
+    if (splice.deleteCount > 0 || splice.items.length > 0) {
+      outlineSnapshot = { items: current.outline, change: { from: beforeOutline, splices: [splice] } };
+      outlineChanged = true;
+    }
     setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
     return true;
   };
@@ -157,6 +224,25 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     } finally {
       notifying = false;
     }
+  };
+
+  const scheduleFlush = () => {
+    if (queued) return;
+    queued = true;
+    scheduler(() => {
+      queued = false;
+      if (running) return;
+      running = true;
+      try {
+        do {
+          flush();
+          flushPrepend();
+          notify();
+        } while ((pending.length > 0 || pendingOlder.length > 0) && !disposed && !desynced);
+      } finally {
+        running = false;
+      }
+    });
   };
 
   function subscribe(listener: Listener): () => void;
@@ -178,23 +264,23 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
 
   return {
     getState() {
-      if (!notifying) flush();
+      if (!notifying) flush(), flushPrepend();
       return current;
     },
     getItem(id: string) {
-      if (!notifying) flush();
+      if (!notifying) flush(), flushPrepend();
       return entities.get(id);
     },
     getOutline(): readonly OutlineItem[] {
-      if (!notifying) flush();
+      if (!notifying) flush(), flushPrepend();
       return current.outline;
     },
     getOutlineSnapshot(): OutlineSnapshot {
-      if (!notifying) flush();
+      if (!notifying) flush(), flushPrepend();
       return outlineSnapshot;
     },
     hasMessageDelivery(deliveryId: string) {
-      if (!notifying) flush();
+      if (!notifying) flush(), flushPrepend();
       return messageAliases.has(`delivery:${deliveryId}`);
     },
     getDiagnostics(): StoreDiagnostics { return diagnostics; },
@@ -209,6 +295,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     resync(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
       pending = [];
+      pendingOlder = [];
       entities.clear();
       messageAliases.clear();
       current = structuredClone(initialState);
@@ -218,10 +305,46 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       stateChanged = false;
       outlineChanged = false;
       desynced = false;
+      acceptedLog = [];
       pending.push(...events);
       flush();
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
+    },
+    /** Starts retaining accepted events for a backward-history walk. Call before publishing its newest page. */
+    beginHistory() {
+      if (disposed) throw new Error("store is disposed");
+      refuseDesynced();
+      if (historyOpen) throw new Error("history is already open");
+      flush();
+      notify();
+      acceptedLog = [];
+      historyOpen = true;
+    },
+    /** Finishes the history walk and releases its accepted-event log. `prepend` is invalid after this call. */
+    endHistory() {
+      if (disposed) return;
+      if (!historyOpen) return;
+      flush();
+      flushPrepend();
+      notify();
+      acceptedLog = [];
+      historyOpen = false;
+    },
+    /**
+     * Re-reduces `older` followed by every accepted event since `beginHistory()` from empty, so the result exactly
+     * matches chronological reduction and accepted live events win naturally. Rejection publishes nothing and visibly
+     * desyncs the store. Cost is O(older + applied log) per prepend, at most once per page; pages queued in one frame
+     * share one reduction. Calling after `endHistory()` is a programmer error.
+     */
+    prepend(events: readonly RunEvent[]) {
+      if (disposed) throw new Error("store is disposed");
+      refuseDesynced();
+      if (!historyOpen) throw new Error("prepend requires an open history window");
+      flush();
+      notify();
+      pendingOlder = [...events, ...pendingOlder];
+      scheduleFlush();
     },
     subscribe,
     subscribeOutline(listener: Listener) {
@@ -232,27 +355,15 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (disposed) throw new Error("store is disposed");
       refuseDesynced();
       pending.push(event);
-      if (!queued) {
-        queued = true;
-        scheduler(() => {
-          queued = false;
-          if (running) return;
-          running = true;
-          try {
-            do {
-              flush();
-              notify();
-            } while (pending.length > 0 && !disposed && !desynced);
-          } finally {
-            running = false;
-          }
-        });
-      }
+      scheduleFlush();
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       pending = [];
+      pendingOlder = [];
+      acceptedLog = [];
+      historyOpen = false;
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
       entities = new Map();

@@ -5,7 +5,7 @@ import { openSession } from "../src/session";
 type Json = Record<string, any>;
 type Handler = (method: string, params: Json, event: (params: Json) => void) => unknown;
 
-async function server(handler: Handler) {
+async function server(handler: Handler, features = ["delivery_id", "user_message_event", "user_message_delivery_id"]) {
   let receive!: (text: string) => void;
   const calls: Array<[string, Json]> = [];
   const transport: Transport = {
@@ -19,7 +19,7 @@ async function server(handler: Handler) {
         const event = (value: Json) => receive(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { session_id: "s", ...value } }));
         try {
           const result = method === "hello"
-            ? { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id"] } }
+            ? { protocol_version: "1.2", capabilities: { features } }
             : await handler(method, params, event);
           receive(JSON.stringify({ jsonrpc: "2.0", id, result }));
         } catch (error) {
@@ -36,11 +36,236 @@ async function server(handler: Handler) {
 const row = (id: string, role: "user" | "assistant", text: string) => ({ id, role, content: [{ type: "text", text }], tool_result: null });
 const items = (store: ReturnType<typeof createClient>["store"]) => store.getOutline().map(({ id }) => store.getItem(id));
 const texts = (store: ReturnType<typeof createClient>["store"]) => items(store).flatMap((item) => {
-  if (item?.type === "message") return [item.message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("")];
+  if (item?.type === "message") return [item.message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("") + (item.text ?? "")];
   if (item?.type === "user" && item.event.type === "user_message") return [item.event.text];
   return [];
 });
 const idleStatus = { session: { session_id: "s", created_at: "", updated_at: "" }, state: "idle", pending_approvals: [] } as const;
+const backwardFeatures = ["delivery_id", "user_message_event", "user_message_delivery_id", "session_history_backward"];
+
+// Backward paging must publish the newest page before an older request finishes, then prepend older rows.
+test("backward history opens newest first and prepends older pages in order", async () => {
+  let release!: () => void;
+  const older = new Promise<unknown>((resolve) => { release = () => resolve({ messages: [row("old", "user", "old")], next_before: null, history_validator: { end: 2, entry_id: "new" } }); });
+  const fake = await server((method, params) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    if (params.offset === 0) return { messages: [row("old", "user", "old")], next_offset: null };
+    if (params.before === null) return { messages: [row("new", "assistant", "new")], next_before: 1, history_validator: { end: 2, entry_id: "new" } };
+    expect(params).toMatchObject({ before: 1, history_validator: { end: 2, entry_id: "new" } });
+    return older;
+  }, backwardFeatures);
+
+  const opened = await openSession(fake.client, "s");
+  expect(texts(opened.lease.store)).toEqual(["new"]);
+  const newestAnchor = opened.lease.store.getOutline()[0]?.id;
+  expect(fake.calls.filter(([method]) => method === "session_history")).toHaveLength(1);
+  expect(fake.calls.filter(([method]) => method === "session_history")[0]?.[1]).toEqual({ session_id: "s", before: null });
+  await Bun.sleep(10);
+  expect(fake.calls.filter(([method]) => method === "session_history")).toHaveLength(2);
+  release();
+  await opened.complete;
+  expect(texts(opened.lease.store)).toEqual(["old", "new"]);
+  expect(opened.lease.store.getOutline().at(-1)?.id).toBe(newestAnchor);
+  expect(() => opened.lease.store.prepend([])).toThrow("prepend requires an open history window");
+});
+
+test("a user message sent while older pages load survives every prepend", async () => {
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  const first = new Promise<unknown>((resolve) => { releaseFirst = () => resolve({ messages: [row("middle", "assistant", "middle")], next_before: 1, history_validator: { end: 3, entry_id: "new" } }); });
+  const second = new Promise<unknown>((resolve) => { releaseSecond = () => resolve({ messages: [row("old", "user", "old")], next_before: null, history_validator: { end: 3, entry_id: "new" } }); });
+  const fake = await server((method, params) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    if (params.before === null) return { messages: [row("new", "assistant", "new")], next_before: 2, history_validator: { end: 3, entry_id: "new" } };
+    return params.before === 2 ? first : second;
+  }, backwardFeatures);
+
+  const opened = await openSession(fake.client, "s");
+  opened.lease.store.dispatch({ type: "user_message", text: "visible optimistic text", mode: "send", intent: "send-1", delivery_id: "send-1" });
+  expect(texts(opened.lease.store)).toEqual(["new", "visible optimistic text"]);
+  releaseFirst();
+  while (!texts(opened.lease.store).includes("middle")) await Bun.sleep(0);
+  expect(texts(opened.lease.store)).toEqual(["middle", "new", "visible optimistic text"]);
+  releaseSecond();
+  await opened.complete;
+  expect(texts(opened.lease.store)).toEqual(["old", "middle", "new", "visible optimistic text"]);
+});
+
+test("a steer accepted while older pages load survives every prepend", async () => {
+  let release!: () => void;
+  const older = new Promise<unknown>((resolve) => { release = () => resolve({ messages: [row("old", "user", "old")], next_before: null, history_validator: { end: 2, entry_id: "new" } }); });
+  const fake = await server((method, params) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    if (params.before === null) return { messages: [row("new", "assistant", "new")], next_before: 1, history_validator: { end: 2, entry_id: "new" } };
+    return older;
+  }, backwardFeatures);
+
+  const opened = await openSession(fake.client, "s");
+  opened.lease.store.dispatch({ type: "user_message", text: "steer while loading", mode: "steer", intent: "steer-1", delivery_id: "steer-1" });
+  release();
+  await opened.complete;
+  expect(texts(opened.lease.store)).toEqual(["old", "new", "steer while loading"]);
+});
+
+test("a streaming assistant reply continues while older pages prepend", async () => {
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  const first = new Promise<unknown>((resolve) => { releaseFirst = () => resolve({ messages: [row("middle", "user", "middle")], next_before: 1, history_validator: { end: 3, entry_id: "new" } }); });
+  const second = new Promise<unknown>((resolve) => { releaseSecond = () => resolve({ messages: [row("old", "user", "old")], next_before: null, history_validator: { end: 3, entry_id: "new" } }); });
+  let running = true;
+  const fake = await server((method, params) => {
+    if (method === "status") return { ...idleStatus, state: running ? "running" : "idle" };
+    if (method !== "session_history") throw new Error(method);
+    if (params.before === null) return { messages: [row("new", "assistant", "new")], next_before: 2, history_validator: { end: 3, entry_id: "new" } };
+    return params.before === 2 ? first : second;
+  }, backwardFeatures);
+
+  const opened = await openSession(fake.client, "s");
+  opened.lease.store.dispatch({ type: "message_delta", message_id: "stream", delta: "first" });
+  releaseFirst();
+  while (!texts(opened.lease.store).includes("middle")) await Bun.sleep(0);
+  expect(texts(opened.lease.store)).toContain("first");
+  opened.lease.store.dispatch({ type: "message_delta", message_id: "stream", delta: " second" });
+  running = false;
+  releaseSecond();
+  while (!texts(opened.lease.store).includes("old")) await Bun.sleep(0);
+  expect(texts(opened.lease.store)).toContain("first second");
+  opened.lease.store.dispatch({ type: "run_end" });
+  await opened.complete;
+});
+
+test("an approval arriving while older pages load stays one row", async () => {
+  let release!: () => void;
+  const older = new Promise<unknown>((resolve) => { release = () => resolve({ messages: [row("old", "user", "old")], next_before: null, history_validator: { end: 2, entry_id: "new" } }); });
+  const fake = await server((method, params) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    if (params.before === null) return { messages: [row("new", "assistant", "new")], next_before: 1, history_validator: { end: 2, entry_id: "new" } };
+    return older;
+  }, backwardFeatures);
+
+  const opened = await openSession(fake.client, "s");
+  opened.lease.store.dispatch({ type: "approval_request", request_id: "approval-live", tool_call: { id: "tool-live", name: "bash", arguments: {} }, delegated: false });
+  release();
+  await opened.complete;
+  expect(opened.lease.store.getOutline().filter(({ kind }) => kind === "approval")).toHaveLength(1);
+});
+
+test("a stale backward restart keeps one pending send", async () => {
+  let release!: () => void;
+  const stale = new Promise<void>((resolve) => { release = resolve; });
+  let newest = 0;
+  const fake = await server(async (method, params) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    if (params.before === null) {
+      newest++;
+      return { messages: [row(`new-${newest}`, "assistant", "new")], next_before: 1, history_validator: { end: newest + 1, entry_id: `new-${newest}` } };
+    }
+    if (newest === 1) {
+      await stale;
+      throw { code: -32009, message: "stale", data: { code: "stale_history_snapshot" } };
+    }
+    return { messages: [row("old", "user", "old")], next_before: null, history_validator: { end: 3, entry_id: "new-2" } };
+  }, backwardFeatures);
+
+  const opened = await openSession(fake.client, "s");
+  opened.lease.store.dispatch({ type: "user_message", text: "pending send", mode: "send", intent: "pending-1", delivery_id: "pending-1" });
+  release();
+  await opened.complete;
+  expect(texts(opened.lease.store)).toEqual(["old", "new", "pending send"]);
+  expect(texts(opened.lease.store).filter((text) => text === "pending send")).toHaveLength(1);
+});
+
+test("a stale backward snapshot restarts from the newest page without duplicates", async () => {
+  let firstPages = 0;
+  const fake = await server((method, params) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    if (params.before === null) {
+      firstPages++;
+      return { messages: [row("new", "assistant", "new")], next_before: 1, history_validator: { end: firstPages + 1, entry_id: `new-${firstPages}` } };
+    }
+    if (firstPages === 1) throw { code: -32009, message: "stale", data: { code: "stale_history_snapshot" } };
+    return { messages: [row("old", "user", "old")], next_before: null, history_validator: { end: 3, entry_id: "new-2" } };
+  }, backwardFeatures);
+
+  const opened = await openSession(fake.client, "s");
+  await opened.complete;
+  expect(texts(opened.lease.store)).toEqual(["old", "new"]);
+  expect(fake.calls.filter(([method, params]) => method === "session_history" && params.before === null)).toHaveLength(2);
+});
+
+test("backward history reconciles live events from the validator end", async () => {
+  const fake = await server((method, params, event) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    if (params.offset === 0) return { messages: [row("new", "assistant", "new")], next_offset: null };
+    if (params.before === null) {
+      event({ event: "assistant_delta", delta: "live", kind: "assistant" });
+      return { messages: [row("new", "assistant", "new")], next_before: 1, history_validator: { end: 2, entry_id: "new" } };
+    }
+    if (params.before === 1) return { messages: [row("old", "user", "old")], next_before: null, history_validator: { end: 2, entry_id: "new" } };
+    if (params.before === 2) return { messages: [], next_before: null, history_validator: { end: 2, entry_id: "new" } };
+    if (params.offset === 1) return { messages: [row("new", "assistant", "new"), row("live", "assistant", "live")], next_offset: null };
+    throw new Error("unexpected history cursor");
+  }, backwardFeatures);
+
+  const opened = await openSession(fake.client, "s");
+  await opened.complete;
+  expect(texts(opened.lease.store)).toEqual(["old", "new", "live"]);
+  expect(fake.calls.filter(([method, params]) => method === "session_history" && params.offset === 1)).toHaveLength(1);
+});
+
+test("a reconnect during a backward walk aborts the old walk and opens a fresh snapshot", async () => {
+  let olderStarted = false;
+  const held = new Promise<unknown>(() => {});
+  const first = await server((method, params) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    if (params.offset === 0) return { messages: [row("old-new", "assistant", "old connection")], next_offset: null };
+    if (params.before === null) return { messages: [row("old-new", "assistant", "old connection")], next_before: 1, history_validator: { end: 2, entry_id: "old-new" } };
+    olderStarted = true;
+    return held;
+  }, backwardFeatures);
+  const abort = new AbortController();
+  const oldOpen = await openSession(first.client, "s", undefined, abort.signal);
+  expect(first.calls.some(([method, params]) => method === "session_history" && params.before === null)).toBe(true);
+  while (!olderStarted) await new Promise((resolve) => setTimeout(resolve, 0));
+  abort.abort();
+  await expect(oldOpen.complete).rejects.toThrow("request aborted");
+
+  const second = await server((method, params) => {
+    if (method === "status") return idleStatus;
+    if (method === "session_history" && params.before === null)
+      return { messages: [row("fresh", "assistant", "fresh connection")], next_before: null, history_validator: { end: 1, entry_id: "fresh" } };
+    throw new Error(method);
+  }, backwardFeatures);
+  const fresh = await openSession(second.client, "s");
+  await fresh.complete;
+  expect(texts(fresh.lease.store)).toEqual(["fresh connection"]);
+});
+
+test("an old server stops a repeated forward cursor instead of looping", async () => {
+  let calls = 0;
+  const fake = await server((method, params) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    calls++;
+    return params.offset === 0
+      ? { messages: [row("old", "user", "old")], next_offset: 1 }
+      : { messages: [row("new", "assistant", "new")], next_offset: calls >= 3 ? null : 1 };
+  });
+
+  const opened = await openSession(fake.client, "s");
+  const result = await opened.complete;
+  expect(calls).toBe(2);
+  expect(result.incomplete).toBe(true);
+  expect(texts(opened.lease.store)).toEqual(["old", "new"]);
+});
 
 // Review 3's exact loss: both events arrive in the ambiguous first-page window and are absent from that page.
 test("an idle replay replaces quarantined live events with one fresh full snapshot", async () => {
