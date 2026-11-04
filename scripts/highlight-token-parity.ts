@@ -239,7 +239,9 @@ if (mode === "generate") {
   const scenarios: [string, readonly string[]][] = [
     ...Object.keys(inputs).map((language): [string, string[]] => [`isolation-${language}`, [language]]), ...orders,
   ];
-  await Promise.all(scenarios.map(([name, order]) => checkScenario(name, order)));
+  for (let index = 0; index < scenarios.length; index += 17) {
+    await Promise.all(scenarios.slice(index, index + 17).map(([name, order]) => checkScenario(name, order)));
+  }
   if (failures.size) {
     await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(runs, null, 2) + "\n");
     throw new Error(`legacy token parity failed: ${[...failures].join(", ")} (shuffle seed ${seed}; ${failedScenarios.join("; ")}; actual: /tmp/highlight-token-parity-actual.json)`);
