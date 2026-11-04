@@ -265,8 +265,10 @@ test("an unexpected reduction failure marks the store desynced until history rep
   store.dispatch(event);
   jobs.shift()!();
   expect(errors).toHaveLength(1);
-  expect(store.getDiagnostics()).toEqual({ ignoredEvents: 0, desynced: true });
-  expect(() => store.getOutline()).toThrow("store is desynced");
+  expect(store.getDiagnostics()).toEqual({ ignoredEvents: 0, desynced: true, reason: "boom" });
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:first", kind: "user" }]);
+  expect(store.getItem("user:delivery:first")).toBeDefined();
+  expect(() => store.dispatch({ type: "turn_end" })).toThrow("store is desynced");
 
   store.resync([{ type: "user_message", text: "from history", mode: "send", delivery_id: "history" }]);
   expect(store.getDiagnostics().desynced).toBe(false);

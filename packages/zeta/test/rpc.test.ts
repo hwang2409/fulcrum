@@ -147,6 +147,43 @@ test("a desynced session store reloads its history and keeps its lease", async (
   expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d2", kind: "user" }]);
 });
 
+test("failed desync history reloads are bounded, visible, and manually retryable", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport, (flush) => flush());
+  let loads = 0;
+  let fail = false;
+  const lease = await client.replay("retryable", async () => {
+    loads++;
+    if (fail) throw new Error("history unavailable");
+    return [{ type: "user_message" as const, text: `history ${loads}`, mode: "send", delivery_id: `d${loads}` }];
+  });
+  fail = true;
+  let reads = 0;
+  lease.store.dispatch(new Proxy({ type: "retry" }, {
+    get(target, key, receiver) {
+      if (key === "type" && ++reads > 3) throw new Error("reducer failed");
+      return Reflect.get(target, key, receiver);
+    },
+  }) as RunEvent);
+  for (let attempt = 0; attempt < 100 && !lease.store.getDiagnostics().resyncError; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+  expect(loads).toBe(4);
+  expect(lease.store.getDiagnostics()).toEqual({
+    ignoredEvents: 0,
+    desynced: true,
+    reason: "reducer failed",
+    resyncError: "history unavailable",
+  });
+  expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d1", kind: "user" }]);
+
+  fail = false;
+  await client.retrySession("retryable");
+  expect(loads).toBe(5);
+  expect(lease.store.getDiagnostics()).toEqual({ ignoredEvents: 0, desynced: false });
+  expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d5", kind: "user" }]);
+});
+
 test("negotiated delivery ids match echoes by id, not text", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);

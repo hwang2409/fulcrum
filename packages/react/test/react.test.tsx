@@ -97,6 +97,37 @@ const q = (selector: string) => container.querySelector(selector) as HTMLElement
 const hostProps = (el: Element) =>
   (el as unknown as Record<string, unknown>)[Object.keys(el).find((key) => key.startsWith("__reactProps$"))!];
 
+test("a desynced timeline keeps its rows, offers retry, and recovers after resync", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.dispatch({ type: "user_message", text: "last good", mode: "send", delivery_id: "good" });
+  jobs.shift()!();
+  let retries = 0;
+  const view = () => <RunProvider store={store} onRetry={() => retries++}><Timeline virtual={false} /></RunProvider>;
+  mount(view());
+
+  let reads = 0;
+  store.dispatch(new Proxy({ type: "retry" }, {
+    get(target, key, receiver) {
+      if (key === "type" && ++reads > 3) throw new Error("history reload failed");
+      return Reflect.get(target, key, receiver);
+    },
+  }) as RunEvent);
+  act(() => jobs.shift()!());
+  act(() => root!.render(view()));
+
+  expect(container.textContent).toContain("last good");
+  expect(container.textContent).toContain("resyncing…");
+  const retry = q('[data-part="resync-retry"]');
+  expect(retry.textContent).toBe("retry");
+  act(() => retry.click());
+  expect(retries).toBe(1);
+
+  act(() => store.resync([{ type: "user_message", text: "recovered", mode: "send", delivery_id: "recovered" }]));
+  expect(container.textContent).toContain("recovered");
+  expect(container.textContent).not.toContain("resyncing…");
+});
+
 test("highlighting passes cumulative source with stable identity and monotonic versions", async () => {
   type Context = { id: string; version: number; state: "streaming" | "done" };
   type Token = { type?: "keyword"; text: string };
