@@ -125,24 +125,28 @@ async function openBackwardSession(
     tail = [];
     return page;
   };
-  const publish = (status: ServerStatus) => lease.store.resync(snapshotEvents(id, rows(), status, true, approvalReconnect));
+  const pendingSends = () => lease.store.getOutline().flatMap(({ id: itemId }) => {
+    const item = lease.store.getItem(itemId);
+    return item?.type === "user" && item.event.type === "user_message" && item.event.intent && item.event.delivery_id ? [item.event] : [];
+  });
+  const publishSnapshot = (status: ServerStatus, pending: readonly RunEvent[] = []) =>
+    lease.store.resync([...snapshotEvents(id, rows(), status, true, approvalReconnect), ...pending]);
+  const publishStatus = (status: ServerStatus) => {
+    for (const event of snapshotEvents(id, [], status, true, approvalReconnect)) lease.store.dispatch(event);
+  };
   const loadOlder = async (publishPages = true) => {
-    let nextPublish = 2;
     while (pages.at(-1)?.next_before != null) {
       const before = pages.at(-1)!.next_before!;
       try {
         const page = await client.request("session_history", { session_id: id, before, history_validator: validator }, { timeoutMs: 15_000, signal: activeSignal }) as BackwardHistoryPage;
         pages.push(page);
-        if (publishPages && (page.next_before == null || pages.length >= nextPublish)) {
-          publish(initialStatus);
-          nextPublish = pages.length * 2;
-        }
+        if (publishPages) lease.store.prepend(fromZetaHistory(page.messages ?? []));
         progress?.(rows().length, page.next_before == null);
       } catch (error) {
         if (!staleHistorySnapshot(error)) throw error;
+        const pending = publishPages ? pendingSends() : [];
         const page = await requestNewest();
-        nextPublish = 2;
-        if (publishPages) publish(initialStatus);
+        if (publishPages) publishSnapshot(initialStatus, pending);
         progress?.(rows().length, page.next_before == null);
       }
     }
@@ -163,6 +167,7 @@ async function openBackwardSession(
       newestReplaced = true;
     }
     tail = loaded;
+    for (const event of fromZetaHistory(loaded)) lease.store.dispatch(event);
   };
   const waitUntilIdle = async (status = initialStatus) => {
     let pending = JSON.stringify(status.pending_approvals ?? []);
@@ -170,7 +175,7 @@ async function openBackwardSession(
       await wait(500, activeSignal);
       status = await getStatus(client, activeSignal);
       const nextPending = JSON.stringify(status.pending_approvals ?? []);
-      if (nextPending !== pending) publish(status);
+      if (nextPending !== pending) publishStatus(status);
       pending = nextPending;
     }
     return status;
@@ -201,7 +206,7 @@ async function openBackwardSession(
     await loadOlder();
     let status = await waitUntilIdle();
     if (client.replayRevision(id) === 0 && client.finishReplay(id, 0)) {
-      publish(status);
+      publishStatus(status);
       return { syncing: false };
     }
     while (true) {
@@ -211,11 +216,13 @@ async function openBackwardSession(
           await loadTail();
         } catch (error) {
           if (!staleHistorySnapshot(error)) throw error;
+          const pending = pendingSends();
           await requestNewest();
+          publishSnapshot(initialStatus, pending);
           await loadOlder();
         }
         status = await getStatus(client, activeSignal);
-        publish(status);
+        publishStatus(status);
         if (client.finishReplay(id, revision)) return { syncing: false };
       }
       status = await waitUntilIdle(status);

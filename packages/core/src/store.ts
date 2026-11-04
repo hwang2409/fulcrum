@@ -223,6 +223,49 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
     },
+    /** Reduces an older history segment in isolation, then inserts only its new rows before the current outline. */
+    prepend(events: readonly RunEvent[]) {
+      if (disposed) throw new Error("store is disposed");
+      refuseDesynced();
+      flush();
+      notify();
+      const olderEntities = new Map<string, RunItem>();
+      const olderAliases = new Map<string, string>();
+      let older = { ...structuredClone(initialState), nextId: current.nextId };
+      try {
+        older = reduceAllWithEntities(older, events.slice(), {
+          get: (id) => olderEntities.get(id),
+          set: (item) => olderEntities.set(item.id, item),
+          delete: (id) => olderEntities.delete(id),
+          splice() {},
+          getMessageAlias: (key) => olderAliases.get(key),
+          setMessageAlias: (key, id) => olderAliases.set(key, id),
+        }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; });
+      } catch (error) {
+        desynced = true;
+        setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
+        options.onError?.(error);
+        return;
+      }
+      const inserted = older.outline.filter(({ id }) => !entities.has(id));
+      if (inserted.length === 0) {
+        current = { ...current, nextId: older.nextId };
+        setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
+        return;
+      }
+      for (const { id } of inserted) {
+        const item = olderEntities.get(id);
+        if (item) entities.set(id, item), changedItems.add(id);
+      }
+      for (const [key, id] of olderAliases) if (!messageAliases.has(key) && entities.has(id)) messageAliases.set(key, id);
+      const before = current.outline;
+      current = { ...current, nextId: older.nextId, outline: [...inserted, ...before] };
+      outlineSnapshot = { items: current.outline, change: { from: before, splices: [{ index: 0, deleteCount: 0, items: inserted }] } };
+      stateChanged = true;
+      outlineChanged = true;
+      setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
+      notify();
+    },
     subscribe,
     subscribeOutline(listener: Listener) {
       outlineListeners.add(listener);

@@ -275,6 +275,26 @@ test("an unexpected reduction failure marks the store desynced until history rep
   expect(store.getOutline()).toEqual([{ id: "user:delivery:history", kind: "user" }]);
 });
 
+test("prepend inserts older rows without resetting or replacing the live tail", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "message_commit", message_id: "new", message: message("new") });
+  store.dispatch({ type: "user_message", text: "pending", mode: "steer", intent: "pending", delivery_id: "pending" });
+  store.dispatch({ type: "message_delta", message_id: "live", delta: "streaming" });
+  const pending = store.getItem("user:intent:pending");
+  const live = store.getItem("message:live");
+
+  store.prepend([
+    { type: "user_message", message_id: "old", text: "old", mode: "send" },
+    { type: "message_commit", message_id: "new", message: message("stale replacement") },
+  ]);
+
+  expect(store.getOutline().map(({ id }) => id)).toEqual(["user:message:old", "message:new", "user:intent:pending", "message:live"]);
+  expect(store.getItem("user:intent:pending")).toBe(pending);
+  expect(store.getItem("message:live")).toBe(live);
+  expect(store.getItem("message:new")).toMatchObject({ message: message("new") });
+  expect(store.getOutlineSnapshot().change?.splices).toEqual([{ index: 0, deleteCount: 0, items: [{ id: "user:message:old", kind: "user" }] }]);
+});
+
 test("a malformed event after a delivered row is a counted no-op", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((flush) => jobs.push(flush));
