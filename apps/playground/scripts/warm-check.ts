@@ -8,8 +8,8 @@ type Counters = { idle: number; posts: number };
 type Opened = { frames: number; tokens: number; width: number; height: number };
 
 // Counts idle callbacks the page schedules and highlight requests it posts to a worker, and records, per block id, whether
-// the newest posted revision has its final tokens: a reply that is not provisional, or the update that follows a
-// provisional one. `idle: false` makes requestIdleCallback never fire, so only hover can warm a card.
+// the newest posted revision has its final tokens: a reply produced with its fully loaded grammar, or the update that
+// follows a cold reply. `idle: false` makes requestIdleCallback never fire, so only hover can warm a card.
 const instrument = (page: Page, idle: boolean) => page.addInitScript((idle) => {
   const counters = { idle: 0, posts: 0 };
   const blocks = new Map<string, { version: number; final: boolean }>();
@@ -22,7 +22,7 @@ const instrument = (page: Page, idle: boolean) => page.addInitScript((idle) => {
     return idle && request ? request(callback, options) : 0;
   }) as typeof window.requestIdleCallback;
   type Message = { type?: string; requestId: number; context: { id: string; version: number } };
-  type Reply = { requestId?: number; provisional?: boolean; update?: { id: string; version: number } };
+  type Reply = { requestId?: number; provenance?: { fullyLoaded: boolean }; update?: { id: string; version: number } };
   const post = Worker.prototype.postMessage;
   Worker.prototype.postMessage = function (this: Worker, message: unknown, ...rest: [StructuredSerializeOptions?]) {
     const { type, requestId, context } = message as Message;
@@ -40,7 +40,7 @@ const instrument = (page: Page, idle: boolean) => page.addInitScript((idle) => {
       this.addEventListener("message", (event) => {
         const reply = event.data as Reply;
         if (reply.update) settle(reply.update.id, reply.update.version);
-        else if (!reply.provisional) { const sent = requests.get(reply.requestId!); if (sent) settle(sent.id, sent.version); }
+        else if (reply.provenance?.fullyLoaded) { const sent = requests.get(reply.requestId!); if (sent) settle(sent.id, sent.version); }
       });
     }
   };
