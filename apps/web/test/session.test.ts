@@ -27,7 +27,7 @@ async function server(handlers: Record<string, Handler>, features = ["list_sessi
     },
   };
   const client = createClient(transport, (flush) => flush());
-  await client.hello(["list_sessions_paging"]);
+  await client.hello(features);
   const event = (params: Record<string, unknown>) => deliver(JSON.stringify({ jsonrpc: "2.0", method: "event", params }));
   return { client, calls, event, drop: () => close(1006) };
 }
@@ -294,6 +294,39 @@ test("a drop keeps the old transcript as stale; the reconnect rebuilds it on a f
   const pending = present(view).open!.lease.store.getItem("approval:r1");
   expect(pending?.type).toBe("approval");
   expect(pending && "ended" in pending ? pending.ended : undefined).toBeUndefined();
+});
+
+test("a negotiated drop keeps the same approval row in reconnecting state across two drops", async () => {
+  const features = ["list_sessions_paging", "approval_reconnect"];
+  const first = await server(handlers("b"), features);
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  await tick();
+  const row = present(view).open!.lease.store.getItem("approval:r1");
+
+  connection.set(null);
+  expect(present(view).open!.lease.store.getItem("approval:r1")).toMatchObject({
+    id: "approval:r1", request: { state: "reconnecting", status: "reconnecting…" },
+  });
+  expect(present(view).open!.lease.store.getItem("approval:r1")).not.toBe(row);
+
+  const second = await server(handlers("b"), features);
+  connection.set(second.client);
+  await tick();
+  connection.set(null);
+  expect(present(view).open!.lease.store.getItem("approval:r1")).toMatchObject({
+    id: "approval:r1", request: { state: "reconnecting" },
+  });
+});
+
+test("an old server drop keeps the legacy pending shape", async () => {
+  const first = await server(handlers("b"), ["list_sessions_paging"]);
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  await tick();
+  connection.set(null);
+  const approval = present(view).open!.lease.store.getItem("approval:r1");
+  expect(approval?.type === "approval" && approval.request.type === "approval_request" ? approval.request.state : "missing").toBeUndefined();
 });
 
 test("a fresh idle snapshot removes a formerly pending approval", async () => {

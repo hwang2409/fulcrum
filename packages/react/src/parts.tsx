@@ -14,7 +14,7 @@ import { Message, ToolResultBlocks } from "./content.js";
 export type ItemProps = { id: string; className?: string };
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
 export type Renderers = Partial<Record<string, ComponentType<{ id: string }>>>;
-export type ItemState = "streaming" | "done" | "error" | "canceled" | "pending" | "submitting";
+export type ItemState = "streaming" | "done" | "error" | "canceled" | "pending" | "submitting" | "reconnecting" | "resolving";
 
 const pre = { whiteSpace: "pre-wrap" } as const;
 
@@ -43,6 +43,8 @@ const statusText: Record<ItemState, string> = {
   canceled: "canceled",
   pending: "needs approval",
   submitting: "sending", // Approval names the action instead: "approving" or "denying"
+  reconnecting: "reconnecting",
+  resolving: "resolving",
 };
 
 // Harness tool names are free strings; a blank one still needs a readable label.
@@ -258,6 +260,7 @@ export const Approval = memo(function Approval({
 }: ItemProps & ToolViewProps & { onApprove?: Decide; onDeny?: Decide; disabledReason?: string }) {
   const item = useItem(id);
   const [sending, setSending] = useState<"approve" | "deny">();
+  const [decisionError, setDecisionError] = useState<string>();
   const labelId = useId();
   const request = item?.type === "approval" && item.request.type === "approval_request" ? item.request : undefined;
   const focus = useDecisionFocus(!item || (item.type === "approval" && !item.ended), request?.tool_call.id ?? "");
@@ -265,22 +268,27 @@ export const Approval = memo(function Approval({
   const { request_id, tool_call, view } = item.request;
   const requested: ToolItem = { id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false };
   const pending = !item.ended;
-  const state: ItemState = !pending ? "done" : sending ? "submitting" : "pending";
+  const state = !pending ? "done" : sending ? "submitting" : item.request.state ?? "pending";
+  const reason = item.request.disabled_reason ?? disabledReason;
+  const available = !reason && item.request.state !== "resolving";
   // One decision per request: later clicks are ignored until the handler fails or the request resolves.
   const decide = (action: "approve" | "deny", handler: Decide) => () => {
     if (sending) return;
     focus.remember();
+    setDecisionError(undefined);
     setSending(action);
-    const retry = () => setSending(undefined);
+    const retry = (error: unknown) => {
+      setSending(undefined);
+      setDecisionError(error instanceof Error ? error.message : String(error));
+    };
     try {
       Promise.resolve(handler(request_id)).catch(retry);
     } catch (error) {
-      retry();
-      throw error;
+      retry(error);
     }
   };
   const end = approvalEnd(item.ended);
-  const status = pending ? sending ? (sending === "approve" ? "approving" : "denying") : undefined : end.text;
+  const status = pending ? sending ? (sending === "approve" ? "approving" : "denying") : item.request.status : end.text;
   return (
     <div
       ref={focus.card}
@@ -305,7 +313,8 @@ export const Approval = memo(function Approval({
           <div data-part="tool-body">
             <Body item={requested} output="" state={state} />
           </div>
-          <ApprovalActions sending={sending} onApprove={onApprove} onDeny={onDeny} disabledReason={disabledReason} decide={decide} />
+          <ApprovalActions sending={sending} onApprove={available ? onApprove : undefined} onDeny={available ? onDeny : undefined} disabledReason={reason} decide={decide} />
+          {decisionError ? <span role="alert" data-part="approval-error">{decisionError}</span> : null}
         </>
       ) : null}
     </div>

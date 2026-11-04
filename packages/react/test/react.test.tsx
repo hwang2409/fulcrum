@@ -361,6 +361,39 @@ test("unknown item kind uses the fallback renderer", () => {
   expect(items[1]!.textContent).toBe("hi there");
 });
 
+test("a pending approval exposes adapter-supplied reconnect and resolving states", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({
+    type: "approval_request", request_id: "r1", delegated: false,
+    tool_call: { id: "t1", name: "bash", arguments: { command: "echo ok" } },
+    state: "reconnecting", status: "reconnecting…", disabled_reason: "decisions are disabled while disconnected",
+  } as RunEvent);
+  const root = mount(<RunProvider store={store}><Approval id="approval:r1" onApprove={() => {}} onDeny={() => {}} /></RunProvider>);
+  const card = root.querySelector('[data-part="approval"]')!;
+  expect(card.getAttribute("data-state")).toBe("reconnecting");
+  expect(card.textContent).toContain("reconnecting…");
+  expect(card.textContent).toContain("decisions are disabled while disconnected");
+  expect([...card.querySelectorAll("button")].every((button) => button.disabled)).toBe(true);
+
+  act(() => store.dispatch({
+    type: "approval_request", request_id: "r1", delegated: false,
+    tool_call: { id: "t1", name: "bash", arguments: { command: "echo ok" } },
+    state: "resolving", status: "resolving…", disabled_reason: "the server is saving this decision",
+  } as RunEvent));
+  expect(card.getAttribute("data-state")).toBe("resolving");
+  expect(card.textContent).toContain("resolving…");
+});
+
+test("a rejected late decision shows its adapter-supplied message and re-enables the actions", async () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "approval_request", request_id: "r1", tool_call: { id: "t1", name: "bash", arguments: {} }, delegated: false });
+  const root = mount(<RunProvider store={store}><Approval id="approval:r1" onApprove={() => Promise.reject(new Error("this approval expired while you were disconnected"))} /></RunProvider>);
+  act(() => root.querySelector<HTMLButtonElement>('button[data-action="approve"]')!.click());
+  await act(async () => { await Promise.resolve(); });
+  expect(root.querySelector('[role="alert"]')?.textContent).toBe("this approval expired while you were disconnected");
+  expect(root.querySelector<HTMLButtonElement>('button[data-action="approve"]')!.getAttribute("aria-disabled")).toBeNull();
+});
+
 test("approval calls onApprove or onDeny with the request id", () => {
   const { store } = setup([
     { type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false },

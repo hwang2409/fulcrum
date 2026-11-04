@@ -283,7 +283,14 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       }
       case "approval_request": {
         const call = tool(wire.tool_call);
-        const approval: RunEvent = { type: "approval_request", request_id: string(wire.request_id, "request_id"), tool_call: call, ...viewOf(call), delegated: boolean(wire.delegated, "delegated") };
+        const state = wire.state === undefined ? undefined : string(wire.state, "state");
+        if (state !== undefined && state !== "reconnecting" && state !== "resolving") throw new Error("state must be reconnecting or resolving");
+        const approval: RunEvent = {
+          type: "approval_request", request_id: string(wire.request_id, "request_id"), tool_call: call, ...viewOf(call), delegated: boolean(wire.delegated, "delegated"),
+          ...(state ? { state } : {}),
+          ...(wire.status === undefined ? {} : { status: string(wire.status, "status") }),
+          ...(wire.disabled_reason === undefined ? {} : { disabled_reason: string(wire.disabled_reason, "disabled_reason") }),
+        };
         const childRunId = optionalString(wire.agent_instance_id, "agent_instance_id");
         return childRunId ? [approval, subAgent({ ...data, child_instance_id: childRunId, description: `approval for ${approval.tool_call.name}` }, "waiting_approval", "approval")] : [approval];
       }
