@@ -29,17 +29,18 @@ export function textmateSources(pattern: string): string[] {
 const patternFields = new Set(["match", "begin", "end", "while"]);
 const isPatternField = (key: string, value: unknown): value is string => typeof value === "string" && patternFields.has(key);
 
+function collectGrammarValue(value: unknown, pending: unknown[], patterns: Set<string>): void {
+  if (Array.isArray(value)) { pending.push(...value); return; }
+  if (!value || typeof value !== "object") return;
+  for (const [key, item] of Object.entries(value)) {
+    if (isPatternField(key, item)) for (const source of textmateSources(item)) patterns.add(source);
+    else pending.push(item);
+  }
+}
+
 export function grammarPatterns(value: unknown): Set<string> {
   const patterns = new Set<string>();
   const pending = [value];
-  while (pending.length) {
-    const current = pending.pop();
-    if (Array.isArray(current)) { pending.push(...current); continue; }
-    if (!current || typeof current !== "object") continue;
-    for (const [key, item] of Object.entries(current)) {
-      if (isPatternField(key, item)) for (const source of textmateSources(item)) patterns.add(source);
-      else pending.push(item);
-    }
-  }
+  while (pending.length) collectGrammarValue(pending.pop(), pending, patterns);
   return patterns;
 }
