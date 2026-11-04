@@ -36,33 +36,43 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const pending = new Map<number, Pending>();
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
-  const buffers = new Map<string, RunEvent[]>();
-  const replayLoads = new Map<string, () => Promise<RunEvent[]>>();
-  type Recovery = { canceled: boolean; waiting: RunEvent[]; timer?: ReturnType<typeof setTimeout>; wake?: () => void };
+  const replaying = new Set<string>();
+  const quarantined = new Set<string>();
+  const quarantineRevisions = new Map<string, number>();
+  const replayLoads = new Map<string, (signal: AbortSignal) => Promise<RunEvent[]>>();
+  const activeLoads = new Map<string, AbortController>();
+  type Recovery = { canceled: boolean; controller?: AbortController; timer?: ReturnType<typeof setTimeout>; wake?: () => void };
   const recoveries = new Map<string, Recovery>();
   const cancelRecovery = (session: string) => {
     const recovery = recoveries.get(session);
     if (!recovery) return;
     recovery.canceled = true;
+    recovery.controller?.abort();
     if (recovery.timer) clearTimeout(recovery.timer);
     recovery.wake?.();
-    if (buffers.get(session) === recovery.waiting) buffers.delete(session);
     recoveries.delete(session);
   };
-  const cancelRecoveries = () => {
+  const cancelLoad = (session: string) => {
+    activeLoads.get(session)?.abort();
+    activeLoads.delete(session);
+  };
+  const cancelLoads = () => {
     for (const session of recoveries.keys()) cancelRecovery(session);
-    buffers.clear();
+    for (const session of activeLoads.keys()) cancelLoad(session);
   };
   const store = createRunStore(scheduler);
   let evictionCount = 0;
   const evict = (id: string) => {
     cancelRecovery(id);
-    buffers.delete(id);
+    cancelLoad(id);
+    replaying.delete(id);
+    quarantined.delete(id);
+    quarantineRevisions.delete(id);
+    replayLoads.delete(id);
     const value = stores.get(id);
     if (!value) return false;
     stores.delete(id);
     holders.delete(id);
-    replayLoads.delete(id);
     value.dispose();
     evictionCount++;
     return true;
@@ -85,10 +95,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const load = replayLoads.get(session);
     if (!load) return;
     cancelRecovery(session);
-    const waiting: RunEvent[] = [];
-    const recovery: Recovery = { canceled: false, waiting };
+    const recovery: Recovery = { canceled: false };
     recoveries.set(session, recovery);
-    buffers.set(session, waiting);
+    quarantined.add(session);
     let failure: unknown;
     try {
       for (const delay of [0, ...RESYNC_BACKOFF_MS]) {
@@ -99,18 +108,24 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
         }
         if (recovery.canceled) return;
         try {
-          const history = await load();
+          const controller = new AbortController();
+          recovery.controller = controller;
+          const history = await load(controller.signal);
+          recovery.controller = undefined;
           if (recovery.canceled || stores.get(session) !== target) return;
-          target.resync([...history, ...waiting]);
+          target.resync(history);
+          quarantined.delete(session);
           return;
         } catch (error) {
+          if (recovery.canceled) return;
+          recovery.controller = undefined;
           failure = error;
         }
       }
       failRecovery(session, target, recovery, failure);
     } finally {
+      recovery.controller?.abort();
       if (recoveries.get(session) === recovery) recoveries.delete(session);
-      if (buffers.get(session) === waiting) buffers.delete(session);
     }
   };
   const createSession = (session: string) => {
@@ -157,27 +172,48 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       },
     };
   };
-  /**
-   * Opens `session` on a fresh store: the cached store is dropped, live events for the session wait while `load`
-   * runs, then the loaded history and the waiting events dispatch in that order. Without a server cursor, a message
-   * that commits while `load` runs can appear in both the history and the live events.
-   */
-  const replay = async (session: string, load: () => Promise<RunEvent[]>): Promise<SessionLease> => {
-    if (buffers.has(session)) throw new Error(`session ${session} is already replaying`);
+  /** Opens `session` on a fresh store. Until `session_replay_seq` ships, overlapping live events are ambiguous and dropped. */
+  const replay = async (session: string, load: (signal: AbortSignal) => Promise<RunEvent[]>, keepQuarantined = false): Promise<SessionLease> => {
+    if (replaying.has(session)) throw new Error(`session ${session} is already replaying`);
     evict(session);
     replayLoads.set(session, load);
-    const waiting: RunEvent[] = [];
-    buffers.set(session, waiting);
-    let history: RunEvent[];
+    replaying.add(session);
+    quarantined.add(session);
+    quarantineRevisions.set(session, 0);
+    const controller = new AbortController();
+    activeLoads.set(session, controller);
     try {
-      history = await load();
+      const history = await load(controller.signal);
+      if (controller.signal.aborted) throw Object.assign(new Error("request aborted"), { name: "AbortError" });
+      if (!keepQuarantined) activeLoads.delete(session);
+      const value = createSession(session);
+      holders.set(session, 1);
+      let released = false;
+      const lease = { store: value, release() { if (released) return; released = true; const count = holders.get(session); if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1)); } };
+      for (const event of history) lease.store.dispatch(event);
+      if (!keepQuarantined) {
+        quarantined.delete(session);
+        quarantineRevisions.delete(session);
+      }
+      return lease;
+    } catch (error) {
+      replayLoads.delete(session);
+      quarantined.delete(session);
+      quarantineRevisions.delete(session);
+      throw error;
     } finally {
-      if (buffers.get(session) === waiting) buffers.delete(session);
+      if (!quarantined.has(session) && activeLoads.get(session) === controller) activeLoads.delete(session);
+      replaying.delete(session);
     }
-    const lease = forSession(session);
-    for (const event of history) lease.store.dispatch(event);
-    for (const event of waiting) lease.store.dispatch(event);
-    return lease;
+  };
+  const replayRevision = (session: string) => quarantineRevisions.get(session) ?? 0;
+  /** Opens live routing only if no event arrived after `revision` was captured. */
+  const finishReplay = (session: string, revision: number) => {
+    if (!quarantined.has(session) || replayRevision(session) !== revision) return false;
+    quarantined.delete(session);
+    quarantineRevisions.delete(session);
+    activeLoads.delete(session);
+    return true;
   };
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;
@@ -195,33 +231,40 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const request = pending.get(id); if (!request) return;
     pending.delete(id); if (request.timer) clearTimeout(request.timer); callback(request);
   };
-  transport.onMessage((text) => {
-    if (text.length > maxFrame || (text.length > maxFrame / 3 && encoder.encode(text).byteLength > maxFrame)) { store.dispatch(adapterError(`frame exceeds ${maxFrame} bytes`)); return; }
-    let value: unknown;
-    try { value = JSON.parse(text); } catch { store.dispatch(adapterError("frame is not valid JSON")); return; }
-    if (!value || typeof value !== "object") { store.dispatch(adapterError("frame must be an object")); return; }
-    const message = value as TransportMessage;
-    if (message.method === "event") {
-      if (!message.params || typeof message.params !== "object") { store.dispatch(adapterError("event params are invalid")); return; }
-      const events = fromZetaEvent(message.params).map(stampIntent);
-      const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
-      const waiting = session === undefined ? undefined : buffers.get(session);
-      if (waiting) { waiting.push(...events); return; }
-      const sessionStore = eventStore(session);
-      for (const event of events) sessionStore.dispatch(event);
+  const handleEvent = (message: TransportMessage) => {
+    if (!message.params || typeof message.params !== "object") return store.dispatch(adapterError("event params are invalid"));
+    const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
+    if (session !== undefined && quarantined.has(session)) {
+      quarantineRevisions.set(session, (quarantineRevisions.get(session) ?? 0) + 1);
       return;
     }
-    if (message.id === null && message.error) { const error = Object.assign(new Error(message.error.message), message.error); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); return; }
-    if (typeof message.id !== "number") return;
-    const request = pending.get(message.id); if (!request) return;
+    const sessionStore = eventStore(session);
+    for (const event of fromZetaEvent(message.params).map(stampIntent)) sessionStore.dispatch(event);
+  };
+  const handleReply = (message: TransportMessage) => {
+    if (message.id === null && message.error) {
+      const error = Object.assign(new Error(message.error.message), message.error);
+      pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
+      return;
+    }
+    if (typeof message.id !== "number" || !pending.has(message.id)) return;
     settle(message.id, (item) => message.error ? item.reject(Object.assign(new Error(message.error.message), message.error)) : item.resolve(message.result));
+  };
+  transport.onMessage((text) => {
+    if (text.length > maxFrame || (text.length > maxFrame / 3 && encoder.encode(text).byteLength > maxFrame)) return store.dispatch(adapterError(`frame exceeds ${maxFrame} bytes`));
+    let value: unknown;
+    try { value = JSON.parse(text); } catch { return store.dispatch(adapterError("frame is not valid JSON")); }
+    if (!value || typeof value !== "object") return store.dispatch(adapterError("frame must be an object"));
+    const message = value as TransportMessage;
+    if (message.method === "event") handleEvent(message);
+    else handleReply(message);
   });
   const closeListeners = new Set<(error: unknown) => void>();
   let closed = false;
   const rejectPending = (code?: number) => { const error = closeError?.(handshaken, code) ?? new Error("transport closed"); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); return error; };
   transport.onClose?.((code) => {
     const error = rejectPending(code);
-    cancelRecoveries();
+    cancelLoads();
     if (closed) return;
     closed = true;
     closeListeners.forEach((listener) => listener(error));
@@ -257,7 +300,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const target = stores.get(session);
     return target ? resyncSession(session, target) : Promise.reject(new Error(`session ${session} is not open`));
   };
-  return { store, stores, forSession, replay, retrySession, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelRecoveries(); rejectPending(); transport.close(); } };
+  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }

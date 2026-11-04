@@ -55,6 +55,19 @@ test("a plain text message renders exactly as before content blocks", () => {
   expect(container.innerHTML).toBe('<div style="white-space: pre-wrap;" data-part="message" data-kind="message" data-id="message:m" data-role="user" data-state="done" data-format="text">hello\nthere</div>');
 });
 
+test("truncated history strings stay visible in markdown and tool cards", () => {
+  const truncated = "[truncated: original utf-8 bytes=1048577]";
+  const call = { id: "truncated", name: "bash", arguments: { command: "printf output" } };
+  const { store } = setup([
+    commit([{ type: "text", text: `unfinished **markdown ${truncated}` }]),
+    { type: "tool_start", tool_call: call },
+    { type: "tool_end", tool_call: call, tool_result: { tool_call_id: call.id, content: `partial output\n${truncated}`, is_error: false } },
+  ]);
+  mount(<RunProvider store={store}><Message id="message:m" markdown={Markdown} /><ToolCall id="tool:truncated" /></RunProvider>);
+  expect(q('[data-part="message"]').textContent).toContain(truncated);
+  expect(q('[data-part="tool-output"]').textContent).toContain(truncated);
+});
+
 test("mixed blocks render in their order, and streaming appends keep it", () => {
   const { send } = render([{ type: "message_delta", message_id: "m", kind: "reasoning", delta: "let me " }]);
   expect(order()).toEqual(["reasoning"]);
