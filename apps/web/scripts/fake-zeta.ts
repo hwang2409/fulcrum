@@ -23,6 +23,7 @@ const meta = (id: string, minutesAgo: number, extra: Json = {}) => ({
 export const ACTIVE = "s-reconnect";
 export const LONG = "s-long";
 export const MANY = "s-many";
+export const LARGE = "s-large-pages";
 const seeded = [
   meta(ACTIVE, 2, { name: "fix the flaky reconnect test in packages/zeta" }),
   meta("s-themes", 45, { first_message_preview: "check every theme's muted text against 4.5:1 on the surface color" }),
@@ -202,8 +203,14 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let allowed = origins;
   let active: string | null = ACTIVE;
   const manyPages = Number(process.env.FAKE_ZETA_MANY_PAGES ?? 0);
+  const largePages = Number(process.env.FAKE_ZETA_LARGE_PAGES ?? 0);
   if (manyPages > 0) histories[MANY] = Array.from({ length: manyPages * 8 }, (_, index) => ({ id: `many-${index}`, role: index % 2 ? "assistant" : "user", content: [text(`many-page row ${index}`)], tool_result: null }));
-  let sessions = [...seeded, ...(manyPages > 0 ? [meta(MANY, 1, { name: `${manyPages.toLocaleString("en")} pages of history` })] : [])];
+  if (largePages > 0) histories[LARGE] = Array.from({ length: largePages * 128 }, (_, index) => ({ id: `large-${index}`, role: index % 2 ? "assistant" : "user", content: [text(`large-page row ${index}`)], tool_result: null }));
+  let sessions = [
+    ...seeded,
+    ...(manyPages > 0 ? [meta(MANY, 1, { name: `${manyPages.toLocaleString("en")} small pages of history` })] : []),
+    ...(largePages > 0 ? [meta(LARGE, 1, { name: `${largePages.toLocaleString("en")} large pages of history` })] : []),
+  ];
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
   let turnStarted = false;
   let approvalAborted = false;
@@ -287,9 +294,10 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           }
           const rows = (histories[active!] ?? []).filter((row) => approvalHistoryMode !== "not-advertised-without-rows" || (row.event !== "approval_request" && row.event !== "approval_end"));
           const offset = Number(params.offset ?? 0);
-          reply({ result: { messages: rows.slice(offset, offset + 8), next_offset: offset + 8 < rows.length ? offset + 8 : null } });
+          const pageSize = active === LARGE ? 128 : 8;
+          reply({ result: { messages: rows.slice(offset, offset + pageSize), next_offset: offset + pageSize < rows.length ? offset + pageSize : null } });
           // The run starts once, after the first open of the active session finishes its history.
-          if (liveEnabled && active === ACTIVE && offset + 8 >= rows.length && !turnStarted) {
+          if (liveEnabled && active === ACTIVE && offset + pageSize >= rows.length && !turnStarted) {
             turnStarted = true;
             running = true;
             const ask = () => new Promise<"approve" | "deny" | "abort">((resolve) => {
