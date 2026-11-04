@@ -107,6 +107,8 @@ async function openBackwardSession(
   const approvalReconnect = client.features.includes("approval_reconnect");
   let pages: BackwardHistoryPage[] = [];
   let tail: unknown[] = [];
+  let newestBoundary = 0;
+  let newestReplaced = false;
   let validator!: HistoryValidator;
   let initialStatus!: ServerStatus;
   let activeSignal!: AbortSignal;
@@ -117,6 +119,8 @@ async function openBackwardSession(
     const page = await client.request("session_history", { session_id: id, before: null }, { timeoutMs: 15_000, signal: activeSignal }) as BackwardHistoryPage;
     if (!page.history_validator || !Number.isInteger(page.history_validator.end)) throw new Error("backward history response has no validator");
     validator = page.history_validator;
+    newestBoundary = page.next_before ?? 0;
+    newestReplaced = false;
     pages = [page];
     tail = [];
     return page;
@@ -146,13 +150,17 @@ async function openBackwardSession(
   const loadTail = async () => {
     if (validator.end > 0) await client.request("session_history", { session_id: id, before: validator.end, history_validator: validator }, { timeoutMs: 15_000, signal: activeSignal });
     const loaded: unknown[] = [];
-    let offset: number | null = validator.end;
+    let offset: number | null = newestBoundary;
     while (offset !== null) {
       const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal: activeSignal }) as HistoryPage;
       loaded.push(...(page.messages ?? []));
       const next = page.next_offset ?? null;
       if (next === offset) break;
       offset = next;
+    }
+    if (!newestReplaced) {
+      pages = pages.slice(1);
+      newestReplaced = true;
     }
     tail = loaded;
   };

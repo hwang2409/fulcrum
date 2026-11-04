@@ -59,7 +59,10 @@ test("backward history opens newest first and prepends older pages in order", as
   const opened = await openSession(fake.client, "s");
   expect(texts(opened.lease.store)).toEqual(["new"]);
   const newestAnchor = opened.lease.store.getOutline()[0]?.id;
+  expect(fake.calls.filter(([method]) => method === "session_history")).toHaveLength(1);
   expect(fake.calls.filter(([method]) => method === "session_history")[0]?.[1]).toEqual({ session_id: "s", before: null });
+  await Bun.sleep(10);
+  expect(fake.calls.filter(([method]) => method === "session_history")).toHaveLength(2);
   release();
   await opened.complete;
   expect(texts(opened.lease.store)).toEqual(["old", "new"]);
@@ -92,16 +95,17 @@ test("backward history reconciles live events from the validator end", async () 
     if (params.offset === 0) return { messages: [row("new", "assistant", "new")], next_offset: null };
     if (params.before === null) {
       event({ event: "assistant_delta", delta: "live", kind: "assistant" });
-      return { messages: [row("new", "assistant", "new")], next_before: null, history_validator: { end: 1, entry_id: "new" } };
+      return { messages: [row("new", "assistant", "new")], next_before: 1, history_validator: { end: 2, entry_id: "new" } };
     }
-    if (params.before === 1) return { messages: [], next_before: null, history_validator: { end: 1, entry_id: "new" } };
-    if (params.offset === 1) return { messages: [row("live", "assistant", "live")], next_offset: null };
+    if (params.before === 1) return { messages: [row("old", "user", "old")], next_before: null, history_validator: { end: 2, entry_id: "new" } };
+    if (params.before === 2) return { messages: [], next_before: null, history_validator: { end: 2, entry_id: "new" } };
+    if (params.offset === 1) return { messages: [row("new", "assistant", "new"), row("live", "assistant", "live")], next_offset: null };
     throw new Error("unexpected history cursor");
   }, backwardFeatures);
 
   const opened = await openSession(fake.client, "s");
   await opened.complete;
-  expect(texts(opened.lease.store)).toEqual(["new", "live"]);
+  expect(texts(opened.lease.store)).toEqual(["old", "new", "live"]);
   expect(fake.calls.filter(([method, params]) => method === "session_history" && params.offset === 1)).toHaveLength(1);
 });
 
