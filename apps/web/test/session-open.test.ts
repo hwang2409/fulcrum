@@ -65,3 +65,7 @@ test("openSession drops overlapping events and keeps the paged snapshot exact", 
   expect(new Set(ids).size).toBe(ids.length);
   lease.release();
 });
+
+test("session_replay_seq stops at the future sequence coordinator seam", async () => {
+  await expect(openSession({ features: ["session_replay_seq"] } as ZetaClient, "s1")).rejects.toThrow("session_replay_seq needs the sequence replay coordinator");
+});
