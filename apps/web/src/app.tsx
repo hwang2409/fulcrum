@@ -1,5 +1,6 @@
 import { createHighlighter } from "@fulcrum/highlight";
-import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
+import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
+import { MermaidFence } from "@fulcrum/mermaid";
 import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvider, Timeline, useItemSelector, useRun, useRunStore, useTimeline, type Renderers } from "@fulcrum/react";
 import type { SessionStore, ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
@@ -10,7 +11,8 @@ import { ThemePicker, useTheme } from "./theme";
 
 const highlight = createHighlighter();
 addEventListener("pagehide", () => highlight.dispose(), { once: true });
-const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
+const fences: Fences = { mermaid: MermaidFence };
+const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} fences={fences} />;
 
 // Renderers stay module-level so appends never re-render every row; approvals reach the live client through context.
 type Decide = (requestId: string) => Promise<unknown>;
@@ -339,13 +341,13 @@ function Run({ client, sessions, open, opener, focusComposer }: { client: ZetaCl
   return (
     <Decisions.Provider value={decisions}>
       <Undelivered value={undelivered}>
-        <RunProvider store={open.lease.store} highlight={highlight}>
+        <RunProvider store={open.lease.store} highlight={highlight} onRetry={client ? () => client.retrySession(open.id) : undefined}>
           <RefreshOnIdle sessions={sessions} />
           <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready="true">
             <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
             <EmptyRun />
           </div>
-          <RunComposer key={open.id} client={open.stale ? null : client} onUndelivered={onUndelivered} />
+          <RunComposer key={open.id} client={open.stale ? null : client} store={open.lease.store} onUndelivered={onUndelivered} />
         </RunProvider>
       </Undelivered>
     </Decisions.Provider>
@@ -366,9 +368,12 @@ function EmptyRun() {
 const offline = () => Promise.reject(new Error("not connected to zeta serve"));
 
 /** The message box: send while idle, steer while a turn runs (zeta always takes steering), stop the turn. */
-function RunComposer({ client, onUndelivered }: { client: ZetaClient | null; onUndelivered(intents: string[]): void }) {
+function RunComposer({ client, store, onUndelivered }: { client: ZetaClient | null; store: SessionStore; onUndelivered(intents: string[]): void }) {
   const running = useRun((state) => state.agent === "running");
-  const delivery = useMemo(() => createDelivery(), []);
+  const delivery = useMemo(() => createDelivery(undefined, (event) => {
+    const deliveryId = event.type === "user_message" && event.delivery_id;
+    if (deliveryId && !store.hasMessageDelivery(deliveryId)) store.dispatch(event);
+  }), [store]);
   const wasRunning = useRef(running);
   useEffect(() => {
     // shortcut: a resend that fails is not shown; upgrade when the composer can take a host-reported error.

@@ -12,6 +12,7 @@ jobs:
       - run: bunx tsc -b
       - run: bun run --cwd packages/highlight build # @fulcrum/react imports its built entry
       - run: git diff --exit-code -- packages/highlight/src/languages.ts
+      - run: bun run --cwd packages/mermaid build # the playground and web apps import its built entry
       - run: bun test
       - run: bun scripts/highlight-token-parity.ts check
       - name: check resolver contract against base
@@ -29,12 +30,14 @@ jobs:
       - run: bun run bench:markdown
       - run: bun run size:check
       - run: bun run check:highlight-consumer
-      - run: bun run check:highlight-notices
+      - run: bun run check:notices
       - run: bun run check:pack-consumer
       - run: cd apps/playground && bunx playwright install --with-deps chromium
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground smoke
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
+      - run: bun run check:mermaid-bundle
       - run: bun run --cwd apps/playground layout
+      - run: bun run --cwd apps/playground mermaid
       - run: bun run --cwd apps/playground fold-check
         env: { FOLD_ROWS: 50000 }
       - run: bun run --cwd apps/playground highlight:fallback

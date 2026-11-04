@@ -34,12 +34,14 @@ import * as adapterTest from "@fulcrum/adapter-test";
 import { createAiSdkAdapter } from "@fulcrum/ai-sdk";
 import { createRunStore } from "@fulcrum/core";
 import * as highlight from "@fulcrum/highlight";
+import { MermaidFence } from "@fulcrum/mermaid";
 import { RunProvider, Timeline } from "@fulcrum/react";
 import * as virtual from "@fulcrum/virtual";
 import * as zeta from "@fulcrum/zeta";
 import "@fulcrum/highlight/styles.css";
 import "@fulcrum/react/styles.css";
 import "@fulcrum/react/themes.css";
+import "@fulcrum/mermaid/styles.css";
 import React from "react";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -51,6 +53,10 @@ const worker = import.meta.resolve("@fulcrum/highlight/worker.js");
 const highlightDist = dirname(fileURLToPath(import.meta.resolve("@fulcrum/highlight")));
 if (!existsSync(fileURLToPath(worker)) || readdirSync(join(highlightDist, "chunks")).length === 0)
   throw new Error("highlight asset entry point is missing");
+// the fence loads mermaid from ./render.js beside it on the first diagram
+const mermaidDist = dirname(fileURLToPath(import.meta.resolve("@fulcrum/mermaid")));
+if (typeof MermaidFence !== "function" || !existsSync(join(mermaidDist, "render.js")) || readdirSync(join(mermaidDist, "chunks")).length === 0)
+  throw new Error("mermaid lazy render module is missing");
 
 const store = createRunStore(() => {});
 const adapter = createAiSdkAdapter({ streamKey: "chat-request-123" });

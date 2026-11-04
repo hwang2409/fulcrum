@@ -1,5 +1,6 @@
 import type { RunEvent, RunItem, SubAgentEvent } from "./events.js";
 import { appendText } from "./stream.js";
+import { messageAlias } from "./message-identity.js";
 
 /** Maximum durable notification ids retained for replay dedupe. */
 export const RECEIPT_LIMIT = 1_000;
@@ -68,8 +69,150 @@ interface EntityDraft {
   delete(id: string): void;
   /** Called once per outline edit, in order, as the reducer makes it. */
   splice(splice: OutlineSplice): void;
+  getMessageAlias(key: string): string | undefined;
+  setMessageAlias(key: string, id: string): void;
 }
 type SpliceOutline = (index: number, deleteCount: number, items: readonly OutlineItem[]) => void;
+
+const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+type Validator = (value: unknown) => boolean;
+interface FieldSchema {
+  readonly required: boolean;
+  readonly validate: Validator;
+  readonly fields?: Readonly<Record<string, FieldSchema>>;
+  readonly inspectFields?: boolean;
+}
+type EventSchema<E> = { readonly [K in Exclude<keyof E, "type">]-?: FieldSchema };
+const required = (validate: Validator, fields?: FieldSchema["fields"], inspectFields = false): FieldSchema => ({ required: true, validate, fields, inspectFields });
+const optional = (validate: Validator, fields?: FieldSchema["fields"], inspectFields = false): FieldSchema => ({ required: false, validate, fields, inspectFields });
+const string: Validator = (value) => typeof value === "string";
+const boolean: Validator = (value) => typeof value === "boolean";
+const finite: Validator = (value) => typeof value === "number" && Number.isFinite(value);
+const oneOf = (...values: readonly unknown[]): Validator => (value) => values.includes(value);
+const array: Validator = Array.isArray;
+const object: Validator = record;
+const usage: Validator = (value) => {
+  if (!record(value)) return false;
+  for (const amount of Object.values(value)) if (!finite(amount)) return false;
+  return true;
+};
+const toolCall: Validator = (value) => record(value) && string(value.id) && string(value.name) && record(value.arguments);
+const message: Validator = (value) => record(value) && string(value.role) && array(value.content);
+const block: Validator = (value) => record(value) && string(value.type);
+const error: Validator = (value) => record(value) && string(value.code) && string(value.message);
+const toolCallFields = { id: required(string), name: required(string), arguments: required(object) };
+const messageFields = { role: required(string), content: required(array) };
+const toolResultFields = {
+  tool_call_id: required(string),
+  content: required(string),
+  is_error: required(boolean),
+  is_canceled: optional(boolean),
+};
+
+/** Every consumed event field declares whether invalid data rejects the event or is omitted from it. */
+export const eventSchemas = {
+  run_start: { data: optional(object) },
+  run_end: { data: optional(object) },
+  turn_start: { data: optional(object) },
+  turn_end: { data: optional(object) },
+  message_start: { data: optional(object) },
+  message_reset: { data: optional(object) },
+  retry: {},
+  message_delta: { message_id: optional(string), delta: required(string), kind: optional(string) },
+  message_block: { message_id: optional(string), block: required(block, { type: required(string) }) },
+  message_commit: { message_id: optional(string), message: required(message, messageFields) },
+  tool_start: { tool_call: required(toolCall, toolCallFields), view: optional(object), data: optional(object) },
+  tool_input: { tool_call: required(toolCall, toolCallFields), input: required(string), view: optional(object), data: optional(object) },
+  tool_output: { tool_call: required(toolCall, toolCallFields), output: required(string), view: optional(object), data: optional(object) },
+  tool_end: { tool_call: required(toolCall, toolCallFields), tool_result: optional(object, toolResultFields, true), view: optional(object), data: optional(object) },
+  approval_request: { request_id: required(string), tool_call: required(toolCall, toolCallFields), view: optional(object), delegated: required(boolean) },
+  approval_end: { request_id: required(string), decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
+  usage: { usage: required(usage) },
+  user_message: { text: required(string), mode: required(string), attachments: optional(array), delivery_id: optional(string), intent: optional(string) },
+  error: { error: required(error, { code: required(string), message: required(string) }) },
+  notification: { notification_id: optional(string), data: optional(object) },
+  unknown: { name: required(string), data: required(object, { notification_id: optional(string) }, true) },
+  sub_agent: {
+    childRunId: required(string),
+    status: required(oneOf("running", "waiting_approval", "waiting_input", "idle", "done", "error", "canceled")),
+    name: optional(string),
+    task: optional(string),
+    latestActivity: optional(string),
+    toolCount: optional(finite),
+    summary: optional(string),
+    urgency: optional(oneOf("approval", "input", "error")),
+    notificationId: optional(string),
+    startedAt: optional(string),
+    updatedAt: optional(string),
+    endedAt: optional(string),
+    sequence: optional(finite),
+  },
+} satisfies { readonly [T in RunEvent["type"]]: EventSchema<Extract<RunEvent, { type: T }>> };
+
+const DROP_EVENT = Symbol("drop invalid event");
+const OMIT = Symbol("omit invalid optional field");
+const MISSING = Symbol("missing optional field");
+type Sanitized = Record<string, unknown> | typeof DROP_EVENT | { readonly value: Record<string, unknown>; readonly count: number };
+const copyWithChanges = (input: Record<string, unknown>, changes: ReadonlyMap<string, unknown>) => {
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    for (const [field, value] of changes) {
+      if (value === OMIT) delete descriptors[field];
+      else descriptors[field] = { value, enumerable: descriptors[field]?.enumerable ?? true, configurable: true, writable: true };
+    }
+    return Object.create(Object.getPrototypeOf(input), descriptors) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+};
+const readField = (input: Record<string, unknown>, field: string, rule: FieldSchema) => {
+  try {
+    const value = input[field];
+    if (value === undefined) return rule.required ? DROP_EVENT : MISSING;
+    if (!rule.validate(value)) return rule.required ? DROP_EVENT : OMIT;
+    return value;
+  } catch {
+    return rule.required ? DROP_EVENT : OMIT;
+  }
+};
+const sanitizeFields = (input: Record<string, unknown>, schema: Readonly<Record<string, FieldSchema>>): Sanitized => {
+  let count = 0;
+  let changes: Map<string, unknown> | undefined;
+  for (const field in schema) {
+    const rule = schema[field]!;
+    const value = readField(input, field, rule);
+    if (value === DROP_EVENT) return DROP_EVENT;
+    if (value === OMIT) {
+      (changes ??= new Map()).set(field, OMIT);
+      count++;
+      continue;
+    }
+    if (value === MISSING || !rule.inspectFields || !rule.fields) continue;
+    const nested = sanitizeFields(value as Record<string, unknown>, rule.fields);
+    if (nested === DROP_EVENT) return DROP_EVENT;
+    if (nested === value) continue;
+    const changed = nested as { readonly value: Record<string, unknown>; readonly count: number };
+    (changes ??= new Map()).set(field, changed.value);
+    count += changed.count;
+  }
+  if (!changes) return input;
+  const value = copyWithChanges(input, changes);
+  return value ? { value, count } : DROP_EVENT;
+};
+
+const validateEvent = (input: unknown, onSanitized?: (count: number) => void): RunEvent | undefined => {
+  if (!record(input) || typeof input.type !== "string") return undefined;
+  const type = input.type;
+  const schema = eventSchemas[type as RunEvent["type"]] as Readonly<Record<string, FieldSchema>> | undefined;
+  if (!schema)
+    return { type: "unknown", name: type, data: record(input.data) ? input.data : {} };
+  const sanitized = sanitizeFields(input, schema);
+  if (sanitized === DROP_EVENT) return undefined;
+  if (sanitized === input) return input as unknown as RunEvent;
+  const changed = sanitized as { readonly value: Record<string, unknown>; readonly count: number };
+  onSanitized?.(changed.count);
+  return changed.value as unknown as RunEvent;
+};
 
 type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;
 type MessageBlock = Extract<RunEvent, { type: "message_block" }>;
@@ -82,6 +225,25 @@ const finishPriorMessage = (next: RunState, id: string, endActiveMessage: () => 
 const appendMessageOutline = (next: RunState, itemId: string, spliceOutline: SpliceOutline) => {
   spliceOutline(next.outline.length, 0, [{ id: itemId, kind: "message" }]);
   next.nextId += 1;
+};
+const reduceUserMessage = (
+  next: RunState,
+  event: Extract<RunEvent, { type: "user_message" }>,
+  entities: EntityDraft,
+  appendItem: (item: RunItem) => void,
+  setItem: EntityDraft["set"],
+) => {
+  const intentId = event.intent === undefined ? undefined : `user:intent:${event.intent}`;
+  const deliveryId = event.delivery_id === undefined ? undefined : messageAlias(event.delivery_id);
+  const deliveryItemId = event.delivery_id === undefined ? undefined : `user:delivery:${event.delivery_id}`;
+  const id = (deliveryId && entities.getMessageAlias(deliveryId)) ||
+    (intentId && entities.getMessageAlias(intentId)) ||
+    (intentId && entities.get(intentId) ? intentId : undefined) ||
+    intentId || deliveryItemId || `user:${next.nextId++}`;
+  if (entities.get(id)) setItem({ id, type: "user", event });
+  else appendItem({ id, type: "user", event });
+  if (deliveryId) entities.setMessageAlias(deliveryId, id);
+  if (intentId) entities.setMessageAlias(intentId, id);
 };
 /**
  * A streaming message reads as its content blocks, then its text tail. A block that is not text first moves the tail
@@ -152,13 +314,16 @@ const reduceMessageCommit = (
   next.activeMessageId = undefined;
 };
 
+/** Internal direct reductions write their supplied entity and alias maps; callers own those maps and the returned state. */
 export function reduceAllWithEntities(
   state: RunState,
   events: RunEvent[],
   entities: EntityDraft,
+  onInvalid?: (event: RunEvent) => void,
+  onSanitized?: (count: number) => void,
 ): RunState {
   // An empty delta carries no text: it must not open a row or publish a new state.
-  const isEmptyDelta = (event: RunEvent) => event.type === "message_delta" && event.delta === "";
+  const isEmptyDelta = (event: RunEvent | null) => event?.type === "message_delta" && event.delta === "";
   if (events.some(isEmptyDelta)) events = events.filter((event) => !isEmptyDelta(event));
   if (events.length === 0) return state;
 
@@ -236,7 +401,9 @@ export function reduceAllWithEntities(
     next.activeToolIds = {};
   };
 
-  for (const event of events) {
+  for (const value of events) {
+    const event = validateEvent(value, onSanitized);
+    if (!event) { onInvalid?.(value); continue; }
     const candidate =
       event.type === "notification"
         ? event.notification_id
@@ -413,12 +580,9 @@ export function reduceAllWithEntities(
         next.usage = usage;
         break;
       }
-      case "user_message": {
-        const id = event.intent === undefined ? `user:${next.nextId++}` : `user:intent:${event.intent}`;
-        if (getItem(id)) setItem({ id, type: "user", event });
-        else appendItem({ id, type: "user", event });
+      case "user_message":
+        reduceUserMessage(next, event, entities, appendItem, setItem);
         break;
-      }
       case "error": {
         const id = `error:${next.nextId++}`;
         next.agent = "idle";

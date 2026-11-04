@@ -54,38 +54,84 @@ const mergeSplices = (base: readonly OutlineSplice[], edits: readonly OutlineSpl
   return merged;
 };
 
-export function createRunStore(scheduler: Scheduler = defaultScheduler) {
+export interface StoreOptions {
+  /** Called when validated reduction still throws. The store stays readable but refuses dispatches until `resync`. */
+  onError?: (error: unknown) => void;
+}
+export interface StoreDiagnostics {
+  readonly ignoredEvents: number;
+  readonly sanitizedFields: number;
+  readonly desynced: boolean;
+  readonly reason?: string;
+  readonly resyncError?: string;
+}
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
   let entities = new Map<string, RunItem>();
+  const messageAliases = new Map<string, string>();
   let current: RunState = structuredClone(initialState);
   let pending: RunEvent[] = [];
   const listeners = new Set<Listener>();
   const outlineListeners = new Set<Listener>();
   const itemListeners = new Map<string, Set<Listener>>();
+  const diagnosticsListeners = new Set<Listener>();
   let queued = false;
+  let running = false;
+  let flushing = false;
+  let notifying = false;
   let disposed = false;
+  let desynced = false;
+  let ignoredEvents = 0;
+  let sanitizedFields = 0;
+  let diagnostics: StoreDiagnostics = { ignoredEvents, sanitizedFields, desynced };
   let stateChanged = false;
   let outlineChanged = false;
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
   let edits: OutlineSplice[] = [];
+  const setDiagnostics = (next: StoreDiagnostics) => {
+    if (diagnostics.ignoredEvents === next.ignoredEvents && diagnostics.sanitizedFields === next.sanitizedFields && diagnostics.desynced === next.desynced && diagnostics.reason === next.reason && diagnostics.resyncError === next.resyncError) return;
+    diagnostics = next;
+    diagnosticsListeners.forEach((listener) => listener());
+  };
+  const refuseDesynced = () => { if (desynced) throw new Error("store is desynced"); };
 
   const flush = () => {
-    if (pending.length === 0 || disposed) return false;
+    if (pending.length === 0 || disposed || desynced || flushing || notifying) return false;
+    flushing = true;
     const events = pending;
     pending = [];
     const beforeOutline = current.outline;
-    current = reduceAllWithEntities(current, events, {
-      get: (id) => entities.get(id),
-      set: (item) => {
-        entities.set(item.id, item);
-        changedItems.add(item.id);
-      },
-      delete: (id) => {
-        entities.delete(id);
-        changedItems.add(id);
-      },
-      splice: (edit) => edits.push(edit),
-    });
+    let next: RunState;
+    try {
+      next = reduceAllWithEntities(current, events, {
+        get: (id) => entities.get(id),
+        set: (item) => { entities.set(item.id, item); changedItems.add(item.id); },
+        delete: (id) => { entities.delete(id); changedItems.add(id); },
+        splice: (edit) => edits.push(edit),
+        getMessageAlias: (key) => messageAliases.get(key),
+        setMessageAlias: (key, id) => { messageAliases.set(key, id); },
+      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; });
+    } catch (error) {
+      desynced = true;
+      pending = [];
+      edits = [];
+      changedItems.clear();
+      flushing = false;
+      setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
+      options.onError?.(error);
+      return false;
+    }
+    if (disposed) {
+      entities.clear();
+      messageAliases.clear();
+      edits = [];
+      changedItems.clear();
+      flushing = false;
+      return false;
+    }
+    current = next;
     stateChanged = true;
     if (current.outline !== beforeOutline) {
       // One change per notification: flushes before it (a read forces one) extend it, so subscribers see one edit list.
@@ -94,17 +140,23 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       outlineChanged = true;
     }
     edits = [];
+    flushing = false;
+    setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
     return true;
   };
   const notify = () => {
-    if (!stateChanged) return;
+    if (!stateChanged || desynced) return;
     stateChanged = false;
-    listeners.forEach((listener) => listener());
-    if (outlineChanged) outlineListeners.forEach((listener) => listener());
-    outlineChanged = false;
-    for (const id of changedItems)
-      itemListeners.get(id)?.forEach((listener) => listener());
-    changedItems.clear();
+    notifying = true;
+    try {
+      listeners.forEach((listener) => listener());
+      if (outlineChanged) outlineListeners.forEach((listener) => listener());
+      outlineChanged = false;
+      for (const id of changedItems) itemListeners.get(id)?.forEach((listener) => listener());
+      changedItems.clear();
+    } finally {
+      notifying = false;
+    }
   };
 
   function subscribe(listener: Listener): () => void;
@@ -126,20 +178,50 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
 
   return {
     getState() {
-      flush();
+      if (!notifying) flush();
       return current;
     },
     getItem(id: string) {
-      flush();
+      if (!notifying) flush();
       return entities.get(id);
     },
     getOutline(): readonly OutlineItem[] {
-      flush();
+      if (!notifying) flush();
       return current.outline;
     },
     getOutlineSnapshot(): OutlineSnapshot {
-      flush();
+      if (!notifying) flush();
       return outlineSnapshot;
+    },
+    hasMessageDelivery(deliveryId: string) {
+      if (!notifying) flush();
+      return messageAliases.has(`delivery:${deliveryId}`);
+    },
+    getDiagnostics(): StoreDiagnostics { return diagnostics; },
+    subscribeDiagnostics(listener: Listener) {
+      diagnosticsListeners.add(listener);
+      return () => diagnosticsListeners.delete(listener);
+    },
+    resyncFailed(error: unknown) {
+      if (!desynced || disposed) return;
+      setDiagnostics({ ...diagnostics, resyncError: errorMessage(error) });
+    },
+    resync(events: readonly RunEvent[]) {
+      if (disposed) throw new Error("store is disposed");
+      pending = [];
+      entities.clear();
+      messageAliases.clear();
+      current = structuredClone(initialState);
+      outlineSnapshot = { items: current.outline, change: null };
+      changedItems.clear();
+      edits = [];
+      stateChanged = false;
+      outlineChanged = false;
+      desynced = false;
+      pending.push(...events);
+      flush();
+      if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
+      notify();
     },
     subscribe,
     subscribeOutline(listener: Listener) {
@@ -148,13 +230,22 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
     },
     dispatch(event: RunEvent) {
       if (disposed) throw new Error("store is disposed");
+      refuseDesynced();
       pending.push(event);
       if (!queued) {
         queued = true;
         scheduler(() => {
           queued = false;
-          flush();
-          notify();
+          if (running) return;
+          running = true;
+          try {
+            do {
+              flush();
+              notify();
+            } while (pending.length > 0 && !disposed && !desynced);
+          } finally {
+            running = false;
+          }
         });
       }
     },
@@ -165,10 +256,15 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler) {
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
       entities = new Map();
+      messageAliases.clear();
       listeners.clear();
       outlineListeners.clear();
       itemListeners.clear();
+      diagnosticsListeners.clear();
       changedItems.clear();
+      edits = [];
+      desynced = false;
+      diagnostics = { ignoredEvents, sanitizedFields, desynced: false };
       stateChanged = false;
       outlineChanged = false;
     },

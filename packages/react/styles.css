@@ -33,6 +33,30 @@
 [data-part="timeline"] *,
 [data-part="timeline"] *::before,
 [data-part="timeline"] *::after { box-sizing: border-box; border-radius: 0; }
+[data-part="resync-status"] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  margin-block-end: 8px;
+  padding-inline: 8px;
+  border-inline-start: 2px solid var(--fulcrum-warn);
+  color: var(--fulcrum-muted);
+  font: 12px/1.4 var(--fulcrum-font);
+}
+[data-part="resync-retry"] {
+  min-height: 32px;
+  padding-inline: 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fulcrum-accent);
+  font: 600 12px/1 var(--fulcrum-font);
+  cursor: pointer;
+}
+[data-part="resync-retry"]:hover { text-decoration: underline; text-underline-offset: 3px; }
+[data-part="resync-retry"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 /* The scroll root (the Timeline's parent) contains the hidden live region, which is absolutely positioned: unpositioned,
    it would sit below the content and stretch the host page. Zero specificity, so a host's own position wins. */
 :where(:has(> [data-part="timeline"])) { position: relative; }
@@ -88,7 +112,13 @@
 [data-part="jump-to-approval"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 
 /* Messages: plain prose, no bubbles. The user's turn is a surface band with a prompt mark. */
-[data-part="message"] { max-width: 80ch; text-wrap: pretty; }
+/* Text keeps an 80ch measure. A direct child marked data-wide (a diagram) takes the message's whole content width
+   instead, and the text around it keeps the measure: a registered length resolves 80ch where the message sets it, so
+   a larger heading font does not widen its own measure. */
+@property --fulcrum-measure { syntax: "<length>"; inherits: true; initial-value: 0px; }
+[data-part="message"] { --fulcrum-measure: 80ch; max-width: var(--fulcrum-measure); text-wrap: pretty; }
+[data-part="message"]:has(> [data-wide]) { max-width: none; }
+[data-part="message"]:has(> [data-wide]) > :not([data-wide]) { max-width: var(--fulcrum-measure); }
 [data-part="message"][data-role="user"],
 [data-part="item"][data-kind="user"] {
   max-width: none;

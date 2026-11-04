@@ -2,20 +2,24 @@ import "../fonts.css";
 import "@fulcrum/react/styles.css";
 import "@fulcrum/react/themes.css";
 import "@fulcrum/highlight/styles.css";
+import "@fulcrum/mermaid/styles.css";
 import themeSource from "@fulcrum/react/themes.css?raw";
 import "./gallery.css";
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, type RunSource } from "@fulcrum/core";
 import { createHighlighter } from "@fulcrum/highlight";
-import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
+import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
+import { MermaidFence } from "@fulcrum/mermaid";
 import { Approval, Message, RunNavigator, RunProvider, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunLocation } from "@fulcrum/react";
 import { CodeCard, codeDemos } from "./code-demos";
 import { ComposerCard, composerDemos } from "./composer-demos";
 import { demos, type Demo } from "./demos";
+import { mermaidDemos } from "./mermaid-demos";
 
 const highlight = createHighlighter();
-const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
+const fences: Fences = { mermaid: MermaidFence };
+const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} fences={fences} />;
 
 /** `path` is the open run path when the approval renders inside a RunNavigator. */
 type Act = (action: "approve" | "deny", requestId: string, path?: readonly RunLocation[]) => void;
@@ -190,7 +194,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
 }
 
 // Every card in page order: the run parts, the composer that sits under a run, then highlighted text outside a run.
-const cards = [...demos, ...composerDemos, ...codeDemos];
+const cards = [...demos, ...mermaidDemos, ...composerDemos, ...codeDemos];
 const parts = [...new Set(cards.map((demo) => demo.part))];
 
 const paletteVars = ["bg", "fg", "accent", "ok", "warn", "danger", "tok-keyword", "tok-string", "tok-function"];
