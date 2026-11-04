@@ -35,6 +35,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const pending = new Map<number, Pending>();
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
+  const buffers = new Map<string, RunEvent[]>();
+  const replayLoads = new Map<string, () => Promise<RunEvent[]>>();
   const store = createRunStore(scheduler);
   let evictionCount = 0;
   const evict = (id: string) => {
@@ -42,6 +44,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!value) return false;
     stores.delete(id);
     holders.delete(id);
+    replayLoads.delete(id);
     value.dispose();
     evictionCount++;
     return true;
@@ -51,8 +54,22 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!value) return;
     stores.delete(session); stores.set(session, value);
   };
+  const resyncSession = async (session: string, target: SessionStore) => {
+    const load = replayLoads.get(session);
+    if (!load || buffers.has(session)) return;
+    const waiting: RunEvent[] = [];
+    buffers.set(session, waiting);
+    try {
+      const history = await load();
+      if (stores.get(session) === target)
+        target.resync([...history, ...waiting]);
+    } finally {
+      if (buffers.get(session) === waiting) buffers.delete(session);
+    }
+  };
   const createSession = (session: string) => {
-    const value = createRunStore(scheduler);
+    let value!: SessionStore;
+    value = createRunStore(scheduler, { onError: () => { void resyncSession(session, value).catch(() => {}); } });
     stores.set(session, value);
     holders.set(session, 0);
     return value;
@@ -94,7 +111,6 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       },
     };
   };
-  const buffers = new Map<string, RunEvent[]>();
   /**
    * Opens `session` on a fresh store: the cached store is dropped, live events for the session wait while `load`
    * runs, then the loaded history and the waiting events dispatch in that order. Without a server cursor, a message
@@ -103,6 +119,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const replay = async (session: string, load: () => Promise<RunEvent[]>): Promise<SessionLease> => {
     if (buffers.has(session)) throw new Error(`session ${session} is already replaying`);
     evict(session);
+    replayLoads.set(session, load);
     const waiting: RunEvent[] = [];
     buffers.set(session, waiting);
     let history: RunEvent[];

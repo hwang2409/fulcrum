@@ -249,47 +249,51 @@ test("stores do not share delivery aliases through initialState", () => {
   expect(second.getOutline()).toEqual([{ id: "user:delivery:same", kind: "user" }]);
 });
 
-test("a failed reduction rebuilds indexes like a fresh replay", () => {
+test("an unexpected reduction failure marks the store desynced until history replaces it", () => {
   const jobs: Array<() => void> = [];
-  const store = createRunStore((job) => jobs.push(job));
+  const errors: unknown[] = [];
+  const store = createRunStore((job) => jobs.push(job), { onError: (error) => errors.push(error) });
   store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "first" });
   jobs.shift()!();
-  let failed = true;
-  const event = { type: "user_message", text: "second", mode: "send", get delivery_id() { if (failed) { failed = false; throw new Error("boom"); } return "second"; } } as RunEvent;
-  store.dispatch(event);
-  expect(() => jobs.shift()!()).toThrow("boom");
+  let reads = 0;
+  const event = new Proxy({ type: "retry" }, {
+    get(target, key, receiver) {
+      if (key === "type" && ++reads > 3) throw new Error("boom");
+      return Reflect.get(target, key, receiver);
+    },
+  }) as RunEvent;
   store.dispatch(event);
   jobs.shift()!();
-  const replay = createRunStore(() => {});
-  replay.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "first" });
-  replay.getState();
-  replay.dispatch({ type: "user_message", text: "second", mode: "send", delivery_id: "second" });
-  replay.getState();
-  expect(store.getOutline()).toEqual(replay.getOutline());
-  for (const row of replay.getOutline()) expect(store.getItem(row.id)).toEqual(replay.getItem(row.id));
-  expect(store.hasMessageDelivery("first")).toBe(replay.hasMessageDelivery("first"));
-  expect(store.hasMessageDelivery("second")).toBe(replay.hasMessageDelivery("second"));
+  expect(errors).toHaveLength(1);
+  expect(store.getDiagnostics()).toEqual({ ignoredEvents: 0, desynced: true });
+  expect(() => store.getOutline()).toThrow("store is desynced");
+
+  store.resync([{ type: "user_message", text: "from history", mode: "send", delivery_id: "history" }]);
+  expect(store.getDiagnostics().desynced).toBe(false);
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:history", kind: "user" }]);
 });
 
-test("a failed batch does not publish entity or delivery indexes", () => {
+test("a malformed event after a delivered row is a counted no-op", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((flush) => jobs.push(flush));
-  store.dispatch({ type: "user_message", text: "go", mode: "send", delivery_id: "throw" });
+  store.dispatch({ type: "user_message", text: "go", mode: "send", delivery_id: "kept" });
   store.dispatch({ type: "tool_start", tool_call: undefined as never });
-  expect(() => jobs.shift()!()).toThrow();
-  expect(store.getState().outline).toEqual([]);
-  expect(store.getItem("user:delivery:throw")).toBeUndefined();
-  expect(store.hasMessageDelivery("throw")).toBe(false);
+  jobs.shift()!();
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:kept", kind: "user" }]);
+  expect(store.getItem("user:delivery:kept")).toBeDefined();
+  expect(store.hasMessageDelivery("kept")).toBe(true);
+  expect(store.getDiagnostics().ignoredEvents).toBe(1);
 });
 
-test("a failed batch does not publish a plain entity write", () => {
+test("a malformed event after a plain row is a counted no-op", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((flush) => jobs.push(flush));
   store.dispatch({ type: "user_message", text: "go", mode: "send" });
   store.dispatch({ type: "tool_start", tool_call: undefined as never });
-  expect(() => jobs.shift()!()).toThrow();
-  expect(store.getState().outline).toEqual([]);
-  expect(store.getItem("user:1")).toBeUndefined();
+  jobs.shift()!();
+  expect(store.getOutline()).toEqual([{ id: "user:1", kind: "user" }]);
+  expect(store.getItem("user:1")).toBeDefined();
+  expect(store.getDiagnostics().ignoredEvents).toBe(1);
 });
 
 test("dispose and replay rebuilds delivery aliases", () => {

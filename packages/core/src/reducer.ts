@@ -17,11 +17,6 @@ export interface OutlineSplice {
   readonly items: readonly OutlineItem[];
 }
 
-export interface CommittedItems {
-  readonly base?: CommittedItems;
-  readonly changes: ReadonlyMap<string, RunItem | undefined>;
-}
-
 export interface RunState {
   turns: string[];
   outline: readonly OutlineItem[];
@@ -35,8 +30,6 @@ export interface RunState {
   activeToolIds: Record<string, boolean>;
   /** Tool call id -> its approval's item id. */
   toolApprovals: Record<string, string>;
-  /** committed item data for rebuilding indexes after a failed reduction */
-  items: CommittedItems;
 }
 
 export const initialState: RunState = {
@@ -50,7 +43,6 @@ export const initialState: RunState = {
   nextId: 1,
   activeToolIds: {},
   toolApprovals: {},
-  items: { changes: new Map() },
 };
 
 const messageItemId = (id: string) => `message:${id}`;
@@ -71,7 +63,7 @@ const compareSubAgentOrder = (prior: SubAgentEvent, event: SubAgentEvent) => {
   return before === undefined || after === undefined ? undefined : Math.sign(after - before);
 };
 
-export interface EntityDraft {
+interface EntityDraft {
   get(id: string): RunItem | undefined;
   set(item: RunItem): void;
   delete(id: string): void;
@@ -82,19 +74,43 @@ export interface EntityDraft {
 }
 type SpliceOutline = (index: number, deleteCount: number, items: readonly OutlineItem[]) => void;
 
-export function createEntityDraft(entities: Map<string, RunItem>, aliases: Map<string, string>) {
-  const edits: OutlineSplice[] = [];
-  const changed = new Set<string>();
-  const draft: EntityDraft = {
-    get: (id) => entities.get(id),
-    set: (item) => { if (entities.get(item.id) !== item) { entities.set(item.id, item); changed.add(item.id); } },
-    delete: (id) => { if (entities.delete(id)) changed.add(id); },
-    splice: (edit) => edits.push(edit),
-    getMessageAlias: (key) => aliases.get(key),
-    setMessageAlias: (key, id) => { if (aliases.get(key) !== id) aliases.set(key, id); },
-  };
-  return { draft, edits, changed, reset() { edits.length = 0; changed.clear(); } };
-}
+const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+const optionalString = (value: unknown) => value === undefined || typeof value === "string";
+const toolCall = (value: unknown) => record(value) && typeof value.id === "string" && typeof value.name === "string" && record(value.arguments);
+const message = (value: unknown) => record(value) && typeof value.role === "string" && Array.isArray(value.content);
+const toolResult = (value: unknown) => record(value) && typeof value.tool_call_id === "string" && typeof value.content === "string" && typeof value.is_error === "boolean";
+const knownEvent = (event: Record<string, unknown>) => {
+  switch (event.type) {
+    case "run_start": case "run_end": case "turn_start": case "turn_end": case "message_start": case "message_reset":
+      return event.data === undefined || record(event.data);
+    case "retry": return true;
+    case "message_delta": return optionalString(event.message_id) && typeof event.delta === "string" && optionalString(event.kind);
+    case "message_block": return optionalString(event.message_id) && record(event.block) && typeof event.block.type === "string";
+    case "message_commit": return optionalString(event.message_id) && message(event.message);
+    case "tool_start": return toolCall(event.tool_call) && (event.view === undefined || record(event.view)) && (event.data === undefined || record(event.data));
+    case "tool_input": return toolCall(event.tool_call) && typeof event.input === "string" && (event.view === undefined || record(event.view)) && (event.data === undefined || record(event.data));
+    case "tool_output": return toolCall(event.tool_call) && typeof event.output === "string" && (event.view === undefined || record(event.view)) && (event.data === undefined || record(event.data));
+    case "tool_end": return toolCall(event.tool_call) && (event.tool_result === undefined || toolResult(event.tool_result)) && (event.view === undefined || record(event.view)) && (event.data === undefined || record(event.data));
+    case "approval_request": return typeof event.request_id === "string" && toolCall(event.tool_call) && typeof event.delegated === "boolean" && (event.view === undefined || record(event.view));
+    case "approval_end": return typeof event.request_id === "string" && (event.decision === undefined || event.decision === "approve" || event.decision === "deny" || event.decision === "abort") && (event.data === undefined || record(event.data));
+    case "usage": return record(event.usage) && Object.values(event.usage).every((value) => typeof value === "number");
+    case "user_message": return typeof event.text === "string" && typeof event.mode === "string" && (event.attachments === undefined || Array.isArray(event.attachments)) && optionalString(event.delivery_id) && optionalString(event.intent);
+    case "error": return record(event.error) && typeof event.error.code === "string" && typeof event.error.message === "string";
+    case "notification": return optionalString(event.notification_id) && (event.data === undefined || record(event.data));
+    case "unknown": return typeof event.name === "string" && record(event.data);
+    case "sub_agent": return typeof event.childRunId === "string" && typeof event.status === "string";
+    default: return false;
+  }
+};
+const validateEvent = (input: unknown): RunEvent | undefined => {
+  if (!record(input) || typeof input.type !== "string") return undefined;
+  const value = input;
+  const type = value.type as string;
+  if (knownEvent(value)) return value as unknown as RunEvent;
+  if (!["run_start", "run_end", "turn_start", "turn_end", "message_start", "message_reset", "retry", "message_delta", "message_block", "message_commit", "tool_start", "tool_input", "tool_output", "tool_end", "approval_request", "approval_end", "usage", "user_message", "error", "notification", "unknown", "sub_agent"].includes(type))
+    return { type: "unknown", name: type, data: record(value.data) ? value.data : {} };
+  return undefined;
+};
 
 type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;
 type MessageBlock = Extract<RunEvent, { type: "message_block" }>;
@@ -111,23 +127,21 @@ const appendMessageOutline = (next: RunState, itemId: string, spliceOutline: Spl
 const reduceUserMessage = (
   next: RunState,
   event: Extract<RunEvent, { type: "user_message" }>,
-  getItem: EntityDraft["get"],
-  getMessageAlias: EntityDraft["getMessageAlias"],
-  setMessageAlias: EntityDraft["setMessageAlias"],
+  entities: EntityDraft,
   appendItem: (item: RunItem) => void,
   setItem: EntityDraft["set"],
 ) => {
   const intentId = event.intent === undefined ? undefined : `user:intent:${event.intent}`;
   const deliveryId = event.delivery_id === undefined ? undefined : messageAlias(event.delivery_id);
   const deliveryItemId = event.delivery_id === undefined ? undefined : `user:delivery:${event.delivery_id}`;
-  const id = (deliveryId && getMessageAlias(deliveryId)) ||
-    (intentId && getMessageAlias(intentId)) ||
-    (intentId && getItem(intentId) ? intentId : undefined) ||
+  const id = (deliveryId && entities.getMessageAlias(deliveryId)) ||
+    (intentId && entities.getMessageAlias(intentId)) ||
+    (intentId && entities.get(intentId) ? intentId : undefined) ||
     intentId || deliveryItemId || `user:${next.nextId++}`;
-  if (getItem(id)) setItem({ id, type: "user", event });
+  if (entities.get(id)) setItem({ id, type: "user", event });
   else appendItem({ id, type: "user", event });
-  if (deliveryId && getMessageAlias(deliveryId) !== id) setMessageAlias(deliveryId, id);
-  if (intentId && getMessageAlias(intentId) !== id) setMessageAlias(intentId, id);
+  if (deliveryId) entities.setMessageAlias(deliveryId, id);
+  if (intentId) entities.setMessageAlias(intentId, id);
 };
 /**
  * A streaming message reads as its content blocks, then its text tail. A block that is not text first moves the tail
@@ -198,10 +212,12 @@ const reduceMessageCommit = (
   next.activeMessageId = undefined;
 };
 
+/** Internal direct reductions write their supplied entity and alias maps; callers own those maps and the returned state. */
 export function reduceAllWithEntities(
   state: RunState,
   events: RunEvent[],
   entities: EntityDraft,
+  onInvalid?: (event: RunEvent) => void,
 ): RunState {
   // An empty delta carries no text: it must not open a row or publish a new state.
   const isEmptyDelta = (event: RunEvent) => event.type === "message_delta" && event.delta === "";
@@ -220,17 +236,9 @@ export function reduceAllWithEntities(
     activeMessageId: state.activeMessageId,
     activeToolIds: state.activeToolIds,
     toolApprovals: state.toolApprovals,
-    items: state.items,
   };
-  const getMessageAlias = entities.getMessageAlias;
-  const setMessageAlias = entities.setMessageAlias;
   const getItem = (id: string) => entities.get(id);
-  let itemChanges: Map<string, RunItem | undefined> | undefined;
-  const setItem = (item: RunItem) => {
-    entities.set(item);
-    (itemChanges ??= new Map()).set(item.id, item);
-    if (next.items === state.items) next.items = { base: state.items, changes: itemChanges };
-  };
+  const setItem = (item: RunItem) => entities.set(item);
   // The first edit copies the outline; later edits in the same batch write that copy in place.
   let ownOutline = false;
   const spliceOutline: SpliceOutline = (index, deleteCount, items) => {
@@ -245,8 +253,6 @@ export function reduceAllWithEntities(
   };
   const deleteItem = (id: string) => {
     entities.delete(id);
-    (itemChanges ??= new Map()).set(id, undefined);
-    if (next.items === state.items) next.items = { base: state.items, changes: itemChanges };
     const index = outlineIndex(next.outline, id);
     if (index >= 0) spliceOutline(index, 1, []);
   };
@@ -292,7 +298,9 @@ export function reduceAllWithEntities(
     next.activeToolIds = {};
   };
 
-  for (const event of events) {
+  for (const value of events) {
+    const event = validateEvent(value);
+    if (!event) { onInvalid?.(value); continue; }
     const candidate =
       event.type === "notification"
         ? event.notification_id
@@ -470,7 +478,7 @@ export function reduceAllWithEntities(
         break;
       }
       case "user_message":
-        reduceUserMessage(next, event, getItem, getMessageAlias, setMessageAlias, appendItem, setItem);
+        reduceUserMessage(next, event, entities, appendItem, setItem);
         break;
       case "error": {
         const id = `error:${next.nextId++}`;

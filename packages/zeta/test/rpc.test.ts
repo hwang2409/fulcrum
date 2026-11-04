@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { RunEvent } from "@fulcrum/core";
 import { connect, createClient, type Transport } from "../src/index.js";
 
 function fakeTransport() {
@@ -120,6 +121,30 @@ test("replay puts loaded history before live events that arrive while it loads, 
   fake.receive(event(" more"));
   expect(lease.store.getItem(lease.store.getOutline()[1]!.id)).toMatchObject({ text: "live more" });
   lease.release();
+});
+
+test("a desynced session store reloads its history and keeps its lease", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport, (flush) => flush());
+  let loads = 0;
+  const lease = await client.replay("s1", async () => [{
+    type: "user_message" as const,
+    text: `history ${++loads}`,
+    mode: "send",
+    delivery_id: `d${loads}`,
+  }]);
+  let reads = 0;
+  lease.store.dispatch(new Proxy({ type: "retry" }, {
+    get(target, key, receiver) {
+      if (key === "type" && ++reads > 3) throw new Error("boom");
+      return Reflect.get(target, key, receiver);
+    },
+  }) as RunEvent);
+  for (let attempt = 0; attempt < 10 && lease.store.getDiagnostics().desynced; attempt++) await Promise.resolve();
+
+  expect(loads).toBe(2);
+  expect(lease.store.getDiagnostics().desynced).toBe(false);
+  expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d2", kind: "user" }]);
 });
 
 test("negotiated delivery ids match echoes by id, not text", async () => {

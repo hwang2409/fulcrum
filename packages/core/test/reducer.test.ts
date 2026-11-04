@@ -1,38 +1,11 @@
 import { expect, test } from "bun:test";
-import { createEntityDraft, initialState, reduceAllWithEntities } from "../src/reducer.js";
-
-const reduceWithMaps = (state: typeof initialState, events: Parameters<typeof reduceAllWithEntities>[1], entities = new Map<string, RunItem>(), aliases = new Map<string, string>(), commit = false) => {
-  const transaction = createEntityDraft(entities, aliases);
-  const next = reduceAllWithEntities(state, events, transaction.draft);
-  if (commit) return next;
-  entities.clear();
-  aliases.clear();
-  return next;
-};
 import {
   createRunStore,
   RECEIPT_LIMIT,
   type RunEvent,
+  type RunItem,
 } from "../src/index.js";
 import { appendText } from "../src/stream.js";
-
-test("discarded delivery reduction can be reduced again", () => {
-  const entities = new Map<string, RunItem>();
-  const aliases = new Map<string, string>();
-  const event = { type: "user_message" as const, text: "go", mode: "send" as const, delivery_id: "d" };
-  reduceWithMaps(initialState, [event], entities, aliases);
-  const next = reduceWithMaps(initialState, [event], entities, aliases);
-  expect(next.outline).toEqual([{ id: "user:delivery:d", kind: "user" }]);
-});
-
-test("discarded plain entity reduction can be reduced again", () => {
-  const entities = new Map<string, RunItem>();
-  const aliases = new Map<string, string>();
-  const event = { type: "user_message" as const, text: "go", mode: "send" as const };
-  reduceWithMaps(initialState, [event], entities, aliases);
-  const next = reduceWithMaps(initialState, [event], entities, aliases);
-  expect(next.outline).toEqual([{ id: "user:1", kind: "user" }]);
-});
 
 const message = (text: string) => ({
   role: "assistant",
@@ -268,8 +241,9 @@ test("handles unknown events and receipt dedupe", () => {
   const store = replay([
     { type: "unknown", name: "future_event", data: { notification_id: "1", value: 1 } },
     { type: "unknown", name: "future_event", data: { notification_id: "1", value: 2 } },
+    { type: "future_event", data: { value: 3 } } as never,
   ]);
-  expect(store.getOutline().filter(({ kind }) => kind === "unknown")).toHaveLength(1);
+  expect(store.getOutline().filter(({ kind }) => kind === "unknown")).toHaveLength(2);
   expect(store.getState().receipts["1"]).toBe(true);
 });
 
