@@ -76,6 +76,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     recovery.wake = resolve;
     recovery.timer = setTimeout(resolve, delay);
   });
+  const failRecovery = (session: string, target: SessionStore, recovery: Recovery, failure: unknown) => {
+    if (recovery.canceled) return;
+    if (stores.get(session) === target) target.resyncFailed(failure);
+    throw failure;
+  };
   const resyncSession = async (session: string, target: SessionStore) => {
     const load = replayLoads.get(session);
     if (!load) return;
@@ -102,8 +107,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
           failure = error;
         }
       }
-      if (!recovery.canceled && stores.get(session) === target) target.resyncFailed(failure);
-      if (!recovery.canceled) throw failure;
+      failRecovery(session, target, recovery, failure);
     } finally {
       if (recoveries.get(session) === recovery) recoveries.delete(session);
       if (buffers.get(session) === waiting) buffers.delete(session);
