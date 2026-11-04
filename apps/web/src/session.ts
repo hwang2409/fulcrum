@@ -75,13 +75,29 @@ export async function openSession(client: ZetaClient, id: string, progress?: Ope
   let rows: unknown[] = [];
   let nextOffset: number | null = null;
   let initialStatus!: ServerStatus;
-  const lease = await client.replay(id, async () => {
-    const before = await getStatus(client, signal);
-    if (before.session?.session_id !== id) await client.request("resume", { session_id: id }, { timeoutMs: 30_000, signal });
-    const page = await client.request("session_history", { session_id: id, offset: 0 }, { timeoutMs: 15_000, signal }) as HistoryPage;
+  let activeSignal!: AbortSignal;
+  const combinedSignal = (replaySignal: AbortSignal) => signal ? AbortSignal.any([signal, replaySignal]) : replaySignal;
+  const loadFullSnapshot = async (replaySignal: AbortSignal) => {
+    const currentSignal = combinedSignal(replaySignal);
+    const snapshotRows: unknown[] = [];
+    for (let offset: number | null = 0; offset !== null; ) {
+      const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal: currentSignal }) as HistoryPage;
+      snapshotRows.push(...(page.messages ?? []));
+      offset = page.next_offset ?? null;
+    }
+    return snapshotEvents(id, snapshotRows, await getStatus(client, currentSignal));
+  };
+  let firstLoad = true;
+  const lease = await client.replay(id, async (replaySignal) => {
+    if (!firstLoad) return loadFullSnapshot(replaySignal);
+    firstLoad = false;
+    activeSignal = combinedSignal(replaySignal);
+    const before = await getStatus(client, activeSignal);
+    if (before.session?.session_id !== id) await client.request("resume", { session_id: id }, { timeoutMs: 30_000, signal: activeSignal });
+    const page = await client.request("session_history", { session_id: id, offset: 0 }, { timeoutMs: 15_000, signal: activeSignal }) as HistoryPage;
     rows = page.messages ?? [];
     nextOffset = page.next_offset ?? null;
-    initialStatus = await getStatus(client, signal);
+    initialStatus = await getStatus(client, activeSignal);
     progress?.(rows.length, nextOffset === null);
     return [...fromZetaHistory(rows), { type: initialStatus.state === "idle" ? "run_end" as const : "run_start" as const }];
   }, true);
@@ -90,7 +106,7 @@ export async function openSession(client: ZetaClient, id: string, progress?: Ope
     const laterEvents: RunEvent[] = [];
     let pages = 0;
     for (let offset: number | null = nextOffset; offset !== null; ) {
-      const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal }) as HistoryPage;
+      const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal: activeSignal }) as HistoryPage;
       const pageRows = page.messages ?? [];
       rows.push(...pageRows);
       laterEvents.push(...fromZetaHistory(pageRows));
@@ -99,7 +115,7 @@ export async function openSession(client: ZetaClient, id: string, progress?: Ope
       if (offset === null || pages % 25 === 0) progress?.(rows.length, offset === null);
     }
     for (const event of laterEvents) lease.store.dispatch(event);
-    let status = await getStatus(client, signal);
+    let status = await getStatus(client, activeSignal);
     for (const event of snapshotEvents(id, [], status)) lease.store.dispatch(event);
     if (status.state === "idle") {
       client.finishReplay(id);
@@ -107,22 +123,15 @@ export async function openSession(client: ZetaClient, id: string, progress?: Ope
     }
     let pending = JSON.stringify(status.pending_approvals ?? []);
     while (status.state !== "idle") {
-      await wait(500, signal);
-      status = await getStatus(client, signal);
+      await wait(500, activeSignal);
+      status = await getStatus(client, activeSignal);
       const nextPending = JSON.stringify(status.pending_approvals ?? []);
       if (nextPending !== pending) {
         for (const event of snapshotEvents(id, [], status)) if (event.type === "approval_request") lease.store.dispatch(event);
         pending = nextPending;
       }
     }
-    const finalRows: unknown[] = [];
-    for (let offset: number | null = 0; offset !== null; ) {
-      const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal }) as HistoryPage;
-      finalRows.push(...(page.messages ?? []));
-      offset = page.next_offset ?? null;
-    }
-    const finalStatus = await getStatus(client, signal);
-    const finalLease = await client.replay(id, async () => snapshotEvents(id, finalRows, finalStatus));
+    const finalLease = await client.replay(id, loadFullSnapshot);
     return { lease: finalLease, syncing: false };
   })();
   return { lease, syncing: initialStatus.state !== "idle", complete };

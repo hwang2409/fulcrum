@@ -302,7 +302,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       }
       case "user_message": {
         if (wire.attachments !== undefined && !Array.isArray(wire.attachments)) throw new Error("attachments must be an array");
-        return [{ type: "user_message", text: string(wire.text, "text"), mode: string(wire.mode, "mode"), ...(wire.attachments === undefined ? {} : { attachments: [...wire.attachments] }) }];
+        return [{ type: "user_message", text: string(wire.text, "text"), mode: string(wire.mode, "mode"), ...(wire.attachments === undefined ? {} : { attachments: [...wire.attachments] }), ...(wire.delivery_id === undefined ? {} : { delivery_id: string(wire.delivery_id, "delivery_id") }) }];
       }
       case "error": {
         const input = object(wire.error, "error");
@@ -357,7 +357,7 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] =>
   }
   if (role === "user") {
     const attachments = content.filter((block) => (block as { type?: unknown } | null)?.type === "attachment");
-    events.push({ type: "user_message", text: text(content), mode: "send", ...(attachments.length ? { attachments } : {}) });
+    events.push({ type: "user_message", text: text(content), mode: "send", ...(attachments.length ? { attachments } : {}), ...(row.delivery_id === undefined ? {} : { delivery_id: string(row.delivery_id, "history row delivery_id") }) });
   } else if (role === "assistant") {
     // History keeps text, thinking, and image stubs; tool_use blocks become tool rows. An empty thinking header carries nothing to show.
     const shown = content.filter((block) => {

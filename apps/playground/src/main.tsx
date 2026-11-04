@@ -127,8 +127,9 @@ function staticStore(count: number): ReturnType<typeof createRunStore> {
   };
   const state = { ...structuredClone(initialState), outline };
   const snapshot = { items: outline, change: null };
+  const diagnostics = { ignoredEvents: 0, sanitizedFields: 0, desynced: false };
   const subscribe = (() => () => {}) as ReturnType<typeof createRunStore>["subscribe"];
-  return { getState: () => state, getItem, getOutline: () => outline, getOutlineSnapshot: () => snapshot, subscribe, subscribeOutline: () => () => true, dispatch: () => {}, dispose: () => {} };
+  return { getState: () => state, getItem, getOutline: () => outline, getOutlineSnapshot: () => snapshot, hasMessageDelivery: () => false, getDiagnostics: () => diagnostics, subscribeDiagnostics: () => () => true, resyncFailed: () => {}, resync: () => {}, subscribe, subscribeOutline: () => () => true, dispatch: () => {}, dispose: () => {} };
 }
 
 function useReplay(mode: string, speed: number, run: number) {

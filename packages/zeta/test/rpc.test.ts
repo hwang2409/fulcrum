@@ -1,16 +1,23 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
+import type { RunEvent } from "@fulcrum/core";
 import { connect, createClient, type Transport } from "../src/index.js";
 
 function fakeTransport() {
   let onMessage!: (text: string) => void;
+  let onClose = (_code?: number) => {};
   const sent: Array<Record<string, unknown>> = [];
   const transport: Transport = {
     send(text) { sent.push(JSON.parse(text)); },
     onMessage(callback) { onMessage = callback; },
-    onClose() {},
+    onClose(callback) { onClose = callback; },
     close() {},
   };
-  return { transport, sent, receive: (message: unknown) => onMessage(JSON.stringify(message)) };
+  return {
+    transport,
+    sent,
+    receive: (message: unknown) => onMessage(JSON.stringify(message)),
+    drop: (code?: number) => onClose(code),
+  };
 }
 
 test("requests before hello are rejected", async () => {
@@ -135,6 +142,291 @@ test("replay drops an event that arrives while history is being committed", asyn
   });
   const lease = await client.replay("s1", async () => [{ type: "run_start" }, { type: "run_end" }]);
   expect(lease.store.getState().agent).toBe("idle");
+});
+
+test("a desynced session store reloads its history and keeps its lease", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport, (flush) => flush());
+  let loads = 0;
+  const lease = await client.replay("s1", async () => [{
+    type: "user_message" as const,
+    text: `history ${++loads}`,
+    mode: "send",
+    delivery_id: `d${loads}`,
+  }]);
+  let reads = 0;
+  lease.store.dispatch(new Proxy({ type: "retry" }, {
+    get(target, key, receiver) {
+      if (key === "type" && ++reads > 3) throw new Error("boom");
+      return Reflect.get(target, key, receiver);
+    },
+  }) as RunEvent);
+  for (let attempt = 0; attempt < 10 && lease.store.getDiagnostics().desynced; attempt++) await Promise.resolve();
+
+  expect(loads).toBe(2);
+  expect(lease.store.getDiagnostics().desynced).toBe(false);
+  expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d2", kind: "user" }]);
+});
+
+test("desync history reload recovers automatically after transient failures", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = fakeTransport();
+    const client = connect(fake.transport, (flush) => flush());
+    let loads = 0;
+    let failures = 0;
+    const lease = await client.replay("transient", async () => {
+      loads++;
+      if (failures-- > 0) throw new Error("history unavailable");
+      return [{ type: "user_message" as const, text: `history ${loads}`, mode: "send", delivery_id: `d${loads}` }];
+    });
+    failures = 3;
+    let reads = 0;
+    lease.store.dispatch(new Proxy({ type: "retry" }, {
+      get(target, key, receiver) {
+        if (key === "type" && ++reads > 3) throw new Error("reducer failed");
+        return Reflect.get(target, key, receiver);
+      },
+    }) as RunEvent);
+    await Promise.resolve();
+    for (const delay of [500, 1_000, 2_000]) {
+      jest.advanceTimersByTime(delay);
+      await Promise.resolve();
+    }
+
+    expect(loads).toBe(5);
+    expect(lease.store.getDiagnostics()).toEqual({ ignoredEvents: 0, sanitizedFields: 0, desynced: false });
+    expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d5", kind: "user" }]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("desync history reload uses bounded exponential backoff", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = fakeTransport();
+    const client = connect(fake.transport, (flush) => flush());
+    let loads = 0;
+    let fail = false;
+    const lease = await client.replay("backoff", async () => {
+      loads++;
+      if (fail) throw new Error("history unavailable");
+      return [];
+    });
+    fail = true;
+    let reads = 0;
+    lease.store.dispatch(new Proxy({ type: "retry" }, {
+      get(target, key, receiver) {
+        if (key === "type" && ++reads > 3) throw new Error("reducer failed");
+        return Reflect.get(target, key, receiver);
+      },
+    }) as RunEvent);
+    await Promise.resolve();
+    expect(loads).toBe(2);
+
+    for (const [elapsed, expectedLoads] of [[499, 2], [1, 3], [999, 3], [1, 4], [2000, 5], [4000, 6], [8000, 7]] as const) {
+      jest.advanceTimersByTime(elapsed);
+      await Promise.resolve();
+      expect(loads).toBe(expectedLoads);
+    }
+    expect(lease.store.getDiagnostics().resyncError).toBe("history unavailable");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("failed desync history reloads are bounded, visible, and manually retryable", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = fakeTransport();
+    const client = connect(fake.transport, (flush) => flush());
+    let loads = 0;
+    let fail = false;
+    const lease = await client.replay("retryable", async () => {
+      loads++;
+      if (fail) throw new Error("history unavailable");
+      return [{ type: "user_message" as const, text: `history ${loads}`, mode: "send", delivery_id: `d${loads}` }];
+    });
+    fail = true;
+    let reads = 0;
+    lease.store.dispatch(new Proxy({ type: "retry" }, {
+      get(target, key, receiver) {
+        if (key === "type" && ++reads > 3) throw new Error("reducer failed");
+        return Reflect.get(target, key, receiver);
+      },
+    }) as RunEvent);
+    await Promise.resolve();
+    for (const delay of [500, 1_000, 2_000, 4_000, 8_000]) {
+      jest.advanceTimersByTime(delay);
+      await Promise.resolve();
+    }
+    await Promise.resolve();
+
+    expect(loads).toBe(7);
+    expect(lease.store.getDiagnostics()).toEqual({
+      ignoredEvents: 0,
+      sanitizedFields: 0,
+      desynced: true,
+      reason: "reducer failed",
+      resyncError: "history unavailable",
+    });
+    expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d1", kind: "user" }]);
+
+    fail = false;
+    await client.retrySession("retryable");
+    expect(loads).toBe(8);
+    expect(lease.store.getDiagnostics()).toEqual({ ignoredEvents: 0, sanitizedFields: 0, desynced: false });
+    expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d8", kind: "user" }]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+const forceDesync = (store: ReturnType<ReturnType<typeof connect>["forSession"]>["store"]) => {
+  let reads = 0;
+  store.dispatch(new Proxy({ type: "retry" }, {
+    get(target, key, receiver) {
+      if (key === "type" && ++reads > 3) throw new Error("reducer failed");
+      return Reflect.get(target, key, receiver);
+    },
+  }) as RunEvent);
+};
+
+for (const action of ["evict", "close"] as const) {
+  test(`${action} aborts an in-flight replay load`, async () => {
+    const fake = fakeTransport();
+    const client = connect(fake.transport, (flush) => flush());
+    let aborted = false;
+    const opening = client.replay(action, (signal) => new Promise<RunEvent[]>((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        aborted = true;
+        reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
+      }, { once: true });
+    }));
+    if (action === "evict") client.evictSession(action);
+    else client.close();
+    expect(aborted).toBe(true);
+    await expect(opening).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  test(`${action} cancels a pending resync backoff`, async () => {
+    jest.useFakeTimers();
+    try {
+      const fake = fakeTransport();
+      const client = connect(fake.transport, (flush) => flush());
+      let loads = 0;
+      let fail = false;
+      const lease = await client.replay(action, async () => {
+        loads++;
+        if (fail) throw new Error("history unavailable");
+        return [];
+      });
+      fail = true;
+      forceDesync(lease.store);
+      await Promise.resolve();
+      expect(loads).toBe(2);
+
+      if (action === "evict") client.evictSession(action);
+      else client.close();
+      jest.advanceTimersByTime(20_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(loads).toBe(2);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+}
+
+test("transport close kills the old recovery before a fresh client recovers once", async () => {
+  jest.useFakeTimers();
+  try {
+    const oldTransport = fakeTransport();
+    const oldClient = connect(oldTransport.transport, (flush) => flush());
+    let oldLoads = 0;
+    let oldFail = false;
+    const oldLease = await oldClient.replay("s", async () => {
+      oldLoads++;
+      if (oldFail) throw new Error("history unavailable");
+      return [];
+    });
+    oldFail = true;
+    forceDesync(oldLease.store);
+    await Promise.resolve();
+    expect(oldLoads).toBe(2);
+    oldTransport.drop(1006);
+
+    const freshTransport = fakeTransport();
+    const freshClient = connect(freshTransport.transport, (flush) => flush());
+    let freshLoads = 0;
+    const freshLease = await freshClient.replay("s", async () => {
+      freshLoads++;
+      return [];
+    });
+    forceDesync(freshLease.store);
+    await Promise.resolve();
+    expect(freshLoads).toBe(2);
+
+    jest.advanceTimersByTime(20_000);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(oldLoads).toBe(2);
+    expect(freshLoads).toBe(2);
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("successful resync clears its pending backoff timer", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = fakeTransport();
+    const client = connect(fake.transport, (flush) => flush());
+    let loads = 0;
+    let failures = 0;
+    const lease = await client.replay("success", async () => {
+      loads++;
+      if (failures-- > 0) throw new Error("history unavailable");
+      return [];
+    });
+    failures = 1;
+    forceDesync(lease.store);
+    await Promise.resolve();
+    expect(loads).toBe(2);
+    expect(jest.getTimerCount()).toBe(1);
+
+    jest.advanceTimersByTime(500);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(loads).toBe(3);
+    expect(jest.getTimerCount()).toBe(0);
+    jest.advanceTimersByTime(20_000);
+    await Promise.resolve();
+    expect(loads).toBe(3);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("negotiated delivery ids match echoes by id, not text", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello(["delivery_id", "user_message_event", "user_message_delivery_id"]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id"] } } });
+  await hello;
+  const first = client.request("send", { text: "same", delivery_id: "d-1" }, { intent: "first" });
+  const second = client.request("steer", { text: "same", delivery_id: "d-2" }, { intent: "second" });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "same", mode: "steer", delivery_id: "d-2" } });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "same", mode: "send", delivery_id: "unknown" } });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "same", mode: "send", delivery_id: "d-1" } });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  fake.receive({ jsonrpc: "2.0", id: 3, result: { accepted: true } });
+  await Promise.all([first, second]);
+  const users = client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user");
+  expect(users.map(({ id }) => id)).toEqual(["user:intent:second", "user:delivery:unknown", "user:intent:first"]);
 });
 
 test("an echoed user_message gets the intent of the pending request with the same text, never another one", async () => {

@@ -143,6 +143,76 @@ test("an approval folding into its tool row is one replace in place, even with a
   expect(ids(store.getOutline()).slice(5)).toEqual(["tool:write-3", "message:between"]);
 });
 
+test("serializes dispatches that re-enter during a reduction", () => {
+  const store = createRunStore((job) => job());
+  const nested = { type: "user_message", text: "nested", mode: "send", delivery_id: "nested" } as const;
+  const outer = {
+    type: "user_message", text: "outer", mode: "send",
+    get delivery_id() { store.dispatch(nested); return "outer"; },
+  } as const;
+  store.dispatch(outer);
+  expect(store.getOutline()).toEqual([
+    { id: "user:delivery:outer", kind: "user" },
+    { id: "user:delivery:nested", kind: "user" },
+  ]);
+  expect(store.getItem("user:delivery:outer")).toBeDefined();
+  expect(store.getItem("user:delivery:nested")).toBeDefined();
+  expect(store.hasMessageDelivery("outer")).toBe(true);
+  expect(store.hasMessageDelivery("nested")).toBe(true);
+});
+
+test("keeps one snapshot for every subscriber notification pass", () => {
+  const store = createRunStore((job) => job());
+  const seenA: string[][] = [];
+  const seenB: string[][] = [];
+  let first = true;
+  store.subscribe(() => {
+    if (first) {
+      first = false;
+      store.dispatch({ type: "user_message", text: "nested", mode: "send", delivery_id: "nested" });
+    }
+    seenA.push(store.getOutline().map(({ id }) => id));
+  });
+  store.subscribe(() => seenB.push(store.getOutline().map(({ id }) => id)));
+
+  store.dispatch({ type: "user_message", text: "outer", mode: "send", delivery_id: "outer" });
+
+  expect(seenA).toEqual([["user:delivery:outer"], ["user:delivery:outer", "user:delivery:nested"]]);
+  expect(seenB).toEqual([["user:delivery:outer"], ["user:delivery:outer", "user:delivery:nested"]]);
+});
+
+test("queues subscriber dispatches until after the current notification", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  let calls = 0;
+  store.subscribe(() => {
+    calls++;
+    if (calls === 1) store.dispatch({ type: "user_message", text: "second", mode: "send", delivery_id: "second" });
+  });
+  store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "first" });
+  jobs.shift()!();
+  expect(calls).toBe(2);
+  expect(store.getOutline()).toEqual([
+    { id: "user:delivery:first", kind: "user" },
+    { id: "user:delivery:second", kind: "user" },
+  ]);
+});
+
+test("does not publish a reduction when disposed during the reduction", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const event = {
+    type: "user_message", text: "dispose", mode: "send",
+    get delivery_id() { store.dispose(); return "dispose"; },
+  } as const;
+  store.dispatch(event);
+  jobs.shift()!();
+  expect(store.getOutline()).toEqual([]);
+  expect(store.getItem("user:delivery:dispose")).toBeUndefined();
+  expect(store.hasMessageDelivery("dispose")).toBe(false);
+  expect(() => store.dispatch({ type: "message_delta", message_id: "late", delta: "x" })).toThrow("store is disposed");
+});
+
 test("dispose stops notifications, drops pending chunks, and rejects dispatch", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));
@@ -157,6 +227,88 @@ test("dispose stops notifications, drops pending chunks, and rejects dispatch", 
   expect(() => store.dispatch({ type: "message_delta", message_id: "a", delta: "late" })).toThrow(
     "store is disposed",
   );
+});
+
+test("published state snapshots do not change after a later delivery", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "one" });
+  const before = store.getState();
+  const snapshot = structuredClone(before);
+  store.dispatch({ type: "user_message", text: "second", mode: "send", delivery_id: "two" });
+  store.getState();
+  expect(before).toEqual(snapshot);
+  expect(snapshot.outline).toHaveLength(1);
+});
+
+test("stores do not share delivery aliases through initialState", () => {
+  const first = createRunStore((flush) => flush());
+  first.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "same" });
+  first.dispose();
+  const second = createRunStore((flush) => flush());
+  second.dispatch({ type: "user_message", text: "second", mode: "send", delivery_id: "same" });
+  expect(second.getOutline()).toEqual([{ id: "user:delivery:same", kind: "user" }]);
+});
+
+test("an unexpected reduction failure marks the store desynced until history replaces it", () => {
+  const jobs: Array<() => void> = [];
+  const errors: unknown[] = [];
+  const store = createRunStore((job) => jobs.push(job), { onError: (error) => errors.push(error) });
+  store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "first" });
+  jobs.shift()!();
+  let reads = 0;
+  const event = new Proxy({ type: "retry" }, {
+    get(target, key, receiver) {
+      if (key === "type" && ++reads > 3) throw new Error("boom");
+      return Reflect.get(target, key, receiver);
+    },
+  }) as RunEvent;
+  store.dispatch(event);
+  jobs.shift()!();
+  expect(errors).toHaveLength(1);
+  expect(store.getDiagnostics()).toEqual({ ignoredEvents: 0, sanitizedFields: 0, desynced: true, reason: "boom" });
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:first", kind: "user" }]);
+  expect(store.getItem("user:delivery:first")).toBeDefined();
+  expect(() => store.dispatch({ type: "turn_end" })).toThrow("store is desynced");
+
+  store.resync([{ type: "user_message", text: "from history", mode: "send", delivery_id: "history" }]);
+  expect(store.getDiagnostics().desynced).toBe(false);
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:history", kind: "user" }]);
+});
+
+test("a malformed event after a delivered row is a counted no-op", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((flush) => jobs.push(flush));
+  store.dispatch({ type: "user_message", text: "go", mode: "send", delivery_id: "kept" });
+  store.dispatch({ type: "tool_start", tool_call: undefined as never });
+  jobs.shift()!();
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:kept", kind: "user" }]);
+  expect(store.getItem("user:delivery:kept")).toBeDefined();
+  expect(store.hasMessageDelivery("kept")).toBe(true);
+  expect(store.getDiagnostics().ignoredEvents).toBe(1);
+});
+
+test("a malformed event after a plain row is a counted no-op", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((flush) => jobs.push(flush));
+  store.dispatch({ type: "user_message", text: "go", mode: "send" });
+  store.dispatch({ type: "tool_start", tool_call: undefined as never });
+  store.dispatch(null as never);
+  jobs.shift()!();
+  expect(store.getOutline()).toEqual([{ id: "user:1", kind: "user" }]);
+  expect(store.getItem("user:1")).toBeDefined();
+  expect(store.getDiagnostics().ignoredEvents).toBe(2);
+});
+
+test("dispose and replay rebuilds delivery aliases", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "one" });
+  store.dispose();
+  const replay = createRunStore((flush) => flush());
+  replay.dispatch({ type: "user_message", text: "first", mode: "send", delivery_id: "one" });
+  replay.dispatch({ type: "user_message", text: "replacement", mode: "send", delivery_id: "two" });
+  expect(replay.getOutline()).toHaveLength(2);
+  expect(replay.getItem("user:delivery:one")).toBeDefined();
+  expect(replay.getItem("user:delivery:two")).toBeDefined();
 });
 
 test("one user intent is one row: a dropped steer resent as a new message replaces its row in place", () => {
@@ -197,4 +349,40 @@ test("random streams with early reads: every snapshot's edits rebuild its items 
       else jobs.splice(0).forEach((job) => job()), store.getOutlineSnapshot().change && applyChange(store.getOutlineSnapshot());
     }
   }
+});
+
+test("live and history user messages join one row through original and replacement delivery ids", () => {
+  const liveFirst = createRunStore((flush) => flush());
+  liveFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-1" });
+  liveFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-2" });
+  liveFirst.dispatch({ type: "user_message", text: "go", mode: "send", delivery_id: "delivery-1" });
+  expect(liveFirst.getOutline().filter((item) => item.kind === "user")).toHaveLength(1);
+
+  const historyFirst = createRunStore((flush) => flush());
+  historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", delivery_id: "delivery-1" });
+  historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-1" });
+  historyFirst.dispatch({ type: "user_message", text: "go", mode: "send", intent: "intent-1", delivery_id: "delivery-2" });
+  expect(historyFirst.getOutline().filter((item) => item.kind === "user")).toHaveLength(1);
+});
+
+test("delivery-id reconciliation reads a constant number of entities in a 100k-row outline", async () => {
+  const { initialState, reduceAllWithEntities } = await import("../src/reducer.js");
+  const target = { id: "user:target", type: "user" as const, event: { type: "user_message" as const, text: "go", mode: "send", delivery_id: "other" } };
+  const entities = new Map<string, typeof target>();
+  entities.set(target.id, target);
+  const outline = [{ id: target.id, kind: "user" as const }];
+  for (let i = 0; i < 100_000; i++) {
+    const id = `user:${i}`;
+    entities.set(id, { id, type: "user", event: { type: "user_message", text: "x", mode: "send" } });
+    outline.push({ id, kind: "user" });
+  }
+  const state = { ...initialState, outline };
+  let reads = 0;
+  reduceAllWithEntities(state, [{ type: "user_message", text: "go", mode: "send", delivery_id: "target" }], {
+    get(id) { reads++; return entities.get(id); },
+    set() {}, delete() {}, splice() {},
+    getMessageAlias() { return undefined; },
+    setMessageAlias() {},
+  });
+  expect(reads).toBeLessThan(10);
 });

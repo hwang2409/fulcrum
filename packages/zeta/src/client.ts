@@ -7,9 +7,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   /**
-   * The user intent this request carries out (`send`, `steer`). Zeta echoes an accepted message as `user_message`
-   * before it replies, without the delivery id, so the first `user_message` that arrives while this request is pending
-   * gets this `intent` (see `RunEvent`): a later message with the same intent then replaces that row instead of adding one.
+   * The user intent this request carries out (`send`, `steer`). On old servers, the first matching `user_message`
+   * echo receives this intent (see `RunEvent`). New servers match echoes by their negotiated delivery ID instead.
    */
   intent?: string;
 }
@@ -23,6 +22,7 @@ export interface SessionLease {
 }
 const adapterError = (message: string) => ({ type: "error" as const, error: { code: "adapter_invalid_frame", message } });
 const encoder = new TextEncoder();
+const RESYNC_BACKOFF_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 
 export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
   let nextId = 1;
@@ -32,20 +32,45 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
   const maxSessions = options.maxSessions ?? 100;
-  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; intent?: string; text?: unknown };
+  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; intent?: string; text?: unknown; deliveryId?: string };
   const pending = new Map<number, Pending>();
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
   const replaying = new Set<string>();
   const quarantined = new Set<string>();
+  const replayLoads = new Map<string, (signal: AbortSignal) => Promise<RunEvent[]>>();
+  const activeLoads = new Map<string, AbortController>();
+  type Recovery = { canceled: boolean; controller?: AbortController; timer?: ReturnType<typeof setTimeout>; wake?: () => void };
+  const recoveries = new Map<string, Recovery>();
+  const cancelRecovery = (session: string) => {
+    const recovery = recoveries.get(session);
+    if (!recovery) return;
+    recovery.canceled = true;
+    recovery.controller?.abort();
+    if (recovery.timer) clearTimeout(recovery.timer);
+    recovery.wake?.();
+    recoveries.delete(session);
+  };
+  const cancelLoad = (session: string) => {
+    activeLoads.get(session)?.abort();
+    activeLoads.delete(session);
+  };
+  const cancelLoads = () => {
+    for (const session of recoveries.keys()) cancelRecovery(session);
+    for (const session of activeLoads.keys()) cancelLoad(session);
+  };
   const store = createRunStore(scheduler);
   let evictionCount = 0;
   const evict = (id: string) => {
+    cancelRecovery(id);
+    cancelLoad(id);
+    replaying.delete(id);
+    quarantined.delete(id);
+    replayLoads.delete(id);
     const value = stores.get(id);
-    if (!value) { quarantined.delete(id); return false; }
+    if (!value) return false;
     stores.delete(id);
     holders.delete(id);
-    quarantined.delete(id);
     value.dispose();
     evictionCount++;
     return true;
@@ -55,8 +80,55 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!value) return;
     stores.delete(session); stores.set(session, value);
   };
+  const waitForRecovery = (recovery: Recovery, delay: number) => new Promise<void>((resolve) => {
+    recovery.wake = resolve;
+    recovery.timer = setTimeout(resolve, delay);
+  });
+  const failRecovery = (session: string, target: SessionStore, recovery: Recovery, failure: unknown) => {
+    if (recovery.canceled) return;
+    if (stores.get(session) === target) target.resyncFailed(failure);
+    throw failure;
+  };
+  const resyncSession = async (session: string, target: SessionStore) => {
+    const load = replayLoads.get(session);
+    if (!load) return;
+    cancelRecovery(session);
+    const recovery: Recovery = { canceled: false };
+    recoveries.set(session, recovery);
+    quarantined.add(session);
+    let failure: unknown;
+    try {
+      for (const delay of [0, ...RESYNC_BACKOFF_MS]) {
+        if (delay) {
+          await waitForRecovery(recovery, delay);
+          recovery.wake = undefined;
+          recovery.timer = undefined;
+        }
+        if (recovery.canceled) return;
+        try {
+          const controller = new AbortController();
+          recovery.controller = controller;
+          const history = await load(controller.signal);
+          recovery.controller = undefined;
+          if (recovery.canceled || stores.get(session) !== target) return;
+          target.resync(history);
+          quarantined.delete(session);
+          return;
+        } catch (error) {
+          if (recovery.canceled) return;
+          recovery.controller = undefined;
+          failure = error;
+        }
+      }
+      failRecovery(session, target, recovery, failure);
+    } finally {
+      recovery.controller?.abort();
+      if (recoveries.get(session) === recovery) recoveries.delete(session);
+    }
+  };
   const createSession = (session: string) => {
-    const value = createRunStore(scheduler);
+    let value!: SessionStore;
+    value = createRunStore(scheduler, { onError: () => { void resyncSession(session, value).catch(() => {}); } });
     stores.set(session, value);
     holders.set(session, 0);
     return value;
@@ -98,16 +170,19 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       },
     };
   };
-  // Without session_replay_seq, live events that overlap a history snapshot are ambiguous. Quarantine them.
-  const replay = async (session: string, load: () => Promise<RunEvent[]>, keepQuarantined = false): Promise<SessionLease> => {
+  /** Opens `session` on a fresh store. Until `session_replay_seq` ships, overlapping live events are ambiguous and dropped. */
+  const replay = async (session: string, load: (signal: AbortSignal) => Promise<RunEvent[]>, keepQuarantined = false): Promise<SessionLease> => {
     if (replaying.has(session)) throw new Error(`session ${session} is already replaying`);
+    evict(session);
+    replayLoads.set(session, load);
     replaying.add(session);
-    const wasQuarantined = quarantined.has(session);
     quarantined.add(session);
+    const controller = new AbortController();
+    activeLoads.set(session, controller);
     try {
-      const history = await load();
-      evict(session);
-      if (keepQuarantined) quarantined.add(session);
+      const history = await load(controller.signal);
+      if (controller.signal.aborted) throw Object.assign(new Error("request aborted"), { name: "AbortError" });
+      activeLoads.delete(session);
       const value = createSession(session);
       holders.set(session, 1);
       let released = false;
@@ -116,21 +191,29 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       if (!keepQuarantined) quarantined.delete(session);
       return lease;
     } catch (error) {
-      if (!wasQuarantined) quarantined.delete(session);
+      replayLoads.delete(session);
+      quarantined.delete(session);
       throw error;
     } finally {
+      if (!quarantined.has(session) && activeLoads.get(session) === controller) activeLoads.delete(session);
       replaying.delete(session);
     }
   };
-  const finishReplay = (session: string) => { quarantined.delete(session); };
+  const finishReplay = (session: string) => {
+    quarantined.delete(session);
+    activeLoads.delete(session);
+  };
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;
-    // Fallback until zeta echoes delivery_id: the echo belongs to a pending request with an intent and the same text.
-    const owner = [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text);
+    const deliveryIds = negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_delivery_id");
+    if (deliveryIds && event.delivery_id === undefined) return event;
+    const owner = deliveryIds
+      ? [...pending.values()].find((request) => request.deliveryId === event.delivery_id)
+      : [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text);
     if (!owner) return event;
     const intent = owner.intent;
     owner.intent = undefined;
-    return { ...event, intent };
+    return { ...event, ...(intent === undefined ? {} : { intent }) };
   };
   const settle = (id: number, callback: (request: Pending) => void) => {
     const request = pending.get(id); if (!request) return;
@@ -161,6 +244,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const rejectPending = (code?: number) => { const error = closeError?.(handshaken, code) ?? new Error("transport closed"); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); return error; };
   transport.onClose?.((code) => {
     const error = rejectPending(code);
+    cancelLoads();
     if (closed) return;
     closed = true;
     closeListeners.forEach((listener) => listener(error));
@@ -174,7 +258,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
       const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" })));
-      const item: Pending = { resolve, reject, intent: requestOptions.intent, text: requestOptions.intent === undefined ? undefined : params.text };
+      const item: Pending = { resolve, reject, intent: requestOptions.intent, text: requestOptions.intent === undefined ? undefined : params.text, deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined };
       pending.set(id, item);
       if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true });
       if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs);
@@ -192,7 +276,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return result;
     });
   };
-  return { store, stores, forSession, replay, finishReplay, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
+  const retrySession = (session: string) => {
+    const target = stores.get(session);
+    return target ? resyncSession(session, target) : Promise.reject(new Error(`session ${session} is not open`));
+  };
+  return { store, stores, forSession, replay, finishReplay, retrySession, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }

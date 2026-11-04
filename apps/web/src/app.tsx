@@ -355,13 +355,13 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
   return (
     <Decisions.Provider value={decisions}>
       <Undelivered value={undelivered}>
-        <RunProvider store={open.lease.store} highlight={highlight}>
+        <RunProvider store={open.lease.store} highlight={highlight} onRetry={client ? () => client.retrySession(open.id) : undefined}>
           <RefreshOnIdle sessions={sessions} />
           <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready={ready ? "true" : undefined}>
             <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
             <EmptyRun />
           </div>
-          <RunComposer key={open.id} client={open.stale || readOnly ? null : client} onUndelivered={onUndelivered} readOnly={readOnly} />
+          <RunComposer key={open.id} client={open.stale || readOnly ? null : client} store={open.lease.store} onUndelivered={onUndelivered} readOnly={readOnly} />
         </RunProvider>
       </Undelivered>
     </Decisions.Provider>
@@ -382,9 +382,12 @@ function EmptyRun() {
 const offline = () => Promise.reject(new Error("not connected to zeta serve"));
 
 /** The message box: send while idle, steer while a turn runs (zeta always takes steering), stop the turn. */
-function RunComposer({ client, onUndelivered, readOnly }: { client: ZetaClient | null; onUndelivered(intents: string[]): void; readOnly: boolean }) {
+function RunComposer({ client, store, onUndelivered, readOnly }: { client: ZetaClient | null; store: SessionStore; onUndelivered(intents: string[]): void; readOnly: boolean }) {
   const running = useRun((state) => state.agent === "running");
-  const delivery = useMemo(() => createDelivery(), []);
+  const delivery = useMemo(() => createDelivery(undefined, (event) => {
+    const deliveryId = event.type === "user_message" && event.delivery_id;
+    if (deliveryId && !store.hasMessageDelivery(deliveryId)) store.dispatch(event);
+  }), [store]);
   const wasRunning = useRef(running);
   useEffect(() => {
     // shortcut: a resend that fails is not shown; upgrade when the composer can take a host-reported error.
