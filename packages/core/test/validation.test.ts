@@ -48,6 +48,54 @@ const view = (store: ReturnType<typeof createRunStore>) => ({
   items: store.getOutline().map(({ id }) => store.getItem(id)),
 });
 
+test("sanitization reads each schema field once and preserves valid event identity", () => {
+  const reads: Record<string, number> = {};
+  const accessorEvent: Record<string, unknown> = { type: "user_message" };
+  for (const [field, value] of Object.entries({ text: "hello", mode: "send", delivery_id: {} })) {
+    Object.defineProperty(accessorEvent, field, {
+      enumerable: true,
+      get() { reads[field] = (reads[field] ?? 0) + 1; return value; },
+    });
+  }
+  const store = createRunStore((flush) => flush());
+  store.dispatch(accessorEvent as unknown as RunEvent);
+  expect(reads).toEqual({ text: 1, mode: 1, delivery_id: 1 });
+
+  const validEvent = { type: "user_message", text: "same", mode: "send" } as const;
+  store.dispatch(validEvent);
+  expect((store.getItem("user:2") as { event: RunEvent }).event).toBe(validEvent);
+});
+
+test("thrown required and optional validation follow their field rules", () => {
+  const required = Proxy.revocable({}, {});
+  const optional = Proxy.revocable({}, {});
+  required.revoke();
+  optional.revoke();
+  const requiredStore = createRunStore((flush) => flush());
+  requiredStore.dispatch({ type: "tool_start", tool_call: required.proxy } as unknown as RunEvent);
+  expect(requiredStore.getDiagnostics()).toEqual({ ignoredEvents: 1, sanitizedFields: 0, desynced: false });
+
+  const optionalStore = createRunStore((flush) => flush());
+  optionalStore.dispatch({ type: "user_message", text: "kept", mode: "send", attachments: optional.proxy } as unknown as RunEvent);
+  expect(optionalStore.getDiagnostics()).toEqual({ ignoredEvents: 0, sanitizedFields: 1, desynced: false });
+  expect(optionalStore.getOutline()).toEqual([{ id: "user:1", kind: "user" }]);
+});
+
+test("nested optional sanitization copies only changed levels", () => {
+  const toolCall = { id: "t", name: "bash", arguments: {} };
+  const result = { tool_call_id: "t", content: "ok", is_error: false, is_canceled: "invalid" };
+  const event = { type: "tool_end", tool_call: toolCall, tool_result: result } as unknown as RunEvent;
+  const store = createRunStore((flush) => flush());
+  store.dispatch(event);
+
+  const stored = store.getItem("tool:t") as { tool_call: unknown; result: Record<string, unknown> };
+  expect(stored.tool_call).toBe(toolCall);
+  expect(stored.result).not.toBe(result);
+  expect(stored.result).toEqual({ tool_call_id: "t", content: "ok", is_error: false });
+  expect(result.is_canceled).toBe("invalid");
+  expect(store.getDiagnostics().sanitizedFields).toBe(1);
+});
+
 test("malformed event fuzz is total and equals a valid-only replay", () => {
   for (const seed of seeds) {
     const random = rng(seed);

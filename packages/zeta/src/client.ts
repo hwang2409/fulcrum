@@ -38,9 +38,26 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const holders = new Map<string, number>();
   const buffers = new Map<string, RunEvent[]>();
   const replayLoads = new Map<string, () => Promise<RunEvent[]>>();
+  type Recovery = { canceled: boolean; waiting: RunEvent[]; timer?: ReturnType<typeof setTimeout>; wake?: () => void };
+  const recoveries = new Map<string, Recovery>();
+  const cancelRecovery = (session: string) => {
+    const recovery = recoveries.get(session);
+    if (!recovery) return;
+    recovery.canceled = true;
+    if (recovery.timer) clearTimeout(recovery.timer);
+    recovery.wake?.();
+    if (buffers.get(session) === recovery.waiting) buffers.delete(session);
+    recoveries.delete(session);
+  };
+  const cancelRecoveries = () => {
+    for (const session of recoveries.keys()) cancelRecovery(session);
+    buffers.clear();
+  };
   const store = createRunStore(scheduler);
   let evictionCount = 0;
   const evict = (id: string) => {
+    cancelRecovery(id);
+    buffers.delete(id);
     const value = stores.get(id);
     if (!value) return false;
     stores.delete(id);
@@ -57,25 +74,37 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const resyncSession = async (session: string, target: SessionStore) => {
     const load = replayLoads.get(session);
-    if (!load || buffers.has(session)) return;
+    if (!load) return;
+    cancelRecovery(session);
     const waiting: RunEvent[] = [];
+    const recovery: Recovery = { canceled: false, waiting };
+    recoveries.set(session, recovery);
     buffers.set(session, waiting);
     let failure: unknown;
     try {
       for (const delay of [0, ...RESYNC_BACKOFF_MS]) {
-        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        if (delay) {
+          await new Promise<void>((resolve) => {
+            recovery.wake = resolve;
+            recovery.timer = setTimeout(resolve, delay);
+          });
+          recovery.wake = undefined;
+          recovery.timer = undefined;
+        }
+        if (recovery.canceled) return;
         try {
           const history = await load();
-          if (stores.get(session) !== target) return;
+          if (recovery.canceled || stores.get(session) !== target) return;
           target.resync([...history, ...waiting]);
           return;
         } catch (error) {
           failure = error;
         }
       }
-      if (stores.get(session) === target) target.resyncFailed(failure);
-      throw failure;
+      if (!recovery.canceled && stores.get(session) === target) target.resyncFailed(failure);
+      if (!recovery.canceled) throw failure;
     } finally {
+      if (recoveries.get(session) === recovery) recoveries.delete(session);
       if (buffers.get(session) === waiting) buffers.delete(session);
     }
   };
@@ -187,6 +216,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const rejectPending = (code?: number) => { const error = closeError?.(handshaken, code) ?? new Error("transport closed"); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); return error; };
   transport.onClose?.((code) => {
     const error = rejectPending(code);
+    cancelRecoveries();
     if (closed) return;
     closed = true;
     closeListeners.forEach((listener) => listener(error));
@@ -222,7 +252,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const target = stores.get(session);
     return target ? resyncSession(session, target) : Promise.reject(new Error(`session ${session} is not open`));
   };
-  return { store, stores, forSession, replay, retrySession, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
+  return { store, stores, forSession, replay, retrySession, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelRecoveries(); rejectPending(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }

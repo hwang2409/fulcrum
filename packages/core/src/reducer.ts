@@ -149,44 +149,46 @@ export const eventSchemas = {
   },
 } satisfies { readonly [T in RunEvent["type"]]: EventSchema<Extract<RunEvent, { type: T }>> };
 
-const inspectFields = (input: Record<string, unknown>, schema: Readonly<Record<string, FieldSchema>>): number => {
-  let sanitized = 0;
+const OMIT = Symbol("omit invalid optional field");
+type Sanitized = { readonly value?: Record<string, unknown>; readonly count: number };
+const sanitizeFields = (input: Record<string, unknown>, schema: Readonly<Record<string, FieldSchema>>): Sanitized => {
+  let count = 0;
+  let changes: Map<string, unknown> | undefined;
   for (const field in schema) {
     const rule = schema[field]!;
-    const value = input[field];
-    if (value === undefined || !rule.validate(value)) {
-      if (rule.required) return -1;
-      if (value !== undefined) sanitized++;
+    let value: unknown;
+    let invalid = false;
+    try {
+      value = input[field];
+      invalid = value !== undefined && !rule.validate(value);
+    } catch {
+      invalid = true;
+    }
+    if (value === undefined || invalid) {
+      if (rule.required) return { count: 0 };
+      if (invalid) {
+        (changes ??= new Map()).set(field, OMIT);
+        count++;
+      }
       continue;
     }
-    if (rule.inspectFields && rule.fields) {
-      const nested = inspectFields(value as Record<string, unknown>, rule.fields);
-      if (nested < 0) return -1;
-      sanitized += nested;
-    }
+    if (!rule.inspectFields || !rule.fields) continue;
+    const nested = sanitizeFields(value as Record<string, unknown>, rule.fields);
+    if (!nested.value) return { count: 0 };
+    count += nested.count;
+    if (nested.value !== value) (changes ??= new Map()).set(field, nested.value);
   }
-  return sanitized;
-};
-const sanitizeOptionalFields = (input: Record<string, unknown>, schema: Readonly<Record<string, FieldSchema>>): [Record<string, unknown>, number] => {
-  let output = input;
-  let count = 0;
-  for (const field in schema) {
-    const rule = schema[field]!;
-    const value = input[field];
-    if (value !== undefined && !rule.validate(value) && !rule.required) {
-      if (output === input) output = { ...input };
-      delete output[field];
-      count++;
-    } else if (value !== undefined && rule.inspectFields && rule.fields) {
-      const [nested, nestedCount] = sanitizeOptionalFields(value as Record<string, unknown>, rule.fields);
-      if (nested !== value) {
-        if (output === input) output = { ...input };
-        output[field] = nested;
-      }
-      count += nestedCount;
+  if (!changes) return { value: input, count };
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    for (const [field, value] of changes) {
+      if (value === OMIT) delete descriptors[field];
+      else descriptors[field] = { value, enumerable: descriptors[field]?.enumerable ?? true, configurable: true, writable: true };
     }
+    return { value: Object.create(Object.getPrototypeOf(input), descriptors) as Record<string, unknown>, count };
+  } catch {
+    return { count: 0 };
   }
-  return [output, count];
 };
 
 const validateEvent = (input: unknown, onSanitized?: (count: number) => void): RunEvent | undefined => {
@@ -195,12 +197,10 @@ const validateEvent = (input: unknown, onSanitized?: (count: number) => void): R
   const schema = eventSchemas[type as RunEvent["type"]] as Readonly<Record<string, FieldSchema>> | undefined;
   if (!schema)
     return { type: "unknown", name: type, data: record(input.data) ? input.data : {} };
-  const invalidOptionalFields = inspectFields(input, schema);
-  if (invalidOptionalFields < 0) return undefined;
-  if (invalidOptionalFields === 0) return input as unknown as RunEvent;
-  const [sanitized, count] = sanitizeOptionalFields(input, schema);
-  onSanitized?.(count);
-  return sanitized as unknown as RunEvent;
+  const sanitized = sanitizeFields(input, schema);
+  if (!sanitized.value) return undefined;
+  if (sanitized.count) onSanitized?.(sanitized.count);
+  return sanitized.value as unknown as RunEvent;
 };
 
 type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;

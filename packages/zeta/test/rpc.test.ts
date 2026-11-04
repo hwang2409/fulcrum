@@ -4,14 +4,20 @@ import { connect, createClient, type Transport } from "../src/index.js";
 
 function fakeTransport() {
   let onMessage!: (text: string) => void;
+  let onClose = (_code?: number) => {};
   const sent: Array<Record<string, unknown>> = [];
   const transport: Transport = {
     send(text) { sent.push(JSON.parse(text)); },
     onMessage(callback) { onMessage = callback; },
-    onClose() {},
+    onClose(callback) { onClose = callback; },
     close() {},
   };
-  return { transport, sent, receive: (message: unknown) => onMessage(JSON.stringify(message)) };
+  return {
+    transport,
+    sent,
+    receive: (message: unknown) => onMessage(JSON.stringify(message)),
+    drop: (code?: number) => onClose(code),
+  };
 }
 
 test("requests before hello are rejected", async () => {
@@ -257,6 +263,118 @@ test("failed desync history reloads are bounded, visible, and manually retryable
     expect(loads).toBe(8);
     expect(lease.store.getDiagnostics()).toEqual({ ignoredEvents: 0, sanitizedFields: 0, desynced: false });
     expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d8", kind: "user" }]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+const forceDesync = (store: ReturnType<ReturnType<typeof connect>["forSession"]>["store"]) => {
+  let reads = 0;
+  store.dispatch(new Proxy({ type: "retry" }, {
+    get(target, key, receiver) {
+      if (key === "type" && ++reads > 3) throw new Error("reducer failed");
+      return Reflect.get(target, key, receiver);
+    },
+  }) as RunEvent);
+};
+
+for (const action of ["evict", "close"] as const) {
+  test(`${action} cancels a pending resync backoff`, async () => {
+    jest.useFakeTimers();
+    try {
+      const fake = fakeTransport();
+      const client = connect(fake.transport, (flush) => flush());
+      let loads = 0;
+      let fail = false;
+      const lease = await client.replay(action, async () => {
+        loads++;
+        if (fail) throw new Error("history unavailable");
+        return [];
+      });
+      fail = true;
+      forceDesync(lease.store);
+      await Promise.resolve();
+      expect(loads).toBe(2);
+
+      if (action === "evict") client.evictSession(action);
+      else client.close();
+      jest.advanceTimersByTime(20_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(loads).toBe(2);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+}
+
+test("transport close kills the old recovery before a fresh client recovers once", async () => {
+  jest.useFakeTimers();
+  try {
+    const oldTransport = fakeTransport();
+    const oldClient = connect(oldTransport.transport, (flush) => flush());
+    let oldLoads = 0;
+    let oldFail = false;
+    const oldLease = await oldClient.replay("s", async () => {
+      oldLoads++;
+      if (oldFail) throw new Error("history unavailable");
+      return [];
+    });
+    oldFail = true;
+    forceDesync(oldLease.store);
+    await Promise.resolve();
+    expect(oldLoads).toBe(2);
+    oldTransport.drop(1006);
+
+    const freshTransport = fakeTransport();
+    const freshClient = connect(freshTransport.transport, (flush) => flush());
+    let freshLoads = 0;
+    const freshLease = await freshClient.replay("s", async () => {
+      freshLoads++;
+      return [];
+    });
+    forceDesync(freshLease.store);
+    await Promise.resolve();
+    expect(freshLoads).toBe(2);
+
+    jest.advanceTimersByTime(20_000);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(oldLoads).toBe(2);
+    expect(freshLoads).toBe(2);
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("successful resync clears its pending backoff timer", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = fakeTransport();
+    const client = connect(fake.transport, (flush) => flush());
+    let loads = 0;
+    let failures = 0;
+    const lease = await client.replay("success", async () => {
+      loads++;
+      if (failures-- > 0) throw new Error("history unavailable");
+      return [];
+    });
+    failures = 1;
+    forceDesync(lease.store);
+    await Promise.resolve();
+    expect(loads).toBe(2);
+    expect(jest.getTimerCount()).toBe(1);
+
+    jest.advanceTimersByTime(500);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(loads).toBe(3);
+    expect(jest.getTimerCount()).toBe(0);
+    jest.advanceTimersByTime(20_000);
+    await Promise.resolve();
+    expect(loads).toBe(3);
   } finally {
     jest.useRealTimers();
   }
