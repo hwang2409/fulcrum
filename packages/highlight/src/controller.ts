@@ -1,6 +1,6 @@
 import { normalizeLanguage } from "./names.js";
 import type { Completion, CompletionNotice, Highlight, HighlightContext, Token } from "./types.js";
-import type { WorkerRequest, WorkerResponse } from "./protocol.js";
+import type { GrammarProvenance, WorkerRequest, WorkerResponse } from "./protocol.js";
 
 const MAX_BLOCK = 512 * 1024;
 const MAX_LINES = 10_000;
@@ -17,7 +17,7 @@ type WorkerLike = {
  * user; an app may show its own notice here.
  */
 export type HighlighterOptions = { workerFactory?: () => WorkerLike; onHighlightUnavailable?: () => void };
-type Pending = { resolve: (tokens: Token[]) => void; code: string; language: string; context: HighlightContext };
+type Pending = { resolve: (tokens: Token[]) => void; code: string; language: string; context: HighlightContext; generation: number };
 // The page's thread never tokenizes: compiling one cold regex or scanner cannot be split (568 ms for cpp in Chromium),
 // so a UI freeze would be worse than missing colors. This module must not import the tokenizer runtime (a test checks).
 // Liveness, not a deadline: the worker reports progress (protocol.ts) at least every PROGRESS_MS while it works, so long
@@ -32,11 +32,12 @@ const RESTART_BACKOFF_MS = [250, 1_000, 4_000];
 const MAX_CRASHES = RESTART_BACKOFF_MS.length;
 const CRASH_WINDOW_MS = 60_000;
 // `code` is kept so a hit is checked against the exact source: an (id, version) pair from a caller is a hint, never proof of content.
-type CacheEntry = { tokens: Token[]; weight: number; used: number; done: boolean; id: string; code: string; completion: Completion };
+type CacheEntry = { tokens: Token[]; weight: number; used: number; done: boolean; id: string; code: string; completion: Completion; provenance?: GrammarProvenance };
 
 export function createController(options: HighlighterOptions = {}): Highlight {
   let worker: WorkerLike | undefined;
   let requestId = 0;
+  let workerGeneration = 0;
   let unavailable = false;
   let busyWith: HighlightContext | null = null; // the block the worker last said it works on
   const parts = new Map<number, Token[]>(); // long results' tokens so far, by result (`of`, protocol.ts)
@@ -49,7 +50,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   let restart: ReturnType<typeof setTimeout> | undefined;
   const pending = new Map<number, Pending>();
   const cache = new Map<string, CacheEntry>();
-  const pendingUpdates = new Map<string, { context: HighlightContext; language: string; tokens: Token[] }>();
+  const pendingUpdates = new Map<string, { context: HighlightContext; provenance: GrammarProvenance; tokens: Token[] }>();
+  const provenances = new Map<string, GrammarProvenance>();
   const inflight = new Map<string, Promise<Token[]>>();
   const inflightCode = new Map<string, string>();
   const inflightIds = new Map<string, string>();
@@ -60,6 +62,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const listeners = new Map<string, Set<(completion: CompletionNotice) => void>>();
   const completions = new Map<string, Completion>();
   const completionWaiters = new Map<string, Set<(completion: CompletionNotice) => void>>();
+  const unsettled = new Map<string, HighlightContext>();
   const notify = (context: HighlightContext, completion: Completion) => {
     const key = revision(context);
     const notice = { version: context.version, ...completion };
@@ -73,7 +76,13 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     const key = revision(context);
     if (completions.get(key)?.status !== "pending" && completions.has(key)) return;
     completions.set(key, completion);
+    if (completion.status === "pending") unsettled.set(key, context); else unsettled.delete(key);
     notify(context, completion);
+  };
+  const trackRevision = (context: HighlightContext) => {
+    const key = revision(context);
+    if (!completions.has(key)) completions.set(key, { status: "pending" });
+    if (completions.get(key)?.status === "pending") unsettled.set(key, context);
   };
 
   const plain = (code: string): Token[] => code ? [{ text: code }] : [];
@@ -87,9 +96,9 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   };
   const weigh = (code: string, tokens: Token[]) => code.length * 2 + tokens.reduce((sum, token) => sum + token.text.length * 2 + 32, 0);
   const remember = (key: string, context: HighlightContext, code: string, tokens: Token[], completion: Completion = { status: "complete" }) => {
-    cache.set(key, { tokens, weight: weigh(code, tokens), used: ++clock, done: context.state === "done", id: context.id, code, completion });
+    cache.set(key, { tokens, weight: weigh(code, tokens), used: ++clock, done: context.state === "done", id: context.id, code, completion, provenance: provenances.get(revision(context)) });
     const queued = pendingUpdates.get(key);
-    if (queued) { pendingUpdates.delete(key); update(queued.context, queued.language, queued.tokens); }
+    if (queued) { pendingUpdates.delete(key); update(queued.context, queued.provenance, queued.tokens); }
     if (completion.status !== "pending") settleRevision(context, completion);
     const keys = [...(versions.get(context.id) ?? []).filter((item) => item !== key), key];
     while (keys.length > 2) cache.delete(keys.shift()!);
@@ -104,10 +113,11 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     }
   };
   // A worker's update replaces only the cached revision it was made for, and only with tokens that spell its exact code.
-  const update = (context: HighlightContext, language: string, tokens: Token[]) => {
-    const key = cacheKey(context, language);
+  const update = (context: HighlightContext, provenance: GrammarProvenance, tokens: Token[]) => {
+    const key = cacheKey(context, provenance.language);
     const entry = cache.get(key);
-    if (!entry) { pendingUpdates.set(key, { context, language, tokens }); return; }
+    if (!entry) { pendingUpdates.set(key, { context, provenance, tokens }); return; }
+    if (!provenance.fullyLoaded || entry.provenance?.language !== provenance.language || entry.provenance.generation !== provenance.generation) return;
     if (tokens.map((token) => token.text).join("") !== entry.code) return;
     entry.tokens = tokens;
     entry.weight = weigh(entry.code, tokens);
@@ -116,10 +126,11 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   };
   const post = (id: number, job: Pending) => {
     watchdog ??= setTimeout(onSilence, WORKER_SILENCE_MS);
-    worker!.postMessage({ type: "highlight", requestId: id, code: job.code, language: job.language, context: job.context });
+    job.generation = workerGeneration;
+    worker!.postMessage({ type: "highlight", requestId: id, code: job.code, context: job.context, grammar: { language: job.language, generation: job.generation } });
   };
   // Any message from the worker proves it alive: the silence clock starts again while work is pending.
-  const heard = () => { clearTimeout(watchdog); watchdog = pending.size ? setTimeout(onSilence, WORKER_SILENCE_MS) : undefined; };
+  const heard = () => { clearTimeout(watchdog); watchdog = pending.size || unsettled.size ? setTimeout(onSilence, WORKER_SILENCE_MS) : undefined; };
   const stop = () => { clearTimeout(watchdog); watchdog = undefined; worker?.terminate(); worker = undefined; busyWith = null; parts.clear(); owesAck = undefined; };
   // One part per frame: the next part's message task cannot run back to back with this one (protocol.ts).
   const ackNextFrame = (from: WorkerLike) => {
@@ -131,6 +142,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const giveUp = () => {
     stop();
     unavailable = true;
+    for (const context of [...unsettled.values()]) settleRevision(context, { status: "unavailable", reason: "worker" });
     for (const job of pending.values()) { settleRevision(job.context, { status: "unavailable", reason: "worker" }); job.resolve(plain(job.code)); }
     pending.clear();
     if (!disposed) queueMicrotask(() => options.onHighlightUnavailable?.());
@@ -144,6 +156,11 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     }, delay);
   };
   const crash = () => {
+    const active = new Set([...pending.values()].map((job) => revision(job.context)));
+    for (const context of [...unsettled.values()]) {
+      const provenance = provenances.get(revision(context));
+      if (provenance?.generation === workerGeneration && !active.has(revision(context))) settleRevision(context, { status: "unavailable", reason: "worker" });
+    }
     stop();
     const now = Date.now();
     while (crashes.length && now - crashes[0] >= CRASH_WINDOW_MS) crashes.shift();
@@ -155,9 +172,11 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (owesAck) return heard(); // the worker waits on this page (a hidden tab runs no frames), it is not hung
     const blamed = busyWith;
     if (!blamed) return crash();
+    const generation = workerGeneration;
     stop();
     poisoned.add(revision(blamed));
     settleRevision(blamed, { status: "unavailable", reason: "watchdog" });
+    for (const context of [...unsettled.values()]) if (provenances.get(revision(context))?.generation === generation) settleRevision(context, { status: "unavailable", reason: "worker" });
     for (const [id, job] of pending) if (sameBlock(blamed, job.context)) { pending.delete(id); job.resolve(plain(job.code)); }
     scheduleRestart(0);
   };
@@ -168,22 +187,24 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (!job) return;
     pending.delete(data.requestId);
     if (sameBlock(busyWith, job.context)) busyWith = null;
-    if ("completion" in data) {
-      if (data.completion.status === "pending") completions.set(revision(job.context), data.completion);
-      else settleRevision(job.context, data.completion);
-    } else if ((data as { provisional?: boolean }).provisional) completions.set(revision(job.context), { status: "pending" });
+    const valid = data.provenance.language === job.language && data.provenance.generation === job.generation;
+    provenances.set(revision(job.context), data.provenance);
+    if (!valid || "error" in data) settleRevision(job.context, valid ? data.completion : { status: "unavailable", reason: "worker" });
+    else if (data.provenance.fullyLoaded) settleRevision(job.context, { status: "complete" });
+    else trackRevision(job.context);
     job.resolve(tokens ?? plain(job.code));
   };
   const startWorker = (): boolean => {
     try {
       const next = options.workerFactory?.() ?? new Worker(new URL("./worker.js", import.meta.url), { type: "module" }) as unknown as WorkerLike;
       worker = next;
+      workerGeneration++;
       next.onmessage = (event) => {
         if (worker !== next || disposed) return;
         const data = event.data;
         if ("progress" in data) busyWith = data.progress;
         else if ("part" in data) { const tokens = parts.get(data.of); if (tokens) for (const token of data.part) tokens.push(token); else parts.set(data.of, data.part); ackNextFrame(next); }
-        else if ("update" in data) { if (sameBlock(busyWith, data.update)) busyWith = null; update(data.update, data.language, joined(data.of, data.tokens)); }
+        else if ("update" in data) { if (sameBlock(busyWith, data.update)) busyWith = null; update(data.update, data.provenance, joined(data.of, data.tokens)); }
         else handleWorkerReply(data);
         heard();
       };
@@ -207,6 +228,23 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     return currentKey ? inflight.get(currentKey) ?? cache.get(currentKey)?.tokens ?? plain(code) : plain(code);
   };
 
+  const selectRevision = (context: HighlightContext, key: string) => {
+    const previous = latestVersion.get(context.id);
+    if (previous === undefined || context.version > previous) {
+      for (const prior of unsettled.values()) if (prior.id === context.id && prior.version < context.version) settleRevision(prior, { status: "superseded" });
+    }
+    if (context.version >= (previous ?? -Infinity)) {
+      latestVersion.set(context.id, context.version);
+      current.set(context.id, key);
+    }
+  };
+  const knownResult = (key: string, code: string): Token[] | Promise<Token[]> | undefined => {
+    const hit = cache.get(key);
+    if (hit?.code === code) { hit.used = ++clock; return hit.tokens; }
+    if (hit) dropCompleted(key, hit);
+    return inflightCode.get(key) === code ? inflight.get(key) : undefined;
+  };
+
   // Whether a request can be posted now or after a pending restart; false: plain for good.
   const ensureWorker = (): boolean => {
     if (worker || restart) return true;
@@ -226,19 +264,14 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     }
     if (poisoned.has(revision(actual))) return plain(code);
     const key = cacheKey(actual, language);
-    if (actual.version >= (latestVersion.get(actual.id) ?? -Infinity)) {
-      latestVersion.set(actual.id, actual.version);
-      current.set(actual.id, key);
-    }
-    const hit = cache.get(key);
-    if (hit && hit.code === code) { hit.used = ++clock; return hit.tokens; }
-    if (hit) dropCompleted(key, hit);
-    const active = inflightCode.get(key) === code ? inflight.get(key) : undefined;
-    if (active) return active;
+    selectRevision(actual, key);
+    const known = knownResult(key, code);
+    if (known) return known;
+    trackRevision(actual);
     if (!ensureWorker()) { settleRevision(actual, { status: "unavailable", reason: "worker" }); return plain(code); }
     const result = new Promise<Token[]>((resolve) => {
       const id = ++requestId;
-      const job = { resolve, code, language, context: actual };
+      const job = { resolve, code, language, context: actual, generation: workerGeneration };
       pending.set(id, job);
       if (worker) post(id, job); // while a restart waits, the job is posted to the new worker
     });
@@ -269,8 +302,9 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     worker?.postMessage({ type: "dispose" });
     stop();
     clearTimeout(restart);
+    for (const context of [...unsettled.values()]) settleRevision(context, { status: "unavailable", reason: "worker" });
     for (const job of pending.values()) { settleRevision(job.context, { status: "unavailable", reason: "worker" }); job.resolve(plain(job.code)); }
-    pending.clear(); cache.clear(); pendingUpdates.clear(); inflight.clear(); inflightCode.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); listeners.clear(); completions.clear(); completionWaiters.clear(); poisoned.clear();
+    pending.clear(); cache.clear(); pendingUpdates.clear(); provenances.clear(); inflight.clear(); inflightCode.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); listeners.clear(); completions.clear(); completionWaiters.clear(); unsettled.clear(); poisoned.clear();
   };
   return highlight;
 }

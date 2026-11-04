@@ -1,5 +1,6 @@
 import type { GrammarState, HighlighterCore, LanguageInput, ThemedToken } from "@shikijs/types";
 import type { HighlightContext, Token } from "./types.js";
+import type { GrammarProvenance } from "./protocol.js";
 import { loadLanguage } from "./languages.js";
 import { appendToken, semanticTheme } from "./scopes.js";
 
@@ -47,13 +48,14 @@ class RegexCache extends Map<string, RegExp | Error> {
 // costly bundled pattern, in cpp, converts and compiles in about 21 ms).
 const WARM_SLICE_MS = 8;
 const WARM_SAMPLE = 'x = f("s", 1); // c';
-type Provisional = { code: string; language: string; context: HighlightContext };
+type Provisional = { code: string; context: HighlightContext; provenance: GrammarProvenance };
+export type TokenizeResult = { tokens: Token[]; provenance: GrammarProvenance };
 /**
  * Where the runtime sends a block again, colored, once its grammar is warm. Until then a block is answered at once
  * with its exact plain text: tokenizing with a cold grammar builds each rule's scanner, which compiles all of that rule's
  * patterns in one call that cannot yield (a cold cpp document blocked the worker 335 ms in Chromium).
  */
-export type OnUpdate = (context: HighlightContext, language: string, tokens: Token[]) => void;
+export type OnUpdate = (context: HighlightContext, provenance: GrammarProvenance, tokens: Token[]) => void;
 /** Called as work goes on: with the block being tokenized (at its start and after each line), or null while a grammar compiles. */
 export type OnProgress = (context: HighlightContext | null) => void;
 
@@ -104,7 +106,6 @@ export class TokenizerRuntime {
   private readonly warmed = new Set<string>();
   // The newest revision of each block asked for while its grammar was cold, until that grammar is warm.
   private readonly provisional = new Map<string, Provisional>();
-  private readonly provisionalReplies = new Set<string>();
 
   /**
    * The runtime warms each grammar it loads, in slices, answers blocks for a cold grammar with plain text, and sends
@@ -184,11 +185,11 @@ export class TokenizerRuntime {
   // Sends each block answered plain while `language` was cold again, colored, one per task.
   private async flushProvisional(language: string, epoch: number): Promise<void> {
     for (const [id, block] of this.provisional) {
-      if (block.language !== language) continue;
+      if (block.provenance.language !== language) continue;
       this.provisional.delete(id);
-      const tokens = await this.tokenize(block.code, language, block.context);
+      const result = await this.tokenizeWithProvenance(block.code, block.context, block.provenance.language, block.provenance.generation);
       if (epoch !== this.epoch) return;
-      this.onUpdate(block.context, language, tokens);
+      this.onUpdate(block.context, result.provenance, result.tokens);
       await nextTask();
     }
   }
@@ -198,30 +199,29 @@ export class TokenizerRuntime {
     return this.provisional.get(context.id)?.context.version === context.version;
   }
 
-  takeProvisionalReply(context: HighlightContext): boolean {
-    const key = `${context.id}\0${context.version}`;
-    const result = this.provisionalReplies.has(key);
-    this.provisionalReplies.delete(key);
-    return result;
-  }
-
   /** Entries in the regex cache: a loaded grammar's own patterns, and patterns built while tokenizing (at most MAX_DYNAMIC_REGEXES). */
   cacheSize(): { static: number; dynamic: number } {
     return { static: this.cache?.static.size ?? 0, dynamic: this.cache?.size ?? 0 };
   }
 
   async tokenize(code: string, language: string, context: HighlightContext): Promise<Token[]> {
+    return (await this.tokenizeWithProvenance(code, context, language, 0)).tokens;
+  }
+
+  async tokenizeWithProvenance(code: string, context: HighlightContext, language: string, generation: number): Promise<TokenizeResult> {
     const epoch = this.epoch;
     const highlighter = await this.ensureLanguage(language);
-    if (epoch !== this.epoch) return code ? [{ text: code }] : []; // disposed while the grammar loaded
+    const fullyLoaded = this.warmed.has(language);
+    const provenance = { language, generation, fullyLoaded };
+    if (epoch !== this.epoch) return { tokens: code ? [{ text: code }] : [], provenance: { ...provenance, fullyLoaded: false } };
     const known = this.provisional.get(context.id);
     const newest = !known || known.context.version <= context.version;
-    if (!this.warmed.has(language)) {
-      if (newest) { this.provisional.set(context.id, { code, language, context }); this.provisionalReplies.add(`${context.id}\0${context.version}`); }
-      return code ? [{ text: code }] : [];
+    if (!fullyLoaded) {
+      if (newest) this.provisional.set(context.id, { code, context, provenance });
+      return { tokens: code ? [{ text: code }] : [], provenance };
     }
     if (newest) this.provisional.delete(context.id); // this revision replaces the plain one
-    return this.tokenizeLoaded(code, language, context, highlighter, epoch);
+    return { tokens: this.tokenizeLoaded(code, language, context, highlighter, epoch), provenance };
   }
 
   private tokenizeLoaded(code: string, language: string, context: HighlightContext, highlighter: HighlighterCore, epoch: number): Token[] {
@@ -308,7 +308,6 @@ export class TokenizerRuntime {
     this.warming.clear();
     this.warmed.clear();
     this.provisional.clear();
-    this.provisionalReplies.clear();
   }
 }
 

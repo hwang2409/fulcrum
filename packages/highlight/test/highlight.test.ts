@@ -71,6 +71,8 @@ const samples: Record<string, string> = {
 };
 
 const text = (tokens: Token[]) => tokens.map((token) => token.text).join("");
+type RecordedRequest = { requestId: number; code: string; grammar: { language: string; generation: number } };
+const completeReply = (request: RecordedRequest, tokens: Token[]) => ({ requestId: request.requestId, tokens, provenance: { ...request.grammar, fullyLoaded: true }, completion: { status: "complete" as const } });
 const viteConfig = 'import { defineConfig } from "vite";\nimport { resolve } from "node:path";\n\nexport default defineConfig({\n  build: { outDir: resolve("dist") },\n});\n';
 const typedPerLine = (tokens: Token[]) => {
   const lines: boolean[] = [false];
@@ -99,6 +101,26 @@ async function full(language: string, code: string) {
   await directHighlighter.awaitCompletion(context.id, context.version);
   return directHighlighter(code, language, context)! as Token[];
 }
+
+test("a cold reply records the language grammar that actually produced it", async () => {
+  const runtime = new TokenizerRuntime(() => {});
+  let resolveTypescript!: (value: unknown) => void;
+  let resolveJavascript!: (value: unknown) => void;
+  const loads = {
+    typescript: new Promise((resolve) => { resolveTypescript = resolve; }),
+    javascript: new Promise((resolve) => { resolveJavascript = resolve; }),
+  };
+  runtime["ensureLanguage"] = (language: keyof typeof loads) => loads[language] as never;
+  const older = runtime.tokenizeWithProvenance("const older: number = 1;\n", { id: "provenance", version: 1, state: "streaming" }, "typescript", 1);
+  const newer = runtime.tokenizeWithProvenance("const newer = 2;\n", { id: "provenance", version: 2, state: "streaming" }, "javascript", 1);
+  resolveJavascript({});
+  const newerReply = await newer as unknown as { provenance: { language: string; fullyLoaded: boolean } };
+  resolveTypescript({});
+  const olderReply = await older as unknown as { provenance: { language: string; fullyLoaded: boolean } };
+  expect(newerReply.provenance).toMatchObject({ language: "javascript", fullyLoaded: false });
+  expect(olderReply.provenance).toMatchObject({ language: "typescript", fullyLoaded: false });
+  runtime.dispose();
+});
 
 describe("language and scope mapping", () => {
   for (const [language, code] of Object.entries(samples)) {
@@ -158,7 +180,7 @@ describe("incremental tokenization", () => {
   // lines, so they were cached as plain text (the gallery's vite.config.ts read lost the colors of line 1). In the worker
   // such a line is provisional: once the grammar is warm, the worker sends the block again, colored.
   test("a cold grammar colors every line once the worker's warm-up lands", async () => {
-    const replies: Array<{ requestId?: number; provisional?: boolean; update?: unknown }> = [];
+    const replies: Array<{ requestId?: number; provenance?: { fullyLoaded: boolean }; update?: unknown }> = [];
     const highlighter = createHighlighter({ workerFactory: () => recordingWorker(replies) });
     const source = viteConfig;
     for (const language of ["typescript", "javascript"]) {
@@ -168,8 +190,8 @@ describe("incremental tokenization", () => {
       expect(text(first)).toBe(source);
       // The handshake: a provisional reply is followed by one update for its block, which the cache then serves.
       const reply = replies.findLast((item) => item.requestId !== undefined)!;
-      if (reply.provisional) await updated;
-      if (reply.provisional) {
+      if (!reply.provenance?.fullyLoaded) await updated;
+      if (!reply.provenance?.fullyLoaded) {
         await highlighter.awaitCompletion(context.id, context.version);
         const update = replies.findLast((item) => item.update && (item.update as { id: string }).id === context.id) as { tokens: Token[] };
         expect(highlighter(source, language, context)).toEqual(update.tokens);
@@ -292,7 +314,7 @@ describe("incremental tokenization", () => {
 
 // Worker liveness and restarts, on fake timers and a scripted worker: no test here waits on the wall clock.
 describe("worker liveness and restarts", () => {
-  type Request = { requestId: number; code: string; context: { id: string } };
+  type Request = { requestId: number; code: string; context: { id: string }; grammar: { language: string; generation: number } };
   type Scripted = {
     posted: Request[]; terminated: boolean; send(data: unknown): void; crash(kind?: "error" | "messageerror"): void;
     onmessage: ((event: MessageEvent<never>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; onmessageerror: ((event: MessageEvent) => unknown) | null;
@@ -309,7 +331,8 @@ describe("worker liveness and restarts", () => {
     return worker;
   };
   const colored = (code: string): Token[] => [{ text: code, type: "keyword" }];
-  const answer = (worker: Scripted, index: number) => worker.send({ requestId: worker.posted[index].requestId, tokens: colored(worker.posted[index].code), provisional: false, completion: { status: "complete" } });
+  const provenance = (worker: Scripted, index: number, fullyLoaded: boolean) => ({ ...worker.posted[index].grammar, fullyLoaded });
+  const answer = (worker: Scripted, index: number) => worker.send({ requestId: worker.posted[index].requestId, tokens: colored(worker.posted[index].code), provenance: provenance(worker, index, true), completion: { status: "complete" } });
   const block = (id: string) => ({ id, version: 1, state: "done" as const });
   const ticks = async () => { for (let i = 0; i < 3; i++) await Promise.resolve(); };
   const withFakeTimers = (run: () => Promise<void>) => async () => { jest.useFakeTimers(); try { await run(); } finally { jest.useRealTimers(); } };
@@ -342,17 +365,97 @@ describe("worker liveness and restarts", () => {
     const workers: Scripted[] = [];
     const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
     const result = highlighter("const cold = 1;\n", "typescript", { id: "cold-stream", version: 1, state: "streaming" });
-    workers[0].send({ requestId: workers[0].posted[0].requestId, tokens: [{ text: "const cold = 1;\n" }], provisional: true, completion: { status: "pending" }, of: 1 });
+    workers[0].send({ requestId: workers[0].posted[0].requestId, tokens: [{ text: "const cold = 1;\n" }], provenance: provenance(workers[0], 0, false), completion: { status: "pending" }, of: 1 });
     const completion = highlighter.awaitCompletion("cold-stream", 1);
     let settled = false;
     completion.then(() => { settled = true; });
     await Promise.resolve();
     expect(settled).toBe(false);
-    workers[0].send({ update: { id: "cold-stream", version: 1, state: "streaming" }, language: "typescript", tokens: colored("const cold = 1;\n"), of: 2 });
+    workers[0].send({ update: { id: "cold-stream", version: 1, state: "streaming" }, provenance: provenance(workers[0], 0, true), tokens: colored("const cold = 1;\n"), of: 2 });
     expect(await completion).toEqual({ version: 1, status: "complete" });
     expect(await result).toEqual([{ text: "const cold = 1;\n" }]);
     highlighter.dispose();
   });
+
+  test("back-to-back cold revisions supersede the older revision and complete the latest", async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const firstCode = "const first: number = 1;\n";
+    const secondCode = "const second: number = 2;\n";
+    highlighter(firstCode, "typescript", { id: "cold-pair", version: 1, state: "streaming" });
+    workers[0].send({ requestId: workers[0].posted[0].requestId, tokens: [{ text: firstCode }], provenance: provenance(workers[0], 0, false), completion: { status: "pending" }, of: 1 });
+    highlighter(secondCode, "typescript", { id: "cold-pair", version: 2, state: "streaming" });
+    workers[0].send({ requestId: workers[0].posted[1].requestId, tokens: [{ text: secondCode }], provenance: provenance(workers[0], 1, false), completion: { status: "pending" }, of: 2 });
+    workers[0].send({ update: { id: "cold-pair", version: 2, state: "streaming" }, provenance: provenance(workers[0], 1, true), tokens: colored(secondCode), of: 3 });
+    expect(await highlighter.awaitCompletion("cold-pair", 1)).toEqual({ version: 1, status: "superseded" });
+    expect(await highlighter.awaitCompletion("cold-pair", 2)).toEqual({ version: 2, status: "complete" });
+    expect(highlighter(secondCode, "typescript", { id: "cold-pair", version: 2, state: "streaming" })).toEqual(colored(secondCode));
+    highlighter.dispose();
+  });
+
+  test("a language change supersedes the cold old language without calling its plain reply complete", async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const oldCode = "const value: number = 1;\n";
+    const newCode = "const value = 2;\n";
+    const expected = await full("javascript", newCode);
+    highlighter(oldCode, "typescript", { id: "language-change", version: 1, state: "streaming" });
+    highlighter(newCode, "javascript", { id: "language-change", version: 2, state: "streaming" });
+    workers[0].send({ requestId: workers[0].posted[1].requestId, tokens: expected, provenance: provenance(workers[0], 1, true), completion: { status: "complete" }, of: 1 });
+    workers[0].send({ requestId: workers[0].posted[0].requestId, tokens: [{ text: oldCode }], provenance: provenance(workers[0], 0, false), completion: { status: "pending" }, of: 2 });
+    expect(await highlighter.awaitCompletion("language-change", 1)).toEqual({ version: 1, status: "superseded" });
+    expect(await highlighter.awaitCompletion("language-change", 2)).toEqual({ version: 2, status: "complete" });
+    expect(highlighter(newCode, "javascript", { id: "language-change", version: 2, state: "streaming" })).toEqual(expected);
+    highlighter.dispose();
+  });
+
+  test("a revision completed before a newer version stays complete", async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    highlighter("one\n", "typescript", { id: "already-complete", version: 1, state: "streaming" });
+    answer(workers[0], 0);
+    expect(await highlighter.awaitCompletion("already-complete", 1)).toEqual({ version: 1, status: "complete" });
+    highlighter("two\n", "typescript", { id: "already-complete", version: 2, state: "streaming" });
+    expect(await highlighter.awaitCompletion("already-complete", 1)).toEqual({ version: 1, status: "complete" });
+    answer(workers[0], 1);
+    highlighter.dispose();
+  });
+
+  test("disposing after a cold reply settles its revision", async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const code = "const pending = 1;\n";
+    const result = highlighter(code, "typescript", { id: "dispose-cold", version: 1, state: "streaming" });
+    workers[0].send({ requestId: workers[0].posted[0].requestId, tokens: [{ text: code }], provenance: provenance(workers[0], 0, false), completion: { status: "pending" }, of: 1 });
+    await result;
+    const completion = highlighter.awaitCompletion("dispose-cold", 1);
+    highlighter.dispose();
+    expect(await completion).toEqual({ version: 1, status: "unavailable", reason: "worker" });
+  });
+
+  test("random version, language, cold-load, and restart interleavings settle every revision", withFakeTimers(async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const completions: Array<Promise<{ version: number; status: string }>> = [];
+    let random = 0x53;
+    const next = () => (random = (random * 1664525 + 1013904223) >>> 0);
+    for (let version = 1; version <= 32; version++) {
+      const language = next() & 1 ? "typescript" : "javascript";
+      const code = `${language} value${version} = ${version};\n`;
+      highlighter(code, language, { id: "property", version, state: "streaming" });
+      completions.push(highlighter.awaitCompletion("property", version));
+      const active = workers.at(-1)!;
+      const index = active.posted.length - 1;
+      if (version < 32 && (version === 16 || next() & 1)) active.send({ requestId: active.posted[index].requestId, tokens: [{ text: code }], provenance: provenance(active, index, false), completion: { status: "pending" }, of: version });
+      else answer(active, index);
+      if (version === 16) { active.crash(); jest.advanceTimersByTime(250); }
+    }
+    await ticks();
+    const settled = await Promise.all(completions);
+    expect(settled.slice(0, -1).every((item) => item.status !== "pending")).toBe(true);
+    expect(settled.at(-1)).toEqual({ version: 32, status: "complete" });
+    highlighter.dispose();
+  }));
 
   test("steady progress for 30 s of long work never restarts the worker", withFakeTimers(async () => {
     const workers: Scripted[] = [];
@@ -460,8 +563,8 @@ describe("worker liveness and restarts", () => {
     const [first, second] = workers[0].posted;
     workers[0].send({ part: [{ text: "a", type: "keyword" }], of: 1 });
     workers[0].send({ part: [{ text: "b" }], of: 1 });
-    workers[0].send({ requestId: first.requestId, tokens: [{ text: "c", type: "string" }], provisional: false, of: 1 });
-    workers[0].send({ requestId: second.requestId, tokens: [{ text: "d" }], provisional: false, of: 2 });
+    workers[0].send({ requestId: first.requestId, tokens: [{ text: "c", type: "string" }], provenance: provenance(workers[0], 0, true), completion: { status: "complete" }, of: 1 });
+    workers[0].send({ requestId: second.requestId, tokens: [{ text: "d" }], provenance: provenance(workers[0], 1, true), completion: { status: "complete" }, of: 2 });
     expect(await long).toEqual([{ text: "a", type: "keyword" }, { text: "b" }, { text: "c", type: "string" }]);
     expect(await short).toEqual([{ text: "d" }]);
     highlighter.dispose();
@@ -476,8 +579,8 @@ describe("worker liveness and restarts", () => {
     workers[0].send({ part: [{ text: "a", type: "keyword" }], of: 1 });
     workers[0].send({ part: [{ text: "x" }], of: 2 });
     workers[0].send({ part: [{ text: "b" }], of: 1 });
-    workers[0].send({ requestId: second.requestId, tokens: [{ text: "yz", type: "string" }], provisional: false, of: 2 });
-    workers[0].send({ requestId: first.requestId, tokens: [{ text: "c" }], provisional: false, of: 1 });
+    workers[0].send({ requestId: second.requestId, tokens: [{ text: "yz", type: "string" }], provenance: provenance(workers[0], 1, true), completion: { status: "complete" }, of: 2 });
+    workers[0].send({ requestId: first.requestId, tokens: [{ text: "c" }], provenance: provenance(workers[0], 0, true), completion: { status: "complete" }, of: 1 });
     expect(await two).toEqual([{ text: "x" }, { text: "yz", type: "string" }]);
     expect(await one).toEqual([{ text: "a", type: "keyword" }, { text: "b" }, { text: "c" }]);
     highlighter.dispose();
@@ -506,7 +609,7 @@ describe("worker liveness and restarts", () => {
       worker.send({ part: [{ text: "b" }], of: 1 });
       run();
       expect(acks()).toBe(2);
-      worker.send({ requestId: worker.posted[0].requestId, tokens: [{ text: "c" }], provisional: false, of: 1 });
+      worker.send({ requestId: worker.posted[0].requestId, tokens: [{ text: "c" }], provenance: provenance(worker, 0, true), completion: { status: "complete" }, of: 1 });
       expect(await long).toEqual([{ text: "a", type: "keyword" }, { text: "b" }, { text: "c" }]);
       expect(frames.length).toBe(0);
       highlighter.dispose();
@@ -541,7 +644,7 @@ test("the worker sends the next part of a long result only after the page acks t
   const until = async (done: () => boolean) => { for (let wait = 0; !done(); wait++) { if (wait > 3_000) throw new Error("timed out"); await Bun.sleep(10); } };
   const parts = () => messages.filter((message) => "part" in message).length;
   const code = "[1, 2, 3, 4, 5, 6],\n".repeat(5_000); // over 16,384 tokens: more than one part
-  worker.postMessage({ type: "highlight", requestId: 1, code, language: "json", context: { id: "paced", version: 1, state: "done" } });
+  worker.postMessage({ type: "highlight", requestId: 1, code, grammar: { language: "json", generation: 1 }, context: { id: "paced", version: 1, state: "done" } });
   await until(() => parts() === 1);
   await Bun.sleep(200);
   expect(parts()).toBe(1);
@@ -567,11 +670,11 @@ test("a small reply waits behind at most one part of a long result", async () =>
   const until = async (done: () => boolean) => { for (let wait = 0; !done(); wait++) { if (wait > 3_000) throw new Error("timed out"); await Bun.sleep(10); } };
   const code = "[1, 2, 3, 4, 5, 6],\n".repeat(10_000); // several parts
   // In a fresh worker json is cold: the reply is plain at once, and the colors come as an update, in parts.
-  worker.postMessage({ type: "highlight", requestId: 1, code, language: "json", context: { id: "long", version: 1, state: "done" } });
+  worker.postMessage({ type: "highlight", requestId: 1, code, grammar: { language: "json", generation: 1 }, context: { id: "long", version: 1, state: "done" } });
   await until(() => messages.some((message) => "part" in message));
   const of = messages.at(-1)!.of;
   const seen = messages.length;
-  worker.postMessage({ type: "highlight", requestId: 2, code: "[1]\n", language: "json", context: { id: "small", version: 1, state: "done" } });
+  worker.postMessage({ type: "highlight", requestId: 2, code: "[1]\n", grammar: { language: "json", generation: 1 }, context: { id: "small", version: 1, state: "done" } });
   await Bun.sleep(200);
   expect(messages.length).toBe(seen); // the page has not acked the part: nothing else is sent, the small reply included
   worker.postMessage({ type: "ack" });
@@ -683,34 +786,34 @@ describe("identity, failure, and caps", () => {
   });
 
   test("an older equal-length reply delivers the newest requested revision", async () => {
-    const requests: Array<{ requestId: number; code: string }> = [];
-    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
-      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) requests.push({ requestId: value.requestId, code: value.code! }); },
+    const requests: RecordedRequest[] = [];
+    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string; grammar?: { language: string; generation: number } }): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) requests.push({ requestId: value.requestId, code: value.code!, grammar: value.grammar! }); },
     };
     const highlighter = createHighlighter({ workerFactory: () => fake });
     const older = highlighter("const old = 1;\n", "typescript", { id: "equal-stale", version: 1, state: "done" }) as Promise<Token[]>;
     const newer = highlighter("const new = 2;\n", "typescript", { id: "equal-stale", version: 2, state: "done" }) as Promise<Token[]>;
-    fake.onmessage!({ data: { requestId: requests[1].requestId, tokens: [{ text: requests[1].code }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
-    fake.onmessage!({ data: { requestId: requests[0].requestId, tokens: [{ text: requests[0].code }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    fake.onmessage!({ data: completeReply(requests[1], [{ text: requests[1].code }]) } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    fake.onmessage!({ data: completeReply(requests[0], [{ text: requests[0].code }]) } as MessageEvent<{ requestId: number; tokens: Token[] }>);
     expect(text(await newer)).toBe("const new = 2;\n");
     expect(text(await older)).toBe("const new = 2;\n");
     highlighter.dispose();
   });
 
   test("an older reply cannot populate the visible cache", async () => {
-    const requests: Array<{ requestId: number; code: string }> = [];
-    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
-      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) requests.push({ requestId: value.requestId, code: value.code! }); },
+    const requests: RecordedRequest[] = [];
+    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string; grammar?: { language: string; generation: number } }): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) requests.push({ requestId: value.requestId, code: value.code!, grammar: value.grammar! }); },
     };
     const highlighter = createHighlighter({ workerFactory: () => fake });
     const older = highlighter("const old = 1;\n", "typescript", { id: "stale", version: 1, state: "done" }) as Promise<Token[]>;
     const newer = highlighter("const current = 2;\n", "typescript", { id: "stale", version: 2, state: "done" }) as Promise<Token[]>;
-    fake.onmessage!({ data: { requestId: requests[1].requestId, tokens: [{ text: requests[1].code }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
-    fake.onmessage!({ data: { requestId: requests[0].requestId, tokens: [{ text: requests[0].code }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    fake.onmessage!({ data: completeReply(requests[1], [{ text: requests[1].code }]) } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    fake.onmessage!({ data: completeReply(requests[0], [{ text: requests[0].code }]) } as MessageEvent<{ requestId: number; tokens: Token[] }>);
     await Promise.all([older, newer]);
     const retried = highlighter("const old = 1;\n", "typescript", { id: "stale", version: 1, state: "done" });
     expect(requests).toHaveLength(3);
-    fake.onmessage!({ data: { requestId: requests[2].requestId, tokens: [{ text: requests[2].code }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+    fake.onmessage!({ data: completeReply(requests[2], [{ text: requests[2].code }]) } as MessageEvent<{ requestId: number; tokens: Token[] }>);
     await retried;
     highlighter.dispose();
   });
@@ -739,13 +842,13 @@ describe("identity, failure, and caps", () => {
   test("a busy worker that keeps answering is not treated as hung", async () => {
     // A backlog posted at once takes longer than one request's patience, but the worker answers steadily.
     let terminated = false;
-    const queue: Array<{ requestId: number; code: string }> = [];
-    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
-      onmessage: null, onerror: null, terminate() { terminated = true; }, postMessage(value) { if (value.requestId) queue.push({ requestId: value.requestId, code: value.code! }); },
+    const queue: RecordedRequest[] = [];
+    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string; grammar?: { language: string; generation: number } }): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() { terminated = true; }, postMessage(value) { if (value.requestId) queue.push({ requestId: value.requestId, code: value.code!, grammar: value.grammar! }); },
     };
     const pump = setInterval(() => {
       const next = queue.shift();
-      if (next) fake.onmessage!({ data: { requestId: next.requestId, tokens: [{ text: next.code, type: "keyword" }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>);
+      if (next) fake.onmessage!({ data: completeReply(next, [{ text: next.code, type: "keyword" }]) } as MessageEvent<{ requestId: number; tokens: Token[] }>);
     }, 150);
     const highlighter = createHighlighter({ workerFactory: () => fake });
     const results = await Promise.all(Array.from({ length: 6 }, (_, index) => highlighter(`const n = ${index};\n`, "typescript", { id: `busy-${index}`, version: 1, state: "done" })));
@@ -757,8 +860,8 @@ describe("identity, failure, and caps", () => {
 
   test("completed cache is capped at 512 blocks", async () => {
     let calls = 0;
-    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
-      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) { calls++; queueMicrotask(() => fake.onmessage!({ data: { requestId: value.requestId!, tokens: [{ text: value.code! }] } } as MessageEvent<{ requestId: number; tokens: Token[] }>)); } },
+    const fake: { onmessage: ((event: MessageEvent<{ requestId: number; tokens: Token[] }>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string; grammar?: { language: string; generation: number } }): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) { calls++; queueMicrotask(() => fake.onmessage!({ data: completeReply({ requestId: value.requestId!, code: value.code!, grammar: value.grammar! }, [{ text: value.code! }]) } as MessageEvent<{ requestId: number; tokens: Token[] }>)); } },
     };
     const highlighter = createHighlighter({ workerFactory: () => fake });
     for (let index = 0; index < 513; index++) await highlighter(`const n = ${index};\n`, "typescript", { id: `cap-${index}`, version: 1, state: "done" });
@@ -779,10 +882,10 @@ test("a cache hit never returns tokens for different code under the same id and 
 });
 
 test("an older same-key request that lands last does not replace the newer cached result", async () => {
-  const posted: Array<{ requestId: number; code: string }> = [];
+  const posted: RecordedRequest[] = [];
   let onmessage: ((event: { data: unknown }) => void) | undefined;
   const fakeWorker = {
-    postMessage(message: { type: string; requestId: number; code: string }) { if (message.type === "highlight") posted.push(message); },
+    postMessage(message: { type: string; requestId: number; code: string; grammar: { language: string; generation: number } }) { if (message.type === "highlight") posted.push(message); },
     terminate() {},
     set onmessage(handler: (event: { data: unknown }) => void) { onmessage = handler; },
     set onerror(_handler: unknown) {},
@@ -791,9 +894,9 @@ test("an older same-key request that lands last does not replace the newer cache
   const context = { id: "race", version: 3, state: "done" as const };
   const older = highlighter("aaa", "typescript", context) as Promise<Token[]>;
   const newer = highlighter("bbb", "typescript", context) as Promise<Token[]>;
-  onmessage!({ data: { requestId: posted[1]!.requestId, tokens: [{ text: "bbb", type: "keyword" }] } });
+  onmessage!({ data: completeReply(posted[1]!, [{ text: "bbb", type: "keyword" }]) });
   await newer;
-  onmessage!({ data: { requestId: posted[0]!.requestId, tokens: [{ text: "aaa", type: "keyword" }] } });
+  onmessage!({ data: completeReply(posted[0]!, [{ text: "aaa", type: "keyword" }]) });
   await older;
   const again = highlighter("bbb", "typescript", context);
   expect(Array.isArray(again)).toBe(true);
@@ -812,7 +915,7 @@ describe("grammar warm-up and regex caches", () => {
 
   test("a worker answers between warm-up slices, and re-sends each provisional block once when warm", async () => {
     const updates: Array<{ id: string; language: string; tokens: Token[] }> = [];
-    const runtime = new TokenizerRuntime((context, language, tokens) => updates.push({ id: context.id, language, tokens }));
+    const runtime = new TokenizerRuntime((context, provenance, tokens) => updates.push({ id: context.id, language: provenance.language, tokens }));
     const cold = viteConfig;
     let tokenized = 0;
     const highlighter = await runtime["engine"]();
@@ -846,11 +949,11 @@ describe("grammar warm-up and regex caches", () => {
   }, 60_000);
 
   type RevisionWorker = {
-    posted: Array<{ requestId: number; code: string; context: unknown }>;
+    posted: Array<{ requestId: number; code: string; context: unknown; grammar: { language: string; generation: number } }>;
     terminated: boolean;
     onmessage: ((event: MessageEvent<unknown>) => void) | null;
     onerror: ((event: ErrorEvent) => unknown) | null;
-    postMessage(value: { type?: string; requestId?: number; code?: string; context?: unknown }): void;
+    postMessage(value: { type?: string; requestId?: number; code?: string; context?: unknown; grammar?: { language: string; generation: number } }): void;
     terminate(): void;
     send(data: unknown): void;
     crash(): void;
@@ -858,7 +961,7 @@ describe("grammar warm-up and regex caches", () => {
   const revisionWorker = (workers: RevisionWorker[]) => {
     const worker: RevisionWorker = {
       posted: [], terminated: false, onmessage: null, onerror: null,
-      postMessage(value) { if (value.type === "highlight") worker.posted.push({ requestId: value.requestId!, code: value.code!, context: value.context }); },
+      postMessage(value) { if (value.type === "highlight") worker.posted.push({ requestId: value.requestId!, code: value.code!, context: value.context, grammar: value.grammar! }); },
       terminate() { worker.terminated = true; },
       send(data) { worker.onmessage?.({ data } as MessageEvent<unknown>); },
       crash() { worker.onerror?.(new ErrorEvent("error")); },
@@ -866,7 +969,8 @@ describe("grammar warm-up and regex caches", () => {
     workers.push(worker);
     return worker;
   };
-  const revisionAnswer = (worker: RevisionWorker, index: number) => worker.send({ requestId: worker.posted[index]!.requestId, tokens: [{ text: worker.posted[index]!.code, type: "keyword" }], provisional: false });
+  const revisionProvenance = (worker: RevisionWorker, index: number, fullyLoaded: boolean) => ({ ...worker.posted[index]!.grammar, fullyLoaded });
+  const revisionAnswer = (worker: RevisionWorker, index: number) => worker.send({ requestId: worker.posted[index]!.requestId, tokens: [{ text: worker.posted[index]!.code, type: "keyword" }], provenance: revisionProvenance(worker, index, true), completion: { status: "complete" } });
 
   test("superseded provisional revisions settle when their final update arrives", async () => {
     const workers: RevisionWorker[] = [];
@@ -875,15 +979,15 @@ describe("grammar warm-up and regex caches", () => {
     const secondContext = { id: "superseded", version: 2, state: "done" as const };
     const first = highlighter("first\n", "typescript", firstContext);
     const firstRequest = workers[0]!.posted[0]!;
-    workers[0]!.send({ requestId: firstRequest.requestId, tokens: [{ text: "first\n" }], provisional: true });
+    workers[0]!.send({ requestId: firstRequest.requestId, tokens: [{ text: "first\n" }], provenance: revisionProvenance(workers[0]!, 0, false), completion: { status: "pending" } });
     await first;
     highlighter("second\n", "typescript", secondContext);
     const secondRequest = workers[0]!.posted[1]!;
     revisionAnswer(workers[0]!, 1);
     await highlighter.awaitCompletion(secondContext.id, secondContext.version);
     const waiting = highlighter.awaitCompletion(firstContext.id, firstContext.version);
-    workers[0]!.send({ update: firstContext, language: "typescript", tokens: [{ text: "first", type: "keyword" }, { text: "\n" }] });
-    await expect(waiting).resolves.toEqual({ version: 1, status: "complete" });
+    workers[0]!.send({ update: firstContext, provenance: revisionProvenance(workers[0]!, 0, true), tokens: [{ text: "first", type: "keyword" }, { text: "\n" }] });
+    await expect(waiting).resolves.toEqual({ version: 1, status: "superseded" });
     expect(highlighter("first\n", "typescript", firstContext)).toEqual([{ text: "first", type: "keyword" }, { text: "\n" }]);
     highlighter.dispose();
   });
@@ -896,9 +1000,9 @@ describe("grammar warm-up and regex caches", () => {
     highlighter.subscribe(context.id, (notice) => notices.push(notice.status));
     const result = highlighter("const value = 1;\n", "typescript", context);
     const request = workers[0]!.posted[0]!;
-    workers[0]!.send({ requestId: request.requestId, tokens: [{ text: request.code }], provisional: true });
+    workers[0]!.send({ requestId: request.requestId, tokens: [{ text: request.code }], provenance: revisionProvenance(workers[0]!, 0, false), completion: { status: "pending" } });
     await result;
-    workers[0]!.send({ update: context, language: "typescript", tokens: [{ text: "const", type: "keyword" }, { text: " value = 1;\n" }] });
+    workers[0]!.send({ update: context, provenance: revisionProvenance(workers[0]!, 0, true), tokens: [{ text: "const", type: "keyword" }, { text: " value = 1;\n" }] });
     expect(notices).toContain("complete");
     expect(highlighter("const value = 1;\n", "typescript", context)).toEqual([{ text: "const", type: "keyword" }, { text: " value = 1;\n" }]);
     highlighter.dispose();
@@ -953,9 +1057,9 @@ describe("grammar warm-up and regex caches", () => {
   }, 60_000);
 
   test("a worker update replaces the cached tokens of its exact block and tells that block's subscribers", async () => {
-    const requests: Array<{ requestId: number; code: string }> = [];
-    const fake: { onmessage: ((event: MessageEvent<unknown>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string }): void; terminate(): void } = {
-      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) requests.push({ requestId: value.requestId, code: value.code! }); },
+    const requests: Array<{ requestId: number; code: string; grammar: { language: string; generation: number } }> = [];
+    const fake: { onmessage: ((event: MessageEvent<unknown>) => void) | null; onerror: ((event: ErrorEvent) => unknown) | null; postMessage(value: { requestId?: number; code?: string; grammar?: { language: string; generation: number } }): void; terminate(): void } = {
+      onmessage: null, onerror: null, terminate() {}, postMessage(value) { if (value.requestId) requests.push({ requestId: value.requestId, code: value.code!, grammar: value.grammar! }); },
     };
     const send = (data: unknown) => fake.onmessage!({ data } as MessageEvent<unknown>);
     const highlighter = createHighlighter({ workerFactory: () => fake });
@@ -967,16 +1071,16 @@ describe("grammar warm-up and regex caches", () => {
     const stop = highlighter.subscribe(context.id, () => told++);
     highlighter.subscribe("another", () => other++);
     const pending = highlighter(code, "typescript", context);
-    send({ requestId: requests[0]!.requestId, tokens: [{ text: code }], provisional: true });
+    send({ requestId: requests[0]!.requestId, tokens: [{ text: code }], provenance: { ...requests[0]!.grammar, fullyLoaded: false }, completion: { status: "pending" } });
     expect(await pending).toEqual([{ text: code }]);
-    send({ update: context, language: "typescript", tokens: [{ text: "other text\n", type: "keyword" }] }); // not this block's text
-    send({ update: { ...context, version: 2 }, language: "typescript", tokens: colored }); // not a cached revision
+    send({ update: context, provenance: { ...requests[0]!.grammar, fullyLoaded: true }, tokens: [{ text: "other text\n", type: "keyword" }] }); // not this block's text
+    send({ update: { ...context, version: 2 }, provenance: { ...requests[0]!.grammar, fullyLoaded: true }, tokens: colored }); // not a cached revision
     expect(told).toBe(0);
-    send({ update: context, language: "typescript", tokens: colored });
+    send({ update: context, provenance: { ...requests[0]!.grammar, fullyLoaded: true }, tokens: colored });
     expect([told, other]).toEqual([1, 0]);
     expect(highlighter(code, "typescript", context)).toEqual(colored);
     stop();
-    send({ update: context, language: "typescript", tokens: [{ text: code, type: "string" }] });
+    send({ update: context, provenance: { ...requests[0]!.grammar, fullyLoaded: true }, tokens: [{ text: code, type: "string" }] });
     expect(told).toBe(1);
     expect(requests).toHaveLength(1);
     highlighter.dispose();
