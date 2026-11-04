@@ -1,4 +1,5 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
+await Bun.$`bun ${new URL("./generate.ts", import.meta.url).pathname}`;
 await rm(new URL("../dist", import.meta.url), { recursive: true, force: true });
 const result = await Bun.build({
   entrypoints: [new URL("./index.ts", import.meta.url).pathname, new URL("./worker.ts", import.meta.url).pathname, new URL("./runtime.ts", import.meta.url).pathname, new URL("./names.ts", import.meta.url).pathname],
@@ -16,14 +17,8 @@ if (!result.success) {
   process.exit(1);
 }
 
-const grammarNames = [
-  "typescript", "tsx", "javascript", "jsx", "python", "shellscript", "json", "diff", "rust", "go", "sql", "yaml",
-  "css", "html", "markdown", "toml", "dockerfile", "c", "cpp", "java", "kotlin", "swift", "ruby", "php", "lua",
-  "make", "ini", "xml", "graphql", "proto",
-];
 const grammarEntries = new URL("../.grammar-entries/", import.meta.url);
-await mkdir(grammarEntries, { recursive: true });
-await Promise.all(grammarNames.map((name) => writeFile(new URL(`${name}.ts`, grammarEntries), `import grammar from "@shikijs/langs/${name}"; export default grammar;\n`)));
+const grammarNames = (await readdir(grammarEntries)).filter((name) => name.endsWith(".ts")).map((name) => name.slice(0, -3));
 const grammars = await Bun.build({
   entrypoints: grammarNames.map((name) => new URL(`${name}.ts`, grammarEntries).pathname),
   outdir: new URL("../dist/langs", import.meta.url).pathname,
