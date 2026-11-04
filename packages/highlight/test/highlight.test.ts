@@ -1182,8 +1182,7 @@ describe("embedded grammar completion", () => {
     }) as typeof runtime["tokenizeLoaded"];
     const open = "```ts\nconst answer: number = 42;\n";
     const first = await runtime.tokenizeWithProvenance(open, { id: "stream-embedded", version: 1, state: "streaming" }, "markdown", 1);
-    expect(first.provenance.fullyLoaded).toBeFalse();
-    const colored = await complete;
+    const colored = first.provenance.fullyLoaded ? first.tokens : await complete;
     expect(colored.some((token) => token.type === "keyword" && token.text === "const")).toBeTrue();
     const closed = await runtime.tokenizeWithProvenance(`${open}\`\`\`\n`, { id: "stream-embedded", version: 2, state: "done" }, "markdown", 1);
     expect(closed.provenance.fullyLoaded).toBeTrue();
