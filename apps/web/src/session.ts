@@ -102,7 +102,12 @@ export async function openSession(
     return { offset, rows: page.messages ?? [], nextOffset: page.next_offset ?? null };
   };
   const allRows = () => pages.flatMap((page) => page.rows);
-  const publishSnapshot = (status: ServerStatus) => lease.store.resync(snapshotEvents(id, allRows(), status));
+  let publishedPages = 1;
+  const stableRows = () => (pages.length === 1 ? pages : pages.slice(0, -1)).flatMap((page) => page.rows);
+  const publishStablePrefix = (status: ServerStatus) => {
+    lease.store.resync(snapshotEvents(id, stableRows(), status, false));
+    publishedPages = pages.length === 1 ? 1 : pages.length - 1;
+  };
   const publishApprovals = (status: ServerStatus) => {
     for (const event of snapshotEvents(id, [], status)) if (event.type === "approval_request") lease.store.dispatch(event);
   };
@@ -118,7 +123,10 @@ export async function openSession(
   const loadFullHistory = async () => { pages = await loadPageRange(0); };
   const appendProgressPage = (page: LoadedPage, count: number) => {
     pages.push(page);
-    for (const event of fromZetaHistory(page.rows)) if (!isApprovalEvent(event)) lease.store.dispatch(event);
+    if (page.nextOffset !== null) {
+      for (const event of fromZetaHistory(page.rows)) if (!isApprovalEvent(event)) lease.store.dispatch(event);
+      publishedPages++;
+    }
     if (page.nextOffset === null || count % 25 === 0) progress?.(allRows().length, page.nextOffset === null);
   };
   const loadRemainingPages = async () => {
@@ -129,9 +137,13 @@ export async function openSession(
       offset = page.nextOffset;
     }
   };
-  const publishDeferredApprovals = () => {
-    if (pages.length < 2) return;
-    for (const event of fromZetaHistory(allRows())) if (isApprovalEvent(event)) lease.store.dispatch(event);
+  const publishFinalTail = (status: ServerStatus) => {
+    for (const page of pages.slice(publishedPages))
+      for (const event of fromZetaHistory(page.rows)) if (!isApprovalEvent(event)) lease.store.dispatch(event);
+    if (pages.length > 1)
+      for (const event of fromZetaHistory(allRows())) if (isApprovalEvent(event)) lease.store.dispatch(event);
+    for (const event of snapshotEvents(id, [], status)) lease.store.dispatch(event);
+    publishedPages = pages.length;
   };
   const waitUntilIdle = async (status = initialStatus): Promise<ServerStatus> => {
     let pending = JSON.stringify(status.pending_approvals ?? []);
@@ -168,11 +180,14 @@ export async function openSession(
     const before = pages.at(-1)!;
     const revision = client.replayRevision(id);
     const tail = await loadPageRange(before.offset);
-    if (changedTailBoundary(before, tail)) await loadFullHistory();
+    const changed = changedTailBoundary(before, tail);
+    if (changed) await loadFullHistory();
     else pages.splice(pages.length - 1, 1, ...tail);
     const status = await getStatus(client, activeSignal);
-    publishSnapshot(status);
-    return { clean: client.finishReplay(id, revision), status };
+    if (changed || pages.length === 1) publishStablePrefix(status);
+    const clean = client.finishReplay(id, revision);
+    if (clean) publishFinalTail(status);
+    return { clean, status };
   };
   const finishWhenClean = async (status: ServerStatus) => {
     while (true) {
@@ -188,8 +203,10 @@ export async function openSession(
     try {
       await wait(0, activeSignal);
       const [, idle] = await Promise.all([loadRemainingPages(), waitUntilIdle()]);
-      publishDeferredApprovals();
-      if (client.replayRevision(id) === 0 && client.finishReplay(id, 0)) return { syncing: false };
+      if (client.replayRevision(id) === 0 && client.finishReplay(id, 0)) {
+        publishFinalTail(idle);
+        return { syncing: false };
+      }
       await finishWhenClean(idle);
       return { syncing: false };
     } catch (error) {
