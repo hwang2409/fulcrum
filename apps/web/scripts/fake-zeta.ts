@@ -34,7 +34,7 @@ const seeded = [
 ];
 
 const text = (value: string) => ({ type: "text", text: value });
-const toolUse = (id: string, name: string, arguments: Json = {}) => ({ type: "tool_use", tool_call: { id, name, arguments } });
+const toolUse = (id: string, name: string, args: Json = {}) => ({ type: "tool_use", tool_call: { id, name, arguments: args } });
 // History keeps a result's text only; bash's is "stdout:\n" + stdout + "\nstderr:\n" + stderr (zeta src/zeta/tools/bash).
 const result = (id: string, content: string, extra: Json = {}) => ({ tool_call_id: id, content, is_error: false, content_blocks: [], structured_content: null, ...extra });
 const histories: Record<string, Json[]> = {
