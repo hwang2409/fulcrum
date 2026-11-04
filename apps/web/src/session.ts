@@ -86,14 +86,18 @@ export async function openSession(client: ZetaClient, id: string, progress?: Ope
   }, true);
 
   const complete = (async (): Promise<{ lease?: SessionLease; syncing: boolean }> => {
+    const laterEvents: RunEvent[] = [];
+    let pages = 0;
     for (let offset = nextOffset; offset !== null; ) {
       const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal }) as HistoryPage;
       const pageRows = page.messages ?? [];
       rows.push(...pageRows);
-      for (const event of fromZetaHistory(pageRows)) lease.store.dispatch(event);
+      laterEvents.push(...fromZetaHistory(pageRows));
       offset = page.next_offset ?? null;
-      progress?.(rows.length, offset === null);
+      pages++;
+      if (offset === null || pages % 25 === 0) progress?.(rows.length, offset === null);
     }
+    for (const event of laterEvents) lease.store.dispatch(event);
     let status = await getStatus(client, signal);
     for (const event of snapshotEvents(id, [], status)) lease.store.dispatch(event);
     if (status.state === "idle") {
