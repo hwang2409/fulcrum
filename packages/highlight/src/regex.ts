@@ -1,6 +1,12 @@
 /** ES2024 uses the `v` flag supported by Safari 17 and Chromium 112; do not emit ES2025 flag groups. */
 export const REGEX_TARGET = "ES2024" as const;
-export type RegexRecipe = readonly [source: string, flags: string];
+export type RegexRecipeOptions = {
+  hiddenCaptures?: number[];
+  lazyCompile?: boolean;
+  strategy?: string | null;
+  transfers?: [number, number[]][];
+};
+export type RegexRecipe = readonly [source: string, flags: string, options?: RegexRecipeOptions];
 export type RegexRecipes = Record<string, RegexRecipe>;
 
 // vscode-textmate rewrites anchors before it asks the regex engine to compile a grammar pattern.

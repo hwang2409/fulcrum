@@ -4,7 +4,8 @@ import type { GrammarProvenance } from "./protocol.js";
 import { loadLanguage, loadRegexRecipes } from "./languages.js";
 import { normalizeLanguage } from "./names.js";
 import { appendToken, semanticTheme } from "./scopes.js";
-import { grammarPatterns, REGEX_TARGET, type RegexRecipes } from "./regex.js";
+import { EmulatedRegExp } from "oniguruma-to-es";
+import { grammarPatterns, REGEX_TARGET, type RegexRecipe, type RegexRecipes } from "./regex.js";
 
 const THEME = "fulcrum-semantic";
 const MAX_SESSIONS = 32;
@@ -12,6 +13,10 @@ const MAX_SESSION_BYTES = 8 * 1024 * 1024;
 // tokenization budgets may schedule work, but never choose the final token semantics. the worker watchdog handles a
 // truly pathological scanner; a slow machine must keep trying until the pinned grammar returns its full result.
 type Session = { language: string; version: number; code: string; finalizedLength: number; tokens: Token[]; state?: GrammarState; used: number; bytes: number };
+
+export function regexFromRecipe([source, flags, options]: RegexRecipe): RegExp {
+  return options ? new EmulatedRegExp(source, flags, options) : new RegExp(source, flags);
+}
 
 function nextCompleteLength(code: string, done: boolean): number {
   if (done) return code.length;
@@ -115,7 +120,7 @@ export class TokenizerRuntime {
         target: REGEX_TARGET,
         regexConstructor: (pattern) => {
           const recipe = this.recipes.get(pattern);
-          return recipe ? new RegExp(recipe[0], recipe[1]) : defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
+          return recipe ? regexFromRecipe(recipe) : defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
         },
       });
       this.highlighter = await createHighlighterCore({ engine, langs: [], themes: [semanticTheme] });
@@ -137,7 +142,11 @@ export class TokenizerRuntime {
         const patterns = grammarPatterns(grammars);
         for (const pattern of patterns) cache.grammar.add(pattern);
         // Not awaited: requests are answered while the grammar warms, with plain text until it is warm.
-        this.warming.set(language, this.warmQueue = this.warmQueue.then(() => this.warm(language, patterns, highlighter, cache, epoch)).catch(() => {}));
+        const grammarLanguages = grammars.flatMap((grammar) => {
+          const name = (grammar as { name?: unknown }).name;
+          return typeof name === "string" ? [name] : [];
+        });
+        this.warming.set(language, this.warmQueue = this.warmQueue.then(() => this.warm(language, grammarLanguages, patterns, highlighter, cache, epoch)).catch(() => {}));
       })();
       this.languages.set(language, loading);
       loading.catch(() => this.languages.delete(language)); // a failed load can be retried
@@ -147,11 +156,12 @@ export class TokenizerRuntime {
   }
 
   // `epoch` is the one the grammar was loaded in: a warm-up queued before dispose must not run after it.
-  private async warm(language: string, patterns: Set<string>, highlighter: HighlighterCore, cache: RegexCache, epoch: number): Promise<void> {
+  private async warm(language: string, grammarLanguages: string[], patterns: Set<string>, highlighter: HighlighterCore, cache: RegexCache, epoch: number): Promise<void> {
     await this.compile(patterns, cache, epoch);
     if (epoch !== this.epoch) return;
-    // The first line through a grammar also builds its rules and runs the regex jit once; a sample does it here.
-    highlighter.codeToTokensBase(WARM_SAMPLE, { lang: language, theme: THEME });
+    // A language chunk can contain embedded grammars. Prime each real scanner so final tokens do not depend on load order.
+    for (const grammarLanguage of new Set(grammarLanguages))
+      highlighter.codeToTokensBase(WARM_SAMPLE, { lang: grammarLanguage, theme: THEME });
     this.warmed.add(language);
     await this.flushProvisional(language, epoch);
   }

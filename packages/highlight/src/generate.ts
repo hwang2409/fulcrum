@@ -49,8 +49,8 @@ for (const entry of entries) {
   const recipes: RegexRecipes = {};
   for (const pattern of grammarPatterns(grammar)) {
     try {
-      const regex = defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
-      recipes[pattern] = [regex.source, regex.flags];
+      const regex = defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET }) as RegExp & { rawOptions?: RegexRecipes[string][2] };
+      recipes[pattern] = [regex.source, regex.flags, regex.rawOptions];
     } catch { /* Unsupported static patterns keep the bounded runtime fallback and its existing error semantics. */ }
   }
   await writeFile(new URL(`${entry.actual}.ts`, recipeEntries), `export default ${JSON.stringify(recipes)} as const;\n`);

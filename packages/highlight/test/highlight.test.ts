@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, jest, test } from "bun:test";
 import type { Token } from "../src/index.js";
+import type { RegexRecipeOptions } from "../src/regex.js";
 import { semanticTheme } from "../src/scopes.js";
 
 const build = Bun.spawnSync(["bun", "run", "build"], { cwd: new URL("..", import.meta.url).pathname });
@@ -8,7 +9,7 @@ const { createHighlighter } = await import("../dist/index.js");
 // Unit tests never depend on how fast this machine is: the clock stands still unless a test moves it, so no line is ever
 // over the time limit by chance. Only a real worker (its own clock) runs on real time.
 Object.defineProperty(performance, "now", { configurable: true, value: () => 0 });
-const { TokenizerRuntime } = await import("../dist/runtime.js");
+const { TokenizerRuntime, regexFromRecipe } = await import("../dist/runtime.js");
 // Every tokenize call on this (the main) thread. The page's thread must never tokenize: a test asserts this stays 0.
 let mainThreadTokenizes = 0;
 const tokenizeOnMainThread = TokenizerRuntime.prototype.tokenize;
@@ -269,6 +270,13 @@ describe("incremental tokenization", () => {
     counter.runtime.dispose();
   });
 
+  test("a recipe preserves converter emulation metadata", async () => {
+    const { defaultJavaScriptRegexConstructor } = await import("@shikijs/engine-javascript");
+    const converted = defaultJavaScriptRegexConstructor("(a)(?>b)", { target: "ES2024" }) as RegExp & { rawOptions?: RegexRecipeOptions };
+    const restored = regexFromRecipe([converted.source, converted.flags, converted.rawOptions]);
+    expect(restored.exec("ab")).toEqual(converted.exec("ab"));
+  });
+
   // Recipes remove conversion from the cold path without constructing every grammar regex. The first representative
   // document may demand more rules than the synthetic warm sample; the same document must not construct them twice.
   test("static recipes construct only scanner-demanded regexes", async () => {
@@ -520,7 +528,7 @@ describe("worker liveness and restarts", () => {
     const stuck = highlighter("a\n", "cpp", block("stuck"));
     const waiting = highlighter("b\n", "cpp", block("waiting"));
     workers[0].send({ progress: workers[0].posted[0].context });
-    jest.advanceTimersByTime(499);
+    jest.advanceTimersByTime(4_999);
     expect(workers.length).toBe(1);
     jest.advanceTimersByTime(1);
     expect(workers[0].terminated).toBe(true);

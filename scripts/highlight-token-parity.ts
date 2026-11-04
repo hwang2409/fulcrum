@@ -177,10 +177,10 @@ if (mode === "generate") {
   if (process.argv[3] !== "--from" || !process.argv[4]) throw new Error("usage: bun scripts/highlight-token-parity.ts generate --from <main-ref>");
   const ref = process.argv[4];
   const sha = await capture(["git", "rev-parse", "--verify", `${ref}^{commit}`]);
-  const mainSha = await capture(["git", "merge-base", "HEAD", "origin/main"]);
+  const mainSha = await capture(["git", "rev-parse", "--verify", "origin/main^{commit}"]);
   const exactSha = /^[0-9a-f]{40}$/.test(ref) && ref === sha;
   if ((ref !== "origin/main" && !exactSha) || sha !== mainSha)
-    throw new Error(`--from must be origin/main or its exact current merge-base sha (${mainSha})`);
+    throw new Error(`--from must be origin/main or its exact sha (${mainSha})`);
   await withBuiltRef(ref, async (packageRoot, sha) => {
     const { createHighlighter } = await import(`${packageRoot}/dist/index.js`) as { createHighlighter: () => Highlight };
     const newReference = await reference();
@@ -196,7 +196,7 @@ if (mode === "generate") {
   const packageRoot = resolve(process.env.HIGHLIGHT_ROOT ?? resolve(import.meta.dir, "../packages/highlight"));
   const { createHighlighter } = await import(`${packageRoot}/dist/index.js`) as { createHighlighter: () => Highlight };
   const expected = JSON.parse(await readFile(fixturePath, "utf8")) as Fixture;
-  const mainSha = await capture(["git", "merge-base", "HEAD", "origin/main"]);
+  const mainSha = await capture(["git", "rev-parse", "--verify", "origin/main^{commit}"]);
   if (expected.source?.sha !== mainSha) throw new Error(`token fixture source ${expected.source?.sha ?? "missing"} is not main ${mainSha}; regenerate from origin/main`);
   const probe = createHighlighter();
   const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof probe.awaitCompletion !== "function";
