@@ -113,16 +113,21 @@ async function openBackwardSession(
   };
   const publish = (status: ServerStatus) => lease.store.resync(snapshotEvents(id, rows(), status));
   const loadOlder = async (publishPages = true) => {
+    let nextPublish = 2;
     while (pages.at(-1)?.next_before != null) {
       const before = pages.at(-1)!.next_before!;
       try {
         const page = await client.request("session_history", { session_id: id, before, history_validator: validator }, { timeoutMs: 15_000, signal: activeSignal }) as BackwardHistoryPage;
         pages.push(page);
-        if (publishPages) publish(initialStatus);
+        if (publishPages && (page.next_before == null || pages.length >= nextPublish)) {
+          publish(initialStatus);
+          nextPublish = pages.length * 2;
+        }
         progress?.(rows().length, page.next_before == null);
       } catch (error) {
         if (!staleHistorySnapshot(error)) throw error;
         const page = await requestNewest();
+        nextPublish = 2;
         if (publishPages) publish(initialStatus);
         progress?.(rows().length, page.next_before == null);
       }
