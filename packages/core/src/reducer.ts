@@ -80,10 +80,11 @@ interface FieldSchema {
   readonly required: boolean;
   readonly validate: Validator;
   readonly fields?: Readonly<Record<string, FieldSchema>>;
+  readonly inspectFields?: boolean;
 }
 type EventSchema<E> = { readonly [K in Exclude<keyof E, "type">]-?: FieldSchema };
-const required = (validate: Validator, fields?: FieldSchema["fields"]): FieldSchema => ({ required: true, validate, fields });
-const optional = (validate: Validator, fields?: FieldSchema["fields"]): FieldSchema => ({ required: false, validate, fields });
+const required = (validate: Validator, fields?: FieldSchema["fields"], inspectFields = false): FieldSchema => ({ required: true, validate, fields, inspectFields });
+const optional = (validate: Validator, fields?: FieldSchema["fields"], inspectFields = false): FieldSchema => ({ required: false, validate, fields, inspectFields });
 const string: Validator = (value) => typeof value === "string";
 const boolean: Validator = (value) => typeof value === "boolean";
 const finite: Validator = (value) => typeof value === "number" && Number.isFinite(value);
@@ -95,6 +96,10 @@ const usage: Validator = (value) => {
   for (const amount of Object.values(value)) if (!finite(amount)) return false;
   return true;
 };
+const toolCall: Validator = (value) => record(value) && string(value.id) && string(value.name) && record(value.arguments);
+const message: Validator = (value) => record(value) && string(value.role) && array(value.content);
+const block: Validator = (value) => record(value) && string(value.type);
+const error: Validator = (value) => record(value) && string(value.code) && string(value.message);
 const toolCallFields = { id: required(string), name: required(string), arguments: required(object) };
 const messageFields = { role: required(string), content: required(array) };
 const toolResultFields = {
@@ -114,19 +119,19 @@ export const eventSchemas = {
   message_reset: { data: optional(object) },
   retry: {},
   message_delta: { message_id: optional(string), delta: required(string), kind: optional(string) },
-  message_block: { message_id: optional(string), block: required(object, { type: required(string) }) },
-  message_commit: { message_id: optional(string), message: required(object, messageFields) },
-  tool_start: { tool_call: required(object, toolCallFields), view: optional(object), data: optional(object) },
-  tool_input: { tool_call: required(object, toolCallFields), input: required(string), view: optional(object), data: optional(object) },
-  tool_output: { tool_call: required(object, toolCallFields), output: required(string), view: optional(object), data: optional(object) },
-  tool_end: { tool_call: required(object, toolCallFields), tool_result: optional(object, toolResultFields), view: optional(object), data: optional(object) },
-  approval_request: { request_id: required(string), tool_call: required(object, toolCallFields), view: optional(object), delegated: required(boolean) },
+  message_block: { message_id: optional(string), block: required(block, { type: required(string) }) },
+  message_commit: { message_id: optional(string), message: required(message, messageFields) },
+  tool_start: { tool_call: required(toolCall, toolCallFields), view: optional(object), data: optional(object) },
+  tool_input: { tool_call: required(toolCall, toolCallFields), input: required(string), view: optional(object), data: optional(object) },
+  tool_output: { tool_call: required(toolCall, toolCallFields), output: required(string), view: optional(object), data: optional(object) },
+  tool_end: { tool_call: required(toolCall, toolCallFields), tool_result: optional(object, toolResultFields, true), view: optional(object), data: optional(object) },
+  approval_request: { request_id: required(string), tool_call: required(toolCall, toolCallFields), view: optional(object), delegated: required(boolean) },
   approval_end: { request_id: required(string), decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
   usage: { usage: required(usage) },
   user_message: { text: required(string), mode: required(string), attachments: optional(array), delivery_id: optional(string), intent: optional(string) },
-  error: { error: required(object, { code: required(string), message: required(string) }) },
+  error: { error: required(error, { code: required(string), message: required(string) }) },
   notification: { notification_id: optional(string), data: optional(object) },
-  unknown: { name: required(string), data: required(object, { notification_id: optional(string) }) },
+  unknown: { name: required(string), data: required(object, { notification_id: optional(string) }, true) },
   sub_agent: {
     childRunId: required(string),
     status: required(oneOf("running", "waiting_approval", "waiting_input", "idle", "done", "error", "canceled")),
@@ -154,7 +159,7 @@ const inspectFields = (input: Record<string, unknown>, schema: Readonly<Record<s
       if (value !== undefined) sanitized++;
       continue;
     }
-    if (rule.fields) {
+    if (rule.inspectFields && rule.fields) {
       const nested = inspectFields(value as Record<string, unknown>, rule.fields);
       if (nested < 0) return -1;
       sanitized += nested;
@@ -172,7 +177,7 @@ const sanitizeOptionalFields = (input: Record<string, unknown>, schema: Readonly
       if (output === input) output = { ...input };
       delete output[field];
       count++;
-    } else if (value !== undefined && rule.fields) {
+    } else if (value !== undefined && rule.inspectFields && rule.fields) {
       const [nested, nestedCount] = sanitizeOptionalFields(value as Record<string, unknown>, rule.fields);
       if (nested !== value) {
         if (output === input) output = { ...input };
