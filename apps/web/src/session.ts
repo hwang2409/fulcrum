@@ -55,8 +55,9 @@ export type OpenProgress = (messages: number, complete: boolean) => void;
 export type OpenResult = { lease: SessionLease; syncing: boolean; complete: Promise<{ lease?: SessionLease; syncing: boolean }> };
 
 type HistoryPage = { messages?: unknown[]; next_offset?: number | null };
-const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus): RunEvent[] => {
-  const events = fromZetaHistory(rows);
+const isApprovalEvent = (event: RunEvent) => event.type === "approval_request" || event.type === "approval_end";
+const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true): RunEvent[] => {
+  const events = fromZetaHistory(rows).filter((event) => historyApprovals || !isApprovalEvent(event));
   for (const approval of status.pending_approvals ?? [])
     events.push(...fromZetaEvent({ event: "approval_request", session_id: id, ...approval }));
   events.push({ type: status.state === "idle" ? "run_end" : "run_start" });
@@ -113,20 +114,23 @@ export async function openSession(
     rows = page.messages ?? [];
     nextOffset = page.next_offset ?? null;
     progress?.(rows.length, nextOffset === null);
-    return snapshotEvents(id, rows, initialStatus);
+    return snapshotEvents(id, rows, initialStatus, nextOffset === null);
   }, true);
 
+  const progressiveHistory = nextOffset !== null;
   const loadRemainingPages = async () => {
     let pages = 0;
     for (let offset: number | null = nextOffset; offset !== null; ) {
       const page = await historyPage(offset, activeSignal);
       const pageRows = page.messages ?? [];
       rows.push(...pageRows);
-      for (const event of fromZetaHistory(pageRows)) lease.store.dispatch(event);
+      for (const event of fromZetaHistory(pageRows)) if (!isApprovalEvent(event)) lease.store.dispatch(event);
       offset = page.next_offset ?? null;
       pages++;
       if (offset === null || pages % 25 === 0) progress?.(rows.length, offset === null);
     }
+    if (progressiveHistory)
+      for (const event of fromZetaHistory(rows)) if (isApprovalEvent(event)) lease.store.dispatch(event);
   };
   const publishApprovals = (status: ServerStatus) => {
     for (const event of snapshotEvents(id, [], status)) if (event.type === "approval_request") lease.store.dispatch(event);
@@ -144,6 +148,7 @@ export async function openSession(
   };
   const complete = (async (): Promise<{ syncing: boolean }> => {
     try {
+      await wait(0, activeSignal);
       await Promise.all([loadRemainingPages(), waitUntilIdle()]);
       await client.finishReplay(id);
       return { syncing: false };

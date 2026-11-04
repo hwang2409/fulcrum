@@ -147,7 +147,7 @@ test("evicting during progressive paging aborts completion before the held reque
   });
 
   const opened = await openSession(fake.client, "s");
-  await Promise.resolve();
+  while (fake.calls.filter(([method]) => method === "session_history").length < 2) await new Promise((resolve) => setTimeout(resolve, 0));
   expect(fake.client.evictSession("s")).toBe(true);
   await expect(opened.complete).rejects.toThrow("request aborted");
   release();

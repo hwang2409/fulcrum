@@ -138,7 +138,7 @@ test("on connect opens the active session before requesting the catalog", async 
   expect(present(view).open?.id).toBe("b");
   expect(view.state.listLoading).toBe(true);
   expect(view.state.listReady).toBe(false);
-  expect(fake.calls.map(([method]) => method).filter((method) => method !== "hello")).toEqual(["status", "session_history", "session_history", "list_sessions"]);
+  expect(fake.calls.map(([method]) => method).filter((method) => method !== "hello")).toEqual(["status", "session_history", "list_sessions", "session_history"]);
   release();
   await tick();
   expect(view.state.listLoading).toBe(false);
@@ -173,6 +173,23 @@ test("the first history page makes the session usable while later pages load", a
   await tick();
   expect(present(view).open?.history).toEqual({ messages: 2, complete: true });
   expect(kinds(view.state)).toEqual(["user", "approval", "message"]);
+});
+
+test("progressive history does not revive a completed approval before its ending page loads", async () => {
+  let release!: () => void;
+  const later = new Promise<{ messages: unknown[]; next_offset: null }>((resolve) => { release = () => resolve({ messages: [{ id: "end", role: "system", event: "approval_end", request_id: "old", data: { decision: "abort" } }], next_offset: null }); });
+  const fake = await server(handlers("b", {
+    status: () => ({ session: meta("b", "x"), state: "idle", pending_approvals: [] }),
+    session_history: (params) => params.offset === 0
+      ? { messages: [{ id: "start", role: "system", event: "approval_request", request_id: "old", tool_call: { id: "old-tool", name: "bash", arguments: {} }, delegated: false }], next_offset: 1 }
+      : later,
+  }));
+  const view = createSessions(source(fake.client));
+  await tick();
+  expect(present(view).open?.lease.store.getItem("approval:old")).toBeUndefined();
+  release();
+  await tick();
+  expect(present(view).open?.lease.store.getItem("approval:old")).toMatchObject({ type: "approval", ended: { decision: "abort" } });
 });
 
 test("a failed later page keeps its first-page approval and exposes the error", async () => {
