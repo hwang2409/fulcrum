@@ -97,6 +97,34 @@ test("a locally created session survives an older catalog snapshot", async () =>
   expect(view.state.sessions.map((item) => item.session_id)).toContain("new");
 });
 
+test("a newer catalog retires a locally created session", async () => {
+  let release!: () => void;
+  const first = new Promise<{ sessions: SessionMeta[]; next_offset: null }>((resolve) => { release = () => resolve({ sessions: [sessions[0]!], next_offset: null }); });
+  let calls = 0;
+  const fake = await server({ ...handlers("b"), list_sessions: () => calls++ === 0 ? first : { sessions: [sessions[0]!], next_offset: null }, new_session: () => ({ session: meta("new", "z", { name: "new" }) }) });
+  const view = createSessions(source(fake.client));
+  await tick();
+  void view.create();
+  await tick();
+  release();
+  await tick();
+  expect(view.state.sessions.map((item) => item.session_id)).toContain("new");
+  await view.refresh();
+  expect(view.state.sessions.map((item) => item.session_id)).not.toContain("new");
+});
+
+test("a failed replacement restores the old active session", async () => {
+  const resumed: string[] = [];
+  const fake = await server(handlers("b", { resume: (params) => { resumed.push(params.session_id as string); if (params.session_id === "a") { return { session: meta("a", "x") }; } return { session: meta("b", "x") }; }, session_history: (params) => { if (params.session_id === "a") throw { code: -32602, message: "session log is invalid at line 12" }; return { messages: [], next_offset: null }; } }));
+  const view = createSessions(source(fake.client));
+  await tick();
+  view.select("a");
+  await tick();
+  expect(resumed).toEqual(["a", "b"]);
+  expect(view.state.open?.id).toBe("b");
+  expect(view.state.openError?.message).toBe("session log is invalid at line 12");
+});
+
 test("on connect opens the active session before requesting the catalog", async () => {
   let release!: () => void;
   const catalog = new Promise<{ sessions: SessionMeta[]; next_offset: null }>((resolve) => { release = () => resolve({ sessions, next_offset: null }); });
@@ -159,7 +187,7 @@ test("a failed replacement keeps the previous run usable", async () => {
   view.select("a");
   await tick();
   expect(view.state.open?.id).toBe("b");
-  expect(view.state.openError).toEqual({ id: "a", message: "session log is invalid at line 12", busy: false });
+  expect(view.state.openError).toEqual({ id: "a", message: "session log is invalid at line 12", busy: false, restored: true });
   expect(view.state.opening).toBeNull();
 });
 

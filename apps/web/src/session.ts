@@ -96,7 +96,7 @@ export type SessionsState = {
   /** The rebuilt session on screen. After a drop it stays until a reconnect replaces it; `stale` marks that. */
   open: { id: string; lease: SessionLease; stale: boolean } | null;
   opening: { id: string; messages: number } | null;
-  openError: { id: string; message: string; busy: boolean } | null;
+  openError: { id: string; message: string; busy: boolean; restored?: boolean } | null;
   /** A `new_session` in flight, and why the last one failed. */
   creating: boolean;
   createError: string | null;
@@ -120,12 +120,14 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const live = (target: ZetaClient) => client === target;
 
   let listInFlight: Promise<void> | null = null;
-  const localSessions = new Map<string, SessionMeta>();
+  const localSessions = new Map<string, { session: SessionMeta; createdGeneration: number }>();
+  let listGeneration = 0;
   let listSlowTimer: ReturnType<typeof setTimeout> | null = null;
   const refresh = async () => {
     if (listInFlight) return listInFlight;
     const target = client;
     if (!target) return;
+    const generation = ++listGeneration;
     set({ listLoading: true, listSlow: false, listError: null, listReady: false });
     listSlowTimer = setTimeout(() => { if (live(target)) set({ listSlow: true }); }, 5_000);
     listInFlight = (async () => {
@@ -133,7 +135,10 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         const list = await listSessions(target);
         if (!live(target)) return;
         const visible = new Map(list.sessions.map((session) => [session.session_id, session]));
-        for (const [id, session] of localSessions) if (!visible.has(id)) visible.set(id, session);
+        for (const [id, local] of localSessions) {
+          if (local.createdGeneration < generation) localSessions.delete(id);
+          else if (!visible.has(id)) visible.set(id, local.session);
+        }
         set({ sessions: [...visible.values()], nextOffset: list.nextOffset, listError: null, listLoading: false, listSlow: false, listReady: true });
       } catch (error) {
         if (live(target)) set({ listLoading: false, listSlow: false, listError: message(error) });
@@ -151,6 +156,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     const mine = ++openGeneration;
     set({ selected: id, opening: { id, messages: 0 }, openError: null });
     if (!target) return;
+    const previousId = state.open?.id !== id ? state.open?.id : null;
     try {
       const previous = state.open?.id === id ? state.open.lease.store : null;
       const lease = await openSession(target, id, (messages) => { if (mine === openGeneration) set({ opening: { id, messages } }); });
@@ -180,7 +186,15 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       set({ open: { id, lease, stale: false }, opening: null });
     } catch (error) {
       if (mine !== openGeneration || !live(target)) return;
-      set({ opening: null, openError: { id, message: message(error), busy: isBusyError(error) } });
+      let restored = false;
+      if (previousId) {
+        try {
+          await target.request("resume", { session_id: previousId }, { timeoutMs: 30_000 });
+          restored = true;
+        } catch { /* keep the retained run read-only with an explicit reopen action */ }
+      }
+      if (mine !== openGeneration || !live(target)) return;
+      set({ opening: null, openError: { id, message: message(error), busy: isBusyError(error), ...(restored ? { restored: true } : {}) } });
     }
   };
 
@@ -222,6 +236,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       void open(id);
     },
     refresh,
+    dismissOpenError() { set({ openError: null }); },
     /** Starts a session with zeta's `new_session` (which makes it the server's own), then opens it. */
     async create() {
       const target = client;
@@ -230,7 +245,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       try {
         const { session } = (await target.request("new_session", {}, { timeoutMs: 30_000 })) as { session: SessionMeta };
         if (!live(target)) return set({ creating: false });
-        localSessions.set(session.session_id, session);
+        localSessions.set(session.session_id, { session, createdGeneration: listGeneration });
         set({ creating: false, sessions: [session, ...state.sessions.filter((item) => item.session_id !== session.session_id)] });
         onSelect?.(session.session_id);
         await open(session.session_id);

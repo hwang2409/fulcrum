@@ -186,7 +186,7 @@ function Sidebar({ state, view, sessions, onSelect, onCreate, open, onClose, foo
         {state.phase === "connected" && !rows.length && !view.listLoading && !view.listError ? <p className="note">no sessions yet. start one with new session.</p> : null}
         <ul ref={list}>
           {rows.map((session) => (
-            <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} opening={view.opening?.id === session.session_id} server={state.phase === "connected" ? view.server : null} store={state.phase === "connected" && view.open?.id === session.session_id && !view.open.stale ? view.open.lease.store : null} onSelect={onSelect} />
+            <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} opening={view.opening?.id === session.session_id || view.openError?.id === session.session_id} server={state.phase === "connected" ? view.server : null} store={state.phase === "connected" && view.open?.id === session.session_id && !view.open.stale ? view.open.lease.store : null} onSelect={onSelect} />
           ))}
         </ul>
         {view.nextOffset !== null ? <button type="button" className="ghost more" onClick={() => void sessions.loadMore()}>load more sessions</button> : null}
@@ -283,10 +283,14 @@ function Body({ state, view, connection, sessions, opener, focusComposer, onCrea
 }) {
   const offline = state.phase !== "connected";
   if (view.open) {
+    const replacing = view.opening && view.opening.id !== view.open.id;
+    const failed = view.openError && view.openError.id !== view.open.id;
     return (
       <>
         {offline ? <ConnectionNotice state={state} connection={connection} compact /> : null}
-        <Run client={offline ? null : connection.client} sessions={sessions} open={view.open} opener={opener} focusComposer={focusComposer} />
+        {replacing ? <p className="note" data-tone="busy" role="status">opening {view.sessions.find((item) => item.session_id === view.opening!.id) ? sessionTitle(view.sessions.find((item) => item.session_id === view.opening!.id)!) : "session"}…</p> : null}
+        {failed ? <div className="note" data-tone="danger" role="alert"><span>could not open {view.sessions.find((item) => item.session_id === view.openError!.id) ? sessionTitle(view.sessions.find((item) => item.session_id === view.openError!.id)!) : "session"}: {view.openError!.message}</span> <button type="button" className="ghost" onClick={() => sessions.dismissOpenError()}>dismiss</button> <button type="button" className="ghost" onClick={() => sessions.select(view.openError!.id)}>try again</button></div> : null}
+        <Run client={offline ? null : connection.client} sessions={sessions} open={view.open} opener={opener} focusComposer={focusComposer} readOnly={Boolean(replacing || (failed && !view.openError?.restored))} ready={view.open.id === view.selected && !view.opening} />
       </>
     );
   }
@@ -329,13 +333,13 @@ function Body({ state, view, connection, sessions, opener, focusComposer, onCrea
   );
 }
 
-function Run({ client, sessions, open, opener, focusComposer }: { client: ZetaClient | null; sessions: Sessions; open: NonNullable<SessionsState["open"]>; opener: React.RefObject<Element | null>; focusComposer: React.RefObject<boolean> }) {
+function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }: { client: ZetaClient | null; sessions: Sessions; open: NonNullable<SessionsState["open"]>; opener: React.RefObject<Element | null>; focusComposer: React.RefObject<boolean>; readOnly: boolean; ready: boolean }) {
   const scroll = useRef<HTMLDivElement>(null);
   const decisions = useMemo(() => {
-    if (!client || open.stale) return { disabledReason: "reconnecting — decisions are disabled until the server confirms this session" };
+    if (!client || open.stale || readOnly) return { disabledReason: readOnly ? "opening another session — decisions are paused" : "reconnecting — decisions are disabled until the server confirms this session" };
     const decide = (method: "approve" | "deny"): Decide => (request_id) => client.request(method, { request_id }, { timeoutMs: 15_000 });
     return { approve: decide("approve"), deny: decide("deny") };
-  }, [client, open.stale]);
+  }, [client, open.stale, readOnly]);
   useLayoutEffect(() => {
     if (focusComposer.current) {
       focusComposer.current = false;
@@ -351,11 +355,11 @@ function Run({ client, sessions, open, opener, focusComposer }: { client: ZetaCl
       <Undelivered value={undelivered}>
         <RunProvider store={open.lease.store} highlight={highlight}>
           <RefreshOnIdle sessions={sessions} />
-          <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready="true">
+          <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready={ready ? "true" : undefined}>
             <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
             <EmptyRun />
           </div>
-          <RunComposer key={open.id} client={open.stale ? null : client} onUndelivered={onUndelivered} />
+          <RunComposer key={open.id} client={open.stale || readOnly ? null : client} onUndelivered={onUndelivered} readOnly={readOnly} />
         </RunProvider>
       </Undelivered>
     </Decisions.Provider>
@@ -376,7 +380,7 @@ function EmptyRun() {
 const offline = () => Promise.reject(new Error("not connected to zeta serve"));
 
 /** The message box: send while idle, steer while a turn runs (zeta always takes steering), stop the turn. */
-function RunComposer({ client, onUndelivered }: { client: ZetaClient | null; onUndelivered(intents: string[]): void }) {
+function RunComposer({ client, onUndelivered, readOnly }: { client: ZetaClient | null; onUndelivered(intents: string[]): void; readOnly: boolean }) {
   const running = useRun((state) => state.agent === "running");
   const delivery = useMemo(() => createDelivery(), []);
   const wasRunning = useRef(running);
@@ -392,7 +396,7 @@ function RunComposer({ client, onUndelivered }: { client: ZetaClient | null; onU
       {client ? (
         <Composer state={running ? "steerable" : "idle"} label="message zeta" placeholder={running ? "steer the running turn" : "message zeta"} onSubmit={onSubmit} onStop={onStop} />
       ) : (
-        <Composer state="read-only" reason="reconnecting · sending is paused until the server confirms this session" label="message zeta" onSubmit={onSubmit} />
+        <Composer state="read-only" reason={readOnly ? "opening another session · sending is paused" : "reconnecting · sending is paused until the server confirms this session"} label="message zeta" onSubmit={onSubmit} />
       )}
     </div>
   );
