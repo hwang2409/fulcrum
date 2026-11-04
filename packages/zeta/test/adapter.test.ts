@@ -8,7 +8,7 @@ import zeta from "./fixtures/zeta-images.json";
 // assistant_delta kinds from server/control.py ("assistant" for text, the content type, "thinking", otherwise).
 test("preserves user delivery ids in live events and history", () => {
   expect(fromZetaEvent({ event: "user_message", text: "queued", mode: "steer", delivery_id: "d-1" })).toEqual([{ type: "user_message", text: "queued", mode: "steer", delivery_id: "d-1" }]);
-  expect(fromZetaHistory([{ id: "h", role: "user", delivery_id: "d-1", content: [{ type: "text", text: "queued" }], tool_result: null }])).toEqual([{ type: "user_message", text: "queued", mode: "send", delivery_id: "d-1" }]);
+  expect(fromZetaHistory([{ id: "h", role: "user", delivery_id: "d-1", content: [{ type: "text", text: "queued" }], tool_result: null }])).toEqual([{ type: "user_message", message_id: "h", text: "queued", mode: "send", delivery_id: "d-1" }]);
 });
 
 test("maps zeta thinking and redacted thinking to fulcrum content blocks", () => {

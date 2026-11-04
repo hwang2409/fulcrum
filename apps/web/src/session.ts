@@ -52,9 +52,11 @@ export async function listSessions(client: ZetaClient, offset = 0): Promise<{ se
 export const getStatus = (client: ZetaClient, signal?: AbortSignal) => client.request("status", {}, { timeoutMs: 15_000, signal }) as Promise<ServerStatus>;
 
 export type OpenProgress = (messages: number, complete: boolean) => void;
-export type OpenResult = { lease: SessionLease; syncing: boolean; complete: Promise<{ lease?: SessionLease; syncing: boolean }> };
+export type OpenResult = { lease: SessionLease; syncing: boolean; complete: Promise<{ lease?: SessionLease; syncing: boolean; incomplete?: boolean }> };
 
 type HistoryPage = { messages?: unknown[]; next_offset?: number | null };
+type HistoryValidator = { end: number; entry_id: string | null };
+type BackwardHistoryPage = { messages?: unknown[]; next_before?: number | null; history_validator?: HistoryValidator };
 const isApprovalEvent = (event: RunEvent) => event.type === "approval_request" || event.type === "approval_end";
 const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true): RunEvent[] => {
   const events = fromZetaHistory(rows).filter((event) => historyApprovals || !isApprovalEvent(event));
@@ -80,6 +82,125 @@ const changedTailBoundary = (before: LoadedPage, after: readonly LoadedPage[]) =
   return rows.length < before.rows.length || rowId(rows[0]) !== rowId(before.rows[0]);
 };
 
+const staleHistorySnapshot = (error: unknown) => {
+  const value = error as { code?: unknown; data?: { code?: unknown } } | null;
+  return value?.code === -32009 && value.data?.code === "stale_history_snapshot";
+};
+
+/** New servers publish the newest snapshot page, prepend older pages, then join live history above its fixed end. */
+async function openBackwardSession(
+  client: ZetaClient,
+  id: string,
+  progress?: OpenProgress,
+  signal?: AbortSignal,
+  knownStatus?: ServerStatus,
+): Promise<OpenResult> {
+  let pages: BackwardHistoryPage[] = [];
+  let tail: unknown[] = [];
+  let validator!: HistoryValidator;
+  let initialStatus!: ServerStatus;
+  let activeSignal!: AbortSignal;
+  let lease!: SessionLease;
+  const combinedSignal = (replaySignal: AbortSignal) => signal ? AbortSignal.any([signal, replaySignal]) : replaySignal;
+  const rows = () => [...pages].reverse().flatMap((page) => page.messages ?? []).concat(tail);
+  const requestNewest = async () => {
+    const page = await client.request("session_history", { session_id: id, before: null }, { timeoutMs: 15_000, signal: activeSignal }) as BackwardHistoryPage;
+    if (!page.history_validator || !Number.isInteger(page.history_validator.end)) throw new Error("backward history response has no validator");
+    validator = page.history_validator;
+    pages = [page];
+    tail = [];
+    return page;
+  };
+  const publish = (status: ServerStatus) => lease.store.resync(snapshotEvents(id, rows(), status));
+  const loadOlder = async (publishPages = true) => {
+    while (pages.at(-1)?.next_before != null) {
+      const before = pages.at(-1)!.next_before!;
+      try {
+        const page = await client.request("session_history", { session_id: id, before, history_validator: validator }, { timeoutMs: 15_000, signal: activeSignal }) as BackwardHistoryPage;
+        pages.push(page);
+        if (publishPages) publish(initialStatus);
+        progress?.(rows().length, page.next_before == null);
+      } catch (error) {
+        if (!staleHistorySnapshot(error)) throw error;
+        const page = await requestNewest();
+        if (publishPages) publish(initialStatus);
+        progress?.(rows().length, page.next_before == null);
+      }
+    }
+  };
+  const loadTail = async () => {
+    if (validator.end > 0) await client.request("session_history", { session_id: id, before: validator.end, history_validator: validator }, { timeoutMs: 15_000, signal: activeSignal });
+    const loaded: unknown[] = [];
+    let offset: number | null = validator.end;
+    while (offset !== null) {
+      const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal: activeSignal }) as HistoryPage;
+      loaded.push(...(page.messages ?? []));
+      const next = page.next_offset ?? null;
+      if (next === offset) break;
+      offset = next;
+    }
+    tail = loaded;
+  };
+  const waitUntilIdle = async (status = initialStatus) => {
+    let pending = JSON.stringify(status.pending_approvals ?? []);
+    while (status.state !== "idle") {
+      await wait(500, activeSignal);
+      status = await getStatus(client, activeSignal);
+      const nextPending = JSON.stringify(status.pending_approvals ?? []);
+      if (nextPending !== pending) publish(status);
+      pending = nextPending;
+    }
+    return status;
+  };
+
+  let firstLoad = true;
+  lease = await client.replay(id, async (replaySignal) => {
+    activeSignal = combinedSignal(replaySignal);
+    if (!firstLoad) {
+      await requestNewest();
+      await loadOlder(false);
+      return snapshotEvents(id, rows(), await getStatus(client, activeSignal));
+    }
+    firstLoad = false;
+    const before = knownStatus ?? await getStatus(client, activeSignal);
+    if (before.session?.session_id === id) initialStatus = before;
+    else {
+      const resumed = await client.request("resume", { session_id: id }, { timeoutMs: 30_000, signal: activeSignal }) as { session?: SessionMeta };
+      initialStatus = { session: resumed.session ?? null, state: "idle", pending_approvals: [] };
+    }
+    const page = await requestNewest();
+    progress?.(rows().length, page.next_before == null);
+    return snapshotEvents(id, rows(), initialStatus, page.next_before == null);
+  }, true);
+
+  const complete = (async () => {
+    await wait(0, activeSignal);
+    await loadOlder();
+    let status = await waitUntilIdle();
+    if (client.replayRevision(id) === 0 && client.finishReplay(id, 0)) {
+      publish(status);
+      return { syncing: false };
+    }
+    while (true) {
+      for (let attempt = 0; attempt < MAX_TAIL_RECONCILES; attempt++) {
+        const revision = client.replayRevision(id);
+        try {
+          await loadTail();
+        } catch (error) {
+          if (!staleHistorySnapshot(error)) throw error;
+          await requestNewest();
+          await loadOlder();
+        }
+        status = await getStatus(client, activeSignal);
+        publish(status);
+        if (client.finishReplay(id, revision)) return { syncing: false };
+      }
+      status = await waitUntilIdle(status);
+    }
+  })();
+  return { lease, syncing: initialStatus.state !== "idle", complete };
+}
+
 /** Opens the first history page immediately, then one coordinator owns paging and the replay join. */
 export async function openSession(
   client: ZetaClient,
@@ -89,7 +210,9 @@ export async function openSession(
   knownStatus?: ServerStatus,
 ): Promise<OpenResult> {
   if (client.features.includes("session_replay_seq")) throw new Error("session_replay_seq needs the sequence replay coordinator");
+  if (client.features.includes("session_history_backward")) return openBackwardSession(client, id, progress, signal, knownStatus);
   let pages: LoadedPage[] = [];
+  let incomplete = false;
   let initialStatus!: ServerStatus;
   let activeSignal!: AbortSignal;
   const combinedSignal = (replaySignal: AbortSignal) => signal ? AbortSignal.any([signal, replaySignal]) : replaySignal;
@@ -116,6 +239,7 @@ export async function openSession(
     for (let offset: number | null = start; offset !== null; ) {
       const page = await historyPage(offset, activeSignal);
       loaded.push(page);
+      if (page.nextOffset === offset) { incomplete = true; break; }
       offset = page.nextOffset;
     }
     return loaded;
@@ -134,6 +258,7 @@ export async function openSession(
     for (let count = 1; offset !== null; count++) {
       const page = await historyPage(offset, activeSignal);
       appendProgressPage(page, count);
+      if (page.nextOffset === offset) { incomplete = true; break; }
       offset = page.nextOffset;
     }
   };
@@ -205,10 +330,10 @@ export async function openSession(
       const [, idle] = await Promise.all([loadRemainingPages(), waitUntilIdle()]);
       if (client.replayRevision(id) === 0 && client.finishReplay(id, 0)) {
         publishFinalTail(idle);
-        return { syncing: false };
+        return { syncing: false, ...(incomplete ? { incomplete: true } : {}) };
       }
       await finishWhenClean(idle);
-      return { syncing: false };
+      return { syncing: false, ...(incomplete ? { incomplete: true } : {}) };
     } catch (error) {
       throw error;
     }
@@ -218,7 +343,7 @@ export async function openSession(
 
 export const isBusyError = (error: unknown) => (error as { code?: unknown } | null)?.code === -32004;
 
-export type OpenRun = { id: string; lease: SessionLease; stale: boolean; history: { messages: number; complete: boolean }; syncing: boolean };
+export type OpenRun = { id: string; lease: SessionLease; stale: boolean; history: { messages: number; complete: boolean; incomplete?: boolean }; syncing: boolean };
 export type OpenFailure = { id: string; message: string; busy: boolean; restored?: boolean };
 export type SessionTransition =
   | { kind: "idle"; selected: string | null }
@@ -367,10 +492,10 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         if (result.lease) {
           const run = transitionRun(state.transition);
           run?.lease.release();
-          transition({ type: "updated", run: { id, lease: result.lease, stale: false, history: { ...history, complete: true }, syncing: result.syncing } });
+          transition({ type: "updated", run: { id, lease: result.lease, stale: false, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
         } else {
           const run = transitionRun(state.transition);
-          if (run?.id === id) transition({ type: "updated", run: { ...run, history: { ...history, complete: true }, syncing: result.syncing } });
+          if (run?.id === id) transition({ type: "updated", run: { ...run, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
         }
       }).catch((error) => {
         if (mine === openGeneration && live(target) && (error as { name?: string }).name !== "AbortError")
