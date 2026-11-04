@@ -105,7 +105,7 @@ test("onClose reports a dropped transport once, with the close error, and can un
   kept();
 });
 
-test("replay puts loaded history before live events that arrive while it loads, on a fresh store", async () => {
+test("replay drops ambiguous live events and starts routing only after the snapshot boundary", async () => {
   const fake = fakeTransport();
   const client = createClient(fake.transport, (flush) => flush());
   const event = (delta: string) => ({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: "s1", delta, kind: "assistant" } });
@@ -117,16 +117,31 @@ test("replay puts loaded history before live events that arrive while it loads, 
   const opening = client.replay("s1", async () => {
     await loaded;
     return [{ type: "user_message", text: "from history", mode: "send" }];
-  });
+  }, true);
   fake.receive(event("live"));
   finish();
   const lease = await opening;
   expect(lease.store).not.toBe(stale.store);
   const items = lease.store.getOutline().map(({ id }) => lease.store.getItem(id));
-  expect(items.map((item) => item?.type === "user" ? "user" : item?.type === "message" ? item.text : item?.type)).toEqual(["user", "live"]);
-  fake.receive(event(" more"));
-  expect(lease.store.getItem(lease.store.getOutline()[1]!.id)).toMatchObject({ text: "live more" });
+  expect(items.map((item) => item?.type === "user" ? "user" : item?.type === "message" ? item.text : item?.type)).toEqual(["user"]);
+  expect(client.finishReplay("s1", client.replayRevision("s1"))).toBe(true);
+  fake.receive(event("after snapshot"));
+  expect(lease.store.getItem(lease.store.getOutline()[1]!.id)).toMatchObject({ text: "after snapshot" });
   lease.release();
+});
+
+test("replay drops an event that arrives while history is being committed", async () => {
+  const fake = fakeTransport();
+  let inject = true;
+  const client = createClient(fake.transport, (flush) => {
+    flush();
+    if (inject) {
+      inject = false;
+      fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "agent_start", session_id: "s1" } });
+    }
+  });
+  const lease = await client.replay("s1", async () => [{ type: "run_start" }, { type: "run_end" }]);
+  expect(lease.store.getState().agent).toBe("idle");
 });
 
 test("a desynced session store reloads its history and keeps its lease", async () => {
@@ -279,6 +294,22 @@ const forceDesync = (store: ReturnType<ReturnType<typeof connect>["forSession"]>
 };
 
 for (const action of ["evict", "close"] as const) {
+  test(`${action} aborts an in-flight replay load`, async () => {
+    const fake = fakeTransport();
+    const client = connect(fake.transport, (flush) => flush());
+    let aborted = false;
+    const opening = client.replay(action, (signal) => new Promise<RunEvent[]>((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        aborted = true;
+        reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
+      }, { once: true });
+    }));
+    if (action === "evict") client.evictSession(action);
+    else client.close();
+    expect(aborted).toBe(true);
+    await expect(opening).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   test(`${action} cancels a pending resync backoff`, async () => {
     jest.useFakeTimers();
     try {
