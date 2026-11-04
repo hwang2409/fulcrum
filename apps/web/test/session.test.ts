@@ -27,7 +27,7 @@ async function server(handlers: Record<string, Handler>, features = ["list_sessi
     },
   };
   const client = createClient(transport, (flush) => flush());
-  await client.hello(["list_sessions_paging"]);
+  await client.hello(features);
   const event = (params: Record<string, unknown>) => deliver(JSON.stringify({ jsonrpc: "2.0", method: "event", params }));
   return { client, calls, event, drop: () => close(1006) };
 }
@@ -294,6 +294,93 @@ test("a drop keeps the old transcript as stale; the reconnect rebuilds it on a f
   const pending = present(view).open!.lease.store.getItem("approval:r1");
   expect(pending?.type).toBe("approval");
   expect(pending && "ended" in pending ? pending.ended : undefined).toBeUndefined();
+});
+
+test("a reconnect after grace expiry replaces an in-flight catalog instead of staying loading", async () => {
+  let releaseFirst!: () => void;
+  const firstCatalog = new Promise<{ sessions: SessionMeta[]; next_offset: null }>((resolve) => {
+    releaseFirst = () => resolve({ sessions: [meta("stale", "x")], next_offset: null });
+  });
+  const first = await server({ ...handlers("b"), list_sessions: () => firstCatalog });
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  await tick();
+  expect(view.state.listLoading).toBe(true);
+
+  connection.set(null);
+  const secondSessions = [meta("after-grace", "y")];
+  const second = await server({ ...handlers("b"), list_sessions: () => ({ sessions: secondSessions, next_offset: null }) });
+  connection.set(second.client);
+  await tick();
+
+  expect(view.state.listLoading).toBe(false);
+  expect(view.state.listReady).toBe(true);
+  expect(view.state.listError).toBeNull();
+  expect(view.state.sessions).toEqual(secondSessions);
+  releaseFirst();
+  await tick();
+  expect(view.state.sessions).toEqual(secondSessions);
+});
+
+test("two reconnects retire both older in-flight catalogs", async () => {
+  const releases: Array<() => void> = [];
+  const pendingCatalog = (id: string) => new Promise<{ sessions: SessionMeta[]; next_offset: null }>((resolve) => {
+    releases.push(() => resolve({ sessions: [meta(id, "x")], next_offset: null }));
+  });
+  const first = await server({ ...handlers("b"), list_sessions: () => pendingCatalog("first") });
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  await tick();
+
+  connection.set(null);
+  const second = await server({ ...handlers("b"), list_sessions: () => pendingCatalog("second") });
+  connection.set(second.client);
+  await tick();
+  connection.set(null);
+  const finalSessions = [meta("third", "z")];
+  const third = await server({ ...handlers("b"), list_sessions: () => ({ sessions: finalSessions, next_offset: null }) });
+  connection.set(third.client);
+  await tick();
+
+  expect(view.state.listLoading).toBe(false);
+  expect(view.state.listReady).toBe(true);
+  expect(view.state.sessions).toEqual(finalSessions);
+  releases.forEach((release) => release());
+  await tick();
+  expect(view.state.sessions).toEqual(finalSessions);
+});
+
+test("a negotiated drop keeps the same approval row in reconnecting state across two drops", async () => {
+  const features = ["list_sessions_paging", "approval_reconnect"];
+  const first = await server(handlers("b"), features);
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  await tick();
+  const row = present(view).open!.lease.store.getItem("approval:r1");
+
+  connection.set(null);
+  expect(present(view).open!.lease.store.getItem("approval:r1")).toMatchObject({
+    id: "approval:r1", request: { state: "reconnecting", status: "reconnecting…" },
+  });
+  expect(present(view).open!.lease.store.getItem("approval:r1")).not.toBe(row);
+
+  const second = await server(handlers("b"), features);
+  connection.set(second.client);
+  await tick();
+  connection.set(null);
+  expect(present(view).open!.lease.store.getItem("approval:r1")).toMatchObject({
+    id: "approval:r1", request: { state: "reconnecting" },
+  });
+});
+
+test("an old server drop keeps the legacy pending shape", async () => {
+  const first = await server(handlers("b"), ["list_sessions_paging"]);
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  await tick();
+  connection.set(null);
+  const approval = present(view).open!.lease.store.getItem("approval:r1");
+  expect(approval?.type === "approval" && approval.request.type === "approval_request" ? approval.request.state : "missing").toBeUndefined();
 });
 
 test("a fresh idle snapshot removes a formerly pending approval", async () => {

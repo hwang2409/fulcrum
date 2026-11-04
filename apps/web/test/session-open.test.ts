@@ -187,6 +187,34 @@ test("a busy replay stays quarantined at the bound and catches up after idle", a
   expect(texts(opened.lease.store)).toEqual(["event-1", "event-2", "event-3", "event-4"]);
 });
 
+test("resolution_pending disables the same approval row with a resolving status", async () => {
+  const approval = { request_id: "approval-late", tool_call: { id: "tool-late", name: "bash", arguments: {} }, delegated: false, resolution_pending: "approve" };
+  const fake = await server((method) => {
+    if (method === "status") return { ...idleStatus, state: "tool", pending_approvals: [approval], pending_approvals_truncated: false };
+    if (method === "session_history") return { messages: [], next_offset: null };
+    throw new Error(method);
+  });
+
+  const opened = await openSession(fake.client, "s");
+  const approvalItem = items(opened.lease.store).find((item) => item?.type === "approval");
+  expect(approvalItem).toMatchObject({ id: "approval:approval-late", request: { state: "resolving", status: "resolving…" } });
+});
+
+test("a truncated 64-entry status keeps pending approvals omitted from the live projection via history", async () => {
+  const approvals = Array.from({ length: 65 }, (_, index) => ({ request_id: `approval-${index}`, tool_call: { id: `tool-${index}`, name: "bash", arguments: {} }, delegated: false }));
+  const history = approvals.map((approval, index) => ({ id: `row-${index}`, role: "system", event: "approval_request", ...approval }));
+  const fake = await server((method) => {
+    if (method === "status") return { ...idleStatus, pending_approvals: approvals.slice(0, 64), pending_approvals_truncated: true };
+    if (method === "session_history") return { messages: history, next_offset: null };
+    throw new Error(method);
+  });
+
+  const opened = await openSession(fake.client, "s");
+  await opened.complete;
+  expect(items(opened.lease.store).filter((item) => item?.type === "approval")).toHaveLength(65);
+  expect(items(opened.lease.store).filter((item) => item?.type === "approval").at(-1)?.id).toBe("approval:approval-64");
+});
+
 test("the first snapshot exposes an actionable approval while page one is held", async () => {
   let release!: () => void;
   const held = new Promise<unknown>((resolve) => { release = () => resolve({ messages: [], next_offset: null }); });
