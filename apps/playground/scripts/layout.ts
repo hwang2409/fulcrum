@@ -13,7 +13,15 @@
 // 1,000,000-line file with no long tasks; scrolling it under 4x CPU throttling is reported. Needs a production build
 // (`bun run build`). Collapsed tool bodies warm before they open (see warm-check.ts). Every highlighted box is
 // colored line by line against its fixture (see token-check.ts). The ux test 6 regressions are in ux-check.ts.
-import { chromium, type Page } from "playwright";
+//
+// VIEWER TIMING DETECTION CONTRACT:
+// (a) zero false positives: A/A stays at least 0.15 below every threshold, normally and under load;
+// (b) any viewer slowdown of 1.5x or more fails 5/5 through paired wall and task ratios;
+// (c) O(n)-per-append viewer work fails 5/5 through head-only size scaling, whatever its constant factor.
+// The scaling probe exists only in this playground page: it wraps Array.push during one append. Segment operations count
+// pushed `text-*` segment objects (a correct append adds only the same tail segments); all pushes also catch virtualizer
+// work that visits every row (correct code touches only visible rows). The task ratio is printed as a diagnostic.
+import { chromium, type Locator, type Page } from "playwright";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { checkComposer } from "./composer-check.js";
@@ -210,50 +218,30 @@ async function checkControls(page: Page): Promise<string[]> {
 }
 
 type ViewerTiming = { openMs: number; appendMs: number; openSamples: number[]; appendSamples: number[] };
-type ViewerSample = { openMs: number; appendMs: number; appendTaskMs: number };
+type ViewerSample = { openMs: number; openTaskMs: number; appendMs: number; appendTaskMs: number };
 type ViewerMeasurement = ViewerTiming & { fixture: string; width: number; bottomGap: number; appendGap: number; middleMoved: boolean; outerMiddleDelta: number; outerBoundaryDelta: number; longTasks: number[]; tokens: number; scroll: { median: number; p95: number; over33: number } };
 type ViewerPair = { base: ViewerSample; candidate: ViewerSample };
+type ViewerCheck = { candidate: ViewerSample | ViewerTiming; baseline: ViewerSample | Pick<ViewerTiming, "openMs" | "appendMs">; pairedRatios?: ViewerSample; budget: number; label: string };
 
 const viewerSamples = 5;
-const viewerRatioBudget = 1.5;
-const viewerTaskRatioBudget = 1.2;
+const viewerRatioBudget = 1.4;
+const viewerScalingBudget = 1.4;
+const viewerScalingTotalBudget = 1.8;
+const viewerScalingTaskDiagnostic = 2.5;
 const fallbackRatioBudget = 2;
 const median = (values: number[]) => [...values].sort((left, right) => left - right)[values.length >> 1]!;
 const ratio = (candidate: number, baseline: number) => candidate / Math.max(baseline, 0.001);
-// The product target remains one 16 ms frame; CI enforces relative regressions plus a loose 64 ms ceiling.
-// The primary gate alternates the same read fixture between base and head, so broad viewer regressions cannot
-// contaminate the baseline. Wall time allows 1.5x; scoped append task time catches 1.2x CPU regressions. Five pairs
-// cost about 15 seconds in CI. A local run without a base normalizes against
-// fixed DOM/layout work that uses no Fulcrum code; 2x is main's observed <=1.3x ratio with a 54% noise margin.
+const ratios = (pairs: ViewerPair[], field: keyof ViewerSample) => pairs.map((pair) => ratio(pair.candidate[field], pair.base[field]));
+// Five alternating base/head pairs use their median ratio, not a ratio of independent medians. The 1.4x A/B ceiling
+// leaves the required margin over observed A/A noise. Scaling compares the same append at 16k and 128k lines; correct
+// virtualized work stays O(visible). A local run without a base keeps the independent fixed-DOM calibration fallback.
 const viewerTimingFails = (candidate: number, baseline: number, budget = viewerRatioBudget) => ratio(candidate, baseline) > budget || candidate >= 64;
 
 async function measureViewer(page: Page, width: number, fixture: "single" | "lines" | "read"): Promise<ViewerMeasurement> {
   const openSamples: number[] = [];
   for (let sample = 0; sample < viewerSamples; sample++) {
     await page.goto(`${candidateUrl}/gallery.html?viewerFixture=${fixture}`);
-    await page.getByRole("button", { name: /^open all/ }).waitFor();
-    await page.waitForTimeout(500); // discard the page's warm-up before the five measured samples
-    if (sample === viewerSamples - 1) {
-      // Long tasks from the retained opening and highlighting its mounted rows, counted from the click.
-      await page.evaluate(() => {
-        const target = window as typeof window & { __longTasks: number[] };
-        target.__longTasks = [];
-        new PerformanceObserver((list) => { for (const entry of list.getEntries()) target.__longTasks.push(entry.duration); }).observe({ type: "longtask" });
-      });
-    }
-    const openSample = await page.evaluate((slowdown) => new Promise<number>((resolve) => requestAnimationFrame(() => {
-      const root = document.querySelector('[data-part="tool-body"]')!;
-      const observer = new MutationObserver(() => {
-        if (!document.querySelector('[data-part="text-viewer"]')) return;
-        observer.disconnect();
-        resolve(performance.now() - started);
-      });
-      observer.observe(root, { childList: true, subtree: true });
-      const started = performance.now();
-      if (slowdown) { const until = performance.now() + slowdown; while (performance.now() < until) { /* deliberate proof slowdown */ } }
-      (document.querySelector('[data-action="open-viewer"]') as HTMLButtonElement).click();
-    })), fixture === "read" ? Number(process.env.TIMING_GATE_SLOWDOWN_MS ?? 0) : 0);
-    openSamples.push(openSample);
+    openSamples.push(await openViewer(page, fixture === "read" ? Number(process.env.TIMING_GATE_SLOWDOWN_MS ?? 0) : 0, sample === viewerSamples - 1));
   }
   const openMs = median(openSamples);
   const viewer = page.locator('[data-part="text-viewer"]');
@@ -282,19 +270,16 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
 
   await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await page.waitForTimeout(100);
-  const appendSamples: number[] = [];
-  for (let sample = 0; sample < viewerSamples; sample++) appendSamples.push(await page.evaluate(({ sample, slowdown }) => new Promise<number>((resolve) => requestAnimationFrame(() => {
-    const viewer = document.querySelector('[data-part="text-viewer"]')!;
-    const observer = new MutationObserver(() => { observer.disconnect(); resolve(performance.now() - started); });
-    observer.observe(viewer, { childList: true, subtree: true, characterData: true, attributes: true });
-    const started = performance.now();
-    if (slowdown) { const until = performance.now() + slowdown; while (performance.now() < until) { /* deliberate proof slowdown */ } }
-    (window as typeof window & { __appendViewerFixture: (delta: string) => void }).__appendViewerFixture(`\nstreamed tail ${sample}`);
-  })), { sample, slowdown: fixture === "read" ? Number(process.env.TIMING_GATE_SLOWDOWN_MS ?? 0) : 0 }));
-  const appendMs = median(appendSamples);
+  const appended = await appendViewer(page, fixture === "read" ? Number(process.env.TIMING_GATE_SLOWDOWN_MS ?? 0) : 0, 0);
+  const { appendMs, samples: appendSamples } = appended;
   await page.waitForTimeout(500);
   const appendGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
-  // Frame times while the viewer scrolls 48 px a frame from the top, on a CPU four times slower.
+  const scroll = await measureViewerScroll(page, viewer);
+
+  return { fixture, width, openMs, appendMs, openSamples, appendSamples, bottomGap, appendGap, middleMoved: middleAfter > middleBefore, outerMiddleDelta, outerBoundaryDelta, longTasks, tokens, scroll };
+}
+
+async function measureViewerScroll(page: Page, viewer: Locator) {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
   const frames = await viewer.evaluate((node) => new Promise<number[]>((resolve) => {
@@ -310,47 +295,91 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
   }));
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
   await cdp.detach();
-  const sorted = [...frames].sort((a, b) => a - b);
-  const scroll = { median: sorted[sorted.length >> 1]!, p95: sorted[Math.floor(sorted.length * 0.95)]!, over33: frames.filter((frame) => frame > 33.4).length };
-
-  return { fixture, width, openMs, appendMs, openSamples, appendSamples, bottomGap, appendGap, middleMoved: middleAfter > middleBefore, outerMiddleDelta, outerBoundaryDelta, longTasks, tokens, scroll };
+  const sorted = [...frames].sort((left, right) => left - right);
+  return { median: sorted[sorted.length >> 1]!, p95: sorted[Math.floor(sorted.length * 0.95)]!, over33: frames.filter((frame) => frame > 33.4).length };
 }
 
-async function measureViewerSample(page: Page, url: string, slowdown: number, sample: number) {
-  await page.goto(`${url}/gallery.html?viewerFixture=read`);
+async function prepareViewerOpen(page: Page, observeLongTasks = false) {
   await page.getByRole("button", { name: /^open all/ }).waitFor();
   await page.waitForTimeout(500);
-  const openMs = await page.evaluate((delay) => new Promise<number>((resolve) => requestAnimationFrame(() => {
+  if (observeLongTasks) await page.evaluate(() => {
+    const target = window as typeof window & { __longTasks: number[] };
+    target.__longTasks = [];
+    new PerformanceObserver((list) => { for (const entry of list.getEntries()) target.__longTasks.push(entry.duration); }).observe({ type: "longtask" });
+  });
+}
+
+const clickViewer = (page: Page, slowdown = 0) => page.evaluate((delay) => new Promise<number>((resolve) => requestAnimationFrame(() => {
+  const root = document.querySelector('[data-part="tool-body"]')!;
+  const observer = new MutationObserver(() => {
+    if (!document.querySelector('[data-part="text-viewer"]')) return;
+    observer.disconnect();
+    resolve(performance.now() - started);
+  });
+  observer.observe(root, { childList: true, subtree: true });
+  const started = performance.now();
+  if (delay) { const until = performance.now() + delay; while (performance.now() < until) { /* deliberate proof slowdown */ } }
+  (document.querySelector('[data-action="open-viewer"]') as HTMLButtonElement).click();
+})), slowdown);
+
+async function openViewer(page: Page, slowdown = 0, observeLongTasks = false) {
+  await prepareViewerOpen(page, observeLongTasks);
+  return clickViewer(page, slowdown);
+}
+
+async function appendViewer(page: Page, slowdown: number, offset: number, count = viewerSamples, delta?: string) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Performance.enable");
+  const before = (await cdp.send("Performance.getMetrics")).metrics.find((metric) => metric.name === "TaskDuration")?.value ?? 0;
+  const measured: { wall: number; pushes: number; segmentPushes: number }[] = [];
+  for (let sample = 0; sample < count; sample++) measured.push(await page.evaluate(({ delay, index, tail }) => new Promise<{ wall: number; pushes: number; segmentPushes: number }>((resolve) => requestAnimationFrame(() => {
+    const target = window as typeof window & { __appendViewerFixture: (delta: string) => void };
     const root = document.querySelector('[data-part="tool-body"]')!;
+    const originalPush = Array.prototype.push;
+    let pushes = 0;
+    let segmentPushes = 0;
+    Array.prototype.push = function (...values) {
+      pushes += values.length;
+      segmentPushes += values.filter((value) => typeof value === "object" && value !== null && "id" in value && typeof value.id === "string" && value.id.startsWith("text-") && "start" in value).length;
+      return Reflect.apply(originalPush, this, values);
+    };
     const observer = new MutationObserver(() => {
-      if (!document.querySelector('[data-part="text-viewer"]')) return;
       observer.disconnect();
-      resolve(performance.now() - started);
+      Array.prototype.push = originalPush;
+      resolve({ wall: performance.now() - started, pushes, segmentPushes });
     });
-    observer.observe(root, { childList: true, subtree: true });
+    observer.observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
     const started = performance.now();
     if (delay) { const until = performance.now() + delay; while (performance.now() < until) { /* deliberate proof slowdown */ } }
-    (document.querySelector('[data-action="open-viewer"]') as HTMLButtonElement).click();
-  })), slowdown);
+    target.__appendViewerFixture(tail ?? `\npaired tail ${index}`);
+  })), { delay: slowdown, index: offset + sample, tail: delta }));
+  const after = (await cdp.send("Performance.getMetrics")).metrics.find((metric) => metric.name === "TaskDuration")?.value ?? before;
+  await cdp.detach();
+  const samples = measured.map(({ wall }) => wall);
+  return { appendMs: median(samples), appendTaskMs: (after - before) * 1_000 / count, appendPushes: median(measured.map(({ pushes }) => pushes)), segmentPushes: median(measured.map(({ segmentPushes }) => segmentPushes)), samples };
+}
+
+async function measureViewerSample(page: Page, url: string, slowdown: number, sample: number, lines?: number) {
+  const query = new URLSearchParams({ viewerFixture: "read" });
+  if (lines) query.set("viewerLines", String(lines));
+  await page.goto(`${url}/gallery.html?${query}`);
+  await prepareViewerOpen(page);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Performance.enable");
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  const before = (await cdp.send("Performance.getMetrics")).metrics.find((metric) => metric.name === "TaskDuration")?.value ?? 0;
+  const openMs = await clickViewer(page, slowdown);
+  const after = (await cdp.send("Performance.getMetrics")).metrics.find((metric) => metric.name === "TaskDuration")?.value ?? before;
+  const openTaskMs = (after - before) * 1_000;
   const viewer = page.locator('[data-part="text-viewer"]');
   await viewer.waitFor();
   await viewer.locator("[class^=tok-]").first().waitFor();
   await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Performance.enable");
-  const before = (await cdp.send("Performance.getMetrics")).metrics.find((metric) => metric.name === "TaskDuration")?.value ?? 0;
-  const appendSamples: number[] = [];
-  for (let append = 0; append < viewerSamples; append++) appendSamples.push(await page.evaluate(({ delay, index }) => new Promise<number>((resolve) => requestAnimationFrame(() => {
-    const viewer = document.querySelector('[data-part="text-viewer"]')!;
-    const observer = new MutationObserver(() => { observer.disconnect(); resolve(performance.now() - started); });
-    observer.observe(viewer, { childList: true, subtree: true, characterData: true, attributes: true });
-    const started = performance.now();
-    if (delay) { const until = performance.now() + delay; while (performance.now() < until) { /* deliberate proof slowdown */ } }
-    (window as typeof window & { __appendViewerFixture: (delta: string) => void }).__appendViewerFixture(`\npaired tail ${index}`);
-  })), { delay: slowdown, index: sample * viewerSamples + append }));
-  const after = (await cdp.send("Performance.getMetrics")).metrics.find((metric) => metric.name === "TaskDuration")?.value ?? before;
+  await page.waitForTimeout(100); // keep asynchronous range coloring outside the scoped append task
+  const appended = await appendViewer(page, slowdown, sample * viewerSamples);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
   await cdp.detach();
-  return { openMs, appendMs: median(appendSamples), appendTaskMs: (after - before) * 1_000 / viewerSamples };
+  return { openMs, openTaskMs, ...appended };
 }
 
 async function measureViewerTiming(page: Page, url: string, slowdown = 0): Promise<ViewerTiming> {
@@ -383,7 +412,7 @@ async function measureCalibration(page: Page) {
   return { median: median(samples), samples };
 }
 
-async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.launch>>, width: number) {
+async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.launch>>, width: number): Promise<ViewerCheck> {
   const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
   const slowdown = Number(process.env.TIMING_GATE_SLOWDOWN_MS ?? 0);
   try {
@@ -402,11 +431,57 @@ async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.lau
       const second = await measureViewerSample(page, secondUrl, secondUrl === candidateUrl ? slowdown : 0, pair);
       pairs.push(pair % 2 ? { candidate: first, base: second } : { base: first, candidate: second });
     }
-    const candidate = { openMs: median(pairs.map(({ candidate }) => candidate.openMs)), appendMs: median(pairs.map(({ candidate }) => candidate.appendMs)), appendTaskMs: median(pairs.map(({ candidate }) => candidate.appendTaskMs)) };
-    const baseline = { openMs: median(pairs.map(({ base }) => base.openMs)), appendMs: median(pairs.map(({ base }) => base.appendMs)), appendTaskMs: median(pairs.map(({ base }) => base.appendTaskMs)) };
-    console.log(`viewer A/B @ ${width}: open head/base ${candidate.openMs.toFixed(1)}/${baseline.openMs.toFixed(1)} ms (${ratio(candidate.openMs, baseline.openMs).toFixed(2)}x), append ${candidate.appendMs.toFixed(1)}/${baseline.appendMs.toFixed(1)} ms (${ratio(candidate.appendMs, baseline.appendMs).toFixed(2)}x), append task ${candidate.appendTaskMs.toFixed(1)}/${baseline.appendTaskMs.toFixed(1)} ms (${ratio(candidate.appendTaskMs, baseline.appendTaskMs).toFixed(2)}x)`);
-    return { candidate, baseline, budget: viewerRatioBudget, label: "base" };
+    const candidate = { openMs: median(pairs.map(({ candidate }) => candidate.openMs)), openTaskMs: median(pairs.map(({ candidate }) => candidate.openTaskMs)), appendMs: median(pairs.map(({ candidate }) => candidate.appendMs)), appendTaskMs: median(pairs.map(({ candidate }) => candidate.appendTaskMs)) };
+    const baseline = { openMs: median(pairs.map(({ base }) => base.openMs)), openTaskMs: median(pairs.map(({ base }) => base.openTaskMs)), appendMs: median(pairs.map(({ base }) => base.appendMs)), appendTaskMs: median(pairs.map(({ base }) => base.appendTaskMs)) };
+    const distributions = { openMs: ratios(pairs, "openMs"), openTaskMs: ratios(pairs, "openTaskMs"), appendMs: ratios(pairs, "appendMs"), appendTaskMs: ratios(pairs, "appendTaskMs") };
+    const pairedRatios = { openMs: median(distributions.openMs), openTaskMs: median(distributions.openTaskMs), appendMs: median(distributions.appendMs), appendTaskMs: median(distributions.appendTaskMs) };
+    const show = (values: number[]) => values.map((value) => value.toFixed(2)).join(", ");
+    console.log(`viewer A/B @ ${width}: paired open wall [${show(distributions.openMs)}] median ${pairedRatios.openMs.toFixed(2)}x; open task [${show(distributions.openTaskMs)}] median ${pairedRatios.openTaskMs.toFixed(2)}x; append [${show(distributions.appendMs)}] median ${pairedRatios.appendMs.toFixed(2)}x; append task [${show(distributions.appendTaskMs)}] median ${pairedRatios.appendTaskMs.toFixed(2)}x`);
+    return { candidate, baseline, pairedRatios, budget: viewerRatioBudget, label: "paired base/head" };
   } finally { await page.close(); }
+}
+
+async function measureAppendAtSize(page: Page, lines: number, sample: number) {
+  await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read&viewerLines=${lines}`);
+  await openViewer(page);
+  const viewer = page.locator('[data-part="text-viewer"]');
+  await viewer.locator("[class^=tok-]").first().waitFor();
+  await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+  await page.waitForTimeout(100);
+  return appendViewer(page, 0, sample * viewerSamples, viewerSamples, `\n${"x".repeat(65_535)}`);
+}
+
+async function checkViewerScaling(browser: Awaited<ReturnType<typeof chromium.launch>>) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  try {
+    const small = await measureAppendAtSize(page, 16_000, 0);
+    const large = await measureAppendAtSize(page, 128_000, 1);
+    const taskRatio = ratio(large.appendTaskMs, small.appendTaskMs);
+    const operationRatio = ratio(large.segmentPushes + 1, small.segmentPushes + 1);
+    const totalOperationRatio = ratio(large.appendPushes, small.appendPushes);
+    await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read&viewerLines=1000000`);
+    await openViewer(page);
+    const mountedRows = await page.locator('[data-part="text-viewer-row"]').count();
+    console.log(`viewer append scaling: segment operations 16k ${small.segmentPushes}, 128k ${large.segmentPushes}, ratio ${operationRatio.toFixed(2)}x; all pushes ${small.appendPushes}/${large.appendPushes}, ratio ${totalOperationRatio.toFixed(2)}x; task ${small.appendTaskMs.toFixed(2)}/${large.appendTaskMs.toFixed(2)} ms, ratio ${taskRatio.toFixed(2)}x (diagnostic ${viewerScalingTaskDiagnostic}x reference only); 1m mounted rows ${mountedRows}`);
+    return { operationRatio, totalOperationRatio, taskRatio, mountedRows };
+  } finally { await page.close(); }
+}
+
+const checkRatio = (check: ViewerCheck, field: "openMs" | "appendMs") => check.pairedRatios?.[field] ?? ratio(check.candidate[field], check.baseline[field]);
+const checkFails = (check: ViewerCheck, field: "openMs" | "appendMs") => checkRatio(check, field) > check.budget || check.candidate[field] >= 64;
+const taskCheckFails = (check: ViewerCheck) => "appendTaskMs" in check.candidate && !!check.pairedRatios && (check.pairedRatios.appendTaskMs > check.budget || check.candidate.appendTaskMs >= 64);
+const openCheckFails = (check: ViewerCheck) => check.pairedRatios && "openTaskMs" in check.candidate
+  ? check.pairedRatios.openTaskMs > check.budget || check.candidate.openTaskMs >= 64
+  : checkFails(check, "openMs");
+
+function recordViewerTimingFailures(check: ViewerCheck, width: number, failures: string[]) {
+  if (openCheckFails(check)) failures.push(`viewer read @ ${width}: open task ratio ${check.pairedRatios?.openTaskMs.toFixed(2) ?? checkRatio(check, "openMs").toFixed(2)}x is over ${check.budget}x ${check.label}, or the open task reached the 64 ms ceiling`);
+  if (checkFails(check, "appendMs")) failures.push(`viewer read @ ${width}: append ratio ${checkRatio(check, "appendMs").toFixed(2)}x is over ${check.budget}x ${check.label}, or the ${check.candidate.appendMs.toFixed(1)} ms median reached the 64 ms ceiling`);
+  if (taskCheckFails(check)) failures.push(`viewer read @ ${width}: append task ratio ${check.pairedRatios!.appendTaskMs.toFixed(2)}x is over ${check.budget}x ${check.label}`);
+}
+
+function recordViewerScalingFailure(scaling: Awaited<ReturnType<typeof checkViewerScaling>>, failures: string[]) {
+  if (scaling.operationRatio > viewerScalingBudget || scaling.totalOperationRatio > viewerScalingTotalBudget || scaling.mountedRows > 200) failures.push(`viewer append scaling: 128k/16k segment-operation ratio ${scaling.operationRatio.toFixed(2)}x must stay <=${viewerScalingBudget}x, all-push ratio ${scaling.totalOperationRatio.toFixed(2)}x must stay <=${viewerScalingTotalBudget}x, and 1m mounted rows ${scaling.mountedRows} must stay <=200 (task ratio ${scaling.taskRatio.toFixed(2)}x is diagnostic against a non-failing ${viewerScalingTaskDiagnostic}x reference)`);
 }
 
 // A large edit or search keeps its structure in the open viewer: language tokens, row kinds, and marks.
@@ -433,9 +508,10 @@ async function checkStructuredViewer(page: Page, fixture: "edit" | "search") {
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const failures: string[] = [];
 try {
-  if (!viewerTimingFails(7, 4) || viewerTimingFails(5, 4))
-    throw new Error("viewer timing gate does not reject a 1.5x baseline-relative regression");
-  console.log("ok   viewer timing sensitivity: independent baseline rejects a >1.5x regression");
+  const pairedProof = [ratio(6, 4), ratio(12, 8), ratio(18, 12), ratio(24, 16), ratio(30, 20)];
+  if (median(pairedProof) <= viewerRatioBudget || median([1.1, 1.15, 1.2, 1.25, 1.3]) > viewerRatioBudget || !viewerTimingFails(7, 4) || viewerTimingFails(5, 4))
+    throw new Error("viewer timing regression sensitivity self-check failed");
+  console.log("ok   viewer timing sensitivity: paired ratios reject a 1.5x regression without rejecting A/A noise");
   const servers = [[candidateUrl, preview], ...(baseUrl && basePreview ? [[baseUrl, basePreview] as const] : [])] as const;
   for (const [url, child] of servers) {
     for (let i = 0; ; i++) {
@@ -446,12 +522,8 @@ try {
   }
   browser = await chromium.launch();
   if (process.env.VIEWER_TIMING_ONLY) {
-    for (const width of [390, 1440]) {
-      const { candidate, baseline, budget, label } = await checkViewerTiming(browser, width);
-      if (viewerTimingFails(candidate.openMs, baseline.openMs, budget)) failures.push(`viewer read @ ${width}: median open ${candidate.openMs.toFixed(1)} ms is over ${budget}x ${label} ${baseline.openMs.toFixed(1)} ms`);
-      if (viewerTimingFails(candidate.appendMs, baseline.appendMs, budget)) failures.push(`viewer read @ ${width}: median append ${candidate.appendMs.toFixed(1)} ms is over ${budget}x ${label} ${baseline.appendMs.toFixed(1)} ms`);
-      if ("appendTaskMs" in candidate && "appendTaskMs" in baseline && viewerTimingFails(candidate.appendTaskMs, baseline.appendTaskMs, viewerTaskRatioBudget)) failures.push(`viewer read @ ${width}: median append task ${candidate.appendTaskMs.toFixed(1)} ms is over ${viewerTaskRatioBudget}x ${label} ${baseline.appendTaskMs.toFixed(1)} ms`);
-    }
+    for (const width of [390, 1440]) recordViewerTimingFailures(await checkViewerTiming(browser, width), width, failures);
+    recordViewerScalingFailure(await checkViewerScaling(browser), failures);
     await browser.close();
     browser = undefined;
     for (const child of previews) child.kill("SIGTERM");
@@ -624,12 +696,8 @@ try {
       await page.close();
     }
   }
-  for (const width of [390, 1440]) {
-    const { candidate, baseline, budget, label } = await checkViewerTiming(browser, width);
-    if (viewerTimingFails(candidate.openMs, baseline.openMs, budget)) failures.push(`viewer read @ ${width}: median open ${candidate.openMs.toFixed(1)} ms is over ${budget}x ${label} ${baseline.openMs.toFixed(1)} ms`);
-    if (viewerTimingFails(candidate.appendMs, baseline.appendMs, budget)) failures.push(`viewer read @ ${width}: median append ${candidate.appendMs.toFixed(1)} ms is over ${budget}x ${label} ${baseline.appendMs.toFixed(1)} ms`);
-    if ("appendTaskMs" in candidate && "appendTaskMs" in baseline && viewerTimingFails(candidate.appendTaskMs, baseline.appendTaskMs, viewerTaskRatioBudget)) failures.push(`viewer read @ ${width}: median append task ${candidate.appendTaskMs.toFixed(1)} ms is over ${viewerTaskRatioBudget}x ${label} ${baseline.appendTaskMs.toFixed(1)} ms`);
-  }
+  for (const width of [390, 1440]) recordViewerTimingFailures(await checkViewerTiming(browser, width), width, failures);
+  recordViewerScalingFailure(await checkViewerScaling(browser), failures);
   for (const fixture of ["edit", "search"] as const) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
     const problems = await checkStructuredViewer(page, fixture);
