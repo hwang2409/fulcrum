@@ -70,13 +70,31 @@ const composeByKind = {
     };
   },
   tool(older: RunItem & { type: "tool" }, current: RunItem & { type: "tool" }) {
-    const tool_call = Object.keys(current.tool_call.arguments).length === 0 && Object.keys(older.tool_call.arguments).length > 0
-      ? { ...current.tool_call, arguments: older.tool_call.arguments }
-      : current.tool_call;
+    const tool_call = {
+      ...older.tool_call,
+      ...current.tool_call,
+      name: current.tool_call.name || older.tool_call.name,
+      arguments: Object.keys(current.tool_call.arguments).length === 0 ? older.tool_call.arguments : current.tool_call.arguments,
+      meta: current.tool_call.meta ?? older.tool_call.meta,
+    };
     return { ...current, tool_call, view: current.view ?? older.view, version: older.version + current.version };
   },
   approval(older: RunItem & { type: "approval" }, current: RunItem & { type: "approval" }) {
-    return { ...older, ...current, request: current.request ?? older.request, ended: current.ended ?? older.ended };
+    const request = older.request.type === "approval_request" && current.request.type === "approval_request"
+      ? {
+          ...older.request,
+          ...current.request,
+          tool_call: {
+            ...older.request.tool_call,
+            ...current.request.tool_call,
+            name: current.request.tool_call.name || older.request.tool_call.name,
+            arguments: Object.keys(current.request.tool_call.arguments).length === 0 ? older.request.tool_call.arguments : current.request.tool_call.arguments,
+            meta: current.request.tool_call.meta ?? older.request.tool_call.meta,
+          },
+          view: current.request.view ?? older.request.view,
+        }
+      : current.request;
+    return { ...older, ...current, request, ended: current.ended ?? older.ended };
   },
   user(_older: RunItem & { type: "user" }, current: RunItem & { type: "user" }) { return current; },
   error(_older: RunItem & { type: "error" }, current: RunItem & { type: "error" }) { return current; },
