@@ -386,6 +386,7 @@ export function reduceAllWithEntities(
   entities: EntityDraft,
   onInvalid?: (event: RunEvent) => void,
   onSanitized?: (count: number) => void,
+  onAccepted?: (event: RunEvent) => void,
 ): RunState {
   // An empty delta carries no text: it must not open a row or publish a new state.
   const isEmptyDelta = (event: RunEvent | null) => event?.type === "message_delta" && event.delta === "";
@@ -486,6 +487,7 @@ export function reduceAllWithEntities(
       next.receipts = receipts;
       next.receiptOrder = order;
     }
+    onAccepted?.(event);
 
     switch (event.type) {
       case "run_start":

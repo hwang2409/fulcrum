@@ -155,12 +155,6 @@ const trackComposition = (tracker: CompositionTracker, event: RunEvent) => {
     default: event satisfies never;
   }
 };
-const trackPageComposition = (events: readonly RunEvent[]) => {
-  const tracker = compositionTracker();
-  for (const event of events) trackComposition(tracker, event);
-  return tracker;
-};
-
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
   let entities = new Map<string, RunItem>();
   const messageAliases = new Map<string, string>();
@@ -207,7 +201,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
         splice: (edit) => edits.push(edit),
         getMessageAlias: (key) => messageAliases.get(key),
         setMessageAlias: (key, id) => { messageAliases.set(key, id); },
-      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; });
+      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, (event) => trackComposition(composition, event));
     } catch (error) {
       desynced = true;
       pending = [];
@@ -313,7 +307,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       stateChanged = false;
       outlineChanged = false;
       desynced = false;
-      composition = trackPageComposition(events);
+      composition = compositionTracker();
       pending.push(...events);
       flush();
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
@@ -330,7 +324,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       notify();
       const olderEntities = new Map<string, RunItem>();
       const olderAliases = new Map<string, string>();
-      const olderComposition = trackPageComposition(events);
+      const olderComposition = compositionTracker();
       let older = { ...structuredClone(initialState), nextId: current.nextId };
       const updates = new Map<string, RunItem>();
       try {
@@ -341,7 +335,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
           splice() {},
           getMessageAlias: (key) => olderAliases.get(key),
           setMessageAlias: (key, id) => olderAliases.set(key, id),
-        }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; });
+        }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, (event) => trackComposition(olderComposition, event));
         for (const [id, olderItem] of olderEntities) {
           const currentItem = entities.get(id);
           if (currentItem) updates.set(id, composeBefore(olderItem, currentItem, composition.messageContinuations.get(id) === true));
@@ -421,7 +415,6 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     dispatch(event: RunEvent) {
       if (disposed) throw new Error("store is disposed");
       refuseDesynced();
-      trackComposition(composition, event);
       pending.push(event);
       if (!queued) {
         queued = true;
