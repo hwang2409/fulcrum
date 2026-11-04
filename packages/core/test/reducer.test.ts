@@ -241,8 +241,9 @@ test("handles unknown events and receipt dedupe", () => {
   const store = replay([
     { type: "unknown", name: "future_event", data: { notification_id: "1", value: 1 } },
     { type: "unknown", name: "future_event", data: { notification_id: "1", value: 2 } },
+    { type: "future_event", data: { value: 3 } } as never,
   ]);
-  expect(store.getOutline().filter(({ kind }) => kind === "unknown")).toHaveLength(1);
+  expect(store.getOutline().filter(({ kind }) => kind === "unknown")).toHaveLength(2);
   expect(store.getState().receipts["1"]).toBe(true);
 });
 

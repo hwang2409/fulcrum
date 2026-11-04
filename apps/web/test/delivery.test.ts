@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 import { createClient, type Transport } from "@fulcrum/zeta";
 import { createDelivery, stopTurn } from "../src/delivery";
+import { composerMethods } from "../scripts/fake-zeta";
 
 type Reply = { result?: unknown; error?: { code: number; message: string; data?: unknown } };
 
 /** A real zeta client over an in-memory transport; `answer` replies to each request by method. */
-async function server(answer: (method: string, params: Record<string, unknown>) => Reply, features = ["delivery_id"]) {
+async function server(answer: (method: string, params: Record<string, unknown>) => Reply, features = ["delivery_id", "user_message_event", "user_message_delivery_id"], echo = true) {
   let deliver!: (text: string) => void;
   const calls: Array<[string, Record<string, unknown>]> = [];
   const transport: Transport = {
@@ -18,8 +19,8 @@ async function server(answer: (method: string, params: Record<string, unknown>) 
       queueMicrotask(() => {
         // As zeta does, an accepted send or steer is echoed to the session before the reply.
         const reply = method === "hello" ? { result: { protocol_version: "1.2", capabilities: { features } } } : answer(method, params);
-        if ((method === "send" || method === "steer") && (reply.result as { accepted?: boolean } | undefined)?.accepted)
-          deliver(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: params.text, mode: method, attachments: [] } }));
+        if (echo && (method === "send" || method === "steer") && (reply.result as { accepted?: boolean } | undefined)?.accepted)
+          deliver(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: params.text, mode: method, attachments: [], ...(params.delivery_id === undefined ? {} : { delivery_id: params.delivery_id }) } }));
         deliver(JSON.stringify({ jsonrpc: "2.0", id, ...reply }));
       });
     },
@@ -30,6 +31,17 @@ async function server(answer: (method: string, params: Record<string, unknown>) 
 }
 const ids = () => { let n = 0; return () => `id-${++n}`; };
 const ok = { result: { accepted: true } };
+
+test("fake reconnect history does not replay a steer dropped at turn end", async () => {
+  let active = false;
+  const fake = composerMethods(async () => {}, { get: () => active, set: (value) => { active = value; } });
+  const before = fake.history.length;
+  fake.handle("send", { text: "start", delivery_id: "fake-send" }, "s-reconnect", () => {});
+  active = true;
+  fake.handle("steer", { text: "drop me", delivery_id: "fake-steer" }, "s-reconnect", () => {});
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(fake.history.slice(before).some((row) => JSON.stringify(row).includes("drop me"))).toBe(false);
+});
 
 test("send and steer go to their methods with a delivery id when the feature is negotiated", async () => {
   const { client, calls } = await server(() => ok);
@@ -147,4 +159,12 @@ test("stop is a session abort", async () => {
   const { client, calls } = await server(() => ({ result: { aborted: true } }));
   expect(await stopTurn(client)).toEqual({ aborted: true });
   expect(calls).toEqual([["abort", {}]]);
+});
+
+test("accepted delivery without an echo reconciles one synthetic user event", async () => {
+  const { client } = await server(() => ok, ["delivery_id", "user_message_event", "user_message_delivery_id"], false);
+  const events: unknown[] = [];
+  const delivery = createDelivery(ids(), (event) => events.push(event));
+  await delivery.submit(client, "hello", false);
+  expect(events).toEqual([{ type: "user_message", text: "hello", mode: "send", intent: "id-1", delivery_id: "id-1" }]);
 });

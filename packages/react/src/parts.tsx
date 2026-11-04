@@ -1,7 +1,7 @@
 import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type RefObject } from "react";
 import type { ApprovalDecision, OutlineChange, RunEvent, RunItem } from "@fulcrum/core";
 import type { VirtualCache } from "@fulcrum/virtual";
-import { useItem, useItemSelector, useRunStore, useTimelineSnapshot } from "./hooks.js";
+import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { HighlightContext, Tokens, useTokens } from "./highlight.js";
 import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
@@ -515,10 +515,22 @@ const keyForStore = (store: object) => {
   return key;
 };
 
+const ResyncStatus = () => {
+  const diagnostics = useRunDiagnostics();
+  const retry = useRunRetry();
+  if (!diagnostics.desynced) return null;
+  return (
+    <div data-part="resync-status" data-state={diagnostics.resyncError ? "error" : "pending"} role="status">
+      {diagnostics.resyncError ? "could not resync" : "resyncing…"}
+      {diagnostics.resyncError && retry ? <button type="button" data-part="resync-retry" onClick={retry}>retry</button> : null}
+    </div>
+  );
+};
+
 /** Pass a stable `renderers` object (module scope or memoized) so appends do not re-render every row. */
 export const Timeline = memo(function Timeline(props: TimelineProps) {
   const store = useRunStore();
-  return <TimelineForStore key={keyForStore(store)} {...props} store={store} />;
+  return <><ResyncStatus /><TimelineForStore key={keyForStore(store)} {...props} store={store} /></>;
 });
 
 const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {

@@ -18,13 +18,16 @@ export type RunStore = Pick<
   | "getOutlineSnapshot"
   | "subscribe"
   | "subscribeOutline"
->;
+> & Partial<Pick<ReturnType<typeof createRunStore>, "getDiagnostics" | "subscribeDiagnostics">>;
 
 const StoreContext = createContext<RunStore | null>(null);
+const RetryContext = createContext<(() => void) | undefined>(undefined);
 
-/** `highlight` (from `createHighlighter()` in @fulcrum/highlight) colors commands, files, diffs, and JSON in tool cards. */
-export function RunProvider({ store, highlight, children }: { store: RunStore; highlight?: Highlight; children?: ReactNode }) {
-  return createElement(StoreContext.Provider, { value: store }, createElement(HighlightContext.Provider, { value: highlight }, children));
+/** `highlight` colors tool content; `onRetry` retries a failed history resync without coupling React to a harness. */
+export function RunProvider({ store, highlight, onRetry, children }: { store: RunStore; highlight?: Highlight; onRetry?: () => void; children?: ReactNode }) {
+  return createElement(StoreContext.Provider, { value: store },
+    createElement(RetryContext.Provider, { value: onRetry },
+      createElement(HighlightContext.Provider, { value: highlight }, children)));
 }
 
 export const useRunStore = () => {
@@ -32,6 +35,16 @@ export const useRunStore = () => {
   if (!store) throw new Error("fulcrum hooks must be used inside <RunProvider>");
   return store;
 };
+
+const syncedDiagnostics = { ignoredEvents: 0, sanitizedFields: 0, desynced: false } as const;
+const noSubscription = () => () => {};
+export const useRunDiagnostics = () => {
+  const store = useRunStore();
+  const available = store.subscribeDiagnostics && store.getDiagnostics;
+  const read = available ? store.getDiagnostics! : () => syncedDiagnostics;
+  return useSyncExternalStore(available ? store.subscribeDiagnostics! : noSubscription, read, read);
+};
+export const useRunRetry = () => useContext(RetryContext);
 
 function useSelected<S, T>(
   subscribe: (listener: () => void) => () => void,

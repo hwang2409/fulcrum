@@ -1,3 +1,4 @@
+import type { RunEvent } from "@fulcrum/core";
 import type { ZetaClient } from "@fulcrum/zeta";
 
 /** Zeta errors that mean the turn changed state between the click and the server: -32004 running, -32005 not running. */
@@ -31,7 +32,7 @@ const refusal = (result: Accepted) => new Error(result.status === "dropped" ? "t
  * Each message keeps one `intent` across every attempt, and the client stamps it on zeta's `user_message` echo, so the
  * steer's row becomes the resent message's row: the user sees one row per message they wrote.
  */
-export function createDelivery(newId: () => string = () => `web-${crypto.randomUUID()}`) {
+export function createDelivery(newId: () => string = () => `web-${crypto.randomUUID()}`, reconcile?: (event: RunEvent) => void) {
   let unsettled: Message | null = null;
   let steers: Message[] = [];
   // The user's stop of the running turn: resolves to whether it ended the turn (it failed, or found no turn: false).
@@ -58,7 +59,11 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
       result = await request(client, used, message);
     }
     if (used === "steer" && message.id && result.accepted !== false) steers.push(message);
-    return result;
+    return { result, used };
+  };
+  const reconcileAccepted = (message: Message, used: Method, result: Accepted) => {
+    if (result.accepted === true && message.id && reconcile)
+      reconcile({ type: "user_message", text: message.text, mode: used, intent: message.intent, delivery_id: message.id });
   };
   const fresh = (client: ZetaClient, text: string): Message => {
     const intent = newId();
@@ -72,9 +77,10 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
     async submit(client: ZetaClient, text: string, steer: boolean) {
       const message = unsettled?.text === text ? unsettled : fresh(client, text);
       unsettled = message;
-      const result = await deliver(client, steer ? "steer" : "send", message);
+      const delivered = await deliver(client, steer ? "steer" : "send", message);
       unsettled = null;
-      if (result.accepted === false) throw refusal(result);
+      if (delivered.result.accepted === false) throw refusal(delivered.result);
+      reconcileAccepted(message, delivered.used, delivered.result);
     },
     /** Stops the running turn (zeta's default session-scope abort); `turnEnded` then knows the user ended it. */
     stop(client: ZetaClient) {
@@ -99,8 +105,10 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
         const status = statuses[index]!;
         if (status.status === "rejected" || !status.value) continue;
         if (stopped) { undelivered.push(message.intent); continue; }
-        const result = await deliver(client, "send", { ...message, id: newId() });
-        if (result.accepted === false) throw refusal(result);
+        const retry = { ...message, id: newId() };
+        const delivered = await deliver(client, "send", retry);
+        if (delivered.result.accepted === false) throw refusal(delivered.result);
+        reconcileAccepted(retry, delivered.used, delivered.result);
       }
       return undelivered;
     },
