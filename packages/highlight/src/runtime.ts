@@ -233,8 +233,10 @@ export class TokenizerRuntime {
   async tokenizeWithProvenance(code: string, context: HighlightContext, language: string, generation: number): Promise<TokenizeResult> {
     const epoch = this.epoch;
     const dependencies = embeddedLanguages(code, language);
-    const highlighter = await this.ensureLanguage(language);
-    if (dependencies.length) await Promise.all(dependencies.map((dependency) => this.ensureLanguage(dependency)));
+    const highlighterLoading = this.ensureLanguage(language);
+    const dependencyLoading = dependencies.map((dependency) => this.ensureLanguage(dependency));
+    const highlighter = await highlighterLoading;
+    if (dependencyLoading.length) await Promise.all(dependencyLoading);
     const fullyLoaded = this.warmed.has(language) && dependencies.every((dependency) => this.warmed.has(dependency));
     const provenance = { language, generation, fullyLoaded };
     if (epoch !== this.epoch) return { tokens: code ? [{ text: code }] : [], provenance: { ...provenance, fullyLoaded: false } };
