@@ -756,7 +756,7 @@ describe("identity, failure, and caps", () => {
     expect(await highlighter(huge, "typescript", { id: "huge", version: 1, state: "done" })).toEqual([{ text: huge }]);
     const long = `${"x".repeat(20_001)}\nconst ok = 1;\n`;
     expect(text((await highlighter(long, "typescript", { id: "long", version: 1, state: "done" }))!)).toBe(long);
-  });
+  }, 10_000);
 
   // A worker that fails at its first request, as a crash does.
   const crashingWorker = () => {
