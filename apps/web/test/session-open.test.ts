@@ -66,42 +66,121 @@ test("an idle replay replaces quarantined live events with one fresh full snapsh
   expect(fake.calls.filter(([method, params]) => method === "session_history" && params.offset === 0)).toHaveLength(2);
 });
 
-test("a quarantined event on a later page forces the same final snapshot", async () => {
-  let round = 0;
+test("a quarantined event on a later page forces a tail reconcile", async () => {
+  let emitted = false;
+  let tailCalls = 0;
   const fake = await server((method, params, event) => {
     if (method === "status") return idleStatus;
     if (method !== "session_history") throw new Error(method);
-    if (params.offset === 0) round++;
-    if (round === 1 && params.offset === 1) {
+    if (params.offset === 0) return { messages: [row("old", "user", "old")], next_offset: 1 };
+    tailCalls++;
+    if (!emitted) {
+      emitted = true;
       event({ event: "assistant_delta", delta: "during-page-one", kind: "assistant" });
       return { messages: [row("older", "user", "older")], next_offset: null };
     }
-    if (round === 1) return { messages: [row("old", "user", "old")], next_offset: 1 };
-    return { messages: [row("old", "user", "old"), row("assistant", "assistant", "during-page-one"), row("older", "user", "older")], next_offset: null };
+    return { messages: [row("older", "user", "older"), row("assistant", "assistant", "during-page-one")], next_offset: null };
   });
 
   const opened = await openSession(fake.client, "s");
   await opened.complete;
 
-  expect(texts(opened.lease.store)).toEqual(["old", "during-page-one", "older"]);
-  expect(round).toBe(2);
+  expect(texts(opened.lease.store)).toEqual(["old", "older", "during-page-one"]);
+  expect(tailCalls).toBe(2);
 });
 
-test("events during every final snapshot stop at the bound and leave the last snapshot stable", async () => {
+test("the fourth quarantined event survives the reconciliation bound", async () => {
   let historyCalls = 0;
   const fake = await server((method, _params, event) => {
     if (method === "status") return idleStatus;
     if (method !== "session_history") throw new Error(method);
     historyCalls++;
-    event({ event: "assistant_delta", delta: `during-snapshot-${historyCalls}`, kind: "assistant" });
-    return { messages: [row("old", "user", "old"), row("complete", "assistant", `snapshot-${historyCalls}`)], next_offset: null };
+    if (historyCalls <= 4)
+      event({ event: "user_message", text: `event-${historyCalls}`, mode: "send", delivery_id: `d${historyCalls}` });
+    return {
+      messages: Array.from({ length: Math.min(historyCalls - 1, 4) }, (_, index) => row(`event-${index + 1}`, "user", `event-${index + 1}`)),
+      next_offset: null,
+    };
   });
 
   const opened = await openSession(fake.client, "s");
   await opened.complete;
 
-  expect(texts(opened.lease.store)).toEqual(["old", "snapshot-4"]);
-  expect(historyCalls).toBe(4);
+  expect(texts(opened.lease.store)).toEqual(["event-1", "event-2", "event-3", "event-4"]);
+  expect(historyCalls).toBe(5);
+});
+
+test("a thousand-page replay reconciles only its tail", async () => {
+  const pageCount = 1_000;
+  const offsets: number[] = [];
+  let emitted = false;
+  const fake = await server((method, params, event) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    const offset = params.offset as number;
+    offsets.push(offset);
+    if (offset === 500 && !emitted) {
+      emitted = true;
+      event({ event: "user_message", text: "late", mode: "send", delivery_id: "late" });
+    }
+    const last = offset === pageCount - 1;
+    return {
+      messages: [row(`row-${offset}`, "user", last && offsets.length > pageCount ? "tail updated" : `row ${offset}`)],
+      next_offset: last ? null : offset + 1,
+    };
+  });
+
+  const opened = await openSession(fake.client, "s");
+  await opened.complete;
+
+  expect(offsets.filter((offset) => offset === 0)).toHaveLength(1);
+  expect(offsets.slice(pageCount)).toEqual([pageCount - 1]);
+  expect(texts(opened.lease.store).at(-1)).toBe("tail updated");
+});
+
+test("a changed tail boundary causes exactly one full reload", async () => {
+  const offsets: number[] = [];
+  let pageTwoCalls = 0;
+  const fake = await server((method, params, event) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    const offset = params.offset as number;
+    offsets.push(offset);
+    if (offset === 1 && pageTwoCalls === 0) event({ event: "assistant_delta", delta: "rewind", kind: "assistant" });
+    if (offset === 2 && ++pageTwoCalls === 1) return { messages: [row("old-2", "user", "old 2")], next_offset: null };
+    if (offset === 2) return { messages: [row("different", "user", "different")], next_offset: null };
+    if (pageTwoCalls === 0) return { messages: [row(`old-${offset}`, "user", `old ${offset}`)], next_offset: offset + 1 };
+    return { messages: [row(`new-${offset}`, "user", `new ${offset}`)], next_offset: offset === 0 ? 1 : null };
+  });
+
+  const opened = await openSession(fake.client, "s");
+  await opened.complete;
+
+  expect(offsets).toEqual([0, 1, 2, 2, 0, 1]);
+  expect(texts(opened.lease.store)).toEqual(["new 0", "new 1"]);
+});
+
+test("a busy replay stays quarantined at the bound and catches up after idle", async () => {
+  let historyCalls = 0;
+  let statusCalls = 0;
+  const fake = await server((method, _params, event) => {
+    if (method === "status") return { ...idleStatus, state: ++statusCalls < 3 ? "running" : "idle" };
+    if (method !== "session_history") throw new Error(method);
+    historyCalls++;
+    if (historyCalls <= 4)
+      event({ event: "user_message", text: `event-${historyCalls}`, mode: "send", delivery_id: `d${historyCalls}` });
+    return {
+      messages: Array.from({ length: Math.min(historyCalls - 1, 4) }, (_, index) => row(`event-${index + 1}`, "user", `event-${index + 1}`)),
+      next_offset: null,
+    };
+  });
+
+  const opened = await openSession(fake.client, "s");
+  expect(opened.syncing).toBe(true);
+  await opened.complete;
+
+  expect(historyCalls).toBe(5);
+  expect(texts(opened.lease.store)).toEqual(["event-1", "event-2", "event-3", "event-4"]);
 });
 
 test("the first snapshot exposes an actionable approval while page one is held", async () => {

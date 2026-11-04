@@ -299,7 +299,7 @@ function OpenRunBody({ state, view, connection, sessions, opener, focusComposer 
       {offline ? <ConnectionNotice state={state} connection={connection} compact /> : null}
       {replacing ? <p className="note" data-tone="busy" role="status">opening {sessionName(view, present.opening!.id)}…</p> : null}
       {!replacing && !open.history.complete ? <p className="note" data-tone="busy" role="status">loading earlier messages… {open.history.messages.toLocaleString("en")} loaded</p> : null}
-      {!replacing && open.syncing ? <p className="note" data-tone="busy" role="status">this turn is in progress; it will appear when it finishes</p> : null}
+      {!replacing && open.syncing ? <p className="note" data-tone="busy" role="status">live updates paused while this session is busy; it will catch up</p> : null}
       {failed ? <div className="note" data-tone="danger" role="alert"><span>could not open {sessionName(view, failed.id)}: {failed.message}</span> <button type="button" className="ghost" onClick={() => sessions.dismissOpenError()}>dismiss</button> <button type="button" className="ghost" onClick={() => sessions.select(failed.id)}>try again</button></div> : null}
       <Run client={offline ? null : connection.client} sessions={sessions} open={open} opener={opener} focusComposer={focusComposer} readOnly={Boolean(replacing || (failed && !failed.restored))} ready={open.id === present.selected && !present.opening} />
     </>

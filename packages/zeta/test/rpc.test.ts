@@ -124,7 +124,7 @@ test("replay drops ambiguous live events and starts routing only after the snaps
   expect(lease.store).not.toBe(stale.store);
   const items = lease.store.getOutline().map(({ id }) => lease.store.getItem(id));
   expect(items.map((item) => item?.type === "user" ? "user" : item?.type === "message" ? item.text : item?.type)).toEqual(["user"]);
-  await client.finishReplay("s1");
+  expect(client.finishReplay("s1", client.replayRevision("s1"))).toBe(true);
   fake.receive(event("after snapshot"));
   expect(lease.store.getItem(lease.store.getOutline()[1]!.id)).toMatchObject({ text: "after snapshot" });
   lease.release();

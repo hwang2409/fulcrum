@@ -23,7 +23,6 @@ export interface SessionLease {
 const adapterError = (message: string) => ({ type: "error" as const, error: { code: "adapter_invalid_frame", message } });
 const encoder = new TextEncoder();
 const RESYNC_BACKOFF_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
-const MAX_REPLAY_SNAPSHOTS = 3;
 
 export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
   let nextId = 1;
@@ -207,22 +206,14 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       replaying.delete(session);
     }
   };
-  /** Replaces any ambiguous replay window with a fresh snapshot. Events during that snapshot trigger another try. */
-  const finishReplay = async (session: string, reconcile = true) => {
-    const load = replayLoads.get(session);
-    const target = stores.get(session);
-    const controller = activeLoads.get(session);
-    if (!load || !target || !controller) return;
-    let seen = 0;
-    for (let attempt = 0; reconcile && attempt < MAX_REPLAY_SNAPSHOTS && (quarantineRevisions.get(session) ?? 0) > seen; attempt++) {
-      seen = quarantineRevisions.get(session) ?? 0;
-      const history = await load(controller.signal);
-      if (controller.signal.aborted || stores.get(session) !== target) throw Object.assign(new Error("request aborted"), { name: "AbortError" });
-      target.resync(history);
-    }
+  const replayRevision = (session: string) => quarantineRevisions.get(session) ?? 0;
+  /** Opens live routing only if no event arrived after `revision` was captured. */
+  const finishReplay = (session: string, revision: number) => {
+    if (!quarantined.has(session) || replayRevision(session) !== revision) return false;
     quarantined.delete(session);
     quarantineRevisions.delete(session);
-    if (activeLoads.get(session) === controller) activeLoads.delete(session);
+    activeLoads.delete(session);
+    return true;
   };
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;
@@ -309,7 +300,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const target = stores.get(session);
     return target ? resyncSession(session, target) : Promise.reject(new Error(`session ${session} is not open`));
   };
-  return { store, stores, forSession, replay, finishReplay, retrySession, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
+  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }
