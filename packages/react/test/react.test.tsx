@@ -114,6 +114,7 @@ test("a desynced timeline keeps its rows, offers retry, and recovers after resyn
     },
   }) as RunEvent);
   act(() => jobs.shift()!());
+  act(() => store.resyncFailed(new Error("history reload failed")));
   act(() => root!.render(view()));
 
   expect(container.textContent).toContain("last good");

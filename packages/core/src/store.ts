@@ -55,10 +55,16 @@ const mergeSplices = (base: readonly OutlineSplice[], edits: readonly OutlineSpl
 };
 
 export interface StoreOptions {
-  /** Called when validated reduction still throws. The store stays desynced until `resync` replaces it. */
+  /** Called when validated reduction still throws. The store stays readable but refuses dispatches until `resync`. */
   onError?: (error: unknown) => void;
 }
-export interface StoreDiagnostics { readonly ignoredEvents: number; readonly desynced: boolean }
+export interface StoreDiagnostics {
+  readonly ignoredEvents: number;
+  readonly desynced: boolean;
+  readonly reason?: string;
+  readonly resyncError?: string;
+}
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
   let entities = new Map<string, RunItem>();
@@ -68,6 +74,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   const listeners = new Set<Listener>();
   const outlineListeners = new Set<Listener>();
   const itemListeners = new Map<string, Set<Listener>>();
+  const diagnosticsListeners = new Set<Listener>();
   let queued = false;
   let running = false;
   let flushing = false;
@@ -75,12 +82,18 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let disposed = false;
   let desynced = false;
   let ignoredEvents = 0;
+  let diagnostics: StoreDiagnostics = { ignoredEvents, desynced };
   let stateChanged = false;
   let outlineChanged = false;
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
   let edits: OutlineSplice[] = [];
-  const assertSynced = () => { if (desynced) throw new Error("store is desynced"); };
+  const setDiagnostics = (next: StoreDiagnostics) => {
+    if (diagnostics.ignoredEvents === next.ignoredEvents && diagnostics.desynced === next.desynced && diagnostics.reason === next.reason && diagnostics.resyncError === next.resyncError) return;
+    diagnostics = next;
+    diagnosticsListeners.forEach((listener) => listener());
+  };
+  const refuseDesynced = () => { if (desynced) throw new Error("store is desynced"); };
 
   const flush = () => {
     if (pending.length === 0 || disposed || desynced || flushing || notifying) return false;
@@ -104,6 +117,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       edits = [];
       changedItems.clear();
       flushing = false;
+      setDiagnostics({ ignoredEvents, desynced: true, reason: errorMessage(error) });
       options.onError?.(error);
       return false;
     }
@@ -125,6 +139,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     }
     edits = [];
     flushing = false;
+    setDiagnostics({ ignoredEvents, desynced: false });
     return true;
   };
   const notify = () => {
@@ -162,30 +177,33 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   return {
     getState() {
       if (!notifying) flush();
-      assertSynced();
       return current;
     },
     getItem(id: string) {
       if (!notifying) flush();
-      assertSynced();
       return entities.get(id);
     },
     getOutline(): readonly OutlineItem[] {
       if (!notifying) flush();
-      assertSynced();
       return current.outline;
     },
     getOutlineSnapshot(): OutlineSnapshot {
       if (!notifying) flush();
-      assertSynced();
       return outlineSnapshot;
     },
     hasMessageDelivery(deliveryId: string) {
       if (!notifying) flush();
-      assertSynced();
       return messageAliases.has(`delivery:${deliveryId}`);
     },
-    getDiagnostics(): StoreDiagnostics { return { ignoredEvents, desynced }; },
+    getDiagnostics(): StoreDiagnostics { return diagnostics; },
+    subscribeDiagnostics(listener: Listener) {
+      diagnosticsListeners.add(listener);
+      return () => diagnosticsListeners.delete(listener);
+    },
+    resyncFailed(error: unknown) {
+      if (!desynced || disposed) return;
+      setDiagnostics({ ...diagnostics, resyncError: errorMessage(error) });
+    },
     resync(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
       pending = [];
@@ -200,6 +218,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       desynced = false;
       pending.push(...events);
       flush();
+      if (!desynced) setDiagnostics({ ignoredEvents, desynced: false });
       notify();
     },
     subscribe,
@@ -209,7 +228,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     },
     dispatch(event: RunEvent) {
       if (disposed) throw new Error("store is disposed");
-      assertSynced();
+      refuseDesynced();
       pending.push(event);
       if (!queued) {
         queued = true;
@@ -239,9 +258,11 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       listeners.clear();
       outlineListeners.clear();
       itemListeners.clear();
+      diagnosticsListeners.clear();
       changedItems.clear();
       edits = [];
       desynced = false;
+      diagnostics = { ignoredEvents, desynced: false };
       stateChanged = false;
       outlineChanged = false;
     },

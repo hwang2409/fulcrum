@@ -59,10 +59,21 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!load || buffers.has(session)) return;
     const waiting: RunEvent[] = [];
     buffers.set(session, waiting);
+    let failure: unknown;
     try {
-      const history = await load();
-      if (stores.get(session) === target)
-        target.resync([...history, ...waiting]);
+      for (const delay of [0, 50, 100]) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        try {
+          const history = await load();
+          if (stores.get(session) !== target) return;
+          target.resync([...history, ...waiting]);
+          return;
+        } catch (error) {
+          failure = error;
+        }
+      }
+      if (stores.get(session) === target) target.resyncFailed(failure);
+      throw failure;
     } finally {
       if (buffers.get(session) === waiting) buffers.delete(session);
     }
@@ -207,7 +218,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return result;
     });
   };
-  return { store, stores, forSession, replay, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
+  const retrySession = (session: string) => {
+    const target = stores.get(session);
+    return target ? resyncSession(session, target) : Promise.reject(new Error(`session ${session} is not open`));
+  };
+  return { store, stores, forSession, replay, retrySession, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { rejectPending(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }

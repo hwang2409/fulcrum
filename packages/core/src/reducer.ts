@@ -75,41 +75,74 @@ interface EntityDraft {
 type SpliceOutline = (index: number, deleteCount: number, items: readonly OutlineItem[]) => void;
 
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
-const optionalString = (value: unknown) => value === undefined || typeof value === "string";
-const toolCall = (value: unknown) => record(value) && typeof value.id === "string" && typeof value.name === "string" && record(value.arguments);
-const message = (value: unknown) => record(value) && typeof value.role === "string" && Array.isArray(value.content);
-const toolResult = (value: unknown) => record(value) && typeof value.tool_call_id === "string" && typeof value.content === "string" && typeof value.is_error === "boolean";
-const knownEvent = (event: Record<string, unknown>) => {
-  switch (event.type) {
-    case "run_start": case "run_end": case "turn_start": case "turn_end": case "message_start": case "message_reset":
-      return event.data === undefined || record(event.data);
-    case "retry": return true;
-    case "message_delta": return optionalString(event.message_id) && typeof event.delta === "string" && optionalString(event.kind);
-    case "message_block": return optionalString(event.message_id) && record(event.block) && typeof event.block.type === "string";
-    case "message_commit": return optionalString(event.message_id) && message(event.message);
-    case "tool_start": return toolCall(event.tool_call) && (event.view === undefined || record(event.view)) && (event.data === undefined || record(event.data));
-    case "tool_input": return toolCall(event.tool_call) && typeof event.input === "string" && (event.view === undefined || record(event.view)) && (event.data === undefined || record(event.data));
-    case "tool_output": return toolCall(event.tool_call) && typeof event.output === "string" && (event.view === undefined || record(event.view)) && (event.data === undefined || record(event.data));
-    case "tool_end": return toolCall(event.tool_call) && (event.tool_result === undefined || toolResult(event.tool_result)) && (event.view === undefined || record(event.view)) && (event.data === undefined || record(event.data));
-    case "approval_request": return typeof event.request_id === "string" && toolCall(event.tool_call) && typeof event.delegated === "boolean" && (event.view === undefined || record(event.view));
-    case "approval_end": return typeof event.request_id === "string" && (event.decision === undefined || event.decision === "approve" || event.decision === "deny" || event.decision === "abort") && (event.data === undefined || record(event.data));
-    case "usage": return record(event.usage) && Object.values(event.usage).every((value) => typeof value === "number");
-    case "user_message": return typeof event.text === "string" && typeof event.mode === "string" && (event.attachments === undefined || Array.isArray(event.attachments)) && optionalString(event.delivery_id) && optionalString(event.intent);
-    case "error": return record(event.error) && typeof event.error.code === "string" && typeof event.error.message === "string";
-    case "notification": return optionalString(event.notification_id) && (event.data === undefined || record(event.data));
-    case "unknown": return typeof event.name === "string" && record(event.data);
-    case "sub_agent": return typeof event.childRunId === "string" && typeof event.status === "string";
-    default: return false;
-  }
+type Validator = (value: unknown) => boolean;
+type EventSchema<E> = { readonly [K in Exclude<keyof E, "type">]-?: Validator };
+const string: Validator = (value) => typeof value === "string";
+const boolean: Validator = (value) => typeof value === "boolean";
+const finite: Validator = (value) => typeof value === "number" && Number.isFinite(value);
+const optional = (validator: Validator): Validator => (value) => value === undefined || validator(value);
+const oneOf = (...values: readonly unknown[]): Validator => (value) => values.includes(value);
+const array: Validator = Array.isArray;
+const object: Validator = record;
+const toolCall: Validator = (value) => record(value) && string(value.id) && string(value.name) && record(value.arguments);
+const message: Validator = (value) => record(value) && string(value.role) && Array.isArray(value.content);
+const block: Validator = (value) => record(value) && string(value.type);
+const toolResult: Validator = (value) => record(value) && string(value.tool_call_id) && string(value.content) && boolean(value.is_error) && optional(boolean)(value.is_canceled);
+const usage: Validator = (value) => {
+  if (!record(value)) return false;
+  for (const amount of Object.values(value)) if (!finite(amount)) return false;
+  return true;
 };
+const unknownData: Validator = (value) => record(value) && optional(string)(value.notification_id);
+
+/** Invalid optional fields reject the whole event, so reduction is always a counted no-op or a fully valid write. */
+export const eventSchemas = {
+  run_start: { data: optional(object) },
+  run_end: { data: optional(object) },
+  turn_start: { data: optional(object) },
+  turn_end: { data: optional(object) },
+  message_start: { data: optional(object) },
+  message_reset: { data: optional(object) },
+  retry: {},
+  message_delta: { message_id: optional(string), delta: string, kind: optional(string) },
+  message_block: { message_id: optional(string), block },
+  message_commit: { message_id: optional(string), message },
+  tool_start: { tool_call: toolCall, view: optional(object), data: optional(object) },
+  tool_input: { tool_call: toolCall, input: string, view: optional(object), data: optional(object) },
+  tool_output: { tool_call: toolCall, output: string, view: optional(object), data: optional(object) },
+  tool_end: { tool_call: toolCall, tool_result: optional(toolResult), view: optional(object), data: optional(object) },
+  approval_request: { request_id: string, tool_call: toolCall, view: optional(object), delegated: boolean },
+  approval_end: { request_id: string, decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
+  usage: { usage },
+  user_message: { text: string, mode: string, attachments: optional(array), delivery_id: optional(string), intent: optional(string) },
+  error: { error: (value) => record(value) && string(value.code) && string(value.message) },
+  notification: { notification_id: optional(string), data: optional(object) },
+  unknown: { name: string, data: unknownData },
+  sub_agent: {
+    childRunId: string,
+    status: oneOf("running", "waiting_approval", "waiting_input", "idle", "done", "error", "canceled"),
+    name: optional(string),
+    task: optional(string),
+    latestActivity: optional(string),
+    toolCount: optional(finite),
+    summary: optional(string),
+    urgency: optional(oneOf("approval", "input", "error")),
+    notificationId: optional(string),
+    startedAt: optional(string),
+    updatedAt: optional(string),
+    endedAt: optional(string),
+    sequence: optional(finite),
+  },
+} satisfies { readonly [T in RunEvent["type"]]: EventSchema<Extract<RunEvent, { type: T }>> };
+
 const validateEvent = (input: unknown): RunEvent | undefined => {
   if (!record(input) || typeof input.type !== "string") return undefined;
-  const value = input;
-  const type = value.type as string;
-  if (knownEvent(value)) return value as unknown as RunEvent;
-  if (!["run_start", "run_end", "turn_start", "turn_end", "message_start", "message_reset", "retry", "message_delta", "message_block", "message_commit", "tool_start", "tool_input", "tool_output", "tool_end", "approval_request", "approval_end", "usage", "user_message", "error", "notification", "unknown", "sub_agent"].includes(type))
-    return { type: "unknown", name: type, data: record(value.data) ? value.data : {} };
-  return undefined;
+  const type = input.type;
+  const schema = eventSchemas[type as RunEvent["type"]] as Record<string, Validator> | undefined;
+  if (!schema)
+    return { type: "unknown", name: type, data: record(input.data) ? input.data : {} };
+  for (const field in schema) if (!schema[field]!(input[field])) return undefined;
+  return input as unknown as RunEvent;
 };
 
 type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;
