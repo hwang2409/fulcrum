@@ -12,7 +12,7 @@
     "./styles.css": "./styles.css"
   },
   "scripts": {
-    "build": "bun src/build.ts && tsc -p tsconfig.types.json",
+    "build": "bun src/build.ts",
     "bench": "bun bench/highlight.ts"
   }
 }

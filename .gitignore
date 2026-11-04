@@ -6,3 +6,5 @@ apps/playground/stress-artifacts/
 packages/highlight/.grammar-entries/
 packages/highlight/.recipe-entries/
 packages/highlight/.recipe-generation-manifest.json
+packages/highlight/.build.lock
+packages/highlight/.build-manifest.pending

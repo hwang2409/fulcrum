@@ -26,6 +26,7 @@ jobs:
       - run: git diff --exit-code -- packages/highlight/src/languages.ts
       - run: bun run --cwd packages/mermaid build # the playground and web apps import its built entry
       - run: bun scripts/highlight-token-parity.ts check
+      - run: bun test ./packages/highlight/test/build-race.ts
       - run: bun test
       - name: check resolver contract against base
         if: github.event_name == 'pull_request' || github.event_name == 'push'

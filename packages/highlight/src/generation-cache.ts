@@ -8,6 +8,10 @@ export type GenerationManifest = {
   files: Record<string, string>;
 };
 
+export type BuildManifest = {
+  files: Record<string, string>;
+};
+
 const sha256 = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex");
 
 async function localImportGraph(entry: URL): Promise<URL[]> {
@@ -99,5 +103,37 @@ export async function verifyBuiltLanguages(dist: URL, languageIds: readonly stri
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
       throw new Error(`highlight build has incomplete ${directory}: expected ${expected.length} language assets, found ${actual.length}`);
     }
+  }
+}
+
+async function builtFiles(directory: URL, prefix = ""): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.name === ".build-manifest.json") continue;
+    const path = `${prefix}${entry.name}`;
+    if (entry.isDirectory()) files.push(...await builtFiles(new URL(`${entry.name}/`, directory), `${path}/`));
+    else if (entry.isFile()) files.push(path);
+    else files.push(`${path}/`);
+  }
+  return files.sort();
+}
+
+export async function createBuildManifest(dist: URL): Promise<BuildManifest> {
+  const files: Record<string, string> = {};
+  for (const path of await builtFiles(dist)) files[path] = sha256(await readFile(new URL(path, dist)));
+  return { files };
+}
+
+export async function verifyBuildManifest(dist: URL, manifestUrl = new URL(".build-manifest.json", dist)): Promise<boolean> {
+  try {
+    const manifest = JSON.parse(await readFile(manifestUrl, "utf8")) as BuildManifest;
+    const actual = await builtFiles(dist);
+    if (JSON.stringify(Object.keys(manifest.files).sort()) !== JSON.stringify(actual)) return false;
+    for (const path of actual) {
+      if (sha256(await readFile(new URL(path, dist))) !== manifest.files[path]) return false;
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
