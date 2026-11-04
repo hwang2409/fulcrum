@@ -341,7 +341,7 @@ function Run({ client, sessions, open, opener, focusComposer }: { client: ZetaCl
   return (
     <Decisions.Provider value={decisions}>
       <Undelivered value={undelivered}>
-        <RunProvider store={open.lease.store} highlight={highlight}>
+        <RunProvider store={open.lease.store} highlight={highlight} onRetry={client ? () => client.retrySession(open.id) : undefined}>
           <RefreshOnIdle sessions={sessions} />
           <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready="true">
             <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />

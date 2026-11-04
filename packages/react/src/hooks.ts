@@ -36,7 +36,7 @@ export const useRunStore = () => {
   return store;
 };
 
-const syncedDiagnostics = { ignoredEvents: 0, desynced: false } as const;
+const syncedDiagnostics = { ignoredEvents: 0, sanitizedFields: 0, desynced: false } as const;
 const noSubscription = () => () => {};
 export const useRunDiagnostics = () => {
   const store = useRunStore();

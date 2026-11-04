@@ -76,26 +76,35 @@ type SpliceOutline = (index: number, deleteCount: number, items: readonly Outlin
 
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 type Validator = (value: unknown) => boolean;
-type EventSchema<E> = { readonly [K in Exclude<keyof E, "type">]-?: Validator };
+interface FieldSchema {
+  readonly required: boolean;
+  readonly validate: Validator;
+  readonly fields?: Readonly<Record<string, FieldSchema>>;
+}
+type EventSchema<E> = { readonly [K in Exclude<keyof E, "type">]-?: FieldSchema };
+const required = (validate: Validator, fields?: FieldSchema["fields"]): FieldSchema => ({ required: true, validate, fields });
+const optional = (validate: Validator, fields?: FieldSchema["fields"]): FieldSchema => ({ required: false, validate, fields });
 const string: Validator = (value) => typeof value === "string";
 const boolean: Validator = (value) => typeof value === "boolean";
 const finite: Validator = (value) => typeof value === "number" && Number.isFinite(value);
-const optional = (validator: Validator): Validator => (value) => value === undefined || validator(value);
 const oneOf = (...values: readonly unknown[]): Validator => (value) => values.includes(value);
 const array: Validator = Array.isArray;
 const object: Validator = record;
-const toolCall: Validator = (value) => record(value) && string(value.id) && string(value.name) && record(value.arguments);
-const message: Validator = (value) => record(value) && string(value.role) && Array.isArray(value.content);
-const block: Validator = (value) => record(value) && string(value.type);
-const toolResult: Validator = (value) => record(value) && string(value.tool_call_id) && string(value.content) && boolean(value.is_error) && optional(boolean)(value.is_canceled);
 const usage: Validator = (value) => {
   if (!record(value)) return false;
   for (const amount of Object.values(value)) if (!finite(amount)) return false;
   return true;
 };
-const unknownData: Validator = (value) => record(value) && optional(string)(value.notification_id);
+const toolCallFields = { id: required(string), name: required(string), arguments: required(object) };
+const messageFields = { role: required(string), content: required(array) };
+const toolResultFields = {
+  tool_call_id: required(string),
+  content: required(string),
+  is_error: required(boolean),
+  is_canceled: optional(boolean),
+};
 
-/** Invalid optional fields reject the whole event, so reduction is always a counted no-op or a fully valid write. */
+/** Every consumed event field declares whether invalid data rejects the event or is omitted from it. */
 export const eventSchemas = {
   run_start: { data: optional(object) },
   run_end: { data: optional(object) },
@@ -104,23 +113,23 @@ export const eventSchemas = {
   message_start: { data: optional(object) },
   message_reset: { data: optional(object) },
   retry: {},
-  message_delta: { message_id: optional(string), delta: string, kind: optional(string) },
-  message_block: { message_id: optional(string), block },
-  message_commit: { message_id: optional(string), message },
-  tool_start: { tool_call: toolCall, view: optional(object), data: optional(object) },
-  tool_input: { tool_call: toolCall, input: string, view: optional(object), data: optional(object) },
-  tool_output: { tool_call: toolCall, output: string, view: optional(object), data: optional(object) },
-  tool_end: { tool_call: toolCall, tool_result: optional(toolResult), view: optional(object), data: optional(object) },
-  approval_request: { request_id: string, tool_call: toolCall, view: optional(object), delegated: boolean },
-  approval_end: { request_id: string, decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
-  usage: { usage },
-  user_message: { text: string, mode: string, attachments: optional(array), delivery_id: optional(string), intent: optional(string) },
-  error: { error: (value) => record(value) && string(value.code) && string(value.message) },
+  message_delta: { message_id: optional(string), delta: required(string), kind: optional(string) },
+  message_block: { message_id: optional(string), block: required(object, { type: required(string) }) },
+  message_commit: { message_id: optional(string), message: required(object, messageFields) },
+  tool_start: { tool_call: required(object, toolCallFields), view: optional(object), data: optional(object) },
+  tool_input: { tool_call: required(object, toolCallFields), input: required(string), view: optional(object), data: optional(object) },
+  tool_output: { tool_call: required(object, toolCallFields), output: required(string), view: optional(object), data: optional(object) },
+  tool_end: { tool_call: required(object, toolCallFields), tool_result: optional(object, toolResultFields), view: optional(object), data: optional(object) },
+  approval_request: { request_id: required(string), tool_call: required(object, toolCallFields), view: optional(object), delegated: required(boolean) },
+  approval_end: { request_id: required(string), decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
+  usage: { usage: required(usage) },
+  user_message: { text: required(string), mode: required(string), attachments: optional(array), delivery_id: optional(string), intent: optional(string) },
+  error: { error: required(object, { code: required(string), message: required(string) }) },
   notification: { notification_id: optional(string), data: optional(object) },
-  unknown: { name: string, data: unknownData },
+  unknown: { name: required(string), data: required(object, { notification_id: optional(string) }) },
   sub_agent: {
-    childRunId: string,
-    status: oneOf("running", "waiting_approval", "waiting_input", "idle", "done", "error", "canceled"),
+    childRunId: required(string),
+    status: required(oneOf("running", "waiting_approval", "waiting_input", "idle", "done", "error", "canceled")),
     name: optional(string),
     task: optional(string),
     latestActivity: optional(string),
@@ -135,14 +144,58 @@ export const eventSchemas = {
   },
 } satisfies { readonly [T in RunEvent["type"]]: EventSchema<Extract<RunEvent, { type: T }>> };
 
-const validateEvent = (input: unknown): RunEvent | undefined => {
+const inspectFields = (input: Record<string, unknown>, schema: Readonly<Record<string, FieldSchema>>): number => {
+  let sanitized = 0;
+  for (const field in schema) {
+    const rule = schema[field]!;
+    const value = input[field];
+    if (value === undefined || !rule.validate(value)) {
+      if (rule.required) return -1;
+      if (value !== undefined) sanitized++;
+      continue;
+    }
+    if (rule.fields) {
+      const nested = inspectFields(value as Record<string, unknown>, rule.fields);
+      if (nested < 0) return -1;
+      sanitized += nested;
+    }
+  }
+  return sanitized;
+};
+const sanitizeOptionalFields = (input: Record<string, unknown>, schema: Readonly<Record<string, FieldSchema>>): [Record<string, unknown>, number] => {
+  let output = input;
+  let count = 0;
+  for (const field in schema) {
+    const rule = schema[field]!;
+    const value = input[field];
+    if (value !== undefined && !rule.validate(value) && !rule.required) {
+      if (output === input) output = { ...input };
+      delete output[field];
+      count++;
+    } else if (value !== undefined && rule.fields) {
+      const [nested, nestedCount] = sanitizeOptionalFields(value as Record<string, unknown>, rule.fields);
+      if (nested !== value) {
+        if (output === input) output = { ...input };
+        output[field] = nested;
+      }
+      count += nestedCount;
+    }
+  }
+  return [output, count];
+};
+
+const validateEvent = (input: unknown, onSanitized?: (count: number) => void): RunEvent | undefined => {
   if (!record(input) || typeof input.type !== "string") return undefined;
   const type = input.type;
-  const schema = eventSchemas[type as RunEvent["type"]] as Record<string, Validator> | undefined;
+  const schema = eventSchemas[type as RunEvent["type"]] as Readonly<Record<string, FieldSchema>> | undefined;
   if (!schema)
     return { type: "unknown", name: type, data: record(input.data) ? input.data : {} };
-  for (const field in schema) if (!schema[field]!(input[field])) return undefined;
-  return input as unknown as RunEvent;
+  const invalidOptionalFields = inspectFields(input, schema);
+  if (invalidOptionalFields < 0) return undefined;
+  if (invalidOptionalFields === 0) return input as unknown as RunEvent;
+  const [sanitized, count] = sanitizeOptionalFields(input, schema);
+  onSanitized?.(count);
+  return sanitized as unknown as RunEvent;
 };
 
 type MessageDelta = Extract<RunEvent, { type: "message_delta" }>;
@@ -251,6 +304,7 @@ export function reduceAllWithEntities(
   events: RunEvent[],
   entities: EntityDraft,
   onInvalid?: (event: RunEvent) => void,
+  onSanitized?: (count: number) => void,
 ): RunState {
   // An empty delta carries no text: it must not open a row or publish a new state.
   const isEmptyDelta = (event: RunEvent | null) => event?.type === "message_delta" && event.delta === "";
@@ -332,7 +386,7 @@ export function reduceAllWithEntities(
   };
 
   for (const value of events) {
-    const event = validateEvent(value);
+    const event = validateEvent(value, onSanitized);
     if (!event) { onInvalid?.(value); continue; }
     const candidate =
       event.type === "notification"

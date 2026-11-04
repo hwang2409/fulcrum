@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import type { RunEvent } from "@fulcrum/core";
 import { connect, createClient, type Transport } from "../src/index.js";
 
@@ -147,41 +147,119 @@ test("a desynced session store reloads its history and keeps its lease", async (
   expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d2", kind: "user" }]);
 });
 
+test("desync history reload recovers automatically after transient failures", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = fakeTransport();
+    const client = connect(fake.transport, (flush) => flush());
+    let loads = 0;
+    let failures = 0;
+    const lease = await client.replay("transient", async () => {
+      loads++;
+      if (failures-- > 0) throw new Error("history unavailable");
+      return [{ type: "user_message" as const, text: `history ${loads}`, mode: "send", delivery_id: `d${loads}` }];
+    });
+    failures = 3;
+    let reads = 0;
+    lease.store.dispatch(new Proxy({ type: "retry" }, {
+      get(target, key, receiver) {
+        if (key === "type" && ++reads > 3) throw new Error("reducer failed");
+        return Reflect.get(target, key, receiver);
+      },
+    }) as RunEvent);
+    await Promise.resolve();
+    for (const delay of [500, 1_000, 2_000]) {
+      jest.advanceTimersByTime(delay);
+      await Promise.resolve();
+    }
+
+    expect(loads).toBe(5);
+    expect(lease.store.getDiagnostics()).toEqual({ ignoredEvents: 0, sanitizedFields: 0, desynced: false });
+    expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d5", kind: "user" }]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("desync history reload uses bounded exponential backoff", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = fakeTransport();
+    const client = connect(fake.transport, (flush) => flush());
+    let loads = 0;
+    let fail = false;
+    const lease = await client.replay("backoff", async () => {
+      loads++;
+      if (fail) throw new Error("history unavailable");
+      return [];
+    });
+    fail = true;
+    let reads = 0;
+    lease.store.dispatch(new Proxy({ type: "retry" }, {
+      get(target, key, receiver) {
+        if (key === "type" && ++reads > 3) throw new Error("reducer failed");
+        return Reflect.get(target, key, receiver);
+      },
+    }) as RunEvent);
+    await Promise.resolve();
+    expect(loads).toBe(2);
+
+    for (const [elapsed, expectedLoads] of [[499, 2], [1, 3], [999, 3], [1, 4], [2000, 5], [4000, 6], [8000, 7]] as const) {
+      jest.advanceTimersByTime(elapsed);
+      await Promise.resolve();
+      expect(loads).toBe(expectedLoads);
+    }
+    expect(lease.store.getDiagnostics().resyncError).toBe("history unavailable");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 test("failed desync history reloads are bounded, visible, and manually retryable", async () => {
-  const fake = fakeTransport();
-  const client = connect(fake.transport, (flush) => flush());
-  let loads = 0;
-  let fail = false;
-  const lease = await client.replay("retryable", async () => {
-    loads++;
-    if (fail) throw new Error("history unavailable");
-    return [{ type: "user_message" as const, text: `history ${loads}`, mode: "send", delivery_id: `d${loads}` }];
-  });
-  fail = true;
-  let reads = 0;
-  lease.store.dispatch(new Proxy({ type: "retry" }, {
-    get(target, key, receiver) {
-      if (key === "type" && ++reads > 3) throw new Error("reducer failed");
-      return Reflect.get(target, key, receiver);
-    },
-  }) as RunEvent);
-  for (let attempt = 0; attempt < 100 && !lease.store.getDiagnostics().resyncError; attempt++)
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  jest.useFakeTimers();
+  try {
+    const fake = fakeTransport();
+    const client = connect(fake.transport, (flush) => flush());
+    let loads = 0;
+    let fail = false;
+    const lease = await client.replay("retryable", async () => {
+      loads++;
+      if (fail) throw new Error("history unavailable");
+      return [{ type: "user_message" as const, text: `history ${loads}`, mode: "send", delivery_id: `d${loads}` }];
+    });
+    fail = true;
+    let reads = 0;
+    lease.store.dispatch(new Proxy({ type: "retry" }, {
+      get(target, key, receiver) {
+        if (key === "type" && ++reads > 3) throw new Error("reducer failed");
+        return Reflect.get(target, key, receiver);
+      },
+    }) as RunEvent);
+    await Promise.resolve();
+    for (const delay of [500, 1_000, 2_000, 4_000, 8_000]) {
+      jest.advanceTimersByTime(delay);
+      await Promise.resolve();
+    }
+    await Promise.resolve();
 
-  expect(loads).toBe(4);
-  expect(lease.store.getDiagnostics()).toEqual({
-    ignoredEvents: 0,
-    desynced: true,
-    reason: "reducer failed",
-    resyncError: "history unavailable",
-  });
-  expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d1", kind: "user" }]);
+    expect(loads).toBe(7);
+    expect(lease.store.getDiagnostics()).toEqual({
+      ignoredEvents: 0,
+      sanitizedFields: 0,
+      desynced: true,
+      reason: "reducer failed",
+      resyncError: "history unavailable",
+    });
+    expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d1", kind: "user" }]);
 
-  fail = false;
-  await client.retrySession("retryable");
-  expect(loads).toBe(5);
-  expect(lease.store.getDiagnostics()).toEqual({ ignoredEvents: 0, desynced: false });
-  expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d5", kind: "user" }]);
+    fail = false;
+    await client.retrySession("retryable");
+    expect(loads).toBe(8);
+    expect(lease.store.getDiagnostics()).toEqual({ ignoredEvents: 0, sanitizedFields: 0, desynced: false });
+    expect(lease.store.getOutline()).toEqual([{ id: "user:delivery:d8", kind: "user" }]);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test("negotiated delivery ids match echoes by id, not text", async () => {

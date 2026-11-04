@@ -521,7 +521,7 @@ const ResyncStatus = () => {
   if (!diagnostics.desynced) return null;
   return (
     <div data-part="resync-status" data-state={diagnostics.resyncError ? "error" : "pending"} role="status">
-      resyncing…
+      {diagnostics.resyncError ? "could not resync" : "resyncing…"}
       {diagnostics.resyncError && retry ? <button type="button" data-part="resync-retry" onClick={retry}>retry</button> : null}
     </div>
   );

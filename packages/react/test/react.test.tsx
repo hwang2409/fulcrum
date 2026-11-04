@@ -118,7 +118,7 @@ test("a desynced timeline keeps its rows, offers retry, and recovers after resyn
   act(() => root!.render(view()));
 
   expect(container.textContent).toContain("last good");
-  expect(container.textContent).toContain("resyncing…");
+  expect(container.textContent).toContain("could not resync");
   const retry = q('[data-part="resync-retry"]');
   expect(retry.textContent).toBe("retry");
   act(() => retry.click());

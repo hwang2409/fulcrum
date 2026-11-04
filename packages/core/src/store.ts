@@ -60,6 +60,7 @@ export interface StoreOptions {
 }
 export interface StoreDiagnostics {
   readonly ignoredEvents: number;
+  readonly sanitizedFields: number;
   readonly desynced: boolean;
   readonly reason?: string;
   readonly resyncError?: string;
@@ -82,14 +83,15 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let disposed = false;
   let desynced = false;
   let ignoredEvents = 0;
-  let diagnostics: StoreDiagnostics = { ignoredEvents, desynced };
+  let sanitizedFields = 0;
+  let diagnostics: StoreDiagnostics = { ignoredEvents, sanitizedFields, desynced };
   let stateChanged = false;
   let outlineChanged = false;
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
   let edits: OutlineSplice[] = [];
   const setDiagnostics = (next: StoreDiagnostics) => {
-    if (diagnostics.ignoredEvents === next.ignoredEvents && diagnostics.desynced === next.desynced && diagnostics.reason === next.reason && diagnostics.resyncError === next.resyncError) return;
+    if (diagnostics.ignoredEvents === next.ignoredEvents && diagnostics.sanitizedFields === next.sanitizedFields && diagnostics.desynced === next.desynced && diagnostics.reason === next.reason && diagnostics.resyncError === next.resyncError) return;
     diagnostics = next;
     diagnosticsListeners.forEach((listener) => listener());
   };
@@ -110,14 +112,14 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
         splice: (edit) => edits.push(edit),
         getMessageAlias: (key) => messageAliases.get(key),
         setMessageAlias: (key, id) => { messageAliases.set(key, id); },
-      }, () => { ignoredEvents++; });
+      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; });
     } catch (error) {
       desynced = true;
       pending = [];
       edits = [];
       changedItems.clear();
       flushing = false;
-      setDiagnostics({ ignoredEvents, desynced: true, reason: errorMessage(error) });
+      setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
       options.onError?.(error);
       return false;
     }
@@ -139,7 +141,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     }
     edits = [];
     flushing = false;
-    setDiagnostics({ ignoredEvents, desynced: false });
+    setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
     return true;
   };
   const notify = () => {
@@ -218,7 +220,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       desynced = false;
       pending.push(...events);
       flush();
-      if (!desynced) setDiagnostics({ ignoredEvents, desynced: false });
+      if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
     },
     subscribe,
@@ -262,7 +264,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       changedItems.clear();
       edits = [];
       desynced = false;
-      diagnostics = { ignoredEvents, desynced: false };
+      diagnostics = { ignoredEvents, sanitizedFields, desynced: false };
       stateChanged = false;
       outlineChanged = false;
     },

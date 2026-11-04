@@ -22,6 +22,7 @@ export interface SessionLease {
 }
 const adapterError = (message: string) => ({ type: "error" as const, error: { code: "adapter_invalid_frame", message } });
 const encoder = new TextEncoder();
+const RESYNC_BACKOFF_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 
 export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
   let nextId = 1;
@@ -61,7 +62,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     buffers.set(session, waiting);
     let failure: unknown;
     try {
-      for (const delay of [0, 50, 100]) {
+      for (const delay of [0, ...RESYNC_BACKOFF_MS]) {
         if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
         try {
           const history = await load();
@@ -147,8 +148,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;
     const deliveryIds = negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_delivery_id");
-    if (deliveryIds && event.delivery_id === undefined)
-      return event;
+    if (deliveryIds && event.delivery_id === undefined) return event;
     const owner = deliveryIds
       ? [...pending.values()].find((request) => request.deliveryId === event.delivery_id)
       : [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text);
