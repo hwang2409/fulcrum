@@ -44,6 +44,7 @@ const samples: Record<string, string> = {
   graphql: "query User($id: ID!) {\n  user(id: $id) { name }\n}\n",
   protobuf: "syntax = \"proto3\";\nmessage User { string name = 1; }\n",
 };
+const regressionOrder = ["tsx", "jsx", "typescript", "javascript", "html", "vue", "svelte", "markdown", "julia", "python", "rust", "go", "c", "cpp", "shell", "json", "yaml", "toml", "sql", "diff"];
 const newSamples: Record<string, string> = {
   vue: "<template><button @click=\"count++\">{{ count }}</button></template>\n<script setup lang=\"ts\">const count = ref(0);</script>\n",
   svelte: "<script lang=\"ts\">let count: number = 0;</script>\n<button on:click={() => count++}>{count}</button>\n",
@@ -69,10 +70,10 @@ function terminal(completion: CompletionNotice, language: string): void {
   const reason = completion.reason ? ` (${completion.reason})` : "";
   throw new Error(`${language} version ${completion.version} completed ${completion.status}${reason}`);
 }
-async function within<T>(promise: Promise<T>, language: string): Promise<T> {
+async function within<T>(promise: Promise<T>, language: string, timeoutMs = 30_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${language} completion exceeded 30s`)), 30_000); })]);
+    return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${language} completion exceeded ${timeoutMs / 1_000}s`)), timeoutMs); })]);
   } finally { clearTimeout(timer); }
 }
 async function finalTokens(highlight: Highlight, source: string, language: string, id: string, version: number) {
@@ -85,7 +86,7 @@ async function finalTokens(highlight: Highlight, source: string, language: strin
   if (first === null) throw new Error(`main registry fixture is not supported by this build: ${language}`);
   const initial = await first;
   if (historical) {
-    if (!typed(split(initial))) await within(updated!, language);
+    if (!typed(split(initial))) await within(updated!, language, 15_000).catch(() => undefined);
     unsubscribe!();
   } else {
     if (typeof highlight.awaitCompletion !== "function") throw new Error("highlight build does not expose awaitCompletion; HISTORICAL_COMPLETION=1 is only for the ffc3883 regression proof");
@@ -154,13 +155,20 @@ if (mode === "generate") {
   const highlighter = createHighlighter();
   try {
     const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof highlighter.awaitCompletion !== "function";
-    const inputs = historical ? { ...samples, ...newSamples } : samples;
+    const allInputs = { ...samples, ...newSamples };
+    const historicalOrder = [...regressionOrder, ...Object.keys(allInputs).filter((language) => !regressionOrder.includes(language))];
+    const inputs = historical ? Object.fromEntries(historicalOrder.map((language) => [language, allInputs[language]!])) : samples;
     const expectedTokens = historical ? { ...expected.legacy, ...expected.newReference } : expected.legacy;
-    const actual = await controllerSamples(highlighter, inputs, "parity");
-    const changed = differences(actual, expectedTokens);
-    if (changed.length) {
-      await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(actual, null, 2) + "\n");
-      throw new Error(`legacy token parity failed: ${changed.join(", ")} (actual: /tmp/highlight-token-parity-actual.json)`);
+    const failures = new Set<string>();
+    const runs: Record<string, Record<string, Sample>> = {};
+    for (let run = 1; run <= 3; run++) {
+      const actual = await controllerSamples(highlighter, inputs, `parity-${run}`);
+      runs[String(run)] = actual;
+      for (const language of differences(actual, expectedTokens)) failures.add(language);
+    }
+    if (failures.size) {
+      await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(runs, null, 2) + "\n");
+      throw new Error(`legacy token parity failed: ${[...failures].join(", ")} (actual: /tmp/highlight-token-parity-actual.json)`);
     }
   } finally { highlighter.dispose(); }
   console.log(`token parity passed: ${Object.keys(expected.legacy).length} main-registry languages, ${Object.keys(expected.newReference).length} direct references, exact completed revisions`);
