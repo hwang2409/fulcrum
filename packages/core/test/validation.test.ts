@@ -137,8 +137,9 @@ const terminalCases: Array<[string, RunEvent[], unknown, (store: ReturnType<type
     expect(store.getState().activeToolIds.t).toBeUndefined();
     expect(store.getItem("tool:t")).toMatchObject({ active: false });
   }],
-  ["approval_end.decision", [{ type: "approval_request", request_id: "r", tool_call: tool, delegated: false }], { type: "approval_end", request_id: "r", decision: "maybe" }, (store) => {
-    expect(store.getItem("approval:r")).toMatchObject({ ended: { type: "approval_end", request_id: "r" } });
+  ["approval_end.decision", [{ type: "tool_start", tool_call: tool }, { type: "approval_request", request_id: "r", tool_call: tool, delegated: false }], { type: "approval_end", request_id: "r", decision: "maybe" }, (store) => {
+    expect(store.getState().toolApprovals.t).toBeUndefined();
+    expect(store.getItem("tool:t")).toMatchObject({ approval: { type: "approval_end", request_id: "r" } });
   }],
   ["sub_agent.summary", [{ type: "sub_agent", childRunId: "c", status: "running" }], { type: "sub_agent", childRunId: "c", status: "done", summary: 7 }, (store) => expect(store.getItem("sub-agent:c")).toMatchObject({ status: "done" })],
 ];
