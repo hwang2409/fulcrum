@@ -314,6 +314,22 @@ test("a running open stays snapshot-only until idle, then reloads one complete m
   expect(view.state.open?.syncing).toBe(false);
 });
 
+test("snapshot-only mode discovers an approval that starts after history loads", async () => {
+  let statusCalls = 0;
+  const fake = await server(handlers("b", {
+    status: () => ({
+      session: meta("b", "x"),
+      state: ++statusCalls >= 4 ? "tool" : "running",
+      pending_approvals: statusCalls >= 4 ? [{ request_id: "late", tool_call: { id: "late-tool", name: "bash", arguments: { command: "bun test" } }, delegated: false }] : [],
+    }),
+  }));
+  const connection = source(fake.client);
+  const view = createSessions(connection);
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  expect(view.state.open!.lease.store.getItem("approval:late")).toMatchObject({ type: "approval", request: { request_id: "late" } });
+  connection.set(null);
+});
+
 test("live events after the open land in the open store", async () => {
   const fake = await server(handlers("b"));
   const view = createSessions(source(fake.client));

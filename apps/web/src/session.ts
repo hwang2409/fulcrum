@@ -105,9 +105,15 @@ export async function openSession(client: ZetaClient, id: string, progress?: Ope
       client.finishReplay(id);
       return { syncing: false };
     }
+    let pending = JSON.stringify(status.pending_approvals ?? []);
     while (status.state !== "idle") {
       await wait(500, signal);
       status = await getStatus(client, signal);
+      const nextPending = JSON.stringify(status.pending_approvals ?? []);
+      if (nextPending !== pending) {
+        for (const event of snapshotEvents(id, [], status)) if (event.type === "approval_request") lease.store.dispatch(event);
+        pending = nextPending;
+      }
     }
     const finalRows: unknown[] = [];
     for (let offset: number | null = 0; offset !== null; ) {
