@@ -239,10 +239,7 @@ if (mode === "generate") {
   const scenarios: [string, readonly string[]][] = [
     ...Object.keys(inputs).map((language): [string, string[]] => [`isolation-${language}`, [language]]), ...orders,
   ];
-  const scenarioConcurrency = Math.max(4, Math.min(12, navigator.hardwareConcurrency));
-  for (let index = 0; index < scenarios.length; index += scenarioConcurrency) {
-    await Promise.all(scenarios.slice(index, index + scenarioConcurrency).map(([name, order]) => checkScenario(name, order)));
-  }
+  await Promise.all(scenarios.map(([name, order]) => checkScenario(name, order)));
   if (failures.size) {
     await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(runs, null, 2) + "\n");
     throw new Error(`legacy token parity failed: ${[...failures].join(", ")} (shuffle seed ${seed}; ${failedScenarios.join("; ")}; actual: /tmp/highlight-token-parity-actual.json)`);
