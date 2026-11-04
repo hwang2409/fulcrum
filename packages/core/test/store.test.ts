@@ -290,10 +290,11 @@ test("a malformed event after a plain row is a counted no-op", () => {
   const store = createRunStore((flush) => jobs.push(flush));
   store.dispatch({ type: "user_message", text: "go", mode: "send" });
   store.dispatch({ type: "tool_start", tool_call: undefined as never });
+  store.dispatch(null as never);
   jobs.shift()!();
   expect(store.getOutline()).toEqual([{ id: "user:1", kind: "user" }]);
   expect(store.getItem("user:1")).toBeDefined();
-  expect(store.getDiagnostics().ignoredEvents).toBe(1);
+  expect(store.getDiagnostics().ignoredEvents).toBe(2);
 });
 
 test("dispose and replay rebuilds delivery aliases", () => {
