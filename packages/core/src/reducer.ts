@@ -220,7 +220,7 @@ export function reduceAllWithEntities(
   onInvalid?: (event: RunEvent) => void,
 ): RunState {
   // An empty delta carries no text: it must not open a row or publish a new state.
-  const isEmptyDelta = (event: RunEvent) => record(event) && event.type === "message_delta" && event.delta === "";
+  const isEmptyDelta = (event: RunEvent | null) => event?.type === "message_delta" && event.delta === "";
   if (events.some(isEmptyDelta)) events = events.filter((event) => !isEmptyDelta(event));
   if (events.length === 0) return state;
 
