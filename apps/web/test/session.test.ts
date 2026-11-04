@@ -190,6 +190,28 @@ test("selecting another session resumes it, releases the old one, and reports pr
   expect(fake.calls.some(([method, params]) => method === "resume" && params.session_id === "a")).toBe(true);
 });
 
+test("switching sessions cancels background history without replacing the new run", async () => {
+  let release!: () => void;
+  const later = new Promise<{ messages: unknown[]; next_offset: null }>((resolve) => { release = () => resolve({ messages: [], next_offset: null }); });
+  const fake = await server(handlers("b", {
+    session_history: (params) => {
+      if (params.session_id === "b" && params.offset === 0) return { messages: [], next_offset: 1 };
+      if (params.session_id === "b") return later;
+      return { messages: [{ id: "a", role: "user", content: [{ type: "text", text: "new run" }], tool_result: null }], next_offset: null };
+    },
+  }));
+  const view = createSessions(source(fake.client));
+  await tick();
+  expect(view.state.open?.id).toBe("b");
+  view.select("a");
+  await tick();
+  expect(view.state.open?.id).toBe("a");
+  release();
+  await tick();
+  expect(view.state.open?.id).toBe("a");
+  expect(kinds(view.state)).toEqual(["user"]);
+});
+
 test("the newest selection wins when opens overlap", async () => {
   const fake = await server(handlers(null));
   const view = createSessions(source(fake.client));
