@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createRunStore, initialState, type RunEvent } from "../src/index.js";
+import { eventSchemas } from "../src/reducer.js";
 
 const seeds = [11, 29, 101, 2027, 65537];
 const rng = (seed: number) => () => ((seed = Math.imul(seed ^ seed >>> 15, 1 | seed), seed ^= seed + Math.imul(seed ^ seed >>> 7, 61 | seed)), ((seed ^ seed >>> 14) >>> 0) / 4294967296);
@@ -95,7 +96,10 @@ const replacePath = (source: Record<string, unknown>, path: string, value: unkno
 };
 
 test("every field of every known event kind rejects a wrong type", () => {
+  expect(new Set(fieldCases.map(({ event }) => event.type))).toEqual(new Set(Object.keys(eventSchemas)));
   for (const { event, fields } of fieldCases) {
+    const testedFields = new Set(fields.filter(([path]) => path !== "type").map(([path]) => path.split(".")[0]));
+    expect(testedFields, String(event.type)).toEqual(new Set(Object.keys(eventSchemas[event.type as keyof typeof eventSchemas])));
     for (const [path, wrong] of fields) {
       const store = createRunStore((flush) => flush());
       const invalid = path === "type" ? { ...event, type: wrong } : replacePath(event, path, wrong);
