@@ -203,8 +203,9 @@ type ViewerMeasurement = { fixture: string; width: number; openMs: number; appen
 const viewerSamples = 5;
 const median = (values: number[]) => [...values].sort((left, right) => left - right)[values.length >> 1]!;
 // 16 ms remains the browser's 60 fps product target. CI uses a same-run ratio and a loose
-// pathological ceiling because runner speed varies; the browser benchmark still reports the target.
-const viewerTimingFails = (value: number, baseline: number) => value > baseline * 4.5 || value >= 64;
+// pathological ceiling because runner speed varies; 3x catches a sustained regression while
+// keeping the product's 60 fps target as a separate absolute check.
+const viewerTimingFails = (value: number, baseline: number) => value > baseline * 3 || value >= 64;
 
 async function measureViewer(page: Page, width: number, fixture: "single" | "lines" | "read"): Promise<ViewerMeasurement> {
   const openSamples: number[] = [];
@@ -263,11 +264,11 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
   await page.waitForTimeout(100);
   const appendSamples: number[] = [];
   for (let sample = 0; sample < viewerSamples; sample++) appendSamples.push(await page.evaluate(({ sample, slowdown }) => new Promise<number>((resolve) => requestAnimationFrame(() => {
-    if (slowdown) { const until = performance.now() + slowdown; while (performance.now() < until) { /* deliberate proof slowdown */ } }
     const viewer = document.querySelector('[data-part="text-viewer"]')!;
     const observer = new MutationObserver(() => { observer.disconnect(); resolve(performance.now() - started); });
     observer.observe(viewer, { childList: true, subtree: true, characterData: true, attributes: true });
     const started = performance.now();
+    if (slowdown) { const until = performance.now() + slowdown; while (performance.now() < until) { /* deliberate proof slowdown */ } }
     (window as typeof window & { __appendViewerFixture: (delta: string) => void }).__appendViewerFixture(`\nstreamed tail ${sample}`);
   })), { sample, slowdown: fixture === "read" ? Number(process.env.TIMING_GATE_SLOWDOWN_MS ?? 0) : 0 }));
   const appendMs = median(appendSamples);
@@ -498,8 +499,8 @@ try {
   for (const width of [390, 1440]) {
     const baseline = viewerMeasurements.find((measurement) => measurement.width === width && measurement.fixture === "single")!;
     for (const measured of viewerMeasurements.filter((measurement) => measurement.width === width && measurement.fixture !== "single")) {
-      if (viewerTimingFails(measured.openMs, baseline.openMs)) failures.push(`viewer ${measured.fixture} @ ${width}: median open ${measured.openMs.toFixed(1)} ms is over 4.5x single baseline ${baseline.openMs.toFixed(1)} ms`);
-      if (viewerTimingFails(measured.appendMs, baseline.appendMs)) failures.push(`viewer ${measured.fixture} @ ${width}: median append ${measured.appendMs.toFixed(1)} ms is over 4.5x single baseline ${baseline.appendMs.toFixed(1)} ms`);
+      if (viewerTimingFails(measured.openMs, baseline.openMs)) failures.push(`viewer ${measured.fixture} @ ${width}: median open ${measured.openMs.toFixed(1)} ms is over 3x single baseline ${baseline.openMs.toFixed(1)} ms`);
+      if (viewerTimingFails(measured.appendMs, baseline.appendMs)) failures.push(`viewer ${measured.fixture} @ ${width}: median append ${measured.appendMs.toFixed(1)} ms is over 3x single baseline ${baseline.appendMs.toFixed(1)} ms`);
     }
   }
   for (const fixture of ["edit", "search"] as const) {
