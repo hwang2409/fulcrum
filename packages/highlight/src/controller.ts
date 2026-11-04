@@ -66,7 +66,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const notify = (context: HighlightContext, completion: Completion) => {
     const key = revision(context);
     const notice = { version: context.version, ...completion };
-    for (const listener of listeners.get(context.id) ?? []) listener(notice);
+    const tell = () => { for (const listener of listeners.get(context.id) ?? []) listener(notice); };
+    if (completion.status === "superseded") queueMicrotask(tell); else tell();
     if (completion.status !== "pending") {
       for (const resolve of completionWaiters.get(key) ?? []) resolve(notice);
       completionWaiters.delete(key);

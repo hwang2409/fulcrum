@@ -421,6 +421,22 @@ describe("worker liveness and restarts", () => {
     highlighter.dispose();
   });
 
+  test("a superseded notice cannot duplicate the current streaming request", async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    let code = "one\n";
+    let context = { id: "no-waste", version: 1, state: "streaming" as const };
+    highlighter.subscribe(context.id, () => { highlighter(code, "typescript", context); });
+    highlighter(code, "typescript", context);
+    workers[0].send({ requestId: workers[0].posted[0].requestId, tokens: [{ text: code }], provenance: provenance(workers[0], 0, false), completion: { status: "pending" }, of: 1 });
+    code = "one\ntwo\n";
+    context = { id: "no-waste", version: 2, state: "streaming" };
+    highlighter(code, "typescript", context);
+    await Promise.resolve();
+    expect(workers[0].posted).toHaveLength(2);
+    highlighter.dispose();
+  });
+
   test("disposing after a cold reply settles its revision", async () => {
     const workers: Scripted[] = [];
     const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
