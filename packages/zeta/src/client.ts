@@ -72,6 +72,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!value) return;
     stores.delete(session); stores.set(session, value);
   };
+  const waitForRecovery = (recovery: Recovery, delay: number) => new Promise<void>((resolve) => {
+    recovery.wake = resolve;
+    recovery.timer = setTimeout(resolve, delay);
+  });
   const resyncSession = async (session: string, target: SessionStore) => {
     const load = replayLoads.get(session);
     if (!load) return;
@@ -84,10 +88,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     try {
       for (const delay of [0, ...RESYNC_BACKOFF_MS]) {
         if (delay) {
-          await new Promise<void>((resolve) => {
-            recovery.wake = resolve;
-            recovery.timer = setTimeout(resolve, delay);
-          });
+          await waitForRecovery(recovery, delay);
           recovery.wake = undefined;
           recovery.timer = undefined;
         }

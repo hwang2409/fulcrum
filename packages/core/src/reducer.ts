@@ -151,44 +151,44 @@ export const eventSchemas = {
 
 const OMIT = Symbol("omit invalid optional field");
 type Sanitized = { readonly value?: Record<string, unknown>; readonly count: number };
-const sanitizeFields = (input: Record<string, unknown>, schema: Readonly<Record<string, FieldSchema>>): Sanitized => {
-  let count = 0;
-  let changes: Map<string, unknown> | undefined;
-  for (const field in schema) {
-    const rule = schema[field]!;
-    let value: unknown;
-    let invalid = false;
-    try {
-      value = input[field];
-      invalid = value !== undefined && !rule.validate(value);
-    } catch {
-      invalid = true;
-    }
-    if (value === undefined || invalid) {
-      if (rule.required) return { count: 0 };
-      if (invalid) {
-        (changes ??= new Map()).set(field, OMIT);
-        count++;
-      }
-      continue;
-    }
-    if (!rule.inspectFields || !rule.fields) continue;
-    const nested = sanitizeFields(value as Record<string, unknown>, rule.fields);
-    if (!nested.value) return { count: 0 };
-    count += nested.count;
-    if (nested.value !== value) (changes ??= new Map()).set(field, nested.value);
-  }
-  if (!changes) return { value: input, count };
+type SanitizedField = { readonly invalid?: true; readonly changed?: unknown; readonly count: number };
+const copyWithChanges = (input: Record<string, unknown>, changes: ReadonlyMap<string, unknown>) => {
   try {
     const descriptors = Object.getOwnPropertyDescriptors(input);
     for (const [field, value] of changes) {
       if (value === OMIT) delete descriptors[field];
       else descriptors[field] = { value, enumerable: descriptors[field]?.enumerable ?? true, configurable: true, writable: true };
     }
-    return { value: Object.create(Object.getPrototypeOf(input), descriptors) as Record<string, unknown>, count };
+    return Object.create(Object.getPrototypeOf(input), descriptors) as Record<string, unknown>;
   } catch {
-    return { count: 0 };
+    return undefined;
   }
+};
+const sanitizeField = (input: Record<string, unknown>, field: string, rule: FieldSchema): SanitizedField => {
+  let value: unknown;
+  try {
+    value = input[field];
+    if (value === undefined) return rule.required ? { invalid: true, count: 0 } : { count: 0 };
+    if (!rule.validate(value)) return rule.required ? { invalid: true, count: 0 } : { changed: OMIT, count: 1 };
+  } catch {
+    return rule.required ? { invalid: true, count: 0 } : { changed: OMIT, count: 1 };
+  }
+  if (!rule.inspectFields || !rule.fields) return { count: 0 };
+  const nested = sanitizeFields(value as Record<string, unknown>, rule.fields);
+  if (!nested.value) return { invalid: true, count: 0 };
+  return { count: nested.count, ...(nested.value === value ? {} : { changed: nested.value }) };
+};
+const sanitizeFields = (input: Record<string, unknown>, schema: Readonly<Record<string, FieldSchema>>): Sanitized => {
+  let count = 0;
+  let changes: Map<string, unknown> | undefined;
+  for (const field in schema) {
+    const result = sanitizeField(input, field, schema[field]!);
+    if (result.invalid) return { count: 0 };
+    count += result.count;
+    if (result.changed !== undefined) (changes ??= new Map()).set(field, result.changed);
+  }
+  if (!changes) return { value: input, count };
+  return { value: copyWithChanges(input, changes), count };
 };
 
 const validateEvent = (input: unknown, onSanitized?: (count: number) => void): RunEvent | undefined => {
