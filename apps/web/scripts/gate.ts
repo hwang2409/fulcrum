@@ -159,8 +159,8 @@ try {
       fake.drop();
       await fake.start();
       await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
-      await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 10_000 });
-      await page.getByText(/loading sessions/).waitFor({ timeout: 10_000 });
+      await page.locator('[data-part="timeline"] [data-part="message"], [data-part="timeline"] [data-part="tool"]').first().waitFor({ timeout: 10_000 }).catch(() => { throw new Error("newest history page did not render"); });
+      await page.getByText(/loading sessions/).waitFor({ timeout: 10_000 }).catch(() => { throw new Error("catalog loading state did not render"); });
       await page.locator(".dock textarea").fill("sent while the catalog loads");
       await page.locator(".dock textarea").press("Enter");
       await page.getByText("sent while the catalog loads", { exact: true }).waitFor({ timeout: 2000 });

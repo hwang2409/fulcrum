@@ -193,6 +193,27 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
   };
 }
 
+const historyGroups = (rows: Json[]) => {
+  const groups: Json[][] = [];
+  const tools = new Map<string, Json[]>();
+  for (const row of rows) {
+    if (row.event === "approval_request" || row.event === "approval_end") {
+      const toolId = (row.tool_call as { id?: unknown } | undefined)?.id;
+      let group = typeof toolId === "string" ? tools.get(toolId) : undefined;
+      if (!group) { group = groups.at(-1) ?? []; if (groups.length === 0) groups.push(group); }
+      group.push(row);
+      continue;
+    }
+    const group = [row];
+    groups.push(group);
+    for (const block of Array.isArray(row.content) ? row.content : []) {
+      const toolId = (block as { tool_call?: { id?: unknown } }).tool_call?.id;
+      if (typeof toolId === "string") tools.set(toolId, group);
+    }
+  }
+  return groups;
+};
+
 export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, serialDelays }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; serialDelays?: Readonly<Record<string, number | readonly number[]>> }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
@@ -301,7 +322,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
           controller = socket;
-          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect)) ?? [];
+          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect)) ?? [];
           const reconnect = features.includes("approval_reconnect");
           if (reconnect) reconnectControllers.add(socket as object);
           reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features } } });
@@ -352,11 +373,37 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
             await wait(openDelay);
           }
           const rows = (histories[active!] ?? []).filter((row) => approvalHistoryMode !== "not-advertised-without-rows" || (row.event !== "approval_request" && row.event !== "approval_end"));
-          const offset = Number(params.offset ?? 0);
+          const groups = historyGroups(rows);
           const pageSize = active === LARGE ? 128 : 8;
-          reply({ result: { messages: rows.slice(offset, offset + pageSize), next_offset: offset + pageSize < rows.length ? offset + pageSize : null } });
+          if (Object.hasOwn(params, "before")) {
+            const validator = params.history_validator as { end?: unknown; entry_id?: unknown } | undefined;
+            const before = params.before;
+            const malformed = Object.hasOwn(params, "offset") ||
+              (before !== null && (!Number.isInteger(before) || Number(before) < 0 || !validator)) ||
+              (before === null && validator !== undefined);
+            if (malformed) return reply({ error: { code: -32602, message: "invalid session_history parameters" } });
+            const end = before === null ? groups.length : Number(before);
+            const snapshotEnd = params.before === null ? groups.length : Number(validator?.end);
+            const endpoint = snapshotEnd ? String(groups[snapshotEnd - 1]?.findLast((row) => row.event !== "approval_request" && row.event !== "approval_end")?.id ?? "") : null;
+            if (params.before !== null && (validator?.end !== snapshotEnd || validator?.entry_id !== endpoint))
+              return reply({ error: { code: -32009, message: "history snapshot is stale", data: { code: "stale_history_snapshot" } } });
+            const start = Math.max(0, end - pageSize);
+            reply({ result: { messages: groups.slice(start, end).flat(), next_before: start || null, history_validator: { end: snapshotEnd, entry_id: endpoint } } });
+            if (liveEnabled && active === ACTIVE && !turnStarted) {
+              turnStarted = true;
+              running = true;
+              const ask = () => new Promise<"approve" | "deny" | "abort">((resolve) => {
+                approvalAborted = false;
+                decide = (decision) => { decide = null; resolve(decision); };
+              });
+              setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; }, currentHistoryMode)(), 300);
+            }
+            return;
+          }
+          const offset = Number(params.offset ?? 0);
+          reply({ result: { messages: groups.slice(offset, offset + pageSize).flat(), next_offset: offset + pageSize < groups.length ? offset + pageSize : null } });
           // The run starts once, after the first open of the active session finishes its history.
-          if (liveEnabled && active === ACTIVE && offset + pageSize >= rows.length && !turnStarted) {
+          if (liveEnabled && active === ACTIVE && offset + pageSize >= groups.length && !turnStarted) {
             turnStarted = true;
             running = true;
             const ask = () => new Promise<"approve" | "deny" | "abort">((resolve) => {
