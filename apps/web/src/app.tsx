@@ -356,7 +356,14 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
   const scroll = useRef<HTMLDivElement>(null);
   const decisions = useMemo(() => {
     if (!client || open.stale || readOnly) return { disabledReason: readOnly ? "opening another session — decisions are paused" : "reconnecting — decisions are disabled until the server confirms this session" };
-    const decide = (method: "approve" | "deny"): Decide => (request_id) => client.request(method, { request_id }, { timeoutMs: 15_000 });
+    const decide = (method: "approve" | "deny"): Decide => async (request_id) => {
+      try {
+        return await client.request(method, { request_id }, { timeoutMs: 15_000 });
+      } catch (error) {
+        if ((error as { code?: unknown }).code === -32006) throw new Error("this approval expired while you were disconnected");
+        throw error;
+      }
+    };
     return { approve: decide("approve"), deny: decide("deny") };
   }, [client, open.stale, readOnly]);
   useLayoutEffect(() => {

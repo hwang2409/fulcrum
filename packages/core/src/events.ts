@@ -185,6 +185,10 @@ export type RunEvent =
       tool_call: ToolCall;
       view?: ToolView;
       delegated: boolean;
+      /** Temporary adapter-supplied state while the request cannot accept a decision. */
+      state?: "reconnecting" | "resolving";
+      status?: string;
+      disabled_reason?: string;
     }
   | { type: "approval_end"; request_id: string; decision?: ApprovalDecision; data?: Record<string, unknown> }
   | { type: "usage"; usage: Record<string, number> }

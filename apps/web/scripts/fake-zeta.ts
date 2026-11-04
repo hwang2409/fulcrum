@@ -214,7 +214,7 @@ const historyGroups = (rows: Json[]) => {
   return groups;
 };
 
-export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", serialDelays }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; serialDelays?: Readonly<Record<string, number | readonly number[]>> }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, serialDelays }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; serialDelays?: Readonly<Record<string, number | readonly number[]>> }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
@@ -244,6 +244,18 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   const requests: Array<{ method: string; received: number; started: number; replied?: number }> = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
   let controller: ServerWebSocket<unknown> | null = null;
+  const reconnectControllers = new WeakSet<object>();
+  let approvalExpiry: ReturnType<typeof setTimeout> | null = null;
+  const approvalCall = { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } };
+  const expireApproval = () => {
+    if (!decide || approvalAborted) return;
+    approvalAborted = true;
+    const resolve = decide;
+    decide = null;
+    running = false;
+    histories[ACTIVE]!.push({ id: `approval-end-expire-${Date.now()}`, role: "system", event: "approval_end", request_id: "approval-1", tool_call: approvalCall, data: { decision: "abort", reason: "grace_expired" } });
+    resolve("abort");
+  };
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   let openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
   const composer = composerMethods(wait, { get: () => running, set: (value) => { running = value; } });
@@ -279,12 +291,17 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         if (socket !== controller) return;
         controller = null;
         if (!decide || approvalAborted) return;
+        if (approvalReconnect && reconnectControllers.has(socket as object)) {
+          if (approvalExpiry) clearTimeout(approvalExpiry);
+          approvalExpiry = setTimeout(expireApproval, approvalReconnectGraceMs);
+          return;
+        }
         approvalAborted = true;
         const resolve = decide;
         decide = null;
         running = false;
         histories[ACTIVE]!.push({ id: `drop-${Date.now()}`, role: "tool_result", content: [text("")], tool_result: result("live-2", "connection lost", { is_canceled: true }) });
-        if (currentHistoryMode === "new") histories[ACTIVE]!.push({ id: `approval-end-drop-${Date.now()}`, role: "system", event: "approval_end", request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, data: { decision: "abort", reason: "controller_disconnected" } });
+        if (currentHistoryMode === "new") histories[ACTIVE]!.push({ id: `approval-end-drop-${Date.now()}`, role: "system", event: "approval_end", request_id: "approval-1", tool_call: approvalCall, data: { decision: "abort", reason: "controller_disconnected" } });
         resolve("abort");
       },
       message(socket, raw) {
@@ -305,7 +322,19 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
           controller = socket;
-          return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
+          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect)) ?? [];
+          const reconnect = features.includes("approval_reconnect");
+          if (reconnect) reconnectControllers.add(socket as object);
+          reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features } } });
+          if (decide && !approvalAborted) {
+            if (!reconnect) expireApproval();
+            else {
+              if (approvalExpiry) clearTimeout(approvalExpiry);
+              approvalExpiry = null;
+              queueMicrotask(() => socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "approval_request", session_id: ACTIVE, request_id: "approval-1", tool_call: approvalCall, delegated: false } })));
+            }
+          }
+          return;
         }
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
@@ -384,6 +413,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           decisions.push({ method, ...params });
           if (!decide || params.request_id !== "approval-1") return reply({ error: { code: -32006, message: "approval request is missing or already resolved" } });
           reply({ result: { accepted: true, request_id: params.request_id, decision: method } });
+          if (approvalExpiry) clearTimeout(approvalExpiry);
+          approvalExpiry = null;
           return decide(method);
         }
         const handled = composer.handle(method, params, active, send);
