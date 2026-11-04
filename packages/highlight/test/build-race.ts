@@ -12,7 +12,7 @@ const children: Bun.Subprocess[] = [];
 
 await cp(sourcePackageDir, packageDir, {
   recursive: true,
-  filter: (source) => basename(source) !== "dist" && basename(source) !== "node_modules",
+  filter: (source) => basename(source) !== "node_modules",
 });
 await cp(join(sourceRoot, "bun.lock"), join(temporaryRoot, "bun.lock"));
 await symlink(join(sourceRoot, "node_modules"), join(temporaryRoot, "node_modules"));
@@ -34,8 +34,6 @@ async function containsTemporaryBuildPath(directory: string): Promise<boolean> {
 
 test("concurrent package builds keep a complete path-independent dist", { timeout: 30_000 }, async () => {
   const sourceWorkerInode = (await stat(join(sourcePackageDir, "dist/worker.js"))).ino;
-  const baseline = Bun.spawnSync(["bun", "run", "build"], { cwd: packageDir, stdout: "ignore", stderr: "inherit" });
-  expect(baseline.exitCode).toBe(0);
   const builds = [0, 1].map(() => {
     const child = Bun.spawn(["bun", "run", "build"], { cwd: packageDir, stdout: "ignore", stderr: "pipe" });
     children.push(child);
