@@ -187,15 +187,19 @@ type TransitionEvent =
 
 export function reduceSessionTransition(transition: SessionTransition, event: TransitionEvent): SessionTransition {
   const run = transitionRun(transition);
-  if (event.type === "start") return run ? { kind: "replacing", from: run, to: event.id, messages: 0 } : { kind: "opening", to: event.id, messages: 0 };
-  if (event.type === "opened") return { kind: "open", run: event.run };
-  if (event.type === "updated") return { kind: "open", run: event.run };
-  if (event.type === "failed") return { kind: "failed", run, to: event.id, error: event.error };
-  if (event.type === "stale") return run ? { kind: "open", run: { ...run, stale: true } } : transition;
-  if (event.type === "dismiss") return run ? { kind: "open", run } : { kind: "idle", selected: transitionSelected(transition) };
-  if (transition.kind === "opening" && transition.to === event.id) return { ...transition, messages: event.messages };
-  if (transition.kind === "replacing" && transition.to === event.id) return { ...transition, messages: event.messages };
-  return transition;
+  switch (event.type) {
+    case "start": return run ? { kind: "replacing", from: run, to: event.id, messages: 0 } : { kind: "opening", to: event.id, messages: 0 };
+    case "opened":
+    case "updated": return { kind: "open", run: event.run };
+    case "failed": return { kind: "failed", run, to: event.id, error: event.error };
+    case "stale": return run ? { kind: "open", run: { ...run, stale: true } } : transition;
+    case "dismiss": return run ? { kind: "open", run } : { kind: "idle", selected: transitionSelected(transition) };
+    case "progress": {
+      if (transition.kind === "opening" && transition.to === event.id) return { ...transition, messages: event.messages };
+      if (transition.kind === "replacing" && transition.to === event.id) return { ...transition, messages: event.messages };
+      return transition;
+    }
+  }
 }
 
 export const sessionPresentation = (transition: SessionTransition) => {
