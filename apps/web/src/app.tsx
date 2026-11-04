@@ -6,7 +6,7 @@ import type { SessionStore, ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { createConnection, serveCommand, type Connection, type ConnectionState } from "./connection";
 import { createDelivery } from "./delivery";
-import { ago, createSessions, sessionTitle, topLevel, type SessionMeta, type Sessions, type SessionsState } from "./session";
+import { ago, createSessions, sessionPresentation, sessionTitle, topLevel, type OpenRun, type SessionMeta, type Sessions, type SessionsState } from "./session";
 import { ThemePicker, useTheme } from "./theme";
 
 const highlight = createHighlighter();
@@ -70,6 +70,7 @@ export function App() {
   useEffect(() => () => { sessions.dispose(); connection.stop(); }, [connection, sessions]);
   const state = useExternal(connection);
   const view = useExternal(sessions);
+  const present = sessionPresentation(view.transition);
   const [drawer, setDrawer] = useState(false);
   const menu = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef(false);
@@ -94,7 +95,7 @@ export function App() {
       setDrawer(false);
     });
   }, [sessions]);
-  const current = view.sessions.find((session) => session.session_id === (view.open?.id ?? view.selected));
+  const current = view.sessions.find((session) => session.session_id === (present.open?.id ?? present.selected));
   useEffect(() => { document.title = current ? `${sessionTitle(current)} · zeta` : "zeta · fulcrum"; }, [current]);
 
   return (
@@ -142,7 +143,8 @@ function Sidebar({ state, view, sessions, onSelect, onCreate, open, onClose, foo
 }) {
   const list = useRef<HTMLUListElement>(null);
   const rows = useMemo(() => topLevel(view.sessions), [view.sessions]);
-  const selected = view.open?.id ?? view.selected;
+  const present = sessionPresentation(view.transition);
+  const selected = present.open?.id ?? present.selected;
   // The drawer takes focus when it opens, on the session on screen.
   useEffect(() => {
     if (!open) return;
@@ -186,7 +188,7 @@ function Sidebar({ state, view, sessions, onSelect, onCreate, open, onClose, foo
         {state.phase === "connected" && !rows.length && !view.listLoading && !view.listError ? <p className="note">no sessions yet. start one with new session.</p> : null}
         <ul ref={list}>
           {rows.map((session) => (
-            <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} opening={view.opening?.id === session.session_id || view.openError?.id === session.session_id} server={state.phase === "connected" ? view.server : null} store={state.phase === "connected" && view.open?.id === session.session_id && !view.open.stale ? view.open.lease.store : null} onSelect={onSelect} />
+            <SessionRow key={session.session_id} session={session} now={now} selected={session.session_id === selected} focusable={session.session_id === focusable} opening={present.opening?.id === session.session_id || present.openError?.id === session.session_id} server={state.phase === "connected" ? view.server : null} store={state.phase === "connected" && present.open?.id === session.session_id && !present.open.stale ? present.open.lease.store : null} onSelect={onSelect} />
           ))}
         </ul>
         {view.nextOffset !== null ? <button type="button" className="ghost more" onClick={() => void sessions.loadMore()}>load more sessions</button> : null}
@@ -237,13 +239,14 @@ function Row({ session, now, selected, focusable, onSelect, status, store }: Row
 }
 
 function RunTitle({ session, view }: { session: SessionMeta | undefined; view: SessionsState }) {
-  if (!session) return <div className="run-title"><h1>{view.selected ? "session" : "zeta"}</h1></div>;
+  const present = sessionPresentation(view.transition);
+  if (!session) return <div className="run-title"><h1>{present.selected ? "session" : "zeta"}</h1></div>;
   return (
     <div className="run-title">
       <h1 title={sessionTitle(session)}>{sessionTitle(session)}</h1>
       <p className="run-meta">
-        {view.open?.id === session.session_id && !view.open.stale ? (
-          <RunProvider store={view.open.lease.store}><RunStatus /></RunProvider>
+        {present.open?.id === session.session_id && !present.open.stale ? (
+          <RunProvider store={present.open.lease.store}><RunStatus /></RunProvider>
         ) : null}
         {session.model ? <span>{session.model}</span> : null}
         {session.cwd ? <span className="cwd" title={session.cwd}>{session.cwd.replace(/^\/Users\/[^/]+|^\/home\/[^/]+/, "~")}</span> : null}
@@ -278,50 +281,52 @@ function RefreshOnIdle({ sessions }: { sessions: Sessions }) {
   return null;
 }
 
-function Body({ state, view, connection, sessions, opener, focusComposer, onCreate, onOpenDrawer }: {
-  state: ConnectionState; view: SessionsState; connection: Connection; sessions: Sessions; opener: React.RefObject<Element | null>; focusComposer: React.RefObject<boolean>; onCreate(): void; onOpenDrawer(): void;
+function sessionName(view: SessionsState, id: string) {
+  const session = view.sessions.find((item) => item.session_id === id);
+  return session ? sessionTitle(session) : "session";
+}
+
+function OpenRunBody({ state, view, connection, sessions, opener, focusComposer }: {
+  state: ConnectionState; view: SessionsState; connection: Connection; sessions: Sessions; opener: React.RefObject<Element | null>; focusComposer: React.RefObject<boolean>;
 }) {
   const offline = state.phase !== "connected";
-  if (view.open) {
-    const replacing = view.opening && view.opening.id !== view.open.id;
-    const failed = view.openError && view.openError.id !== view.open.id;
-    return (
-      <>
-        {offline ? <ConnectionNotice state={state} connection={connection} compact /> : null}
-        {replacing ? <p className="note" data-tone="busy" role="status">opening {view.sessions.find((item) => item.session_id === view.opening!.id) ? sessionTitle(view.sessions.find((item) => item.session_id === view.opening!.id)!) : "session"}…</p> : null}
-        {!replacing && !view.open.history.complete ? <p className="note" data-tone="busy" role="status">loading earlier messages… {view.open.history.messages.toLocaleString("en")} loaded</p> : null}
-        {!replacing && view.open.syncing ? <p className="note" data-tone="busy" role="status">this turn is in progress; it will appear when it finishes</p> : null}
-        {failed ? <div className="note" data-tone="danger" role="alert"><span>could not open {view.sessions.find((item) => item.session_id === view.openError!.id) ? sessionTitle(view.sessions.find((item) => item.session_id === view.openError!.id)!) : "session"}: {view.openError!.message}</span> <button type="button" className="ghost" onClick={() => sessions.dismissOpenError()}>dismiss</button> <button type="button" className="ghost" onClick={() => sessions.select(view.openError!.id)}>try again</button></div> : null}
-        <Run client={offline ? null : connection.client} sessions={sessions} open={view.open} opener={opener} focusComposer={focusComposer} readOnly={Boolean(replacing || (failed && !view.openError?.restored))} ready={view.open.id === view.selected && !view.opening} />
-      </>
-    );
-  }
-  if (offline) return <ConnectionNotice state={state} connection={connection} />;
-  if (view.opening) {
-    const session = view.sessions.find((item) => item.session_id === view.opening!.id);
-    return (
-      <Panel title={`opening ${session ? sessionTitle(session) : "session"}`} tone="busy">
-        <p>loading history{view.opening.messages ? ` · ${view.opening.messages.toLocaleString("en")} messages` : ""}</p>
-      </Panel>
-    );
-  }
-  if (view.openError) {
-    const running = view.server?.id && view.server.id !== view.openError.id ? view.server.id : null;
-    return view.openError.busy ? (
-      <Panel title="zeta is busy with another session" tone="warn">
-        <p>zeta serve opens a session only when no turn runs. wait for the running turn to end, or open the running session.</p>
-        <div className="actions">
-          {running ? <button type="button" className="primary" onClick={() => sessions.select(running)}>open the running session</button> : null}
-          <button type="button" className="ghost" onClick={() => sessions.select(view.openError!.id)}>try again</button>
-        </div>
-      </Panel>
-    ) : (
-      <Panel title="could not open this session" tone="danger">
-        <p className="mono">{view.openError.message}</p>
-        <div className="actions"><button type="button" className="primary" onClick={() => sessions.select(view.openError!.id)}>try again</button></div>
-      </Panel>
-    );
-  }
+  const present = sessionPresentation(view.transition);
+  const open = present.open!;
+  const replacing = Boolean(present.opening && present.opening.id !== open.id);
+  const failed = present.openError;
+  return (
+    <>
+      {offline ? <ConnectionNotice state={state} connection={connection} compact /> : null}
+      {replacing ? <p className="note" data-tone="busy" role="status">opening {sessionName(view, present.opening!.id)}…</p> : null}
+      {!replacing && !open.history.complete ? <p className="note" data-tone="busy" role="status">loading earlier messages… {open.history.messages.toLocaleString("en")} loaded</p> : null}
+      {!replacing && open.syncing ? <p className="note" data-tone="busy" role="status">this turn is in progress; it will appear when it finishes</p> : null}
+      {failed ? <div className="note" data-tone="danger" role="alert"><span>could not open {sessionName(view, failed.id)}: {failed.message}</span> <button type="button" className="ghost" onClick={() => sessions.dismissOpenError()}>dismiss</button> <button type="button" className="ghost" onClick={() => sessions.select(failed.id)}>try again</button></div> : null}
+      <Run client={offline ? null : connection.client} sessions={sessions} open={open} opener={opener} focusComposer={focusComposer} readOnly={Boolean(replacing || (failed && !failed.restored))} ready={open.id === present.selected && !present.opening} />
+    </>
+  );
+}
+
+function OpeningPanel({ view }: { view: SessionsState }) {
+  const opening = sessionPresentation(view.transition).opening!;
+  return <Panel title={`opening ${sessionName(view, opening.id)}`} tone="busy"><p>loading history{opening.messages ? ` · ${opening.messages.toLocaleString("en")} messages` : ""}</p></Panel>;
+}
+
+function FailurePanel({ view, sessions }: { view: SessionsState; sessions: Sessions }) {
+  const failure = sessionPresentation(view.transition).openError!;
+  const running = view.server?.id && view.server.id !== failure.id ? view.server.id : null;
+  if (!failure.busy) return <Panel title="could not open this session" tone="danger"><p className="mono">{failure.message}</p><div className="actions"><button type="button" className="primary" onClick={() => sessions.select(failure.id)}>try again</button></div></Panel>;
+  return (
+    <Panel title="zeta is busy with another session" tone="warn">
+      <p>zeta serve opens a session only when no turn runs. wait for the running turn to end, or open the running session.</p>
+      <div className="actions">
+        {running ? <button type="button" className="primary" onClick={() => sessions.select(running)}>open the running session</button> : null}
+        <button type="button" className="ghost" onClick={() => sessions.select(failure.id)}>try again</button>
+      </div>
+    </Panel>
+  );
+}
+
+function EmptyPanel({ state, view, onCreate, onOpenDrawer }: { state: ConnectionState; view: SessionsState; onCreate(): void; onOpenDrawer(): void }) {
   const any = view.sessions.length > 0;
   return (
     <Panel title={any ? "choose a session" : "start a session"} tone="busy">
@@ -335,7 +340,18 @@ function Body({ state, view, connection, sessions, opener, focusComposer, onCrea
   );
 }
 
-function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }: { client: ZetaClient | null; sessions: Sessions; open: NonNullable<SessionsState["open"]>; opener: React.RefObject<Element | null>; focusComposer: React.RefObject<boolean>; readOnly: boolean; ready: boolean }) {
+function Body({ state, view, connection, sessions, opener, focusComposer, onCreate, onOpenDrawer }: {
+  state: ConnectionState; view: SessionsState; connection: Connection; sessions: Sessions; opener: React.RefObject<Element | null>; focusComposer: React.RefObject<boolean>; onCreate(): void; onOpenDrawer(): void;
+}) {
+  const present = sessionPresentation(view.transition);
+  if (present.open) return <OpenRunBody state={state} view={view} connection={connection} sessions={sessions} opener={opener} focusComposer={focusComposer} />;
+  if (state.phase !== "connected") return <ConnectionNotice state={state} connection={connection} />;
+  if (present.opening) return <OpeningPanel view={view} />;
+  if (present.openError) return <FailurePanel view={view} sessions={sessions} />;
+  return <EmptyPanel state={state} view={view} onCreate={onCreate} onOpenDrawer={onOpenDrawer} />;
+}
+
+function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }: { client: ZetaClient | null; sessions: Sessions; open: OpenRun; opener: React.RefObject<Element | null>; focusComposer: React.RefObject<boolean>; readOnly: boolean; ready: boolean }) {
   const scroll = useRef<HTMLDivElement>(null);
   const decisions = useMemo(() => {
     if (!client || open.stale || readOnly) return { disabledReason: readOnly ? "opening another session — decisions are paused" : "reconnecting — decisions are disabled until the server confirms this session" };

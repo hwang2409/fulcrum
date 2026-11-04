@@ -23,6 +23,7 @@ export interface SessionLease {
 const adapterError = (message: string) => ({ type: "error" as const, error: { code: "adapter_invalid_frame", message } });
 const encoder = new TextEncoder();
 const RESYNC_BACKOFF_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
+const MAX_REPLAY_SNAPSHOTS = 3;
 
 export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
   let nextId = 1;
@@ -38,6 +39,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const holders = new Map<string, number>();
   const replaying = new Set<string>();
   const quarantined = new Set<string>();
+  const quarantineRevisions = new Map<string, number>();
   const replayLoads = new Map<string, (signal: AbortSignal) => Promise<RunEvent[]>>();
   const activeLoads = new Map<string, AbortController>();
   type Recovery = { canceled: boolean; controller?: AbortController; timer?: ReturnType<typeof setTimeout>; wake?: () => void };
@@ -66,6 +68,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     cancelLoad(id);
     replaying.delete(id);
     quarantined.delete(id);
+    quarantineRevisions.delete(id);
     replayLoads.delete(id);
     const value = stores.get(id);
     if (!value) return false;
@@ -177,31 +180,49 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     replayLoads.set(session, load);
     replaying.add(session);
     quarantined.add(session);
+    quarantineRevisions.set(session, 0);
     const controller = new AbortController();
     activeLoads.set(session, controller);
     try {
       const history = await load(controller.signal);
       if (controller.signal.aborted) throw Object.assign(new Error("request aborted"), { name: "AbortError" });
-      activeLoads.delete(session);
+      if (!keepQuarantined) activeLoads.delete(session);
       const value = createSession(session);
       holders.set(session, 1);
       let released = false;
       const lease = { store: value, release() { if (released) return; released = true; const count = holders.get(session); if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1)); } };
       for (const event of history) lease.store.dispatch(event);
-      if (!keepQuarantined) quarantined.delete(session);
+      if (!keepQuarantined) {
+        quarantined.delete(session);
+        quarantineRevisions.delete(session);
+      }
       return lease;
     } catch (error) {
       replayLoads.delete(session);
       quarantined.delete(session);
+      quarantineRevisions.delete(session);
       throw error;
     } finally {
       if (!quarantined.has(session) && activeLoads.get(session) === controller) activeLoads.delete(session);
       replaying.delete(session);
     }
   };
-  const finishReplay = (session: string) => {
+  /** Replaces any ambiguous replay window with a fresh snapshot. Events during that snapshot trigger another try. */
+  const finishReplay = async (session: string, reconcile = true) => {
+    const load = replayLoads.get(session);
+    const target = stores.get(session);
+    const controller = activeLoads.get(session);
+    if (!load || !target || !controller) return;
+    let seen = 0;
+    for (let attempt = 0; reconcile && attempt < MAX_REPLAY_SNAPSHOTS && (quarantineRevisions.get(session) ?? 0) > seen; attempt++) {
+      seen = quarantineRevisions.get(session) ?? 0;
+      const history = await load(controller.signal);
+      if (controller.signal.aborted || stores.get(session) !== target) throw Object.assign(new Error("request aborted"), { name: "AbortError" });
+      target.resync(history);
+    }
     quarantined.delete(session);
-    activeLoads.delete(session);
+    quarantineRevisions.delete(session);
+    if (activeLoads.get(session) === controller) activeLoads.delete(session);
   };
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;
@@ -219,25 +240,33 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const request = pending.get(id); if (!request) return;
     pending.delete(id); if (request.timer) clearTimeout(request.timer); callback(request);
   };
-  transport.onMessage((text) => {
-    if (text.length > maxFrame || (text.length > maxFrame / 3 && encoder.encode(text).byteLength > maxFrame)) { store.dispatch(adapterError(`frame exceeds ${maxFrame} bytes`)); return; }
-    let value: unknown;
-    try { value = JSON.parse(text); } catch { store.dispatch(adapterError("frame is not valid JSON")); return; }
-    if (!value || typeof value !== "object") { store.dispatch(adapterError("frame must be an object")); return; }
-    const message = value as TransportMessage;
-    if (message.method === "event") {
-      if (!message.params || typeof message.params !== "object") { store.dispatch(adapterError("event params are invalid")); return; }
-      const events = fromZetaEvent(message.params).map(stampIntent);
-      const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
-      if (session !== undefined && quarantined.has(session)) return;
-      const sessionStore = eventStore(session);
-      for (const event of events) sessionStore.dispatch(event);
+  const handleEvent = (message: TransportMessage) => {
+    if (!message.params || typeof message.params !== "object") return store.dispatch(adapterError("event params are invalid"));
+    const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
+    if (session !== undefined && quarantined.has(session)) {
+      quarantineRevisions.set(session, (quarantineRevisions.get(session) ?? 0) + 1);
       return;
     }
-    if (message.id === null && message.error) { const error = Object.assign(new Error(message.error.message), message.error); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); return; }
-    if (typeof message.id !== "number") return;
-    const request = pending.get(message.id); if (!request) return;
+    const sessionStore = eventStore(session);
+    for (const event of fromZetaEvent(message.params).map(stampIntent)) sessionStore.dispatch(event);
+  };
+  const handleReply = (message: TransportMessage) => {
+    if (message.id === null && message.error) {
+      const error = Object.assign(new Error(message.error.message), message.error);
+      pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
+      return;
+    }
+    if (typeof message.id !== "number" || !pending.has(message.id)) return;
     settle(message.id, (item) => message.error ? item.reject(Object.assign(new Error(message.error.message), message.error)) : item.resolve(message.result));
+  };
+  transport.onMessage((text) => {
+    if (text.length > maxFrame || (text.length > maxFrame / 3 && encoder.encode(text).byteLength > maxFrame)) return store.dispatch(adapterError(`frame exceeds ${maxFrame} bytes`));
+    let value: unknown;
+    try { value = JSON.parse(text); } catch { return store.dispatch(adapterError("frame is not valid JSON")); }
+    if (!value || typeof value !== "object") return store.dispatch(adapterError("frame must be an object"));
+    const message = value as TransportMessage;
+    if (message.method === "event") handleEvent(message);
+    else handleReply(message);
   });
   const closeListeners = new Set<(error: unknown) => void>();
   let closed = false;

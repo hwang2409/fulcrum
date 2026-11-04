@@ -69,76 +69,146 @@ const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, r
   signal?.addEventListener("abort", onAbort, { once: true });
 });
 
-/** Opens the first history page immediately. Older pages continue in the same quarantined snapshot. */
-export async function openSession(client: ZetaClient, id: string, progress?: OpenProgress, signal?: AbortSignal): Promise<OpenResult> {
+/** Opens the first history page immediately. Older pages continue under the same quarantine controller. */
+export async function openSession(
+  client: ZetaClient,
+  id: string,
+  progress?: OpenProgress,
+  signal?: AbortSignal,
+  knownStatus?: ServerStatus,
+): Promise<OpenResult> {
   if (client.features.includes("session_replay_seq")) throw new Error("session_replay_seq needs the sequence replay coordinator");
   let rows: unknown[] = [];
   let nextOffset: number | null = null;
   let initialStatus!: ServerStatus;
   let activeSignal!: AbortSignal;
   const combinedSignal = (replaySignal: AbortSignal) => signal ? AbortSignal.any([signal, replaySignal]) : replaySignal;
+  const historyPage = (offset: number, loadSignal: AbortSignal) => client.request(
+    "session_history",
+    { session_id: id, offset },
+    { timeoutMs: 15_000, signal: loadSignal },
+  ) as Promise<HistoryPage>;
   const loadFullSnapshot = async (replaySignal: AbortSignal) => {
-    const currentSignal = combinedSignal(replaySignal);
+    const loadSignal = combinedSignal(replaySignal);
     const snapshotRows: unknown[] = [];
     for (let offset: number | null = 0; offset !== null; ) {
-      const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal: currentSignal }) as HistoryPage;
+      const page = await historyPage(offset, loadSignal);
       snapshotRows.push(...(page.messages ?? []));
       offset = page.next_offset ?? null;
     }
-    return snapshotEvents(id, snapshotRows, await getStatus(client, currentSignal));
+    return snapshotEvents(id, snapshotRows, await getStatus(client, loadSignal));
   };
   let firstLoad = true;
   const lease = await client.replay(id, async (replaySignal) => {
     if (!firstLoad) return loadFullSnapshot(replaySignal);
     firstLoad = false;
     activeSignal = combinedSignal(replaySignal);
-    const before = await getStatus(client, activeSignal);
-    if (before.session?.session_id !== id) await client.request("resume", { session_id: id }, { timeoutMs: 30_000, signal: activeSignal });
-    const page = await client.request("session_history", { session_id: id, offset: 0 }, { timeoutMs: 15_000, signal: activeSignal }) as HistoryPage;
+    const before = knownStatus ?? await getStatus(client, activeSignal);
+    if (before.session?.session_id === id) initialStatus = before;
+    else {
+      const resumed = await client.request("resume", { session_id: id }, { timeoutMs: 30_000, signal: activeSignal }) as { session?: SessionMeta };
+      initialStatus = { session: resumed.session ?? null, state: "idle", pending_approvals: [] };
+    }
+    const page = await historyPage(0, activeSignal);
     rows = page.messages ?? [];
     nextOffset = page.next_offset ?? null;
-    initialStatus = await getStatus(client, activeSignal);
     progress?.(rows.length, nextOffset === null);
-    return [...fromZetaHistory(rows), { type: initialStatus.state === "idle" ? "run_end" as const : "run_start" as const }];
+    return snapshotEvents(id, rows, initialStatus);
   }, true);
 
-  const complete = (async (): Promise<{ lease?: SessionLease; syncing: boolean }> => {
-    const laterEvents: RunEvent[] = [];
+  const loadRemainingPages = async () => {
     let pages = 0;
     for (let offset: number | null = nextOffset; offset !== null; ) {
-      const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal: activeSignal }) as HistoryPage;
+      const page = await historyPage(offset, activeSignal);
       const pageRows = page.messages ?? [];
       rows.push(...pageRows);
-      laterEvents.push(...fromZetaHistory(pageRows));
+      for (const event of fromZetaHistory(pageRows)) lease.store.dispatch(event);
       offset = page.next_offset ?? null;
       pages++;
       if (offset === null || pages % 25 === 0) progress?.(rows.length, offset === null);
     }
-    for (const event of laterEvents) lease.store.dispatch(event);
-    let status = await getStatus(client, activeSignal);
-    for (const event of snapshotEvents(id, [], status)) lease.store.dispatch(event);
-    if (status.state === "idle") {
-      client.finishReplay(id);
-      return { syncing: false };
-    }
+  };
+  const publishApprovals = (status: ServerStatus) => {
+    for (const event of snapshotEvents(id, [], status)) if (event.type === "approval_request") lease.store.dispatch(event);
+  };
+  const waitUntilIdle = async () => {
+    let status = initialStatus;
     let pending = JSON.stringify(status.pending_approvals ?? []);
     while (status.state !== "idle") {
       await wait(500, activeSignal);
       status = await getStatus(client, activeSignal);
       const nextPending = JSON.stringify(status.pending_approvals ?? []);
-      if (nextPending !== pending) {
-        for (const event of snapshotEvents(id, [], status)) if (event.type === "approval_request") lease.store.dispatch(event);
-        pending = nextPending;
-      }
+      if (nextPending !== pending) publishApprovals(status);
+      pending = nextPending;
     }
-    const finalLease = await client.replay(id, loadFullSnapshot);
-    return { lease: finalLease, syncing: false };
+  };
+  const complete = (async (): Promise<{ syncing: boolean }> => {
+    try {
+      await Promise.all([loadRemainingPages(), waitUntilIdle()]);
+      await client.finishReplay(id);
+      return { syncing: false };
+    } catch (error) {
+      await client.finishReplay(id, false);
+      throw error;
+    }
   })();
   return { lease, syncing: initialStatus.state !== "idle", complete };
 }
 
 /** Zeta answers `resume` with -32004 while another session's turn runs. */
 export const isBusyError = (error: unknown) => (error as { code?: unknown } | null)?.code === -32004;
+
+export type OpenRun = { id: string; lease: SessionLease; stale: boolean; history: { messages: number; complete: boolean }; syncing: boolean };
+export type OpenFailure = { id: string; message: string; busy: boolean; restored?: boolean };
+export type SessionTransition =
+  | { kind: "idle"; selected: string | null }
+  | { kind: "opening"; to: string; messages: number }
+  | { kind: "open"; run: OpenRun }
+  | { kind: "replacing"; from: OpenRun; to: string; messages: number }
+  | { kind: "failed"; run: OpenRun | null; to: string; error: OpenFailure };
+
+export const transitionRun = (transition: SessionTransition): OpenRun | null =>
+  transition.kind === "open" ? transition.run : transition.kind === "replacing" ? transition.from : transition.kind === "failed" ? transition.run : null;
+export const transitionSelected = (transition: SessionTransition): string | null => {
+  if (transition.kind === "idle") return transition.selected;
+  if (transition.kind === "open") return transition.run.id;
+  if (transition.kind === "failed" && transition.error.restored && transition.run) return transition.run.id;
+  return transition.kind === "replacing" || transition.kind === "opening" || transition.kind === "failed" ? transition.to : null;
+};
+
+type TransitionEvent =
+  | { type: "start"; id: string }
+  | { type: "progress"; id: string; messages: number }
+  | { type: "opened"; run: OpenRun }
+  | { type: "updated"; run: OpenRun }
+  | { type: "failed"; id: string; error: OpenFailure }
+  | { type: "stale" }
+  | { type: "dismiss" };
+
+export function reduceSessionTransition(transition: SessionTransition, event: TransitionEvent): SessionTransition {
+  const run = transitionRun(transition);
+  if (event.type === "start") return run ? { kind: "replacing", from: run, to: event.id, messages: 0 } : { kind: "opening", to: event.id, messages: 0 };
+  if (event.type === "opened") return { kind: "open", run: event.run };
+  if (event.type === "updated") return { kind: "open", run: event.run };
+  if (event.type === "failed") return { kind: "failed", run, to: event.id, error: event.error };
+  if (event.type === "stale") return run ? { kind: "open", run: { ...run, stale: true } } : transition;
+  if (event.type === "dismiss") return run ? { kind: "open", run } : { kind: "idle", selected: transitionSelected(transition) };
+  if (transition.kind === "opening" && transition.to === event.id) return { ...transition, messages: event.messages };
+  if (transition.kind === "replacing" && transition.to === event.id) return { ...transition, messages: event.messages };
+  return transition;
+}
+
+export const sessionPresentation = (transition: SessionTransition) => {
+  const run = transitionRun(transition);
+  const opening = transition.kind === "opening" ? { id: transition.to, messages: transition.messages }
+    : transition.kind === "replacing" ? { id: transition.to, messages: transition.messages } : null;
+  return {
+    selected: transitionSelected(transition),
+    open: run,
+    opening,
+    openError: transition.kind === "failed" ? transition.error : null,
+  };
+};
 
 export type SessionsState = {
   sessions: SessionMeta[];
@@ -149,11 +219,7 @@ export type SessionsState = {
   listReady: boolean;
   /** The server's own session from `status` and what it is doing. */
   server: { id: string | null; state: ServerStatus["state"]; approvals: number } | null;
-  selected: string | null;
-  /** The rebuilt session on screen. After a drop it stays until a reconnect replaces it; `stale` marks that. */
-  open: { id: string; lease: SessionLease; stale: boolean; history: { messages: number; complete: boolean }; syncing: boolean } | null;
-  opening: { id: string; messages: number } | null;
-  openError: { id: string; message: string; busy: boolean; restored?: boolean } | null;
+  transition: SessionTransition;
   /** A `new_session` in flight, and why the last one failed. */
   creating: boolean;
   createError: string | null;
@@ -169,9 +235,10 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
  * opens are released.
  */
 export function createSessions(connection: Source, { selected = null, onSelect }: { selected?: string | null; onSelect?: (id: string) => void } = {}) {
-  let state: SessionsState = { sessions: [], nextOffset: null, listError: null, listLoading: false, listSlow: false, listReady: false, server: null, selected, open: null, opening: null, openError: null, creating: false, createError: null };
+  let state: SessionsState = { sessions: [], nextOffset: null, listError: null, listLoading: false, listSlow: false, listReady: false, server: null, transition: { kind: "idle", selected }, creating: false, createError: null };
   const listeners = new Set<() => void>();
   const set = (patch: Partial<SessionsState>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); };
+  const transition = (event: TransitionEvent) => set({ transition: reduceSessionTransition(state.transition, event) });
   let client: ZetaClient | null = null;
   let openGeneration = 0;
   let openAbort: AbortController | null = null;
@@ -209,36 +276,41 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     return listInFlight;
   };
 
-  const open = async (id: string) => {
+  const open = async (id: string, knownStatus?: ServerStatus) => {
     const target = client;
     const mine = ++openGeneration;
     openAbort?.abort();
     const abort = new AbortController();
     openAbort = abort;
-    set({ selected: id, opening: { id, messages: 0 }, openError: null });
+    transition({ type: "start", id });
     if (!target) return;
-    const previousId = state.open?.id !== id ? state.open?.id : null;
+    const previous = transitionRun(state.transition);
+    const previousId = previous?.id !== id ? previous?.id : null;
     try {
       let history = { messages: 0, complete: false };
       const opened = await openSession(target, id, (messages, complete) => {
         history = { messages, complete };
         if (mine !== openGeneration) return;
-        if (state.open?.id === id) set({ open: { ...state.open, history } });
-        else set({ opening: { id, messages } });
-      }, abort.signal);
+        transition({ type: "progress", id, messages });
+      }, abort.signal, knownStatus);
+      if (!state.listLoading && !state.listReady) void refresh();
       const { lease } = opened;
       if (mine !== openGeneration || !live(target)) return lease.release();
-      state.open?.lease.release();
-      set({ open: { id, lease, stale: false, history, syncing: opened.syncing }, opening: null });
+      previous?.lease.release();
+      transition({ type: "opened", run: { id, lease, stale: false, history, syncing: opened.syncing } });
       void opened.complete.then((result) => {
         if (mine !== openGeneration || !live(target)) return result.lease?.release();
         if (result.lease) {
-          state.open?.lease.release();
-          set({ open: { id, lease: result.lease, stale: false, history: { ...history, complete: true }, syncing: result.syncing } });
-        } else if (state.open?.id === id) set({ open: { ...state.open, history: { ...history, complete: true }, syncing: result.syncing } });
+          const run = transitionRun(state.transition);
+          run?.lease.release();
+          transition({ type: "updated", run: { id, lease: result.lease, stale: false, history: { ...history, complete: true }, syncing: result.syncing } });
+        } else {
+          const run = transitionRun(state.transition);
+          if (run?.id === id) transition({ type: "updated", run: { ...run, history: { ...history, complete: true }, syncing: result.syncing } });
+        }
       }).catch((error) => {
         if (mine === openGeneration && live(target) && (error as { name?: string }).name !== "AbortError")
-          set({ openError: { id, message: message(error), busy: isBusyError(error) } });
+          transition({ type: "failed", id, error: { id, message: message(error), busy: isBusyError(error) } });
       });
     } catch (error) {
       if (mine !== openGeneration || !live(target)) return;
@@ -251,7 +323,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       }
       if (mine !== openGeneration || !live(target)) return;
       if (restored && previousId) onSelect?.(previousId);
-      set({ ...(restored && previousId ? { selected: previousId } : {}), opening: null, openError: { id, message: message(error), busy: isBusyError(error), ...(restored ? { restored: true } : {}) } });
+      transition({ type: "failed", id, error: { id, message: message(error), busy: isBusyError(error), ...(restored ? { restored: true } : {}) } });
     }
   };
 
@@ -261,7 +333,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     if (!client) {
       openGeneration++;
       openAbort?.abort();
-      if (state.open) set({ open: { ...state.open, stale: true }, opening: null });
+      transition({ type: "stale" });
       return;
     }
     set({ listReady: false, listError: null });
@@ -271,14 +343,16 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         const status = await getStatus(target);
         if (!live(target)) return;
         set({ server: { id: status.session?.session_id ?? null, state: status.state, approvals: status.pending_approvals?.length ?? 0 } });
-        const id = state.selected ?? status.session?.session_id ?? null;
-        void refresh();
+        const id = transitionSelected(state.transition) ?? status.session?.session_id ?? null;
         if (id) {
-          await open(id);
+          await open(id, status);
           if (!live(target)) return;
-        }
+        } else void refresh();
       } catch (error) {
-        if (live(target)) set({ openError: { id: state.selected ?? "", message: message(error), busy: isBusyError(error) } });
+        if (live(target)) {
+          const id = transitionSelected(state.transition) ?? "";
+          transition({ type: "failed", id, error: { id, message: message(error), busy: isBusyError(error) } });
+        }
       }
     })();
   };
@@ -289,12 +363,13 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     get state() { return state; },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     select(id: string) {
-      if (id === state.selected && (state.opening?.id === id || (state.open?.id === id && !state.open.stale))) return;
+      const run = transitionRun(state.transition);
+      if (id === transitionSelected(state.transition) && ((state.transition.kind === "opening" || state.transition.kind === "replacing") || (run?.id === id && !run.stale))) return;
       onSelect?.(id);
       void open(id);
     },
     refresh,
-    dismissOpenError() { set({ openError: null }); },
+    dismissOpenError() { transition({ type: "dismiss" }); },
     /** Starts a session with zeta's `new_session` (which makes it the server's own), then opens it. */
     async create() {
       const target = client;
@@ -328,7 +403,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       listSlowTimer = null;
       openGeneration++;
       openAbort?.abort();
-      state.open?.lease.release();
+      transitionRun(state.transition)?.lease.release();
     },
   };
 }

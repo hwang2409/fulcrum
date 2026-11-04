@@ -193,7 +193,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
   };
 }
 
-export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows" }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", serialDelays }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; serialDelays?: Readonly<Record<string, number | readonly number[]>> }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
@@ -220,11 +220,27 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let delayedOpen = false;
   let catalogBusy = false;
   const decisions: Json[] = [];
+  const requests: Array<{ method: string; received: number; started: number; replied?: number }> = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
   let controller: ServerWebSocket<unknown> | null = null;
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   let openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
   const composer = composerMethods(wait, { get: () => running, set: (value) => { running = value; } });
+  let serialTail = Promise.resolve<unknown>(undefined);
+  const delayCalls = new Map<string, number>();
+  const requestDelay = (method: string) => {
+    const configured = serialDelays?.[method] ?? 0;
+    if (typeof configured === "number") return configured;
+    const call = delayCalls.get(method) ?? 0;
+    delayCalls.set(method, call + 1);
+    return configured[Math.min(call, configured.length - 1)] ?? 0;
+  };
+  const schedule = <T,>(task: () => Promise<T>) => {
+    if (!serialDelays) return task();
+    const next = serialTail.then(task, task);
+    serialTail = next.catch(() => undefined);
+    return next;
+  };
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -250,9 +266,18 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         if (currentHistoryMode === "new") histories[ACTIVE]!.push({ id: `approval-end-drop-${Date.now()}`, role: "system", event: "approval_end", request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, data: { decision: "abort", reason: "controller_disconnected" } });
         resolve("abort");
       },
-      async message(socket, raw) {
-        const { id, method, params = {} } = JSON.parse(String(raw)) as { id: number; method: string; params: Json };
-        const reply = (body: Json) => socket.send(JSON.stringify({ jsonrpc: "2.0", id, ...body }));
+      message(socket, raw) {
+        const received = performance.now();
+        const request = JSON.parse(String(raw)) as { id: number; method: string; params?: Json };
+        return schedule(async () => {
+        const { id, method, params = {} } = request;
+        const timing: { method: string; received: number; started: number; replied?: number } = { method, received, started: performance.now() };
+        requests.push(timing);
+        await wait(requestDelay(method));
+        const reply = (body: Json) => {
+          timing.replied = performance.now();
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id, ...body }));
+        };
         const send = (event: Json) => { for (const each of sockets) each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); };
         if (method === "hello") {
           if (mode === "busy" || sockets.size > 1) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
@@ -322,6 +347,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         const handled = composer.handle(method, params, active, send);
         if (handled) return reply(handled);
         reply({ error: { code: -32601, message: `method not found: ${method}` } });
+        });
       },
     },
   });
@@ -332,6 +358,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     home,
     port: server.port,
     decisions,
+    requests,
     /** Every accepted send and steer, in order. */
     sent: composer.sent,
     clearSent() { composer.clearSent(); },
