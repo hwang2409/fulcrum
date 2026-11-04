@@ -2,11 +2,11 @@ export const TOKEN_TYPES = ["keyword", "string", "number", "comment", "function"
 export type TokenType = (typeof TOKEN_TYPES)[number];
 export type Token = { text: string; type?: TokenType };
 export type HighlightContext = { id: string; version: number; state: "streaming" | "done" };
-/**
- * `subscribe(id, listener)` calls `listener` when the cached tokens of block `id` were replaced (a block answered plain
- * while its grammar was cold is now colored); ask again for the new tokens. Returns the unsubscribe function.
- */
+export type Completion = { status: "pending" | "complete" | "superseded" | "unavailable"; reason?: "grammar" | "size" | "watchdog" | "worker" };
+export type CompletionNotice = Completion & { version: number };
+/** `subscribe` reports cache replacement and terminal completion for the requested block id. */
 export type Highlight = ((code: string, lang: string | undefined, context?: HighlightContext) => Token[] | Promise<Token[]> | null) & {
   dispose(): void;
-  subscribe(id: string, listener: () => void): () => void;
+  subscribe(id: string, listener: (completion: CompletionNotice) => void): () => void;
+  awaitCompletion(id: string, version: number): Promise<CompletionNotice>;
 };

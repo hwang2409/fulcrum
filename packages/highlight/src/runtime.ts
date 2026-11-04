@@ -1,20 +1,14 @@
 import type { GrammarState, HighlighterCore, LanguageInput, ThemedToken } from "@shikijs/types";
 import type { HighlightContext, Token } from "./types.js";
+import type { GrammarProvenance } from "./protocol.js";
 import { loadLanguage } from "./languages.js";
 import { appendToken, semanticTheme } from "./scopes.js";
 
 const THEME = "fulcrum-semantic";
-const MAX_LINE = 20_000;
 const MAX_SESSIONS = 32;
 const MAX_SESSION_BYTES = 8 * 1024 * 1024;
-// The tokenize policy, all of it. Shiki stops a line at TOKENIZE_TIME_LIMIT_MS without saying so, and that time also
-// counts compiling a pattern the line meets for the first time, and any pause of the thread (a garbage collection, a
-// busy machine). A slow attempt gets one retry while the document still has retry time; otherwise the line is
-// plain, exact text, and the document goes on. The runtime tokenizes only with a warm grammar (see OnUpdate), so a
-// plain line is final: a line that a pause made slow once must get its retry.
-const TOKENIZE_TIME_LIMIT_MS = 10;
-const LINE_ATTEMPTS = 2; // shiki stops each attempt near TOKENIZE_TIME_LIMIT_MS, so a line costs about 2 x 10 ms
-const DOCUMENT_RETRY_BUDGET_MS = 100; // all retries of one tokenize call
+// tokenization budgets may schedule work, but never choose the final token semantics. the worker watchdog handles a
+// truly pathological scanner; a slow machine must keep trying until the pinned grammar returns its full result.
 type Session = { language: string; version: number; code: string; finalizedLength: number; tokens: Token[]; state?: GrammarState; used: number; bytes: number };
 
 function nextCompleteLength(code: string, done: boolean): number {
@@ -54,13 +48,14 @@ class RegexCache extends Map<string, RegExp | Error> {
 // costly bundled pattern, in cpp, converts and compiles in about 21 ms).
 const WARM_SLICE_MS = 8;
 const WARM_SAMPLE = 'x = f("s", 1); // c';
-type Provisional = { code: string; language: string; context: HighlightContext };
+type Provisional = { code: string; context: HighlightContext; provenance: GrammarProvenance };
+export type TokenizeResult = { tokens: Token[]; provenance: GrammarProvenance };
 /**
  * Where the runtime sends a block again, colored, once its grammar is warm. Until then a block is answered at once
  * with its exact plain text: tokenizing with a cold grammar builds each rule's scanner, which compiles all of that rule's
  * patterns in one call that cannot yield (a cold cpp document blocked the worker 335 ms in Chromium).
  */
-export type OnUpdate = (context: HighlightContext, language: string, tokens: Token[]) => void;
+export type OnUpdate = (context: HighlightContext, provenance: GrammarProvenance, tokens: Token[]) => void;
 /** Called as work goes on: with the block being tokenized (at its start and after each line), or null while a grammar compiles. */
 export type OnProgress = (context: HighlightContext | null) => void;
 
@@ -190,11 +185,11 @@ export class TokenizerRuntime {
   // Sends each block answered plain while `language` was cold again, colored, one per task.
   private async flushProvisional(language: string, epoch: number): Promise<void> {
     for (const [id, block] of this.provisional) {
-      if (block.language !== language) continue;
+      if (block.provenance.language !== language) continue;
       this.provisional.delete(id);
-      const tokens = await this.tokenize(block.code, language, block.context);
+      const result = await this.tokenizeWithProvenance(block.code, block.context, block.provenance.language, block.provenance.generation);
       if (epoch !== this.epoch) return;
-      this.onUpdate(block.context, language, tokens);
+      this.onUpdate(block.context, result.provenance, result.tokens);
       await nextTask();
     }
   }
@@ -210,17 +205,23 @@ export class TokenizerRuntime {
   }
 
   async tokenize(code: string, language: string, context: HighlightContext): Promise<Token[]> {
+    return (await this.tokenizeWithProvenance(code, context, language, 0)).tokens;
+  }
+
+  async tokenizeWithProvenance(code: string, context: HighlightContext, language: string, generation: number): Promise<TokenizeResult> {
     const epoch = this.epoch;
     const highlighter = await this.ensureLanguage(language);
-    if (epoch !== this.epoch) return code ? [{ text: code }] : []; // disposed while the grammar loaded
+    const fullyLoaded = this.warmed.has(language);
+    const provenance = { language, generation, fullyLoaded };
+    if (epoch !== this.epoch) return { tokens: code ? [{ text: code }] : [], provenance: { ...provenance, fullyLoaded: false } };
     const known = this.provisional.get(context.id);
     const newest = !known || known.context.version <= context.version;
-    if (!this.warmed.has(language)) {
-      if (newest) this.provisional.set(context.id, { code, language, context });
-      return code ? [{ text: code }] : [];
+    if (!fullyLoaded) {
+      if (newest) this.provisional.set(context.id, { code, context, provenance });
+      return { tokens: code ? [{ text: code }] : [], provenance };
     }
     if (newest) this.provisional.delete(context.id); // this revision replaces the plain one
-    return this.tokenizeLoaded(code, language, context, highlighter, epoch);
+    return { tokens: this.tokenizeLoaded(code, language, context, highlighter, epoch), provenance };
   }
 
   private tokenizeLoaded(code: string, language: string, context: HighlightContext, highlighter: HighlighterCore, epoch: number): Token[] {
@@ -258,33 +259,22 @@ export class TokenizerRuntime {
       appendToken(output, code.slice(completeLength));
       return output;
     };
-    const budget = { retryMs: DOCUMENT_RETRY_BUDGET_MS };
     const tokens: Token[] = [];
     let grammarState = state;
     this.onProgress(context);
     for (const line of sourceLines(code.slice(start, completeLength))) {
-      if (line.replace(/\n$/, "").length > MAX_LINE) { appendToken(tokens, line); grammarState = undefined; }
-      else {
-        const result = this.tokenizeLine(highlighter, line, language, grammarState, budget);
-        if (!result) { appendToken(tokens, line); grammarState = undefined; }
-        else { this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result); }
+      {
+        const result = this.tokenizeLine(highlighter, line, language, grammarState);
+        this.appendShiki(tokens, result, line); grammarState = highlighter.getLastGrammarState(result);
       }
       this.onProgress(context);
     }
     return finish(tokens, grammarState);
   }
 
-  /** One line's tokens under the tokenize policy (top of file), or undefined: the line is plain. */
-  private tokenizeLine(highlighter: HighlighterCore, line: string, language: string, grammarState: GrammarState | undefined, budget: { retryMs: number }): ThemedToken[][] | undefined {
-    for (let attempt = 1; ; attempt++) {
-      const started = performance.now();
-      const result = highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: TOKENIZE_TIME_LIMIT_MS });
-      const elapsed = performance.now() - started;
-      if (attempt > 1) budget.retryMs -= elapsed;
-      if (elapsed < TOKENIZE_TIME_LIMIT_MS) return result;
-      // No per-line time budget: a pause can make the first attempt long, and it must not cost the line its retry.
-      if (attempt >= LINE_ATTEMPTS || budget.retryMs < TOKENIZE_TIME_LIMIT_MS) return undefined;
-    }
+  /** A slow attempt is retried. Plain text is provisional only; it is never a terminal result. */
+  private tokenizeLine(highlighter: HighlighterCore, line: string, language: string, grammarState: GrammarState | undefined): ThemedToken[][] {
+    return highlighter.codeToTokensBase(line, { lang: language, theme: THEME, grammarState });
   }
 
   private appendShiki(output: Token[], lines: ThemedToken[][], source: string): void {

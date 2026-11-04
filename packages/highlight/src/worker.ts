@@ -1,4 +1,4 @@
-import { PROGRESS_MS, TOKENS_PER_MESSAGE, type WorkerRequest, type WorkerResponse } from "./protocol.js";
+import { PROGRESS_MS, TOKENS_PER_MESSAGE, type GrammarProvenance, type WorkerRequest, type WorkerResponse } from "./protocol.js";
 import type { HighlightContext, Token } from "./types.js";
 import { TokenizerRuntime } from "./runtime.js";
 
@@ -18,7 +18,7 @@ const progress = (context: HighlightContext | null) => {
 // Every token message goes through one paced queue (protocol.ts). A result over TOKENS_PER_MESSAGE tokens goes out as
 // parts addressed by its message id (`of`), and after a part nothing is sent until the page acks it. The next message
 // always comes from the result with the fewest tokens left, so a small reply waits behind at most one part of a large one.
-type Result = { requestId: number; tokens: Token[]; provisional: boolean } | { update: HighlightContext; language: string; tokens: Token[] };
+type Result = { requestId: number; tokens: Token[]; provenance: GrammarProvenance; completion: { status: "pending" | "complete" } } | { update: HighlightContext; provenance: GrammarProvenance; tokens: Token[] };
 type Outgoing = { of: number; message: Result; at: number };
 const queue: Outgoing[] = [];
 let sent = 0;
@@ -39,15 +39,15 @@ const pump = () => {
   }
 };
 const send = (message: Result) => { queue.push({ of: ++sent, message, at: 0 }); pump(); };
-const runtime = new TokenizerRuntime((update, language, tokens) => send({ update, language, tokens }), progress);
+const runtime = new TokenizerRuntime((update, provenance, tokens) => send({ update, provenance, tokens }), progress);
 scope.onmessage = async (event) => {
   if (event.data.type === "ack") { waiting = false; pump(); return; }
   if (event.data.type === "dispose") { runtime.dispose(); scope.close(); return; }
-  const { requestId, code, language, context } = event.data;
+  const { requestId, code, context, grammar } = event.data;
   try {
-    const tokens = await runtime.tokenize(code, language, context);
-    send({ requestId, tokens, provisional: runtime.willUpdate(context) });
+    const { tokens, provenance } = await runtime.tokenizeWithProvenance(code, context, grammar.language, grammar.generation);
+    send({ requestId, tokens, provenance, completion: { status: provenance.fullyLoaded ? "complete" : "pending" } });
   } catch (cause) {
-    scope.postMessage({ requestId, error: cause instanceof Error ? cause.message : String(cause) });
+    scope.postMessage({ requestId, error: cause instanceof Error ? cause.message : String(cause), provenance: { ...grammar, fullyLoaded: false }, completion: { status: "unavailable", reason: "grammar" } });
   }
 };
