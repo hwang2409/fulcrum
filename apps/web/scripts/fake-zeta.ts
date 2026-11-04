@@ -220,6 +220,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let catalogBusy = false;
   const decisions: Json[] = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
+  let controller: ServerWebSocket<unknown> | null = null;
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   let openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
   const composer = composerMethods(wait, { get: () => running, set: (value) => { running = value; } });
@@ -236,13 +237,15 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     websocket: {
       open(socket) { sockets.add(socket); },
       close(socket) {
-        if (!decide || approvalAborted) { sockets.delete(socket); return; }
+        sockets.delete(socket);
+        if (socket !== controller) return;
+        controller = null;
+        if (!decide || approvalAborted) return;
         approvalAborted = true;
         const resolve = decide;
         decide = null;
         running = false;
         histories[ACTIVE]!.push({ id: `drop-${Date.now()}`, role: "tool_result", content: [text("")], tool_result: result("live-2", "connection lost", { is_canceled: true }) });
-        sockets.delete(socket);
         if (currentHistoryMode === "new") histories[ACTIVE]!.push({ id: `approval-end-drop-${Date.now()}`, role: "system", event: "approval_end", request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, data: { decision: "abort", reason: "controller_disconnected" } });
         resolve("abort");
       },
@@ -254,6 +257,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "busy" || sockets.size > 1) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
+          controller = socket;
           return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
         }
         if (method === "new_session") {
@@ -334,12 +338,16 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     /** Closes every socket, like a network blip; the server keeps running. */
     drop() { for (const socket of sockets) socket.close(1012, "restart"); },
     /** Removes the discovery file and refuses upgrades, like a stopped server. */
-    async stop() { allowed = []; await rm(discovery, { force: true }); this.drop(); },
+    async stop() {
+      allowed = [];
+      await rm(discovery, { force: true });
+      this.drop();
+      for (let attempt = 0; decide && attempt < 100; attempt++) await Bun.sleep(1);
+    },
     async start() {
       allowed = origins;
-      histories[ACTIVE] = histories[ACTIVE]!.filter((row) => row.event !== "approval_request" && row.event !== "approval_end");
       token = crypto.randomUUID();
-      if (!decide) { turnStarted = false; approvalAborted = false; running = false; }
+      if (!decide) { approvalAborted = false; running = false; }
       await write({ port: server.port, token, pid: process.pid, origins: allowed });
     },
     /** Lists other origins in the allowlist, so this page's origin is missing. */
@@ -351,7 +359,13 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     /** `true`: new_session fails the way real zeta does while a turn runs (`require_idle`). */
     setRejectCreate(next: boolean) { rejectCreate = next; },
     setHistoryMode(next: HistoryMode) { currentHistoryMode = next; },
-    setLive(next: boolean) { liveEnabled = next; },
+    setLive(next: boolean) {
+      if (next && !liveEnabled) {
+        turnStarted = false;
+        histories[ACTIVE] = histories[ACTIVE]!.filter((row) => row.event !== "approval_request" && row.event !== "approval_end");
+      }
+      liveEnabled = next;
+    },
     /** `true`: a fresh zeta home, with no sessions and no server session. `false`: the seeded sessions again. */
     setEmpty(empty: boolean) { sessions = empty ? [] : [...seeded]; active = empty ? null : ACTIVE; },
     async close() { this.drop(); server.stop(true); await rm(home, { recursive: true, force: true }); },
