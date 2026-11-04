@@ -89,7 +89,7 @@ export async function openSession(client: ZetaClient, id: string, progress?: Ope
   const complete = (async (): Promise<{ lease?: SessionLease; syncing: boolean }> => {
     const laterEvents: RunEvent[] = [];
     let pages = 0;
-    for (let offset = nextOffset; offset !== null; ) {
+    for (let offset: number | null = nextOffset; offset !== null; ) {
       const page = await client.request("session_history", { session_id: id, offset }, { timeoutMs: 15_000, signal }) as HistoryPage;
       const pageRows = page.messages ?? [];
       rows.push(...pageRows);
