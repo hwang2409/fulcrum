@@ -212,8 +212,7 @@ if (mode === "generate") {
     ["reverse", Object.keys(inputs).reverse()],
     ["shuffle", shuffled(Object.keys(inputs), seed)],
   ] as const;
-  const scenario = process.env.HIGHLIGHT_PARITY_SCENARIO;
-  const wave = process.env.HIGHLIGHT_PARITY_WAVE ? JSON.parse(process.env.HIGHLIGHT_PARITY_WAVE) as string[] : scenario ? [scenario] : undefined;
+  const wave = process.env.HIGHLIGHT_PARITY_WAVE ? JSON.parse(process.env.HIGHLIGHT_PARITY_WAVE) as string[] : undefined;
   if (wave) {
     const results: Record<string, Record<string, Sample>> = {};
     for (const name of wave) {
@@ -225,7 +224,7 @@ if (mode === "generate") {
       try { results[name] = await controllerSamples(highlighter, orderedInputs, `parity-${name}`); }
       finally { highlighter.dispose(); }
     }
-    console.log(JSON.stringify(scenario ? results[scenario] : results));
+    console.log(JSON.stringify(results));
     process.exit(0);
   }
   const direct = await reference();
@@ -243,20 +242,29 @@ if (mode === "generate") {
   const scenarios: [string, readonly string[]][] = [
     ...Object.keys(inputs).map((language): [string, string[]] => [`isolation-${language}`, [language]]), ...orders,
   ];
-  // Reuse one Bun process per CPU wave; every scenario still creates a fresh controller and worker realm.
-  const processCount = Math.min(availableParallelism(), scenarios.length);
-  const waves = Array.from({ length: processCount }, () => [] as typeof scenarios);
-  scenarios.forEach((entry, index) => waves[index % processCount]!.push(entry));
-  await Promise.all(waves.map(async (wave) => {
+  const runWave = async (wave: typeof scenarios) => {
     const proc = Bun.spawn([process.execPath, import.meta.path], {
       env: { ...process.env, HIGHLIGHT_PARITY_WAVE: JSON.stringify(wave.map(([name]) => name)) }, stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, status] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    if (status) throw new Error(`parity wave failed: ${stderr.trim()}`);
+    if (status) throw new Error(`parity wave failed (${status}): ${stderr.trim()}`);
     const actual = JSON.parse(stdout) as Record<string, Record<string, Sample>>;
     for (const [name, order] of wave)
       compare(name, actual[name]!, Object.fromEntries(order.map((language) => [language, inputs[language]!])));
-  }));
+  };
+  // Reserve one CPU wave for load-order scenarios so only one full registry is resident at a time.
+  const isolated = scenarios.slice(0, Object.keys(inputs).length);
+  const processCount = Math.min(availableParallelism(), 4);
+  const isolationCount = Math.max(1, processCount - 1);
+  const waves = Array.from({ length: isolationCount }, () => [] as typeof scenarios);
+  isolated.forEach((entry, index) => waves[index % isolationCount]!.push(entry));
+  const ordered = scenarios.slice(isolated.length);
+  if (processCount === 1) {
+    await runWave(waves[0]!);
+    await runWave(ordered);
+  } else {
+    await Promise.all([...waves.map(runWave), runWave(ordered)]);
+  }
   if (failures.size) {
     await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(runs, null, 2) + "\n");
     throw new Error(`legacy token parity failed: ${[...failures].join(", ")} (shuffle seed ${seed}; ${failedScenarios.join("; ")}; actual: /tmp/highlight-token-parity-actual.json)`);
