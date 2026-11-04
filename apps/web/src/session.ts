@@ -113,6 +113,7 @@ async function openBackwardSession(
   let initialStatus!: ServerStatus;
   let activeSignal!: AbortSignal;
   let lease!: SessionLease;
+  let initialEvents: RunEvent[] = [];
   const combinedSignal = (replaySignal: AbortSignal) => signal ? AbortSignal.any([signal, replaySignal]) : replaySignal;
   const rows = () => [...pages].reverse().flatMap((page) => page.messages ?? []).concat(tail);
   const requestNewest = async () => {
@@ -198,8 +199,11 @@ async function openBackwardSession(
     }
     const page = await requestNewest();
     progress?.(rows().length, page.next_before == null);
-    return snapshotEvents(id, rows(), initialStatus, page.next_before == null, approvalReconnect);
+    initialEvents = snapshotEvents(id, rows(), initialStatus, page.next_before == null, approvalReconnect);
+    return initialEvents;
   }, true);
+  lease.store.beginHistory();
+  lease.store.resync(initialEvents);
 
   const complete = (async () => {
     await wait(0, activeSignal);
@@ -227,7 +231,7 @@ async function openBackwardSession(
       }
       status = await waitUntilIdle(status);
     }
-  })();
+  })().finally(() => lease.store.endHistory());
   return { lease, syncing: initialStatus.state !== "idle", complete };
 }
 

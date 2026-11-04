@@ -67,6 +67,7 @@ test("backward history opens newest first and prepends older pages in order", as
   await opened.complete;
   expect(texts(opened.lease.store)).toEqual(["old", "new"]);
   expect(opened.lease.store.getOutline().at(-1)?.id).toBe(newestAnchor);
+  expect(() => opened.lease.store.prepend([])).toThrow("prepend requires an open history window");
 });
 
 test("a user message sent while older pages load survives every prepend", async () => {

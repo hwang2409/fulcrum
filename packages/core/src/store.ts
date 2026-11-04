@@ -88,6 +88,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let current: RunState = structuredClone(initialState);
   let pending: RunEvent[] = [];
   let acceptedLog: RunEvent[] = [];
+  let historyOpen = false;
   let pendingOlder: RunEvent[] = [];
   const listeners = new Set<Listener>();
   const outlineListeners = new Set<Listener>();
@@ -121,7 +122,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     pending = [];
     const beforeOutline = current.outline;
     let next: RunState;
-    const accepted: RunEvent[] = [];
+    const accepted = historyOpen ? [] as RunEvent[] : undefined;
     try {
       next = reduceAllWithEntities(current, events, {
         get: (id) => entities.get(id),
@@ -130,7 +131,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
         splice: (edit) => edits.push(edit),
         getMessageAlias: (key) => messageAliases.get(key),
         setMessageAlias: (key, id) => { messageAliases.set(key, id); },
-      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, (event) => accepted.push(event));
+      }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, accepted && ((event) => accepted.push(event)));
     } catch (error) {
       desynced = true;
       pending = [];
@@ -150,7 +151,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       return false;
     }
     current = next;
-    acceptedLog.push(...accepted);
+    if (accepted) acceptedLog.push(...accepted);
     stateChanged = true;
     if (current.outline !== beforeOutline) {
       // One change per notification: flushes before it (a read forces one) extend it, so subscribers see one edit list.
@@ -310,14 +311,36 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
     },
+    /** Starts retaining accepted events for a backward-history walk. Call before publishing its newest page. */
+    beginHistory() {
+      if (disposed) throw new Error("store is disposed");
+      refuseDesynced();
+      if (historyOpen) throw new Error("history is already open");
+      flush();
+      notify();
+      acceptedLog = [];
+      historyOpen = true;
+    },
+    /** Finishes the history walk and releases its accepted-event log. `prepend` is invalid after this call. */
+    endHistory() {
+      if (disposed) return;
+      if (!historyOpen) return;
+      flush();
+      flushPrepend();
+      notify();
+      acceptedLog = [];
+      historyOpen = false;
+    },
     /**
-     * Re-reduces `older` followed by every accepted event from empty, so the result exactly matches chronological
-     * reduction and accepted live events win naturally. Rejection publishes nothing and visibly desyncs the store.
-     * Cost is O(older + applied log) per prepend, at most once per page; pages queued in one frame share a reduction.
+     * Re-reduces `older` followed by every accepted event since `beginHistory()` from empty, so the result exactly
+     * matches chronological reduction and accepted live events win naturally. Rejection publishes nothing and visibly
+     * desyncs the store. Cost is O(older + applied log) per prepend, at most once per page; pages queued in one frame
+     * share one reduction. Calling after `endHistory()` is a programmer error.
      */
     prepend(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
       refuseDesynced();
+      if (!historyOpen) throw new Error("prepend requires an open history window");
       flush();
       notify();
       pendingOlder = [...events, ...pendingOlder];
@@ -340,6 +363,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       pending = [];
       pendingOlder = [];
       acceptedLog = [];
+      historyOpen = false;
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
       entities = new Map();

@@ -54,6 +54,7 @@ const measurements = [
 
 const prependBudget = 500;
 const prependStore = createRunStore(() => {});
+prependStore.beginHistory();
 for (let i = 0; i < 100_000; i++)
   prependStore.dispatch({ type: "message_commit", message_id: `current-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
 prependStore.getState();

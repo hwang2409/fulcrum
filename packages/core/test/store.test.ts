@@ -276,8 +276,20 @@ test("an unexpected reduction failure marks the store desynced until history rep
   expect(store.getOutline()).toEqual([{ id: "user:delivery:history", kind: "user" }]);
 });
 
+test("history windows reject prepends after releasing their accepted events", () => {
+  const store = createRunStore((flush) => flush());
+  store.beginHistory();
+  store.dispatch({ type: "run_start" });
+  store.endHistory();
+  store.dispatch({ type: "run_end" });
+
+  expect(store.getState().agent).toBe("idle");
+  expect(() => store.prepend([])).toThrow("prepend requires an open history window");
+});
+
 test("prepend composes a message stream split across the page seam", () => {
   const store = createRunStore((flush) => flush());
+  store.beginHistory();
   store.dispatch({ type: "message_delta", message_id: "split", delta: "suffix" });
 
   store.prepend([{ type: "message_delta", message_id: "split", delta: "prefix-" }]);
@@ -288,6 +300,7 @@ test("prepend composes a message stream split across the page seam", () => {
 test("prepend keeps a current approval resolution when its request is older", () => {
   const call = { id: "split", name: "bash", arguments: { command: "true" } };
   const store = createRunStore((flush) => flush());
+  store.beginHistory();
   store.resync([{ type: "approval_end", request_id: "split", decision: "approve" }]);
 
   store.prepend([{ type: "approval_request", request_id: "split", tool_call: call, delegated: false }]);
@@ -298,6 +311,7 @@ test("prepend keeps a current approval resolution when its request is older", ()
 test("prepend folds an older completed tool with its newer approval resolution", () => {
   const call = { id: "split", name: "bash", arguments: { command: "true" } };
   const store = createRunStore((flush) => flush());
+  store.beginHistory();
   store.resync([{ type: "approval_end", request_id: "split", decision: "approve" }]);
 
   store.prepend([
@@ -312,6 +326,7 @@ test("prepend folds an older completed tool with its newer approval resolution",
 
 test("prepend assigns generated ids as a whole chronological reduction", () => {
   const store = createRunStore((flush) => flush());
+  store.beginHistory();
   store.resync([{ type: "error", error: { code: "newer", message: "newer" } }]);
 
   store.prepend([{ type: "message_commit", message_id: "fixed", message: message("older") }]);
@@ -332,6 +347,7 @@ test("prepend assigns generated ids as a whole chronological reduction", () => {
 test("prepend rejection keeps the last good state and visibly desyncs", () => {
   const errors: unknown[] = [];
   const store = createRunStore((flush) => flush(), { onError: (error) => errors.push(error) });
+  store.beginHistory();
   store.resync([{ type: "message_commit", message_id: "kept", message: message("kept") }]);
   const kept = store.getItem("message:kept");
   let reads = 0;
@@ -353,6 +369,7 @@ test("prepend rejection keeps the last good state and visibly desyncs", () => {
 test("prepend coalesces pages queued in one frame", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((flush) => jobs.push(flush));
+  store.beginHistory();
   store.resync([{ type: "message_commit", message_id: "new", message: message("new") }]);
   store.prepend([{ type: "message_commit", message_id: "middle", message: message("middle") }]);
   store.prepend([{ type: "message_commit", message_id: "old", message: message("old") }]);
@@ -420,6 +437,7 @@ test("prepend equals whole-log reduction at every page seam", () => {
     const expectedView = prependView(expected);
     for (let split = 0; split <= events.length; split++) {
       const actual = createRunStore((flush) => flush());
+      actual.beginHistory();
       actual.resync(events.slice(split));
       actual.prepend(events.slice(0, split));
       expect(prependView(actual), `seed ${seed}, split ${split}`).toEqual(expectedView);
@@ -428,6 +446,7 @@ test("prepend equals whole-log reduction at every page seam", () => {
     const first = seed % (events.length + 1);
     const second = first + seed % (events.length - first + 1);
     const actual = createRunStore((flush) => flush());
+    actual.beginHistory();
     actual.resync(events.slice(second));
     actual.prepend(events.slice(first, second));
     actual.prepend(events.slice(0, first));
@@ -439,6 +458,7 @@ test("prepend equals whole-log reduction at every page seam", () => {
 
 test("prepend inserts older rows without resetting or replacing the live tail", () => {
   const store = createRunStore((flush) => flush());
+  store.beginHistory();
   store.dispatch({ type: "message_commit", message_id: "new", message: message("new") });
   store.dispatch({ type: "user_message", text: "pending", mode: "steer", intent: "pending", delivery_id: "pending" });
   store.dispatch({ type: "message_delta", message_id: "live", delta: "streaming" });
