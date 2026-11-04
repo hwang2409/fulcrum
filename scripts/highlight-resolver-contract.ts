@@ -5,7 +5,7 @@ import * as ts from "typescript";
 import { aliases, languageForContentType, languageForPath, normalizeLanguage } from "../packages/highlight/src/names.js";
 
 type Result = string | null;
-type Contract = { baseCommit: string; sourceSha256: string; counts: Record<string, number>; aliases: Record<string, Result>; paths: Record<string, Result>; media: Record<string, Result> };
+type Contract = { sourceSha256: string; counts: Record<string, number>; aliases: Record<string, Result>; paths: Record<string, Result>; media: Record<string, Result> };
 const fixture = resolve(import.meta.dir, "../packages/highlight/test/fixtures/resolver-contract.json");
 const mode = process.argv[2] ?? "check";
 const ref = process.argv[3] ?? process.env.GITHUB_BASE_SHA ?? "origin/main";
@@ -45,7 +45,7 @@ async function generate() {
   const base = runBase(source);
   const names = ["aliases", "extensions", "fileNames", "mediaTypes"] as const;
   const keys = Object.fromEntries(names.map((name) => [name, objectKeys(source, name)]));
-  const out: Contract = { baseCommit: ref, sourceSha256: createHash("sha256").update(source).digest("hex"), counts: Object.fromEntries(names.map((name) => [name, keys[name].length])), aliases: {}, paths: {}, media: {} };
+  const out: Contract = { sourceSha256: createHash("sha256").update(source).digest("hex"), counts: Object.fromEntries(names.map((name) => [name, keys[name].length])), aliases: {}, paths: {}, media: {} };
   for (const key of keys.aliases) {
     addCase(out.aliases, key, base.normalizeLanguage(key));
     addCase(out.aliases, key.toUpperCase(), base.normalizeLanguage(key.toUpperCase()));
