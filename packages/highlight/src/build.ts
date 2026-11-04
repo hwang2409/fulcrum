@@ -7,6 +7,7 @@ const entries = generationEntries();
 const expectedFiles = entries.flatMap((entry) => [`.grammar-entries/${entry.actual}.ts`, `.recipe-entries/${entry.actual}.ts`]).sort();
 const packageRoot = new URL("../", import.meta.url);
 const dist = new URL("dist/", packageRoot);
+const distPath = new URL("dist", packageRoot).pathname;
 const lock = new URL(".build.lock", packageRoot);
 const manifest = new URL(".build-manifest.json", dist);
 const pendingManifest = new URL(".build-manifest.pending", packageRoot);
@@ -79,7 +80,8 @@ try {
   await rm(dist, { recursive: true, force: true });
   const result = await Bun.build({
     entrypoints: [new URL("./index.ts", import.meta.url).pathname, new URL("./worker.ts", import.meta.url).pathname, new URL("./runtime.ts", import.meta.url).pathname, new URL("./names.ts", import.meta.url).pathname],
-    outdir: dist.pathname,
+    // Bun's debug identifiers include the outdir string; keep the proven direct-dist spelling stable.
+    outdir: distPath,
     root: new URL(".", import.meta.url).pathname,
     target: "browser",
     format: "esm",
