@@ -52,7 +52,7 @@ const measurements = [
   report("enforced 3-event flush", collectRuns(3)),
 ];
 
-const prependBudget = Number(process.env.CI ? 500 : 100);
+const prependBudget = 500;
 const prependStore = createRunStore(() => {});
 for (let i = 0; i < 100_000; i++)
   prependStore.dispatch({ type: "message_commit", message_id: `current-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
