@@ -47,7 +47,7 @@ scope.onmessage = async (event) => {
   try {
     const tokens = await runtime.tokenize(code, language, context);
     const provisional = runtime.takeProvisionalReply(context);
-    send({ requestId, tokens, provisional, completion: { status: provisional || context.state !== "done" ? "pending" : "complete" } });
+    send({ requestId, tokens, provisional, completion: { status: provisional ? "pending" : "complete" } });
   } catch (cause) {
     scope.postMessage({ requestId, error: cause instanceof Error ? cause.message : String(cause), completion: { status: "unavailable", reason: "grammar" } });
   }

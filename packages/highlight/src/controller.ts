@@ -86,7 +86,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     else versions.delete(entry.id);
   };
   const weigh = (code: string, tokens: Token[]) => code.length * 2 + tokens.reduce((sum, token) => sum + token.text.length * 2 + 32, 0);
-  const remember = (key: string, context: HighlightContext, code: string, tokens: Token[], completion: Completion = { status: context.state === "done" ? "complete" : "pending" }) => {
+  const remember = (key: string, context: HighlightContext, code: string, tokens: Token[], completion: Completion = { status: "complete" }) => {
     cache.set(key, { tokens, weight: weigh(code, tokens), used: ++clock, done: context.state === "done", id: context.id, code, completion });
     const queued = pendingUpdates.get(key);
     if (queued) { pendingUpdates.delete(key); update(queued.context, queued.language, queued.tokens); }
@@ -111,9 +111,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (tokens.map((token) => token.text).join("") !== entry.code) return;
     entry.tokens = tokens;
     entry.weight = weigh(entry.code, tokens);
-    entry.completion = { status: context.state === "done" ? "complete" : "pending" };
-    if (context.state === "done") settleRevision(context, { status: "complete" });
-    else notify(context, entry.completion);
+    entry.completion = { status: "complete" };
+    settleRevision(context, entry.completion);
   };
   const post = (id: number, job: Pending) => {
     watchdog ??= setTimeout(onSilence, WORKER_SILENCE_MS);
@@ -163,6 +162,18 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     scheduleRestart(0);
   };
   const sameBlock = (a: HighlightContext | null, b: HighlightContext) => a?.id === b.id && a.version === b.version;
+  const handleWorkerReply = (data: Extract<WorkerResponse, { requestId: number }>) => {
+    const tokens = "tokens" in data ? joined(data.of, data.tokens) : undefined;
+    const job = pending.get(data.requestId);
+    if (!job) return;
+    pending.delete(data.requestId);
+    if (sameBlock(busyWith, job.context)) busyWith = null;
+    if ("completion" in data) {
+      if (data.completion.status === "pending") completions.set(revision(job.context), data.completion);
+      else settleRevision(job.context, data.completion);
+    } else if ((data as { provisional?: boolean }).provisional) completions.set(revision(job.context), { status: "pending" });
+    job.resolve(tokens ?? plain(job.code));
+  };
   const startWorker = (): boolean => {
     try {
       const next = options.workerFactory?.() ?? new Worker(new URL("./worker.js", import.meta.url), { type: "module" }) as unknown as WorkerLike;
@@ -173,25 +184,27 @@ export function createController(options: HighlighterOptions = {}): Highlight {
         if ("progress" in data) busyWith = data.progress;
         else if ("part" in data) { const tokens = parts.get(data.of); if (tokens) for (const token of data.part) tokens.push(token); else parts.set(data.of, data.part); ackNextFrame(next); }
         else if ("update" in data) { if (sameBlock(busyWith, data.update)) busyWith = null; update(data.update, data.language, joined(data.of, data.tokens)); }
-        else {
-          const tokens = "tokens" in data ? joined(data.of, data.tokens) : undefined; // joined even for a request no longer pending
-          const job = pending.get(data.requestId);
-          if (job) {
-            pending.delete(data.requestId);
-            if (sameBlock(busyWith, job.context)) busyWith = null;
-            // An error for one block (the worker is alive) leaves that block plain.
-            if ("completion" in data) {
-              if (data.completion.status === "pending") completions.set(revision(job.context), data.completion);
-              else settleRevision(job.context, data.completion);
-            } else if ((data as { provisional?: boolean }).provisional) completions.set(revision(job.context), { status: "pending" });
-            job.resolve(tokens ?? plain(job.code));
-          }
-        }
+        else handleWorkerReply(data);
         heard();
       };
       next.onerror = next.onmessageerror = () => { if (worker === next) crash(); };
       return true;
     } catch { return false; }
+  };
+
+  const visibleResult = (actual: HighlightContext, key: string, code: string, tokens: Token[], newest: boolean): Token[] | Promise<Token[]> => {
+    const currentKey = current.get(actual.id);
+    if (!disposed && currentKey === key) {
+      if (newest && !unavailable && !poisoned.has(revision(actual))) remember(key, actual, code, tokens, completions.get(revision(actual)) ?? { status: "complete" });
+      if ([...inflightIds].some(([otherKey, id]) => id === actual.id && otherKey !== key)) latestSettled.set(actual.id, { key, tokens });
+      return tokens;
+    }
+    const settled = latestSettled.get(actual.id);
+    if (settled && settled.key === currentKey) {
+      if (![...inflightIds.values()].includes(actual.id)) latestSettled.delete(actual.id);
+      return settled.tokens;
+    }
+    return currentKey ? inflight.get(currentKey) ?? cache.get(currentKey)?.tokens ?? plain(code) : plain(code);
   };
 
   // Whether a request can be posted now or after a pending restart; false: plain for good.
@@ -230,22 +243,10 @@ export function createController(options: HighlighterOptions = {}): Highlight {
       if (worker) post(id, job); // while a restart waits, the job is posted to the new worker
     });
     const tracked = result.then((tokens): Token[] | Promise<Token[]> => {
-      // Only the newest request under a key may fill its cache entry: an older one for other content that lands later
-      // must not replace a newer, already-cached result (that would only cost a needless retokenize, never wrong colors).
+      // Only the newest request under a key may fill its cache entry.
       const newest = inflight.get(key) === tracked;
       if (newest) { inflight.delete(key); inflightIds.delete(key); inflightCode.delete(key); }
-      const currentKey = current.get(actual.id);
-      if (!disposed && currentKey === key) {
-        if (newest && !unavailable && !poisoned.has(revision(actual))) remember(key, actual, code, tokens, completions.get(revision(actual)) ?? { status: actual.state === "done" ? "complete" : "pending" }); // plain for want of a worker is never cached
-        if ([...inflightIds].some(([otherKey, id]) => id === actual.id && otherKey !== key)) latestSettled.set(actual.id, { key, tokens });
-        return tokens;
-      }
-      const settled = latestSettled.get(actual.id);
-      if (settled && settled.key === currentKey) {
-        if (![...inflightIds.values()].includes(actual.id)) latestSettled.delete(actual.id);
-        return settled.tokens;
-      }
-      return currentKey ? inflight.get(currentKey) ?? cache.get(currentKey)?.tokens ?? plain(code) : plain(code);
+      return visibleResult(actual, key, code, tokens, newest);
     });
     inflight.set(key, tracked);
     inflightIds.set(key, actual.id);

@@ -309,10 +309,50 @@ describe("worker liveness and restarts", () => {
     return worker;
   };
   const colored = (code: string): Token[] => [{ text: code, type: "keyword" }];
-  const answer = (worker: Scripted, index: number) => worker.send({ requestId: worker.posted[index].requestId, tokens: colored(worker.posted[index].code), provisional: false });
+  const answer = (worker: Scripted, index: number) => worker.send({ requestId: worker.posted[index].requestId, tokens: colored(worker.posted[index].code), provisional: false, completion: { status: "complete" } });
   const block = (id: string) => ({ id, version: 1, state: "done" as const });
   const ticks = async () => { for (let i = 0; i < 3; i++) await Promise.resolve(); };
   const withFakeTimers = (run: () => Promise<void>) => async () => { jest.useFakeTimers(); try { await run(); } finally { jest.useRealTimers(); } };
+
+  test("a streaming revision completes when its non-provisional worker result arrives", async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const result = highlighter("const one = 1;\n", "typescript", { id: "stream", version: 1, state: "streaming" });
+    answer(workers[0], 0);
+    expect(await highlighter.awaitCompletion("stream", 1)).toEqual({ version: 1, status: "complete" });
+    expect(await result).toEqual(colored("const one = 1;\n"));
+    highlighter.dispose();
+  });
+
+  test("a superseded streaming revision keeps its exact completion", async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const first = highlighter("const one = 1;\n", "typescript", { id: "stream", version: 1, state: "streaming" });
+    answer(workers[0], 0);
+    const second = highlighter("const two = 2;\n", "typescript", { id: "stream", version: 2, state: "streaming" });
+    answer(workers[0], 1);
+    expect(await highlighter.awaitCompletion("stream", 1)).toEqual({ version: 1, status: "complete" });
+    // The visible promise follows the newest revision; the exact v1 result is retained by its completion record above.
+    expect(await first).toEqual(colored("const two = 2;\n"));
+    expect(await second).toEqual(colored("const two = 2;\n"));
+    highlighter.dispose();
+  });
+
+  test("a provisional streaming revision completes on its cold update", async () => {
+    const workers: Scripted[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
+    const result = highlighter("const cold = 1;\n", "typescript", { id: "cold-stream", version: 1, state: "streaming" });
+    workers[0].send({ requestId: workers[0].posted[0].requestId, tokens: [{ text: "const cold = 1;\n" }], provisional: true, completion: { status: "pending" }, of: 1 });
+    const completion = highlighter.awaitCompletion("cold-stream", 1);
+    let settled = false;
+    completion.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    workers[0].send({ update: { id: "cold-stream", version: 1, state: "streaming" }, language: "typescript", tokens: colored("const cold = 1;\n"), of: 2 });
+    expect(await completion).toEqual({ version: 1, status: "complete" });
+    expect(await result).toEqual([{ text: "const cold = 1;\n" }]);
+    highlighter.dispose();
+  });
 
   test("steady progress for 30 s of long work never restarts the worker", withFakeTimers(async () => {
     const workers: Scripted[] = [];
@@ -859,7 +899,7 @@ describe("grammar warm-up and regex caches", () => {
     workers[0]!.send({ requestId: request.requestId, tokens: [{ text: request.code }], provisional: true });
     await result;
     workers[0]!.send({ update: context, language: "typescript", tokens: [{ text: "const", type: "keyword" }, { text: " value = 1;\n" }] });
-    expect(notices).toContain("pending");
+    expect(notices).toContain("complete");
     expect(highlighter("const value = 1;\n", "typescript", context)).toEqual([{ text: "const", type: "keyword" }, { text: " value = 1;\n" }]);
     highlighter.dispose();
   });
