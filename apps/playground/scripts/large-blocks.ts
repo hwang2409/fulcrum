@@ -2,8 +2,8 @@
 // throttled). On a page that already shows a run, a markdown fence of 9,999 cpp lines (329,968 tokens) must mount, color,
 // and scroll a page per frame without real jank; its first visible lines must color without waiting for the whole block; the bounded view must scroll by
 // keyboard, copy the whole text, and let find-in-page reach its visible lines. Timing checks use five measured samples
-// after a discarded warm-up: a median long-task count must stay zero, while any task over 150 ms is pathological.
-// This avoids failing on one scheduler or GC spike on a loaded CI runner while still rejecting sustained jank.
+// after a discarded warm-up: two samples with a task over 80 ms fail, while any task over 150 ms is pathological.
+// This tolerates one scheduler or GC spike on a loaded CI runner while rejecting repeated visible jank.
 // A small block asked for while a
 // 330k-token result is still being delivered must color within two frames of the time it takes on its own. A fence
 // under the whole-block cap must send its mounted ranges to the worker before its whole block, and a small block asked
@@ -226,10 +226,10 @@ try {
   }
   const readSamples = results.readSamples as Measured[];
   const readLongTaskCounts = readSamples.map((sample) => sample.longTasks.length);
-  const readMedianCount = [...readLongTaskCounts].sort((left, right) => left - right)[readLongTaskCounts.length >> 1]!;
+  const affectedReadSamples = readSamples.filter((sample) => sample.longTasks.some((task) => task > 80)).length;
   const readMaxTask = Math.max(0, ...readSamples.flatMap((sample) => sample.longTasks));
   console.log(`read timing samples: counts [${readLongTaskCounts.join(", ")}], max tasks [${readSamples.map((sample) => sample.maxLongTask.toFixed(1)).join(", ")}] ms`);
-  if (readMedianCount > 0) failures.push(`read: median long-task count ${readMedianCount} across five samples`);
+  if (affectedReadSamples >= 2) failures.push(`read: ${affectedReadSamples} of five samples had a main-thread task over 80 ms`);
   if (readMaxTask > 150) failures.push(`read: pathological main-thread task ${readMaxTask.toFixed(1)} ms`);
   if (!results.read?.colored) failures.push("read: the scrolled-to rows of the opened read viewer never colored");
   const { queue } = results;

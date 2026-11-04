@@ -36,7 +36,24 @@ jobs:
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground smoke
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
       - run: bun run check:mermaid-bundle
+      - name: build base playground for viewer timing
+        env:
+          BASE_DIR: ${{ github.workspace }}/../fulcrum-layout-base
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+          elif [ "${{ github.ref }}" = refs/heads/main ]; then
+            base_sha="$(bun scripts/ci-base-ref.ts "${{ github.event.before }}")"
+          else
+            base_sha="$(git merge-base HEAD origin/main)"
+          fi
+          git worktree add --detach "$BASE_DIR" "$base_sha"
+          cd "$BASE_DIR"
+          bun install --frozen-lockfile
+          bun run --cwd apps/playground build
       - run: bun run --cwd apps/playground layout
+        env:
+          LAYOUT_BASE_ROOT: ${{ github.workspace }}/../fulcrum-layout-base/apps/playground
       - run: bun run --cwd apps/playground mermaid
       - run: bun run --cwd apps/playground fold-check
         env: { FOLD_ROWS: 50000 }
