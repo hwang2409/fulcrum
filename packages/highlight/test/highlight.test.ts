@@ -169,13 +169,14 @@ describe("incremental tokenization", () => {
       // The handshake: a provisional reply is followed by one update for its block, which the cache then serves.
       const reply = replies.findLast((item) => item.requestId !== undefined)!;
       if (reply.provisional) await updated;
+      if (reply.provisional) {
+        await highlighter.awaitCompletion(context.id, context.version);
+        const update = replies.findLast((item) => item.update && (item.update as { id: string }).id === context.id) as { tokens: Token[] };
+        expect(highlighter(source, language, context)).toEqual(update.tokens);
+      }
       const tokens = highlighter(source, language, context) as Token[];
       expect(Array.isArray(tokens)).toBe(true);
       expect(text(tokens)).toBe(source);
-      if (reply.provisional) {
-        await highlighter.awaitCompletion(context.id, context.version);
-        expect((highlighter(source, language, context) as Token[]).some((token) => token.type)).toBe(true);
-      }
       // Every line colored is shown deterministically below ("re-sends each provisional block once"); here, on real
       // time, the colors only have to arrive.
       expect(tokens.some((token) => token.type)).toBe(true);
@@ -803,6 +804,83 @@ describe("grammar warm-up and regex caches", () => {
     expect(runtime["provisional"].size).toBe(0);
     runtime.dispose();
   }, 60_000);
+
+  type RevisionWorker = {
+    posted: Array<{ requestId: number; code: string; context: unknown }>;
+    terminated: boolean;
+    onmessage: ((event: MessageEvent<unknown>) => void) | null;
+    onerror: ((event: ErrorEvent) => unknown) | null;
+    postMessage(value: { type?: string; requestId?: number; code?: string; context?: unknown }): void;
+    terminate(): void;
+    send(data: unknown): void;
+    crash(): void;
+  };
+  const revisionWorker = (workers: RevisionWorker[]) => {
+    const worker: RevisionWorker = {
+      posted: [], terminated: false, onmessage: null, onerror: null,
+      postMessage(value) { if (value.type === "highlight") worker.posted.push({ requestId: value.requestId!, code: value.code!, context: value.context }); },
+      terminate() { worker.terminated = true; },
+      send(data) { worker.onmessage?.({ data } as MessageEvent<unknown>); },
+      crash() { worker.onerror?.(new ErrorEvent("error")); },
+    };
+    workers.push(worker);
+    return worker;
+  };
+  const revisionAnswer = (worker: RevisionWorker, index: number) => worker.send({ requestId: worker.posted[index]!.requestId, tokens: [{ text: worker.posted[index]!.code, type: "keyword" }], provisional: false });
+
+  test("superseded provisional revisions settle when their final update arrives", async () => {
+    const workers: RevisionWorker[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => revisionWorker(workers) });
+    const firstContext = { id: "superseded", version: 1, state: "done" as const };
+    const secondContext = { id: "superseded", version: 2, state: "done" as const };
+    const first = highlighter("first\n", "typescript", firstContext);
+    const firstRequest = workers[0]!.posted[0]!;
+    workers[0]!.send({ requestId: firstRequest.requestId, tokens: [{ text: "first\n" }], provisional: true });
+    await first;
+    highlighter("second\n", "typescript", secondContext);
+    const secondRequest = workers[0]!.posted[1]!;
+    revisionAnswer(workers[0]!, 1);
+    await highlighter.awaitCompletion(secondContext.id, secondContext.version);
+    const waiting = highlighter.awaitCompletion(firstContext.id, firstContext.version);
+    workers[0]!.send({ update: firstContext, language: "typescript", tokens: [{ text: "first", type: "keyword" }, { text: "\n" }] });
+    await expect(waiting).resolves.toEqual({ version: 1, status: "complete" });
+    expect(highlighter("first\n", "typescript", firstContext)).toEqual([{ text: "first", type: "keyword" }, { text: "\n" }]);
+    highlighter.dispose();
+  });
+
+  test("a cold update notifies subscribers before completion is awaited", async () => {
+    const workers: RevisionWorker[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => revisionWorker(workers) });
+    const context = { id: "cold-subscribe", version: 1, state: "streaming" as const };
+    const notices: string[] = [];
+    highlighter.subscribe(context.id, (notice) => notices.push(notice.status));
+    const result = highlighter("const value = 1;\n", "typescript", context);
+    const request = workers[0]!.posted[0]!;
+    workers[0]!.send({ requestId: request.requestId, tokens: [{ text: request.code }], provisional: true });
+    await result;
+    workers[0]!.send({ update: context, language: "typescript", tokens: [{ text: "const", type: "keyword" }, { text: " value = 1;\n" }] });
+    expect(notices).toContain("pending");
+    expect(highlighter("const value = 1;\n", "typescript", context)).toEqual([{ text: "const", type: "keyword" }, { text: " value = 1;\n" }]);
+    highlighter.dispose();
+  });
+
+  test("completion waiters survive cache eviction and worker restart", async () => {
+    jest.useFakeTimers();
+    try {
+    const workers: RevisionWorker[] = [];
+    const highlighter = createHighlighter({ workerFactory: () => revisionWorker(workers) });
+    const context = { id: "evicted", version: 1, state: "done" as const };
+    const pending = highlighter("evicted\n", "typescript", context);
+    const request = workers[0]!.posted[0]!;
+    const waiting = highlighter.awaitCompletion(context.id, context.version);
+    workers[0]!.crash();
+    jest.advanceTimersByTime(250);
+    revisionAnswer(workers[1]!, 0);
+    await pending;
+    await expect(waiting).resolves.toEqual({ version: 1, status: "complete" });
+    highlighter.dispose();
+    } finally { jest.useRealTimers(); }
+  });
 
   test("completion is observable for the exact block revision", async () => {
     const notices: Array<{ version: number; status: string }> = [];

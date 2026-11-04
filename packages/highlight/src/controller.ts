@@ -62,13 +62,18 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const completionWaiters = new Map<string, Set<(completion: CompletionNotice) => void>>();
   const notify = (context: HighlightContext, completion: Completion) => {
     const key = revision(context);
-    if (completion.status !== "pending") completions.set(key, completion);
     const notice = { version: context.version, ...completion };
+    for (const listener of listeners.get(context.id) ?? []) listener(notice);
     if (completion.status !== "pending") {
-      for (const listener of listeners.get(context.id) ?? []) listener(notice);
       for (const resolve of completionWaiters.get(key) ?? []) resolve(notice);
       completionWaiters.delete(key);
     }
+  };
+  const settleRevision = (context: HighlightContext, completion: Completion) => {
+    const key = revision(context);
+    if (completions.get(key)?.status !== "pending" && completions.has(key)) return;
+    completions.set(key, completion);
+    notify(context, completion);
   };
 
   const plain = (code: string): Token[] => code ? [{ text: code }] : [];
@@ -85,7 +90,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     cache.set(key, { tokens, weight: weigh(code, tokens), used: ++clock, done: context.state === "done", id: context.id, code, completion });
     const queued = pendingUpdates.get(key);
     if (queued) { pendingUpdates.delete(key); update(queued.context, queued.language, queued.tokens); }
-    notify(context, completion);
+    if (completion.status !== "pending") settleRevision(context, completion);
     const keys = [...(versions.get(context.id) ?? []).filter((item) => item !== key), key];
     while (keys.length > 2) cache.delete(keys.shift()!);
     versions.set(context.id, keys);
@@ -107,7 +112,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     entry.tokens = tokens;
     entry.weight = weigh(entry.code, tokens);
     entry.completion = { status: context.state === "done" ? "complete" : "pending" };
-    if (context.state === "done" && current.get(context.id) === cacheKey(context, language)) notify(context, { status: "complete" });
+    if (context.state === "done") settleRevision(context, { status: "complete" });
+    else notify(context, entry.completion);
   };
   const post = (id: number, job: Pending) => {
     watchdog ??= setTimeout(onSilence, WORKER_SILENCE_MS);
@@ -126,7 +132,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
   const giveUp = () => {
     stop();
     unavailable = true;
-    for (const job of pending.values()) { notify(job.context, { status: "unavailable", reason: "worker" }); job.resolve(plain(job.code)); }
+    for (const job of pending.values()) { settleRevision(job.context, { status: "unavailable", reason: "worker" }); job.resolve(plain(job.code)); }
     pending.clear();
     if (!disposed) queueMicrotask(() => options.onHighlightUnavailable?.());
   };
@@ -152,7 +158,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (!blamed) return crash();
     stop();
     poisoned.add(revision(blamed));
-    notify(blamed, { status: "unavailable", reason: "watchdog" });
+    settleRevision(blamed, { status: "unavailable", reason: "watchdog" });
     for (const [id, job] of pending) if (sameBlock(blamed, job.context)) { pending.delete(id); job.resolve(plain(job.code)); }
     scheduleRestart(0);
   };
@@ -175,8 +181,8 @@ export function createController(options: HighlighterOptions = {}): Highlight {
             if (sameBlock(busyWith, job.context)) busyWith = null;
             // An error for one block (the worker is alive) leaves that block plain.
             if ("completion" in data) {
-              if (data.completion.status === "unavailable") notify(job.context, data.completion);
-              else completions.set(revision(job.context), data.completion);
+              if (data.completion.status === "pending") completions.set(revision(job.context), data.completion);
+              else settleRevision(job.context, data.completion);
             } else if ((data as { provisional?: boolean }).provisional) completions.set(revision(job.context), { status: "pending" });
             job.resolve(tokens ?? plain(job.code));
           }
@@ -202,7 +208,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (!language) return null;
     const actual = context ?? { id: `finished:${language}:${code}`, version: 0, state: "done" as const };
     if (code.length > MAX_BLOCK || (code.match(/\n/g)?.length ?? 0) + 1 > MAX_LINES) {
-      notify(actual, { status: "unavailable", reason: "size" });
+      settleRevision(actual, { status: "unavailable", reason: "size" });
       return plain(code);
     }
     if (poisoned.has(revision(actual))) return plain(code);
@@ -216,7 +222,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     if (hit) dropCompleted(key, hit);
     const active = inflightCode.get(key) === code ? inflight.get(key) : undefined;
     if (active) return active;
-    if (!ensureWorker()) { notify(actual, { status: "unavailable", reason: "worker" }); return plain(code); }
+    if (!ensureWorker()) { settleRevision(actual, { status: "unavailable", reason: "worker" }); return plain(code); }
     const result = new Promise<Token[]>((resolve) => {
       const id = ++requestId;
       const job = { resolve, code, language, context: actual };
@@ -262,7 +268,7 @@ export function createController(options: HighlighterOptions = {}): Highlight {
     worker?.postMessage({ type: "dispose" });
     stop();
     clearTimeout(restart);
-    for (const job of pending.values()) { notify(job.context, { status: "unavailable", reason: "worker" }); job.resolve(plain(job.code)); }
+    for (const job of pending.values()) { settleRevision(job.context, { status: "unavailable", reason: "worker" }); job.resolve(plain(job.code)); }
     pending.clear(); cache.clear(); pendingUpdates.clear(); inflight.clear(); inflightCode.clear(); inflightIds.clear(); latestSettled.clear(); versions.clear(); current.clear(); latestVersion.clear(); listeners.clear(); completions.clear(); completionWaiters.clear(); poisoned.clear();
   };
   return highlight;
