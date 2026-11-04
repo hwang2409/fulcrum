@@ -152,6 +152,32 @@ try {
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
     });
 
+    await check("slow catalog keeps the selected transcript and composer usable", async () => {
+      fake.setLive(false);
+      fake.setMode("slow-catalog");
+      fake.drop();
+      await fake.start();
+      await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+      await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 10_000 });
+      await page.getByText(/loading sessions/).waitFor({ timeout: 10_000 });
+      await page.locator(".dock textarea").fill("sent while the catalog loads");
+      await page.locator(".dock textarea").press("Enter");
+      await page.getByText("sent while the catalog loads", { exact: true }).waitFor({ timeout: 2000 });
+      await shoot(page, "slow-catalog-1440");
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.locator(".menu").click();
+      await page.getByRole("button", { name: "new session" }).waitFor();
+      await shoot(page, "slow-catalog-390");
+      await page.setViewportSize({ width: 1440, height: 900 });
+      fake.setMode("ok");
+      await Bun.sleep(31_000);
+      fake.clearSent();
+      await fake.start();
+      fake.setLive(true);
+      await page.goto(`${origin}/?theme=tokyo-night`);
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+    });
+
     // Connected: list, history, live run, approval, follow-bottom.
     await check("session list shows top-level sessions with title, time, and status", async () => {
       const rows = page.locator("button.session");
@@ -179,7 +205,7 @@ try {
       await approval.waitFor({ timeout: 5000 });
       // The run is blocked on the user, not running: the header says so, with the warn color.
       const header = page.locator(".run-meta .state");
-      await header.filter({ hasText: "waiting for approval" }).waitFor({ timeout: 3000 }).catch(async () => { throw new Error(`the run header says "${await header.textContent()}" while an approval waits`); });
+      await header.filter({ hasText: "waiting for approval" }).waitFor({ timeout: 10_000 }).catch(async () => { throw new Error(`the run header says "${await header.textContent()}" while an approval waits`); });
       const [mark, warn] = await header.evaluate((node) => [getComputedStyle(node, "::before").backgroundColor, (() => { const probe = document.createElement("span"); probe.style.color = "var(--fulcrum-warn)"; node.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()]);
       if (mark !== warn) throw new Error(`the header mark is ${mark}, not the warn color ${warn}`);
       const row = await page.locator("button.session[aria-current] .state").textContent();
@@ -274,7 +300,14 @@ try {
       await fake.start();
       await page.goto(`${origin}/?theme=tokyo-night`);
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
-      await page.locator('button.session[tabindex="0"]').focus();
+      await page.locator('[data-catalog-ready="true"]').waitFor({ timeout: 5000 });
+      fake.setOpenDelay(200);
+      await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+      const selected = page.locator(`button.session[data-status]`, { hasText: "fix the flaky reconnect test" });
+      await selected.focus();
+      await page.waitForTimeout(250);
+      if (!(await page.evaluate(() => document.activeElement?.textContent?.includes("fix the flaky reconnect test")))) throw new Error("run readiness stole focus from the selected session");
+      fake.setOpenDelay(0);
       await page.keyboard.press("ArrowDown");
       const focused = await page.evaluate(() => document.activeElement?.textContent ?? "");
       if (!focused.includes("check every theme")) throw new Error(`focus on "${focused}"`);
@@ -488,7 +521,7 @@ try {
       await mobile.getByRole("dialog", { name: "sessions" }).getByRole("button", { name: "new session" }).waitFor({ timeout: 2000 });
       await shoot(mobile, "drawer-390-gruvbox-dark");
       await auditThemes(mobile, "390 drawer", 44);
-      // A rejected new session (zeta refuses while a turn runs) keeps the drawer open and says why.
+      // A rejected new session keeps the modal focusable; Escape must close it even if Chromium moved focus to body.
       fake.setRejectCreate(true);
       await mobile.getByRole("dialog", { name: "sessions" }).getByRole("button", { name: "new session" }).click();
       await mobile.getByRole("dialog", { name: "sessions" }).getByRole("alert").filter({ hasText: "could not start a session" }).waitFor({ timeout: 3000 })

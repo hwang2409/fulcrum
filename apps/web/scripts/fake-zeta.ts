@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 
 type Json = Record<string, unknown>;
-export type Mode = "ok" | "busy" | "incompatible" | "slow";
+export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog" | "broken-session";
 export type HistoryMode = "new" | "old";
 export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
@@ -22,6 +22,8 @@ const meta = (id: string, minutesAgo: number, extra: Json = {}) => ({
 
 export const ACTIVE = "s-reconnect";
 export const LONG = "s-long";
+export const MANY = "s-many";
+export const LARGE = "s-large-pages";
 const seeded = [
   meta(ACTIVE, 2, { name: "fix the flaky reconnect test in packages/zeta" }),
   meta("s-themes", 45, { first_message_preview: "check every theme's muted text against 4.5:1 on the surface color" }),
@@ -33,7 +35,7 @@ const seeded = [
 ];
 
 const text = (value: string) => ({ type: "text", text: value });
-const toolUse = (id: string, name: string) => ({ type: "tool_use", tool_call: { id, name, arguments: {} } });
+const toolUse = (id: string, name: string, args: Json = {}) => ({ type: "tool_use", tool_call: { id, name, arguments: args } });
 // History keeps a result's text only; bash's is "stdout:\n" + stdout + "\nstderr:\n" + stderr (zeta src/zeta/tools/bash).
 const result = (id: string, content: string, extra: Json = {}) => ({ tool_call_id: id, content, is_error: false, content_blocks: [], structured_content: null, ...extra });
 const histories: Record<string, Json[]> = {
@@ -41,7 +43,7 @@ const histories: Record<string, Json[]> = {
     { id: "h1", role: "user", content: [text("the reconnect test in packages/zeta fails about one run in ten. find out why and fix it.")], tool_result: null },
     { id: "h2", role: "assistant", content: [{ type: "thinking", text: "start with the test and the client close path." }, text("I will read the test first, then run it in a loop."), toolUse("c1", "read")], tool_result: null },
     { id: "h3", role: "tool_result", content: [text("")], tool_result: result("c1", "import { expect, test } from \"bun:test\";\nimport { connect } from \"../src/index.js\";\n\ntest(\"reconnects\", async () => {\n  const client = connect(transport);\n  await client.hello();\n});") },
-    { id: "h4", role: "assistant", content: [toolUse("c2", "bash")], tool_result: null },
+    { id: "h4", role: "assistant", content: [toolUse("c2", "bash", { command: "bun test packages/zeta/test/rpc.test.ts" })], tool_result: null },
     { id: "h5", role: "tool_result", content: [text("")], tool_result: result("c2", "stdout:\nbun test v1.3.13\n\n packages/zeta/test/rpc.test.ts:\n(fail) reconnects [5003.12ms]\n  timed out after 5000ms\n\n 4 pass\n 1 fail\n\nstderr:\n", { is_error: true }) },
     {
       id: "h6", role: "assistant", tool_result: null, content: [text(
@@ -156,10 +158,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
     send({ event: "user_message", session_id: active, text: value, mode: method, attachments: [], ...(delivery ? { delivery_id: delivery } : {}) });
     const accepted = method === "send" ? { accepted: true, session_id: active } : { accepted: true };
     if (delivery) { deliveries.set(delivery, accepted); statuses.set(delivery, method === "steer" ? "queued" : "delivered"); }
-    if (method === "steer") {
-      if (delivery) chat?.steers.push(delivery);
-      return { result: accepted };
-    }
+    if (method === "steer") { if (delivery) chat?.steers.push(delivery); return { result: accepted }; }
     histories[active] = [...(histories[active] ?? []), { id: `sent-${sent.length}`, role: "user", content: [text(value)], ...(delivery ? { delivery_id: delivery } : {}), tool_result: null }];
     // After the reply, as zeta starts the turn once the send is persisted.
     queueMicrotask(() => void chatTurn(active, send));
@@ -180,6 +179,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
   return {
     /** Every accepted send and steer, in order. */
     sent,
+    clearSent() { sent.splice(0); },
     get history() { return histories[ACTIVE] ?? []; },
     get aborts() { return aborts; },
     /** The reply body for a composer method, or undefined for any other method. */
@@ -193,7 +193,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
   };
 }
 
-export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows" }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", serialDelays }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; serialDelays?: Readonly<Record<string, number | readonly number[]>> }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
@@ -203,18 +203,44 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let currentHistoryMode = historyMode;
   let allowed = origins;
   let active: string | null = ACTIVE;
-  let sessions = [...seeded];
+  const manyPages = Number(process.env.FAKE_ZETA_MANY_PAGES ?? 0);
+  const largePages = Number(process.env.FAKE_ZETA_LARGE_PAGES ?? 0);
+  if (manyPages > 0) histories[MANY] = Array.from({ length: manyPages * 8 }, (_, index) => ({ id: `many-${index}`, role: index % 2 ? "assistant" : "user", content: [text(`many-page row ${index}`)], tool_result: null }));
+  if (largePages > 0) histories[LARGE] = Array.from({ length: largePages * 128 }, (_, index) => ({ id: `large-${index}`, role: index % 2 ? "assistant" : "user", content: [text(`large-page row ${index}`)], tool_result: null }));
+  let sessions = [
+    ...seeded,
+    ...(manyPages > 0 ? [meta(MANY, 1, { name: `${manyPages.toLocaleString("en")} small pages of history` })] : []),
+    ...(largePages > 0 ? [meta(LARGE, 1, { name: `${largePages.toLocaleString("en")} large pages of history` })] : []),
+  ];
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
   let turnStarted = false;
   let approvalAborted = false;
   let running = false;
   let rejectCreate = false;
   let delayedOpen = false;
+  let catalogBusy = false;
   const decisions: Json[] = [];
+  const requests: Array<{ method: string; received: number; started: number; replied?: number }> = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
+  let controller: ServerWebSocket<unknown> | null = null;
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-  const openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
+  let openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
   const composer = composerMethods(wait, { get: () => running, set: (value) => { running = value; } });
+  let serialTail = Promise.resolve<unknown>(undefined);
+  const delayCalls = new Map<string, number>();
+  const requestDelay = (method: string) => {
+    const configured = serialDelays?.[method] ?? 0;
+    if (typeof configured === "number") return configured;
+    const call = delayCalls.get(method) ?? 0;
+    delayCalls.set(method, call + 1);
+    return configured[Math.min(call, configured.length - 1)] ?? 0;
+  };
+  const schedule = <T,>(task: () => Promise<T>) => {
+    if (!serialDelays) return task();
+    const next = serialTail.then(task, task);
+    serialTail = next.catch(() => undefined);
+    return next;
+  };
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -228,24 +254,36 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     websocket: {
       open(socket) { sockets.add(socket); },
       close(socket) {
-        if (!decide || approvalAborted) { sockets.delete(socket); return; }
+        sockets.delete(socket);
+        if (socket !== controller) return;
+        controller = null;
+        if (!decide || approvalAborted) return;
         approvalAborted = true;
         const resolve = decide;
         decide = null;
         running = false;
         histories[ACTIVE]!.push({ id: `drop-${Date.now()}`, role: "tool_result", content: [text("")], tool_result: result("live-2", "connection lost", { is_canceled: true }) });
-        sockets.delete(socket);
         if (currentHistoryMode === "new") histories[ACTIVE]!.push({ id: `approval-end-drop-${Date.now()}`, role: "system", event: "approval_end", request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, data: { decision: "abort", reason: "controller_disconnected" } });
         resolve("abort");
       },
-      async message(socket, raw) {
-        const { id, method, params = {} } = JSON.parse(String(raw)) as { id: number; method: string; params: Json };
-        const reply = (body: Json) => socket.send(JSON.stringify({ jsonrpc: "2.0", id, ...body }));
+      message(socket, raw) {
+        const received = performance.now();
+        const request = JSON.parse(String(raw)) as { id: number; method: string; params?: Json };
+        return schedule(async () => {
+        const { id, method, params = {} } = request;
+        const timing: { method: string; received: number; started: number; replied?: number } = { method, received, started: performance.now() };
+        requests.push(timing);
+        await wait(requestDelay(method));
+        const reply = (body: Json) => {
+          timing.replied = performance.now();
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id, ...body }));
+        };
         const send = (event: Json) => { for (const each of sockets) each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); };
         if (method === "hello") {
           if (mode === "busy" || sockets.size > 1) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
+          controller = socket;
           return reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features: (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows")) ?? [] } } });
         }
         if (method === "new_session") {
@@ -258,16 +296,21 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           return reply({ result: { session: created } });
         }
         if (method === "list_sessions") {
-          const offset = Number(params.offset ?? 0);
-          const limit = Number(params.limit ?? sessions.length);
-          const page = sessions.slice(offset, offset + limit);
-          return reply({ result: { sessions: page, next_offset: offset + limit < sessions.length ? offset + limit : null } });
+          catalogBusy = true;
+          try {
+            if (mode === "slow-catalog") await wait(30_000);
+            const offset = Number(params.offset ?? 0);
+            const limit = Number(params.limit ?? sessions.length);
+            const page = sessions.slice(offset, offset + limit);
+            return reply({ result: { sessions: page, next_offset: offset + limit < sessions.length ? offset + limit : null } });
+          } finally { catalogBusy = false; }
         }
         if (method === "status") {
           const pending = decide && !approvalAborted ? [{ request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, delegated: false }] : [];
           return reply({ result: { session: active ? sessions.find((session) => session.session_id === active) ?? null : null, state: running ? (decide ? "tool" : "running") : "idle", explicit_finish: false, pending_approvals: pending, usage: {}, compaction_markers: 0 } });
         }
         if (method === "resume") {
+          if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
           if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = String(params.session_id);
           delayedOpen = false;
@@ -281,12 +324,16 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           }
           const rows = (histories[active!] ?? []).filter((row) => approvalHistoryMode !== "not-advertised-without-rows" || (row.event !== "approval_request" && row.event !== "approval_end"));
           const offset = Number(params.offset ?? 0);
-          reply({ result: { messages: rows.slice(offset, offset + 8), next_offset: offset + 8 < rows.length ? offset + 8 : null } });
+          const pageSize = active === LARGE ? 128 : 8;
+          reply({ result: { messages: rows.slice(offset, offset + pageSize), next_offset: offset + pageSize < rows.length ? offset + pageSize : null } });
           // The run starts once, after the first open of the active session finishes its history.
-          if (liveEnabled && active === ACTIVE && offset + 8 >= rows.length && !turnStarted) {
+          if (liveEnabled && active === ACTIVE && offset + pageSize >= rows.length && !turnStarted) {
             turnStarted = true;
             running = true;
-            const ask = () => new Promise<"approve" | "deny" | "abort">((resolve) => { decide = (decision) => { decide = null; resolve(decision); }; });
+            const ask = () => new Promise<"approve" | "deny" | "abort">((resolve) => {
+              approvalAborted = false;
+              decide = (decision) => { decide = null; resolve(decision); };
+            });
             setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; }, currentHistoryMode)(), 300);
           }
           return;
@@ -300,6 +347,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         const handled = composer.handle(method, params, active, send);
         if (handled) return reply(handled);
         reply({ error: { code: -32601, message: `method not found: ${method}` } });
+        });
       },
     },
   });
@@ -310,18 +358,24 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     home,
     port: server.port,
     decisions,
+    requests,
     /** Every accepted send and steer, in order. */
     sent: composer.sent,
+    clearSent() { composer.clearSent(); },
     get aborts() { return composer.aborts; },
     /** Closes every socket, like a network blip; the server keeps running. */
     drop() { for (const socket of sockets) socket.close(1012, "restart"); },
     /** Removes the discovery file and refuses upgrades, like a stopped server. */
-    async stop() { allowed = []; await rm(discovery, { force: true }); this.drop(); },
+    async stop() {
+      allowed = [];
+      await rm(discovery, { force: true });
+      this.drop();
+      for (let attempt = 0; decide && attempt < 100; attempt++) await Bun.sleep(1);
+    },
     async start() {
       allowed = origins;
-      histories[ACTIVE] = histories[ACTIVE]!.filter((row) => row.event !== "approval_request" && row.event !== "approval_end");
       token = crypto.randomUUID();
-      if (!decide) { turnStarted = false; approvalAborted = false; running = false; }
+      if (!decide) { approvalAborted = false; running = false; }
       await write({ port: server.port, token, pid: process.pid, origins: allowed });
     },
     /** Lists other origins in the allowlist, so this page's origin is missing. */
@@ -329,10 +383,17 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     /** Hands out a token the server will refuse. */
     async wrongToken() { await write({ port: server.port, token: "stale-token", pid: process.pid, origins: allowed }); },
     setMode(next: Mode) { mode = next; },
+    setOpenDelay(ms: number) { openDelay = ms; },
     /** `true`: new_session fails the way real zeta does while a turn runs (`require_idle`). */
     setRejectCreate(next: boolean) { rejectCreate = next; },
     setHistoryMode(next: HistoryMode) { currentHistoryMode = next; },
-    setLive(next: boolean) { liveEnabled = next; },
+    setLive(next: boolean) {
+      if (next && !liveEnabled) {
+        turnStarted = false;
+        histories[ACTIVE] = histories[ACTIVE]!.filter((row) => row.event !== "approval_request" && row.event !== "approval_end");
+      }
+      liveEnabled = next;
+    },
     /** `true`: a fresh zeta home, with no sessions and no server session. `false`: the seeded sessions again. */
     setEmpty(empty: boolean) { sessions = empty ? [] : [...seeded]; active = empty ? null : ACTIVE; },
     async close() { this.drop(); server.stop(true); await rm(home, { recursive: true, force: true }); },
