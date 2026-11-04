@@ -50,5 +50,9 @@ test("concurrent package builds keep a complete path-independent dist", { timeou
   expect(results.map(({ code }) => code)).toEqual([0, 0]);
   expect(results.map(({ error }) => error).join("\n")).not.toContain("No such file or directory");
   expect(await containsTemporaryBuildPath(dist)).toBe(false);
+  const firstIndex = await readFile(join(dist, "index.js"));
+  const repeat = Bun.spawnSync(["bun", "run", "build"], { cwd: packageDir, stdout: "ignore", stderr: "inherit" });
+  expect(repeat.exitCode).toBe(0);
+  expect(await readFile(join(dist, "index.js"))).toEqual(firstIndex);
   expect((await stat(join(sourcePackageDir, "dist/worker.js"))).ino).toBe(sourceWorkerInode);
 });
