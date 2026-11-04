@@ -77,20 +77,31 @@ async function within<T>(promise: Promise<T>, language: string): Promise<T> {
 }
 async function finalTokens(highlight: Highlight, source: string, language: string, id: string, version: number) {
   const context = { id, version, state: "done" as const };
+  const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof highlight.awaitCompletion !== "function";
+  let updated: Promise<void> | undefined;
+  let unsubscribe: (() => void) | undefined;
+  if (historical) updated = new Promise((resolve) => { unsubscribe = highlight.subscribe(id, () => resolve()); });
   const first = highlight(source, language, context);
   if (first === null) throw new Error(`main registry fixture is not supported by this build: ${language}`);
-  await first;
-  terminal(await within(highlight.awaitCompletion(id, version), language), language);
+  const initial = await first;
+  if (historical) {
+    if (!typed(split(initial))) await within(updated!, language);
+    unsubscribe!();
+  } else {
+    if (typeof highlight.awaitCompletion !== "function") throw new Error("highlight build does not expose awaitCompletion; HISTORICAL_COMPLETION=1 is only for the ffc3883 regression proof");
+    terminal(await within(highlight.awaitCompletion(id, version), language), language);
+  }
   const final = highlight(source, language, context);
   if (final === null) throw new Error(`completed fixture stopped resolving: ${language}`);
   return await final;
 }
 async function controllerSamples(highlight: Highlight, inputs: Record<string, string>, prefix: string) {
   const out: Record<string, Sample> = {};
-  let version = 0;
   for (const [language, source] of Object.entries(inputs)) {
-    version++;
-    out[language] = { source, lines: split(await finalTokens(highlight, source, language, `${prefix}-${language}`, version)) };
+    const id = `${prefix}-${language}`;
+    const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof highlight.awaitCompletion !== "function";
+    if (!historical) void highlight(source.slice(0, Math.max(1, Math.floor(source.length / 2))), language, { id, version: 1, state: "streaming" });
+    out[language] = { source, lines: split(await finalTokens(highlight, source, language, id, historical ? 1 : 2)) };
   }
   return out;
 }
@@ -142,8 +153,11 @@ if (mode === "generate") {
   if (referenceDifferences.length) throw new Error(`direct Shiki reference changed: ${referenceDifferences.join(", ")}`);
   const highlighter = createHighlighter();
   try {
-    const actual = await controllerSamples(highlighter, samples, "parity");
-    const changed = differences(actual, expected.legacy);
+    const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof highlighter.awaitCompletion !== "function";
+    const inputs = historical ? { ...samples, ...newSamples } : samples;
+    const expectedTokens = historical ? { ...expected.legacy, ...expected.newReference } : expected.legacy;
+    const actual = await controllerSamples(highlighter, inputs, "parity");
+    const changed = differences(actual, expectedTokens);
     if (changed.length) {
       await writeFile("/tmp/highlight-token-parity-actual.json", JSON.stringify(actual, null, 2) + "\n");
       throw new Error(`legacy token parity failed: ${changed.join(", ")} (actual: /tmp/highlight-token-parity-actual.json)`);
