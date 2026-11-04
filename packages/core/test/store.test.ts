@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createRunStore, type OutlineSnapshot } from "../src/index.js";
+import { seededRandom } from "./fuzz.js";
 
 const message = (text: string) => ({
   role: "assistant",
@@ -273,6 +274,91 @@ test("an unexpected reduction failure marks the store desynced until history rep
   store.resync([{ type: "user_message", text: "from history", mode: "send", delivery_id: "history" }]);
   expect(store.getDiagnostics().desynced).toBe(false);
   expect(store.getOutline()).toEqual([{ id: "user:delivery:history", kind: "user" }]);
+});
+
+test("prepend composes a message stream split across the page seam", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "message_delta", message_id: "split", delta: "suffix" });
+
+  store.prepend([{ type: "message_delta", message_id: "split", delta: "prefix-" }]);
+
+  expect((store.getItem("message:split") as { text: string }).text).toBe("prefix-suffix");
+});
+
+test("prepend keeps a current approval resolution when its request is older", () => {
+  const call = { id: "split", name: "bash", arguments: { command: "true" } };
+  const store = createRunStore((flush) => flush());
+  store.resync([{ type: "approval_end", request_id: "split", decision: "approve" }]);
+
+  store.prepend([{ type: "approval_request", request_id: "split", tool_call: call, delegated: false }]);
+
+  expect(store.getItem("approval:split")).toMatchObject({ ended: { decision: "approve" } });
+});
+
+const prependView = (store: ReturnType<typeof createRunStore>) => ({
+  state: store.getState(),
+  items: store.getOutline().map(({ id }) => store.getItem(id)),
+});
+
+const generatedHistory = (seed: number) => {
+  const next = seededRandom(seed);
+  const random = (max: number) => Math.floor(next() * max);
+  const events: Parameters<ReturnType<typeof createRunStore>["dispatch"]>[0][] = [];
+  const groups = 2 + random(5);
+  for (let group = 0; group < groups; group++) {
+    const id = `${seed}-${group}`;
+    const kind = random(6);
+    if (kind === 0) {
+      const deltas = 1 + random(4);
+      const streamKind = ["text", "reasoning", "user"][random(3)]!;
+      for (let part = 0; part < deltas; part++) events.push({ type: "message_delta", message_id: id, delta: `${id}:${part}|`, kind: streamKind });
+      if (random(2)) events.push({ type: "message_commit", message_id: id, message: message(`done:${id}`) });
+      else events.push({ type: "turn_end" });
+    } else if (kind === 1) {
+      const call = { id, name: "bash", arguments: { command: `echo ${id}` } };
+      events.push({ type: "tool_start", tool_call: call });
+      if (random(2)) events.push({ type: "tool_input", tool_call: call, input: JSON.stringify(call.arguments) });
+      events.push({ type: "tool_end", tool_call: { ...call, arguments: {} }, tool_result: { tool_call_id: id, content: `done:${id}`, is_error: false } });
+    } else if (kind === 2) {
+      const call = { id, name: "write", arguments: { path: id } };
+      events.push({ type: "approval_request", request_id: id, tool_call: call, delegated: false });
+      events.push({ type: "approval_end", request_id: id, decision: random(2) ? "approve" : "deny" });
+    } else if (kind === 3) {
+      events.push({ type: "usage", usage: { input: 1 + random(100), output: random(50) } });
+    } else if (kind === 4) {
+      events.push({ type: "sub_agent", childRunId: id, status: "running", toolCount: random(5), sequence: 1 });
+      events.push({ type: "sub_agent", childRunId: id, status: "done", summary: `done:${id}`, toolCount: 5, sequence: 2 });
+    } else {
+      events.push({ type: "run_start" }, { type: "turn_start", data: { turn: id } }, { type: "turn_end" }, { type: "run_end" });
+    }
+  }
+  return events;
+};
+
+test("prepend equals whole-log reduction at every page seam", () => {
+  let cases = 0;
+  for (let seed = 1; seed <= 600; seed++) {
+    const events = generatedHistory(seed);
+    const expected = createRunStore((flush) => flush());
+    expected.resync(events);
+    const expectedView = prependView(expected);
+    for (let split = 0; split <= events.length; split++) {
+      const actual = createRunStore((flush) => flush());
+      actual.resync(events.slice(split));
+      actual.prepend(events.slice(0, split));
+      expect(prependView(actual), `seed ${seed}, split ${split}`).toEqual(expectedView);
+      cases++;
+    }
+    const first = seed % (events.length + 1);
+    const second = first + seed % (events.length - first + 1);
+    const actual = createRunStore((flush) => flush());
+    actual.resync(events.slice(second));
+    actual.prepend(events.slice(first, second));
+    actual.prepend(events.slice(0, first));
+    expect(prependView(actual), `seed ${seed}, splits ${first}/${second}`).toEqual(expectedView);
+    cases++;
+  }
+  expect(cases).toBeGreaterThan(5_000);
 });
 
 test("prepend inserts older rows without resetting or replacing the live tail", () => {

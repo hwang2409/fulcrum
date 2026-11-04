@@ -1,6 +1,8 @@
 import type { RunEvent, RunItem } from "./events.js";
 import {
+  composeBefore,
   initialState,
+  RECEIPT_LIMIT,
   reduceAllWithEntities,
   type OutlineItem,
   type OutlineSplice,
@@ -67,11 +69,104 @@ export interface StoreDiagnostics {
 }
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+type CompositionTracker = {
+  readonly messageContinuations: Map<string, boolean>;
+  readonly approvalRequests: Set<string>;
+  readonly approvalEnds: Map<string, Extract<RunEvent, { type: "approval_end" }>>;
+  activeMessageId?: string;
+  endsPriorMessage: boolean;
+  agentTouched: boolean;
+  turnTouched: boolean;
+  readonly toolTouched: Set<string>;
+  endsPriorTools: boolean;
+};
+const compositionTracker = (): CompositionTracker => ({
+  messageContinuations: new Map(),
+  approvalRequests: new Set(),
+  approvalEnds: new Map(),
+  endsPriorMessage: false,
+  agentTouched: false,
+  turnTouched: false,
+  toolTouched: new Set(),
+  endsPriorTools: false,
+});
+const trackComposition = (tracker: CompositionTracker, event: RunEvent) => {
+  if (event === null || typeof event !== "object") return;
+  switch (event.type) {
+    case "message_delta":
+    case "message_block": {
+      tracker.endsPriorMessage = true;
+      if (!event.message_id) break;
+      const id = `message:${event.message_id}`;
+      if (tracker.activeMessageId !== event.message_id) tracker.messageContinuations.set(id, true);
+      tracker.activeMessageId = event.message_id;
+      break;
+    }
+    case "message_commit":
+      tracker.endsPriorMessage = true;
+      if (event.message_id) tracker.messageContinuations.set(`message:${event.message_id}`, false);
+      tracker.activeMessageId = undefined;
+      break;
+    case "message_reset":
+      tracker.endsPriorMessage = true;
+      if (tracker.activeMessageId) tracker.messageContinuations.delete(`message:${tracker.activeMessageId}`);
+      tracker.activeMessageId = undefined;
+      break;
+    case "retry":
+      tracker.endsPriorMessage = true;
+      tracker.activeMessageId = undefined;
+      break;
+    case "turn_end":
+      tracker.turnTouched = true;
+      tracker.endsPriorMessage = true;
+      tracker.activeMessageId = undefined;
+      break;
+    case "run_end":
+      tracker.agentTouched = true;
+      tracker.turnTouched = true;
+      tracker.endsPriorMessage = true;
+      tracker.endsPriorTools = true;
+      tracker.activeMessageId = undefined;
+      break;
+    case "approval_request":
+      tracker.approvalRequests.add(event.request_id);
+      tracker.approvalEnds.delete(event.request_id);
+      break;
+    case "approval_end":
+      if (!tracker.approvalRequests.has(event.request_id)) tracker.approvalEnds.set(event.request_id, event);
+      break;
+    case "run_start":
+      tracker.agentTouched = true;
+      break;
+    case "turn_start":
+      tracker.turnTouched = true;
+      break;
+    case "tool_start": case "tool_input": case "tool_output": case "tool_end":
+      if (event.tool_call && typeof event.tool_call.id === "string") tracker.toolTouched.add(event.tool_call.id);
+      break;
+    case "error":
+      tracker.agentTouched = true;
+      tracker.turnTouched = true;
+      tracker.endsPriorMessage = true;
+      tracker.endsPriorTools = true;
+      break;
+    case "message_start": case "usage": case "user_message": case "notification": case "unknown": case "sub_agent":
+      break;
+    default: event satisfies never;
+  }
+};
+const trackPageComposition = (events: readonly RunEvent[]) => {
+  const tracker = compositionTracker();
+  for (const event of events) trackComposition(tracker, event);
+  return tracker;
+};
+
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
   let entities = new Map<string, RunItem>();
   const messageAliases = new Map<string, string>();
   let current: RunState = structuredClone(initialState);
   let pending: RunEvent[] = [];
+  let composition = compositionTracker();
   const listeners = new Set<Listener>();
   const outlineListeners = new Set<Listener>();
   const itemListeners = new Map<string, Set<Listener>>();
@@ -218,12 +313,16 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       stateChanged = false;
       outlineChanged = false;
       desynced = false;
+      composition = trackPageComposition(events);
       pending.push(...events);
       flush();
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
     },
-    /** Reduces an older history segment in isolation, then inserts only its new rows before the current outline. */
+    /**
+     * Reduces one older page, composes entities that cross the live-copy seam, then emits one index-0 splice.
+     * An indeterminate composition desyncs before publication. Cost is O(page) plus one O(n) outline pointer copy.
+     */
     prepend(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
       refuseDesynced();
@@ -231,7 +330,9 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       notify();
       const olderEntities = new Map<string, RunItem>();
       const olderAliases = new Map<string, string>();
+      const olderComposition = trackPageComposition(events);
       let older = { ...structuredClone(initialState), nextId: current.nextId };
+      const updates = new Map<string, RunItem>();
       try {
         older = reduceAllWithEntities(older, events.slice(), {
           get: (id) => olderEntities.get(id),
@@ -241,6 +342,15 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
           getMessageAlias: (key) => olderAliases.get(key),
           setMessageAlias: (key, id) => olderAliases.set(key, id),
         }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; });
+        for (const [id, olderItem] of olderEntities) {
+          const currentItem = entities.get(id);
+          if (currentItem) updates.set(id, composeBefore(olderItem, currentItem, composition.messageContinuations.get(id) === true));
+          else if (olderItem.type === "approval") {
+            const ended = composition.approvalEnds.get(olderItem.id.slice("approval:".length));
+            updates.set(id, ended ? { ...olderItem, ended } : olderItem);
+          } else if (olderItem.type === "message" && composition.endsPriorMessage && olderItem.active) updates.set(id, { ...olderItem, active: false });
+          else updates.set(id, olderItem);
+        }
       } catch (error) {
         desynced = true;
         setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
@@ -248,21 +358,58 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
         return;
       }
       const inserted = older.outline.filter(({ id }) => !entities.has(id));
-      if (inserted.length === 0) {
-        current = { ...current, nextId: older.nextId };
-        setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
-        return;
+      const insertedIds = new Set(inserted.map(({ id }) => id));
+      const reusedGeneratedIds = older.outline.reduce((count, { id, kind }) =>
+        count + (entities.has(id) && (kind === "message" || kind === "error" || kind === "notification" || kind === "unknown" || (kind === "user" && /^user:\\d+$/.test(id))) ? 1 : 0), 0);
+      for (const [id, item] of updates) {
+        entities.set(id, item);
+        changedItems.add(id);
       }
-      for (const { id } of inserted) {
-        const item = olderEntities.get(id);
-        if (item) entities.set(id, item), changedItems.add(id);
+      for (const [key, id] of olderAliases) if (!messageAliases.has(key) && (entities.has(id) || updates.has(id))) messageAliases.set(key, id);
+      composition.endsPriorMessage ||= olderComposition.endsPriorMessage;
+      composition.agentTouched ||= olderComposition.agentTouched;
+      composition.turnTouched ||= olderComposition.turnTouched;
+      composition.endsPriorTools ||= olderComposition.endsPriorTools;
+      for (const toolId of olderComposition.toolTouched) composition.toolTouched.add(toolId);
+      for (const [id, continued] of olderComposition.messageContinuations) {
+        if (insertedIds.has(id) || composition.messageContinuations.get(id) === true) composition.messageContinuations.set(id, continued);
       }
-      for (const [key, id] of olderAliases) if (!messageAliases.has(key) && entities.has(id)) messageAliases.set(key, id);
+      for (const requestId of olderComposition.approvalRequests) {
+        composition.approvalRequests.add(requestId);
+        composition.approvalEnds.delete(requestId);
+      }
+      for (const [requestId, end] of olderComposition.approvalEnds) if (!composition.approvalRequests.has(requestId)) composition.approvalEnds.set(requestId, end);
       const before = current.outline;
-      current = { ...current, nextId: older.nextId, outline: [...inserted, ...before] };
-      outlineSnapshot = { items: current.outline, change: { from: before, splices: [{ index: 0, deleteCount: 0, items: inserted }] } };
-      stateChanged = true;
-      outlineChanged = true;
+      const nextId = older.nextId - reusedGeneratedIds;
+      const toolApprovals = { ...older.toolApprovals, ...current.toolApprovals };
+      for (const [toolId, approvalId] of Object.entries(toolApprovals)) if (!entities.has(approvalId)) delete toolApprovals[toolId];
+      const usage = { ...older.usage };
+      for (const [key, amount] of Object.entries(current.usage)) usage[key] = (usage[key] ?? 0) + amount;
+      const activeToolIds = composition.endsPriorTools ? { ...current.activeToolIds } : { ...older.activeToolIds, ...current.activeToolIds };
+      for (const toolId of composition.toolTouched) if (!current.activeToolIds[toolId]) delete activeToolIds[toolId];
+      const receiptOrder = [...new Set([...older.receiptOrder, ...current.receiptOrder])].slice(-RECEIPT_LIMIT);
+      const receipts = Object.fromEntries(receiptOrder.map((id) => [id, true]));
+      const composedState = {
+        ...current,
+        agent: composition.agentTouched ? current.agent : older.agent,
+        turn: composition.turnTouched ? current.turn : older.turn,
+        turns: [...older.turns, ...current.turns],
+        usage,
+        receipts,
+        receiptOrder,
+        activeMessageId: composition.endsPriorMessage ? current.activeMessageId : current.activeMessageId ?? older.activeMessageId,
+        activeToolIds,
+        nextId,
+        toolApprovals,
+      };
+      current = inserted.length === 0
+        ? composedState
+        : { ...composedState, outline: [...inserted, ...before] };
+      if (inserted.length > 0) {
+        outlineSnapshot = { items: current.outline, change: { from: before, splices: [{ index: 0, deleteCount: 0, items: inserted }] } };
+        outlineChanged = true;
+      }
+      stateChanged = updates.size > 0;
       setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
     },
@@ -274,6 +421,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     dispatch(event: RunEvent) {
       if (disposed) throw new Error("store is disposed");
       refuseDesynced();
+      trackComposition(composition, event);
       pending.push(event);
       if (!queued) {
         queued = true;
@@ -296,6 +444,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (disposed) return;
       disposed = true;
       pending = [];
+      composition = compositionTracker();
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
       entities = new Map();

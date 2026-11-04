@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { createRunStore, initialState, type RunEvent } from "../src/index.js";
 import { eventSchemas } from "../src/reducer.js";
+import { seededRandom } from "./fuzz.js";
 
 const seeds = [11, 29, 101, 2027, 65537];
-const rng = (seed: number) => () => ((seed = Math.imul(seed ^ seed >>> 15, 1 | seed), seed ^= seed + Math.imul(seed ^ seed >>> 7, 61 | seed)), ((seed ^ seed >>> 14) >>> 0) / 4294967296);
 const good = (index: number): RunEvent => {
   const id = String(index % 113);
   switch (index % 12) {
@@ -98,7 +98,7 @@ test("nested optional sanitization copies only changed levels", () => {
 
 test("malformed event fuzz is total and equals a valid-only replay", () => {
   for (const seed of seeds) {
-    const random = rng(seed);
+    const random = seededRandom(seed);
     const actual = createRunStore((flush) => flush());
     const expected = createRunStore((flush) => flush());
     for (let index = 0; index < 10_000; index++) {

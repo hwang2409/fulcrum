@@ -48,6 +48,52 @@ export const initialState: RunState = {
 const messageItemId = (id: string) => `message:${id}`;
 const toolItemId = (id: string) => `tool:${id}`;
 const approvalItemId = (id: string) => `approval:${id}`;
+
+const composeMessageContent = (older: RunItem & { type: "message" }, current: RunItem & { type: "message" }) => {
+  const content = [...older.message.content, ...current.message.content];
+  const seam = older.message.content.length;
+  const before = content[seam - 1];
+  const after = content[seam];
+  if (before && after && before.type === after.type && typeof before.text === "string" && typeof after.text === "string")
+    content.splice(seam - 1, 2, { ...after, text: before.text + after.text });
+  return content;
+};
+
+const composeByKind = {
+  message(older: RunItem & { type: "message" }, current: RunItem & { type: "message" }, beganMidstream: boolean) {
+    if (!beganMidstream) return { ...current, version: older.version + current.version };
+    return {
+      ...current,
+      message: { ...current.message, content: composeMessageContent(older, current) },
+      version: older.version + current.version,
+      ...((older.text || current.text) ? { text: (older.text ?? "") + (current.text ?? "") } : {}),
+    };
+  },
+  tool(older: RunItem & { type: "tool" }, current: RunItem & { type: "tool" }) {
+    const tool_call = Object.keys(current.tool_call.arguments).length === 0 && Object.keys(older.tool_call.arguments).length > 0
+      ? { ...current.tool_call, arguments: older.tool_call.arguments }
+      : current.tool_call;
+    return { ...current, tool_call, view: current.view ?? older.view, version: older.version + current.version };
+  },
+  approval(older: RunItem & { type: "approval" }, current: RunItem & { type: "approval" }) {
+    return { ...older, ...current, request: current.request ?? older.request, ended: current.ended ?? older.ended };
+  },
+  user(_older: RunItem & { type: "user" }, current: RunItem & { type: "user" }) { return current; },
+  error(_older: RunItem & { type: "error" }, current: RunItem & { type: "error" }) { return current; },
+  notification(_older: RunItem & { type: "notification" }, current: RunItem & { type: "notification" }) { return current; },
+  unknown(_older: RunItem & { type: "unknown" }, current: RunItem & { type: "unknown" }) { return current; },
+  sub_agent(older: RunItem & { type: "sub_agent" }, current: RunItem & { type: "sub_agent" }) {
+    const toolCount = older.toolCount === undefined || current.toolCount === undefined ? current.toolCount ?? older.toolCount : Math.max(older.toolCount, current.toolCount);
+    return { ...older, ...current, urgency: current.urgency, toolCount };
+  },
+} satisfies Record<RunItem["type"], (older: never, current: never, beganMidstream: boolean) => RunItem>;
+
+/** Composes two reductions of the same entity in chronological order. New item kinds must add one rule here. */
+export const composeBefore = (older: RunItem, current: RunItem, currentBeganMidstream = false): RunItem => {
+  if (older.type !== current.type) throw new Error(`cannot compose ${older.type} before ${current.type}`);
+  const compose = composeByKind[current.type] as (older: RunItem, current: RunItem, beganMidstream: boolean) => RunItem;
+  return compose(older, current, currentBeganMidstream);
+};
 const terminalSubAgentStatuses = new Set(["done", "error", "canceled"]);
 const subAgentTime = (event: SubAgentEvent) => {
   const value = event.endedAt ?? event.updatedAt ?? event.startedAt;
