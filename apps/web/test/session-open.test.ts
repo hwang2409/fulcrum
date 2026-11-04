@@ -133,6 +133,7 @@ test("a thousand-page replay reconciles only its tail", async () => {
   const opened = await openSession(fake.client, "s");
   await opened.complete;
 
+  expect(offsets).toHaveLength(pageCount + 1);
   expect(offsets.filter((offset) => offset === 0)).toHaveLength(1);
   expect(offsets.slice(pageCount)).toEqual([pageCount - 1]);
   expect(texts(opened.lease.store).at(-1)).toBe("tail updated");
@@ -164,7 +165,10 @@ test("a busy replay stays quarantined at the bound and catches up after idle", a
   let historyCalls = 0;
   let statusCalls = 0;
   const fake = await server((method, _params, event) => {
-    if (method === "status") return { ...idleStatus, state: ++statusCalls < 3 ? "running" : "idle" };
+    if (method === "status") {
+      statusCalls++;
+      return { ...idleStatus, state: statusCalls === 1 || (statusCalls >= 3 && statusCalls <= 5) ? "running" : "idle" };
+    }
     if (method !== "session_history") throw new Error(method);
     historyCalls++;
     if (historyCalls <= 4)
