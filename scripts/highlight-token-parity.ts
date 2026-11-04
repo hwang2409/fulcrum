@@ -196,8 +196,14 @@ if (mode === "generate") {
   const packageRoot = resolve(process.env.HIGHLIGHT_ROOT ?? resolve(import.meta.dir, "../packages/highlight"));
   const { createHighlighter } = await import(`${packageRoot}/dist/index.js`) as { createHighlighter: () => Highlight };
   const expected = JSON.parse(await readFile(fixturePath, "utf8")) as Fixture;
-  const mainSha = await capture(["git", "rev-parse", "--verify", "origin/main^{commit}"]);
-  if (expected.source?.sha !== mainSha) throw new Error(`token fixture source ${expected.source?.sha ?? "missing"} is not main ${mainSha}; regenerate from origin/main`);
+  // the fixture must come from main's history, but it does not have to be main's tip:
+  // final tokens are compared below, so a later main commit that keeps them passes
+  // without regenerating, and only an intended token change needs a new fixture.
+  const mainSha = await capture(["git", "merge-base", "HEAD", "origin/main"]);
+  const source = expected.source?.sha ?? "missing";
+  await capture(["git", "merge-base", "--is-ancestor", source, mainSha]).catch(() => {
+    throw new Error(`token fixture source ${source} is not in main's history (main ${mainSha}); regenerate from origin/main`);
+  });
   const probe = createHighlighter();
   const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof probe.awaitCompletion !== "function";
   probe.dispose();
