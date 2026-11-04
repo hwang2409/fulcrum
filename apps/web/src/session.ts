@@ -64,8 +64,9 @@ const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus): RunE
 };
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
   if (signal?.aborted) return reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
-  const timer = setTimeout(resolve, ms);
-  signal?.addEventListener("abort", () => { clearTimeout(timer); reject(Object.assign(new Error("request aborted"), { name: "AbortError" })); }, { once: true });
+  const onAbort = () => { clearTimeout(timer); reject(Object.assign(new Error("request aborted"), { name: "AbortError" })); };
+  const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, ms);
+  signal?.addEventListener("abort", onAbort, { once: true });
 });
 
 /** Opens the first history page immediately. Older pages continue in the same quarantined snapshot. */
