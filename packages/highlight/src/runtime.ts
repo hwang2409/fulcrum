@@ -94,22 +94,13 @@ function sourceLines(source: string): string[] {
   return lines;
 }
 
-// Markdown can reach dozens of grammars, so load only supported languages named by fences in this source.
+// Markdown can reach dozens of grammars, so load only supported languages named after a possible fence marker.
+// This is deliberately conservative: an extra load is safe, but missing a nested fence would make `complete` false.
 function embeddedLanguages(code: string, language: string): string[] {
   if (language !== "markdown") return [];
   const dependencies = new Set<string>();
-  let fence: { marker: "`" | "~"; length: number } | undefined;
-  for (const line of sourceLines(code)) {
-    if (fence) {
-      const close = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*(?:\n)?$/);
-      if (close && close[1]![0] === fence.marker && close[1]!.length >= fence.length) fence = undefined;
-      continue;
-    }
-    const open = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`~]+)?/);
-    if (!open) continue;
-    const marker = open[1]!;
-    fence = { marker: marker[0] as "`" | "~", length: marker.length };
-    const dependency = normalizeLanguage(open[2]);
+  for (const match of code.matchAll(/(?:`{3,}|~{3,})[ \t]*([^\s`~]+)/g)) {
+    const dependency = normalizeLanguage(match[1]);
     if (dependency && dependency !== language) dependencies.add(dependency);
   }
   return [...dependencies];
