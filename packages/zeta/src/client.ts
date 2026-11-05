@@ -345,6 +345,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     else handleReply(message);
   });
   const closeListeners = new Set<(error: unknown) => void>();
+  const closeWaiters = new Set<(error: unknown) => void>();
   const attachmentGates = new Map<string, Promise<unknown>>();
   let closeSignal!: (error: unknown) => void;
   const closedPromise = new Promise<unknown>((resolve) => { closeSignal = resolve; });
@@ -357,6 +358,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     closedError = error;
     pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
     closeSignal(error);
+    closeWaiters.forEach((reject) => reject(error));
+    closeWaiters.clear();
     attachmentGates.clear();
     cancelLoads();
     closeListeners.forEach((listener) => listener(error));
@@ -392,7 +395,12 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     } catch {
       supply = Promise.reject(new HostCommandError("host_command_supplier_failed", "host command supplier failed"));
     }
-    const supplied = await Promise.race([supply, closedPromise.then((error) => { throw error; })]);
+    let rejectClosed!: (error: unknown) => void;
+    const closeWait = new Promise<never>((_, reject) => {
+      rejectClosed = reject;
+      closeWaiters.add(reject);
+    });
+    const supplied = await Promise.race([supply, closeWait]).finally(() => closeWaiters.delete(rejectClosed));
     if (closed) throw closedError;
     const commands = validateHostCommands(supplied);
     try {
@@ -467,7 +475,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return await readContentChunks(handle, cap, (offset) => request("content_read", { handle, offset }, { signal: options.signal }));
     } catch (error) { return contentReadError(error); }
   };
-  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { closeClient(); transport.close(); } };
+  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { closeClient(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler, options?: ClientOptions) { return createClient(transport, scheduler, undefined, options); }
