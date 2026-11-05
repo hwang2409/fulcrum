@@ -2,6 +2,7 @@ import { safeUrl } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
+import { parseReferenceDefinition } from "./reference-definition.js";
 import { PendingInline } from "./pending-inline.js";
 import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
@@ -63,6 +64,18 @@ const pendingInlineMatches = (state: PendingInlineState | undefined, offset: num
   state?.offset === offset && state.continues === continues && state.tableCandidate === tableCandidate && state.referenceCount === referenceCount;
 
 const markdown = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
+const block = (markdown as any).block;
+const stockReferenceRule = block.ruler.__rules__.find((rule: any) => rule.name === "reference").fn;
+block.ruler.at("reference", (state: any, startLine: number, endLine: number, silent: boolean) => {
+  const start = state.bMarks[startLine] + state.tShift[startLine];
+  const source = state.src.slice(start, state.eMarks[startLine] + 1);
+  const candidate = state.src.slice(start);
+  if (/^ {0,3}\[/.test(source) && !parseReferenceDefinition(candidate)) {
+    const close = candidate.indexOf("]:");
+    if (close >= 0 && Array.from(candidate.slice(candidate.indexOf("[") + 1, close)).length > 999) return false;
+  }
+  return stockReferenceRule(state, startLine, endLine, silent);
+});
 
 const attr = (token: MarkdownToken, name: string) => token.attrGet(name) ?? undefined;
 

@@ -1,3 +1,5 @@
+import { parseReferenceDefinition, parseReferenceTitle } from "./reference-definition.js";
+
 export type ContainerKind = "document" | "quote" | "list" | "item";
 
 export type ContainerFrame =
@@ -163,8 +165,6 @@ const isBlank = (line: string, offset = 0) => {
 const isTableDelimiter = (line: string) => /^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$/.test(line)
   || /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/.test(line);
 const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
-const normalizeReference = (label: string) => label.trim().replace(/\s+/g, " ").toUpperCase();
-
 function stripPendingContainers(line: string) {
   for (;;) {
     const marker = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)?.[0];
@@ -200,17 +200,17 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
 }
 
 function referenceDefinition(line: string) {
-  const match = /^ {0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))(?:[ \t]+(?:"([^"]*)"|'([^']*)'|\(([^)]*)\)))?[ \t]*$/.exec(line);
-  if (!match) return undefined;
+  const definition = parseReferenceDefinition(line);
+  if (!definition) return undefined;
   return {
-    label: normalizeReference(match[1]!),
-    value: { href: match[2] ?? match[3]!, title: match[4] ?? match[5] ?? match[6] ?? "" },
-    canContinueTitle: match[4] === undefined && match[5] === undefined && match[6] === undefined,
+    label: definition.label,
+    value: { href: definition.href, title: definition.title },
+    canContinueTitle: !definition.title,
   };
 }
 
 function referenceTitle(line: string) {
-  return /^ {0,3}(?:"([^"]*)"|'([^']*)'|\(([^)]*)\))[ \t]*$/.exec(line)?.slice(1).find((value) => value !== undefined);
+  return parseReferenceTitle(line);
 }
 
 function htmlBlockEnd(line: string) {
@@ -355,7 +355,11 @@ export class MarkdownLineResolver {
       };
     }
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
-    const { continuesParagraph, lazy } = this.lazyContinuation(blank, startsBlock, unmatched);
+    let { continuesParagraph, lazy } = this.lazyContinuation(blank, startsBlock, unmatched);
+    if (followsContainerOnly && parseReferenceDefinition(unmatchedContent)) {
+      continuesParagraph = false;
+      lazy = false;
+    }
     const closedToDepth = this.closeToDepth(matchedDepth, continuesParagraph, unmatched, blank, unmatchedContent, marker);
 
     const opened = continuesParagraph || blank ? [] : this.openContainers(cursor);
@@ -546,8 +550,8 @@ export class MarkdownLineResolver {
     }
     const definition = referenceDefinition(content);
     if (definition) {
-      this.referenceIndex.set(definition.label, definition.value);
-      if (definition.canContinueTitle) this.pendingReferenceTitle = { label: definition.label };
+      if (!this.referenceIndex.has(definition.label)) this.referenceIndex.set(definition.label, definition.value);
+      if (definition.canContinueTitle && !this.referenceIndex.get(definition.label)?.title) this.pendingReferenceTitle = { label: definition.label };
       this.openLeaf = undefined;
       return {
         continued: false,
