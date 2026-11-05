@@ -311,9 +311,11 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         return [approval, subAgent({ ...data, child_instance_id: childRunId }, status, urgency)];
       }
       case "usage": {
+        // zeta keeps the provider's usage details (a service tier, nested cache counts) beside the token counts: the counts
+        // are the usage, the details are dropped.
         const input = object(wire.usage, "usage");
-        if (Object.values(input).some((item) => typeof item !== "number" || !Number.isFinite(item))) throw new Error("usage must contain finite numbers");
-        return [{ type: "usage", usage: { ...input } as Record<string, number> }];
+        const usage = Object.fromEntries(Object.entries(input).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])));
+        return [{ type: "usage", usage }];
       }
       case "user_message": {
         if (wire.attachments !== undefined && !Array.isArray(wire.attachments)) throw new Error("attachments must be an array");
