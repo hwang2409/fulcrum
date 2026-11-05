@@ -143,7 +143,7 @@ test("features are used only when echoed by the server", async () => {
     id: 1,
     result: {
       protocol_version: "1.2",
-      capabilities: { features: ["projects"], requests: ["new_session_settings"] },
+      capabilities: { features: ["projects"] },
     },
   });
 
@@ -151,7 +151,6 @@ test("features are used only when echoed by the server", async () => {
   expect(client.features).toEqual(["projects"]);
   expect(client.protocolVersion).toBe("1.2");
   expect(client.features).not.toContain("list_sessions_paging");
-  expect(client.requests).toEqual(["new_session_settings"]);
 });
 
 test("malformed feature lists are treated as empty", async () => {
