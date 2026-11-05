@@ -249,7 +249,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   const negotiatedFeatures = new WeakMap<object, Set<string>>();
   const hostBoundSessions = new Set<string>();
   const hostBindingRequired = new Set<string>();
-  const parseHostBinding = (socket: ServerWebSocket<unknown>, params: Json) => {
+  const parseHostBinding = (socket: ServerWebSocket<unknown>, method: string, params: Json) => {
+    if (method !== "new_session" && method !== "resume") return undefined;
     if (!Object.hasOwn(params, "host_commands")) return { commands: undefined };
     if (!negotiatedFeatures.get(socket as object)?.has("session_host_commands")) return { error: "host_commands requires session_host_commands" };
     try {
@@ -356,7 +357,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           }
           return;
         }
-        const binding = method === "new_session" || method === "resume" ? parseHostBinding(socket, params) : undefined;
+        const binding = parseHostBinding(socket, method, params);
         if (binding?.error) return reply({ error: { code: -32602, message: binding.error } });
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
