@@ -885,6 +885,7 @@ export function createStreamingDocument(): StreamingDocument {
   let scannedCharacters = 0;
   let previewScannedCharacters = 0;
   let copiedCharacters = 0;
+  let referenceCandidateScannedCharacters = 0;
   const resolver = new MarkdownLineResolver();
   const blocks = new BlockBuffer();
   let openRoots: Block[] = [];
@@ -1240,10 +1241,55 @@ export function createStreamingDocument(): StreamingDocument {
   };
 
   // A definition-shaped line is held until its line ending decides whether it is metadata or prose.
+  type ReferenceCandidateState = {
+    prefixLength: number;
+    position: number;
+    labelLength: number;
+    escaped: boolean;
+    phase: "start" | "label" | "after-label" | "held";
+    candidate: boolean;
+  };
+  let referenceCandidateState: ReferenceCandidateState | undefined;
   const pendingReferenceCandidate = (line: string, continues: boolean) => {
     if (continues) return false;
     const content = pendingLeafContent(line);
-    return /^\s*\[(?:\\.|[^\\\]\n])*\](?=$|[:[])/.test(content) || /^\s*\[[^\n]*\\]/.test(content);
+    const prefixLength = line.length - content.length;
+    let state = referenceCandidateState;
+    if (!state || state.prefixLength !== prefixLength || state.position > content.length) {
+      state = referenceCandidateState = {
+        prefixLength,
+        position: 0,
+        labelLength: 0,
+        escaped: false,
+        phase: "start",
+        candidate: true,
+      };
+    }
+    if (!state.candidate) return false;
+    while (state.position < content.length) {
+      if (state.phase === "held") return true;
+      const character = content[state.position++]!;
+      referenceCandidateScannedCharacters++;
+      if (state.phase === "start") {
+        if (/\s/.test(character)) continue;
+        if (character !== "[") return state.candidate = false;
+        state.phase = "label";
+        continue;
+      }
+      if (state.phase === "label") {
+        if (state.escaped) {
+          state.escaped = false;
+          if (++state.labelLength > 999) return state.candidate = false;
+        } else if (character === "\\") state.escaped = true;
+        else if (character === "]") state.phase = "after-label";
+        else if (++state.labelLength > 999) return state.candidate = false;
+        continue;
+      }
+      if (character !== ":") return state.candidate = false;
+      state.phase = "held";
+      return true;
+    }
+    return true;
   };
   const pendingReferenceDefinition = (line: string, continues: boolean) =>
     pendingReferenceCandidate(line, continues) && /^\s*\[(?:\\.|[^\\\]\n])+\]:/.test(pendingLeafContent(line));
@@ -1301,7 +1347,7 @@ export function createStreamingDocument(): StreamingDocument {
 
   return {
     get source() { return source; },
-    get stats() { return { frozenParses, tailParses, scannedCharacters, previewScannedCharacters, copiedCharacters }; },
+    get stats() { return { frozenParses, tailParses, scannedCharacters, previewScannedCharacters, copiedCharacters, referenceCandidateScannedCharacters }; },
     append(delta) {
       if (finished || !delta) return;
       const normalized = normalizeDelta(delta);

@@ -47,6 +47,21 @@ test("line classification stays correct at one-character boundaries", () => {
   }
 });
 
+test("reference-definition candidate scans only new characters", () => {
+  const measure = (source: string) => {
+    const document = createStreamingDocument();
+    for (let offset = 0; offset < source.length; offset += 64) {
+      document.append(source.slice(offset, offset + 64));
+      document.render();
+    }
+    return document.stats.referenceCandidateScannedCharacters;
+  };
+  const open = measure(`[${"*a ".repeat(100_000)}`);
+  const closedTail = measure(`[label]${"x".repeat(300_000)}`);
+  expect(open).toBeLessThan(400_000);
+  expect(closedTail).toBeLessThan(400_000);
+});
+
 test("continuation preview stays linear as the line grows", () => {
   const measure = () => {
     const document = createStreamingDocument();
