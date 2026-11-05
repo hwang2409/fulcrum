@@ -23,6 +23,34 @@ export interface SessionLease {
 const adapterError = (message: string) => ({ type: "error" as const, error: { code: "adapter_invalid_frame", message } });
 const encoder = new TextEncoder();
 const RESYNC_BACKOFF_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
+export const MAX_CONTENT_BYTES = 32 * 1024 * 1024;
+export type ContentReadErrorKind = "not_available" | "not_negotiated" | "invalid_request" | "invalid_response" | "too_large";
+export class ContentReadError extends Error {
+  readonly name = "ContentReadError";
+  constructor(readonly kind: ContentReadErrorKind, message: string) { super(message); }
+}
+
+type ContentChunk = { handle: string; media_type: string; title?: string; size: number; offset: number; data: string; next_offset: number; eof: boolean };
+const contentChunk = (value: unknown): ContentChunk => {
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  if (typeof row.handle !== "string" || typeof row.media_type !== "string" ||
+      typeof row.size !== "number" || !Number.isSafeInteger(row.size) || row.size < 0 ||
+      typeof row.offset !== "number" || !Number.isSafeInteger(row.offset) || row.offset < 0 ||
+      typeof row.next_offset !== "number" || !Number.isSafeInteger(row.next_offset) || row.next_offset < row.offset ||
+      typeof row.data !== "string" || typeof row.eof !== "boolean")
+    throw new ContentReadError("invalid_response", "content_read returned an invalid response");
+  return row as ContentChunk;
+};
+const decodeBase64 = (value: string) => {
+  try {
+    const binary = atob(value);
+    const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  } catch {
+    throw new ContentReadError("invalid_response", "content_read returned invalid base64");
+  }
+};
 
 export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
   let nextId = 1;
@@ -300,7 +328,42 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const target = stores.get(session);
     return target ? resyncSession(session, target) : Promise.reject(new Error(`session ${session} is not open`));
   };
-  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
+  const readContent = async (handle: string, options: { signal?: AbortSignal; maxBytes?: number } = {}) => {
+    const cap = Math.min(options.maxBytes ?? MAX_CONTENT_BYTES, MAX_CONTENT_BYTES);
+    if (!Number.isSafeInteger(cap) || cap < 0) throw new ContentReadError("too_large", "content size limit is invalid");
+    let offset = 0;
+    let mediaType: string | undefined;
+    let size: number | undefined;
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
+    try {
+      while (true) {
+        const chunk = contentChunk(await request("content_read", { handle, offset }, { signal: options.signal }));
+        if (chunk.handle !== handle || chunk.offset !== offset || (size !== undefined && chunk.size !== size) || (mediaType !== undefined && chunk.media_type !== mediaType))
+          throw new ContentReadError("invalid_response", "content_read response changed between chunks");
+        size ??= chunk.size;
+        mediaType ??= chunk.media_type;
+        if (size > cap) throw new ContentReadError("too_large", `content is larger than ${cap} bytes`);
+        const bytes = decodeBase64(chunk.data);
+        if (bytes.byteLength !== chunk.next_offset - offset || chunk.next_offset > size || offset + bytes.byteLength > cap)
+          throw new ContentReadError("invalid_response", "content_read returned inconsistent offsets");
+        chunks.push(bytes);
+        if (chunk.eof) {
+          if (chunk.next_offset !== size) throw new ContentReadError("invalid_response", "content_read ended before its declared size");
+          return new Blob(chunks, { type: mediaType });
+        }
+        if (chunk.next_offset <= offset) throw new ContentReadError("invalid_response", "content_read did not advance");
+        offset = chunk.next_offset;
+      }
+    } catch (error) {
+      if (error instanceof ContentReadError || (error as { name?: unknown }).name === "AbortError") throw error;
+      const rpc = error as { code?: unknown; data?: { code?: unknown } };
+      if (rpc.code === -32012 || rpc.data?.code === "content_not_found") throw new ContentReadError("not_available", "content is no longer available");
+      if (rpc.code === -32601) throw new ContentReadError("not_negotiated", "content_read was not negotiated");
+      if (rpc.code === -32602 || rpc.data?.code === "invalid_content_read") throw new ContentReadError("invalid_request", "content_read request was invalid");
+      throw error;
+    }
+  };
+  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }

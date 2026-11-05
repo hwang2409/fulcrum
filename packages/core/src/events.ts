@@ -37,10 +37,13 @@ export interface FileContentBlock extends ContentBlock {
   filename?: string;
   size?: number;
 }
+/** A host-resolved media source. `key` is opaque outside the adapter and host that exchange it. */
+export interface LazyMediaSource { kind: "lazy"; key: string }
 /** An image. `width` and `height` (pixels) let the renderer reserve its exact shape before it loads. `size` is in bytes. */
 export interface ImageContentBlock extends ContentBlock {
   type: "image";
-  url: string;
+  url?: string;
+  source?: LazyMediaSource;
   mediaType?: string;
   alt?: string;
   filename?: string;
@@ -196,7 +199,7 @@ export type RunEvent =
       type: "user_message";
       text: string;
       mode: string;
-      attachments?: unknown[];
+      attachments?: ContentBlock[];
       /** The harness's stable identity for this message, when replay supplies one. */
       message_id?: string;
       /** The server's durable identity for this accepted message, when client delivery IDs were negotiated. */

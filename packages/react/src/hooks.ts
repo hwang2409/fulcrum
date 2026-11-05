@@ -2,11 +2,13 @@ import {
   createContext,
   createElement,
   useContext,
+  useEffect,
+  useMemo,
   useRef,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { createRunStore, RunItem, RunState } from "@fulcrum/core";
+import type { createRunStore, ImageContentBlock, RunItem, RunState } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { HighlightContext } from "./highlight.js";
 
@@ -22,13 +24,45 @@ export type RunStore = Pick<
 
 const StoreContext = createContext<RunStore | null>(null);
 const RetryContext = createContext<(() => void) | undefined>(undefined);
+export type LoadMedia = (block: ImageContentBlock, signal: AbortSignal) => Promise<Blob>;
+export class MediaNotAvailableError extends Error { readonly name = "MediaNotAvailableError"; }
+const MEDIA_CACHE_SIZE = 32;
+class MediaCache {
+  private entries = new Map<string, Promise<string>>();
+  constructor(private readonly load: LoadMedia) {}
+  get(block: ImageContentBlock, signal: AbortSignal) {
+    const key = block.source?.key;
+    if (!key) return Promise.reject(new Error("image has no lazy source"));
+    const cached = this.entries.get(key);
+    if (cached) { this.entries.delete(key); this.entries.set(key, cached); return cached; }
+    const pending = this.load(block, signal).then((blob) => URL.createObjectURL(blob));
+    this.entries.set(key, pending);
+    pending.catch(() => { if (this.entries.get(key) === pending) this.entries.delete(key); });
+    while (this.entries.size > MEDIA_CACHE_SIZE) {
+      const oldest = this.entries.entries().next().value as [string, Promise<string>] | undefined;
+      if (!oldest) break;
+      this.entries.delete(oldest[0]);
+      void oldest[1].then(URL.revokeObjectURL, () => {});
+    }
+    return pending;
+  }
+  dispose() {
+    for (const value of this.entries.values()) void value.then(URL.revokeObjectURL, () => {});
+    this.entries.clear();
+  }
+}
+const MediaContext = createContext<MediaCache | undefined>(undefined);
 
-/** `highlight` colors tool content; `onRetry` retries a failed history resync without coupling React to a harness. */
-export function RunProvider({ store, highlight, onRetry, children }: { store: RunStore; highlight?: Highlight; onRetry?: () => void; children?: ReactNode }) {
+/** `highlight` colors tool content; `onRetry` retries history; `loadMedia` resolves generic lazy image blocks. */
+export function RunProvider({ store, highlight, onRetry, loadMedia, children }: { store: RunStore; highlight?: Highlight; onRetry?: () => void; loadMedia?: LoadMedia; children?: ReactNode }) {
+  const media = useMemo(() => loadMedia ? new MediaCache(loadMedia) : undefined, [loadMedia]);
+  useEffect(() => () => media?.dispose(), [media]);
   return createElement(StoreContext.Provider, { value: store },
     createElement(RetryContext.Provider, { value: onRetry },
-      createElement(HighlightContext.Provider, { value: highlight }, children)));
+      createElement(MediaContext.Provider, { value: media },
+        createElement(HighlightContext.Provider, { value: highlight }, children))));
 }
+export const useMediaCache = () => useContext(MediaContext);
 
 export const useRunStore = () => {
   const store = useContext(StoreContext);

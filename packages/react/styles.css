@@ -734,7 +734,11 @@ a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--f
 [data-part="image-open"]:hover { border-color: var(--fulcrum-accent); }
 [data-part="image-open"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 [data-part="image-open"] > img { display: block; width: 100%; height: 100%; object-fit: contain; }
-[data-part="image-placeholder"] { display: flex; align-items: center; justify-content: center; padding: 12px; color: var(--fulcrum-muted); font-size: 12px; text-align: center; }
+[data-part="image-placeholder"] { position: relative; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; color: var(--fulcrum-muted); font-size: 12px; text-align: center; }
+[data-part="image"][data-state="loading"] [data-part="image-placeholder"] { background: linear-gradient(100deg, var(--fulcrum-surface) 35%, var(--fulcrum-border) 50%, var(--fulcrum-surface) 65%); background-size: 200% 100%; animation: fulcrum-image-loading 1.5s linear infinite; }
+[data-action="open-image"] { position: absolute; inset: 0; width: 100%; border: 0; background: transparent; cursor: zoom-in; }
+@keyframes fulcrum-image-loading { to { background-position-x: -200%; } }
+@media (prefers-reduced-motion: reduce) { [data-part="image"][data-state="loading"] [data-part="image-placeholder"] { animation: none; } }
 /* An image that will never load needs no reserved box: one line says why. */
 [data-part="image"][data-state="blocked"] [data-part="image-placeholder"] { width: auto; height: auto; aspect-ratio: auto; justify-content: flex-start; padding: 6px 12px; }
 [data-part="image"][data-state="error"] [data-part="image-placeholder"] { color: var(--fulcrum-danger); }

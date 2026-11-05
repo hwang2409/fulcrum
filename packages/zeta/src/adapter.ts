@@ -51,14 +51,18 @@ const deltaKind = (kind: string | undefined) => kind === undefined || kind === "
 const basename = (path: string) => path.split(/[\\/]/).pop() || undefined;
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const positive = (value: unknown): value is number => finite(value) && value > 0;
-// zeta's message ImageContent (protocol/types.py): base64 data, mimeType, and an optional path and byte size.
+// Live images carry base64 bytes. Negotiated history stubs carry only an opaque content_read handle.
 const image = (input: Record<string, unknown>, at: string): ImageContentBlock => {
-  const mediaType = string(input.mimeType, `${at}.mimeType`);
+  const mediaType = input.mimeType === undefined ? undefined : string(input.mimeType, `${at}.mimeType`);
+  const handle = input.handle === undefined ? undefined : string(input.handle, `${at}.handle`);
+  const data = input.data === undefined ? undefined : string(input.data, `${at}.data`);
+  if (!handle && !data) throw new Error(`${at} must contain data or handle`);
   const filename = input.path === undefined || input.path === null ? undefined : basename(string(input.path, `${at}.path`));
   return {
     type: "image",
-    url: `data:${mediaType};base64,${string(input.data, `${at}.data`)}`,
-    mediaType,
+    ...(data && mediaType ? { url: `data:${mediaType};base64,${data}` } : {}),
+    ...(handle ? { source: { kind: "lazy", key: handle } } : {}),
+    ...(mediaType ? { mediaType } : {}),
     ...(filename ? { filename } : {}),
     ...(finite(input.size) ? { size: input.size } : {}),
   };
@@ -83,9 +87,13 @@ const contentBlock = (value: unknown, index: number): ContentBlock => {
       };
     case "image":
       return image(input, `message.content[${index}]`);
-    // History replaces an image with its name and size (server/ergonomics.py), so it shows as a file without a link.
-    case "attachment":
-      return { type: "file", filename: string(input.name, `message.content[${index}].name`), ...(finite(input.size) ? { size: input.size } : {}) };
+    // With content_read, history attachments are image stubs with opaque handles. Older history stays a file row.
+    case "attachment": {
+      const filename = string(input.name, `message.content[${index}].name`);
+      return input.handle === undefined
+        ? { type: "file", filename, ...(finite(input.size) ? { size: input.size } : {}) }
+        : { type: "image", filename, source: { kind: "lazy", key: string(input.handle, `message.content[${index}].handle`) }, ...(finite(input.size) ? { size: input.size } : {}) };
+    }
     case "redacted_thinking":
       return { type: "reasoning", text: "", redacted: true, data: string(input.data, `message.content[${index}].data`) };
     case "tool_use":
@@ -363,7 +371,7 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] =>
     return [{ type: "tool_end", tool_call: call, tool_result: result, ...finishedView(call, row.tool_result) }];
   }
   if (role === "user") {
-    const attachments = content.filter((block) => (block as { type?: unknown } | null)?.type === "attachment");
+    const attachments = content.flatMap((block, index) => (block as { type?: unknown } | null)?.type === "attachment" ? [contentBlock(block, index)] : []);
     events.push({ type: "user_message", message_id: id, text: text(content), mode: "send", ...(attachments.length ? { attachments } : {}), ...(row.delivery_id === undefined ? {} : { delivery_id: string(row.delivery_id, "history row delivery_id") }) });
   } else if (role === "assistant") {
     // History keeps text, thinking, and image stubs; tool_use blocks become tool rows. An empty thinking header carries nothing to show.

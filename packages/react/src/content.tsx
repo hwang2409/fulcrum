@@ -1,6 +1,7 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { safeUrl, type ContentBlock, type FileContentBlock, type ImageContentBlock, type RunItem } from "@fulcrum/core";
-import { useItem } from "./hooks.js";
+import { MediaNotAvailableError, useItem, useMediaCache } from "./hooks.js";
+import { useNearViewport } from "./warm.js";
 import type { ItemProps } from "./parts.js";
 import { boundText, bytes, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { CopyButton, TextViewer, type TextFormat } from "./tools/text-viewer.js";
@@ -210,21 +211,61 @@ const dimension = (value: unknown) => (typeof value === "number" && Number.isFin
  */
 export const ImageBlock = memo(function ImageBlock({ block, onOpen }: ContentBlockProps) {
   const image = block as ImageContentBlock;
-  const src = safeUrl(image.url, "image");
-  const [failed, setFailed] = useState(false);
+  const direct = safeUrl(image.url, "image");
+  const lazy = image.source?.kind === "lazy";
+  const cache = useMediaCache();
+  const frame = useRef<HTMLElement>(null);
+  const near = useNearViewport(frame);
+  const [src, setSrc] = useState(direct);
+  const [state, setState] = useState<"idle" | "loading" | "ready" | "error" | "unavailable">(direct ? "ready" : "idle");
   const [viewing, setViewing] = useState(false);
+  const controller = useRef<AbortController>(undefined);
+  const load = useCallback(() => {
+    if (!lazy || !cache || state === "loading" || state === "ready") return Promise.resolve(src);
+    controller.current?.abort();
+    const next = new AbortController();
+    controller.current = next;
+    setState("loading");
+    return cache.get(image, next.signal).then((url) => {
+      if (!next.signal.aborted) { setSrc(url); setState("ready"); }
+      return url;
+    }, (error) => {
+      if (!next.signal.aborted) setState(error instanceof MediaNotAvailableError ? "unavailable" : "error");
+      return undefined;
+    });
+  }, [cache, image, lazy, src, state]);
+  useEffect(() => { if (near && lazy && state === "idle") void load(); }, [near, lazy, state, load]);
+  useEffect(() => () => controller.current?.abort(), []);
   const width = dimension(image.width);
   const height = dimension(image.height);
   const name = str(image.alt) ?? str(image.filename) ?? fileName(image.url) ?? "image";
   const box: CSSProperties | undefined = width && height ? { width: Math.min(width, (IMAGE_MAX_HEIGHT * width) / height), aspectRatio: `${width} / ${height}` } : undefined;
+  const blocked = !direct && (!lazy || !cache);
+  const open = () => {
+    if (onOpen) {
+      if (src) onOpen({ ...image, url: src });
+      else void load().then((url) => { if (url) onOpen({ ...image, url }); });
+    } else {
+      setViewing(true);
+      if (!src) void load();
+    }
+  };
+  const message = blocked ? "image not shown: unsupported address"
+    : state === "unavailable" ? "image no longer available"
+    : state === "error" ? "image failed to load"
+    : "loading image";
   return (
-    <figure data-part="image" data-size={box ? "known" : "unknown"} data-state={!src ? "blocked" : failed ? "error" : "ready"}>
-      {src && !failed ? (
-        <button type="button" data-part="image-open" style={box} aria-label={`open image: ${label(name)}`} onClick={() => (onOpen ? onOpen(image) : setViewing(true))}>
-          <img src={src} alt={label(name)} width={width} height={height} loading="lazy" decoding="async" onError={() => setFailed(true)} />
+    <figure ref={frame} data-part="image" data-size={box ? "known" : "unknown"} data-state={blocked ? "blocked" : state}>
+      {src && state === "ready" ? (
+        <button type="button" data-part="image-open" style={box} aria-label={`open image: ${label(name)}`} onClick={open}>
+          <img src={src} alt={label(name)} width={width} height={height} loading="lazy" decoding="async" onError={() => setState("error")} />
         </button>
       ) : (
-        <div data-part="image-placeholder" style={src ? box : undefined}>{!src ? "image not shown: unsupported address" : "image failed to load"}</div>
+        <div data-part="image-placeholder" style={blocked ? undefined : box} aria-busy={state === "loading" || undefined}>
+          <span>{message}</span>
+          {(state === "error" || state === "unavailable") && lazy ? <button type="button" data-action="retry" onClick={() => void load()}>retry</button> : null}
+          {!blocked && state !== "error" && state !== "unavailable" ? <button type="button" data-action="open-image" aria-label={`open image: ${label(name)}`} onClick={open} /> : null}
+        </div>
       )}
       <figcaption data-part="image-caption">
         <span data-part="block-label">image</span>

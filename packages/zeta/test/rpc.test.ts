@@ -20,6 +20,52 @@ function fakeTransport() {
   };
 }
 
+async function hello(fake: ReturnType<typeof fakeTransport>, client: ReturnType<typeof createClient>) {
+  const ready = client.hello(["session_history_fidelity", "content_read"]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["session_history_fidelity", "content_read"] } } });
+  await ready;
+}
+
+test("content_read joins chunks, accepts a short final chunk, and sends no session id", async () => {
+  const fake = fakeTransport();
+  const client = createClient(fake.transport);
+  await hello(fake, client);
+  const reading = client.readContent("opaque");
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { handle: "opaque", media_type: "image/png", title: "x", size: 7, offset: 0, data: btoa("abc"), next_offset: 3, eof: false } });
+  await Promise.resolve();
+  fake.receive({ jsonrpc: "2.0", id: 3, result: { handle: "opaque", media_type: "image/png", title: "x", size: 7, offset: 3, data: btoa("def"), next_offset: 6, eof: false } });
+  await Promise.resolve();
+  fake.receive({ jsonrpc: "2.0", id: 4, result: { handle: "opaque", media_type: "image/png", title: "x", size: 7, offset: 6, data: btoa("g"), next_offset: 7, eof: true } });
+  const blob = await reading;
+  expect(await blob.text()).toBe("abcdefg");
+  expect(blob.type).toBe("image/png");
+  expect(fake.sent.slice(1).map((message) => message.params)).toEqual([
+    { handle: "opaque", offset: 0 }, { handle: "opaque", offset: 3 }, { handle: "opaque", offset: 6 },
+  ]);
+});
+
+test("content_read rejects declared sizes over the cap and is abortable", async () => {
+  const fake = fakeTransport();
+  const client = createClient(fake.transport);
+  await hello(fake, client);
+  const tooLarge = client.readContent("large", { maxBytes: 2 });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { handle: "large", media_type: "image/png", size: 3, offset: 0, data: "", next_offset: 0, eof: false } });
+  await expect(tooLarge).rejects.toMatchObject({ kind: "too_large" });
+  const controller = new AbortController();
+  const aborted = client.readContent("slow", { signal: controller.signal });
+  controller.abort();
+  await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+});
+
+test("content_not_found has a typed not-available error", async () => {
+  const fake = fakeTransport();
+  const client = createClient(fake.transport);
+  await hello(fake, client);
+  const reading = client.readContent("gone");
+  fake.receive({ jsonrpc: "2.0", id: 2, error: { code: -32012, message: "content not found", data: { code: "content_not_found" } } });
+  await expect(reading).rejects.toMatchObject({ name: "ContentReadError", kind: "not_available" });
+});
+
 test("requests before hello are rejected", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);

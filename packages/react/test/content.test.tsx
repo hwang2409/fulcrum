@@ -7,7 +7,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, MAX_URL_CHARS, type ContentBlock, type RunEvent } from "@fulcrum/core";
 import { Markdown } from "../../markdown/src/react.js";
-import { Message, RunProvider, ToolCall, type BlockRenderers, type ContentBlockProps } from "../src/index.js";
+import { MediaNotAvailableError, Message, RunProvider, ToolCall, type BlockRenderers, type ContentBlockProps, type LoadMedia } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 
@@ -42,9 +42,9 @@ const q = (selector: string) => container.querySelector(selector) as HTMLElement
 // The message's direct block parts, in DOM order (markdown text shows as its md-* parts).
 const order = () => [...q('[data-part="message"]').children].map((child) => (child as HTMLElement).dataset.part).filter((part) => part !== "reasoning-live");
 const commit = (content: ContentBlock[], role = "assistant"): RunEvent => ({ type: "message_commit", message_id: "m", message: { role, content } });
-const render = (events: RunEvent[], props: { blocks?: BlockRenderers; onOpen?: ContentBlockProps["onOpen"]; markdown?: boolean } = {}) => {
+const render = (events: RunEvent[], props: { blocks?: BlockRenderers; onOpen?: ContentBlockProps["onOpen"]; markdown?: boolean; loadMedia?: LoadMedia } = {}) => {
   const setupResult = setup(events);
-  mount(<RunProvider store={setupResult.store}><Message id="message:m" markdown={props.markdown === false ? false : Markdown} blocks={props.blocks} onOpen={props.onOpen} /></RunProvider>);
+  mount(<RunProvider store={setupResult.store} loadMedia={props.loadMedia}><Message id="message:m" markdown={props.markdown === false ? false : Markdown} blocks={props.blocks} onOpen={props.onOpen} /></RunProvider>);
   return setupResult;
 };
 
@@ -236,4 +236,100 @@ test("a tool result's image blocks show under its output, and the card opens for
   const image = q('[data-part="tool-blocks"] [data-part="image"]');
   expect(image.dataset.size).toBe("known");
   expect(image.querySelector("img")?.getAttribute("alt")).toBe("revenue by quarter");
+});
+
+test("lazy images load only near the viewport, keep their reserved box, and revoke object urls", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  const savedCreate = URL.createObjectURL;
+  const savedRevoke = URL.revokeObjectURL;
+  let seen: IntersectionObserverCallback | undefined;
+  const revoked: string[] = [];
+  let loads = 0;
+  globalThis.IntersectionObserver = class {
+    constructor(callback: IntersectionObserverCallback) { seen = callback; }
+    observe() {}
+    disconnect() {}
+    unobserve() {}
+    takeRecords() { return []; }
+    root = null; rootMargin = "400px 0px"; thresholds = [0];
+  } as unknown as typeof IntersectionObserver;
+  URL.createObjectURL = () => "blob:lazy-image";
+  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  try {
+    render([commit([{ type: "image", filename: "history.png", width: 800, height: 400, source: { kind: "lazy", key: "opaque" } }])], {
+      loadMedia: async () => { loads++; return new Blob(["png"], { type: "image/png" }); },
+    });
+    const placeholder = q('[data-part="image-placeholder"]');
+    expect(loads).toBe(0);
+    expect(placeholder.getAttribute("style")).toContain("aspect-ratio: 800 / 400");
+    await act(async () => { seen?.([{ isIntersecting: true, target: q('[data-part="image"]') } as IntersectionObserverEntry], {} as IntersectionObserver); await Promise.resolve(); });
+    expect(loads).toBe(1);
+    expect(q('[data-part="image-open"]').getAttribute("style")).toContain("aspect-ratio: 800 / 400");
+    expect(q("img").getAttribute("src")).toBe("blob:lazy-image");
+    act(() => root?.unmount());
+    root = undefined;
+    await Promise.resolve();
+    expect(revoked).toEqual(["blob:lazy-image"]);
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+    URL.createObjectURL = savedCreate;
+    URL.revokeObjectURL = savedRevoke;
+  }
+});
+
+test("a missing lazy image says it is no longer available and can retry", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  let attempts = 0;
+  try {
+    render([commit([{ type: "image", filename: "gone.png", source: { kind: "lazy", key: "gone" } }])], {
+      loadMedia: async () => { attempts++; throw new MediaNotAvailableError("gone"); },
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(q('[data-part="image"]').dataset.state).toBe("unavailable");
+    expect(q('[data-part="image-placeholder"]').textContent).toContain("image no longer available");
+    await act(async () => { q('[data-action="retry"]').click(); await Promise.resolve(); });
+    expect(attempts).toBe(2);
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+  }
+});
+
+test("lazy image object urls use an lru and revoke on eviction", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  const savedCreate = URL.createObjectURL;
+  const savedRevoke = URL.revokeObjectURL;
+  const callbacks: IntersectionObserverCallback[] = [];
+  const revoked: string[] = [];
+  let next = 0;
+  globalThis.IntersectionObserver = class {
+    constructor(callback: IntersectionObserverCallback) { callbacks.push(callback); }
+    observe(target: Element) { this.target = target; }
+    target?: Element;
+    disconnect() {}
+    unobserve() {}
+    takeRecords() { return []; }
+    root = null; rootMargin = "400px 0px"; thresholds = [0];
+  } as unknown as typeof IntersectionObserver;
+  URL.createObjectURL = () => `blob:${next++}`;
+  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  try {
+    render([commit(Array.from({ length: 33 }, (_, index) => ({ type: "image", source: { kind: "lazy", key: `image-${index}` } })))], {
+      loadMedia: async () => new Blob(["x"]),
+    });
+    const images = [...container.querySelectorAll('[data-part="image"]')];
+    await act(async () => {
+      callbacks.forEach((callback, index) => callback([{ isIntersecting: true, target: images[index]! } as IntersectionObserverEntry], {} as IntersectionObserver));
+      await Promise.resolve(); await Promise.resolve();
+    });
+    expect(revoked).toContain("blob:0");
+    act(() => root?.unmount());
+    root = undefined;
+    await Promise.resolve();
+    expect(new Set(revoked).size).toBe(33);
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+    URL.createObjectURL = savedCreate;
+    URL.revokeObjectURL = savedRevoke;
+  }
 });
