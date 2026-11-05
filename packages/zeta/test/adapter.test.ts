@@ -97,3 +97,14 @@ test("usage keeps the token counts and drops the provider details zeta passes th
   const usage = { input_tokens: 4, cache_creation_input_tokens: 97, cache_read_input_tokens: 6287, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 97 }, output_tokens: 189, service_tier: "standard", inference_geo: "global", speed: "standard", output_tokens_details: { thinking_tokens: 157 } };
   expect(fromZetaEvent({ event: "usage", usage })).toEqual([{ type: "usage", usage: { input_tokens: 4, cache_creation_input_tokens: 97, cache_read_input_tokens: 6287, output_tokens: 189 } }]);
 });
+
+test("usage treats malformed containers as empty maps and keeps only nonnegative finite counts", () => {
+  for (const usage of [null, [], "bad", 42]) {
+    expect(fromZetaEvent({ event: "usage", usage })).toEqual([{ type: "usage", usage: {} }]);
+  }
+  expect(fromZetaEvent({ event: "usage", usage: { zero: 0, negative: -1, nan: NaN, infinity: Infinity, good: 3 } })).toEqual([{ type: "usage", usage: { zero: 0, good: 3 } }]);
+});
+
+test("history usage rows use the live usage mapping", () => {
+  expect(fromZetaHistory([{ id: "u", role: "system", event: "usage", usage: { input_tokens: 2 }, content: [] }])).toEqual([{ type: "usage", usage: { input_tokens: 2 } }]);
+});

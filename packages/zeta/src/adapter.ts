@@ -313,8 +313,8 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       case "usage": {
         // zeta keeps the provider's usage details (a service tier, nested cache counts) beside the token counts: the counts
         // are the usage, the details are dropped.
-        const input = object(wire.usage, "usage");
-        const usage = Object.fromEntries(Object.entries(input).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])));
+        const input = wire.usage && typeof wire.usage === "object" && !Array.isArray(wire.usage) ? wire.usage as Record<string, unknown> : {};
+        const usage = Object.fromEntries(Object.entries(input).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0));
         return [{ type: "usage", usage }];
       }
       case "user_message": {
@@ -355,7 +355,7 @@ const text = (content: unknown[]) =>
 
 const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
   const row = object(value, "history row");
-  if (row.event === "approval_request" || row.event === "approval_end") {
+  if (row.event === "approval_request" || row.event === "approval_end" || row.event === "usage") {
     // History empties tool_use arguments, but an approval row keeps them: the call's result row then gets its full view.
     let call: ToolCall | undefined;
     try { call = tool(row.tool_call); } catch { /* no usable call: the row still maps */ }
