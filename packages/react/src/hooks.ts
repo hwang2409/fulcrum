@@ -1,14 +1,21 @@
 import {
   createContext,
   createElement,
+  useCallback,
   useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { createRunStore, RunItem, RunState } from "@fulcrum/core";
+import type { createRunStore, LazyContentBlock, RunItem, RunState } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { HighlightContext } from "./highlight.js";
+import { createMediaStore, type LoadMedia, type MediaLease, type MediaState, type MediaStore } from "./media-store.js";
+export type { LoadMedia } from "./media-store.js";
 
 export type RunStore = Pick<
   ReturnType<typeof createRunStore>,
@@ -22,12 +29,46 @@ export type RunStore = Pick<
 
 const StoreContext = createContext<RunStore | null>(null);
 const RetryContext = createContext<(() => void) | undefined>(undefined);
+const MediaContext = createContext<MediaStore | undefined>(undefined);
 
-/** `highlight` colors tool content; `onRetry` retries a failed history resync without coupling React to a harness. */
-export function RunProvider({ store, highlight, onRetry, children }: { store: RunStore; highlight?: Highlight; onRetry?: () => void; children?: ReactNode }) {
+/** `highlight` colors tool content; `onRetry` retries history; `loadMedia` resolves lazy content blocks. */
+export function RunProvider({ store, highlight, onRetry, loadMedia, children }: { store: RunStore; highlight?: Highlight; onRetry?: () => void; loadMedia?: LoadMedia; children?: ReactNode }) {
+  const media = useMemo(() => loadMedia ? createMediaStore(loadMedia) : undefined, [loadMedia]);
+  useEffect(() => () => media?.dispose(), [media]);
   return createElement(StoreContext.Provider, { value: store },
     createElement(RetryContext.Provider, { value: onRetry },
-      createElement(HighlightContext.Provider, { value: highlight }, children)));
+      createElement(MediaContext.Provider, { value: media },
+        createElement(HighlightContext.Provider, { value: highlight }, children))));
+}
+const idleMedia = { status: "idle" } as const;
+type MediaView = MediaState | typeof idleMedia;
+export function useMedia(block: LazyContentBlock | undefined, active: boolean) {
+  const store = useContext(MediaContext);
+  const lease = useRef<MediaLease>(undefined);
+  const [view, setView] = useState<MediaView>(idleMedia);
+  const release = useCallback(() => { lease.current?.release(); lease.current = undefined; }, []);
+  useEffect(() => {
+    release();
+    setView(idleMedia);
+    return release;
+  }, [store, block?.source.key, release]);
+  useEffect(() => {
+    if (!store || !block || !active) {
+      if (lease.current?.read().status === "loading") { release(); setView(idleMedia); }
+      return;
+    }
+    if (lease.current) return;
+    let next: MediaLease;
+    const update = () => setView(next.read());
+    next = store.acquire(block.source.key, block, update);
+    lease.current = next;
+    update();
+  }, [active, block, store, release]);
+  useLayoutEffect(() => { lease.current?.commit(view.status === "ready" ? view : undefined); });
+  const retry = useCallback(() => {
+    if (view.status !== "idle") lease.current?.invalidate(view);
+  }, [view]);
+  return { state: view, retry, available: !!store };
 }
 
 export const useRunStore = () => {

@@ -356,9 +356,11 @@ export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
   // An "aborted" error is the user's own stop: a neutral row, not a failure.
   const stopped = item.type === "error" && item.event.type === "error" && item.event.error.code === "aborted";
   const kind = stopped ? "stopped" : item.type;
+  const attachments = item.type === "user" && item.event.type === "user_message" ? item.event.attachments : undefined;
   return (
     <div className={className} style={pre} data-part="item" data-kind={kind} data-id={id} data-state={stopped ? "stopped" : item.type === "error" ? "error" : "done"}>
       {stopped ? "stopped" : itemLabel(item)}
+      {attachments?.length ? <ToolResultBlocks id={id} blocks={attachments} /> : null}
     </div>
   );
 });

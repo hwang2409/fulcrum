@@ -35,12 +35,14 @@ const seeded = [
 ];
 
 const text = (value: string) => ({ type: "text", text: value });
+const fakeImage = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="), (character) => character.charCodeAt(0));
+const fakeImageHandle = "fake-history-image";
 const toolUse = (id: string, name: string, args: Json = {}) => ({ type: "tool_use", tool_call: { id, name, arguments: args } });
 // History keeps a result's text only; bash's is "stdout:\n" + stdout + "\nstderr:\n" + stderr (zeta src/zeta/tools/bash).
 const result = (id: string, content: string, extra: Json = {}) => ({ tool_call_id: id, content, is_error: false, content_blocks: [], structured_content: null, ...extra });
 const histories: Record<string, Json[]> = {
   [ACTIVE]: [
-    { id: "h1", role: "user", content: [text("the reconnect test in packages/zeta fails about one run in ten. find out why and fix it.")], tool_result: null },
+    { id: "h1", role: "user", content: [text("the reconnect test in packages/zeta fails about one run in ten. find out why and fix it."), { type: "attachment", name: "reconnect.png", size: fakeImage.byteLength, handle: fakeImageHandle }], tool_result: null },
     { id: "h2", role: "assistant", content: [{ type: "thinking", text: "start with the test and the client close path." }, text("I will read the test first, then run it in a loop."), toolUse("c1", "read")], tool_result: null },
     { id: "h3", role: "tool_result", content: [text("")], tool_result: result("c1", "import { expect, test } from \"bun:test\";\nimport { connect } from \"../src/index.js\";\n\ntest(\"reconnects\", async () => {\n  const client = connect(transport);\n  await client.hello();\n});") },
     { id: "h4", role: "assistant", content: [toolUse("c2", "bash", { command: "bun test packages/zeta/test/rpc.test.ts" })], tool_result: null },
@@ -245,6 +247,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   const sockets = new Set<ServerWebSocket<unknown>>();
   let controller: ServerWebSocket<unknown> | null = null;
   const reconnectControllers = new WeakSet<object>();
+  const contentReaders = new WeakSet<object>();
   let approvalExpiry: ReturnType<typeof setTimeout> | null = null;
   const approvalCall = { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } };
   const expireApproval = () => {
@@ -322,9 +325,10 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
           controller = socket;
-          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect)) ?? [];
+          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || name === "session_history_fidelity" || name === "content_read" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect)) ?? [];
           const reconnect = features.includes("approval_reconnect");
           if (reconnect) reconnectControllers.add(socket as object);
+          if (features.includes("session_history_fidelity") && features.includes("content_read")) contentReaders.add(socket as object);
           reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features } } });
           if (decide && !approvalAborted) {
             if (!reconnect) expireApproval();
@@ -365,6 +369,17 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           active = String(params.session_id);
           delayedOpen = false;
           return reply({ result: { session: sessions.find((session) => session.session_id === active) } });
+        }
+        if (method === "content_read") {
+          if (!contentReaders.has(socket as object)) return reply({ error: { code: -32601, message: "content_read requires negotiation" } });
+          if (params.handle !== fakeImageHandle) return reply({ error: { code: -32012, message: "content not found", data: { code: "content_not_found" } } });
+          const offset = params.offset === undefined ? 0 : Number(params.offset);
+          const limit = Math.min(params.limit === undefined ? 524_288 : Number(params.limit), 524_288);
+          if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || Object.hasOwn(params, "session_id"))
+            return reply({ error: { code: -32602, message: "invalid content read", data: { code: "invalid_content_read" } } });
+          const next = Math.min(fakeImage.byteLength, offset + limit);
+          const data = btoa(String.fromCharCode(...fakeImage.slice(offset, next)));
+          return reply({ result: { handle: fakeImageHandle, media_type: "image/png", title: "reconnect.png", size: fakeImage.byteLength, offset, data, next_offset: next, eof: next === fakeImage.byteLength } });
         }
         if (method === "session_history") {
           if (params.session_id !== active) return reply({ error: { code: -32003, message: "no active session" } });
