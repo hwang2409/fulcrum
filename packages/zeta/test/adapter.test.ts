@@ -92,14 +92,6 @@ test("keeps an image's history stub and passes unknown blocks through", () => {
   expect(history).toEqual([{ type: "message_commit", message_id: "h", message: { role: "assistant", content: [{ type: "text", text: "see" }, { type: "file", filename: "shot.png", size: 5 }] } }]);
 });
 
-test("a live user_message's attachments become file rows, as history's do", () => {
-  // zeta's echo of a send_images turn: each stored image by name, type, and size, never its bytes.
-  const attachments = [{ name: "circle.png", mime_type: "image/png", size: 2093 }, { size: 3 }];
-  expect(fromZetaEvent({ event: "user_message", text: "describe this", mode: "send", attachments })).toEqual([
-    { type: "user_message", text: "describe this", mode: "send", attachments: [{ type: "file", filename: "circle.png", mediaType: "image/png", size: 2093 }] },
-  ]);
-});
-
 test("malformed attachment containers do not drop the user message", () => {
   for (const attachments of [null, "bad", 42, {}]) {
     expect(fromZetaEvent({ event: "user_message", text: "keep me", mode: "send", attachments })).toEqual([

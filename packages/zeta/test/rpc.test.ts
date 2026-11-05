@@ -545,6 +545,40 @@ test("an id-less send_images echo uses text intent fallback without duplicating 
   expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:image-intent"]);
 });
 
+test("an id-less image echo selects send_images over a same-text send", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello(["delivery_id", "user_message_event", "user_message_delivery_id"]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id"] } } });
+  await hello;
+  const text = client.request("send", { text: "same", delivery_id: "text-delivery" }, { intent: "text-intent" });
+  const image = client.request("send_images", { text: "same", delivery_id: "image-delivery", images: [] }, { intent: "image-intent" });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "same", mode: "send", attachments: [{ name: "x.png", mime_type: "image/png", size: 1 }] } });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "same", mode: "send", delivery_id: "text-delivery" } });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  fake.receive({ jsonrpc: "2.0", id: 3, result: { accepted: true } });
+  await Promise.all([text, image]);
+  expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:image-intent", "user:intent:text-intent"]);
+});
+
+test("a late id-less image echo merges into its reconciled delivery row", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello(["delivery_id", "user_message_event", "user_message_delivery_id"]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id"] } } });
+  await hello;
+  const sending = client.request("send_images", { text: "late", delivery_id: "late-delivery", images: [] }, { intent: "late-intent" });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "late", mode: "send", delivery_id: "late-delivery" } });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  await sending;
+  const echo = { jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "late", mode: "send", attachments: [{ name: "x.png", mime_type: "image/png", size: 1 }] } };
+  fake.receive(echo);
+  fake.receive(echo);
+  const users = client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user");
+  expect(users.map(({ id }) => id)).toEqual(["user:intent:late-intent"]);
+  expect(client.forSession("s").store.getItem("user:intent:late-intent")).toMatchObject({ event: { attachments: [{ filename: "x.png" }] } });
+});
+
 test("an echoed user_message gets the intent of the pending request with the same text, never another one", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);

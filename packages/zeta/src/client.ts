@@ -117,8 +117,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
   const maxSessions = options.maxSessions ?? 100;
-  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; intent?: string; text?: unknown; deliveryId?: string };
+  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; method: string; intent?: string; text?: unknown; deliveryId?: string };
   const pending = new Map<number, Pending>();
+  const settledDeliveries = new Map<string, { method: string; text?: unknown }>();
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
   const replaying = new Set<string>();
@@ -303,17 +304,26 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;
     const deliveryIds = negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_delivery_id");
+    const hasAttachments = event.attachments !== undefined && event.attachments.length > 0;
     const owner = deliveryIds && event.delivery_id !== undefined
       ? [...pending.values()].find((request) => request.deliveryId === event.delivery_id)
-      : [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text);
-    if (!owner) return event;
-    const intent = owner.intent;
-    owner.intent = undefined;
-    return { ...event, ...(intent === undefined ? {} : { intent }) };
+      : [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text && (hasAttachments ? request.method === "send_images" : request.method !== "send_images"));
+    if (owner) {
+      const intent = owner.intent;
+      owner.intent = undefined;
+      return { ...event, ...(intent === undefined ? {} : { intent }) };
+    }
+    if (hasAttachments) {
+      const settled = [...settledDeliveries.entries()].find(([, request]) => request.method === "send_images" && request.text === event.text);
+      if (settled) return { ...event, delivery_id: settled[0] };
+    }
+    return event;
   };
   const settle = (id: number, callback: (request: Pending) => void) => {
     const request = pending.get(id); if (!request) return;
-    pending.delete(id); if (request.timer) clearTimeout(request.timer); callback(request);
+    pending.delete(id); if (request.timer) clearTimeout(request.timer);
+    if (request.deliveryId) settledDeliveries.set(request.deliveryId, { method: request.method, text: request.text });
+    callback(request);
   };
   const handleEvent = (message: TransportMessage) => {
     if (!message.params || typeof message.params !== "object") return store.dispatch(adapterError("event params are invalid"));
@@ -374,7 +384,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
       const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" })));
-      const item: Pending = { resolve, reject, intent: requestOptions.intent, text: requestOptions.intent === undefined ? undefined : params.text, deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined };
+      const item: Pending = { resolve, reject, method, intent: requestOptions.intent, text: requestOptions.intent === undefined ? undefined : params.text, deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined };
       pending.set(id, item);
       if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true });
       if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs);
