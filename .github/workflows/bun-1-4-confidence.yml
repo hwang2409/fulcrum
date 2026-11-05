@@ -1,5 +1,6 @@
 name: bun 1.4.4 confidence
 on:
+  pull_request:
   workflow_dispatch:
 jobs:
   parity:
