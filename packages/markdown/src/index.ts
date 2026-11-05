@@ -70,7 +70,10 @@ block.ruler.at("reference", (state: any, startLine: number, endLine: number, sil
   const start = state.bMarks[startLine] + state.tShift[startLine];
   const source = state.src.slice(start, state.eMarks[startLine] + 1);
   const candidate = state.src.slice(start);
-  if (/^ {0,3}\[/.test(source) && source.trimEnd().endsWith("]:") && /^\s*["']/.test(candidate.slice(source.length))) return false;
+  if (/^ {0,3}\[/.test(source) && source.trimEnd().endsWith("]:")) {
+    const nextLine = candidate.slice(source.length).split("\n", 1)[0] ?? "";
+    if (nextLine && !parseReferenceDefinition(`${source.trimEnd()}\n${nextLine}`)) return false;
+  }
   if (/^ {0,3}\[/.test(source) && !parseReferenceDefinition(candidate)) {
     const close = candidate.indexOf("]:");
     if (close >= 0 && Array.from(candidate.slice(candidate.indexOf("[") + 1, close)).length > 999) return false;
