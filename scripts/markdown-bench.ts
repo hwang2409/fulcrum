@@ -139,21 +139,43 @@ const commitRatio = commits[2]![1] / Math.max(commits[0]![1], 0.1);
 console.log(`rich line commit growth 100k -> 1 MB: ${commitRatio.toFixed(1)}x (linear is ~10x)`);
 if (commitRatio > 25 || commits[2]![1] > 500) failed = true;
 
-// A paragraph's 2nd and later lines ask, on every delta, whether the growing line starts a block. That check must read
-// the line's first characters only; a whole-line regex makes continuation lines quadratic (15x time for 4x length).
+// A paragraph's 2nd and later lines ask, on every delta, whether the growing line starts a block. That check
+// (`startsLeafBlock`) must read the line's first characters only; a whole-line regex makes continuation lines
+// quadratic. The gate is a size-scaling ratio: growing the line 4x (46k -> 184k) must not grow the time super-linearly.
+//
+// Robustness: the small (46k) and large (184k) runs are measured back-to-back as one pair, and the gate is the median
+// of 7 per-pair ratios. Pairing cancels machine-wide slowdowns, because a slow moment on a shared CI runner hits both
+// sizes in the same pair and leaves their ratio unchanged; the earlier version measured the two sizes in separate
+// batches, so a slowdown during only the large batch inflated the ratio (CI 41985973904 attempt 1 read 8.1x against a
+// clean baseline of ~6x, with almost no margin). One warm-up pair is discarded so JIT and GC warm-up do not land in a
+// measured pair.
+//
+// Calibration: clean reads ~6x here (not the ideal 4x), because the inline/pending-paragraph path already grows mildly
+// super-linearly with line length. A whole-line regex in `startsLeafBlock` (the mistake this guards) reads ~11.5x.
+// The 8x threshold sits between them with margin on both sides; the median of 7 pairs holds clean within 6.1-6.7x and
+// the regex regression within 11.3-11.6x locally.
+//
+// Detection limit (honest): this gate catches super-linear growth (a whole-line scan per delta), not a constant-factor
+// slowdown. A flat slowdown scales both sizes equally and leaves the ratio near its ~6x baseline, so a regression must
+// add roughly 1.3x of extra scaling on top of that baseline to cross 8x; smaller constant-factor regressions are
+// instead caught by the p95/p99/max latency gates above.
 const continuationTime = (units: number) => {
   const source = `first line\n${"word **b** `c` and more ".repeat(units)}`;
-  const samples = Array.from({ length: 3 }, () => {
-    const document = createStreamingDocument();
-    const start = performance.now();
-    for (let offset = 0; offset < source.length; offset += 64) { document.append(source.slice(offset, offset + 64)); document.render(); }
-    return performance.now() - start;
-  });
-  return samples.sort((a, b) => a - b)[1]!;
+  const document = createStreamingDocument();
+  const start = performance.now();
+  for (let offset = 0; offset < source.length; offset += 64) { document.append(source.slice(offset, offset + 64)); document.render(); }
+  return performance.now() - start;
 };
-const continuationSmall = continuationTime(2_000);
-const continuationLarge = continuationTime(8_000);
-const continuationRatio = continuationLarge / Math.max(continuationSmall, 0.1);
-console.log(`64 B  continuation line 46k -> 184k: ${continuationSmall.toFixed(0)} -> ${continuationLarge.toFixed(0)} ms, ${continuationRatio.toFixed(1)}x (linear is ~4x, quadratic ~16x)`);
+continuationTime(2_000); continuationTime(8_000); // warm-up pair, discarded
+const continuationPairs = Array.from({ length: 7 }, () => {
+  const small = continuationTime(2_000);
+  const large = continuationTime(8_000);
+  return { small, large, ratio: large / Math.max(small, 0.1) };
+});
+const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
+const continuationSmall = median(continuationPairs.map((pair) => pair.small));
+const continuationLarge = median(continuationPairs.map((pair) => pair.large));
+const continuationRatio = median(continuationPairs.map((pair) => pair.ratio));
+console.log(`64 B  continuation line 46k -> 184k: ${continuationSmall.toFixed(0)} -> ${continuationLarge.toFixed(0)} ms, ${continuationRatio.toFixed(1)}x median of 7 pairs (clean ~6x, whole-line regex ~11.5x)`);
 if (continuationRatio > 8) failed = true;
 if (failed) process.exit(1);

@@ -257,6 +257,10 @@ function ImageFrame({ box, height, lifecycle, name, width }: { box?: CSSProperti
     case "loading":
     case "idle":
       return <div data-part="image-placeholder" style={box} aria-busy={lifecycle.state.status === "loading" || undefined}><span>loading image</span></div>;
+    default: {
+      const unreachable: never = lifecycle.state;
+      return unreachable;
+    }
   }
 }
 

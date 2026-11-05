@@ -275,10 +275,11 @@ describe("incremental tokenization", () => {
     expect(restored.exec("ab")).toEqual(converted.exec("ab"));
   });
 
-  // Root cause (PR #57): Bun/JavaScriptCore can return a wrong result on a `v`-flag recipe regex's very first exec
-  // under CPU load. Shiki's scanner reuses each regex's first search on a line (vscode-oniguruma behaviour), so that
-  // first wrong "no match" is cached and never retried: e.g. the TypeScript `(:)(?=\s*\S)` rule failed at `id:`, and
-  // `id: number };` merged into one token. The fix warms every grammar regex with `exec("")` during warm-up, before any
+  // Root cause (PR #57): under CPU load, a plain `v`-flag recipe RegExp whose first exec reached Shiki's scanner cold
+  // produced a missed match. Shiki's scanner reuses each regex's first search on a line (vscode-oniguruma behaviour), so
+  // that first "no match" is cached and never retried: e.g. the TypeScript `(:)(?=\s*\S)` rule missed at `id:`, and
+  // `id: number };` merged into one token. (No standalone wrong exec reproduced; the miss appears only through the full
+  // scanner harness under load.) The fix warms every grammar regex with `exec("")` during warm-up, before any
   // real block reaches a scanner, so the scanner never sees a cold first exec. This guards that warming: every plain
   // grammar RegExp in the cache must have been exec'd during warm-up. It fails on the lazy path, where the
   // type-annotation recipes are never exec'd before the first real document.
