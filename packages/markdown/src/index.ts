@@ -756,7 +756,7 @@ function cloneOpenPath(blocks: readonly Block[], cloneLeaf = true): Block[] {
     const item = items.at(-1);
     if (item) items[items.length - 1] = { ...item, children: cloneOpenPath(item.children, cloneLeaf) };
     copy[index] = { ...block, items };
-  } else if (cloneLeaf && block.type === "paragraph") copy[index] = { ...block, children: block.children.slice() };
+  } else if (cloneLeaf && block.type === "paragraph") copy[index] = { ...block };
   else if (cloneLeaf && block.type === "code") copy[index] = { ...block };
   else if (cloneLeaf && block.type === "table") copy[index] = { ...block, rows: block.rows.slice() };
   return copy;
@@ -799,7 +799,7 @@ function appendPendingParagraph(blocks: Block[], pending: Inline[], continuesPar
   if (!pending.length) return;
   const paragraph = continuesParagraph ? tailParagraph(blocks) : undefined;
   if (paragraph) {
-    paragraph.children = [...paragraph.children, { type: "text", value: "\n" }, ...pending];
+    paragraph.children = pending;
     return paragraph;
   }
   // `pending` is the growing line's live node list; each frame gets a new block object around it.
@@ -888,7 +888,10 @@ export function createStreamingDocument(): StreamingDocument {
   // The growing line's inline nodes; `pendingInlineOffset` is where its content starts in the pending line.
   let pendingInline: PendingInline | undefined;
   let pendingInlineOffset = 0;
+  let pendingInlineLineLength = 0;
   let pendingInlineContinues = false;
+  let pendingInlineTableCandidate = false;
+  let pendingInlineReferenceCount = 0;
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
 
@@ -1219,24 +1222,43 @@ export function createStreamingDocument(): StreamingDocument {
     return nodes.filter((node) => node.type !== "text" || node.value);
   };
 
-  const pendingPreview = (): Inline[] => {
+  const pendingPreview = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean): Inline[] => {
     const line = resolver.pending.content;
-    const classification = resolver.classifyPending(line);
     if (classification.kind !== "paragraph") return [];
-    const continues = resolver.pendingContinuesParagraph(line);
-    if (!pendingInline || pendingInlineOffset !== classification.offset || pendingInlineContinues !== continues) {
+    let tableCandidate = false;
+    if (continues && !resolver.pendingStartsWithSettledProse) {
+      let candidateOffset = classification.offset;
+      while (line[candidateOffset] === " " || line[candidateOffset] === "\t") candidateOffset++;
+      tableCandidate = line[candidateOffset] === "|";
+    }
+    const startsInline = !pendingInline || pendingInlineOffset !== classification.offset || pendingInlineContinues !== continues || pendingInlineTableCandidate !== tableCandidate || pendingInlineReferenceCount !== resolver.references.size;
+    if (startsInline) {
       // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
       const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
       const after = open && openParagraph!.source[open.index + open.length];
-      pendingInline = new PendingInline(parsePending, open && { marker: "`".repeat(open.length), leadingSpace: after === undefined || /\s/.test(after) });
+      const prefix = continues && openParagraph
+        ? [...openParagraph.block.children, { type: tableCandidate ? "pending-reference" as const : "text" as const, value: "\n" }]
+        : undefined;
+      pendingInline = new PendingInline(
+        parsePending,
+        open && { marker: "`".repeat(open.length), leadingSpace: after === undefined || /\s/.test(after) },
+        prefix,
+      );
       pendingInlineOffset = classification.offset;
+      pendingInlineLineLength = 0;
       pendingInlineContinues = continues;
+      pendingInlineTableCandidate = tableCandidate;
+      pendingInlineReferenceCount = resolver.references.size;
     }
-    const copied = pendingInline.copiedCharacters;
-    previewScannedCharacters += line.length - pendingInlineOffset - pendingInline.content.length;
-    pendingInline.extend(line.slice(pendingInlineOffset));
-    copiedCharacters += pendingInline.copiedCharacters - copied;
-    return pendingInline.nodes;
+    const inline = pendingInline!;
+    const copied = inline.copiedCharacters;
+    const lineLength = line.length - pendingInlineOffset;
+    previewScannedCharacters += lineLength - pendingInlineLineLength;
+    if (startsInline) inline.extend(line.slice(pendingInlineOffset));
+    else inline.append(line.slice(pendingInlineOffset + pendingInlineLineLength));
+    pendingInlineLineLength = lineLength;
+    copiedCharacters += inline.copiedCharacters - copied;
+    return inline.nodes;
   };
 
   const normalizeDelta = (delta: string) => {
@@ -1283,11 +1305,12 @@ export function createStreamingDocument(): StreamingDocument {
       if (classification.kind === "fence" && openCode && !openIndentedCode) {
         const disposition = resolver.pendingFenceDisposition;
         if (disposition === "closes") closeOpenCode(overlay);
-        else if (disposition === "none" && classification.content) appendOpenCode(overlay, classification.content);
+        else if (disposition === "none" && classification.offset < pending.length) appendOpenCode(overlay, classification.content);
       } else {
-        const startsBlock = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
-        if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.content && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment())))
-          appendPendingParagraph(overlay, pendingPreview(), Boolean(openParagraph) && !startsBlock);
+        const continuesParagraph = Boolean(openParagraph) && resolver.pendingContinuesParagraph(pending);
+        const startsBlock = openParagraph ? !continuesParagraph : /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
+        if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.offset < pending.length && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment())))
+          appendPendingParagraph(overlay, pendingPreview(classification, continuesParagraph), continuesParagraph);
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];

@@ -47,21 +47,27 @@ test("line classification stays correct at one-character boundaries", () => {
   }
 });
 
-test("continuation preview stays near-linear as the line grows", () => {
-  const measure = (length: number) => {
+test("continuation preview stays linear as the line grows", () => {
+  const measure = () => {
     const document = createStreamingDocument();
-    const source = "first paragraph\n" + "word **b** `c` and more ".repeat(Math.ceil(length / 24)).slice(0, length);
-    const start = performance.now();
-    for (let offset = 0; offset < source.length; offset += 64) {
-      document.append(source.slice(offset, offset + 64));
+    const line = "word **b** `c` and more ".repeat(16_000);
+    document.append("first paragraph\n");
+    const start = Number(process.hrtime.bigint()) / 1e6;
+    const times: number[] = [];
+    for (let offset = 0; offset < 384_000; offset += 64) {
+      document.append(line.slice(offset, offset + 64));
       document.render();
+      if (offset + 64 === 96_000 || offset + 64 === 192_000 || offset + 64 === 384_000)
+        times.push(Number(process.hrtime.bigint()) / 1e6 - start);
     }
-    return performance.now() - start;
+    return times as [number, number, number];
   };
-  const samples = Array.from({ length: 3 }, () => [measure(48_000), measure(192_000)] as const);
-  const ratios = samples.map(([small, large]) => large / Math.max(small, 0.1)).sort((a, b) => a - b);
-  expect(ratios[1]!).toBeLessThan(7.5);
-});
+  measure();
+  const samples = Array.from({ length: 7 }, measure);
+  const median = (values: number[]) => values.sort((a, b) => a - b)[3]!;
+  expect(median(samples.map(([small, medium]) => medium / small))).toBeLessThanOrEqual(2.3);
+  expect(median(samples.map(([, medium, large]) => large / medium))).toBeLessThanOrEqual(2.3);
+}, 30_000);
 
 test("frozen blocks retain identity while only the open path is rebuilt", () => {
   const document = createStreamingDocument();
