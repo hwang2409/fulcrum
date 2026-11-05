@@ -96,6 +96,20 @@ test("supplies fresh host commands for new_session, resume, a failed-resume retr
   expect(calls).toEqual([null, "s-one", "s-two", "s-two", "s-two"]);
 });
 
+test("settled host command suppliers release close waiters", async () => {
+  const fake = fakeTransport();
+  const client = createClient(fake.transport, undefined, undefined, { maxPendingRequests: 20_000, hostCommands: () => Promise.resolve([command()]) });
+  await hello(fake, client);
+
+  const attaches = Array.from({ length: 10_000 }, () => client.request("new_session"));
+  await Bun.sleep(0);
+  for (const request of fake.sent.slice(1)) fake.reply(request, { session: { session_id: `s-${request.id}` } });
+  await Promise.all(attaches);
+
+  expect(client.hostCommandWaiterCount).toBe(0);
+  expect(fake.sent).toHaveLength(10_001);
+});
+
 test("a session send waits for its slow resume attachment", async () => {
   const supplied = deferred<HostCommand[]>();
   const fake = fakeTransport();
