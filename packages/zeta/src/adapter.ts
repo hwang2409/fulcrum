@@ -312,8 +312,8 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       }
       case "usage": {
         const input = object(wire.usage, "usage");
-        if (Object.values(input).some((item) => typeof item !== "number" || !Number.isFinite(item))) throw new Error("usage must contain finite numbers");
-        return [{ type: "usage", usage: { ...input } as Record<string, number> }];
+        const numeric = Object.fromEntries(Object.entries(input).filter(([, item]) => typeof item === "number" && Number.isFinite(item)));
+        return [{ type: "usage", usage: numeric }];
       }
       case "user_message": {
         if (wire.attachments !== undefined && !Array.isArray(wire.attachments)) throw new Error("attachments must be an array");
