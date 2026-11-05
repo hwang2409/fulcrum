@@ -388,14 +388,12 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       throw redactHostCommandFailure("host_command_request_failed", error);
     }
   };
-  const attach = (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions, coalesce = false) => {
+  const attach = (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
     const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
     if (sessionId === null) return performAttach(method, params, requestOptions);
     const previous = attachmentGates.get(sessionId);
-    if (coalesce && previous) return previous;
-    const operation = previous
-      ? previous.then(() => performAttach(method, params, requestOptions), () => performAttach(method, params, requestOptions))
-      : performAttach(method, params, requestOptions);
+    const operation = previous?.catch(() => {}).then(() => performAttach(method, params, requestOptions))
+      ?? performAttach(method, params, requestOptions);
     attachmentGates.set(sessionId, operation);
     const clear = () => { if (attachmentGates.get(sessionId) === operation) attachmentGates.delete(sessionId); };
     operation.then(clear, clear);
@@ -405,7 +403,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const sessionId = typeof params.session_id === "string" ? params.session_id : null;
     if (!sessionId || typeof params.delivery_id !== "string") throw redactHostCommandFailure("host_binding_recovery_failed", error);
     try {
-      await attach("resume", { session_id: sessionId }, requestOptions, true);
+      await (attachmentGates.get(sessionId) ?? attach("resume", { session_id: sessionId }, requestOptions));
     } catch (recoveryError) {
       if (recoveryError instanceof HostCommandError) throw recoveryError;
       throw redactHostCommandFailure("host_binding_recovery_failed", recoveryError);
@@ -416,15 +414,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       throw redactHostCommandFailure("host_binding_retry_failed", retryError);
     }
   };
-  const requestAfterAttachment = (method: string, params: Record<string, unknown>, requestOptions: RequestOptions) => {
-    const sessionId = typeof params.session_id === "string" ? params.session_id : null;
-    const waitsForAttachment = method === "send" || method === "send_images" || method === "steer";
-    const gate = sessionId && waitsForAttachment ? attachmentGates.get(sessionId) : undefined;
-    return gate ? gate.then(() => rawRequest(method, params, requestOptions)) : rawRequest(method, params, requestOptions);
-  };
   const request = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
     if (hostCommandsEnabled() && (method === "new_session" || method === "resume")) return attach(method, params, requestOptions);
-    const result = requestAfterAttachment(method, params, requestOptions);
+    const gate = ["send", "send_images", "steer"].includes(method) ? attachmentGates.get(params.session_id as string) : undefined;
+    const result = gate ? gate.then(() => rawRequest(method, params, requestOptions)) : rawRequest(method, params, requestOptions);
     if (!hostCommandsEnabled() || (method !== "send" && method !== "send_images")) return result;
     return result.catch((error) => isHostBindingRequired(error) ? recoverHostBinding(method, params, requestOptions, error) : Promise.reject(error));
   };
