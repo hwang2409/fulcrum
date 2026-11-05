@@ -283,10 +283,15 @@ function imageModel(image: ImageContentBlock, src: string | undefined, media: Re
 
 function ImageView({ image, frame, src, media, viewing, open, close }: ImageViewProps) {
   const [failed, setFailed] = useState(false);
+  const decodeRetries = useRef(0);
   const model = imageModel(image, src, media, failed);
-  const retry = () => { setFailed(false); media.retry(); };
+  const retry = () => { decodeRetries.current = 0; setFailed(false); media.retry(); };
+  const fail = () => {
+    if (model.lazy && decodeRetries.current++ === 0) media.retry();
+    else setFailed(true);
+  };
   return <figure ref={frame} data-part="image" data-size={model.box ? "known" : "unknown"} data-state={model.state}>
-    <ImageBody model={model} open={open} retry={retry} fail={() => setFailed(true)} />
+    <ImageBody model={model} open={open} retry={retry} fail={fail} />
     <figcaption data-part="image-caption"><span data-part="block-label">image</span><span data-part="file-name">{model.name}</span><Facts mediaType={image.mediaType} size={image.size} /></figcaption>
     {viewing && src ? <ImageDialog src={src} name={model.name} close={close} /> : null}
   </figure>;

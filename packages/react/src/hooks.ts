@@ -30,7 +30,7 @@ const StoreContext = createContext<RunStore | null>(null);
 const RetryContext = createContext<(() => void) | undefined>(undefined);
 const MediaContext = createContext<MediaStore | undefined>(undefined);
 
-/** `highlight` colors tool content; `onRetry` retries history; `loadMedia` resolves generic lazy image blocks. */
+/** `highlight` colors tool content; `onRetry` retries history; `loadMedia` resolves lazy content blocks. */
 export function RunProvider({ store, highlight, onRetry, loadMedia, children }: { store: RunStore; highlight?: Highlight; onRetry?: () => void; loadMedia?: LoadMedia; children?: ReactNode }) {
   const media = useMemo(() => loadMedia ? new MediaStore(loadMedia) : undefined, [loadMedia]);
   useEffect(() => () => media?.dispose(), [media]);
@@ -45,14 +45,18 @@ export function useMedia(block: LazyContentBlock | undefined, active: boolean) {
   const lease = useRef<MediaLease>(undefined);
   const current = useRef<MediaState | typeof idleMedia>(idleMedia);
   const [state, setState] = useState<MediaState | typeof idleMedia>(idleMedia);
-  const [attempt, setAttempt] = useState(0);
-  const show = useCallback((next: MediaState | typeof idleMedia) => { current.current = next; setState(next); }, []);
+  const [generation, setGeneration] = useState(0);
+  const show = useCallback((next: MediaState | typeof idleMedia, nextGeneration = 0) => {
+    current.current = next;
+    setState(next);
+    setGeneration(nextGeneration);
+  }, []);
   const release = useCallback(() => { lease.current?.release(); lease.current = undefined; }, []);
   useEffect(() => {
     release();
     show(idleMedia);
     return release;
-  }, [store, block?.source.key, attempt, release, show]);
+  }, [store, block?.source.key, release, show]);
   useEffect(() => {
     if (!store || !block || !active) {
       if (current.current.status === "loading") { release(); show(idleMedia); }
@@ -61,11 +65,13 @@ export function useMedia(block: LazyContentBlock | undefined, active: boolean) {
     if (lease.current) return;
     const next = store.acquire(block.source.key, block);
     lease.current = next;
-    const update = () => show(next.state);
+    const update = () => show(next.state, next.generation);
     update();
     return next.subscribe(update);
-  }, [active, block, store, attempt, release, show]);
-  const retry = useCallback(() => { release(); show(idleMedia); setAttempt((value) => value + 1); }, [release, show]);
+  }, [active, block, store, release, show]);
+  const retry = useCallback(() => {
+    if (store && block && generation) store.invalidate(block.source.key, generation);
+  }, [block, generation, store]);
   return { state, retry, available: Boolean(store) };
 }
 

@@ -277,6 +277,109 @@ test("lazy images load only near the viewport, keep their reserved box, and revo
   }
 });
 
+test("retry replaces a shared failed image load for every mounted lease", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  let calls = 0;
+  const { store } = setup([
+    { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "shared-failure" } }] } },
+    { type: "message_commit", message_id: "b", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "shared-failure" } }] } },
+  ]);
+  try {
+    mount(<RunProvider store={store} loadMedia={async () => {
+      calls++;
+      if (calls === 1) throw new Error("first load failed");
+      return new Blob(["ok"]);
+    }}><Message id="message:a" /><Message id="message:b" /></RunProvider>);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(container.querySelectorAll('[data-action="retry"]')).toHaveLength(2);
+    await act(async () => { (container.querySelector('[data-action="retry"]') as HTMLButtonElement).click(); await Promise.resolve(); await Promise.resolve(); });
+    expect(calls).toBe(2);
+    expect(container.querySelectorAll("img")).toHaveLength(2);
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+  }
+});
+
+test("simultaneous retries replace a failed generation only once", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const recovered = deferredBlob();
+  let calls = 0;
+  const { store } = setup([
+    { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "simultaneous" } }] } },
+    { type: "message_commit", message_id: "b", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "simultaneous" } }] } },
+  ]);
+  try {
+    mount(<RunProvider store={store} loadMedia={() => {
+      calls++;
+      return calls === 1 ? Promise.reject(new Error("first load failed")) : recovered.promise;
+    }}><Message id="message:a" /><Message id="message:b" /></RunProvider>);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const retries = [...container.querySelectorAll('[data-action="retry"]')] as HTMLButtonElement[];
+    await act(async () => {
+      retries[0]!.click();
+      expect(calls).toBe(2);
+      retries[1]!.click();
+      await Promise.resolve();
+    });
+    expect(calls).toBe(2);
+    await act(async () => { recovered.resolve(new Blob(["ok"])); await Promise.resolve(); await Promise.resolve(); });
+    expect(container.querySelectorAll("img")).toHaveLength(2);
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+  }
+});
+
+test("a lazy image retries one decode failure automatically, then shows manual retry", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  let calls = 0;
+  try {
+    render([commit([{ type: "image", source: { kind: "lazy", key: "bad-blob" } }])], {
+      loadMedia: async () => { calls++; return new Blob([`blob-${calls}`]); },
+    });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { q("img").dispatchEvent(new Event("error")); await Promise.resolve(); await Promise.resolve(); });
+    expect(calls).toBe(2);
+    expect(q('[data-part="image"]').dataset.state).toBe("ready");
+    await act(async () => { q("img").dispatchEvent(new Event("error")); await Promise.resolve(); });
+    expect(calls).toBe(2);
+    expect(q('[data-part="image"]').dataset.state).toBe("error");
+    expect(q('[data-action="retry"]')).toBeTruthy();
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+  }
+});
+
+test("a replaced image url is revoked only after both leases leave its generation", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  const savedCreate = URL.createObjectURL;
+  const savedRevoke = URL.revokeObjectURL;
+  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const revoked: string[] = [];
+  let calls = 0;
+  URL.createObjectURL = () => `blob:generation-${calls}`;
+  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  const { store } = setup([
+    { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "revoke-shared" } }] } },
+    { type: "message_commit", message_id: "b", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "revoke-shared" } }] } },
+  ]);
+  try {
+    mount(<RunProvider store={store} loadMedia={async () => { calls++; return new Blob([`generation-${calls}`]); }}><Message id="message:a" /><Message id="message:b" /></RunProvider>);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const oldUrl = (container.querySelector("img") as HTMLImageElement).src;
+    await act(async () => { (container.querySelector("img") as HTMLImageElement).dispatchEvent(new Event("error")); await Promise.resolve(); await Promise.resolve(); });
+    expect(calls).toBe(2);
+    expect(container.querySelectorAll(`img[src="${oldUrl}"]`)).toHaveLength(0);
+    expect(revoked).toEqual([oldUrl]);
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+    URL.createObjectURL = savedCreate;
+    URL.revokeObjectURL = savedRevoke;
+  }
+});
+
 test("a missing lazy image says it is no longer available and can retry", async () => {
   const savedObserver = globalThis.IntersectionObserver;
   globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
