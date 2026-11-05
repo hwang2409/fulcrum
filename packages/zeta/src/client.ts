@@ -350,7 +350,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   let closed = false;
   let closedError: unknown;
   const closeClient = (code?: number) => {
-    if (closed) return closedError;
+    if (closed) return;
     const error = closeError?.(handshaken, code) ?? new Error("transport closed");
     closed = true;
     closedError = error;
@@ -360,7 +360,6 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     attachmentGates.clear();
     cancelLoads();
     closeListeners.forEach((listener) => listener(error));
-    return error;
   };
   transport.onClose?.((code) => { closeClient(code); });
   /** Calls `listener` once when the transport closes, with the same error that rejected pending requests. */
