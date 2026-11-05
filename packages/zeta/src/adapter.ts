@@ -313,7 +313,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       case "usage": {
         // zeta keeps the provider's usage details (a service tier, nested cache counts) beside the token counts: the counts
         // are the usage, the details are dropped.
-        const input = wire.usage !== null && typeof wire.usage === "object" && !Array.isArray(wire.usage) ? wire.usage as Record<string, unknown> : {};
+        const input = wire.usage !== null && typeof wire.usage === "object" && !Array.isArray(wire.usage) ? wire.usage : {};
         const usage = Object.fromEntries(Object.entries(input).filter((entry): entry is [string, number] => finite(entry[1]) && entry[1] >= 0));
         return [{ type: "usage", usage }];
       }
