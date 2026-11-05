@@ -1261,8 +1261,9 @@ export function createStreamingDocument(): StreamingDocument {
   let referenceCandidateState: ReferenceCandidateState | undefined;
   let referenceContinuation = false;
   const pendingReferenceCandidate = (line: string, continues: boolean): ReferenceCandidateState["disposition"] => {
-    if (continues && !referenceContinuation && !/^\s*\[/.test(pendingLeafContent(line))) return "released";
+    if (continues && !referenceContinuation) return "released";
     const content = pendingLeafContent(line);
+    if (/^\[[ xX]/.test(content)) return "released";
     const prefix = line.slice(0, line.length - content.length);
     let state = referenceCandidateState;
     if (!state || state.prefix !== prefix || state.position > content.length) {
@@ -1305,6 +1306,12 @@ export function createStreamingDocument(): StreamingDocument {
   };
   const pendingReferenceDefinition = (line: string, continues: boolean) =>
     pendingReferenceCandidate(line, continues) === "held" && /^\s*\[(?:\\.|[^\\\]\n])+\]:/.test(pendingLeafContent(line));
+  const pendingReferencePreview = (line: string) => {
+    const content = pendingLeafContent(line).trim();
+    if (!content.startsWith("[")) return content;
+    const close = referenceCandidateState?.phase === "after-label" ? referenceCandidateState.position - 1 : content.length;
+    return content.slice(1, close) .replace(/\\([\\\[\]])/g, "$1") + content.slice(close + 1);
+  };
 
   const startPendingInline = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean, tableCandidate: boolean) => {
     // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
@@ -1397,9 +1404,13 @@ export function createStreamingDocument(): StreamingDocument {
           const referenceDisposition = pendingReferenceCandidate(pending, continuesParagraph);
           const preview = referenceDisposition === "held"
             ? []
-            : referenceCandidateState?.phase === "after-label"
-              ? [{ type: "pending-reference" as const, value: pendingLeafContent(pending).trim() }]
-              : pendingPreview(classification, continuesParagraph);
+            : referenceDisposition === "possible" && referenceCandidateState?.phase === "start"
+              ? []
+              : referenceDisposition === "possible" && referenceCandidateState
+                ? pendingReferencePreview(pending)
+                  ? [{ type: "pending-reference" as const, value: pendingReferencePreview(pending) }]
+                  : []
+                : pendingPreview(classification, continuesParagraph);
           appendPendingParagraph(overlay, preview, continuesParagraph);
         }
       }

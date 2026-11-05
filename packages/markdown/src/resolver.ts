@@ -180,7 +180,7 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   const heading = /^#{1,6}[ \t]+/.exec(content);
   if (heading) content = content.slice(heading[0].length);
   const task = /^\[([ xX])\][ \t]+/.exec(content);
-  if (/^[ \t]*\[[^\]\n]+\]:/.test(content)) return EMPTY;
+  if (/^[ \t]*\[(?:\\.|[^\\\]\n])+\]:/.test(content)) return EMPTY;
   if (task) content = content.slice(task[0].length);
   else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
   if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
@@ -201,7 +201,7 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
 }
 
 function referenceDefinition(line: string) {
-  const match = /^ {0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))(?:[ \t]+(?:"([^"]*)"|'([^']*)'|\(([^)]*)\)))?[ \t]*$/.exec(line);
+  const match = /^ {0,3}\[((?:\\.|[^\\\]\n])+)]\:[ \t]*(?:<([^>\n]+)>|(\S+))(?:[ \t]+(?:"([^"]*)"|'([^']*)'|\(([^)]*)\)))?[ \t]*$/.exec(line);
   if (!match) return undefined;
   return {
     label: normalizeReference(match[1]!),
