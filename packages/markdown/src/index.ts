@@ -1184,6 +1184,8 @@ export function createStreamingDocument(): StreamingDocument {
       else {
         closeParagraph();
         openParagraph = createParagraph(leaf.content);
+        if (pendingReferenceDefinition(leaf.content, false))
+          openParagraph.block.children = [{ type: "pending-reference", value: "" }];
       }
       openCode = undefined;
       openIndentedCode = false;
@@ -1237,31 +1239,42 @@ export function createStreamingDocument(): StreamingDocument {
     return nodes.filter((node) => node.type !== "text" || node.value);
   };
 
+  // A definition-shaped line is held until its line ending decides whether it is metadata or prose.
+  const pendingReferenceCandidate = (line: string, continues: boolean) => {
+    if (continues) return false;
+    const content = pendingLeafContent(line);
+    return /^\s*\[(?:\\.|[^\\\]\n])*\](?=$|[:[])/.test(content) || /^\s*\[[^\n]*\\]/.test(content);
+  };
+  const pendingReferenceDefinition = (line: string, continues: boolean) =>
+    pendingReferenceCandidate(line, continues) && /^\s*\[(?:\\.|[^\\\]\n])+\]:/.test(pendingLeafContent(line));
+
+  const startPendingInline = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean, tableCandidate: boolean) => {
+    // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
+    const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
+    const after = open && openParagraph!.source[open.index + open.length];
+    const prefix = continues && openParagraph
+      ? [...openParagraph.block.children, { type: tableCandidate ? "pending-reference" as const : "text" as const, value: "\n" }]
+      : undefined;
+    pendingInline = new PendingInline(
+      parsePending,
+      open && { marker: "`".repeat(open.length), leadingSpace: after === undefined || /\s/.test(after) },
+      prefix,
+    );
+    pendingInlineState = {
+      offset: classification.offset,
+      lineLength: 0,
+      continues,
+      tableCandidate,
+      referenceCount: resolver.references.size,
+    };
+  };
+
   const pendingPreview = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean): Inline[] => {
     const line = resolver.pending.content;
     if (classification.kind !== "paragraph") return [];
     const tableCandidate = pendingTableCandidate(line, classification.offset, continues, resolver.pendingStartsWithSettledProse);
     const startsInline = !pendingInline || !pendingInlineMatches(pendingInlineState, classification.offset, continues, tableCandidate, resolver.references.size);
-    if (startsInline) {
-      // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
-      const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
-      const after = open && openParagraph!.source[open.index + open.length];
-      const prefix = continues && openParagraph
-        ? [...openParagraph.block.children, { type: tableCandidate ? "pending-reference" as const : "text" as const, value: "\n" }]
-        : undefined;
-      pendingInline = new PendingInline(
-        parsePending,
-        open && { marker: "`".repeat(open.length), leadingSpace: after === undefined || /\s/.test(after) },
-        prefix,
-      );
-      pendingInlineState = {
-        offset: classification.offset,
-        lineLength: 0,
-        continues,
-        tableCandidate,
-        referenceCount: resolver.references.size,
-      };
-    }
+    if (startsInline) startPendingInline(classification, continues, tableCandidate);
     const inline = pendingInline!;
     const copied = inline.copiedCharacters;
     const state = pendingInlineState!;
@@ -1323,7 +1336,7 @@ export function createStreamingDocument(): StreamingDocument {
         const continuesParagraph = Boolean(openParagraph) && resolver.pendingContinuesParagraph(pending);
         const startsBlock = openParagraph ? !continuesParagraph : /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
         if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.offset < pending.length && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment())))
-          appendPendingParagraph(overlay, pendingPreview(classification, continuesParagraph), continuesParagraph);
+          appendPendingParagraph(overlay, pendingReferenceCandidate(pending, continuesParagraph) ? [] : pendingPreview(classification, continuesParagraph), continuesParagraph);
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];

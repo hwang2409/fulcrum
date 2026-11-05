@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
-import { PendingInline } from "../src/pending-inline.js";
+import { PENDING_INLINE_SUFFIX, PendingInline } from "../src/pending-inline.js";
 
 // Gates for the pending-line rule: a character the user has seen never disappears, a raw marker may
 // later become a style, and only the fixed suffix may be provisional.
-const SUFFIX = 128;
+const SUFFIX = PENDING_INLINE_SUFFIX;
 
 function text(nodes: readonly Inline[], provisional: boolean): string {
   return nodes.map((node) => node.type === "pending-reference" ? provisional ? node.value : ""
