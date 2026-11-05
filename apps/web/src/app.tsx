@@ -1,8 +1,8 @@
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
 import { MermaidFence } from "@fulcrum/mermaid";
-import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvider, Timeline, useItemSelector, useRun, useRunStore, useTimeline, type Renderers } from "@fulcrum/react";
-import type { SessionStore, ZetaClient } from "@fulcrum/zeta";
+import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvider, Timeline, useItemSelector, useRun, useRunStore, useTimeline, type LoadMedia, type Renderers } from "@fulcrum/react";
+import { ContentReadError, type SessionStore, type ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { createConnection, serveCommand, type Connection, type ConnectionState } from "./connection";
 import { createDelivery } from "./delivery";
@@ -376,10 +376,18 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
   const onUndelivered = useCallback((intents: string[]) => {
     if (intents.length) setUndelivered((current) => new Set([...current, ...intents]));
   }, []);
+  const loadMedia = useMemo<LoadMedia | undefined>(() => client ? async (block, signal) => {
+    try {
+      return await client.readContent(block.source!.key, { signal });
+    } catch (error) {
+      if (error instanceof ContentReadError && error.kind === "not_available") throw Object.assign(new Error("image no longer available"), { code: "not_available" });
+      throw error;
+    }
+  } : undefined, [client]);
   return (
     <Decisions.Provider value={decisions}>
       <Undelivered value={undelivered}>
-        <RunProvider store={open.lease.store} highlight={highlight} onRetry={client ? () => client.retrySession(open.id) : undefined}>
+        <RunProvider store={open.lease.store} highlight={highlight} onRetry={client ? () => client.retrySession(open.id) : undefined} loadMedia={loadMedia}>
           <RefreshOnIdle sessions={sessions} />
           <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready={ready ? "true" : undefined}>
             <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />

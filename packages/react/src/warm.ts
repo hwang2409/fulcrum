@@ -55,6 +55,7 @@ const distance = (node: Element | null) => {
   const { top, bottom } = node.getBoundingClientRect();
   return bottom < 0 ? -bottom : top > innerHeight ? top - innerHeight : 0;
 };
+
 function flush(deadline: Deadline) {
   scheduled = false;
   const jobs = [...queue].map((job) => [distance(job.node.current), job] as const).sort((a, b) => a[0] - b[0]);

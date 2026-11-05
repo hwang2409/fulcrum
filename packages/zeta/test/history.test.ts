@@ -11,6 +11,18 @@ const rows = [
   { id: "e5", role: "system", content: [{ type: "text", text: "agent finished" }], tool_result: null, notification: { notification_id: "n1", kind: "agent_completion" } },
 ];
 
+test("maps negotiated history image stubs to generic lazy images without storing bytes", () => {
+  const events = fromZetaHistory([
+    { id: "m1", role: "user", content: [{ type: "attachment", name: "shot.png", size: 12, handle: "opaque-message" }], tool_result: null },
+    { id: "t1", role: "tool_result", content: [], tool_result: { tool_call_id: "call", content: "", is_error: false, content_blocks: [{ type: "image", mimeType: "image/png", size: 9, width: 3, height: 2, data_omitted: true, handle: "opaque-tool" }] } },
+  ]);
+  expect(events).toMatchObject([
+    { type: "user_message", attachments: [{ type: "image", filename: "shot.png", size: 12, source: { kind: "lazy", key: "opaque-message" } }] },
+    { type: "tool_end", tool_result: { blocks: [{ type: "image", mediaType: "image/png", size: 9, width: 3, height: 2, source: { kind: "lazy", key: "opaque-tool" } }] } },
+  ]);
+  expect(JSON.stringify(events)).not.toContain("data:");
+});
+
 test("maps history rows into one ordered transcript", () => {
   const store = createRunStore((flush) => flush());
   for (const event of fromZetaHistory(rows)) store.dispatch(event);

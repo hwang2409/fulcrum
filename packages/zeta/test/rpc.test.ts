@@ -20,6 +20,109 @@ function fakeTransport() {
   };
 }
 
+async function hello(fake: ReturnType<typeof fakeTransport>, client: ReturnType<typeof createClient>) {
+  const ready = client.hello(["session_history_fidelity", "content_read"]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["session_history_fidelity", "content_read"] } } });
+  await ready;
+}
+
+test("content_read joins chunks, accepts a short final chunk, and sends no session id", async () => {
+  const fake = fakeTransport();
+  const client = createClient(fake.transport);
+  await hello(fake, client);
+  const reading = client.readContent("opaque");
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { handle: "opaque", media_type: "image/png", title: "x", size: 7, offset: 0, data: btoa("abc"), next_offset: 3, eof: false } });
+  await Promise.resolve();
+  fake.receive({ jsonrpc: "2.0", id: 3, result: { handle: "opaque", media_type: "image/png", title: "x", size: 7, offset: 3, data: btoa("def"), next_offset: 6, eof: false } });
+  await Promise.resolve();
+  fake.receive({ jsonrpc: "2.0", id: 4, result: { handle: "opaque", media_type: "image/png", title: "x", size: 7, offset: 6, data: btoa("g"), next_offset: 7, eof: true } });
+  const blob = await reading;
+  expect(await blob.text()).toBe("abcdefg");
+  expect(blob.type).toBe("image/png");
+  expect(fake.sent.slice(1).map((message) => message.params)).toEqual([
+    { handle: "opaque", offset: 0 }, { handle: "opaque", offset: 3 }, { handle: "opaque", offset: 6 },
+  ]);
+});
+
+test("content_read rejects declared sizes over the cap and is abortable", async () => {
+  const fake = fakeTransport();
+  const client = createClient(fake.transport);
+  await hello(fake, client);
+  const tooLarge = client.readContent("large", { maxBytes: 2 });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { handle: "large", media_type: "image/png", size: 3, offset: 0, data: "", next_offset: 0, eof: false } });
+  await expect(tooLarge).rejects.toMatchObject({ kind: "too_large" });
+  const controller = new AbortController();
+  const aborted = client.readContent("slow", { signal: controller.signal });
+  controller.abort();
+  await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+});
+
+test("content_not_found has a typed not-available error", async () => {
+  const fake = fakeTransport();
+  const client = createClient(fake.transport);
+  await hello(fake, client);
+  const reading = client.readContent("gone");
+  fake.receive({ jsonrpc: "2.0", id: 2, error: { code: -32012, message: "content not found", data: { code: "content_not_found" } } });
+  await expect(reading).rejects.toMatchObject({ name: "ContentReadError", kind: "not_available" });
+});
+
+const validChunk = { handle: "opaque", media_type: "image/png", title: "image", size: 1, offset: 0, data: btoa("a"), next_offset: 1, eof: true };
+
+test("content_read rejects malformed single-chunk replies", async () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["wrong handle", { handle: "other" }],
+    ["wrong offset", { offset: 1 }],
+    ["invalid title", { title: 7 }],
+    ["malformed base64", { data: "%%%" }],
+    ["inconsistent byte count", { next_offset: 0 }],
+    ["early eof", { size: 2 }],
+  ];
+  for (const [name, change] of cases) {
+    const fake = fakeTransport();
+    const client = createClient(fake.transport);
+    await hello(fake, client);
+    const reading = client.readContent("opaque");
+    fake.receive({ jsonrpc: "2.0", id: 2, result: { ...validChunk, ...change } });
+    await expect(reading, name).rejects.toMatchObject({ kind: "invalid_response" });
+  }
+});
+
+test("content_read rejects metadata changes and non-advancing chunks", async () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["size", { size: 3 }],
+    ["media type", { media_type: "image/jpeg" }],
+    ["title", { title: "other" }],
+    ["offset", { offset: 0 }],
+  ];
+  for (const [name, change] of cases) {
+    const fake = fakeTransport();
+    const client = createClient(fake.transport);
+    await hello(fake, client);
+    const reading = client.readContent("opaque");
+    fake.receive({ jsonrpc: "2.0", id: 2, result: { ...validChunk, size: 2, data: btoa("a"), next_offset: 1, eof: false } });
+    await Promise.resolve();
+    fake.receive({ jsonrpc: "2.0", id: 3, result: { ...validChunk, size: 2, offset: 1, data: btoa("b"), next_offset: 2, ...change } });
+    await expect(reading, name).rejects.toMatchObject({ kind: "invalid_response" });
+  }
+  const fake = fakeTransport();
+  const client = createClient(fake.transport);
+  await hello(fake, client);
+  const stalled = client.readContent("opaque");
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { ...validChunk, size: 1, data: "", next_offset: 0, eof: false } });
+  await expect(stalled).rejects.toMatchObject({ kind: "invalid_response" });
+});
+
+test("content_read maps protocol and request rpc errors", async () => {
+  for (const [code, kind] of [[-32601, "not_negotiated"], [-32602, "invalid_request"]] as const) {
+    const fake = fakeTransport();
+    const client = createClient(fake.transport);
+    await hello(fake, client);
+    const reading = client.readContent("opaque");
+    fake.receive({ jsonrpc: "2.0", id: 2, error: { code, message: "no" } });
+    await expect(reading).rejects.toMatchObject({ kind });
+  }
+});
+
 test("requests before hello are rejected", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);
