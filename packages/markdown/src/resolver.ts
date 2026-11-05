@@ -179,7 +179,8 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   const heading = /^#{1,6}[ \t]+/.exec(content);
   if (heading) content = content.slice(heading[0].length);
   const task = /^\[([ xX])\][ \t]+/.exec(content);
-  if (/^[ \t]*\[[^\]\n]+\]:/.test(content)) return EMPTY;
+  if (/^[ \t]*\[[^\]\n]+\]:/.test(content)
+    && (growing || parseReferenceDefinition(content) || /\]:[ \t]*$/.test(content))) return EMPTY;
   if (task) content = content.slice(task[0].length);
   else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
   if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
@@ -230,7 +231,7 @@ export class MarkdownLineResolver {
   private pendingLine: MutablePendingLine = freshPending();
   private pendingClassification?: { length: number; value: PendingClassification };
   private readonly referenceIndex = new Map<string, ReferenceDefinition>();
-  private pendingReferenceTitle?: { label: string };
+  private pendingReferenceTitle?: { label: string; update: boolean };
   private previousContainerOnly = false;
 
   get references(): ReadonlyMap<string, ReferenceDefinition> {
@@ -534,8 +535,10 @@ export class MarkdownLineResolver {
     if (this.pendingReferenceTitle) {
       const title = referenceTitle(content);
       if (title !== undefined) {
-        const reference = this.referenceIndex.get(this.pendingReferenceTitle.label)!;
-        reference.title = title;
+        if (this.pendingReferenceTitle.update) {
+          const reference = this.referenceIndex.get(this.pendingReferenceTitle.label)!;
+          reference.title = title;
+        }
         this.pendingReferenceTitle = undefined;
         this.openLeaf = undefined;
         return {
@@ -552,7 +555,7 @@ export class MarkdownLineResolver {
     if (definition) {
       const firstDefinition = !this.referenceIndex.has(definition.label);
       if (firstDefinition) this.referenceIndex.set(definition.label, definition.value);
-      if (firstDefinition && definition.canContinueTitle) this.pendingReferenceTitle = { label: definition.label };
+      if (definition.canContinueTitle) this.pendingReferenceTitle = { label: definition.label, update: firstDefinition };
       this.openLeaf = undefined;
       return {
         continued: false,

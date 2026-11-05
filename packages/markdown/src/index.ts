@@ -72,12 +72,10 @@ block.ruler.at("reference", (state: any, startLine: number, endLine: number, sil
   const candidate = state.src.slice(start);
   if (/^ {0,3}\[/.test(source) && source.trimEnd().endsWith("]:")) {
     const nextLine = candidate.slice(source.length).split("\n", 1)[0] ?? "";
-    if (nextLine && !parseReferenceDefinition(`${source.trimEnd()}\n${nextLine}`)) return false;
+    if (!nextLine || !parseReferenceDefinition(`${source.trimEnd()}\n${nextLine}`)) return false;
   }
-  if (/^ {0,3}\[/.test(source) && !parseReferenceDefinition(candidate)) {
-    const close = candidate.indexOf("]:");
-    if (close >= 0 && Array.from(candidate.slice(candidate.indexOf("[") + 1, close)).length > 999) return false;
-  }
+  const close = source.indexOf("]:");
+  if (/^ {0,3}\[/.test(source) && close >= 0 && source.slice(close + 2).trim() && !parseReferenceDefinition(source)) return false;
   return stockReferenceRule(state, startLine, endLine, silent);
 });
 
@@ -1005,6 +1003,8 @@ export function createStreamingDocument(): StreamingDocument {
     }
     const classified = streaming && !record.source.includes("\n") ? resolver.classifyCommitted(record.source) : undefined;
     let inlineSource = classified?.kind === "paragraph" ? classified.content : record.source;
+    if (classified?.kind === "paragraph" && /^ {0,3}\[[^\]\n]+\]:/.test(inlineSource) && !parseReferenceDefinition(inlineSource))
+      inlineSource = inlineSource.replace("[", "\\[");
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment())
