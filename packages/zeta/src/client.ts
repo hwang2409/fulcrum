@@ -303,8 +303,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const stampIntent = (event: RunEvent): RunEvent => {
     if (event.type !== "user_message") return event;
     const deliveryIds = negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_delivery_id");
-    if (deliveryIds && event.delivery_id === undefined) return event;
-    const owner = deliveryIds
+    const owner = deliveryIds && event.delivery_id !== undefined
       ? [...pending.values()].find((request) => request.deliveryId === event.delivery_id)
       : [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text);
     if (!owner) return event;

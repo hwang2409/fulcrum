@@ -532,6 +532,19 @@ test("negotiated delivery ids match echoes by id, not text", async () => {
   expect(users.map(({ id }) => id)).toEqual(["user:intent:second", "user:delivery:unknown", "user:intent:first"]);
 });
 
+test("an id-less send_images echo uses text intent fallback without duplicating delivery", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello(["delivery_id", "user_message_event", "user_message_delivery_id"]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id"] } } });
+  await hello;
+  const sending = client.request("send_images", { text: "look", images: [], delivery_id: "image-delivery" }, { intent: "image-intent" });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "look", mode: "send", attachments: [{ name: "x.png" }] } });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  await sending;
+  expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:image-intent"]);
+});
+
 test("an echoed user_message gets the intent of the pending request with the same text, never another one", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);

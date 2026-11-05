@@ -313,15 +313,14 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       case "usage": {
         // zeta keeps the provider's usage details (a service tier, nested cache counts) beside the token counts: the counts
         // are the usage, the details are dropped.
-        const input = wire.usage?.constructor === Object ? wire.usage as Record<string, unknown> : {};
+        const input = wire.usage !== null && typeof wire.usage === "object" && !Array.isArray(wire.usage) ? wire.usage as Record<string, unknown> : {};
         const usage = Object.fromEntries(Object.entries(input).filter((entry): entry is [string, number] => finite(entry[1]) && entry[1] >= 0));
         return [{ type: "usage", usage }];
       }
       case "user_message": {
-        if (wire.attachments !== undefined && !Array.isArray(wire.attachments)) throw new Error("attachments must be an array");
         // A live echo names each image zeta stored ({ name, mime_type, size }) without its bytes: a file row, as in history.
-        const attachments = (wire.attachments ?? []).flatMap((item: any) => typeof item?.name === "string" ? [{ type: "file", filename: item.name, ...(typeof item.mime_type === "string" && { mediaType: item.mime_type }), ...(finite(item.size) && { size: item.size }) }] : []);
-        return [{ type: "user_message", text: string(wire.text, "text"), mode: string(wire.mode, "mode"), ...(wire.attachments === undefined ? {} : { attachments }), ...(wire.delivery_id === undefined ? {} : { delivery_id: string(wire.delivery_id, "delivery_id") }) }];
+        const attachments = Array.isArray(wire.attachments) ? wire.attachments.flatMap((item: any) => typeof item?.name === "string" ? [{ type: "file", filename: item.name, ...(typeof item.mime_type === "string" && { mediaType: item.mime_type }), ...(finite(item.size) && { size: item.size }) }] : []) : undefined;
+        return [{ type: "user_message", text: string(wire.text, "text"), mode: string(wire.mode, "mode"), ...(attachments === undefined ? {} : { attachments }), ...(wire.delivery_id === undefined ? {} : { delivery_id: string(wire.delivery_id, "delivery_id") }) }];
       }
       case "error": {
         const input = object(wire.error, "error");
@@ -357,7 +356,8 @@ const text = (content: unknown[]) =>
 
 const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
   const row = object(value, "history row");
-  if (row.event === "approval_request" || row.event === "approval_end" || row.event === "usage") {
+  if (row.event === "usage") return fromZetaEvent(row);
+  if (row.event === "approval_request" || row.event === "approval_end") {
     // History empties tool_use arguments, but an approval row keeps them: the call's result row then gets its full view.
     let call: ToolCall | undefined;
     try { call = tool(row.tool_call); } catch { /* no usable call: the row still maps */ }
