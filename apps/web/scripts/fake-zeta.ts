@@ -1,6 +1,6 @@
 // A scripted `zeta serve --ws` for the browser gate and for trying the app without a real zeta. It speaks the subset
 // of protocol 1.2 the app uses (hello, list_sessions, new_session, status, resume, session_history, approve, deny,
-// send, steer, abort, with the delivery_id and user_message_event features), checks the
+// send, steer, abort, with delivery and session_host_commands features), checks the
 // token and Origin like the real upgrade, and writes the discovery file under its own ZETA_HOME, never ~/.zeta.
 //
 // Manual use: `bun scripts/fake-zeta.ts`, then start vite with the printed ZETA_HOME.
@@ -8,6 +8,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
+import { validateHostCommands } from "@fulcrum/zeta";
 
 type Json = Record<string, unknown>;
 export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog" | "broken-session";
@@ -245,6 +246,9 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   const sockets = new Set<ServerWebSocket<unknown>>();
   let controller: ServerWebSocket<unknown> | null = null;
   const reconnectControllers = new WeakSet<object>();
+  const negotiatedFeatures = new WeakMap<object, Set<string>>();
+  const hostBoundSessions = new Set<string>();
+  const hostBindingRequired = new Set<string>();
   let approvalExpiry: ReturnType<typeof setTimeout> | null = null;
   const approvalCall = { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } };
   const expireApproval = () => {
@@ -290,6 +294,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         sockets.delete(socket);
         if (socket !== controller) return;
         controller = null;
+        if (active && hostBoundSessions.has(active)) hostBindingRequired.add(active);
         if (!decide || approvalAborted) return;
         if (approvalReconnect && reconnectControllers.has(socket as object)) {
           if (approvalExpiry) clearTimeout(approvalExpiry);
@@ -322,7 +327,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
           controller = socket;
-          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect)) ?? [];
+          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect)) ?? [];
+          negotiatedFeatures.set(socket as object, new Set(features));
           const reconnect = features.includes("approval_reconnect");
           if (reconnect) reconnectControllers.add(socket as object);
           reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features } } });
@@ -338,11 +344,18 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
+          if (Object.hasOwn(params, "host_commands")) {
+            if (!negotiatedFeatures.get(socket as object)?.has("session_host_commands")) return reply({ error: { code: -32602, message: "host_commands requires session_host_commands" } });
+            try { validateHostCommands(params.host_commands); } catch { return reply({ error: { code: -32602, message: "host_commands is invalid" } }); }
+          }
           if (running || rejectCreate) return reply({ error: { code: -32004, message: "a turn is already running" } });
           const created = meta(`s-new-${sessions.length}`, 0, { created_at: at(0), cwd: "/Users/dev/me/fun/fulcrum", retained_tail: 8, compaction_budget: 262144, override_audit: [], context_files: [], skill_catalog: [], agent_catalog: [], plan_mode: false, project_id: null, tool_allow: null, tool_deny: [] });
           sessions.unshift(created);
           histories[created.session_id] = [];
           active = created.session_id;
+          if (Array.isArray(params.host_commands) && params.host_commands.length) hostBoundSessions.add(active);
+          else hostBoundSessions.delete(active);
+          hostBindingRequired.delete(active);
           return reply({ result: { session: created } });
         }
         if (method === "list_sessions") {
@@ -360,9 +373,16 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           return reply({ result: { session: active ? sessions.find((session) => session.session_id === active) ?? null : null, state: running ? (decide ? "tool" : "running") : "idle", explicit_finish: false, pending_approvals: pending, usage: {}, compaction_markers: 0 } });
         }
         if (method === "resume") {
+          if (Object.hasOwn(params, "host_commands")) {
+            if (!negotiatedFeatures.get(socket as object)?.has("session_host_commands")) return reply({ error: { code: -32602, message: "host_commands requires session_host_commands" } });
+            try { validateHostCommands(params.host_commands); } catch { return reply({ error: { code: -32602, message: "host_commands is invalid" } }); }
+          }
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
           if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = String(params.session_id);
+          if (Array.isArray(params.host_commands) && params.host_commands.length) hostBoundSessions.add(active);
+          else hostBoundSessions.delete(active);
+          hostBindingRequired.delete(active);
           delayedOpen = false;
           return reply({ result: { session: sessions.find((session) => session.session_id === active) } });
         }
@@ -422,6 +442,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           approvalExpiry = null;
           return decide(method);
         }
+        if ((method === "send" || method === "send_images") && active && hostBindingRequired.has(active)) return reply({ error: { code: -32003, message: "host binding required", data: { code: "host_binding_required" } } });
         const handled = composer.handle(method, params, active, send);
         if (handled) return reply(handled);
         reply({ error: { code: -32601, message: `method not found: ${method}` } });

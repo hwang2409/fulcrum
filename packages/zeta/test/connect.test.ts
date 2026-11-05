@@ -43,6 +43,30 @@ function error(socket: FakeWebSocket, code: number) {
   await expect(connecting).resolves.toHaveProperty("request");
 });
 
+test("connectZeta opts into host commands only when a supplier is present", async () => {
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  const supplied: Array<string | null> = [];
+  const connecting = connectZeta({
+    url: "ws://127.0.0.1:8765/",
+    token: "secret",
+    hostCommands(sessionId) {
+      supplied.push(sessionId);
+      return [{ name: "gamma-render", executable: "/opt/gamma/render", summary: "render a file", environment: {} }];
+    },
+  });
+  const socket = await open();
+  expect(JSON.parse(socket.sent[0]).params.features).toEqual(["session_host_commands"]);
+  reply(socket, { protocol_version: "1.2", capabilities: { features: ["session_host_commands"] } });
+  const client = await connecting;
+  const creating = client.request("new_session");
+  await Promise.resolve();
+  const request = JSON.parse(socket.sent[1]);
+  expect(request).toMatchObject({ method: "new_session", params: { host_commands: [{ name: "gamma-render" }] } });
+  socket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { session: { session_id: "s-one" } } }) });
+  await creating;
+  expect(supplied).toEqual([null]);
+});
+
 test("failed upgrade rejects with connect_failed without exposing the token", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "secret" });

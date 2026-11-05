@@ -1,4 +1,5 @@
 import { createClient } from "./client.js";
+import type { HostCommandSupplier } from "./host-commands.js";
 import { webSocketTransport } from "./transport.js";
 
 export type ZetaErrorKind =
@@ -42,9 +43,11 @@ export interface ConnectZetaOptions {
   url: string;
   token: string;
   features?: string[];
+  /** Enables host commands and supplies a fresh binding for every new session or resume. */
+  hostCommands?: HostCommandSupplier | null;
 }
 
-export function connectZeta({ url, token, features }: ConnectZetaOptions) {
+export function connectZeta({ url, token, features, hostCommands }: ConnectZetaOptions) {
   let websocketUrl: string;
   try {
     const parsed = new URL(url);
@@ -63,6 +66,7 @@ export function connectZeta({ url, token, features }: ConnectZetaOptions) {
         undefined,
         (handshaken, code) =>
           new ZetaError(handshaken ? "closed" : "connect_failed", code),
+        { hostCommands },
       );
       return client.hello(features).catch((error: unknown) => {
         const kind =

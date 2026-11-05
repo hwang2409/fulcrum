@@ -2,6 +2,13 @@ import { createRunStore, type RunEvent, type Scheduler, type RunState } from "@f
 import { fromZetaEvent } from "./adapter.js";
 import type { HelloResult, RpcError, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
+import {
+  HostCommandError,
+  isHostBindingRequired,
+  redactHostCommandFailure,
+  validateHostCommands,
+  type HostCommandSupplier,
+} from "./host-commands.js";
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -13,7 +20,13 @@ export interface RequestOptions {
   intent?: string;
 }
 /** maxSessions limits only event-created stores; held view stores can exceed it. */
-export interface ClientOptions { maxPendingRequests?: number; maxFrameSize?: number; maxSessions?: number }
+export interface ClientOptions {
+  maxPendingRequests?: number;
+  maxFrameSize?: number;
+  maxSessions?: number;
+  /** Enables Zeta session host commands and supplies a fresh binding for each session attachment. */
+  hostCommands?: HostCommandSupplier | null;
+}
 export type SessionStore = ReturnType<typeof createRunStore>;
 export interface SessionLease {
   readonly store: SessionStore;
@@ -29,6 +42,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   let handshaken = false;
   let negotiatedProtocol = "1.0";
   let negotiatedFeatures: string[] = [];
+  let activeSession: string | null = null;
+  let warnedHostCommandsUnavailable = false;
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
   const maxSessions = options.maxSessions ?? 100;
@@ -271,7 +286,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   });
   /** Calls `listener` once when the transport closes, with the same error that rejected pending requests. */
   const onClose = (listener: (error: unknown) => void) => { closeListeners.add(listener); return () => { closeListeners.delete(listener); }; };
-  const request = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
+  const rawRequest = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
     if (!handshaken && method !== "hello") return Promise.reject(new Error("hello required"));
     if (pending.size >= maxPending) return Promise.reject(Object.assign(new Error("too many pending requests"), { code: "pending_limit" }));
     if (requestOptions.signal?.aborted) return Promise.reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
@@ -286,13 +301,62 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       catch (error) { settle(id, (entry) => entry.reject(error)); }
     });
   };
+  const hostCommandsEnabled = () => options.hostCommands !== undefined && options.hostCommands !== null && negotiatedFeatures.includes("session_host_commands");
+  const attach = async (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
+    const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
+    let commands;
+    try {
+      commands = validateHostCommands(await options.hostCommands!(sessionId));
+    } catch (error) {
+      if (error instanceof HostCommandError) throw error;
+      throw redactHostCommandFailure("host_command_supplier_failed", error);
+    }
+    let result: unknown;
+    try {
+      result = await rawRequest(method, { ...params, host_commands: commands }, requestOptions);
+    } catch (error) {
+      throw redactHostCommandFailure("host_command_request_failed", error);
+    }
+    const attached = typeof result === "object" && result !== null && typeof (result as { session?: unknown }).session === "object" && (result as { session: { session_id?: unknown } }).session !== null
+      ? (result as { session: { session_id?: unknown } }).session.session_id
+      : undefined;
+    activeSession = typeof attached === "string" ? attached : sessionId;
+    return result;
+  };
+  const request = async (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
+    if (hostCommandsEnabled() && (method === "new_session" || method === "resume")) return attach(method, params, requestOptions);
+    try {
+      return await rawRequest(method, params, requestOptions);
+    } catch (error) {
+      if (!hostCommandsEnabled() || (method !== "send" && method !== "send_images") || !isHostBindingRequired(error)) throw error;
+      if (!activeSession || typeof params.delivery_id !== "string") throw redactHostCommandFailure("host_binding_recovery_failed", error);
+      try {
+        await attach("resume", { session_id: activeSession }, requestOptions);
+      } catch (recoveryError) {
+        if (recoveryError instanceof HostCommandError) throw recoveryError;
+        throw redactHostCommandFailure("host_binding_recovery_failed", recoveryError);
+      }
+      try {
+        return await rawRequest(method, params, requestOptions);
+      } catch (retryError) {
+        throw redactHostCommandFailure("host_binding_retry_failed", retryError);
+      }
+    }
+  };
   const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
-    const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", ...(requestedFeatures ? { features: requestedFeatures } : {}) }) as Promise<HelloResult>;
+    const features = options.hostCommands
+      ? [...new Set([...(requestedFeatures ?? []), "session_host_commands"])]
+      : requestedFeatures;
+    const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", ...(features ? { features } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => {
       handshaken = true;
       negotiatedProtocol = typeof result.protocol_version === "string" ? result.protocol_version : "1.0";
       const features = result.capabilities?.features;
       negotiatedFeatures = negotiatedProtocol !== "1.0" && Array.isArray(features) && features.every((feature): feature is string => typeof feature === "string") ? features : [];
+      if (options.hostCommands && !negotiatedFeatures.includes("session_host_commands") && !warnedHostCommandsUnavailable) {
+        warnedHostCommandsUnavailable = true;
+        console.warn("session_host_commands was requested but is not offered; host commands are disabled");
+      }
       return result;
     });
   };
@@ -303,5 +367,5 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
-export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }
+export function connect(transport: Transport, scheduler?: Scheduler, options?: ClientOptions) { return createClient(transport, scheduler, undefined, options); }
 export type { RunState };
