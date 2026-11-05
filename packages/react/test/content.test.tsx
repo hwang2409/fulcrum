@@ -295,41 +295,152 @@ test("a missing lazy image says it is no longer available and can retry", async 
   }
 });
 
-test("lazy image object urls use an lru and revoke on eviction", async () => {
+type Observed = { callback: IntersectionObserverCallback; target?: Element };
+const installObservers = (seen: Observed[]) => class {
+  constructor(callback: IntersectionObserverCallback) { seen.push({ callback }); }
+  observe(target: Element) { seen.at(-1)!.target = target; }
+  disconnect() {}
+  unobserve() {}
+  takeRecords() { return []; }
+  root = null; rootMargin = "400px 0px"; thresholds = [0];
+} as unknown as typeof IntersectionObserver;
+const intersect = (observed: Observed, value: boolean) => observed.callback([
+  { isIntersecting: value, target: observed.target! } as IntersectionObserverEntry,
+], {} as IntersectionObserver);
+const deferredBlob = () => {
+  let resolve!: (blob: Blob) => void;
+  let reject!: (error: unknown) => void;
+  return { promise: new Promise<Blob>((yes, no) => { resolve = yes; reject = no; }), resolve, reject };
+};
+
+test("1,000 mounted images and an open full view keep valid urls, then released urls stay bounded", async () => {
   const savedObserver = globalThis.IntersectionObserver;
   const savedCreate = URL.createObjectURL;
   const savedRevoke = URL.revokeObjectURL;
-  const callbacks: IntersectionObserverCallback[] = [];
+  const observed: Observed[] = [];
   const revoked: string[] = [];
   let next = 0;
-  globalThis.IntersectionObserver = class {
-    constructor(callback: IntersectionObserverCallback) { callbacks.push(callback); }
-    observe(target: Element) { this.target = target; }
-    target?: Element;
-    disconnect() {}
-    unobserve() {}
-    takeRecords() { return []; }
-    root = null; rootMargin = "400px 0px"; thresholds = [0];
-  } as unknown as typeof IntersectionObserver;
+  globalThis.IntersectionObserver = installObservers(observed);
   URL.createObjectURL = () => `blob:${next++}`;
   URL.revokeObjectURL = (url) => { revoked.push(url); };
   try {
-    render([commit(Array.from({ length: 33 }, (_, index) => ({ type: "image", source: { kind: "lazy", key: `image-${index}` } })))], {
-      loadMedia: async () => new Blob(["x"]),
-    });
-    const images = [...container.querySelectorAll('[data-part="image"]')];
+    const blocks = Array.from({ length: 1_000 }, (_, index) => ({ type: "image", source: { kind: "lazy" as const, key: `image-${index}` } }));
+    const { send } = render([commit(blocks)], { loadMedia: async () => new Blob(["x"]) });
     await act(async () => {
-      callbacks.forEach((callback, index) => callback([{ isIntersecting: true, target: images[index]! } as IntersectionObserverEntry], {} as IntersectionObserver));
+      observed.forEach((entry) => intersect(entry, true));
       await Promise.resolve(); await Promise.resolve();
     });
-    expect(revoked).toContain("blob:0");
-    act(() => root?.unmount());
-    root = undefined;
-    await Promise.resolve();
-    expect(new Set(revoked).size).toBe(33);
+    act(() => q('[data-part="image-open"]').click());
+    expect(q('[data-part="image-dialog"] img').getAttribute("src")).toBe("blob:0");
+    expect(revoked).toEqual([]);
+    send(commit(blocks.slice(0, 1)));
+    await act(async () => { await Promise.resolve(); });
+    expect(revoked).not.toContain("blob:0");
+    expect(new Set(revoked).size).toBe(967);
   } finally {
     globalThis.IntersectionObserver = savedObserver;
     URL.createObjectURL = savedCreate;
     URL.revokeObjectURL = savedRevoke;
+  }
+});
+
+test("a pending image read aborts after it leaves the preload margin", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  const observed: Observed[] = [];
+  let aborted = false;
+  globalThis.IntersectionObserver = installObservers(observed);
+  try {
+    render([commit([{ type: "image", source: { kind: "lazy", key: "pending" } }])], {
+      loadMedia: (_block, signal) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => {
+        aborted = true;
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      }, { once: true })),
+    });
+    await act(async () => { intersect(observed[0]!, true); await Promise.resolve(); });
+    await act(async () => { intersect(observed[0]!, false); await Promise.resolve(); });
+    expect(aborted).toBe(true);
+    expect(q('[data-part="image"]').dataset.state).toBe("idle");
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+  }
+});
+
+test("one subscriber can unmount while another keeps the shared read alive", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const pending = deferredBlob();
+  let aborted = false;
+  const { store } = setup([
+    { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "shared" } }] } },
+    { type: "message_commit", message_id: "b", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "shared" } }] } },
+  ]);
+  const loader: LoadMedia = (_block, signal) => {
+    signal.addEventListener("abort", () => { aborted = true; pending.reject(Object.assign(new Error("aborted"), { name: "AbortError" })); }, { once: true });
+    return pending.promise;
+  };
+  try {
+    mount(<RunProvider store={store} loadMedia={loader}><Message key="a" id="message:a" /></RunProvider>);
+    await act(async () => { await Promise.resolve(); });
+    act(() => root!.render(<RunProvider store={store} loadMedia={loader}><Message key="a" id="message:a" /><Message key="b" id="message:b" /></RunProvider>));
+    await act(async () => { await Promise.resolve(); });
+    act(() => root!.render(<RunProvider store={store} loadMedia={loader}><Message key="b" id="message:b" /></RunProvider>));
+    await act(async () => { pending.resolve(new Blob(["ok"])); await Promise.resolve(); await Promise.resolve(); });
+    expect(aborted).toBe(false);
+    expect(q("img").getAttribute("src")).toStartWith("blob:");
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+  }
+});
+
+test("a late subscriber joins the in-flight read after the first subscriber leaves", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  const observed: Observed[] = [];
+  const pending = deferredBlob();
+  let loads = 0;
+  globalThis.IntersectionObserver = installObservers(observed);
+  try {
+    const { send } = render([commit([{ type: "image", source: { kind: "lazy", key: "same" } }])], {
+      loadMedia: () => { loads++; return pending.promise; },
+    });
+    await act(async () => { intersect(observed[0]!, true); await Promise.resolve(); });
+    send(commit([
+      { type: "image", source: { kind: "lazy", key: "same" } },
+      { type: "image", source: { kind: "lazy", key: "same" } },
+    ]));
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { intersect(observed[1]!, true); await Promise.resolve(); });
+    await act(async () => { intersect(observed[0]!, false); await Promise.resolve(); });
+    pending.resolve(new Blob(["ok"]));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(loads).toBe(1);
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+  }
+});
+
+test("changing loaders aborts the old generation and does not reuse its blob", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const first = deferredBlob();
+  let oldAborted = false;
+  let loads = 0;
+  const one: LoadMedia = (_block, signal) => {
+    loads++;
+    signal.addEventListener("abort", () => { oldAborted = true; first.reject(Object.assign(new Error("aborted"), { name: "AbortError" })); }, { once: true });
+    return first.promise;
+  };
+  const two: LoadMedia = async () => { loads++; return new Blob(["new"]); };
+  const { store } = setup([commit([{ type: "image", source: { kind: "lazy", key: "opaque" } }])]);
+  try {
+    mount(<RunProvider store={store} loadMedia={one}><Message id="message:m" /></RunProvider>);
+    await act(async () => { await Promise.resolve(); });
+    act(() => root!.render(<RunProvider store={store} loadMedia={two}><Message id="message:m" /></RunProvider>));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(oldAborted).toBe(true);
+    expect(loads).toBe(2);
+    expect(q("img")).not.toBeNull();
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
   }
 });

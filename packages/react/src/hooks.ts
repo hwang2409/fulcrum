@@ -1,16 +1,20 @@
 import {
   createContext,
   createElement,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { createRunStore, ImageContentBlock, RunItem, RunState } from "@fulcrum/core";
+import type { createRunStore, LazyContentBlock, RunItem, RunState } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { HighlightContext } from "./highlight.js";
+import { MediaStore, type LoadMedia, type MediaLease, type MediaState } from "./media-store.js";
+export type { LoadMedia } from "./media-store.js";
 
 export type RunStore = Pick<
   ReturnType<typeof createRunStore>,
@@ -24,44 +28,46 @@ export type RunStore = Pick<
 
 const StoreContext = createContext<RunStore | null>(null);
 const RetryContext = createContext<(() => void) | undefined>(undefined);
-export type LoadMedia = (block: ImageContentBlock, signal: AbortSignal) => Promise<Blob>;
-const MEDIA_CACHE_SIZE = 32;
-class MediaCache {
-  private entries = new Map<string, Promise<string>>();
-  constructor(private readonly load: LoadMedia) {}
-  get(block: ImageContentBlock, signal: AbortSignal) {
-    const key = block.source?.key;
-    if (!key) return Promise.reject(new Error("image has no lazy source"));
-    const cached = this.entries.get(key);
-    if (cached) { this.entries.delete(key); this.entries.set(key, cached); return cached; }
-    const pending = this.load(block, signal).then((blob) => URL.createObjectURL(blob));
-    this.entries.set(key, pending);
-    pending.catch(() => { if (this.entries.get(key) === pending) this.entries.delete(key); });
-    while (this.entries.size > MEDIA_CACHE_SIZE) {
-      const oldest = this.entries.entries().next().value as [string, Promise<string>] | undefined;
-      if (!oldest) break;
-      this.entries.delete(oldest[0]);
-      void oldest[1].then(URL.revokeObjectURL, () => {});
-    }
-    return pending;
-  }
-  dispose() {
-    for (const value of this.entries.values()) void value.then(URL.revokeObjectURL, () => {});
-    this.entries.clear();
-  }
-}
-const MediaContext = createContext<MediaCache | undefined>(undefined);
+const MediaContext = createContext<MediaStore | undefined>(undefined);
 
 /** `highlight` colors tool content; `onRetry` retries history; `loadMedia` resolves generic lazy image blocks. */
 export function RunProvider({ store, highlight, onRetry, loadMedia, children }: { store: RunStore; highlight?: Highlight; onRetry?: () => void; loadMedia?: LoadMedia; children?: ReactNode }) {
-  const media = useMemo(() => loadMedia ? new MediaCache(loadMedia) : undefined, [loadMedia]);
+  const media = useMemo(() => loadMedia ? new MediaStore(loadMedia) : undefined, [loadMedia]);
   useEffect(() => () => media?.dispose(), [media]);
   return createElement(StoreContext.Provider, { value: store },
     createElement(RetryContext.Provider, { value: onRetry },
       createElement(MediaContext.Provider, { value: media },
         createElement(HighlightContext.Provider, { value: highlight }, children))));
 }
-export const useMediaCache = () => useContext(MediaContext);
+const idleMedia = { status: "idle" } as const;
+export function useMedia(block: LazyContentBlock | undefined, active: boolean) {
+  const store = useContext(MediaContext);
+  const lease = useRef<MediaLease>(undefined);
+  const current = useRef<MediaState | typeof idleMedia>(idleMedia);
+  const [state, setState] = useState<MediaState | typeof idleMedia>(idleMedia);
+  const [attempt, setAttempt] = useState(0);
+  const show = useCallback((next: MediaState | typeof idleMedia) => { current.current = next; setState(next); }, []);
+  const release = useCallback(() => { lease.current?.release(); lease.current = undefined; }, []);
+  useEffect(() => {
+    release();
+    show(idleMedia);
+    return release;
+  }, [store, block?.source.key, attempt, release, show]);
+  useEffect(() => {
+    if (!store || !block || !active) {
+      if (current.current.status === "loading") { release(); show(idleMedia); }
+      return;
+    }
+    if (lease.current) return;
+    const next = store.acquire(block.source.key, block);
+    lease.current = next;
+    const update = () => show(next.state);
+    update();
+    return next.subscribe(update);
+  }, [active, block, store, attempt, release, show]);
+  const retry = useCallback(() => { release(); show(idleMedia); setAttempt((value) => value + 1); }, [release, show]);
+  return { state, retry, available: Boolean(store) };
+}
 
 export const useRunStore = () => {
   const store = useContext(StoreContext);

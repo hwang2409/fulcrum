@@ -37,7 +37,8 @@ const contentChunk = (value: unknown): ContentChunk => {
       typeof row.size !== "number" || !Number.isSafeInteger(row.size) || row.size < 0 ||
       typeof row.offset !== "number" || !Number.isSafeInteger(row.offset) || row.offset < 0 ||
       typeof row.next_offset !== "number" || !Number.isSafeInteger(row.next_offset) || row.next_offset < row.offset ||
-      typeof row.data !== "string" || typeof row.eof !== "boolean")
+      typeof row.data !== "string" || typeof row.eof !== "boolean" ||
+      (row.title !== undefined && typeof row.title !== "string"))
     throw new ContentReadError("invalid_response", "content_read returned an invalid response");
   return row as ContentChunk;
 };
@@ -50,6 +51,31 @@ const decodeBase64 = (value: string) => {
   } catch {
     throw new ContentReadError("invalid_response", "content_read returned invalid base64");
   }
+};
+type ContentAssembly = { offset: number; size?: number; mediaType?: string; title?: string; chunks: Uint8Array<ArrayBuffer>[] };
+const validatedChunk = (value: unknown, handle: string, state: ContentAssembly, cap: number) => {
+  const chunk = contentChunk(value);
+  if (chunk.handle !== handle || chunk.offset !== state.offset ||
+      (state.size !== undefined && chunk.size !== state.size) ||
+      (state.mediaType !== undefined && chunk.media_type !== state.mediaType) ||
+      (state.size !== undefined && chunk.title !== state.title))
+    throw new ContentReadError("invalid_response", "content_read response changed between chunks");
+  state.size ??= chunk.size;
+  state.mediaType ??= chunk.media_type;
+  state.title ??= chunk.title;
+  if (state.size > cap) throw new ContentReadError("too_large", `content is larger than ${cap} bytes`);
+  const bytes = decodeBase64(chunk.data);
+  if (bytes.byteLength !== chunk.next_offset - state.offset || chunk.next_offset > state.size || state.offset + bytes.byteLength > cap)
+    throw new ContentReadError("invalid_response", "content_read returned inconsistent offsets");
+  return { chunk, bytes };
+};
+const contentReadError = (error: unknown): never => {
+  if (error instanceof ContentReadError || (error as { name?: unknown }).name === "AbortError") throw error;
+  const rpc = error as { code?: unknown; data?: { code?: unknown } };
+  if (rpc.code === -32012 || rpc.data?.code === "content_not_found") throw new ContentReadError("not_available", "content is no longer available");
+  if (rpc.code === -32601) throw new ContentReadError("not_negotiated", "content_read was not negotiated");
+  if (rpc.code === -32602 || rpc.data?.code === "invalid_content_read") throw new ContentReadError("invalid_request", "content_read request was invalid");
+  throw error;
 };
 
 export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
@@ -331,37 +357,20 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const readContent = async (handle: string, options: { signal?: AbortSignal; maxBytes?: number } = {}) => {
     const cap = Math.min(options.maxBytes ?? MAX_CONTENT_BYTES, MAX_CONTENT_BYTES);
     if (!Number.isSafeInteger(cap) || cap < 0) throw new ContentReadError("too_large", "content size limit is invalid");
-    let offset = 0;
-    let mediaType: string | undefined;
-    let size: number | undefined;
-    const chunks: Uint8Array<ArrayBuffer>[] = [];
+    const state: ContentAssembly = { offset: 0, chunks: [] };
     try {
       while (true) {
-        const chunk = contentChunk(await request("content_read", { handle, offset }, { signal: options.signal }));
-        if (chunk.handle !== handle || chunk.offset !== offset || (size !== undefined && chunk.size !== size) || (mediaType !== undefined && chunk.media_type !== mediaType))
-          throw new ContentReadError("invalid_response", "content_read response changed between chunks");
-        size ??= chunk.size;
-        mediaType ??= chunk.media_type;
-        if (size > cap) throw new ContentReadError("too_large", `content is larger than ${cap} bytes`);
-        const bytes = decodeBase64(chunk.data);
-        if (bytes.byteLength !== chunk.next_offset - offset || chunk.next_offset > size || offset + bytes.byteLength > cap)
-          throw new ContentReadError("invalid_response", "content_read returned inconsistent offsets");
-        chunks.push(bytes);
+        const value = await request("content_read", { handle, offset: state.offset }, { signal: options.signal });
+        const { chunk, bytes } = validatedChunk(value, handle, state, cap);
+        state.chunks.push(bytes);
         if (chunk.eof) {
-          if (chunk.next_offset !== size) throw new ContentReadError("invalid_response", "content_read ended before its declared size");
-          return new Blob(chunks, { type: mediaType });
+          if (chunk.next_offset !== state.size) throw new ContentReadError("invalid_response", "content_read ended before its declared size");
+          return new Blob(state.chunks, { type: state.mediaType });
         }
-        if (chunk.next_offset <= offset) throw new ContentReadError("invalid_response", "content_read did not advance");
-        offset = chunk.next_offset;
+        if (chunk.next_offset <= state.offset) throw new ContentReadError("invalid_response", "content_read did not advance");
+        state.offset = chunk.next_offset;
       }
-    } catch (error) {
-      if (error instanceof ContentReadError || (error as { name?: unknown }).name === "AbortError") throw error;
-      const rpc = error as { code?: unknown; data?: { code?: unknown } };
-      if (rpc.code === -32012 || rpc.data?.code === "content_not_found") throw new ContentReadError("not_available", "content is no longer available");
-      if (rpc.code === -32601) throw new ContentReadError("not_negotiated", "content_read was not negotiated");
-      if (rpc.code === -32602 || rpc.data?.code === "invalid_content_read") throw new ContentReadError("invalid_request", "content_read request was invalid");
-      throw error;
-    }
+    } catch (error) { return contentReadError(error); }
   };
   return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
 }

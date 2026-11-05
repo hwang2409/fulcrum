@@ -66,6 +66,63 @@ test("content_not_found has a typed not-available error", async () => {
   await expect(reading).rejects.toMatchObject({ name: "ContentReadError", kind: "not_available" });
 });
 
+const validChunk = { handle: "opaque", media_type: "image/png", title: "image", size: 1, offset: 0, data: btoa("a"), next_offset: 1, eof: true };
+
+test("content_read rejects malformed single-chunk replies", async () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["wrong handle", { handle: "other" }],
+    ["wrong offset", { offset: 1 }],
+    ["invalid title", { title: 7 }],
+    ["malformed base64", { data: "%%%" }],
+    ["inconsistent byte count", { next_offset: 0 }],
+    ["early eof", { size: 2 }],
+  ];
+  for (const [name, change] of cases) {
+    const fake = fakeTransport();
+    const client = createClient(fake.transport);
+    await hello(fake, client);
+    const reading = client.readContent("opaque");
+    fake.receive({ jsonrpc: "2.0", id: 2, result: { ...validChunk, ...change } });
+    await expect(reading, name).rejects.toMatchObject({ kind: "invalid_response" });
+  }
+});
+
+test("content_read rejects metadata changes and non-advancing chunks", async () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["size", { size: 3 }],
+    ["media type", { media_type: "image/jpeg" }],
+    ["title", { title: "other" }],
+    ["offset", { offset: 0 }],
+  ];
+  for (const [name, change] of cases) {
+    const fake = fakeTransport();
+    const client = createClient(fake.transport);
+    await hello(fake, client);
+    const reading = client.readContent("opaque");
+    fake.receive({ jsonrpc: "2.0", id: 2, result: { ...validChunk, size: 2, data: btoa("a"), next_offset: 1, eof: false } });
+    await Promise.resolve();
+    fake.receive({ jsonrpc: "2.0", id: 3, result: { ...validChunk, size: 2, offset: 1, data: btoa("b"), next_offset: 2, ...change } });
+    await expect(reading, name).rejects.toMatchObject({ kind: "invalid_response" });
+  }
+  const fake = fakeTransport();
+  const client = createClient(fake.transport);
+  await hello(fake, client);
+  const stalled = client.readContent("opaque");
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { ...validChunk, size: 1, data: "", next_offset: 0, eof: false } });
+  await expect(stalled).rejects.toMatchObject({ kind: "invalid_response" });
+});
+
+test("content_read maps protocol and request rpc errors", async () => {
+  for (const [code, kind] of [[-32601, "not_negotiated"], [-32602, "invalid_request"]] as const) {
+    const fake = fakeTransport();
+    const client = createClient(fake.transport);
+    await hello(fake, client);
+    const reading = client.readContent("opaque");
+    fake.receive({ jsonrpc: "2.0", id: 2, error: { code, message: "no" } });
+    await expect(reading).rejects.toMatchObject({ kind });
+  }
+});
+
 test("requests before hello are rejected", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);

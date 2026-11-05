@@ -37,13 +37,15 @@ export interface FileContentBlock extends ContentBlock {
   filename?: string;
   size?: number;
 }
-/** A host-resolved media source. `key` is opaque outside the adapter and host that exchange it. */
-export interface LazyMediaSource { kind: "lazy"; key: string }
+/** A host-resolved content source. `key` must be unique for the loader that resolves it. */
+export interface LazyContentSource { kind: "lazy"; key: string }
+/** Any content block whose bytes are resolved by its host instead of stored in run state. */
+export type LazyContentBlock = ContentBlock & { source: LazyContentSource };
 /** An image. `width` and `height` (pixels) let the renderer reserve its exact shape before it loads. `size` is in bytes. */
 export interface ImageContentBlock extends ContentBlock {
   type: "image";
   url?: string;
-  source?: LazyMediaSource;
+  source?: LazyContentSource;
   mediaType?: string;
   alt?: string;
   filename?: string;

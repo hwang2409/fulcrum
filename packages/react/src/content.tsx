@@ -1,7 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { safeUrl, type ContentBlock, type FileContentBlock, type ImageContentBlock, type RunItem } from "@fulcrum/core";
-import { useItem, useMediaCache } from "./hooks.js";
-import { useNearViewport } from "./warm.js";
+import { useItem, useMedia } from "./hooks.js";
 import type { ItemProps } from "./parts.js";
 import { boundText, bytes, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { CopyButton, TextViewer, type TextFormat } from "./tools/text-viewer.js";
@@ -209,73 +208,74 @@ const dimension = (value: unknown) => (typeof value === "number" && Number.isFin
  * An image in a box reserved before it loads, so nothing below it moves. Clicking it calls the host's `onOpen`, or
  * opens it full size in a dialog. Its address is never text: alt, captions, and errors use its name or "image".
  */
+function useMediaViewport(node: React.RefObject<Element | null>) {
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const element = node.current;
+    if (!element || typeof IntersectionObserver === "undefined") { setNear(true); return; }
+    const observer = new IntersectionObserver(([entry]) => setNear(Boolean(entry?.isIntersecting)), { rootMargin: "400px 0px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [node]);
+  return near;
+}
+
 export const ImageBlock = memo(function ImageBlock({ block, onOpen }: ContentBlockProps) {
   const image = block as ImageContentBlock;
   const direct = safeUrl(image.url, "image");
-  const lazy = image.source?.kind === "lazy";
-  const cache = useMediaCache();
+  const lazy = image.source?.kind === "lazy" ? image as ImageContentBlock & { source: NonNullable<ImageContentBlock["source"]> } : undefined;
   const frame = useRef<HTMLElement>(null);
-  const near = useNearViewport(frame);
-  const [src, setSrc] = useState(direct);
-  const [state, setState] = useState<"idle" | "loading" | "ready" | "error" | "unavailable">(direct ? "ready" : "idle");
+  const near = useMediaViewport(frame);
+  const [requested, setRequested] = useState(false);
   const [viewing, setViewing] = useState(false);
-  const controller = useRef<AbortController>(undefined);
-  const load = useCallback(() => {
-    if (!lazy || !cache || state === "loading" || state === "ready") return Promise.resolve(src);
-    controller.current?.abort();
-    const next = new AbortController();
-    controller.current = next;
-    setState("loading");
-    return cache.get(image, next.signal).then((url) => {
-      if (!next.signal.aborted) { setSrc(url); setState("ready"); }
-      return url;
-    }, (error) => {
-      if (!next.signal.aborted) setState((error as { code?: unknown }).code === "not_available" ? "unavailable" : "error");
-      return undefined;
-    });
-  }, [cache, image, lazy, src, state]);
-  useEffect(() => { if (near && lazy && state === "idle") void load(); }, [near, lazy, state, load]);
-  useEffect(() => () => controller.current?.abort(), []);
+  const media = useMedia(lazy, near || requested || viewing);
+  const src = direct ?? (media.state.status === "ready" ? media.state.url : undefined);
+  useEffect(() => {
+    if (!requested || !src || !onOpen) return;
+    setRequested(false);
+    onOpen({ ...image, url: src });
+  }, [image, onOpen, requested, src]);
+  const open = () => {
+    if (onOpen) src ? onOpen({ ...image, url: src }) : setRequested(true);
+    else setViewing(true);
+  };
+  return <ImageView image={image} frame={frame} src={src} media={media} viewing={viewing} open={open} close={() => setViewing(false)} />;
+});
+
+type ImageViewProps = {
+  image: ImageContentBlock;
+  frame: React.RefObject<HTMLElement | null>;
+  src?: string;
+  media: ReturnType<typeof useMedia>;
+  viewing: boolean;
+  open(): void;
+  close(): void;
+};
+
+function ImageView({ image, frame, src, media, viewing, open, close }: ImageViewProps) {
   const width = dimension(image.width);
   const height = dimension(image.height);
-  const name = str(image.alt) ?? str(image.filename) ?? fileName(image.url) ?? "image";
+  const name = label(str(image.alt) ?? str(image.filename) ?? fileName(image.url) ?? "image");
   const box: CSSProperties | undefined = width && height ? { width: Math.min(width, (IMAGE_MAX_HEIGHT * width) / height), aspectRatio: `${width} / ${height}` } : undefined;
-  const blocked = !direct && (!lazy || !cache);
-  const open = () => {
-    if (onOpen) {
-      if (src) onOpen({ ...image, url: src });
-      else void load().then((url) => { if (url) onOpen({ ...image, url }); });
-    } else {
-      setViewing(true);
-      if (!src) void load();
-    }
-  };
-  const message = blocked ? "image not shown: unsupported address"
-    : state === "unavailable" ? "image no longer available"
-    : state === "error" ? "image failed to load"
-    : "loading image";
-  return (
-    <figure ref={frame} data-part="image" data-size={box ? "known" : "unknown"} data-state={blocked ? "blocked" : state}>
-      {src && state === "ready" ? (
-        <button type="button" data-part="image-open" style={box} aria-label={`open image: ${label(name)}`} onClick={open}>
-          <img src={src} alt={label(name)} width={width} height={height} loading="lazy" decoding="async" onError={() => setState("error")} />
-        </button>
-      ) : (
-        <div data-part="image-placeholder" style={blocked ? undefined : box} aria-busy={state === "loading" || undefined}>
-          <span>{message}</span>
-          {(state === "error" || state === "unavailable") && lazy ? <button type="button" data-action="retry" onClick={() => void load()}>retry</button> : null}
-          {!blocked && state !== "error" && state !== "unavailable" ? <button type="button" data-action="open-image" aria-label={`open image: ${label(name)}`} onClick={open} /> : null}
-        </div>
-      )}
-      <figcaption data-part="image-caption">
-        <span data-part="block-label">image</span>
-        <span data-part="file-name">{label(name)}</span>
-        <Facts mediaType={image.mediaType} size={image.size} />
-      </figcaption>
-      {viewing && src ? <ImageDialog src={src} name={label(name)} close={() => setViewing(false)} /> : null}
-    </figure>
-  );
-});
+  const lazy = image.source?.kind === "lazy";
+  const [failed, setFailed] = useState(false);
+  const blocked = !src && (!lazy || !media.available);
+  const status = failed ? "error" : src ? "ready" : media.state.status;
+  const unavailable = media.state.status === "error" && (media.state.error as { code?: unknown }).code === "not_available";
+  const message = blocked ? "image not shown: unsupported address" : unavailable ? "image no longer available" : status === "error" ? "image failed to load" : "loading image";
+  const retry = () => { setFailed(false); media.retry(); };
+  return <figure ref={frame} data-part="image" data-size={box ? "known" : "unknown"} data-state={blocked ? "blocked" : unavailable ? "unavailable" : status}>
+    {src && status === "ready" ? <button type="button" data-part="image-open" style={box} aria-label={`open image: ${name}`} onClick={open}>
+      <img src={src} alt={name} width={width} height={height} loading="lazy" decoding="async" onError={() => setFailed(true)} />
+    </button> : <div data-part="image-placeholder" style={blocked ? undefined : box} aria-busy={status === "loading" || undefined}>
+      <span>{message}</span>
+      {(status === "error") && lazy ? <button type="button" data-action="retry" onClick={retry}>retry</button> : null}
+      {!blocked && status !== "error" ? <button type="button" data-action="open-image" aria-label={`open image: ${name}`} onClick={open} /> : null}
+    </div>}
+    <figcaption data-part="image-caption"><span data-part="block-label">image</span><span data-part="file-name">{name}</span><Facts mediaType={image.mediaType} size={image.size} /></figcaption>
+    {viewing && src ? <ImageDialog src={src} name={name} close={close} /> : null}
+  </figure>;
+}
 
 function ImageDialog({ src, name, close }: { src: string; name: string; close: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
