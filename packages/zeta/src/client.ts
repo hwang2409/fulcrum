@@ -402,14 +402,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       throw redactHostCommandFailure("host_binding_retry_failed", retryError);
     }
   };
-  const request = async (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
+  const request = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
     if (hostCommandsEnabled() && (method === "new_session" || method === "resume")) return attach(method, params, requestOptions);
-    try {
-      return await rawRequest(method, params, requestOptions);
-    } catch (error) {
-      if (!hostCommandsEnabled() || (method !== "send" && method !== "send_images") || !isHostBindingRequired(error)) throw error;
-      return recoverHostBinding(method, params, requestOptions, error);
-    }
+    const result = rawRequest(method, params, requestOptions);
+    if (!hostCommandsEnabled() || (method !== "send" && method !== "send_images")) return result;
+    return result.catch((error) => isHostBindingRequired(error) ? recoverHostBinding(method, params, requestOptions, error) : Promise.reject(error));
   };
   const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
     const features = options.hostCommands
