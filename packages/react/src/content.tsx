@@ -252,29 +252,55 @@ type ImageViewProps = {
   close(): void;
 };
 
-function ImageView({ image, frame, src, media, viewing, open, close }: ImageViewProps) {
+type ImageModel = {
+  box?: CSSProperties;
+  blocked: boolean;
+  height?: number;
+  lazy: boolean;
+  message: string;
+  name: string;
+  src?: string;
+  state: string;
+  status: string;
+  width?: number;
+};
+
+const imageStatus = (src: string | undefined, failed: boolean, media: ReturnType<typeof useMedia>) => failed ? "error" : src ? "ready" : media.state.status;
+const imageMessage = (blocked: boolean, unavailable: boolean, status: string) => blocked ? "image not shown: unsupported address" : unavailable ? "image no longer available" : status === "error" ? "image failed to load" : "loading image";
+const imageState = (blocked: boolean, unavailable: boolean, status: string) => blocked ? "blocked" : unavailable ? "unavailable" : status;
+
+function imageModel(image: ImageContentBlock, src: string | undefined, media: ReturnType<typeof useMedia>, failed: boolean): ImageModel {
   const width = dimension(image.width);
   const height = dimension(image.height);
   const name = label(str(image.alt) ?? str(image.filename) ?? fileName(image.url) ?? "image");
-  const box: CSSProperties | undefined = width && height ? { width: Math.min(width, (IMAGE_MAX_HEIGHT * width) / height), aspectRatio: `${width} / ${height}` } : undefined;
+  const box = width && height ? { width: Math.min(width, (IMAGE_MAX_HEIGHT * width) / height), aspectRatio: `${width} / ${height}` } : undefined;
   const lazy = image.source?.kind === "lazy";
-  const [failed, setFailed] = useState(false);
   const blocked = !src && (!lazy || !media.available);
-  const status = failed ? "error" : src ? "ready" : media.state.status;
+  const status = imageStatus(src, failed, media);
   const unavailable = media.state.status === "error" && (media.state.error as { code?: unknown }).code === "not_available";
-  const message = blocked ? "image not shown: unsupported address" : unavailable ? "image no longer available" : status === "error" ? "image failed to load" : "loading image";
+  return { box, blocked, height, lazy, message: imageMessage(blocked, unavailable, status), name, src, status, state: imageState(blocked, unavailable, status), width };
+}
+
+function ImageView({ image, frame, src, media, viewing, open, close }: ImageViewProps) {
+  const [failed, setFailed] = useState(false);
+  const model = imageModel(image, src, media, failed);
   const retry = () => { setFailed(false); media.retry(); };
-  return <figure ref={frame} data-part="image" data-size={box ? "known" : "unknown"} data-state={blocked ? "blocked" : unavailable ? "unavailable" : status}>
-    {src && status === "ready" ? <button type="button" data-part="image-open" style={box} aria-label={`open image: ${name}`} onClick={open}>
-      <img src={src} alt={name} width={width} height={height} loading="lazy" decoding="async" onError={() => setFailed(true)} />
-    </button> : <div data-part="image-placeholder" style={blocked ? undefined : box} aria-busy={status === "loading" || undefined}>
-      <span>{message}</span>
-      {(status === "error") && lazy ? <button type="button" data-action="retry" onClick={retry}>retry</button> : null}
-      {!blocked && status !== "error" ? <button type="button" data-action="open-image" aria-label={`open image: ${name}`} onClick={open} /> : null}
-    </div>}
-    <figcaption data-part="image-caption"><span data-part="block-label">image</span><span data-part="file-name">{name}</span><Facts mediaType={image.mediaType} size={image.size} /></figcaption>
-    {viewing && src ? <ImageDialog src={src} name={name} close={close} /> : null}
+  return <figure ref={frame} data-part="image" data-size={model.box ? "known" : "unknown"} data-state={model.state}>
+    <ImageBody model={model} open={open} retry={retry} fail={() => setFailed(true)} />
+    <figcaption data-part="image-caption"><span data-part="block-label">image</span><span data-part="file-name">{model.name}</span><Facts mediaType={image.mediaType} size={image.size} /></figcaption>
+    {viewing && src ? <ImageDialog src={src} name={model.name} close={close} /> : null}
   </figure>;
+}
+
+function ImageBody({ model, open, retry, fail }: { model: ImageModel; open(): void; retry(): void; fail(): void }) {
+  if (model.src && model.status === "ready") return <button type="button" data-part="image-open" style={model.box} aria-label={`open image: ${model.name}`} onClick={open}>
+    <img src={model.src} alt={model.name} width={model.width} height={model.height} loading="lazy" decoding="async" onError={fail} />
+  </button>;
+  return <div data-part="image-placeholder" style={model.blocked ? undefined : model.box} aria-busy={model.status === "loading" || undefined}>
+    <span>{model.message}</span>
+    {model.status === "error" && model.lazy ? <button type="button" data-action="retry" onClick={retry}>retry</button> : null}
+    {!model.blocked && model.status !== "error" ? <button type="button" data-action="open-image" aria-label={`open image: ${model.name}`} onClick={open} /> : null}
+  </div>;
 }
 
 function ImageDialog({ src, name, close }: { src: string; name: string; close: () => void }) {

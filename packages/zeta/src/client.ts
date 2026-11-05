@@ -77,6 +77,23 @@ const contentReadError = (error: unknown): never => {
   if (rpc.code === -32602 || rpc.data?.code === "invalid_content_read") throw new ContentReadError("invalid_request", "content_read request was invalid");
   throw error;
 };
+const finishContent = (chunk: ContentChunk, state: ContentAssembly) => {
+  if (chunk.next_offset !== state.size) throw new ContentReadError("invalid_response", "content_read ended before its declared size");
+  return new Blob(state.chunks, { type: state.mediaType });
+};
+const advanceContent = (chunk: ContentChunk, state: ContentAssembly) => {
+  if (chunk.next_offset <= state.offset) throw new ContentReadError("invalid_response", "content_read did not advance");
+  state.offset = chunk.next_offset;
+};
+async function readContentChunks(handle: string, cap: number, read: (offset: number) => Promise<unknown>) {
+  const state: ContentAssembly = { offset: 0, chunks: [] };
+  while (true) {
+    const { chunk, bytes } = validatedChunk(await read(state.offset), handle, state, cap);
+    state.chunks.push(bytes);
+    if (chunk.eof) return finishContent(chunk, state);
+    advanceContent(chunk, state);
+  }
+}
 
 export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
   let nextId = 1;
@@ -357,19 +374,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const readContent = async (handle: string, options: { signal?: AbortSignal; maxBytes?: number } = {}) => {
     const cap = Math.min(options.maxBytes ?? MAX_CONTENT_BYTES, MAX_CONTENT_BYTES);
     if (!Number.isSafeInteger(cap) || cap < 0) throw new ContentReadError("too_large", "content size limit is invalid");
-    const state: ContentAssembly = { offset: 0, chunks: [] };
     try {
-      while (true) {
-        const value = await request("content_read", { handle, offset: state.offset }, { signal: options.signal });
-        const { chunk, bytes } = validatedChunk(value, handle, state, cap);
-        state.chunks.push(bytes);
-        if (chunk.eof) {
-          if (chunk.next_offset !== state.size) throw new ContentReadError("invalid_response", "content_read ended before its declared size");
-          return new Blob(state.chunks, { type: state.mediaType });
-        }
-        if (chunk.next_offset <= state.offset) throw new ContentReadError("invalid_response", "content_read did not advance");
-        state.offset = chunk.next_offset;
-      }
+      return await readContentChunks(handle, cap, (offset) => request("content_read", { handle, offset }, { signal: options.signal }));
     } catch (error) { return contentReadError(error); }
   };
   return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
