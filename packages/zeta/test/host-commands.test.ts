@@ -63,23 +63,23 @@ test("supplies fresh host commands for new_session, resume, a failed-resume retr
   await hello(first, firstClient);
 
   const creating = firstClient.request("new_session");
-  await Promise.resolve();
+  await Bun.sleep(0);
   expect(first.sent.at(-1)).toMatchObject({ method: "new_session", params: { host_commands: [command({ FOO: "1" })] } });
   first.reply(first.sent.at(-1)!, { session: { session_id: "s-new" } });
   await creating;
 
   const resuming = firstClient.request("resume", { session_id: "s-one" });
-  await Promise.resolve();
+  await Bun.sleep(0);
   expect(first.sent.at(-1)).toMatchObject({ method: "resume", params: { session_id: "s-one", host_commands: [command({ FOO: "2" })] } });
   first.reply(first.sent.at(-1)!, { session: { session_id: "s-one" } });
   await resuming;
 
   const failed = firstClient.request("resume", { session_id: "s-two" });
-  await Promise.resolve();
+  await Bun.sleep(0);
   first.fail(first.sent.at(-1)!, -32602);
   await expect(failed).rejects.toThrow("request failed");
   const retried = firstClient.request("resume", { session_id: "s-two" });
-  await Promise.resolve();
+  await Bun.sleep(0);
   expect(first.sent.at(-1)).toMatchObject({ params: { host_commands: [command({ FOO: "4" })] } });
   first.reply(first.sent.at(-1)!, { session: { session_id: "s-two" } });
   await retried;
@@ -88,7 +88,7 @@ test("supplies fresh host commands for new_session, resume, a failed-resume retr
   const reconnectedClient = createClient(reconnected.transport, undefined, undefined, { hostCommands: supply });
   await hello(reconnected, reconnectedClient);
   const reattach = reconnectedClient.request("resume", { session_id: "s-two" });
-  await Promise.resolve();
+  await Bun.sleep(0);
   expect(reconnected.sent.at(-1)).toMatchObject({ method: "resume", params: { host_commands: [command({ FOO: "5" })] } });
   reconnected.reply(reconnected.sent.at(-1)!, { session: { session_id: "s-two" } });
   await reattach;
@@ -115,6 +115,59 @@ test("a session send waits for its slow resume attachment", async () => {
   expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "resume", "send"]);
   fake.reply(fake.sent.at(-1)!, { accepted: true });
   await sending;
+});
+
+test("close rejects new_session while its host command supplier never settles", async () => {
+  const supplied = deferred<HostCommand[]>();
+  const fake = fakeTransport();
+  const closed = new Error("closed");
+  const client = createClient(fake.transport, undefined, () => closed, { hostCommands: () => supplied.promise });
+  await hello(fake, client);
+
+  const creating = client.request("new_session");
+  client.close();
+
+  expect(await Promise.race([creating.catch((error) => error), Bun.sleep(50).then(() => "timed out")])).toBe(closed);
+  expect(fake.sent.map(({ method }) => method)).toEqual(["hello"]);
+});
+
+test.each([
+  ["close", (fake: ReturnType<typeof fakeTransport>, client: ReturnType<typeof createClient>) => client.close()],
+  ["drop", (fake: ReturnType<typeof fakeTransport>) => fake.drop()],
+])("%s rejects two pending same-session resumes and their queued send", async (_, close) => {
+  const supplied = deferred<HostCommand[]>();
+  const fake = fakeTransport();
+  const closed = new Error("closed");
+  const client = createClient(fake.transport, undefined, () => closed, { hostCommands: () => supplied.promise });
+  await hello(fake, client);
+
+  const first = client.request("resume", { session_id: "s-one" });
+  const second = client.request("resume", { session_id: "s-one" });
+  const sending = client.request("send", { session_id: "s-one", text: "hello" });
+  close(fake, client);
+
+  const outcomes = await Promise.all([first, second, sending].map((request) => Promise.race([
+    request.catch((error) => error),
+    Bun.sleep(50).then(() => "timed out"),
+  ])));
+  expect(outcomes).toEqual([closed, closed, closed]);
+  expect(fake.sent.map(({ method }) => method)).toEqual(["hello"]);
+});
+
+test("close rejects recovery while its host command supplier never settles", async () => {
+  const supplied = deferred<HostCommand[]>();
+  const fake = fakeTransport();
+  const closed = new Error("closed");
+  const client = createClient(fake.transport, undefined, () => closed, { hostCommands: () => supplied.promise });
+  await hello(fake, client);
+
+  const sending = client.request("send", { session_id: "s-one", text: "hello", delivery_id: "d-one" });
+  fake.fail(fake.sent.at(-1)!, -32003, { code: "host_binding_required" });
+  await Bun.sleep(0);
+  client.close();
+
+  expect(await Promise.race([sending.catch((error) => error), Bun.sleep(50).then(() => "timed out")])).toBe(closed);
+  expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "send"]);
 });
 
 test("a dropped client rejects a pending attachment and queued send", async () => {
@@ -408,7 +461,7 @@ test("a failed host-binding retry surfaces a typed error and does not retry twic
   const client = createClient(fake.transport, undefined, undefined, { hostCommands: () => [command()] });
   await hello(fake, client);
   const attach = client.request("resume", { session_id: "s-one" });
-  await Promise.resolve();
+  await Bun.sleep(0);
   fake.reply(fake.sent.at(-1)!, { session: { session_id: "s-one" } });
   await attach;
 

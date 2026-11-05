@@ -346,7 +346,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   });
   const closeListeners = new Set<(error: unknown) => void>();
   const attachmentGates = new Map<string, Promise<unknown>>();
-  const attachmentRejects = new Map<string, (error: unknown) => void>();
+  let closeSignal!: (error: unknown) => void;
+  const closedPromise = new Promise<unknown>((resolve) => { closeSignal = resolve; });
   let closed = false;
   let closedError: unknown;
   const closeClient = (code?: number) => {
@@ -355,8 +356,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     closed = true;
     closedError = error;
     pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
-    attachmentRejects.forEach((reject) => reject(error));
-    attachmentRejects.clear();
+    closeSignal(error);
     attachmentGates.clear();
     cancelLoads();
     closeListeners.forEach((listener) => listener(error));
@@ -384,12 +384,15 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const performAttach = async (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
     const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
     if (closed) throw closedError;
-    let supplied: unknown;
+    let supply: Promise<unknown>;
     try {
-      supplied = await options.hostCommands!(sessionId);
+      supply = Promise.resolve(options.hostCommands!(sessionId)).catch(() => {
+        throw new HostCommandError("host_command_supplier_failed", "host command supplier failed");
+      });
     } catch {
-      throw new HostCommandError("host_command_supplier_failed", "host command supplier failed");
+      supply = Promise.reject(new HostCommandError("host_command_supplier_failed", "host command supplier failed"));
     }
+    const supplied = await Promise.race([supply, closedPromise.then((error) => { throw error; })]);
     if (closed) throw closedError;
     const commands = validateHostCommands(supplied);
     try {
@@ -404,17 +407,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const previous = attachmentGates.get(sessionId);
     const operation = previous?.catch(() => {}).then(() => performAttach(method, params, requestOptions))
       ?? performAttach(method, params, requestOptions);
-    let rejectGate!: (error: unknown) => void;
-    const gate = new Promise<unknown>((resolve, reject) => {
-      rejectGate = reject;
-      operation.then(resolve, reject);
-    });
-    attachmentRejects.set(sessionId, rejectGate);
+    const gate = operation;
     attachmentGates.set(sessionId, gate);
     const clear = () => {
       if (attachmentGates.get(sessionId) === gate) {
         attachmentGates.delete(sessionId);
-        attachmentRejects.delete(sessionId);
       }
     };
     gate.then(clear, clear);
@@ -426,7 +423,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     try {
       await (attachmentGates.get(sessionId) ?? attach("resume", { session_id: sessionId }, requestOptions));
     } catch (recoveryError) {
-      if (recoveryError instanceof HostCommandError) throw recoveryError;
+      if (recoveryError === closedError || recoveryError instanceof HostCommandError) throw recoveryError;
       throw redactHostCommandFailure("host_binding_recovery_failed", recoveryError);
     }
     try {
