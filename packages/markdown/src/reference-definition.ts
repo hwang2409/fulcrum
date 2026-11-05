@@ -35,7 +35,7 @@ function scan(source: string, eof: boolean): ReferenceDisposition {
   if (!visible.trim() || source[end + 1] !== ":") return { kind: "rejected" };
   const label = normalize(source.slice(source.indexOf("[") + 1, end));
   let rest = source.slice(end + 2);
-  const destination = /^\s*(?:<((?:\\.|[^>])*)>|((?:\\.|[^\s()<>])|\((?:\\.|[^()<>])*\))+)/s.exec(rest);
+  const destination = /^\s*(?:<((?:\\.|[^>])*)>|((?:\\.|[^\s()<>[\]"'])|\((?:\\.|[^()<>])*\))+)/s.exec(rest);
   if (!destination) return eof ? { kind: "rejected" } : { kind: "metadata" };
   const href = unescape(destination[1] ?? destination[0].trim());
   rest = rest.slice(destination[0].length);
