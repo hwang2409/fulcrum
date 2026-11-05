@@ -1,0 +1,17 @@
+name: bun 1.4.4 confidence
+on:
+  workflow_dispatch:
+jobs:
+  parity:
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: 1.4.4 }
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd packages/highlight build
+      - run: bun scripts/highlight-token-parity.ts check
