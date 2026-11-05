@@ -45,6 +45,22 @@ export type Block =
 
 type ParsedBlock = { block: Block; map: [number, number]; closed: boolean };
 type Environment = { references?: Record<string, { href: string; title: string }> };
+type PendingInlineState = {
+  offset: number;
+  lineLength: number;
+  continues: boolean;
+  tableCandidate: boolean;
+  referenceCount: number;
+};
+
+const pendingTableCandidate = (line: string, offset: number, continues: boolean, settled: boolean) => {
+  if (!continues || settled) return false;
+  while (line[offset] === " " || line[offset] === "\t") offset++;
+  return line[offset] === "|";
+};
+
+const pendingInlineMatches = (state: PendingInlineState | undefined, offset: number, continues: boolean, tableCandidate: boolean, referenceCount: number) =>
+  state?.offset === offset && state.continues === continues && state.tableCandidate === tableCandidate && state.referenceCount === referenceCount;
 
 const markdown = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
 
@@ -885,13 +901,9 @@ export function createStreamingDocument(): StreamingDocument {
   let previewBlocks: readonly Block[] | undefined;
   let pendingReferenceApply = false;
   let trailingCarriageReturn = false;
-  // The growing line's inline nodes; `pendingInlineOffset` is where its content starts in the pending line.
+  // The growing line's inline nodes and the identity used to reuse them.
   let pendingInline: PendingInline | undefined;
-  let pendingInlineOffset = 0;
-  let pendingInlineLineLength = 0;
-  let pendingInlineContinues = false;
-  let pendingInlineTableCandidate = false;
-  let pendingInlineReferenceCount = 0;
+  let pendingInlineState: PendingInlineState | undefined;
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
 
@@ -1211,7 +1223,10 @@ export function createStreamingDocument(): StreamingDocument {
     scannedCharacters += delta.length * 3;
     for (const piece of delta.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
       for (const resolution of resolver.append(piece)) apply(resolution);
-      if (piece.endsWith("\n")) pendingInline = undefined;
+      if (piece.endsWith("\n")) {
+        pendingInline = undefined;
+        pendingInlineState = undefined;
+      }
     }
   };
 
@@ -1225,13 +1240,8 @@ export function createStreamingDocument(): StreamingDocument {
   const pendingPreview = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean): Inline[] => {
     const line = resolver.pending.content;
     if (classification.kind !== "paragraph") return [];
-    let tableCandidate = false;
-    if (continues && !resolver.pendingStartsWithSettledProse) {
-      let candidateOffset = classification.offset;
-      while (line[candidateOffset] === " " || line[candidateOffset] === "\t") candidateOffset++;
-      tableCandidate = line[candidateOffset] === "|";
-    }
-    const startsInline = !pendingInline || pendingInlineOffset !== classification.offset || pendingInlineContinues !== continues || pendingInlineTableCandidate !== tableCandidate || pendingInlineReferenceCount !== resolver.references.size;
+    const tableCandidate = pendingTableCandidate(line, classification.offset, continues, resolver.pendingStartsWithSettledProse);
+    const startsInline = !pendingInline || !pendingInlineMatches(pendingInlineState, classification.offset, continues, tableCandidate, resolver.references.size);
     if (startsInline) {
       // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
       const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
@@ -1244,19 +1254,22 @@ export function createStreamingDocument(): StreamingDocument {
         open && { marker: "`".repeat(open.length), leadingSpace: after === undefined || /\s/.test(after) },
         prefix,
       );
-      pendingInlineOffset = classification.offset;
-      pendingInlineLineLength = 0;
-      pendingInlineContinues = continues;
-      pendingInlineTableCandidate = tableCandidate;
-      pendingInlineReferenceCount = resolver.references.size;
+      pendingInlineState = {
+        offset: classification.offset,
+        lineLength: 0,
+        continues,
+        tableCandidate,
+        referenceCount: resolver.references.size,
+      };
     }
     const inline = pendingInline!;
     const copied = inline.copiedCharacters;
-    const lineLength = line.length - pendingInlineOffset;
-    previewScannedCharacters += lineLength - pendingInlineLineLength;
-    if (startsInline) inline.extend(line.slice(pendingInlineOffset));
-    else inline.append(line.slice(pendingInlineOffset + pendingInlineLineLength));
-    pendingInlineLineLength = lineLength;
+    const state = pendingInlineState!;
+    const lineLength = line.length - state.offset;
+    previewScannedCharacters += lineLength - state.lineLength;
+    if (startsInline) inline.extend(line.slice(state.offset));
+    else inline.append(line.slice(state.offset + state.lineLength));
+    state.lineLength = lineLength;
     copiedCharacters += inline.copiedCharacters - copied;
     return inline.nodes;
   };

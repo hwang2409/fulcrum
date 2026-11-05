@@ -299,23 +299,31 @@ export class MarkdownLineResolver {
     return /^ {0,3}$/.test(content) || new RegExp(`^ {0,3}${marker[0]}+\\s*$`).test(content) ? "possible" : "none";
   }
 
+  private appendPartial(delta: string) {
+    advancePending(this.pendingLine, delta);
+    if (this.pendingClassification?.value.kind === "paragraph" && this.pendingLine.settledProseStart)
+      this.pendingClassification.length += delta.length;
+    else this.pendingClassification = undefined;
+  }
+
+  private consumePendingLine() {
+    const result = this.resolveLine(this.pendingLine.content, false);
+    this.pendingLine = freshPending();
+    this.pendingClassification = undefined;
+    return result;
+  }
+
   append(delta: string): LineResolution[] {
     const resolved: LineResolution[] = [];
     let offset = 0;
     while (offset < delta.length) {
       const newline = delta.indexOf("\n", offset);
       if (newline < 0) {
-        const addition = delta.slice(offset);
-        advancePending(this.pendingLine, addition);
-        if (this.pendingClassification?.value.kind === "paragraph" && this.pendingLine.settledProseStart)
-          this.pendingClassification.length += addition.length;
-        else this.pendingClassification = undefined;
+        this.appendPartial(delta.slice(offset));
         break;
       }
       advancePending(this.pendingLine, delta.slice(offset, newline));
-      resolved.push(this.resolveLine(this.pendingLine.content, false));
-      this.pendingLine = freshPending();
-      this.pendingClassification = undefined;
+      resolved.push(this.consumePendingLine());
       offset = newline + 1;
     }
     return resolved;

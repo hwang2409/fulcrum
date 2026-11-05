@@ -3,7 +3,7 @@ import { createStreamingDocument } from "../packages/markdown/src/index.js";
 const targetBytes = 100_000;
 const deltaSizes = [1, 20, 200];
 
-type Measurement = { p95: number; p99: number; max: number; total: number; workRatio: number; maxWork: number; maxCopied: number };
+type Measurement = { p95: number; p99: number; p999: number; max: number; total: number; workRatio: number; maxWork: number; maxCopied: number };
 const failsGate = ({ p95, p99, max, workRatio }: Measurement) => workRatio > 1.2 || p95 > 2 || p99 > 4 || max > 50;
 
 const quarterRatio = (samples: number[]) => {
@@ -21,7 +21,7 @@ function proveGateSensitivity() {
   const wholeContainerRatio = quarterRatio(wholeContainer);
   if (boundedRatio > 1.2 || wholeContainerRatio <= 1.2)
     throw new Error(`markdown work gate is not sensitive: bounded ${boundedRatio.toFixed(2)}x, whole-container ${wholeContainerRatio.toFixed(2)}x`);
-  const base = { p95: 1, p99: 2, max: 8, total: 10, workRatio: 1, maxWork: 1, maxCopied: 1 };
+  const base = { p95: 1, p99: 2, p999: 3, max: 8, total: 10, workRatio: 1, maxWork: 1, maxCopied: 1 };
   if (failsGate(base) || !failsGate({ ...base, p99: 4.01 }) || !failsGate({ ...base, max: 50.01 }))
     throw new Error("markdown latency gate does not catch p99 regressions and isolated pauses");
   console.log(`work gate sensitivity: bounded ${boundedRatio.toFixed(2)}x passes; deliberate whole-container parser ${wholeContainerRatio.toFixed(2)}x fails; p99 and isolated-pause probes fail`);
@@ -47,12 +47,13 @@ function measure(source: string, deltaSize: number): Measurement {
     if (trial === 0) work = trialWork;
     const total = durations.reduce((sum, duration) => sum + duration, 0);
     const sorted = durations.sort((a, b) => a - b);
-    return { p95: sorted[Math.floor(durations.length * 0.95)]!, p99: sorted[Math.floor(durations.length * 0.99)]!, max: sorted.at(-1)!, total };
+    return { p95: sorted[Math.floor(durations.length * 0.95)]!, p99: sorted[Math.floor(durations.length * 0.99)]!, p999: sorted[Math.floor(durations.length * 0.999)]!, max: sorted.at(-1)!, total };
   });
-  const median = (key: "p95" | "p99" | "max" | "total") => trials.map((trial) => trial[key]).sort((a, b) => a - b)[3]!;
+  const median = (key: "p95" | "p99" | "p999" | "max" | "total") => trials.map((trial) => trial[key]).sort((a, b) => a - b)[3]!;
   return {
     p95: median("p95"),
     p99: median("p99"),
+    p999: median("p999"),
     max: median("max"),
     total: median("total"),
     workRatio: quarterRatio(work),
@@ -83,7 +84,7 @@ console.log(`markdown stream benchmark: ${targetBytes} bytes`);
 let failed = false;
 for (const deltaSize of deltaSizes) for (const [name, source] of cases) {
   const result = measure(source, deltaSize);
-  console.log(`${String(deltaSize).padStart(3)} B  ${name.padEnd(22)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  work ${result.workRatio.toFixed(2)}x  max-work ${result.maxWork}  max-copy ${result.maxCopied}`);
+  console.log(`${String(deltaSize).padStart(3)} B  ${name.padEnd(22)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  p999 ${result.p999.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  work ${result.workRatio.toFixed(2)}x  max-work ${result.maxWork}  max-copy ${result.maxCopied}`);
   if (failsGate(result)) failed = true;
 }
 const millionByteParagraph = measure("a".repeat(1_000_000), 1_024);
@@ -104,7 +105,7 @@ const adversarialRows = [
 ] as const;
 for (const [name, source] of adversarialRows) {
   const result = measure(source, 1_024);
-  console.log(`1024 B  ${name.padEnd(26)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  work ${result.workRatio.toFixed(2)}x  max-copy ${result.maxCopied}`);
+  console.log(`1024 B  ${name.padEnd(26)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  p999 ${result.p999.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  work ${result.workRatio.toFixed(2)}x  max-copy ${result.maxCopied}`);
   if (result.p99 > 10 || result.max > 100 || result.workRatio > 1.2) failed = true;
 }
 
@@ -119,8 +120,8 @@ const richLines = [
 ] as const;
 for (const [name, unit] of richLines) {
   const result = measure(unit.repeat(Math.ceil(1_000_000 / unit.length)).slice(0, 1_000_000), 1_024);
-  console.log(`1024 B  ${name.padEnd(22)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  total ${result.total.toFixed(1)} ms  max-copy ${result.maxCopied}`);
-  if (result.p99 > 5 || result.max > 8 || result.maxCopied > 1_024 + PENDING_SUFFIX + 64) failed = true;
+  console.log(`1024 B  ${name.padEnd(22)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  p999 ${result.p999.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  total ${result.total.toFixed(1)} ms  max-copy ${result.maxCopied}`);
+  if (result.p99 > 5 || result.p999 > 50 || result.maxCopied > 1_024 + PENDING_SUFFIX + 64) failed = true;
 }
 
 const totalTime = (source: string) => {

@@ -4,7 +4,7 @@ import { PendingInline } from "../src/pending-inline.js";
 
 // Gates for the pending-line rule: a character the user has seen never disappears, a raw marker may
 // later become a style, and only the fixed suffix may be provisional.
-const SUFFIX = 256;
+const SUFFIX = 128;
 
 function text(nodes: readonly Inline[], provisional: boolean): string {
   return nodes.map((node) => node.type === "pending-reference" ? provisional ? node.value : ""
