@@ -550,8 +550,9 @@ export class MarkdownLineResolver {
     }
     const definition = referenceDefinition(content);
     if (definition) {
-      if (!this.referenceIndex.has(definition.label)) this.referenceIndex.set(definition.label, definition.value);
-      if (definition.canContinueTitle && !this.referenceIndex.get(definition.label)?.title) this.pendingReferenceTitle = { label: definition.label };
+      const firstDefinition = !this.referenceIndex.has(definition.label);
+      if (firstDefinition) this.referenceIndex.set(definition.label, definition.value);
+      if (firstDefinition && definition.canContinueTitle) this.pendingReferenceTitle = { label: definition.label };
       this.openLeaf = undefined;
       return {
         continued: false,
