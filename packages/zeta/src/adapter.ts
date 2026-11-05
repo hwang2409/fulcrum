@@ -312,7 +312,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       }
       case "usage": {
         const input = object(wire.usage, "usage");
-        const numeric = Object.fromEntries(Object.entries(input).filter(([, item]) => typeof item === "number" && Number.isFinite(item)));
+        const numeric = Object.fromEntries(Object.entries(input).filter(([, item]) => typeof item === "number" && Number.isFinite(item))) as Record<string, number>;
         return [{ type: "usage", usage: numeric }];
       }
       case "user_message": {
