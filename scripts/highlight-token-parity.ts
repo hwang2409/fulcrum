@@ -104,6 +104,7 @@ async function controllerSamples(highlight: Highlight, inputs: Record<string, st
     const id = `${prefix}-${language}`;
     const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof highlight.awaitCompletion !== "function";
     if (!historical) void highlight(source.slice(0, Math.max(1, Math.floor(source.length / 2))), language, { id, version: 1, state: "streaming" });
+    if (process.env.HIGHLIGHT_PARITY_DIAGNOSTIC === "1") console.error(`parity language: ${prefix}/${language}`);
     out[language] = { source, lines: split(await finalTokens(highlight, source, language, id, historical ? 1 : 2)) };
   }
   return out;
@@ -253,7 +254,10 @@ if (mode === "generate") {
       env: { ...process.env, HIGHLIGHT_PARITY_WAVE: JSON.stringify(wave.map(([name]) => name)) }, stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, status] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    if (status) throw new Error(`parity wave failed (${status}): ${stderr.trim()}`);
+    if (status) {
+      const child = proc as typeof proc & { exitCode: number | null; signalCode?: string | null };
+      throw new Error(`parity wave failed (exit code ${child.exitCode ?? "unknown"}, signal ${child.signalCode ?? "none"})\nstdout:\n${stdout}\nstderr:\n${stderr}`);
+    }
     const actual = JSON.parse(stdout) as Record<string, Record<string, Sample>>;
     for (const [name, order] of wave)
       compare(name, actual[name]!, Object.fromEntries(order.map((language) => [language, inputs[language]!])));
