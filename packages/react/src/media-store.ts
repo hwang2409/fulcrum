@@ -5,7 +5,7 @@ export type LoadMedia = (block: LazyContentBlock, signal: AbortSignal) => Promis
 export type MediaState = { status: "loading" } | { status: "ready"; url: string } | { status: "error"; error: unknown };
 
 type LeaseRecord = { bad: boolean; notify?: () => void; rendered?: Entry; next: Entry };
-type Entry = { block: LazyContentBlock; controller: AbortController; key: string; refs: Set<LeaseRecord>; state: MediaState };
+type Entry = { block: LazyContentBlock; abort: AbortController; key: string; refs: Set<LeaseRecord>; state: MediaState };
 export type MediaLease = {
   read(): MediaState;
   commit(generation: MediaState | undefined): void;
@@ -21,7 +21,7 @@ export function createMediaStore(load: LoadMedia) {
   const unused = new Set<Entry>();
   const notify = (entry: Entry) => entry.refs.forEach((lease) => lease.notify?.());
   const discard = (entry: Entry) => {
-    entry.controller.abort();
+    entry.abort.abort();
     if (entry.state.status === "ready") URL.revokeObjectURL(entry.state.url);
   };
   const cache = (entry: Entry) => {
@@ -42,9 +42,9 @@ export function createMediaStore(load: LoadMedia) {
     else entries.delete(entry.key);
   };
   const start = (key: string, block: LazyContentBlock) => {
-    const entry: Entry = { block, controller: new AbortController(), key, refs: new Set(), state: { status: "loading" } };
+    const entry: Entry = { block, abort: new AbortController(), key, refs: new Set(), state: { status: "loading" } };
     entries.set(key, entry);
-    void load(block, entry.controller.signal).then((blob) => {
+    void load(block, entry.abort.signal).then((blob) => {
       if (entries.get(key) !== entry) return;
       entry.state = { status: "ready", url: URL.createObjectURL(blob) };
       notify(entry);
@@ -106,7 +106,7 @@ export function createMediaStore(load: LoadMedia) {
   };
   const dispose = () => {
     for (const entry of entries.values()) {
-      entry.controller.abort();
+      entry.abort.abort();
       if (entry.refs.size === 0 && entry.state.status === "ready") URL.revokeObjectURL(entry.state.url);
     }
     entries.clear();

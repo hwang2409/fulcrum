@@ -229,7 +229,7 @@ export const ImageBlock = memo(function ImageBlock({ block, onOpen }: ContentBlo
   const status = decodeFailures > 1 ? "error" : src ? "ready" : media.state.status;
   const unavailable = media.state.status === "error" && (media.state.error as { code?: unknown }).code === "not_available";
   return <figure ref={frame} data-part="image" data-size={box ? "known" : "unknown"} data-state={blocked ? "blocked" : unavailable ? "unavailable" : status}>
-    {src && status === "ready" ? <button type="button" data-part="image-open" style={box} onClick={() => onOpen ? onOpen({ ...image, url: src }) : setViewing(true)}>
+    {src && status === "ready" ? <button type="button" data-part="image-open" style={box} aria-label={`open image: ${name}`} onClick={() => onOpen ? onOpen({ ...image, url: src }) : setViewing(true)}>
       <img src={src} alt={name} width={width} height={height} onError={() => { if (lazy && decodeFailures === 0) media.retry(); setDecodeFailures(decodeFailures + 1); }} />
     </button> : <div data-part="image-placeholder" style={blocked ? undefined : box} aria-busy={status === "loading" || undefined}>
       <span>{blocked ? "image not shown: unsupported address" : unavailable ? "image no longer available" : status === "error" ? "image failed to load" : "loading image"}</span>
