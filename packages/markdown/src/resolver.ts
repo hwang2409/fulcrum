@@ -52,6 +52,8 @@ type MutablePendingLine = {
   scan: PendingLineScan;
   atLineStart: boolean;
   orderedDigits: number;
+  blank: boolean;
+  settledProseStart: boolean;
 };
 
 type Cursor = { line: string; offset: number; column: number };
@@ -70,12 +72,15 @@ const freshPending = (): MutablePendingLine => ({
   scan: { indentColumns: 0, marker: "possible" },
   atLineStart: true,
   orderedDigits: 0,
+  blank: true,
+  settledProseStart: false,
 });
 
 function advancePending(scan: MutablePendingLine, delta: string) {
   scan.content += delta;
   scan.length += delta.length;
   for (const character of delta) {
+    if (character !== " " && character !== "\t") scan.blank = false;
     if (!scan.atLineStart) continue;
     if (character === " " && scan.scan.indentColumns < 4) {
       scan.scan.indentColumns++;
@@ -88,7 +93,10 @@ function advancePending(scan: MutablePendingLine, delta: string) {
       scan.scan.marker = "possible";
       continue;
     } else if ((character === "." || character === ")") && scan.orderedDigits) scan.scan.marker = "ordered";
-    else scan.scan.marker = "none";
+    else {
+      scan.scan.marker = "none";
+      scan.settledProseStart = scan.scan.indentColumns < 4 && !"#`~*-_=|:<>[".includes(character);
+    }
     scan.atLineStart = false;
   }
 }
@@ -125,7 +133,7 @@ function consumeQuote(cursor: Cursor) {
 function listMarker(cursor: Cursor): Marker | undefined {
   const start = { ...cursor };
   consumeIndent(cursor, 3);
-  const rest = cursor.line.slice(cursor.offset);
+  const rest = cursor.line.slice(cursor.offset, cursor.offset + 15);
   const match = /^(?:([-+*])|(\d{1,9})([.)]))([ \t]+)/.exec(rest);
   if (!match) {
     Object.assign(cursor, start);
@@ -148,7 +156,10 @@ function consumeItemIndent(cursor: Cursor, width: number) {
   return false;
 }
 
-const isBlank = (line: string, offset = 0) => /^[ \t]*$/.test(line.slice(offset));
+const isBlank = (line: string, offset = 0) => {
+  for (; offset < line.length; offset++) if (line[offset] !== " " && line[offset] !== "\t") return false;
+  return true;
+};
 const isTableDelimiter = (line: string) => /^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$/.test(line)
   || /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/.test(line);
 const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
@@ -217,6 +228,7 @@ export class MarkdownLineResolver {
   private stack: ContainerFrame[] = [{ kind: "document" }];
   private openLeaf?: { kind: "paragraph"; content: string; tableEligible: boolean } | { kind: "fence"; marker: string } | { kind: "indented-code" } | { kind: "table" } | { kind: "html"; end: RegExp };
   private pendingLine: MutablePendingLine = freshPending();
+  private pendingClassification?: { length: number; value: PendingClassification };
   private readonly referenceIndex = new Map<string, ReferenceDefinition>();
   private pendingReferenceTitle?: { label: string };
   private previousContainerOnly = false;
@@ -240,6 +252,8 @@ export class MarkdownLineResolver {
   }
 
   classifyPending(line = this.pendingLine.content): Readonly<PendingClassification> {
+    const cached = this.pendingClassification;
+    if (line === this.pendingLine.content && cached && line.length === cached.length) return cached.value;
     const { cursor, unmatched } = this.matchContinuations(line);
     if (!unmatched && this.openLeaf?.kind === "fence") {
       const content = line.slice(cursor.offset);
@@ -248,12 +262,29 @@ export class MarkdownLineResolver {
         return FENCE;
       return { content, kind: "fence", offset: cursor.offset };
     }
-    return classifyLeaf(line, true);
+    const value = classifyLeaf(line, true);
+    if (line !== this.pendingLine.content) return value;
+    if (value.kind !== "paragraph") {
+      this.pendingClassification = { length: line.length, value };
+      return value;
+    }
+    const owner = this;
+    const liveValue: PendingClassification = {
+      kind: "paragraph",
+      offset: value.offset,
+      get content() { return owner.pendingLine.content.slice(value.offset); },
+    };
+    this.pendingClassification = { length: line.length, value: liveValue };
+    return liveValue;
   }
 
   /** Classifies a line that already ended, so only lines after it can change its meaning. */
   classifyCommitted(line: string): Readonly<PendingClassification> {
     return classifyLeaf(line, false);
+  }
+
+  get pendingStartsWithSettledProse() {
+    return this.pendingLine.settledProseStart;
   }
 
   get hasPendingLookahead() {
@@ -268,18 +299,31 @@ export class MarkdownLineResolver {
     return /^ {0,3}$/.test(content) || new RegExp(`^ {0,3}${marker[0]}+\\s*$`).test(content) ? "possible" : "none";
   }
 
+  private appendPartial(delta: string) {
+    advancePending(this.pendingLine, delta);
+    if (this.pendingClassification?.value.kind === "paragraph" && this.pendingLine.settledProseStart)
+      this.pendingClassification.length += delta.length;
+    else this.pendingClassification = undefined;
+  }
+
+  private consumePendingLine() {
+    const result = this.resolveLine(this.pendingLine.content, false);
+    this.pendingLine = freshPending();
+    this.pendingClassification = undefined;
+    return result;
+  }
+
   append(delta: string): LineResolution[] {
     const resolved: LineResolution[] = [];
     let offset = 0;
     while (offset < delta.length) {
       const newline = delta.indexOf("\n", offset);
       if (newline < 0) {
-        advancePending(this.pendingLine, delta.slice(offset));
+        this.appendPartial(delta.slice(offset));
         break;
       }
       advancePending(this.pendingLine, delta.slice(offset, newline));
-      resolved.push(this.resolveLine(this.pendingLine.content, false));
-      this.pendingLine = freshPending();
+      resolved.push(this.consumePendingLine());
       offset = newline + 1;
     }
     return resolved;
@@ -289,6 +333,7 @@ export class MarkdownLineResolver {
     if (!this.pendingLine.length) return undefined;
     const result = this.resolveLine(this.pendingLine.content, true);
     this.pendingLine = freshPending();
+    this.pendingClassification = undefined;
     return result;
   }
 
@@ -354,6 +399,7 @@ export class MarkdownLineResolver {
   /** Whether the pending line, once it ends, continues the open paragraph: the read-only part of `resolveLine`. */
   pendingContinuesParagraph(line = this.pendingLine.content) {
     if (this.openLeaf?.kind !== "paragraph") return false;
+    if (line === this.pendingLine.content && this.stack.length === 1 && this.pendingLine.settledProseStart) return true;
     const { cursor, unmatched, blank } = this.matchContinuations(line);
     return !blank && !this.lineStart(cursor, unmatched).startsBlock;
   }
@@ -405,7 +451,7 @@ export class MarkdownLineResolver {
       cursor,
       matchedDepth,
       unmatched: matchedDepth < this.stack.length,
-      blank: isBlank(line, cursor.offset),
+      blank: line === this.pendingLine.content && cursor.offset === 0 ? this.pendingLine.blank : isBlank(line, cursor.offset),
     };
   }
 
