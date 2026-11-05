@@ -2,7 +2,7 @@ import { delimiterRun } from "./delimiters.js";
 import type { Inline } from "./index.js";
 
 /** Only this many trailing characters of a growing line may be provisional. */
-export const PENDING_INLINE_SUFFIX = 256;
+export const PENDING_INLINE_SUFFIX = 128;
 
 type OpenerKind = "emphasis" | "code" | "bracket" | "angle";
 // A bracket moves through `dest`, `title`, `close`, or `ref` after its `]`; that syntax stays hidden.
@@ -228,11 +228,13 @@ export type InlineParser = (source: string, streaming: boolean) => Inline[];
 /** Cuts at a recent space so no construct, escape, or surrogate pair is split between stable chunks. */
 function cutPoint(source: string, target: number) {
   if (target <= 0) return 0;
-  const window = Math.max(0, target - 64);
-  const space = source.slice(window, target).lastIndexOf(" ");
-  let cut = space >= 0 ? window + space + 1 : target;
-  while (cut > 0 && unsafeCut(source, cut)) cut--;
-  return cut;
+  const base = Math.max(0, target - 66);
+  const window = source.slice(base, target + 2);
+  const localTarget = target - base;
+  const space = window.slice(0, localTarget).lastIndexOf(" ");
+  let cut = space >= 0 ? space + 1 : localTarget;
+  while (cut > 0 && unsafeCut(window, cut)) cut--;
+  return base + cut;
 }
 
 // A suffix that starts with a backtick would merge with the code-span marker it is parsed behind, and one that
@@ -247,43 +249,63 @@ const unsafeCut = (source: string, index: number) => source[index] === "`" || /[
  */
 export class PendingInline {
   /** Stable nodes followed by the current suffix nodes; updated in place so a frame copies no node list. */
-  readonly nodes: Inline[] = [];
-  content = "";
+  readonly nodes: Inline[];
+  private content = "";
   emittedEnd = 0;
   copiedCharacters = 0;
   private readonly openers: Opener[] = [];
   private readonly stableIndex: StableIndex = { emphasis: new Map(), bracket: -1, boundary: 0, bracketKnown: false };
   private indexedOpeners = 0;
   private suffixLength = 0;
+  private totalLength = 0;
+  private readonly chunks: string[] = [];
+  private readonly prefixLength: number;
 
-  /** `openCode` is the backtick run of a code span that an earlier line of the paragraph left open. */
-  constructor(private readonly parse: InlineParser, private readonly openCode?: { marker: string; leadingSpace: boolean }) {
+  get length() { return this.totalLength; }
+
+  constructor(
+    private readonly parse: InlineParser,
+    private readonly openCode?: { marker: string; leadingSpace: boolean },
+    prefix: readonly Inline[] = [],
+  ) {
+    this.nodes = prefix.slice();
+    this.prefixLength = this.nodes.length;
     this.reset();
   }
 
   private reset() {
-    this.nodes.length = 0;
+    this.content = "";
+    this.nodes.length = this.prefixLength;
     this.openers.length = 0;
     this.indexedOpeners = 0;
     this.stableIndex.emphasis.clear();
     this.stableIndex.bracket = -1;
     this.stableIndex.boundary = 0;
     this.stableIndex.bracketKnown = false;
-    if (this.openCode) this.openers.push({ index: 0, end: 0, kind: "code", node: 0, state: "text", ...this.openCode });
     this.emittedEnd = 0;
     this.suffixLength = 0;
+    this.totalLength = 0;
+    this.chunks.length = 0;
+    if (this.openCode) this.openers.push({ index: 0, end: 0, kind: "code", node: this.prefixLength, state: "text", ...this.openCode });
   }
 
   /**
    * Takes the line so far, which extends the previous content, and returns the nodes of its suffix, which
-   * later text may still restyle. The caller passes a slice of its own line, because appending deltas to a
-   * string here would copy the whole line on the next read.
+   * later text may still restyle. Settled source is discarded when no unresolved opener still needs it.
    */
   extend(content: string): Inline[] {
     // Invariant: `content` extends the previous content (the caller resets at each line end). A shorter line breaks
     // it, so the stable nodes start over; a full prefix check would cost O(line) per delta.
-    if (content.length < this.content.length) this.reset();
-    this.content = content;
+    if (content.length < this.totalLength) this.reset();
+    return this.append(content.slice(this.totalLength));
+  }
+
+  append(delta: string): Inline[] {
+    this.content += delta;
+    this.totalLength += delta.length;
+    const lastChunk = this.chunks.length - 1;
+    if (lastChunk >= 0 && this.chunks[lastChunk]!.length + delta.length <= 4_096) this.chunks[lastChunk] += delta;
+    else if (delta) this.chunks.push(delta);
     this.nodes.length -= this.suffixLength;
     const cut = cutPoint(this.content, this.content.length - PENDING_INLINE_SUFFIX);
     if (cut > this.emittedEnd) this.emitStable(cut);
@@ -299,13 +321,24 @@ export class PendingInline {
     if (last?.type === "text") last.value = last.value.replace(/[ \t]+$/, "");
     for (const node of suffix) this.nodes.push(node);
     this.suffixLength = suffix.length;
+    if (!this.openers.length && this.emittedEnd) {
+      this.content = this.content.slice(this.emittedEnd);
+      this.emittedEnd = 0;
+    }
     return suffix;
   }
 
   /** Final streaming nodes for the finished line, or undefined when `line` does not extend this line. */
   commit(line: string): Inline[] | undefined {
-    if (!line.startsWith(this.content) || this.openers[0]?.leadingSpace !== undefined) return undefined;
-    this.content = line;
+    if (line.length < this.totalLength || this.openers[0]?.leadingSpace !== undefined) return undefined;
+    let offset = 0;
+    for (const chunk of this.chunks) {
+      if (!line.startsWith(chunk, offset)) return undefined;
+      offset += chunk.length;
+    }
+    const delta = line.slice(this.totalLength);
+    this.content += delta;
+    this.totalLength = line.length;
     this.nodes.length -= this.suffixLength;
     this.suffixLength = 0;
     // Reuse the same provisional suffix parser as render; finish() performs the authoritative one-shot parse.
