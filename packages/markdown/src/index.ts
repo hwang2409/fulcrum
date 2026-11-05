@@ -45,6 +45,22 @@ export type Block =
 
 type ParsedBlock = { block: Block; map: [number, number]; closed: boolean };
 type Environment = { references?: Record<string, { href: string; title: string }> };
+type PendingInlineState = {
+  offset: number;
+  lineLength: number;
+  continues: boolean;
+  tableCandidate: boolean;
+  referenceCount: number;
+};
+
+const pendingTableCandidate = (line: string, offset: number, continues: boolean, settled: boolean) => {
+  if (!continues || settled) return false;
+  while (line[offset] === " " || line[offset] === "\t") offset++;
+  return line[offset] === "|";
+};
+
+const pendingInlineMatches = (state: PendingInlineState | undefined, offset: number, continues: boolean, tableCandidate: boolean, referenceCount: number) =>
+  state?.offset === offset && state.continues === continues && state.tableCandidate === tableCandidate && state.referenceCount === referenceCount;
 
 const markdown = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
 
@@ -756,7 +772,7 @@ function cloneOpenPath(blocks: readonly Block[], cloneLeaf = true): Block[] {
     const item = items.at(-1);
     if (item) items[items.length - 1] = { ...item, children: cloneOpenPath(item.children, cloneLeaf) };
     copy[index] = { ...block, items };
-  } else if (cloneLeaf && block.type === "paragraph") copy[index] = { ...block, children: block.children.slice() };
+  } else if (cloneLeaf && block.type === "paragraph") copy[index] = { ...block };
   else if (cloneLeaf && block.type === "code") copy[index] = { ...block };
   else if (cloneLeaf && block.type === "table") copy[index] = { ...block, rows: block.rows.slice() };
   return copy;
@@ -799,7 +815,7 @@ function appendPendingParagraph(blocks: Block[], pending: Inline[], continuesPar
   if (!pending.length) return;
   const paragraph = continuesParagraph ? tailParagraph(blocks) : undefined;
   if (paragraph) {
-    paragraph.children = [...paragraph.children, { type: "text", value: "\n" }, ...pending];
+    paragraph.children = pending;
     return paragraph;
   }
   // `pending` is the growing line's live node list; each frame gets a new block object around it.
@@ -885,10 +901,9 @@ export function createStreamingDocument(): StreamingDocument {
   let previewBlocks: readonly Block[] | undefined;
   let pendingReferenceApply = false;
   let trailingCarriageReturn = false;
-  // The growing line's inline nodes; `pendingInlineOffset` is where its content starts in the pending line.
+  // The growing line's inline nodes and the identity used to reuse them.
   let pendingInline: PendingInline | undefined;
-  let pendingInlineOffset = 0;
-  let pendingInlineContinues = false;
+  let pendingInlineState: PendingInlineState | undefined;
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
 
@@ -1208,7 +1223,10 @@ export function createStreamingDocument(): StreamingDocument {
     scannedCharacters += delta.length * 3;
     for (const piece of delta.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
       for (const resolution of resolver.append(piece)) apply(resolution);
-      if (piece.endsWith("\n")) pendingInline = undefined;
+      if (piece.endsWith("\n")) {
+        pendingInline = undefined;
+        pendingInlineState = undefined;
+      }
     }
   };
 
@@ -1219,24 +1237,41 @@ export function createStreamingDocument(): StreamingDocument {
     return nodes.filter((node) => node.type !== "text" || node.value);
   };
 
-  const pendingPreview = (): Inline[] => {
+  const pendingPreview = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean): Inline[] => {
     const line = resolver.pending.content;
-    const classification = resolver.classifyPending(line);
     if (classification.kind !== "paragraph") return [];
-    const continues = resolver.pendingContinuesParagraph(line);
-    if (!pendingInline || pendingInlineOffset !== classification.offset || pendingInlineContinues !== continues) {
+    const tableCandidate = pendingTableCandidate(line, classification.offset, continues, resolver.pendingStartsWithSettledProse);
+    const startsInline = !pendingInline || !pendingInlineMatches(pendingInlineState, classification.offset, continues, tableCandidate, resolver.references.size);
+    if (startsInline) {
       // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
       const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
       const after = open && openParagraph!.source[open.index + open.length];
-      pendingInline = new PendingInline(parsePending, open && { marker: "`".repeat(open.length), leadingSpace: after === undefined || /\s/.test(after) });
-      pendingInlineOffset = classification.offset;
-      pendingInlineContinues = continues;
+      const prefix = continues && openParagraph
+        ? [...openParagraph.block.children, { type: tableCandidate ? "pending-reference" as const : "text" as const, value: "\n" }]
+        : undefined;
+      pendingInline = new PendingInline(
+        parsePending,
+        open && { marker: "`".repeat(open.length), leadingSpace: after === undefined || /\s/.test(after) },
+        prefix,
+      );
+      pendingInlineState = {
+        offset: classification.offset,
+        lineLength: 0,
+        continues,
+        tableCandidate,
+        referenceCount: resolver.references.size,
+      };
     }
-    const copied = pendingInline.copiedCharacters;
-    previewScannedCharacters += line.length - pendingInlineOffset - pendingInline.content.length;
-    pendingInline.extend(line.slice(pendingInlineOffset));
-    copiedCharacters += pendingInline.copiedCharacters - copied;
-    return pendingInline.nodes;
+    const inline = pendingInline!;
+    const copied = inline.copiedCharacters;
+    const state = pendingInlineState!;
+    const lineLength = line.length - state.offset;
+    previewScannedCharacters += lineLength - state.lineLength;
+    if (startsInline) inline.extend(line.slice(state.offset));
+    else inline.append(line.slice(state.offset + state.lineLength));
+    state.lineLength = lineLength;
+    copiedCharacters += inline.copiedCharacters - copied;
+    return inline.nodes;
   };
 
   const normalizeDelta = (delta: string) => {
@@ -1283,11 +1318,12 @@ export function createStreamingDocument(): StreamingDocument {
       if (classification.kind === "fence" && openCode && !openIndentedCode) {
         const disposition = resolver.pendingFenceDisposition;
         if (disposition === "closes") closeOpenCode(overlay);
-        else if (disposition === "none" && classification.content) appendOpenCode(overlay, classification.content);
+        else if (disposition === "none" && classification.offset < pending.length) appendOpenCode(overlay, classification.content);
       } else {
-        const startsBlock = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
-        if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.content && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment())))
-          appendPendingParagraph(overlay, pendingPreview(), Boolean(openParagraph) && !startsBlock);
+        const continuesParagraph = Boolean(openParagraph) && resolver.pendingContinuesParagraph(pending);
+        const startsBlock = openParagraph ? !continuesParagraph : /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
+        if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.offset < pending.length && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment())))
+          appendPendingParagraph(overlay, pendingPreview(classification, continuesParagraph), continuesParagraph);
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];
