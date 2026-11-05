@@ -249,6 +249,20 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   const negotiatedFeatures = new WeakMap<object, Set<string>>();
   const hostBoundSessions = new Set<string>();
   const hostBindingRequired = new Set<string>();
+  const parseHostBinding = (socket: ServerWebSocket<unknown>, params: Json) => {
+    if (!Object.hasOwn(params, "host_commands")) return { commands: undefined };
+    if (!negotiatedFeatures.get(socket as object)?.has("session_host_commands")) return { error: "host_commands requires session_host_commands" };
+    try {
+      return { commands: validateHostCommands(params.host_commands) };
+    } catch {
+      return { error: "host_commands is invalid" };
+    }
+  };
+  const applyHostBinding = (session: string, commands: ReturnType<typeof validateHostCommands> | undefined) => {
+    if (commands?.length) hostBoundSessions.add(session);
+    else hostBoundSessions.delete(session);
+    hostBindingRequired.delete(session);
+  };
   let approvalExpiry: ReturnType<typeof setTimeout> | null = null;
   const approvalCall = { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } };
   const expireApproval = () => {
@@ -344,18 +358,14 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
-          if (Object.hasOwn(params, "host_commands")) {
-            if (!negotiatedFeatures.get(socket as object)?.has("session_host_commands")) return reply({ error: { code: -32602, message: "host_commands requires session_host_commands" } });
-            try { validateHostCommands(params.host_commands); } catch { return reply({ error: { code: -32602, message: "host_commands is invalid" } }); }
-          }
+          const binding = parseHostBinding(socket, params);
+          if (binding.error) return reply({ error: { code: -32602, message: binding.error } });
           if (running || rejectCreate) return reply({ error: { code: -32004, message: "a turn is already running" } });
           const created = meta(`s-new-${sessions.length}`, 0, { created_at: at(0), cwd: "/Users/dev/me/fun/fulcrum", retained_tail: 8, compaction_budget: 262144, override_audit: [], context_files: [], skill_catalog: [], agent_catalog: [], plan_mode: false, project_id: null, tool_allow: null, tool_deny: [] });
           sessions.unshift(created);
           histories[created.session_id] = [];
           active = created.session_id;
-          if (Array.isArray(params.host_commands) && params.host_commands.length) hostBoundSessions.add(active);
-          else hostBoundSessions.delete(active);
-          hostBindingRequired.delete(active);
+          applyHostBinding(active, binding.commands);
           return reply({ result: { session: created } });
         }
         if (method === "list_sessions") {
@@ -373,16 +383,12 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           return reply({ result: { session: active ? sessions.find((session) => session.session_id === active) ?? null : null, state: running ? (decide ? "tool" : "running") : "idle", explicit_finish: false, pending_approvals: pending, usage: {}, compaction_markers: 0 } });
         }
         if (method === "resume") {
-          if (Object.hasOwn(params, "host_commands")) {
-            if (!negotiatedFeatures.get(socket as object)?.has("session_host_commands")) return reply({ error: { code: -32602, message: "host_commands requires session_host_commands" } });
-            try { validateHostCommands(params.host_commands); } catch { return reply({ error: { code: -32602, message: "host_commands is invalid" } }); }
-          }
+          const binding = parseHostBinding(socket, params);
+          if (binding.error) return reply({ error: { code: -32602, message: binding.error } });
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
           if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = String(params.session_id);
-          if (Array.isArray(params.host_commands) && params.host_commands.length) hostBoundSessions.add(active);
-          else hostBoundSessions.delete(active);
-          hostBindingRequired.delete(active);
+          applyHostBinding(active, binding.commands);
           delayedOpen = false;
           return reply({ result: { session: sessions.find((session) => session.session_id === active) } });
         }

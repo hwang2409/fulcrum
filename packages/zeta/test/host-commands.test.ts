@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { createClient, type HostCommand, type Transport } from "../src/index.js";
+import { inspect } from "node:util";
+import { createClient, HostCommandError, type HostCommand, type Transport } from "../src/index.js";
 
 type Message = { id: number; method: string; params: Record<string, unknown> };
 
@@ -174,31 +175,80 @@ test("does not expose host commands in warnings or errors", async () => {
   expect(messages.filter((message) => message.includes("session_host_commands"))).toHaveLength(1);
 });
 
-test("host_binding_required resumes with a fresh binding then retries the same delivery id once", async () => {
+test("a fresh client recovers the failed request's session binding and retries its delivery id once", async () => {
   let supplies = 0;
   const fake = fakeTransport();
-  const client = createClient(fake.transport, undefined, undefined, { hostCommands: () => [command({ FOO: String(++supplies) })] });
+  const client = createClient(fake.transport, undefined, undefined, { hostCommands: (sessionId) => {
+    expect(sessionId).toBe("s-one");
+    return [command({ FOO: String(++supplies) })];
+  } });
   await hello(fake, client);
-  const attach = client.request("resume", { session_id: "s-one" });
-  await Promise.resolve();
-  fake.reply(fake.sent.at(-1)!, { session: { session_id: "s-one" } });
-  await attach;
 
-  const sending = client.request("send", { text: "hello", delivery_id: "delivery-1" });
+  const sending = client.request("send", { session_id: "s-one", text: "hello", delivery_id: "delivery-1" });
   await Promise.resolve();
   const firstSend = fake.sent.at(-1)!;
   fake.fail(firstSend, -32003, { code: "host_binding_required" });
   await Bun.sleep(0);
   const resume = fake.sent.at(-1)!;
-  expect(resume).toMatchObject({ method: "resume", params: { session_id: "s-one", host_commands: [command({ FOO: "2" })] } });
+  expect(resume).toMatchObject({ method: "resume", params: { session_id: "s-one", host_commands: [command({ FOO: "1" })] } });
   fake.reply(resume, { session: { session_id: "s-one" } });
   await Bun.sleep(0);
   const retry = fake.sent.at(-1)!;
-  expect(retry).toMatchObject({ method: "send", params: { text: "hello", delivery_id: "delivery-1" } });
+  expect(retry).toMatchObject({ method: "send", params: { session_id: "s-one", text: "hello", delivery_id: "delivery-1" } });
   expect(retry.id).not.toBe(firstSend.id);
   fake.reply(retry, { accepted: true, session_id: "s-one" });
   await expect(sending).resolves.toMatchObject({ accepted: true });
   expect(fake.sent.filter(({ method }) => method === "send")).toHaveLength(2);
+});
+
+test("supplier failures and invalid output never expose their values", async () => {
+  const marker = "DISTINCTIVE-PR62-SECRET";
+  const thrown = [
+    new Error(marker),
+    new HostCommandError("host_command_supplier_failed", marker, 999, { code: marker }),
+    marker,
+  ];
+  const invalid = [{ ...command(), name: `!${marker}` }];
+  const messages: string[] = [];
+  const originals = { log: console.log, warn: console.warn, error: console.error, debug: console.debug };
+  const capture = (...values: unknown[]) => messages.push(values.map((value) => inspect(value)).join(" "));
+  console.log = capture;
+  console.warn = capture;
+  console.error = capture;
+  console.debug = capture;
+  try {
+    for (const value of [...thrown, invalid]) {
+      const fake = fakeTransport();
+      const client = createClient(fake.transport, undefined, undefined, {
+        hostCommands: () => {
+          if (value === invalid) return invalid;
+          throw value;
+        },
+      });
+      await hello(fake, client);
+      const failure = await client.request("new_session").catch((error: unknown) => error as Error & { cause?: unknown });
+      console.error(failure);
+      expect(String(failure)).not.toContain(marker);
+      expect(JSON.stringify(failure)).not.toContain(marker);
+      expect(inspect(failure)).not.toContain(marker);
+      expect(failure.cause).toBeUndefined();
+      expect(failure.stack).not.toContain(marker);
+      if (value === invalid) {
+        expect(failure).toMatchObject({ name: "HostCommandError", kind: "invalid_host_commands" });
+        expect(failure.message).toContain("host_commands[0].name");
+        expect(failure.message).toContain("64");
+      } else {
+        expect(failure).toMatchObject({
+          name: "HostCommandError",
+          kind: "host_command_supplier_failed",
+          message: "host command supplier failed",
+        });
+      }
+    }
+  } finally {
+    Object.assign(console, originals);
+  }
+  expect(messages.join("\n")).not.toContain(marker);
 });
 
 test("a failed host-binding retry surfaces a typed error and does not retry twice", async () => {
@@ -210,7 +260,7 @@ test("a failed host-binding retry surfaces a typed error and does not retry twic
   fake.reply(fake.sent.at(-1)!, { session: { session_id: "s-one" } });
   await attach;
 
-  const sending = client.request("send", { text: "hello", delivery_id: "delivery-1" });
+  const sending = client.request("send", { session_id: "s-one", text: "hello", delivery_id: "delivery-1" });
   await Promise.resolve();
   fake.fail(fake.sent.at(-1)!, -32003, { code: "host_binding_required" });
   await Bun.sleep(0);

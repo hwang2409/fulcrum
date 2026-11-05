@@ -42,7 +42,6 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   let handshaken = false;
   let negotiatedProtocol = "1.0";
   let negotiatedFeatures: string[] = [];
-  let activeSession: string | null = null;
   let warnedHostCommandsUnavailable = false;
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
@@ -304,24 +303,33 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const hostCommandsEnabled = () => options.hostCommands !== undefined && options.hostCommands !== null && negotiatedFeatures.includes("session_host_commands");
   const attach = async (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
     const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
-    let commands;
+    let supplied: unknown;
     try {
-      commands = validateHostCommands(await options.hostCommands!(sessionId));
-    } catch (error) {
-      if (error instanceof HostCommandError) throw error;
-      throw redactHostCommandFailure("host_command_supplier_failed", error);
+      supplied = await options.hostCommands!(sessionId);
+    } catch {
+      throw new HostCommandError("host_command_supplier_failed", "host command supplier failed");
     }
-    let result: unknown;
+    const commands = validateHostCommands(supplied);
     try {
-      result = await rawRequest(method, { ...params, host_commands: commands }, requestOptions);
+      return await rawRequest(method, { ...params, host_commands: commands }, requestOptions);
     } catch (error) {
       throw redactHostCommandFailure("host_command_request_failed", error);
     }
-    const attached = typeof result === "object" && result !== null && typeof (result as { session?: unknown }).session === "object" && (result as { session: { session_id?: unknown } }).session !== null
-      ? (result as { session: { session_id?: unknown } }).session.session_id
-      : undefined;
-    activeSession = typeof attached === "string" ? attached : sessionId;
-    return result;
+  };
+  const recoverHostBinding = async (method: string, params: Record<string, unknown>, requestOptions: RequestOptions, error: unknown) => {
+    const sessionId = typeof params.session_id === "string" ? params.session_id : null;
+    if (!sessionId || typeof params.delivery_id !== "string") throw redactHostCommandFailure("host_binding_recovery_failed", error);
+    try {
+      await attach("resume", { session_id: sessionId }, requestOptions);
+    } catch (recoveryError) {
+      if (recoveryError instanceof HostCommandError) throw recoveryError;
+      throw redactHostCommandFailure("host_binding_recovery_failed", recoveryError);
+    }
+    try {
+      return await rawRequest(method, params, requestOptions);
+    } catch (retryError) {
+      throw redactHostCommandFailure("host_binding_retry_failed", retryError);
+    }
   };
   const request = async (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
     if (hostCommandsEnabled() && (method === "new_session" || method === "resume")) return attach(method, params, requestOptions);
@@ -329,18 +337,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return await rawRequest(method, params, requestOptions);
     } catch (error) {
       if (!hostCommandsEnabled() || (method !== "send" && method !== "send_images") || !isHostBindingRequired(error)) throw error;
-      if (!activeSession || typeof params.delivery_id !== "string") throw redactHostCommandFailure("host_binding_recovery_failed", error);
-      try {
-        await attach("resume", { session_id: activeSession }, requestOptions);
-      } catch (recoveryError) {
-        if (recoveryError instanceof HostCommandError) throw recoveryError;
-        throw redactHostCommandFailure("host_binding_recovery_failed", recoveryError);
-      }
-      try {
-        return await rawRequest(method, params, requestOptions);
-      } catch (retryError) {
-        throw redactHostCommandFailure("host_binding_retry_failed", retryError);
-      }
+      return recoverHostBinding(method, params, requestOptions, error);
     }
   };
   const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
