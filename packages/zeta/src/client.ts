@@ -2,6 +2,13 @@ import { createRunStore, type RunEvent, type Scheduler, type RunState } from "@f
 import { fromZetaEvent } from "./adapter.js";
 import type { HelloResult, RpcError, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
+import {
+  HostCommandError,
+  isHostBindingRequired,
+  redactHostCommandFailure,
+  validateHostCommands,
+  type HostCommandSupplier,
+} from "./host-commands.js";
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -13,7 +20,13 @@ export interface RequestOptions {
   intent?: string;
 }
 /** maxSessions limits only event-created stores; held view stores can exceed it. */
-export interface ClientOptions { maxPendingRequests?: number; maxFrameSize?: number; maxSessions?: number }
+export interface ClientOptions {
+  maxPendingRequests?: number;
+  maxFrameSize?: number;
+  maxSessions?: number;
+  /** Enables Zeta session host commands and supplies a fresh binding for each session attachment. */
+  hostCommands?: HostCommandSupplier | null;
+}
 export type SessionStore = ReturnType<typeof createRunStore>;
 export interface SessionLease {
   readonly store: SessionStore;
@@ -100,6 +113,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   let handshaken = false;
   let negotiatedProtocol = "1.0";
   let negotiatedFeatures: string[] = [];
+  let warnedHostCommandsUnavailable = false;
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
   const maxSessions = options.maxSessions ?? 100;
@@ -331,18 +345,27 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     else handleReply(message);
   });
   const closeListeners = new Set<(error: unknown) => void>();
+  const attachmentGates = new Map<string, Promise<unknown>>();
+  let closeSignal!: (error: unknown) => void;
+  const closedPromise = new Promise<unknown>((resolve) => { closeSignal = resolve; });
   let closed = false;
-  const rejectPending = (code?: number) => { const error = closeError?.(handshaken, code) ?? new Error("transport closed"); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); return error; };
-  transport.onClose?.((code) => {
-    const error = rejectPending(code);
-    cancelLoads();
+  let closedError: unknown;
+  const closeClient = (code?: number) => {
     if (closed) return;
+    const error = closeError?.(handshaken, code) ?? new Error("transport closed");
     closed = true;
+    closedError = error;
+    pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
+    closeSignal(error);
+    attachmentGates.clear();
+    cancelLoads();
     closeListeners.forEach((listener) => listener(error));
-  });
+  };
+  transport.onClose?.((code) => { closeClient(code); });
   /** Calls `listener` once when the transport closes, with the same error that rejected pending requests. */
   const onClose = (listener: (error: unknown) => void) => { closeListeners.add(listener); return () => { closeListeners.delete(listener); }; };
-  const request = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
+  const rawRequest = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
+    if (closed) return Promise.reject(closedError);
     if (!handshaken && method !== "hello") return Promise.reject(new Error("hello required"));
     if (pending.size >= maxPending) return Promise.reject(Object.assign(new Error("too many pending requests"), { code: "pending_limit" }));
     if (requestOptions.signal?.aborted) return Promise.reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
@@ -357,13 +380,79 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       catch (error) { settle(id, (entry) => entry.reject(error)); }
     });
   };
+  const hostCommandsEnabled = () => options.hostCommands !== undefined && options.hostCommands !== null && negotiatedFeatures.includes("session_host_commands");
+  const performAttach = async (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
+    const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
+    if (closed) throw closedError;
+    let supply: Promise<unknown>;
+    try {
+      supply = Promise.resolve(options.hostCommands!(sessionId)).catch(() => {
+        throw new HostCommandError("host_command_supplier_failed", "host command supplier failed");
+      });
+    } catch {
+      supply = Promise.reject(new HostCommandError("host_command_supplier_failed", "host command supplier failed"));
+    }
+    const supplied = await Promise.race([supply, closedPromise.then((error) => { throw error; })]);
+    if (closed) throw closedError;
+    const commands = validateHostCommands(supplied);
+    try {
+      return await rawRequest(method, { ...params, host_commands: commands }, requestOptions);
+    } catch (error) {
+      throw redactHostCommandFailure("host_command_request_failed", error);
+    }
+  };
+  const attach = (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
+    const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
+    if (sessionId === null) return performAttach(method, params, requestOptions);
+    const previous = attachmentGates.get(sessionId);
+    const operation = previous?.catch(() => {}).then(() => performAttach(method, params, requestOptions))
+      ?? performAttach(method, params, requestOptions);
+    const gate = operation;
+    attachmentGates.set(sessionId, gate);
+    const clear = () => {
+      if (attachmentGates.get(sessionId) === gate) {
+        attachmentGates.delete(sessionId);
+      }
+    };
+    gate.then(clear, clear);
+    return gate;
+  };
+  const recoverHostBinding = async (method: string, params: Record<string, unknown>, requestOptions: RequestOptions, error: unknown) => {
+    const sessionId = typeof params.session_id === "string" ? params.session_id : null;
+    if (!sessionId || typeof params.delivery_id !== "string") throw redactHostCommandFailure("host_binding_recovery_failed", error);
+    try {
+      await (attachmentGates.get(sessionId) ?? attach("resume", { session_id: sessionId }, requestOptions));
+    } catch (recoveryError) {
+      if (recoveryError === closedError || recoveryError instanceof HostCommandError) throw recoveryError;
+      throw redactHostCommandFailure("host_binding_recovery_failed", recoveryError);
+    }
+    try {
+      return await rawRequest(method, params, requestOptions);
+    } catch (retryError) {
+      throw redactHostCommandFailure("host_binding_retry_failed", retryError);
+    }
+  };
+  const request = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
+    if (hostCommandsEnabled() && (method === "new_session" || method === "resume")) return attach(method, params, requestOptions);
+    const gate = ["send", "send_images", "steer"].includes(method) ? attachmentGates.get(params.session_id as string) : undefined;
+    const result = gate ? gate.then(() => rawRequest(method, params, requestOptions)) : rawRequest(method, params, requestOptions);
+    if (!hostCommandsEnabled() || (method !== "send" && method !== "send_images")) return result;
+    return result.catch((error) => isHostBindingRequired(error) ? recoverHostBinding(method, params, requestOptions, error) : Promise.reject(error));
+  };
   const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
-    const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", ...(requestedFeatures ? { features: requestedFeatures } : {}) }) as Promise<HelloResult>;
+    const features = options.hostCommands
+      ? [...new Set([...(requestedFeatures ?? []), "session_host_commands"])]
+      : requestedFeatures;
+    const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", ...(features ? { features } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => {
       handshaken = true;
       negotiatedProtocol = typeof result.protocol_version === "string" ? result.protocol_version : "1.0";
       const features = result.capabilities?.features;
       negotiatedFeatures = negotiatedProtocol !== "1.0" && Array.isArray(features) && features.every((feature): feature is string => typeof feature === "string") ? features : [];
+      if (options.hostCommands && !negotiatedFeatures.includes("session_host_commands") && !warnedHostCommandsUnavailable) {
+        warnedHostCommandsUnavailable = true;
+        console.warn("session_host_commands was requested but is not offered; host commands are disabled");
+      }
       return result;
     });
   };
@@ -378,8 +467,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return await readContentChunks(handle, cap, (offset) => request("content_read", { handle, offset }, { signal: options.signal }));
     } catch (error) { return contentReadError(error); }
   };
-  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
+  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { closeClient(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
-export function connect(transport: Transport, scheduler?: Scheduler) { return createClient(transport, scheduler); }
+export function connect(transport: Transport, scheduler?: Scheduler, options?: ClientOptions) { return createClient(transport, scheduler, undefined, options); }
 export type { RunState };
