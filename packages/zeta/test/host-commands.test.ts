@@ -6,11 +6,12 @@ type Message = { id: number; method: string; params: Record<string, unknown> };
 
 function fakeTransport() {
   let onMessage!: (text: string) => void;
+  let onClose = (_code?: number) => {};
   const sent: Message[] = [];
   const transport: Transport = {
     send(text) { sent.push(JSON.parse(text)); },
     onMessage(callback) { onMessage = callback; },
-    onClose() {},
+    onClose(callback) { onClose = callback; },
     close() {},
   };
   return {
@@ -22,6 +23,7 @@ function fakeTransport() {
     fail(message: Message, code: number, data?: unknown) {
       onMessage(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code, message: "request failed", data } }));
     },
+    drop(code = 1006) { onClose(code); },
   };
 }
 
@@ -113,6 +115,49 @@ test("a session send waits for its slow resume attachment", async () => {
   expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "resume", "send"]);
   fake.reply(fake.sent.at(-1)!, { accepted: true });
   await sending;
+});
+
+test("a dropped client rejects a pending attachment and queued send", async () => {
+  const supplied = deferred<HostCommand[]>();
+  const fake = fakeTransport();
+  const client = createClient(fake.transport, undefined, (_handshaken, code) => new Error(`closed ${code}`), { hostCommands: () => supplied.promise });
+  await hello(fake, client);
+
+  const resuming = client.request("resume", { session_id: "s-one" });
+  const sending = client.request("send", { session_id: "s-one", text: "hello" });
+  fake.drop();
+  await expect(Promise.all([resuming, sending])).rejects.toThrow("closed 1006");
+  supplied.resolve([command()]);
+  await Bun.sleep(0);
+  expect(fake.sent.map(({ method }) => method)).toEqual(["hello"]);
+});
+
+test("close rejects a pending attachment and queued send, and clears the gate", async () => {
+  const supplied = deferred<HostCommand[]>();
+  const fake = fakeTransport();
+  const client = createClient(fake.transport, undefined, () => new Error("closed"), { hostCommands: () => supplied.promise });
+  await hello(fake, client);
+
+  const resuming = client.request("resume", { session_id: "s-one" });
+  const sending = client.request("send", { session_id: "s-one", text: "hello" });
+  client.close();
+  await expect(Promise.all([resuming, sending])).rejects.toThrow("closed");
+  supplied.resolve([command()]);
+  await Bun.sleep(0);
+  expect(fake.sent.map(({ method }) => method)).toEqual(["hello"]);
+});
+
+test("a late host command supplier cannot send after close", async () => {
+  const supplied = deferred<HostCommand[]>();
+  const fake = fakeTransport();
+  const client = createClient(fake.transport, undefined, undefined, { hostCommands: () => supplied.promise });
+  await hello(fake, client);
+  const resuming = client.request("resume", { session_id: "s-one" });
+  client.close();
+  supplied.resolve([command()]);
+  await expect(resuming).rejects.toThrow();
+  await Bun.sleep(0);
+  expect(fake.sent.map(({ method }) => method)).toEqual(["hello"]);
 });
 
 test("two session sends wait for one slow attachment and leave in call order", async () => {

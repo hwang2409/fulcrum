@@ -345,18 +345,28 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     else handleReply(message);
   });
   const closeListeners = new Set<(error: unknown) => void>();
+  const attachmentGates = new Map<string, Promise<unknown>>();
+  const attachmentRejects = new Map<string, (error: unknown) => void>();
   let closed = false;
-  const rejectPending = (code?: number) => { const error = closeError?.(handshaken, code) ?? new Error("transport closed"); pending.forEach((_, id) => settle(id, (request) => request.reject(error))); return error; };
-  transport.onClose?.((code) => {
-    const error = rejectPending(code);
-    cancelLoads();
-    if (closed) return;
+  let closedError: unknown;
+  const closeClient = (code?: number) => {
+    if (closed) return closedError;
+    const error = closeError?.(handshaken, code) ?? new Error("transport closed");
     closed = true;
+    closedError = error;
+    pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
+    attachmentRejects.forEach((reject) => reject(error));
+    attachmentRejects.clear();
+    attachmentGates.clear();
+    cancelLoads();
     closeListeners.forEach((listener) => listener(error));
-  });
+    return error;
+  };
+  transport.onClose?.((code) => { closeClient(code); });
   /** Calls `listener` once when the transport closes, with the same error that rejected pending requests. */
   const onClose = (listener: (error: unknown) => void) => { closeListeners.add(listener); return () => { closeListeners.delete(listener); }; };
   const rawRequest = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
+    if (closed) return Promise.reject(closedError);
     if (!handshaken && method !== "hello") return Promise.reject(new Error("hello required"));
     if (pending.size >= maxPending) return Promise.reject(Object.assign(new Error("too many pending requests"), { code: "pending_limit" }));
     if (requestOptions.signal?.aborted) return Promise.reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
@@ -372,15 +382,16 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     });
   };
   const hostCommandsEnabled = () => options.hostCommands !== undefined && options.hostCommands !== null && negotiatedFeatures.includes("session_host_commands");
-  const attachmentGates = new Map<string, Promise<unknown>>();
   const performAttach = async (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
     const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
+    if (closed) throw closedError;
     let supplied: unknown;
     try {
       supplied = await options.hostCommands!(sessionId);
     } catch {
       throw new HostCommandError("host_command_supplier_failed", "host command supplier failed");
     }
+    if (closed) throw closedError;
     const commands = validateHostCommands(supplied);
     try {
       return await rawRequest(method, { ...params, host_commands: commands }, requestOptions);
@@ -394,10 +405,21 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const previous = attachmentGates.get(sessionId);
     const operation = previous?.catch(() => {}).then(() => performAttach(method, params, requestOptions))
       ?? performAttach(method, params, requestOptions);
-    attachmentGates.set(sessionId, operation);
-    const clear = () => { if (attachmentGates.get(sessionId) === operation) attachmentGates.delete(sessionId); };
-    operation.then(clear, clear);
-    return operation;
+    let rejectGate!: (error: unknown) => void;
+    const gate = new Promise<unknown>((resolve, reject) => {
+      rejectGate = reject;
+      operation.then(resolve, reject);
+    });
+    attachmentRejects.set(sessionId, rejectGate);
+    attachmentGates.set(sessionId, gate);
+    const clear = () => {
+      if (attachmentGates.get(sessionId) === gate) {
+        attachmentGates.delete(sessionId);
+        attachmentRejects.delete(sessionId);
+      }
+    };
+    gate.then(clear, clear);
+    return gate;
   };
   const recoverHostBinding = async (method: string, params: Record<string, unknown>, requestOptions: RequestOptions, error: unknown) => {
     const sessionId = typeof params.session_id === "string" ? params.session_id : null;
@@ -449,7 +471,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return await readContentChunks(handle, cap, (offset) => request("content_read", { handle, offset }, { signal: options.signal }));
     } catch (error) { return contentReadError(error); }
   };
-  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { cancelLoads(); rejectPending(); transport.close(); } };
+  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, evictSession: evict, close: () => { closeClient(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler, options?: ClientOptions) { return createClient(transport, scheduler, undefined, options); }
