@@ -352,27 +352,133 @@ test("a lazy image retries one decode failure automatically, then shows manual r
   }
 });
 
-test("a replaced image url is revoked only after both leases leave its generation", async () => {
+test("a sibling decode retry keeps an open full view visible through a slow replacement", async () => {
   const savedObserver = globalThis.IntersectionObserver;
   const savedCreate = URL.createObjectURL;
   const savedRevoke = URL.revokeObjectURL;
   globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const replacement = deferredBlob();
   const revoked: string[] = [];
   let calls = 0;
   URL.createObjectURL = () => `blob:generation-${calls}`;
   URL.revokeObjectURL = (url) => { revoked.push(url); };
   const { store } = setup([
+    { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "slow-shared" } }] } },
+    { type: "message_commit", message_id: "b", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "slow-shared" } }] } },
+  ]);
+  try {
+    mount(<RunProvider store={store} loadMedia={() => ++calls === 1 ? Promise.resolve(new Blob(["first"])) : replacement.promise}><Message id="message:a" /><Message id="message:b" /></RunProvider>);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const oldUrl = (container.querySelector("img") as HTMLImageElement).src;
+    act(() => (container.querySelectorAll('[data-part="image-open"]')[1] as HTMLButtonElement).click());
+    await act(async () => { (container.querySelector("img") as HTMLImageElement).dispatchEvent(new Event("error")); await Promise.resolve(); });
+    expect(calls).toBe(2);
+    expect(container.querySelectorAll(`img[src="${oldUrl}"]`)).toHaveLength(2);
+    expect(q('[data-part="image-dialog"] img').getAttribute("src")).toBe(oldUrl);
+    expect(revoked).toEqual([]);
+    await act(async () => { replacement.resolve(new Blob(["second"])); await Promise.resolve(); await Promise.resolve(); });
+    expect(q('[data-part="image-dialog"] img').getAttribute("src")).toBe("blob:generation-2");
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+    URL.createObjectURL = savedCreate;
+    URL.revokeObjectURL = savedRevoke;
+  }
+});
+
+test("a replaced image url is revoked once after the last lease commits the new url", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  const savedCreate = URL.createObjectURL;
+  const savedRevoke = URL.revokeObjectURL;
+  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const replacement = deferredBlob();
+  const revoked: string[] = [];
+  const renderedAtRevoke: number[] = [];
+  let calls = 0;
+  URL.createObjectURL = () => `blob:generation-${calls}`;
+  URL.revokeObjectURL = (url) => { revoked.push(url); renderedAtRevoke.push(container.querySelectorAll(`img[src="${url}"]`).length); };
+  const { store } = setup([
     { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "revoke-shared" } }] } },
     { type: "message_commit", message_id: "b", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "revoke-shared" } }] } },
   ]);
   try {
-    mount(<RunProvider store={store} loadMedia={async () => { calls++; return new Blob([`generation-${calls}`]); }}><Message id="message:a" /><Message id="message:b" /></RunProvider>);
+    mount(<RunProvider store={store} loadMedia={() => ++calls === 1 ? Promise.resolve(new Blob(["first"])) : replacement.promise}><Message id="message:a" /><Message id="message:b" /></RunProvider>);
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     const oldUrl = (container.querySelector("img") as HTMLImageElement).src;
-    await act(async () => { (container.querySelector("img") as HTMLImageElement).dispatchEvent(new Event("error")); await Promise.resolve(); await Promise.resolve(); });
-    expect(calls).toBe(2);
+    await act(async () => { (container.querySelector("img") as HTMLImageElement).dispatchEvent(new Event("error")); await Promise.resolve(); });
+    expect(revoked).toEqual([]);
+    await act(async () => { replacement.resolve(new Blob(["second"])); await Promise.resolve(); await Promise.resolve(); });
     expect(container.querySelectorAll(`img[src="${oldUrl}"]`)).toHaveLength(0);
     expect(revoked).toEqual([oldUrl]);
+    expect(renderedAtRevoke).toEqual([0]);
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+    URL.createObjectURL = savedCreate;
+    URL.revokeObjectURL = savedRevoke;
+  }
+});
+
+test("a failed replacement keeps good sibling leases on the old url", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  const savedCreate = URL.createObjectURL;
+  const savedRevoke = URL.revokeObjectURL;
+  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const replacement = deferredBlob();
+  const revoked: string[] = [];
+  let calls = 0;
+  URL.createObjectURL = () => `blob:generation-${calls}`;
+  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  const { store } = setup([
+    { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "failed-shared" } }] } },
+    { type: "message_commit", message_id: "b", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "failed-shared" } }] } },
+  ]);
+  try {
+    mount(<RunProvider store={store} loadMedia={() => ++calls === 1 ? Promise.resolve(new Blob(["first"])) : replacement.promise}><Message id="message:a" /><Message id="message:b" /></RunProvider>);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    const oldUrl = (container.querySelector("img") as HTMLImageElement).src;
+    await act(async () => { (container.querySelector("img") as HTMLImageElement).dispatchEvent(new Event("error")); replacement.reject(new Error("replacement failed")); await Promise.resolve(); await Promise.resolve(); });
+    expect(container.querySelectorAll(`img[src="${oldUrl}"]`)).toHaveLength(1);
+    expect(container.querySelectorAll('[data-action="retry"]')).toHaveLength(1);
+    expect(revoked).toEqual([]);
+  } finally {
+    globalThis.IntersectionObserver = savedObserver;
+    URL.createObjectURL = savedCreate;
+    URL.revokeObjectURL = savedRevoke;
+  }
+});
+
+test("100 image retries neither revoke a rendered url nor leak generations", async () => {
+  const savedObserver = globalThis.IntersectionObserver;
+  const savedCreate = URL.createObjectURL;
+  const savedRevoke = URL.revokeObjectURL;
+  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const revoked: string[] = [];
+  let revokedWhileRendered = 0;
+  let created = 0;
+  URL.createObjectURL = () => `blob:retry-${created++}`;
+  URL.revokeObjectURL = (url) => {
+    revoked.push(url);
+    if (container.querySelector(`img[src="${url}"]`)) revokedWhileRendered++;
+  };
+  try {
+    render([commit([
+      { type: "image", source: { kind: "lazy", key: "retry-100" } },
+      { type: "image", source: { kind: "lazy", key: "retry-100" } },
+    ])], { loadMedia: async () => new Blob(["image"]) });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    for (let index = 0; index < 100; index++) {
+      await act(async () => {
+        (container.querySelector("img") as HTMLImageElement).dispatchEvent(new Event("error"));
+        await Promise.resolve(); await Promise.resolve();
+      });
+      const retry = container.querySelector('[data-action="retry"]') as HTMLButtonElement | null;
+      if (retry) await act(async () => { retry.click(); await Promise.resolve(); await Promise.resolve(); });
+    }
+    act(() => root?.unmount());
+    root = undefined;
+    expect(revokedWhileRendered).toBe(0);
+    expect(created).toBe(101);
+    expect(revoked).toHaveLength(created);
+    expect(new Set(revoked).size).toBe(created);
   } finally {
     globalThis.IntersectionObserver = savedObserver;
     URL.createObjectURL = savedCreate;

@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -46,10 +47,12 @@ export function useMedia(block: LazyContentBlock | undefined, active: boolean) {
   const current = useRef<MediaState | typeof idleMedia>(idleMedia);
   const [state, setState] = useState<MediaState | typeof idleMedia>(idleMedia);
   const [generation, setGeneration] = useState(0);
-  const show = useCallback((next: MediaState | typeof idleMedia, nextGeneration = 0) => {
+  const [renderGeneration, setRenderGeneration] = useState(0);
+  const show = useCallback((next: MediaState | typeof idleMedia, nextGeneration = 0, nextRenderGeneration = 0) => {
     current.current = next;
     setState(next);
     setGeneration(nextGeneration);
+    setRenderGeneration(nextRenderGeneration);
   }, []);
   const release = useCallback(() => { lease.current?.release(); lease.current = undefined; }, []);
   useEffect(() => {
@@ -65,13 +68,14 @@ export function useMedia(block: LazyContentBlock | undefined, active: boolean) {
     if (lease.current) return;
     const next = store.acquire(block.source.key, block);
     lease.current = next;
-    const update = () => show(next.state, next.generation);
+    const update = () => show(next.state, next.generation, next.renderGeneration);
     update();
     return next.subscribe(update);
   }, [active, block, store, release, show]);
+  useLayoutEffect(() => { lease.current?.commit(renderGeneration); });
   const retry = useCallback(() => {
-    if (store && block && generation) store.invalidate(block.source.key, generation);
-  }, [block, generation, store]);
+    if (generation) lease.current?.invalidate(generation);
+  }, [generation]);
   return { state, retry, available: Boolean(store) };
 }
 

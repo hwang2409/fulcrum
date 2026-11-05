@@ -9,9 +9,11 @@ export type MediaState =
   | { status: "error"; error: unknown };
 
 type LeaseRecord = {
-  entry: Entry;
+  broken: boolean;
   listeners: Set<() => void>;
   released: boolean;
+  rendered?: Entry;
+  target: Entry;
 };
 
 type Entry = {
@@ -19,13 +21,17 @@ type Entry = {
   controller: AbortController;
   generation: number;
   leases: Set<LeaseRecord>;
+  renderRefs: number;
   revoked: boolean;
   state: MediaState;
 };
 
 export type MediaLease = {
   readonly generation: number;
+  readonly renderGeneration: number;
   readonly state: MediaState;
+  commit(generation: number): void;
+  invalidate(generation: number): void;
   subscribe(listener: () => void): () => void;
   release(): void;
 };
@@ -34,41 +40,47 @@ const CACHE_SIZE = 32;
 
 export class MediaStore {
   private readonly entries = new Map<string, Entry>();
+  private readonly generations = new Set<Entry>();
   private readonly unused = new Map<string, Entry>();
+  private disposed = false;
   private nextGeneration = 0;
 
   constructor(private readonly load: LoadMedia) {}
 
   acquire(key: string, block: LazyContentBlock): MediaLease {
     const entry = this.entries.get(key) ?? this.start(key, block);
-    const record: LeaseRecord = { entry, listeners: new Set(), released: false };
+    const record: LeaseRecord = { broken: false, listeners: new Set(), released: false, target: entry };
     entry.leases.add(record);
     this.unused.delete(key);
+    const shown = () => entryForState(record);
     return {
-      get generation() { return record.entry.generation; },
-      get state() { return record.entry.state; },
+      get generation() { return shown().generation; },
+      get renderGeneration() { const entry = shown(); return entry.state.status === "ready" ? entry.generation : 0; },
+      get state() { return shown().state; },
+      commit: (generation) => this.commit(record, generation),
+      invalidate: (generation) => this.invalidate(key, generation, record),
       subscribe: (listener) => { record.listeners.add(listener); return () => record.listeners.delete(listener); },
-      release: () => {
-        if (record.released) return;
-        record.released = true;
-        record.entry.leases.delete(record);
-        this.release(key, record.entry);
-      },
+      release: () => this.release(key, record),
     };
   }
 
-  invalidate(key: string, generation: number) {
+  private invalidate(key: string, generation: number, source: LeaseRecord) {
+    if (source.released || entryForState(source).generation !== generation) return;
+    source.broken = true;
     const entry = this.entries.get(key);
-    if (!entry || entry.generation !== generation) return;
+    if (!entry || entry.generation !== generation) {
+      source.listeners.forEach((listener) => listener());
+      return;
+    }
     const replacement = this.start(key, entry.block);
     const leases = [...entry.leases];
     for (const lease of leases) {
       entry.leases.delete(lease);
-      lease.entry = replacement;
+      lease.target = replacement;
       replacement.leases.add(lease);
     }
     leases.forEach((lease) => lease.listeners.forEach((listener) => listener()));
-    this.release(key, entry);
+    this.cleanup(key, entry);
   }
 
   private start(key: string, block: LazyContentBlock) {
@@ -77,10 +89,12 @@ export class MediaStore {
       controller: new AbortController(),
       generation: ++this.nextGeneration,
       leases: new Set(),
+      renderRefs: 0,
       revoked: false,
       state: { status: "loading" },
     };
     this.entries.set(key, entry);
+    this.generations.add(entry);
     void this.load(block, entry.controller.signal).then(
       (blob) => this.finish(key, entry, blob),
       (error) => this.fail(key, entry, error),
@@ -96,26 +110,56 @@ export class MediaStore {
     if (this.entries.get(key) !== entry || entry.controller.signal.aborted) return;
     entry.state = { status: "ready", url: URL.createObjectURL(blob) };
     this.notify(entry);
-    if (entry.leases.size === 0) this.cache(key, entry);
+    if (entry.leases.size === 0 && entry.renderRefs === 0) this.cache(key, entry);
   }
 
   private fail(key: string, entry: Entry, error: unknown) {
     if (this.entries.get(key) !== entry) return;
     entry.state = { status: "error", error };
     this.notify(entry);
-    if (entry.leases.size === 0) this.entries.delete(key);
+    this.cleanup(key, entry);
   }
 
-  private release(key: string, entry: Entry) {
-    if (entry.leases.size > 0) return;
-    if (this.entries.get(key) !== entry) {
-      entry.controller.abort();
-      this.revoke(entry);
-    } else if (entry.state.status === "loading") {
+  private commit(record: LeaseRecord, generation: number) {
+    if (record.released) return;
+    const next = generation === record.target.generation && record.target.state.status === "ready"
+      ? record.target
+      : generation === record.rendered?.generation ? record.rendered : undefined;
+    if (next === record.rendered) return;
+    if (next) next.renderRefs++;
+    const previous = record.rendered;
+    record.rendered = next;
+    if (next === record.target) record.broken = false;
+    if (previous) {
+      previous.renderRefs--;
+      this.cleanup(previous.block.source.key, previous);
+    }
+  }
+
+  private release(key: string, record: LeaseRecord) {
+    if (record.released) return;
+    record.released = true;
+    record.target.leases.delete(record);
+    const target = record.target;
+    const rendered = record.rendered;
+    if (rendered) rendered.renderRefs--;
+    record.rendered = undefined;
+    record.listeners.clear();
+    this.cleanup(key, target);
+    if (rendered && rendered !== target) this.cleanup(key, rendered);
+  }
+
+  private cleanup(key: string, entry: Entry) {
+    if (entry.leases.size > 0 || entry.renderRefs > 0) return;
+    if (this.disposed || this.entries.get(key) !== entry) this.discard(entry);
+    else if (entry.state.status === "loading") {
       this.entries.delete(key);
-      entry.controller.abort();
+      this.discard(entry);
     } else if (entry.state.status === "ready") this.cache(key, entry);
-    else this.entries.delete(key);
+    else {
+      this.entries.delete(key);
+      this.generations.delete(entry);
+    }
   }
 
   private cache(key: string, entry: Entry) {
@@ -129,7 +173,13 @@ export class MediaStore {
     if (!entry) return;
     this.unused.delete(key);
     this.entries.delete(key);
+    this.discard(entry);
+  }
+
+  private discard(entry: Entry) {
+    entry.controller.abort();
     this.revoke(entry);
+    this.generations.delete(entry);
   }
 
   private revoke(entry: Entry) {
@@ -139,11 +189,17 @@ export class MediaStore {
   }
 
   dispose() {
-    for (const entry of this.entries.values()) {
-      entry.controller.abort();
-      this.revoke(entry);
-    }
+    this.disposed = true;
     this.entries.clear();
     this.unused.clear();
+    for (const entry of this.generations) {
+      entry.controller.abort();
+      if (entry.renderRefs === 0) this.discard(entry);
+    }
   }
 }
+
+const entryForState = (record: LeaseRecord) =>
+  !record.broken && record.rendered?.state.status === "ready" && record.target.state.status !== "ready"
+    ? record.rendered
+    : record.target;
