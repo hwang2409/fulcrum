@@ -166,7 +166,11 @@ export class TokenizerRuntime {
     await this.flushProvisional(language, epoch);
   }
 
-  // Compiles each pattern not yet cached, yielding to the worker's queue after each WARM_SLICE_MS.
+  // Compiles and warms each grammar pattern not yet cached, yielding to the worker's queue after each WARM_SLICE_MS.
+  // Warming matters for correctness, not only latency: under CPU load Bun/JavaScriptCore can return a wrong result on a
+  // `v`-flag regex's very first exec. Shiki's scanner reuses each regex's first search on a line, so that wrong "no
+  // match" is cached and never retried (e.g. TypeScript `(:)(?=\s*\S)` failed at `id:`, merging `id: number };` into one
+  // token). Forcing the first exec here, before any real block reaches a scanner, keeps that bad first exec off the hot path.
   private async compile(patterns: Set<string>, cache: RegexCache, epoch: number): Promise<void> {
     const { defaultJavaScriptRegexConstructor } = await import("@shikijs/engine-javascript");
     let sliceStart = performance.now();
@@ -178,7 +182,7 @@ export class TokenizerRuntime {
         try {
           const recipe = this.recipes.get(pattern);
           const regex = recipe ? regexFromRecipe(recipe) : defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
-          regex.exec(""); // force native compilation before a real block reaches Bun's regex engine
+          regex.exec(""); // absorb the wrong first exec; the scanner only ever sees the settled regex
           regex.lastIndex = 0;
           cache.set(pattern, regex);
         } catch (cause) { cache.set(pattern, cause instanceof Error ? cause : new Error(String(cause))); }

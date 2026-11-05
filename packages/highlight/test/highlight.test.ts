@@ -275,15 +275,38 @@ describe("incremental tokenization", () => {
     expect(restored.exec("ab")).toEqual(converted.exec("ab"));
   });
 
-  // Bun 1.4 on macOS arm64 can compile a `v` regex incorrectly on its first real input. Recipes keep conversion out of
-  // the cold path, but every grammar regex must be constructed and forced to compile before tokenization starts.
-  test("static recipes compile before a real document reaches the scanner", async () => {
+  // Root cause (PR #57): Bun/JavaScriptCore can return a wrong result on a `v`-flag recipe regex's very first exec
+  // under CPU load. Shiki's scanner reuses each regex's first search on a line (vscode-oniguruma behaviour), so that
+  // first wrong "no match" is cached and never retried: e.g. the TypeScript `(:)(?=\s*\S)` rule failed at `id:`, and
+  // `id: number };` merged into one token. The fix warms every grammar regex with `exec("")` during warm-up, before any
+  // real block reaches a scanner, so the scanner never sees a cold first exec. This guards that warming: every plain
+  // grammar RegExp in the cache must have been exec'd during warm-up. It fails on the lazy path, where the
+  // type-annotation recipes are never exec'd before the first real document.
+  test("warm-up exec-warms every grammar regex so no scanner does a cold first exec", async () => {
+    const execd = new Set<string>();
+    const originalExec = RegExp.prototype.exec;
+    RegExp.prototype.exec = function (this: RegExp, input: string) { execd.add(this.source); return originalExec.call(this, input); };
+    try {
+      for (const language of ["typescript", "cpp"]) {
+        execd.clear();
+        const runtime = new TokenizerRuntime(() => {});
+        await runtime.tokenize("x\n", language, { id: "load", version: 1, state: "done" });
+        await runtime["warming"].get(language);
+        const cache = runtime["cache"] as Map<string, RegExp | Error> & { static: Map<string, RegExp | Error>; grammar: Set<string> };
+        expect(cache.static.size).toBe(cache.grammar.size); // every grammar pattern compiled before any real block
+        const coldPlain = [...cache.static.values()].filter((r): r is RegExp => r instanceof RegExp && r.constructor === RegExp && !execd.has(r.source));
+        expect(coldPlain.map((r) => r.source)).toEqual([]); // none would be a cold first exec inside a scanner
+        runtime.dispose();
+      }
+    } finally { RegExp.prototype.exec = originalExec; }
+  }, 60_000);
+
+  test("a warmed grammar tokenizes a document the same way twice", async () => {
     const documents = [["cpp", "#include <vector>\nstd::vector<int> values;\nint main() { return values.size(); }\n"], ["typescript", viteConfig]] as const;
     for (const [language, source] of documents) {
       const runtime = new TokenizerRuntime(() => {});
       await runtime.tokenize("x\n", language, { id: "load", version: 1, state: "done" });
       await runtime["warming"].get(language);
-      expect(runtime.cacheSize().static).toBe(runtime["cache"].grammar.size);
       const first = await runtime.tokenize(source, language, { id: "first", version: 1, state: "done" });
       const afterFirst = runtime.cacheSize();
       const second = await runtime.tokenize(source, language, { id: "second", version: 1, state: "done" });

@@ -118,20 +118,25 @@ async function assertLegacyCoverage() {
   const actual = Object.keys(samples).sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`legacy samples do not match main's generated registry:\nexpected: ${expected.join(", ")}\nactual: ${actual.join(", ")}`);
 }
+// Mirror the runtime's warm-up: compile every grammar regex and force its first exec before tokenizing, so the direct
+// reference never hits Bun's wrong-first-exec defect either (see runtime.ts). Returns the engine's regex cache.
+function warmedCache(grammar: unknown): Map<string, RegExp | Error> {
+  const cache = new Map<string, RegExp | Error>();
+  for (const pattern of grammarPatterns(grammar)) {
+    try {
+      const regex = defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
+      regex.exec("");
+      regex.lastIndex = 0;
+      cache.set(pattern, regex);
+    } catch (cause) { cache.set(pattern, cause instanceof Error ? cause : new Error(String(cause))); }
+  }
+  return cache;
+}
 async function reference() {
   const out: Fixture["newReference"] = {};
   for (const [language, source] of Object.entries(newSamples)) {
     const grammar = language === "vue" ? vue : language === "svelte" ? svelte : julia;
-    const cache = new Map<string, RegExp | Error>();
-    for (const pattern of grammarPatterns(grammar)) {
-      try {
-        const regex = defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
-        regex.exec("");
-        regex.lastIndex = 0;
-        cache.set(pattern, regex);
-      } catch (cause) { cache.set(pattern, cause instanceof Error ? cause : new Error(String(cause))); }
-    }
-    const engine = createJavaScriptRegexEngine({ target: REGEX_TARGET, cache });
+    const engine = createJavaScriptRegexEngine({ target: REGEX_TARGET, cache: warmedCache(grammar) });
     const highlighter = await createHighlighterCore({ engine, langs: [grammar], themes: [semanticTheme] });
     try {
       highlighter.codeToTokens(source, { lang: language, theme: semanticTheme });
