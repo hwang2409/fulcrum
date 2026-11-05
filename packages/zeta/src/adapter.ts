@@ -311,9 +311,11 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
         return [approval, subAgent({ ...data, child_instance_id: childRunId }, status, urgency)];
       }
       case "usage": {
-        const input = object(wire.usage, "usage");
-        if (Object.values(input).some((item) => typeof item !== "number" || !Number.isFinite(item))) throw new Error("usage must contain finite numbers");
-        return [{ type: "usage", usage: { ...input } as Record<string, number> }];
+        // zeta keeps the provider's usage details (a service tier, nested cache counts) beside the token counts: the counts
+        // are the usage, the details are dropped.
+        const input = wire.usage?.constructor === Object ? wire.usage as Record<string, unknown> : {};
+        const usage = Object.fromEntries(Object.entries(input).filter((entry): entry is [string, number] => finite(entry[1]) && entry[1] >= 0));
+        return [{ type: "usage", usage }];
       }
       case "user_message": {
         if (wire.attachments !== undefined && !Array.isArray(wire.attachments)) throw new Error("attachments must be an array");
@@ -353,7 +355,7 @@ const text = (content: unknown[]) =>
 
 const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
   const row = object(value, "history row");
-  if (row.event === "approval_request" || row.event === "approval_end") {
+  if (row.event === "approval_request" || row.event === "approval_end" || row.event === "usage") {
     // History empties tool_use arguments, but an approval row keeps them: the call's result row then gets its full view.
     let call: ToolCall | undefined;
     try { call = tool(row.tool_call); } catch { /* no usable call: the row still maps */ }
