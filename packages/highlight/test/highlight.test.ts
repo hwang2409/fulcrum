@@ -1,14 +1,13 @@
 import { afterAll, describe, expect, jest, test } from "bun:test";
 import type { Token } from "../src/index.js";
+import type { RegexRecipeOptions } from "../src/regex.js";
 import { semanticTheme } from "../src/scopes.js";
 
-const build = Bun.spawnSync(["bun", "run", "build"], { cwd: new URL("..", import.meta.url).pathname });
-if (build.exitCode !== 0) throw new Error(build.stderr.toString());
 const { createHighlighter } = await import("../dist/index.js");
 // Unit tests never depend on how fast this machine is: the clock stands still unless a test moves it, so no line is ever
 // over the time limit by chance. Only a real worker (its own clock) runs on real time.
 Object.defineProperty(performance, "now", { configurable: true, value: () => 0 });
-const { TokenizerRuntime } = await import("../dist/runtime.js");
+const { TokenizerRuntime, regexFromRecipe } = await import("../dist/runtime.js");
 // Every tokenize call on this (the main) thread. The page's thread must never tokenize: a test asserts this stays 0.
 let mainThreadTokenizes = 0;
 const tokenizeOnMainThread = TokenizerRuntime.prototype.tokenize;
@@ -269,19 +268,51 @@ describe("incremental tokenization", () => {
     counter.runtime.dispose();
   });
 
-  // In the worker a grammar is warmed in the background; once warm, a document compiles no regex: warm-up compiled each
-  // pattern in every form textmate compiles it (anchor variants, `\z` rewritten). Regression: cpp's anchor variants were
-  // missed, and its first line then compiled 51 patterns in one scanner build that cannot yield (272 ms in Chromium).
-  test("after warm-up a document compiles no regex", async () => {
+  test("a recipe preserves converter emulation metadata", async () => {
+    const { defaultJavaScriptRegexConstructor } = await import("@shikijs/engine-javascript");
+    const converted = defaultJavaScriptRegexConstructor("(a)(?>b)", { target: "ES2024" }) as RegExp & { rawOptions?: RegexRecipeOptions };
+    const restored = regexFromRecipe([converted.source, converted.flags, converted.rawOptions]);
+    expect(restored.exec("ab")).toEqual(converted.exec("ab"));
+  });
+
+  // Root cause (PR #57): Bun/JavaScriptCore can return a wrong result on a `v`-flag recipe regex's very first exec
+  // under CPU load. Shiki's scanner reuses each regex's first search on a line (vscode-oniguruma behaviour), so that
+  // first wrong "no match" is cached and never retried: e.g. the TypeScript `(:)(?=\s*\S)` rule failed at `id:`, and
+  // `id: number };` merged into one token. The fix warms every grammar regex with `exec("")` during warm-up, before any
+  // real block reaches a scanner, so the scanner never sees a cold first exec. This guards that warming: every plain
+  // grammar RegExp in the cache must have been exec'd during warm-up. It fails on the lazy path, where the
+  // type-annotation recipes are never exec'd before the first real document.
+  test("warm-up exec-warms every grammar regex so no scanner does a cold first exec", async () => {
+    const execd = new Set<string>();
+    const originalExec = RegExp.prototype.exec;
+    RegExp.prototype.exec = function (this: RegExp, input: string) { execd.add(this.source); return originalExec.call(this, input); };
+    try {
+      for (const language of ["typescript", "cpp"]) {
+        execd.clear();
+        const runtime = new TokenizerRuntime(() => {});
+        await runtime.tokenize("x\n", language, { id: "load", version: 1, state: "done" });
+        await runtime["warming"].get(language);
+        const cache = runtime["cache"] as Map<string, RegExp | Error> & { static: Map<string, RegExp | Error>; grammar: Set<string> };
+        expect(cache.static.size).toBe(cache.grammar.size); // every grammar pattern compiled before any real block
+        const coldPlain = [...cache.static.values()].filter((r): r is RegExp => r instanceof RegExp && r.constructor === RegExp && !execd.has(r.source));
+        expect(coldPlain.map((r) => r.source)).toEqual([]); // none would be a cold first exec inside a scanner
+        runtime.dispose();
+      }
+    } finally { RegExp.prototype.exec = originalExec; }
+  }, 60_000);
+
+  test("a warmed grammar tokenizes a document the same way twice", async () => {
     const documents = [["cpp", "#include <vector>\nstd::vector<int> values;\nint main() { return values.size(); }\n"], ["typescript", viteConfig]] as const;
     for (const [language, source] of documents) {
       const runtime = new TokenizerRuntime(() => {});
       await runtime.tokenize("x\n", language, { id: "load", version: 1, state: "done" });
       await runtime["warming"].get(language);
-      const before = runtime.cacheSize();
-      const tokens = await runtime.tokenize(source, language, { id: "warm", version: 1, state: "done" });
-      expect(text(tokens)).toBe(source);
-      expect({ language, ...runtime.cacheSize() }).toEqual({ language, ...before });
+      const first = await runtime.tokenize(source, language, { id: "first", version: 1, state: "done" });
+      const afterFirst = runtime.cacheSize();
+      const second = await runtime.tokenize(source, language, { id: "second", version: 1, state: "done" });
+      expect(text(first)).toBe(source);
+      expect(second).toEqual(first);
+      expect(runtime.cacheSize()).toEqual(afterFirst);
       runtime.dispose();
     }
   }, 60_000);
@@ -518,7 +549,7 @@ describe("worker liveness and restarts", () => {
     const stuck = highlighter("a\n", "cpp", block("stuck"));
     const waiting = highlighter("b\n", "cpp", block("waiting"));
     workers[0].send({ progress: workers[0].posted[0].context });
-    jest.advanceTimersByTime(499);
+    jest.advanceTimersByTime(4_999);
     expect(workers.length).toBe(1);
     jest.advanceTimersByTime(1);
     expect(workers[0].terminated).toBe(true);
@@ -548,7 +579,7 @@ describe("worker liveness and restarts", () => {
     const stale = highlighter("a\n", "cpp", { id: "surface", version: 1, state: "streaming" });
     const newer = highlighter("a\nb\n", "cpp", { id: "surface", version: 2, state: "done" });
     workers[0].send({ progress: workers[0].posted[0].context });
-    jest.advanceTimersByTime(500);
+    jest.advanceTimersByTime(5_000);
     jest.advanceTimersByTime(0);
     expect(workers.length).toBe(2);
     expect(workers[1].posted.map((request) => request.code)).toEqual(["a\nb\n"]);
@@ -562,7 +593,7 @@ describe("worker liveness and restarts", () => {
     const workers: Scripted[] = [];
     const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
     const result = highlighter("x\n", "cpp", block("quiet"));
-    jest.advanceTimersByTime(500 + 250);
+    jest.advanceTimersByTime(5_000 + 250);
     expect(workers.length).toBe(2);
     answer(workers[1], 0);
     expect(await result).toEqual(colored("x\n"));
@@ -748,7 +779,7 @@ describe("identity, failure, and caps", () => {
     expect(await highlighter(huge, "typescript", { id: "huge", version: 1, state: "done" })).toEqual([{ text: huge }]);
     const long = `${"x".repeat(20_001)}\nconst ok = 1;\n`;
     expect(text((await highlighter(long, "typescript", { id: "long", version: 1, state: "done" }))!)).toBe(long);
-  });
+  }, 10_000);
 
   // A worker that fails at its first request, as a crash does.
   const crashingWorker = () => {

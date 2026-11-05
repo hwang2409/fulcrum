@@ -331,7 +331,19 @@ test("simultaneous retries replace a failed generation only once", async () => {
   }
 });
 
-test("a lazy image retries one decode failure automatically, then shows manual retry", async () => {
+test("a plain-url image shows an error after two decode failures and retry recovers", () => {
+  render([commit([{ type: "image", url: PNG, alt: "dot" }])]);
+  act(() => q("img").dispatchEvent(new Event("error")));
+  act(() => q("img").dispatchEvent(new Event("error")));
+  expect(q('[data-part="image"]').dataset.state).toBe("error");
+  expect(q('[data-part="image-placeholder"]').textContent).toContain("image failed to load");
+  expect(q('[data-action="retry"]')).toBeTruthy();
+  act(() => q('[data-action="retry"]').click());
+  expect(q('[data-part="image"]').dataset.state).toBe("ready");
+  expect(q("img").getAttribute("src")).toBe(PNG);
+});
+
+test("a lazy image shows an error after two decode failures and retry recovers", async () => {
   const savedObserver = globalThis.IntersectionObserver;
   globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
   let calls = 0;
@@ -346,7 +358,12 @@ test("a lazy image retries one decode failure automatically, then shows manual r
     await act(async () => { q("img").dispatchEvent(new Event("error")); await Promise.resolve(); });
     expect(calls).toBe(2);
     expect(q('[data-part="image"]').dataset.state).toBe("error");
+    expect(q('[data-part="image-placeholder"]').textContent).toContain("image failed to load");
     expect(q('[data-action="retry"]')).toBeTruthy();
+    await act(async () => { q('[data-action="retry"]').click(); await Promise.resolve(); await Promise.resolve(); });
+    expect(calls).toBe(3);
+    expect(q('[data-part="image"]').dataset.state).toBe("ready");
+    expect(q("img")).toBeTruthy();
   } finally {
     globalThis.IntersectionObserver = savedObserver;
   }

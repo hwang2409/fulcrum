@@ -36,10 +36,14 @@ try {
   if (worker.data.includes(Buffer.from('"displayName":"TypeScript"')) || worker.data.includes(Buffer.from('"displayName":"Python"')))
     throw new Error("initial worker chunk contains a bundled grammar");
   if (worker.data.byteLength > 750_000) throw new Error(`initial worker chunk is ${worker.data.byteLength} bytes; ceiling is 750000`);
-  const grammar = javascript.find(({ file }) => file.startsWith("typescript-"));
-  if (!grammar) throw new Error("consumer build did not emit typescript as a separate grammar asset");
+  const typescript = javascript.filter(({ file }) => file.startsWith("typescript-"));
+  const grammar = typescript.find(({ data }) => data.includes(Buffer.from('"displayName":"TypeScript"')));
+  const recipe = typescript.find(({ data }) => !data.includes(Buffer.from('"displayName":"TypeScript"')));
+  if (!grammar || !recipe) throw new Error("consumer build did not emit separate typescript grammar and recipe assets");
+  if (worker.data.includes(Buffer.from("source.ts"))) throw new Error("initial worker chunk contains a regex recipe");
   console.log(`highlight consumer worker\t${worker.data.byteLength} b\t${gzipSync(worker.data).byteLength} b gzip\t${worker.file}`);
   console.log(`highlight consumer typescript grammar\t${grammar.data.byteLength} b\t${gzipSync(grammar.data).byteLength} b gzip\t${grammar.file}`);
+  console.log(`highlight consumer typescript recipe\t${recipe.data.byteLength} b\t${gzipSync(recipe.data).byteLength} b gzip\t${recipe.file}`);
 
   // A @fulcrum/react app with no highlighter ships neither the worker nor a grammar: react resolves language names
   // through @fulcrum/highlight/languages, which imports no grammar or worker url.

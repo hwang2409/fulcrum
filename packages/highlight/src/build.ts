@@ -1,36 +1,150 @@
-import { readdir, rm } from "node:fs/promises";
-await Bun.$`bun ${new URL("./generate.ts", import.meta.url).pathname}`;
-await rm(new URL("../dist", import.meta.url), { recursive: true, force: true });
-const result = await Bun.build({
-  entrypoints: [new URL("./index.ts", import.meta.url).pathname, new URL("./worker.ts", import.meta.url).pathname, new URL("./runtime.ts", import.meta.url).pathname, new URL("./names.ts", import.meta.url).pathname],
-  outdir: new URL("../dist", import.meta.url).pathname,
-  root: new URL(".", import.meta.url).pathname,
-  target: "browser",
-  format: "esm",
-  splitting: true,
-  minify: true,
-  sourcemap: "external",
-  naming: { entry: "[name].js", chunk: "chunks/[name]-[hash].js" },
-});
-if (!result.success) {
-  for (const log of result.logs) console.error(log);
-  process.exit(1);
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { readdir, rename, rm, writeFile } from "node:fs/promises";
+import { createBuildManifest, generationDigest, verifyBuildManifest, verifyBuiltLanguages, verifyGenerationCache } from "./generation-cache.js";
+import { generationEntries } from "./generation-config.js";
+
+// concurrent builders never publish a mixed dist; .build-manifest.json is written last to mark a complete build. readers may observe a missing or mixed dist during a build.
+const entries = generationEntries();
+const expectedFiles = entries.flatMap((entry) => [`.grammar-entries/${entry.actual}.ts`, `.recipe-entries/${entry.actual}.ts`]).sort();
+const packageRoot = new URL("../", import.meta.url);
+const dist = new URL("dist/", packageRoot);
+const distPath = new URL("dist", packageRoot).pathname;
+const lock = new URL(".build.lock", packageRoot);
+const manifest = new URL(".build-manifest.json", dist);
+const pendingManifest = new URL(".build-manifest.pending", packageRoot);
+const lockContents = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
+const waitStartedAt = Date.now();
+let backoff = 50;
+
+const releaseLock = () => {
+  try {
+    if (readFileSync(lock, "utf8") === lockContents) unlinkSync(lock);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+};
+
+while (true) {
+  try {
+    writeFileSync(lock, lockContents, { flag: "wx" });
+    break;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (Date.now() - waitStartedAt >= 10 * 60 * 1000) throw new Error("timed out waiting for highlight build lock");
+    let current: string;
+    try {
+      current = readFileSync(lock, "utf8");
+    } catch (readError) {
+      if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw readError;
+    }
+    const raceHook = process.env.HIGHLIGHT_BUILD_LOCK_TEST_AFTER_READ;
+    if (raceHook) {
+      writeFileSync(`${raceHook}.${process.pid}`, "");
+      while (!existsSync(`${raceHook}.release`)) await Bun.sleep(5);
+    }
+    let owner = 0;
+    let startedAt = 0;
+    try {
+      const parsed = JSON.parse(current) as { pid?: number; startedAt?: string };
+      owner = Number(parsed.pid);
+      startedAt = Date.parse(parsed.startedAt ?? "");
+    } catch {}
+    let lockTimestamp = startedAt;
+    if (!lockTimestamp) {
+      try {
+        lockTimestamp = statSync(lock).mtimeMs;
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw statError;
+      }
+    }
+    const lockAge = Date.now() - lockTimestamp;
+    const stale = lockAge > (Number.isFinite(startedAt) && startedAt ? 10 * 60 * 1000 : 30 * 1000);
+    if (stale || owner) {
+      let dead = stale;
+      if (!dead) {
+        try {
+          process.kill(owner, 0);
+        } catch (ownerError) {
+          if ((ownerError as NodeJS.ErrnoException).code !== "ESRCH") throw ownerError;
+          dead = true;
+        }
+      }
+      if (dead) {
+        try {
+          if (readFileSync(lock, "utf8") === current) unlinkSync(lock);
+        } catch (readError) {
+          if ((readError as NodeJS.ErrnoException).code !== "ENOENT") throw readError;
+        }
+        continue;
+      }
+    }
+    await Bun.sleep(backoff);
+    backoff = Math.min(backoff * 2, 500);
+  }
 }
 
-const grammarEntries = new URL("../.grammar-entries/", import.meta.url);
-const grammarNames = (await readdir(grammarEntries)).filter((name) => name.endsWith(".ts")).map((name) => name.slice(0, -3));
-const grammars = await Bun.build({
-  entrypoints: grammarNames.map((name) => new URL(`${name}.ts`, grammarEntries).pathname),
-  outdir: new URL("../dist/langs", import.meta.url).pathname,
-  target: "browser",
-  format: "esm",
-  splitting: false,
-  minify: true,
-  sourcemap: "external",
-  naming: { entry: "[name].js" },
-});
-await rm(grammarEntries, { recursive: true, force: true });
-if (!grammars.success) {
-  for (const log of grammars.logs) console.error(log);
-  process.exit(1);
+const releaseOnSignal = (signal: NodeJS.Signals) => {
+  releaseLock();
+  process.exit(signal === "SIGINT" ? 130 : 143);
+};
+process.once("SIGINT", releaseOnSignal);
+process.once("SIGTERM", releaseOnSignal);
+
+try {
+  await Bun.$`bun ${new URL("./generate.ts", import.meta.url).pathname}`;
+  if (!await verifyGenerationCache(packageRoot, new URL(".recipe-generation-manifest.json", packageRoot), await generationDigest(), expectedFiles)) {
+    throw new Error("highlight recipe cache failed verification after generation");
+  }
+
+  await rm(dist, { recursive: true, force: true });
+  const result = await Bun.build({
+    entrypoints: [new URL("./index.ts", import.meta.url).pathname, new URL("./worker.ts", import.meta.url).pathname, new URL("./runtime.ts", import.meta.url).pathname, new URL("./names.ts", import.meta.url).pathname],
+    // Bun's debug identifiers include the outdir string; keep the proven direct-dist spelling stable.
+    outdir: distPath,
+    root: new URL(".", import.meta.url).pathname,
+    target: "browser",
+    format: "esm",
+    splitting: true,
+    minify: true,
+    sourcemap: "external",
+    naming: { entry: "[name].js", chunk: "chunks/[name]-[hash].js" },
+  });
+  if (!result.success) {
+    for (const log of result.logs) console.error(log);
+    throw new Error("highlight javascript build failed");
+  }
+
+  const buildAssets = async (source: string, output: string) => {
+    const sourceEntries = new URL(source, import.meta.url);
+    const names = (await readdir(sourceEntries)).filter((name) => name.endsWith(".ts"));
+    const built = await Bun.build({
+      entrypoints: names.map((name) => new URL(name, sourceEntries).pathname),
+      outdir: new URL(output, import.meta.url).pathname,
+      target: "browser",
+      format: "esm",
+      splitting: false,
+      minify: true,
+      sourcemap: "external",
+      naming: { entry: "[name].js" },
+    });
+    if (!built.success) {
+      for (const log of built.logs) console.error(log);
+      throw new Error("highlight asset build failed");
+    }
+  };
+
+  await buildAssets("../.grammar-entries/", "../dist/langs");
+  await buildAssets("../.recipe-entries/", "../dist/recipes");
+  await Bun.$`bunx tsc -p ${new URL("../tsconfig.types.json", import.meta.url).pathname}`;
+  await verifyBuiltLanguages(dist, entries.map((entry) => entry.actual));
+  await writeFile(pendingManifest, `${JSON.stringify(await createBuildManifest(dist), null, 2)}\n`);
+  await rename(pendingManifest, manifest);
+  if (!await verifyBuildManifest(dist)) throw new Error("highlight build manifest failed verification");
+} finally {
+  process.off("SIGINT", releaseOnSignal);
+  process.off("SIGTERM", releaseOnSignal);
+  await rm(pendingManifest, { force: true });
+  releaseLock();
 }

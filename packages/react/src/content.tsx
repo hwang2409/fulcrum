@@ -202,6 +202,75 @@ export const FileBlock = memo(function FileBlock({ block, onOpen }: ContentBlock
 
 // Images draw at most 360px tall; a known size reserves its exact box, an unknown one a fixed frame.
 const dimension = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+type ImageState =
+  | { status: "idle" | "loading" | "blocked" | "error" | "unavailable" }
+  | { status: "ready"; url: string };
+type LazyImage = ImageContentBlock & { source: NonNullable<ImageContentBlock["source"]> };
+
+function imageState(image: ImageContentBlock, lazy: LazyImage | undefined, media: ReturnType<typeof useMedia>, decodeFailures: number): ImageState {
+  const url = safeUrl(image.url, "image") ?? (media.state.status === "ready" ? media.state.url : undefined);
+  if (!url && (!lazy || !media.available)) return { status: "blocked" };
+  if (media.state.status === "error" && (media.state.error as { code?: unknown }).code === "not_available") return { status: "unavailable" };
+  if (decodeFailures > 1) return { status: "error" };
+  if (url) return { status: "ready", url };
+  return { status: media.state.status === "ready" ? "idle" : media.state.status };
+}
+
+function useImageLifecycle(image: ImageContentBlock, onOpen: ContentBlockProps["onOpen"]) {
+  const lazy = image.source?.kind === "lazy" ? image as LazyImage : undefined;
+  const [decodeFailures, setDecodeFailures] = useState(0);
+  const [near, setNear] = useState(false);
+  const [viewing, setViewing] = useState(false);
+  const frame = useCallback((element: HTMLElement | null) => {
+    if (!element || typeof IntersectionObserver === "undefined") { if (element) setNear(true); return; }
+    const observer = new IntersectionObserver(([entry]) => setNear(!!entry?.isIntersecting), { rootMargin: "400px 0px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const media = useMedia(lazy, near || viewing);
+  const state = imageState(image, lazy, media, decodeFailures);
+  const open = () => { if (state.status === "ready") onOpen ? onOpen({ ...image, url: state.url }) : setViewing(true); };
+  const close = () => setViewing(false);
+  const decodeError = () => { if (lazy && decodeFailures === 0) media.retry(); setDecodeFailures(decodeFailures + 1); };
+  const retry = () => { setDecodeFailures(0); media.retry(); };
+  return { close, decodeError, frame, lazy: !!lazy, open, retry, state, viewing };
+}
+
+function ImageFrame({ box, height, lifecycle, name, width }: { box?: CSSProperties; height?: number; lifecycle: ReturnType<typeof useImageLifecycle>; name: string; width?: number }) {
+  switch (lifecycle.state.status) {
+    case "ready":
+      return <button type="button" data-part="image-open" style={box} aria-label={`open image: ${name}`} onClick={lifecycle.open}>
+        <img src={lifecycle.state.url} alt={name} width={width} height={height} onError={lifecycle.decodeError} />
+      </button>;
+    case "blocked":
+      return <div data-part="image-placeholder"><span>image not shown: unsupported address</span></div>;
+    case "unavailable":
+      return <div data-part="image-placeholder" style={box}>
+        <span>image no longer available</span>
+        {lifecycle.lazy ? <button type="button" data-action="retry" onClick={lifecycle.retry}>retry</button> : null}
+      </div>;
+    case "error":
+      return <div data-part="image-placeholder" style={box}>
+        <span>image failed to load</span>
+        <button type="button" data-action="retry" onClick={lifecycle.retry}>retry</button>
+      </div>;
+    case "loading":
+    case "idle":
+      return <div data-part="image-placeholder" style={box} aria-busy={lifecycle.state.status === "loading" || undefined}><span>loading image</span></div>;
+  }
+}
+
+function ImageCaption({ image, name }: { image: ImageContentBlock; name: string }) {
+  return <figcaption data-part="image-caption"><span data-part="block-label">image</span><span data-part="file-name">{name}</span><Facts mediaType={image.mediaType} size={image.size} /></figcaption>;
+}
+
+function ImageFullView({ lifecycle, name }: { lifecycle: ReturnType<typeof useImageLifecycle>; name: string }) {
+  if (!lifecycle.viewing || lifecycle.state.status !== "ready") return null;
+  return <dialog ref={(dialog) => { if (dialog && !dialog.open) dialog.showModal?.(); }} data-part="image-dialog" aria-label={name} onClose={lifecycle.close} onClick={(event) => { event.target === event.currentTarget && lifecycle.close(); }}>
+    <img src={lifecycle.state.url} alt={name} />
+    <button type="button" data-action="close" onClick={lifecycle.close}>close</button>
+  </dialog>;
+}
 
 /**
  * An image in a box reserved before it loads, so nothing below it moves. Clicking it calls the host's `onOpen`, or
@@ -209,37 +278,15 @@ const dimension = (value: unknown) => (typeof value === "number" && Number.isFin
  */
 export const ImageBlock = memo(function ImageBlock({ block, onOpen }: ContentBlockProps) {
   const image = block as ImageContentBlock;
-  const lazy = image.source?.kind === "lazy" ? image as ImageContentBlock & { source: NonNullable<ImageContentBlock["source"]> } : undefined;
-  const [decodeFailures, setDecodeFailures] = useState(0);
-  const [near, setNear] = useState(false);
-  const frame = useCallback((element: HTMLElement | null) => {
-    if (!element || typeof IntersectionObserver === "undefined") { if (element) setNear(true); return; }
-    const observer = new IntersectionObserver(([entry]) => setNear(!!entry?.isIntersecting), { rootMargin: "400px 0px" });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-  const [viewing, setViewing] = useState(false);
-  const media = useMedia(lazy, near || viewing);
-  const src = safeUrl(image.url, "image") ?? (media.state.status === "ready" ? media.state.url : undefined);
+  const lifecycle = useImageLifecycle(image, onOpen);
   const width = dimension(image.width);
   const height = dimension(image.height);
   const name = label(str(image.alt) ?? str(image.filename) ?? fileName(image.url) ?? "image");
   const box = width && height ? { width: Math.min(width, (360 * width) / height), aspectRatio: `${width} / ${height}` } : undefined;
-  const blocked = !src && (!lazy || !media.available);
-  const status = decodeFailures > 1 ? "error" : src ? "ready" : media.state.status;
-  const unavailable = media.state.status === "error" && (media.state.error as { code?: unknown }).code === "not_available";
-  return <figure ref={frame} data-part="image" data-size={box ? "known" : "unknown"} data-state={blocked ? "blocked" : unavailable ? "unavailable" : status}>
-    {src && status === "ready" ? <button type="button" data-part="image-open" style={box} aria-label={`open image: ${name}`} onClick={() => onOpen ? onOpen({ ...image, url: src }) : setViewing(true)}>
-      <img src={src} alt={name} width={width} height={height} onError={() => { if (lazy && decodeFailures === 0) media.retry(); setDecodeFailures(decodeFailures + 1); }} />
-    </button> : <div data-part="image-placeholder" style={blocked ? undefined : box} aria-busy={status === "loading" || undefined}>
-      <span>{blocked ? "image not shown: unsupported address" : unavailable ? "image no longer available" : status === "error" ? "image failed to load" : "loading image"}</span>
-      {status === "error" && lazy ? <button type="button" data-action="retry" onClick={() => { setDecodeFailures(0); media.retry(); }}>retry</button> : null}
-    </div>}
-    <figcaption data-part="image-caption"><span data-part="block-label">image</span><span data-part="file-name">{name}</span><Facts mediaType={image.mediaType} size={image.size} /></figcaption>
-    {viewing && src ? <dialog ref={(dialog) => { if (dialog && !dialog.open) dialog.showModal?.(); }} data-part="image-dialog" aria-label={name} onClose={() => setViewing(false)} onClick={(event) => { event.target === event.currentTarget && setViewing(false); }}>
-      <img src={src} alt={name} />
-      <button type="button" data-action="close" onClick={() => setViewing(false)}>close</button>
-    </dialog> : null}
+  return <figure ref={lifecycle.frame} data-part="image" data-size={box ? "known" : "unknown"} data-state={lifecycle.state.status}>
+    <ImageFrame box={box} height={height} lifecycle={lifecycle} name={name} width={width} />
+    <ImageCaption image={image} name={name} />
+    <ImageFullView lifecycle={lifecycle} name={name} />
   </figure>;
 });
 

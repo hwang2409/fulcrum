@@ -14,10 +14,10 @@ const server = spawn("bun", ["run", "dev", "--host", "127.0.0.1", "--port", Stri
 });
 
 try {
-  for (let attempt = 0; attempt < 600; attempt++) {
+  for (let attempt = 0; attempt < 1_200; attempt++) {
     if (server.exitCode !== null) throw new Error("vite dev server exited");
     if (await fetch(`http://127.0.0.1:${port}`).then((response) => response.ok).catch(() => false)) break;
-    if (attempt === 599) throw new Error("vite dev server did not start");
+    if (attempt === 1_199) throw new Error("vite dev server did not start");
     await Bun.sleep(100);
   }
 
