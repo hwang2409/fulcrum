@@ -163,6 +163,7 @@ const isBlank = (line: string, offset = 0) => {
 const isTableDelimiter = (line: string) => /^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$/.test(line)
   || /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/.test(line);
 const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
+export const REFERENCE_LABEL_MAX_LENGTH = 999;
 const normalizeReference = (label: string) => label.trim().replace(/\s+/g, " ").toUpperCase();
 
 function stripPendingContainers(line: string) {
@@ -189,7 +190,7 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
     return EMPTY;
   // A growing `[label]` at the line start can still become a definition; labels end within 999 characters.
-  if (growing) return /^[ \t]*\[[^\]]{0,999}\]?[ \t]*$/.test(content) ? EMPTY : { content, kind: "paragraph", offset: line.length - content.length };
+  if (growing) return new RegExp(`^[ \\t]*\\[[^\\]]{0,${REFERENCE_LABEL_MAX_LENGTH}}\\]?[ \\t]*$`).test(content) ? EMPTY : { content, kind: "paragraph", offset: line.length - content.length };
   // An open `[` may still close on a later line.
   const openBracket = content.lastIndexOf("[");
   if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);

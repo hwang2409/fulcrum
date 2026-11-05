@@ -3,7 +3,7 @@ import type { Highlight } from "@fulcrum/highlight";
 import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
 import { PendingInline } from "./pending-inline.js";
-import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
+import { MarkdownLineResolver, REFERENCE_LABEL_MAX_LENGTH, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
 type MarkdownToken = {
   type: string;
@@ -612,6 +612,7 @@ type ParagraphRecord = {
   labels: Set<string>;
   /** The last line has pipes that stay hidden only while it is the last line. */
   lastLinePipes?: boolean;
+  pendingReferenceContinuation?: boolean;
 };
 
 type TableBlock = Extract<Block, { type: "table" }>;
@@ -1028,6 +1029,10 @@ export function createStreamingDocument(): StreamingDocument {
   const appendParagraphLine = (record: ParagraphRecord, content: string) => {
     const addition = `\n${content}`;
     record.source += addition;
+    if (record.pendingReferenceContinuation) {
+      record.block.children = [{ type: "pending-reference", value: content }];
+      return;
+    }
     const child = record.block.children.length === 1 ? record.block.children[0] : undefined;
     if (child?.type === "text" && !record.lastLinePipes && !/[\\&<>*_~`\[\]|]/.test(content)) child.value += addition;
     else updateParagraph(record, true);
@@ -1185,8 +1190,10 @@ export function createStreamingDocument(): StreamingDocument {
       else {
         closeParagraph();
         openParagraph = createParagraph(leaf.content);
-        if (pendingReferenceDefinition(leaf.content, false))
+        if (pendingReferenceDefinition(leaf.content, false)) {
+          openParagraph.pendingReferenceContinuation = true;
           openParagraph.block.children = [{ type: "pending-reference", value: "" }];
+        }
       }
       openCode = undefined;
       openIndentedCode = false;
@@ -1227,6 +1234,8 @@ export function createStreamingDocument(): StreamingDocument {
     for (const piece of delta.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
       for (const resolution of resolver.append(piece)) apply(resolution);
       if (piece.endsWith("\n")) {
+        referenceContinuation = !referenceContinuation && referenceCandidateState?.disposition === "held";
+        referenceCandidateState = undefined;
         pendingInline = undefined;
         pendingInlineState = undefined;
       }
@@ -1242,57 +1251,60 @@ export function createStreamingDocument(): StreamingDocument {
 
   // A definition-shaped line is held until its line ending decides whether it is metadata or prose.
   type ReferenceCandidateState = {
-    prefixLength: number;
+    prefix: string;
     position: number;
     labelLength: number;
     escaped: boolean;
-    phase: "start" | "label" | "after-label" | "held";
-    candidate: boolean;
+    phase: "start" | "label" | "after-label";
+    disposition: "possible" | "held" | "released";
   };
   let referenceCandidateState: ReferenceCandidateState | undefined;
-  const pendingReferenceCandidate = (line: string, continues: boolean) => {
-    if (continues) return false;
+  let referenceContinuation = false;
+  const pendingReferenceCandidate = (line: string, continues: boolean): ReferenceCandidateState["disposition"] => {
+    if (continues && !referenceContinuation && !/^\s*\[/.test(pendingLeafContent(line))) return "released";
     const content = pendingLeafContent(line);
-    const prefixLength = line.length - content.length;
+    const prefix = line.slice(0, line.length - content.length);
     let state = referenceCandidateState;
-    if (!state || state.prefixLength !== prefixLength || state.position > content.length) {
+    if (!state || state.prefix !== prefix || state.position > content.length) {
       state = referenceCandidateState = {
-        prefixLength,
+        prefix,
         position: 0,
         labelLength: 0,
         escaped: false,
         phase: "start",
-        candidate: true,
+        disposition: referenceContinuation ? "held" : "possible",
       };
+      referenceContinuation = false;
     }
-    if (!state.candidate) return false;
-    while (state.position < content.length) {
-      if (state.phase === "held") return true;
+    while (state.position < content.length && state.disposition !== "held" && state.disposition !== "released") {
       const character = content[state.position++]!;
       referenceCandidateScannedCharacters++;
       if (state.phase === "start") {
         if (/\s/.test(character)) continue;
-        if (character !== "[") return state.candidate = false;
-        state.phase = "label";
+        if (character !== "[") state.disposition = "released";
+        else state.phase = "label";
         continue;
       }
       if (state.phase === "label") {
         if (state.escaped) {
           state.escaped = false;
-          if (++state.labelLength > 999) return state.candidate = false;
+          state.labelLength++;
         } else if (character === "\\") state.escaped = true;
+        else if (character === "[") state.disposition = "released";
         else if (character === "]") state.phase = "after-label";
-        else if (++state.labelLength > 999) return state.candidate = false;
+        else state.labelLength++;
+        // keep the parser's boundary provisional until the following character proves prose;
+        // this prevents a definition marker from retracting the boundary character.
+        if (state.labelLength > REFERENCE_LABEL_MAX_LENGTH + 1) state.disposition = "released";
         continue;
       }
-      if (character !== ":") return state.candidate = false;
-      state.phase = "held";
-      return true;
+      if (character === ":") state.disposition = "held";
+      else state.disposition = "released";
     }
-    return true;
+    return state.disposition;
   };
   const pendingReferenceDefinition = (line: string, continues: boolean) =>
-    pendingReferenceCandidate(line, continues) && /^\s*\[(?:\\.|[^\\\]\n])+\]:/.test(pendingLeafContent(line));
+    pendingReferenceCandidate(line, continues) === "held" && /^\s*\[(?:\\.|[^\\\]\n])+\]:/.test(pendingLeafContent(line));
 
   const startPendingInline = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean, tableCandidate: boolean) => {
     // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
@@ -1381,8 +1393,15 @@ export function createStreamingDocument(): StreamingDocument {
       } else {
         const continuesParagraph = Boolean(openParagraph) && resolver.pendingContinuesParagraph(pending);
         const startsBlock = openParagraph ? !continuesParagraph : /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
-        if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.offset < pending.length && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment())))
-          appendPendingParagraph(overlay, pendingReferenceCandidate(pending, continuesParagraph) ? [] : pendingPreview(classification, continuesParagraph), continuesParagraph);
+        if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.offset < pending.length && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment()))) {
+          const referenceDisposition = pendingReferenceCandidate(pending, continuesParagraph);
+          const preview = referenceDisposition === "held"
+            ? []
+            : referenceCandidateState?.phase === "after-label"
+              ? [{ type: "pending-reference" as const, value: pendingLeafContent(pending).trim() }]
+              : pendingPreview(classification, continuesParagraph);
+          appendPendingParagraph(overlay, preview, continuesParagraph);
+        }
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];
