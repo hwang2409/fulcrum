@@ -167,10 +167,15 @@ export class TokenizerRuntime {
   }
 
   // Compiles and warms each grammar pattern not yet cached, yielding to the worker's queue after each WARM_SLICE_MS.
-  // Warming matters for correctness, not only latency: under CPU load Bun/JavaScriptCore can return a wrong result on a
-  // `v`-flag regex's very first exec. Shiki's scanner reuses each regex's first search on a line, so that wrong "no
-  // match" is cached and never retried (e.g. TypeScript `(:)(?=\s*\S)` failed at `id:`, merging `id: number };` into one
-  // token). Forcing the first exec here, before any real block reaches a scanner, keeps that bad first exec off the hot path.
+  // Warming matters for correctness, not only latency. Observed under CPU load: when a plain `v`-flag RegExp (the recipe
+  // path) reached Shiki's scanner cold, its first exec produced a missed match. The scanner caches each regex's first
+  // search per line and reuses that "no match" for the rest of the line, so one cold miss drops a token for the whole
+  // line (e.g. TypeScript `(:)(?=\s*\S)` missed at `id:`, merging `id: number };` into one token). Running one exec per
+  // pattern here, before any real block reaches a scanner, removes that cold first exec and the miss with it: on
+  // identical code the lazy path fails 5/14 under load while this warm path passes 22/22.
+  // This is observed scanner behavior, not a confirmed engine bug. A standalone wrong exec did not reproduce (Bun:
+  // millions of execs within one process and 1500 fresh processes; WebKit JSC: 9.15M cold contexts; all 0 wrong); the
+  // miss appears only through the full scanner harness under load.
   private async compile(patterns: Set<string>, cache: RegexCache, epoch: number): Promise<void> {
     const { defaultJavaScriptRegexConstructor } = await import("@shikijs/engine-javascript");
     let sliceStart = performance.now();
@@ -182,7 +187,7 @@ export class TokenizerRuntime {
         try {
           const recipe = this.recipes.get(pattern);
           const regex = recipe ? regexFromRecipe(recipe) : defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
-          regex.exec(""); // absorb the wrong first exec; the scanner only ever sees the settled regex
+          regex.exec(""); // burn the cold first exec; the scanner only ever sees the warmed regex
           regex.lastIndex = 0;
           cache.set(pattern, regex);
         } catch (cause) { cache.set(pattern, cause instanceof Error ? cause : new Error(String(cause))); }
