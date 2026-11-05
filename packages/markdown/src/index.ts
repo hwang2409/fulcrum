@@ -1310,7 +1310,9 @@ export function createStreamingDocument(): StreamingDocument {
     const content = pendingLeafContent(line).trim();
     if (!content.startsWith("[")) return content;
     const close = referenceCandidateState?.phase === "after-label" ? referenceCandidateState.position - 1 : content.length;
-    return content.slice(1, close) .replace(/\\([\\\[\]])/g, "$1") + content.slice(close + 1);
+    const label = content.slice(1, close).replace(/\\([\\\[\]])/g, "$1");
+    const suffix = content.slice(close + 1);
+    return label + (suffix.trimStart().startsWith(":") ? "" : suffix);
   };
 
   const startPendingInline = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean, tableCandidate: boolean) => {
@@ -1404,13 +1406,10 @@ export function createStreamingDocument(): StreamingDocument {
           const referenceDisposition = pendingReferenceCandidate(pending, continuesParagraph);
           const preview = referenceDisposition === "held"
             ? []
-            : referenceDisposition === "possible" && referenceCandidateState?.phase === "start"
-              ? []
-              : referenceDisposition === "possible" && referenceCandidateState
-                ? pendingReferencePreview(pending)
-                  ? [{ type: "pending-reference" as const, value: pendingReferencePreview(pending) }]
-                  : []
-                : pendingPreview(classification, continuesParagraph);
+            : referenceDisposition === "possible" && referenceCandidateState
+              && (referenceCandidateState.phase === "after-label" || pendingLeafContent(pending).includes("\\\\"))
+              ? [{ type: "pending-reference" as const, value: pendingReferencePreview(pending) }]
+              : pendingPreview(classification, continuesParagraph);
           appendPendingParagraph(overlay, preview, continuesParagraph);
         }
       }
