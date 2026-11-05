@@ -2,6 +2,10 @@
 
 lazy, worker-first syntax highlighting for streamed agent output. the published package bundles its javascript regex engine and textmate grammars, has no runtime dependencies, and uses no wasm, html injection, blob url, `eval`, or `new Function`. grammar regex recipes are generated for the explicit ES2024 target, which uses the `v` flag available in Safari 17 and Chromium 112 without newer ES2025 flag groups or build-host feature detection.
 
+## contributors
+
+`bun run build` serializes concurrent builders with `.build.lock`, writes directly to `dist`, and writes `.build-manifest.json` last to mark a complete build. concurrent builders never publish a mixed `dist`. readers may observe a missing or mixed `dist` while a build runs; published consumers never rebuild `dist`.
+
 ```ts
 import { createHighlighter } from "@fulcrum/highlight";
 

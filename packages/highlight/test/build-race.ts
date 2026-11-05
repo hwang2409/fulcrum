@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -54,7 +54,17 @@ describe.serial("package build lock", () => {
     await expectValidDist();
   });
 
-  test("takes over a stale lock owned by a dead process", { timeout: 60_000 }, async () => {
+  test("takes over an empty lock after its grace period", { timeout: 60_000 }, async () => {
+    await writeFile(join(packageDir, ".build.lock"), "");
+    const lockTime = new Date(Date.now() - 31_000);
+    await utimes(join(packageDir, ".build.lock"), lockTime, lockTime);
+    const result = await buildResult(runBuild());
+    expect(result.code).toBe(0);
+    expect(result.error).not.toContain("No such file or directory");
+    await expectValidDist();
+  });
+
+  test("takes over a lock with an old start time", { timeout: 60_000 }, async () => {
     const deadPid = 2_147_483_647;
     expect(() => process.kill(deadPid, 0)).toThrow();
     await writeFile(join(packageDir, ".build.lock"), JSON.stringify({ pid: deadPid, startedAt: "2000-01-01T00:00:00.000Z" }));

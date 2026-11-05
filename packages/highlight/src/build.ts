@@ -1,8 +1,9 @@
-import { closeSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createBuildManifest, generationDigest, verifyBuildManifest, verifyBuiltLanguages, verifyGenerationCache } from "./generation-cache.js";
 import { generationEntries } from "./generation-config.js";
 
+// concurrent builders never publish a mixed dist; .build-manifest.json is written last to mark a complete build. readers may observe a missing or mixed dist during a build.
 const entries = generationEntries();
 const expectedFiles = entries.flatMap((entry) => [`.grammar-entries/${entry.actual}.ts`, `.recipe-entries/${entry.actual}.ts`]).sort();
 const packageRoot = new URL("../", import.meta.url);
@@ -25,12 +26,7 @@ const releaseLock = () => {
 
 while (true) {
   try {
-    const descriptor = openSync(lock, "wx");
-    try {
-      writeFileSync(descriptor, lockContents);
-    } finally {
-      closeSync(descriptor);
-    }
+    writeFileSync(lock, lockContents, { flag: "wx" });
     break;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -43,14 +39,25 @@ while (true) {
       throw readError;
     }
     let owner = 0;
+    let startedAt = 0;
     try {
-      owner = Number((JSON.parse(current) as { pid?: number }).pid);
+      const parsed = JSON.parse(current) as { pid?: number; startedAt?: string };
+      owner = Number(parsed.pid);
+      startedAt = Date.parse(parsed.startedAt ?? "");
     } catch {}
-    if (owner) {
-      try {
-        process.kill(owner, 0);
-      } catch (ownerError) {
-        if ((ownerError as NodeJS.ErrnoException).code !== "ESRCH") throw ownerError;
+    const lockAge = Date.now() - (startedAt || statSync(lock).mtimeMs);
+    const stale = lockAge > (Number.isFinite(startedAt) && startedAt ? 10 * 60 * 1000 : 30 * 1000);
+    if (stale || owner) {
+      let dead = stale;
+      if (!dead) {
+        try {
+          process.kill(owner, 0);
+        } catch (ownerError) {
+          if ((ownerError as NodeJS.ErrnoException).code !== "ESRCH") throw ownerError;
+          dead = true;
+        }
+      }
+      if (dead) {
         try {
           if (readFileSync(lock, "utf8") === current) unlinkSync(lock);
         } catch (readError) {
