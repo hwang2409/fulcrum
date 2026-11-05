@@ -39,6 +39,8 @@ open the live zeta panel and paste the discovery url from `$ZETA_HOME/run/serve.
 
 build with `bun install --frozen-lockfile`, `bunx tsc -b`, and `bun test`.
 
+contributors need Bun >= 1.4.4 because older Bun 1.3 releases can intermittently crash during concurrent transpilation in the source-map cache.
+
 ## react
 
 ```tsx
