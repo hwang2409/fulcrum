@@ -1,7 +1,7 @@
 // The package's javascript, in two builds. index.js is the fence (a few kB; react and @fulcrum/* stay the app's), with
 // `import("./render.js")` left as is. render.js bundles mermaid and dompurify and loads on a page's first diagram;
 // mermaid's diagram types stay lazy chunks of it, so a page loads the code of the diagram types it draws.
-// index is the module itself, not a re-export: bun 1.3.13 emits an empty entry for a re-export entry under `sideEffects`.
+// index is the module itself, not a re-export: Bun 1.4.4 emits an empty entry for a re-export entry under `sideEffects`.
 import { rm } from "node:fs/promises";
 const dist = new URL("../dist", import.meta.url).pathname;
 const src = (file: string) => new URL(file, import.meta.url).pathname;
