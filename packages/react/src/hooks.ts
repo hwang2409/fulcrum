@@ -14,7 +14,7 @@ import {
 import type { createRunStore, LazyContentBlock, RunItem, RunState } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { HighlightContext } from "./highlight.js";
-import { MediaStore, type LoadMedia, type MediaLease, type MediaState } from "./media-store.js";
+import { createMediaStore, type LoadMedia, type MediaLease, type MediaState, type MediaStore } from "./media-store.js";
 export type { LoadMedia } from "./media-store.js";
 
 export type RunStore = Pick<
@@ -33,7 +33,7 @@ const MediaContext = createContext<MediaStore | undefined>(undefined);
 
 /** `highlight` colors tool content; `onRetry` retries history; `loadMedia` resolves lazy content blocks. */
 export function RunProvider({ store, highlight, onRetry, loadMedia, children }: { store: RunStore; highlight?: Highlight; onRetry?: () => void; loadMedia?: LoadMedia; children?: ReactNode }) {
-  const media = useMemo(() => loadMedia ? new MediaStore(loadMedia) : undefined, [loadMedia]);
+  const media = useMemo(() => loadMedia ? createMediaStore(loadMedia) : undefined, [loadMedia]);
   useEffect(() => () => media?.dispose(), [media]);
   return createElement(StoreContext.Provider, { value: store },
     createElement(RetryContext.Provider, { value: onRetry },
@@ -41,42 +41,34 @@ export function RunProvider({ store, highlight, onRetry, loadMedia, children }: 
         createElement(HighlightContext.Provider, { value: highlight }, children))));
 }
 const idleMedia = { status: "idle" } as const;
+type MediaView = MediaState | typeof idleMedia;
 export function useMedia(block: LazyContentBlock | undefined, active: boolean) {
   const store = useContext(MediaContext);
   const lease = useRef<MediaLease>(undefined);
-  const current = useRef<MediaState | typeof idleMedia>(idleMedia);
-  const [state, setState] = useState<MediaState | typeof idleMedia>(idleMedia);
-  const [generation, setGeneration] = useState(0);
-  const [renderGeneration, setRenderGeneration] = useState(0);
-  const show = useCallback((next: MediaState | typeof idleMedia, nextGeneration = 0, nextRenderGeneration = 0) => {
-    current.current = next;
-    setState(next);
-    setGeneration(nextGeneration);
-    setRenderGeneration(nextRenderGeneration);
-  }, []);
+  const [view, setView] = useState<MediaView>(idleMedia);
   const release = useCallback(() => { lease.current?.release(); lease.current = undefined; }, []);
   useEffect(() => {
     release();
-    show(idleMedia);
+    setView(idleMedia);
     return release;
-  }, [store, block?.source.key, release, show]);
+  }, [store, block?.source.key, release]);
   useEffect(() => {
     if (!store || !block || !active) {
-      if (current.current.status === "loading") { release(); show(idleMedia); }
+      if (lease.current?.read().status === "loading") { release(); setView(idleMedia); }
       return;
     }
     if (lease.current) return;
-    const next = store.acquire(block.source.key, block);
+    let next: MediaLease;
+    const update = () => setView(next.read());
+    next = store.acquire(block.source.key, block, update);
     lease.current = next;
-    const update = () => show(next.state, next.generation, next.renderGeneration);
     update();
-    return next.subscribe(update);
-  }, [active, block, store, release, show]);
-  useLayoutEffect(() => { lease.current?.commit(renderGeneration); });
+  }, [active, block, store, release]);
+  useLayoutEffect(() => { lease.current?.commit(view.status === "ready" ? view : undefined); });
   const retry = useCallback(() => {
-    if (generation) lease.current?.invalidate(generation);
-  }, [generation]);
-  return { state, retry, available: Boolean(store) };
+    if (view.status !== "idle") lease.current?.invalidate(view);
+  }, [view]);
+  return { state: view, retry, available: !!store };
 }
 
 export const useRunStore = () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, type RefObject } from "react";
 import type { Highlight } from "@fulcrum/highlight";
 import type { ToolBodyProps, ToolItem } from "./parts.js";
 import { requestTokens, type Block } from "./highlight.js";
@@ -56,21 +56,6 @@ const distance = (node: Element | null) => {
   return bottom < 0 ? -bottom : top > innerHeight ? top - innerHeight : 0;
 };
 
-/** True once an element reaches the viewport's 400 px preload margin. */
-export function useNearViewport(node: RefObject<Element | null>) {
-  const [near, setNear] = useState(false);
-  useEffect(() => {
-    const element = node.current;
-    if (!element || near) return;
-    if (typeof IntersectionObserver === "undefined") { setNear(true); return; }
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) { setNear(true); observer.disconnect(); }
-    }, { rootMargin: "400px 0px" });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [node, near]);
-  return near;
-}
 function flush(deadline: Deadline) {
   scheduled = false;
   const jobs = [...queue].map((job) => [distance(job.node.current), job] as const).sort((a, b) => a[0] - b[0]);

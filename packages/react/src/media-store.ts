@@ -2,204 +2,117 @@ import type { LazyContentBlock } from "@fulcrum/core";
 
 /** Resolves lazy content. A source key must be unique for this loader's lifetime. */
 export type LoadMedia = (block: LazyContentBlock, signal: AbortSignal) => Promise<Blob>;
+export type MediaState = { status: "loading" } | { status: "ready"; url: string } | { status: "error"; error: unknown };
 
-export type MediaState =
-  | { status: "loading" }
-  | { status: "ready"; url: string }
-  | { status: "error"; error: unknown };
-
-type LeaseRecord = {
-  broken: boolean;
-  listeners: Set<() => void>;
-  released: boolean;
-  rendered?: Entry;
-  target: Entry;
-};
-
-type Entry = {
-  block: LazyContentBlock;
-  controller: AbortController;
-  generation: number;
-  leases: Set<LeaseRecord>;
-  renderRefs: number;
-  revoked: boolean;
-  state: MediaState;
-};
-
+type LeaseRecord = { bad: boolean; notify?: () => void; rendered?: Entry; next: Entry };
+type Entry = { block: LazyContentBlock; controller: AbortController; key: string; refs: Set<LeaseRecord>; state: MediaState };
 export type MediaLease = {
-  readonly generation: number;
-  readonly renderGeneration: number;
-  readonly state: MediaState;
-  commit(generation: number): void;
-  invalidate(generation: number): void;
-  subscribe(listener: () => void): () => void;
+  read(): MediaState;
+  commit(generation: MediaState | undefined): void;
+  invalidate(generation: MediaState): void;
   release(): void;
 };
 
 const CACHE_SIZE = 32;
+const shown = (lease: LeaseRecord) => !lease.bad && lease.rendered?.state.status === "ready" && lease.next.state.status !== "ready" ? lease.rendered : lease.next;
 
-export class MediaStore {
-  private readonly entries = new Map<string, Entry>();
-  private readonly generations = new Set<Entry>();
-  private readonly unused = new Map<string, Entry>();
-  private disposed = false;
-  private nextGeneration = 0;
-
-  constructor(private readonly load: LoadMedia) {}
-
-  acquire(key: string, block: LazyContentBlock): MediaLease {
-    const entry = this.entries.get(key) ?? this.start(key, block);
-    const record: LeaseRecord = { broken: false, listeners: new Set(), released: false, target: entry };
-    entry.leases.add(record);
-    this.unused.delete(key);
-    const shown = () => entryForState(record);
-    return {
-      get generation() { return shown().generation; },
-      get renderGeneration() { const entry = shown(); return entry.state.status === "ready" ? entry.generation : 0; },
-      get state() { return shown().state; },
-      commit: (generation) => this.commit(record, generation),
-      invalidate: (generation) => this.invalidate(key, generation, record),
-      subscribe: (listener) => { record.listeners.add(listener); return () => record.listeners.delete(listener); },
-      release: () => this.release(key, record),
-    };
-  }
-
-  private invalidate(key: string, generation: number, source: LeaseRecord) {
-    if (source.released || entryForState(source).generation !== generation) return;
-    source.broken = true;
-    const entry = this.entries.get(key);
-    if (!entry || entry.generation !== generation) {
-      source.listeners.forEach((listener) => listener());
-      return;
-    }
-    const replacement = this.start(key, entry.block);
-    const leases = [...entry.leases];
-    for (const lease of leases) {
-      entry.leases.delete(lease);
-      lease.target = replacement;
-      replacement.leases.add(lease);
-    }
-    leases.forEach((lease) => lease.listeners.forEach((listener) => listener()));
-    this.cleanup(key, entry);
-  }
-
-  private start(key: string, block: LazyContentBlock) {
-    const entry: Entry = {
-      block,
-      controller: new AbortController(),
-      generation: ++this.nextGeneration,
-      leases: new Set(),
-      renderRefs: 0,
-      revoked: false,
-      state: { status: "loading" },
-    };
-    this.entries.set(key, entry);
-    this.generations.add(entry);
-    void this.load(block, entry.controller.signal).then(
-      (blob) => this.finish(key, entry, blob),
-      (error) => this.fail(key, entry, error),
-    );
-    return entry;
-  }
-
-  private notify(entry: Entry) {
-    entry.leases.forEach((lease) => lease.listeners.forEach((listener) => listener()));
-  }
-
-  private finish(key: string, entry: Entry, blob: Blob) {
-    if (this.entries.get(key) !== entry || entry.controller.signal.aborted) return;
-    entry.state = { status: "ready", url: URL.createObjectURL(blob) };
-    this.notify(entry);
-    if (entry.leases.size === 0 && entry.renderRefs === 0) this.cache(key, entry);
-  }
-
-  private fail(key: string, entry: Entry, error: unknown) {
-    if (this.entries.get(key) !== entry) return;
-    entry.state = { status: "error", error };
-    this.notify(entry);
-    this.cleanup(key, entry);
-  }
-
-  private commit(record: LeaseRecord, generation: number) {
-    if (record.released) return;
-    const next = generation === record.target.generation && record.target.state.status === "ready"
-      ? record.target
-      : generation === record.rendered?.generation ? record.rendered : undefined;
-    if (next === record.rendered) return;
-    if (next) next.renderRefs++;
-    const previous = record.rendered;
-    record.rendered = next;
-    if (next === record.target) record.broken = false;
-    if (previous) {
-      previous.renderRefs--;
-      this.cleanup(previous.block.source.key, previous);
-    }
-  }
-
-  private release(key: string, record: LeaseRecord) {
-    if (record.released) return;
-    record.released = true;
-    record.target.leases.delete(record);
-    const target = record.target;
-    const rendered = record.rendered;
-    if (rendered) rendered.renderRefs--;
-    record.rendered = undefined;
-    record.listeners.clear();
-    this.cleanup(key, target);
-    if (rendered && rendered !== target) this.cleanup(key, rendered);
-  }
-
-  private cleanup(key: string, entry: Entry) {
-    if (entry.leases.size > 0 || entry.renderRefs > 0) return;
-    if (this.disposed || this.entries.get(key) !== entry) this.discard(entry);
-    else if (entry.state.status === "loading") {
-      this.entries.delete(key);
-      this.discard(entry);
-    } else if (entry.state.status === "ready") this.cache(key, entry);
-    else {
-      this.entries.delete(key);
-      this.generations.delete(entry);
-    }
-  }
-
-  private cache(key: string, entry: Entry) {
-    this.unused.delete(key);
-    this.unused.set(key, entry);
-    while (this.unused.size > CACHE_SIZE) this.evict(this.unused.keys().next().value as string);
-  }
-
-  private evict(key: string) {
-    const entry = this.unused.get(key);
-    if (!entry) return;
-    this.unused.delete(key);
-    this.entries.delete(key);
-    this.discard(entry);
-  }
-
-  private discard(entry: Entry) {
+export function createMediaStore(load: LoadMedia) {
+  const entries = new Map<string, Entry>();
+  const unused = new Set<Entry>();
+  const notify = (entry: Entry) => entry.refs.forEach((lease) => lease.notify?.());
+  const discard = (entry: Entry) => {
     entry.controller.abort();
-    this.revoke(entry);
-    this.generations.delete(entry);
-  }
-
-  private revoke(entry: Entry) {
-    if (entry.state.status !== "ready" || entry.revoked) return;
-    entry.revoked = true;
-    URL.revokeObjectURL(entry.state.url);
-  }
-
-  dispose() {
-    this.disposed = true;
-    this.entries.clear();
-    this.unused.clear();
-    for (const entry of this.generations) {
+    if (entry.state.status === "ready") URL.revokeObjectURL(entry.state.url);
+  };
+  const cache = (entry: Entry) => {
+    unused.add(entry);
+    if (unused.size <= CACHE_SIZE) return;
+    const oldest = unused.values().next().value as Entry;
+    unused.delete(oldest);
+    entries.delete(oldest.key);
+    discard(oldest);
+  };
+  const cleanup = (entry: Entry) => {
+    if (entry.refs.size > 0) return;
+    if (entries.get(entry.key) !== entry) discard(entry);
+    else if (entry.state.status === "loading") {
+      entries.delete(entry.key);
+      discard(entry);
+    } else if (entry.state.status === "ready") cache(entry);
+    else entries.delete(entry.key);
+  };
+  const start = (key: string, block: LazyContentBlock) => {
+    const entry: Entry = { block, controller: new AbortController(), key, refs: new Set(), state: { status: "loading" } };
+    entries.set(key, entry);
+    void load(block, entry.controller.signal).then((blob) => {
+      if (entries.get(key) !== entry) return;
+      entry.state = { status: "ready", url: URL.createObjectURL(blob) };
+      notify(entry);
+      if (entry.refs.size === 0) cache(entry);
+    }, (error) => {
+      if (entries.get(key) !== entry) return;
+      entry.state = { status: "error", error };
+      notify(entry);
+      cleanup(entry);
+    });
+    return entry;
+  };
+  const acquire = (key: string, block: LazyContentBlock, notify: () => void): MediaLease => {
+    const entry = entries.get(key) ?? start(key, block);
+    const lease: LeaseRecord = { bad: false, notify, next: entry };
+    entry.refs.add(lease);
+    unused.delete(entry);
+    const commit = (generation: object | undefined) => {
+      if (!lease.next.refs.has(lease)) return;
+      const next = generation === lease.next.state && lease.next.state.status === "ready" ? lease.next : generation === lease.rendered?.state ? lease.rendered : undefined;
+      if (next === lease.rendered) return;
+      const previous = lease.rendered;
+      lease.rendered = next;
+      if (next === lease.next) lease.bad = false;
+      if (previous && previous !== lease.next) {
+        previous.refs.delete(lease);
+        cleanup(previous);
+      }
+    };
+    return {
+      read: () => shown(lease).state,
+      commit,
+      invalidate: (generation) => {
+        if (!lease.next.refs.has(lease) || shown(lease).state !== generation) return;
+        lease.bad = true;
+        const current = entries.get(key);
+        if (!current || current.state !== generation) { lease.notify?.(); return; }
+        const replacement = start(key, current.block);
+        const refs = [...current.refs];
+        for (const item of refs) {
+          item.next = replacement;
+          replacement.refs.add(item);
+          if (item.rendered !== current) current.refs.delete(item);
+        }
+        refs.forEach((item) => item.notify?.());
+        cleanup(current);
+      },
+      release: () => {
+        if (!lease.next.refs.delete(lease)) return;
+        const next = lease.next;
+        const rendered = lease.rendered;
+        if (rendered) rendered.refs.delete(lease);
+        lease.rendered = undefined;
+        lease.notify = undefined;
+        cleanup(next);
+        if (rendered && rendered !== next) cleanup(rendered);
+      },
+    };
+  };
+  const dispose = () => {
+    for (const entry of entries.values()) {
       entry.controller.abort();
-      if (entry.renderRefs === 0) this.discard(entry);
+      if (entry.refs.size === 0 && entry.state.status === "ready") URL.revokeObjectURL(entry.state.url);
     }
-  }
+    entries.clear();
+    unused.clear();
+  };
+  return { acquire, dispose };
 }
 
-const entryForState = (record: LeaseRecord) =>
-  !record.broken && record.rendered?.state.status === "ready" && record.target.state.status !== "ready"
-    ? record.rendered
-    : record.target;
+export type MediaStore = ReturnType<typeof createMediaStore>;

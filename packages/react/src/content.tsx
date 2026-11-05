@@ -200,128 +200,48 @@ export const FileBlock = memo(function FileBlock({ block, onOpen }: ContentBlock
   );
 });
 
-// Images draw at most this tall; a known size reserves its exact box, an unknown one a fixed frame.
-const IMAGE_MAX_HEIGHT = 360;
+// Images draw at most 360px tall; a known size reserves its exact box, an unknown one a fixed frame.
 const dimension = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
 
 /**
  * An image in a box reserved before it loads, so nothing below it moves. Clicking it calls the host's `onOpen`, or
  * opens it full size in a dialog. Its address is never text: alt, captions, and errors use its name or "image".
  */
-function useMediaViewport(node: React.RefObject<Element | null>) {
-  const [near, setNear] = useState(false);
-  useEffect(() => {
-    const element = node.current;
-    if (!element || typeof IntersectionObserver === "undefined") { setNear(true); return; }
-    const observer = new IntersectionObserver(([entry]) => setNear(Boolean(entry?.isIntersecting)), { rootMargin: "400px 0px" });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [node]);
-  return near;
-}
-
 export const ImageBlock = memo(function ImageBlock({ block, onOpen }: ContentBlockProps) {
   const image = block as ImageContentBlock;
-  const direct = safeUrl(image.url, "image");
   const lazy = image.source?.kind === "lazy" ? image as ImageContentBlock & { source: NonNullable<ImageContentBlock["source"]> } : undefined;
-  const frame = useRef<HTMLElement>(null);
-  const near = useMediaViewport(frame);
-  const [requested, setRequested] = useState(false);
+  const [decodeFailures, setDecodeFailures] = useState(0);
+  const [near, setNear] = useState(false);
+  const frame = useCallback((element: HTMLElement | null) => {
+    if (!element || typeof IntersectionObserver === "undefined") { if (element) setNear(true); return; }
+    const observer = new IntersectionObserver(([entry]) => setNear(!!entry?.isIntersecting), { rootMargin: "400px 0px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const [viewing, setViewing] = useState(false);
-  const media = useMedia(lazy, near || requested || viewing);
-  const src = direct ?? (media.state.status === "ready" ? media.state.url : undefined);
-  useEffect(() => {
-    if (!requested || !src || !onOpen) return;
-    setRequested(false);
-    onOpen({ ...image, url: src });
-  }, [image, onOpen, requested, src]);
-  const open = () => {
-    if (onOpen) src ? onOpen({ ...image, url: src }) : setRequested(true);
-    else setViewing(true);
-  };
-  return <ImageView image={image} frame={frame} src={src} media={media} viewing={viewing} open={open} close={() => setViewing(false)} />;
-});
-
-type ImageViewProps = {
-  image: ImageContentBlock;
-  frame: React.RefObject<HTMLElement | null>;
-  src?: string;
-  media: ReturnType<typeof useMedia>;
-  viewing: boolean;
-  open(): void;
-  close(): void;
-};
-
-type ImageModel = {
-  box?: CSSProperties;
-  blocked: boolean;
-  height?: number;
-  lazy: boolean;
-  message: string;
-  name: string;
-  src?: string;
-  state: string;
-  status: string;
-  width?: number;
-};
-
-const imageStatus = (src: string | undefined, failed: boolean, media: ReturnType<typeof useMedia>) => failed ? "error" : src ? "ready" : media.state.status;
-const imageMessage = (blocked: boolean, unavailable: boolean, status: string) => blocked ? "image not shown: unsupported address" : unavailable ? "image no longer available" : status === "error" ? "image failed to load" : "loading image";
-const imageState = (blocked: boolean, unavailable: boolean, status: string) => blocked ? "blocked" : unavailable ? "unavailable" : status;
-
-function imageModel(image: ImageContentBlock, src: string | undefined, media: ReturnType<typeof useMedia>, failed: boolean): ImageModel {
+  const media = useMedia(lazy, near || viewing);
+  const src = safeUrl(image.url, "image") ?? (media.state.status === "ready" ? media.state.url : undefined);
   const width = dimension(image.width);
   const height = dimension(image.height);
   const name = label(str(image.alt) ?? str(image.filename) ?? fileName(image.url) ?? "image");
-  const box = width && height ? { width: Math.min(width, (IMAGE_MAX_HEIGHT * width) / height), aspectRatio: `${width} / ${height}` } : undefined;
-  const lazy = image.source?.kind === "lazy";
+  const box = width && height ? { width: Math.min(width, (360 * width) / height), aspectRatio: `${width} / ${height}` } : undefined;
   const blocked = !src && (!lazy || !media.available);
-  const status = imageStatus(src, failed, media);
+  const status = decodeFailures > 1 ? "error" : src ? "ready" : media.state.status;
   const unavailable = media.state.status === "error" && (media.state.error as { code?: unknown }).code === "not_available";
-  return { box, blocked, height, lazy, message: imageMessage(blocked, unavailable, status), name, src, status, state: imageState(blocked, unavailable, status), width };
-}
-
-function ImageView({ image, frame, src, media, viewing, open, close }: ImageViewProps) {
-  const [failed, setFailed] = useState(false);
-  const decodeRetries = useRef(0);
-  const model = imageModel(image, src, media, failed);
-  const retry = () => { decodeRetries.current = 0; setFailed(false); media.retry(); };
-  const fail = () => {
-    if (model.lazy && decodeRetries.current++ === 0) media.retry();
-    else setFailed(true);
-  };
-  return <figure ref={frame} data-part="image" data-size={model.box ? "known" : "unknown"} data-state={model.state}>
-    <ImageBody model={model} open={open} retry={retry} fail={fail} />
-    <figcaption data-part="image-caption"><span data-part="block-label">image</span><span data-part="file-name">{model.name}</span><Facts mediaType={image.mediaType} size={image.size} /></figcaption>
-    {viewing && src ? <ImageDialog src={src} name={model.name} close={close} /> : null}
-  </figure>;
-}
-
-function ImageBody({ model, open, retry, fail }: { model: ImageModel; open(): void; retry(): void; fail(): void }) {
-  if (model.src && model.status === "ready") return <button type="button" data-part="image-open" style={model.box} aria-label={`open image: ${model.name}`} onClick={open}>
-    <img src={model.src} alt={model.name} width={model.width} height={model.height} loading="lazy" decoding="async" onError={fail} />
-  </button>;
-  return <div data-part="image-placeholder" style={model.blocked ? undefined : model.box} aria-busy={model.status === "loading" || undefined}>
-    <span>{model.message}</span>
-    {model.status === "error" && model.lazy ? <button type="button" data-action="retry" onClick={retry}>retry</button> : null}
-    {!model.blocked && model.status !== "error" ? <button type="button" data-action="open-image" aria-label={`open image: ${model.name}`} onClick={open} /> : null}
-  </div>;
-}
-
-function ImageDialog({ src, name, close }: { src: string; name: string; close: () => void }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const dialog = ref.current;
-    if (dialog && !dialog.open) dialog.showModal?.();
-  }, []);
-  return (
-    // A click on the backdrop (the dialog itself, not its content) closes it, as Escape does.
-    <dialog ref={ref} data-part="image-dialog" aria-label={name} onClose={close} onClick={(event) => { if (event.target === event.currentTarget) close(); }}>
+  return <figure ref={frame} data-part="image" data-size={box ? "known" : "unknown"} data-state={blocked ? "blocked" : unavailable ? "unavailable" : status}>
+    {src && status === "ready" ? <button type="button" data-part="image-open" style={box} onClick={() => onOpen ? onOpen({ ...image, url: src }) : setViewing(true)}>
+      <img src={src} alt={name} width={width} height={height} onError={() => { if (lazy && decodeFailures === 0) media.retry(); setDecodeFailures(decodeFailures + 1); }} />
+    </button> : <div data-part="image-placeholder" style={blocked ? undefined : box} aria-busy={status === "loading" || undefined}>
+      <span>{blocked ? "image not shown: unsupported address" : unavailable ? "image no longer available" : status === "error" ? "image failed to load" : "loading image"}</span>
+      {status === "error" && lazy ? <button type="button" data-action="retry" onClick={() => { setDecodeFailures(0); media.retry(); }}>retry</button> : null}
+    </div>}
+    <figcaption data-part="image-caption"><span data-part="block-label">image</span><span data-part="file-name">{name}</span><Facts mediaType={image.mediaType} size={image.size} /></figcaption>
+    {viewing && src ? <dialog ref={(dialog) => { if (dialog && !dialog.open) dialog.showModal?.(); }} data-part="image-dialog" aria-label={name} onClose={() => setViewing(false)} onClick={(event) => { event.target === event.currentTarget && setViewing(false); }}>
       <img src={src} alt={name} />
-      <button type="button" data-action="close" onClick={close}>close</button>
-    </dialog>
-  );
-}
+      <button type="button" data-action="close" onClick={() => setViewing(false)}>close</button>
+    </dialog> : null}
+  </figure>;
+});
 
 const json = (block: ContentBlock) => {
   try {
