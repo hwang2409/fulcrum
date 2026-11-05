@@ -148,7 +148,10 @@ function consumeItemIndent(cursor: Cursor, width: number) {
   return false;
 }
 
-const isBlank = (line: string, offset = 0) => /^[ \t]*$/.test(line.slice(offset));
+const isBlank = (line: string, offset = 0) => {
+  for (; offset < line.length; offset++) if (line[offset] !== " " && line[offset] !== "\t") return false;
+  return true;
+};
 const isTableDelimiter = (line: string) => /^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$/.test(line)
   || /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/.test(line);
 const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
@@ -217,6 +220,7 @@ export class MarkdownLineResolver {
   private stack: ContainerFrame[] = [{ kind: "document" }];
   private openLeaf?: { kind: "paragraph"; content: string; tableEligible: boolean } | { kind: "fence"; marker: string } | { kind: "indented-code" } | { kind: "table" } | { kind: "html"; end: RegExp };
   private pendingLine: MutablePendingLine = freshPending();
+  private pendingClassification?: { line: string; value: PendingClassification };
   private readonly referenceIndex = new Map<string, ReferenceDefinition>();
   private pendingReferenceTitle?: { label: string };
   private previousContainerOnly = false;
@@ -240,6 +244,14 @@ export class MarkdownLineResolver {
   }
 
   classifyPending(line = this.pendingLine.content): Readonly<PendingClassification> {
+    if (line === this.pendingClassification?.line) return this.pendingClassification.value;
+    if (line === this.pendingLine.content && this.pendingClassification?.value.kind === "paragraph"
+      && line.startsWith(this.pendingClassification.line)) {
+      const previous = this.pendingClassification.value;
+      const value = { content: line.slice(previous.offset), kind: "paragraph" as const, offset: previous.offset };
+      this.pendingClassification = { line, value };
+      return value;
+    }
     const { cursor, unmatched } = this.matchContinuations(line);
     if (!unmatched && this.openLeaf?.kind === "fence") {
       const content = line.slice(cursor.offset);
@@ -248,7 +260,9 @@ export class MarkdownLineResolver {
         return FENCE;
       return { content, kind: "fence", offset: cursor.offset };
     }
-    return classifyLeaf(line, true);
+    const value = classifyLeaf(line, true);
+    if (line === this.pendingLine.content) this.pendingClassification = { line, value };
+    return value;
   }
 
   /** Classifies a line that already ended, so only lines after it can change its meaning. */
@@ -280,6 +294,7 @@ export class MarkdownLineResolver {
       advancePending(this.pendingLine, delta.slice(offset, newline));
       resolved.push(this.resolveLine(this.pendingLine.content, false));
       this.pendingLine = freshPending();
+      this.pendingClassification = undefined;
       offset = newline + 1;
     }
     return resolved;
@@ -289,6 +304,7 @@ export class MarkdownLineResolver {
     if (!this.pendingLine.length) return undefined;
     const result = this.resolveLine(this.pendingLine.content, true);
     this.pendingLine = freshPending();
+    this.pendingClassification = undefined;
     return result;
   }
 

@@ -30,7 +30,7 @@ function proveGateSensitivity() {
 function measure(source: string, deltaSize: number): Measurement {
   let work: number[] = [];
   let maxCopied = 0;
-  const trials = Array.from({ length: 5 }, (_, trial) => {
+  const trials = Array.from({ length: 7 }, (_, trial) => {
     const document = createStreamingDocument();
     const durations: number[] = [];
     const trialWork: number[] = [];
@@ -48,7 +48,7 @@ function measure(source: string, deltaSize: number): Measurement {
     const sorted = durations.sort((a, b) => a - b);
     return { p95: sorted[Math.floor(durations.length * 0.95)]!, p99: sorted[Math.floor(durations.length * 0.99)]!, max: sorted.at(-1)! };
   });
-  const median = (key: "p95" | "p99" | "max") => trials.map((trial) => trial[key]).sort((a, b) => a - b)[2]!;
+  const median = (key: "p95" | "p99" | "max") => trials.map((trial) => trial[key]).sort((a, b) => a - b)[3]!;
   return {
     p95: median("p95"),
     p99: median("p99"),
@@ -141,23 +141,22 @@ if (commitRatio > 25 || commits[2]![1] > 500) failed = true;
 
 // A paragraph's 2nd and later lines ask, on every delta, whether the growing line starts a block. That check
 // (`startsLeafBlock`) must read the line's first characters only; a whole-line regex makes continuation lines
-// quadratic. The gate is a size-scaling ratio: growing the line 4x (46k -> 184k) must not grow the time super-linearly.
+// quadratic. The gate is a size-scaling ratio: growing the line 4x (48k -> 192k) must not grow the time super-linearly.
 //
-// Robustness: the small (46k) and large (184k) runs are measured back-to-back as one pair, and the gate is the median
+// Robustness: the small (48k) and large (192k) runs are measured back-to-back as one pair, and the gate is the median
 // of 7 per-pair ratios. Pairing cancels machine-wide slowdowns, because a slow moment on a shared CI runner hits both
 // sizes in the same pair and leaves their ratio unchanged; the earlier version measured the two sizes in separate
 // batches, so a slowdown during only the large batch inflated the ratio (CI 41985973904 attempt 1 read 8.1x against a
 // clean baseline of ~6x, with almost no margin). One warm-up pair is discarded so JIT and GC warm-up do not land in a
 // measured pair.
 //
-// Calibration: clean reads ~6x here (not the ideal 4x), because the inline/pending-paragraph path already grows mildly
+// Calibration: clean reads ~6.4x here (not the ideal 4x), because the inline/pending-paragraph path still grows mildly
 // super-linearly with line length. A whole-line regex in `startsLeafBlock` (the mistake this guards) reads ~11.5x.
-// The 8x threshold sits between them with margin on both sides; the median of 7 pairs holds clean within 6.1-6.7x and
-// the regex regression within 11.3-11.6x locally.
+// The 7.5x threshold sits between them with margin on both sides; the paired median absorbs normal runner noise.
 //
 // Detection limit (honest): this gate catches super-linear growth (a whole-line scan per delta), not a constant-factor
 // slowdown. A flat slowdown scales both sizes equally and leaves the ratio near its ~6x baseline, so a regression must
-// add roughly 1.3x of extra scaling on top of that baseline to cross 8x; smaller constant-factor regressions are
+// add roughly 1.2x of extra scaling on top of that baseline to cross 7.5x; smaller constant-factor regressions are
 // instead caught by the p95/p99/max latency gates above.
 const continuationTime = (units: number) => {
   const source = `first line\n${"word **b** `c` and more ".repeat(units)}`;
@@ -176,6 +175,6 @@ const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floo
 const continuationSmall = median(continuationPairs.map((pair) => pair.small));
 const continuationLarge = median(continuationPairs.map((pair) => pair.large));
 const continuationRatio = median(continuationPairs.map((pair) => pair.ratio));
-console.log(`64 B  continuation line 46k -> 184k: ${continuationSmall.toFixed(0)} -> ${continuationLarge.toFixed(0)} ms, ${continuationRatio.toFixed(1)}x median of 7 pairs (clean ~6x, whole-line regex ~11.5x)`);
-if (continuationRatio > 8) failed = true;
+console.log(`64 B  continuation line 48k -> 192k: ${continuationSmall.toFixed(0)} -> ${continuationLarge.toFixed(0)} ms, ${continuationRatio.toFixed(1)}x median of 7 pairs (clean ~6.4x, whole-line regex ~11.5x)`);
+if (continuationRatio > 7.5) failed = true;
 if (failed) process.exit(1);

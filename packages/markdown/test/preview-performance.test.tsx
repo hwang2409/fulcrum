@@ -24,6 +24,45 @@ test("pending preview work scales with delta at depth 50", () => {
   expect(large.render()[0]?.type).toBe("paragraph");
 });
 
+test("line classification stays correct at one-character boundaries", () => {
+  for (const source of [
+    "leading spaces\n  continuation",
+    "- item\ncontinuation",
+    "# heading\ncontinuation",
+    "> quote\ncontinuation",
+    "1. item\ncontinuation",
+    "```ts\ncode\n```\ncontinuation",
+    "| name | value |\n| --- | --- |\n| one | two |",
+  ]) {
+    const expected = createStreamingDocument();
+    expected.append(source);
+    expected.finish();
+    const actual = createStreamingDocument();
+    for (const character of source) {
+      actual.append(character);
+      actual.render();
+    }
+    actual.finish();
+    expect(JSON.stringify(actual.render())).toBe(JSON.stringify(expected.render()));
+  }
+});
+
+test("continuation preview stays near-linear as the line grows", () => {
+  const measure = (length: number) => {
+    const document = createStreamingDocument();
+    const source = "first paragraph\n" + "word **b** `c` and more ".repeat(Math.ceil(length / 24)).slice(0, length);
+    const start = performance.now();
+    for (let offset = 0; offset < source.length; offset += 64) {
+      document.append(source.slice(offset, offset + 64));
+      document.render();
+    }
+    return performance.now() - start;
+  };
+  const samples = Array.from({ length: 3 }, () => [measure(48_000), measure(192_000)] as const);
+  const ratios = samples.map(([small, large]) => large / Math.max(small, 0.1)).sort((a, b) => a - b);
+  expect(ratios[1]!).toBeLessThan(7.5);
+});
+
 test("frozen blocks retain identity while only the open path is rebuilt", () => {
   const document = createStreamingDocument();
   document.append("frozen\n\nopen\nnext");
