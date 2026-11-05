@@ -1,9 +1,11 @@
 import type { GrammarState, HighlighterCore, LanguageInput, ThemedToken } from "@shikijs/types";
 import type { HighlightContext, Token } from "./types.js";
 import type { GrammarProvenance } from "./protocol.js";
-import { loadLanguage } from "./languages.js";
+import { loadLanguage, loadRegexRecipes } from "./languages.js";
 import { normalizeLanguage } from "./names.js";
 import { appendToken, semanticTheme } from "./scopes.js";
+import { EmulatedRegExp } from "oniguruma-to-es";
+import { grammarPatterns, REGEX_TARGET, type RegexRecipe, type RegexRecipes } from "./regex.js";
 
 const THEME = "fulcrum-semantic";
 const MAX_SESSIONS = 32;
@@ -11,6 +13,10 @@ const MAX_SESSION_BYTES = 8 * 1024 * 1024;
 // tokenization budgets may schedule work, but never choose the final token semantics. the worker watchdog handles a
 // truly pathological scanner; a slow machine must keep trying until the pinned grammar returns its full result.
 type Session = { language: string; version: number; code: string; finalizedLength: number; tokens: Token[]; state?: GrammarState; used: number; bytes: number };
+
+export function regexFromRecipe([source, flags, options]: RegexRecipe): RegExp {
+  return options ? new EmulatedRegExp(source, flags, options) : new RegExp(source, flags);
+}
 
 function nextCompleteLength(code: string, done: boolean): number {
   if (done) return code.length;
@@ -60,35 +66,6 @@ export type OnUpdate = (context: HighlightContext, provenance: GrammarProvenance
 /** Called as work goes on: with the block being tokenized (at its start and after each line), or null while a grammar compiles. */
 export type OnProgress = (context: HighlightContext | null) => void;
 
-// The sources textmate compiles for one grammar pattern (vscode-textmate's RegExpSource, pinned with shiki): `\z`
-// rewritten, and for `\A` or `\G` the variant for each of "A allowed" and "G allowed", the disallowed one as \uFFFF.
-function textmateSources(pattern: string): string[] {
-  let source = "";
-  let anchored = false;
-  for (let index = 0; index < pattern.length; index++) {
-    const next = pattern[index + 1];
-    if (pattern[index] !== "\\" || next === undefined) { source += pattern[index]; continue; }
-    source += next === "z" ? "$(?!\\n)(?<!\\n)" : `\\${next}`;
-    anchored ||= next === "A" || next === "G";
-    index++;
-  }
-  if (!anchored) return [source];
-  const variant = (allowA: boolean, allowG: boolean) => source.replace(/\\([\s\S])/g, (escape, next: string) =>
-    (next === "A" && !allowA) || (next === "G" && !allowG) ? "\\\uFFFF" : escape);
-  return [variant(true, true), variant(true, false), variant(false, true), variant(false, false)];
-}
-
-function grammarPatterns(value: unknown, patterns: Set<string>): Set<string> {
-  if (Array.isArray(value)) for (const item of value) grammarPatterns(item, patterns);
-  else if (value && typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) {
-      if (typeof item === "string" && (key === "match" || key === "begin" || key === "end" || key === "while")) for (const source of textmateSources(item)) patterns.add(source);
-      else grammarPatterns(item, patterns);
-    }
-  }
-  return patterns;
-}
-
 function sourceLines(source: string): string[] {
   const lines = source.match(/.*(?:\n|$)/g)?.filter(Boolean) ?? [];
   return lines;
@@ -109,6 +86,7 @@ function embeddedLanguages(code: string, language: string): string[] {
 export class TokenizerRuntime {
   private highlighter?: HighlighterCore;
   private cache?: RegexCache;
+  private readonly recipes = new Map<string, RegexRecipes[string]>();
   private readonly sessions = new Map<string, Session>();
   private clock = 0;
   private epoch = 0;
@@ -133,11 +111,18 @@ export class TokenizerRuntime {
 
   private engine(): Promise<HighlighterCore> {
     this.enginePromise ??= (async () => {
-      const [{ createHighlighterCore }, { createJavaScriptRegexEngine }] = await Promise.all([
+      const [{ createHighlighterCore }, { createJavaScriptRegexEngine, defaultJavaScriptRegexConstructor }] = await Promise.all([
         import("shiki/core"), import("@shikijs/engine-javascript"),
       ]);
       const cache = this.cache = new RegexCache();
-      const engine = createJavaScriptRegexEngine({ cache });
+      const engine = createJavaScriptRegexEngine({
+        cache,
+        target: REGEX_TARGET,
+        regexConstructor: (pattern) => {
+          const recipe = this.recipes.get(pattern);
+          return recipe ? regexFromRecipe(recipe) : defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
+        },
+      });
       this.highlighter = await createHighlighterCore({ engine, langs: [], themes: [semanticTheme] });
       return this.highlighter;
     })();
@@ -151,12 +136,17 @@ export class TokenizerRuntime {
     let loading = this.languages.get(language);
     if (!loading) {
       loading = (async () => {
-        const grammars = await loadLanguage(language);
+        const [grammars, recipes] = await Promise.all([loadLanguage(language), loadRegexRecipes(language)]);
+        for (const [pattern, recipe] of Object.entries(recipes)) this.recipes.set(pattern, recipe);
         await highlighter.loadLanguage(...grammars);
-        const patterns = grammarPatterns(grammars, new Set());
+        const patterns = grammarPatterns(grammars);
         for (const pattern of patterns) cache.grammar.add(pattern);
         // Not awaited: requests are answered while the grammar warms, with plain text until it is warm.
-        this.warming.set(language, this.warmQueue = this.warmQueue.then(() => this.warm(language, patterns, highlighter, cache, epoch)).catch(() => {}));
+        const grammarLanguages = grammars.flatMap((grammar) => {
+          const name = (grammar as { name?: unknown }).name;
+          return typeof name === "string" ? [name] : [];
+        });
+        this.warming.set(language, this.warmQueue = this.warmQueue.then(() => this.warm(language, grammarLanguages, patterns, highlighter, cache, epoch)).catch(() => {}));
       })();
       this.languages.set(language, loading);
       loading.catch(() => this.languages.delete(language)); // a failed load can be retried
@@ -166,16 +156,21 @@ export class TokenizerRuntime {
   }
 
   // `epoch` is the one the grammar was loaded in: a warm-up queued before dispose must not run after it.
-  private async warm(language: string, patterns: Set<string>, highlighter: HighlighterCore, cache: RegexCache, epoch: number): Promise<void> {
+  private async warm(language: string, grammarLanguages: string[], patterns: Set<string>, highlighter: HighlighterCore, cache: RegexCache, epoch: number): Promise<void> {
     await this.compile(patterns, cache, epoch);
     if (epoch !== this.epoch) return;
-    // The first line through a grammar also builds its rules and runs the regex jit once; a sample does it here.
-    highlighter.codeToTokensBase(WARM_SAMPLE, { lang: language, theme: THEME });
+    // A language chunk can contain embedded grammars. Prime each real scanner so final tokens do not depend on load order.
+    for (const grammarLanguage of new Set(grammarLanguages))
+      highlighter.codeToTokensBase(WARM_SAMPLE, { lang: grammarLanguage, theme: THEME });
     this.warmed.add(language);
     await this.flushProvisional(language, epoch);
   }
 
-  // Compiles each pattern not yet cached, yielding to the worker's queue after each WARM_SLICE_MS.
+  // Compiles and warms each grammar pattern not yet cached, yielding to the worker's queue after each WARM_SLICE_MS.
+  // Warming matters for correctness, not only latency: under CPU load Bun/JavaScriptCore can return a wrong result on a
+  // `v`-flag regex's very first exec. Shiki's scanner reuses each regex's first search on a line, so that wrong "no
+  // match" is cached and never retried (e.g. TypeScript `(:)(?=\s*\S)` failed at `id:`, merging `id: number };` into one
+  // token). Forcing the first exec here, before any real block reaches a scanner, keeps that bad first exec off the hot path.
   private async compile(patterns: Set<string>, cache: RegexCache, epoch: number): Promise<void> {
     const { defaultJavaScriptRegexConstructor } = await import("@shikijs/engine-javascript");
     let sliceStart = performance.now();
@@ -185,8 +180,9 @@ export class TokenizerRuntime {
       if (!cache.static.has(pattern)) {
         // The engine caches a failed compile the same way and throws it at use.
         try {
-          const regex = defaultJavaScriptRegexConstructor(pattern, { target: "auto" });
-          regex.exec(""); // a long pattern's RegExp compiles at its first use
+          const recipe = this.recipes.get(pattern);
+          const regex = recipe ? regexFromRecipe(recipe) : defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
+          regex.exec(""); // absorb the wrong first exec; the scanner only ever sees the settled regex
           regex.lastIndex = 0;
           cache.set(pattern, regex);
         } catch (cause) { cache.set(pattern, cause instanceof Error ? cause : new Error(String(cause))); }
@@ -322,6 +318,7 @@ export class TokenizerRuntime {
     this.languages.clear();
     this.cache?.clear();
     this.cache = undefined;
+    this.recipes.clear();
     this.warming.clear();
     this.warmed.clear();
     this.provisional.clear();
