@@ -1,7 +1,7 @@
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
 import { MermaidFence } from "@fulcrum/mermaid";
-import { Approval, Code, Composer, Fallback, HighlightContext, MediaNotAvailableError, Message, RunProvider, Timeline, useItemSelector, useRun, useRunStore, useTimeline, type LoadMedia, type Renderers } from "@fulcrum/react";
+import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvider, Timeline, useItemSelector, useRun, useRunStore, useTimeline, type LoadMedia, type Renderers } from "@fulcrum/react";
 import { ContentReadError, type SessionStore, type ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { createConnection, serveCommand, type Connection, type ConnectionState } from "./connection";
@@ -380,7 +380,7 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
     try {
       return await client.readContent(block.source!.key, { signal });
     } catch (error) {
-      if (error instanceof ContentReadError && error.kind === "not_available") throw new MediaNotAvailableError("image no longer available");
+      if (error instanceof ContentReadError && error.kind === "not_available") throw Object.assign(new Error("image no longer available"), { code: "not_available" });
       throw error;
     }
   } : undefined, [client]);

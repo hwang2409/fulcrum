@@ -7,7 +7,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, MAX_URL_CHARS, type ContentBlock, type RunEvent } from "@fulcrum/core";
 import { Markdown } from "../../markdown/src/react.js";
-import { MediaNotAvailableError, Message, RunProvider, ToolCall, type BlockRenderers, type ContentBlockProps, type LoadMedia } from "../src/index.js";
+import { Message, RunProvider, ToolCall, type BlockRenderers, type ContentBlockProps, type LoadMedia } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 
@@ -283,7 +283,7 @@ test("a missing lazy image says it is no longer available and can retry", async 
   let attempts = 0;
   try {
     render([commit([{ type: "image", filename: "gone.png", source: { kind: "lazy", key: "gone" } }])], {
-      loadMedia: async () => { attempts++; throw new MediaNotAvailableError("gone"); },
+      loadMedia: async () => { attempts++; throw Object.assign(new Error("gone"), { code: "not_available" }); },
     });
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(q('[data-part="image"]').dataset.state).toBe("unavailable");

@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { safeUrl, type ContentBlock, type FileContentBlock, type ImageContentBlock, type RunItem } from "@fulcrum/core";
-import { MediaNotAvailableError, useItem, useMediaCache } from "./hooks.js";
+import { useItem, useMediaCache } from "./hooks.js";
 import { useNearViewport } from "./warm.js";
 import type { ItemProps } from "./parts.js";
 import { boundText, bytes, MAX_SUMMARY_CHARS } from "./tools/common.js";
@@ -230,7 +230,7 @@ export const ImageBlock = memo(function ImageBlock({ block, onOpen }: ContentBlo
       if (!next.signal.aborted) { setSrc(url); setState("ready"); }
       return url;
     }, (error) => {
-      if (!next.signal.aborted) setState(error instanceof MediaNotAvailableError ? "unavailable" : "error");
+      if (!next.signal.aborted) setState((error as { code?: unknown }).code === "not_available" ? "unavailable" : "error");
       return undefined;
     });
   }, [cache, image, lazy, src, state]);

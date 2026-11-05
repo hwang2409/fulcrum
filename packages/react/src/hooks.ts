@@ -25,7 +25,6 @@ export type RunStore = Pick<
 const StoreContext = createContext<RunStore | null>(null);
 const RetryContext = createContext<(() => void) | undefined>(undefined);
 export type LoadMedia = (block: ImageContentBlock, signal: AbortSignal) => Promise<Blob>;
-export class MediaNotAvailableError extends Error { readonly name = "MediaNotAvailableError"; }
 const MEDIA_CACHE_SIZE = 32;
 class MediaCache {
   private entries = new Map<string, Promise<string>>();
