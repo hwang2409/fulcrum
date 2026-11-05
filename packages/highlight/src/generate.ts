@@ -42,7 +42,7 @@ const entries = generationEntries();
 const expectedFiles = entries.flatMap((entry) => [`.grammar-entries/${entry.actual}.ts`, `.recipe-entries/${entry.actual}.ts`]).sort();
 const cacheRoot = packageRoot;
 if (await verifyGenerationCache(cacheRoot, manifestUrl, hash, expectedFiles)) {
-  console.log(`reused ${hash} ${"ES2024"} regex recipe chunks`);
+  console.log(`reused ${hash} regex recipe chunks`);
   process.exit(0);
 }
 

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { cp, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -24,8 +24,8 @@ afterAll(async () => {
   await rm(temporaryRoot, { recursive: true, force: true });
 });
 
-const runBuild = () => {
-  const child = Bun.spawn(["bun", "run", "build"], { cwd: packageDir, stdout: "ignore", stderr: "pipe" });
+const runBuild = (env?: Record<string, string>) => {
+  const child = Bun.spawn([process.execPath, "run", "build"], { cwd: packageDir, env: { ...process.env, ...env }, stdout: "ignore", stderr: "pipe" });
   children.push(child);
   return child;
 };
@@ -61,6 +61,21 @@ describe.serial("package build lock", () => {
     const result = await buildResult(runBuild());
     expect(result.code).toBe(0);
     expect(result.error).not.toContain("No such file or directory");
+    await expectValidDist();
+  });
+
+  test("two waiters retry when a stale lock disappears before stat", { timeout: 120_000 }, async () => {
+    await writeFile(join(packageDir, ".build.lock"), "");
+    const lockTime = new Date(Date.now() - 31_000);
+    await utimes(join(packageDir, ".build.lock"), lockTime, lockTime);
+    const hook = join(temporaryRoot, "after-lock-read");
+    const waiters = [runBuild({ HIGHLIGHT_BUILD_LOCK_TEST_AFTER_READ: hook }), runBuild({ HIGHLIGHT_BUILD_LOCK_TEST_AFTER_READ: hook })];
+    while ((await readdir(temporaryRoot)).filter((name) => name.startsWith("after-lock-read.") && name !== "after-lock-read.release").length < 2) await Bun.sleep(5);
+    await unlink(join(packageDir, ".build.lock"));
+    await writeFile(`${hook}.release`, "");
+    const results = await Promise.all(waiters.map(buildResult));
+    expect(results.map(({ code }) => code)).toEqual([0, 0]);
+    expect(results.map(({ error }) => error).join("\n")).not.toContain("No such file or directory");
     await expectValidDist();
   });
 

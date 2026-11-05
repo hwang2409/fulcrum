@@ -275,15 +275,15 @@ describe("incremental tokenization", () => {
     expect(restored.exec("ab")).toEqual(converted.exec("ab"));
   });
 
-  // Recipes remove conversion from the cold path without constructing every grammar regex. The first representative
-  // document may demand more rules than the synthetic warm sample; the same document must not construct them twice.
-  test("static recipes construct only scanner-demanded regexes", async () => {
+  // Bun 1.4 on macOS arm64 can compile a `v` regex incorrectly on its first real input. Recipes keep conversion out of
+  // the cold path, but every grammar regex must be constructed and forced to compile before tokenization starts.
+  test("static recipes compile before a real document reaches the scanner", async () => {
     const documents = [["cpp", "#include <vector>\nstd::vector<int> values;\nint main() { return values.size(); }\n"], ["typescript", viteConfig]] as const;
     for (const [language, source] of documents) {
       const runtime = new TokenizerRuntime(() => {});
       await runtime.tokenize("x\n", language, { id: "load", version: 1, state: "done" });
       await runtime["warming"].get(language);
-      expect(runtime.cacheSize().static).toBeLessThan(runtime["recipes"].size);
+      expect(runtime.cacheSize().static).toBe(runtime["cache"].grammar.size);
       const first = await runtime.tokenize(source, language, { id: "first", version: 1, state: "done" });
       const afterFirst = runtime.cacheSize();
       const second = await runtime.tokenize(source, language, { id: "second", version: 1, state: "done" });

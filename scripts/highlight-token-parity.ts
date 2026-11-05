@@ -2,11 +2,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { dirname, resolve } from "node:path";
 import { createHighlighterCore } from "shiki/core";
-import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript";
+import { createJavaScriptRegexEngine, defaultJavaScriptRegexConstructor } from "@shikijs/engine-javascript";
 import vue from "@shikijs/langs/vue";
 import svelte from "@shikijs/langs/svelte";
 import julia from "@shikijs/langs/julia";
-import { REGEX_TARGET } from "../packages/highlight/src/regex.js";
+import { grammarPatterns, REGEX_TARGET } from "../packages/highlight/src/regex.js";
 import { semanticTheme } from "../packages/highlight/src/scopes.js";
 import type { CompletionNotice, Highlight } from "../packages/highlight/src/types.js";
 
@@ -104,7 +104,7 @@ async function controllerSamples(highlight: Highlight, inputs: Record<string, st
     const id = `${prefix}-${language}`;
     const historical = process.env.HISTORICAL_COMPLETION === "1" && typeof highlight.awaitCompletion !== "function";
     if (!historical) void highlight(source.slice(0, Math.max(1, Math.floor(source.length / 2))), language, { id, version: 1, state: "streaming" });
-    if (process.env.HIGHLIGHT_PARITY_DIAGNOSTIC === "1") console.error(`parity language: ${prefix}/${language}`);
+    if (process.env.HIGHLIGHT_PARITY_DIAGNOSTIC === "1") console.error(`parity block: ${id}`);
     out[language] = { source, lines: split(await finalTokens(highlight, source, language, id, historical ? 1 : 2)) };
   }
   return out;
@@ -121,8 +121,17 @@ async function assertLegacyCoverage() {
 async function reference() {
   const out: Fixture["newReference"] = {};
   for (const [language, source] of Object.entries(newSamples)) {
-    const engine = createJavaScriptRegexEngine({ target: REGEX_TARGET });
     const grammar = language === "vue" ? vue : language === "svelte" ? svelte : julia;
+    const cache = new Map<string, RegExp | Error>();
+    for (const pattern of grammarPatterns(grammar)) {
+      try {
+        const regex = defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
+        regex.exec("");
+        regex.lastIndex = 0;
+        cache.set(pattern, regex);
+      } catch (cause) { cache.set(pattern, cause instanceof Error ? cause : new Error(String(cause))); }
+    }
+    const engine = createJavaScriptRegexEngine({ target: REGEX_TARGET, cache });
     const highlighter = await createHighlighterCore({ engine, langs: [grammar], themes: [semanticTheme] });
     try {
       highlighter.codeToTokens(source, { lang: language, theme: semanticTheme });
@@ -136,6 +145,19 @@ async function reference() {
 }
 function differences(actual: Record<string, Sample>, expected: Record<string, Sample>) {
   return Object.keys(expected).filter((language) => JSON.stringify(actual[language]) !== JSON.stringify(expected[language]));
+}
+function firstDifference(actual: Sample, expected: Sample): string {
+  const lines = Math.max(actual.lines.length, expected.lines.length);
+  for (let line = 0; line < lines; line++) {
+    const actualLine = actual.lines[line] ?? [];
+    const expectedLine = expected.lines[line] ?? [];
+    const tokens = Math.max(actualLine.length, expectedLine.length);
+    for (let token = 0; token < tokens; token++) {
+      if (JSON.stringify(actualLine[token]) !== JSON.stringify(expectedLine[token]))
+        return `line ${line + 1}, token ${token + 1}: expected ${JSON.stringify(expectedLine[token] ?? null)}, actual ${JSON.stringify(actualLine[token] ?? null)}`;
+    }
+  }
+  return "source metadata differs";
 }
 function shuffled<T>(values: T[], seed: number): T[] {
   const out = [...values];
@@ -242,9 +264,12 @@ if (mode === "generate") {
   const runs: Record<string, Record<string, Sample>> = {};
   const compare = (name: string, actual: Record<string, Sample>, orderedInputs: Record<string, string>) => {
     runs[name] = actual;
-    const changed = differences(actual, Object.fromEntries(Object.keys(orderedInputs).map((language) => [language, expectedTokens[language]!])))
-    for (const language of changed) failures.add(language);
-    if (changed.length) failedScenarios.push(`${name}: ${changed.join(", ")}`);
+    const scenarioExpected = Object.fromEntries(Object.keys(orderedInputs).map((language) => [language, expectedTokens[language]!]));
+    const changed = differences(actual, scenarioExpected);
+    for (const language of changed) {
+      failures.add(language);
+      failedScenarios.push(`${name}/${language} block parity-${name}-${language}, first differing token ${firstDifference(actual[language]!, scenarioExpected[language]!)}`);
+    }
   };
   const scenarios: [string, readonly string[]][] = [
     ...Object.keys(inputs).map((language): [string, string[]] => [`isolation-${language}`, [language]]), ...orders,

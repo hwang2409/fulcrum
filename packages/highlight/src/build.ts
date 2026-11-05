@@ -1,4 +1,4 @@
-import { readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createBuildManifest, generationDigest, verifyBuildManifest, verifyBuiltLanguages, verifyGenerationCache } from "./generation-cache.js";
 import { generationEntries } from "./generation-config.js";
@@ -38,6 +38,11 @@ while (true) {
       if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw readError;
     }
+    const raceHook = process.env.HIGHLIGHT_BUILD_LOCK_TEST_AFTER_READ;
+    if (raceHook) {
+      writeFileSync(`${raceHook}.${process.pid}`, "");
+      while (!existsSync(`${raceHook}.release`)) await Bun.sleep(5);
+    }
     let owner = 0;
     let startedAt = 0;
     try {
@@ -45,7 +50,16 @@ while (true) {
       owner = Number(parsed.pid);
       startedAt = Date.parse(parsed.startedAt ?? "");
     } catch {}
-    const lockAge = Date.now() - (startedAt || statSync(lock).mtimeMs);
+    let lockTimestamp = startedAt;
+    if (!lockTimestamp) {
+      try {
+        lockTimestamp = statSync(lock).mtimeMs;
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw statError;
+      }
+    }
+    const lockAge = Date.now() - lockTimestamp;
     const stale = lockAge > (Number.isFinite(startedAt) && startedAt ? 10 * 60 * 1000 : 30 * 1000);
     if (stale || owner) {
       let dead = stale;

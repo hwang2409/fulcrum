@@ -1,4 +1,4 @@
-/** ES2024 uses the `v` flag supported by Safari 17 and Chromium 112; do not emit ES2025 flag groups. */
+/** ES2024 is required by grammar intersections; eager compilation avoids Bun's unstable first-use `v` compilation. */
 export const REGEX_TARGET = "ES2024" as const;
 export type RegexRecipeOptions = {
   hiddenCaptures?: number[];

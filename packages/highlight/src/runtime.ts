@@ -173,11 +173,12 @@ export class TokenizerRuntime {
     for (const pattern of patterns) {
       if (epoch !== this.epoch) return;
       this.onProgress(null);
-      if (!cache.static.has(pattern) && !this.recipes.has(pattern)) {
+      if (!cache.static.has(pattern)) {
         // The engine caches a failed compile the same way and throws it at use.
         try {
-          const regex = defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
-          regex.exec(""); // a long pattern's RegExp compiles at its first use
+          const recipe = this.recipes.get(pattern);
+          const regex = recipe ? regexFromRecipe(recipe) : defaultJavaScriptRegexConstructor(pattern, { target: REGEX_TARGET });
+          regex.exec(""); // force native compilation before a real block reaches Bun's regex engine
           regex.lastIndex = 0;
           cache.set(pattern, regex);
         } catch (cause) { cache.set(pattern, cause instanceof Error ? cause : new Error(String(cause))); }
