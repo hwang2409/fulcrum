@@ -450,6 +450,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     }
   };
   const request = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
+    if (method === "send_images" && typeof params.delivery_id === "string" && !negotiatedFeatures.includes("send_images_delivery_id")) {
+      params = { ...params };
+      delete params.delivery_id;
+    }
     if (hostCommandsEnabled() && (method === "new_session" || method === "resume")) return attach(method, params, requestOptions);
     const gate = ["send", "send_images", "steer"].includes(method) ? attachmentGates.get(params.session_id as string) : undefined;
     const result = gate ? gate.then(() => rawRequest(method, params, requestOptions)) : rawRequest(method, params, requestOptions);
@@ -457,9 +461,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return result.catch((error) => isHostBindingRequired(error) ? recoverHostBinding(method, params, requestOptions, error) : Promise.reject(error));
   };
   const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
-    const features = options.hostCommands
-      ? [...new Set([...(requestedFeatures ?? []), "session_host_commands"])]
-      : requestedFeatures;
+    const features = [...new Set([...(requestedFeatures ?? []), "send_images_delivery_id", ...(options.hostCommands ? ["session_host_commands"] : [])])];
     const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", ...(features ? { features } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => {
       handshaken = true;

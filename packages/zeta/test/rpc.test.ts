@@ -532,6 +532,21 @@ test("negotiated delivery ids match echoes by id, not text", async () => {
   expect(users.map(({ id }) => id)).toEqual(["user:intent:second", "user:delivery:unknown", "user:intent:first"]);
 });
 
+test("send_images keeps delivery ids only when its feature is negotiated", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello(["delivery_id", "user_message_event", "user_message_delivery_id"]);
+  expect(fake.sent[0]?.params.features).toContain("send_images_delivery_id");
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id", "send_images_delivery_id"] } } });
+  await hello;
+  const sending = client.request("send_images", { text: "with id", delivery_id: "image-delivery", images: [] }, { intent: "image-intent" });
+  expect(fake.sent.at(-1)?.params).toMatchObject({ delivery_id: "image-delivery" });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "with id", mode: "send", delivery_id: "image-delivery", attachments: [{ name: "x.png" }] } });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  await sending;
+  expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:image-intent"]);
+});
+
 test("an id-less send_images echo uses text intent fallback without duplicating delivery", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);
@@ -539,6 +554,7 @@ test("an id-less send_images echo uses text intent fallback without duplicating 
   fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id"] } } });
   await hello;
   const sending = client.request("send_images", { text: "look", images: [], delivery_id: "image-delivery" }, { intent: "image-intent" });
+  expect(fake.sent.at(-1)?.params).not.toHaveProperty("delivery_id");
   fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "look", mode: "send", attachments: [{ name: "x.png" }] } });
   fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
   await sending;
@@ -565,7 +581,7 @@ test("a late id-less image echo merges into its reconciled delivery row", async 
   const fake = fakeTransport();
   const client = connect(fake.transport);
   const hello = client.hello(["delivery_id", "user_message_event", "user_message_delivery_id"]);
-  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id"] } } });
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id", "send_images_delivery_id"] } } });
   await hello;
   const sending = client.request("send_images", { text: "late", delivery_id: "late-delivery", images: [] }, { intent: "late-intent" });
   fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "late", mode: "send", delivery_id: "late-delivery" } });
