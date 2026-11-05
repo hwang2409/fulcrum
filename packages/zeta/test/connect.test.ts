@@ -59,7 +59,7 @@ test("connectZeta opts into host commands only when a supplier is present", asyn
   reply(socket, { protocol_version: "1.2", capabilities: { features: ["session_host_commands"] } });
   const client = await connecting;
   const creating = client.request("new_session");
-  await Promise.resolve();
+  await Bun.sleep(0);
   const request = JSON.parse(socket.sent[1]);
   expect(request).toMatchObject({ method: "new_session", params: { host_commands: [{ name: "gamma-render" }] } });
   socket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { session: { session_id: "s-one" } } }) });
