@@ -317,7 +317,9 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       }
       case "user_message": {
         if (wire.attachments !== undefined && !Array.isArray(wire.attachments)) throw new Error("attachments must be an array");
-        return [{ type: "user_message", text: string(wire.text, "text"), mode: string(wire.mode, "mode"), ...(wire.attachments === undefined ? {} : { attachments: [...wire.attachments] }), ...(wire.delivery_id === undefined ? {} : { delivery_id: string(wire.delivery_id, "delivery_id") }) }];
+        // A live echo names each image zeta stored ({ name, mime_type, size }) without its bytes: a file row, as in history.
+        const attachments = (wire.attachments ?? []).flatMap((item: any) => typeof item?.name === "string" ? [{ type: "file", filename: item.name, ...(typeof item.mime_type === "string" && { mediaType: item.mime_type }), ...(finite(item.size) && { size: item.size }) }] : []);
+        return [{ type: "user_message", text: string(wire.text, "text"), mode: string(wire.mode, "mode"), ...(wire.attachments === undefined ? {} : { attachments }), ...(wire.delivery_id === undefined ? {} : { delivery_id: string(wire.delivery_id, "delivery_id") }) }];
       }
       case "error": {
         const input = object(wire.error, "error");
