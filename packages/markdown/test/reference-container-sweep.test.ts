@@ -155,38 +155,43 @@ function lineChunks(source: string) {
   return chunks.filter(Boolean);
 }
 
-test(`generated reference/container sweep (${cases.length} documents)`, () => {
-  const mismatches = new Map<string, { count: number; examples: string[] }>();
-  const record = (category: string, kind: string) => {
-    const mismatch = mismatches.get(kind) ?? { count: 0, examples: [] };
-    mismatch.count++;
-    if (mismatch.examples.length < 5) mismatch.examples.push(category);
-    mismatches.set(kind, mismatch);
-  };
+type Mismatches = Map<string, { count: number; examples: string[] }>;
 
-  for (const current of cases) {
-    const expected = oracle(current.source);
-    const oneShot = parseMarkdown(current.source);
-    if (json(blockShape(oneShot)) !== json(expected.shape)) record(current.category, "one-shot/commonmark tree");
-    if (json(resolverReferences(current.source)) !== json(expected.references)) record(current.category, "finished references");
+function record(mismatches: Mismatches, category: string, kind: string) {
+  const mismatch = mismatches.get(kind) ?? { count: 0, examples: [] };
+  mismatch.count++;
+  if (mismatch.examples.length < 5) mismatch.examples.push(category);
+  mismatches.set(kind, mismatch);
+}
 
-    for (const split of [1, "line"] as const) {
-      const document = createStreamingDocument();
-      const chunks = split === 1 ? [...current.source] : lineChunks(current.source);
-      let prefix = "";
-      for (const chunk of chunks) {
-        prefix += chunk;
-        document.append(chunk);
-        const closed = withoutOpenTail(blockShape(document.render()));
-        if (!shapePrefix(closed, expected.shape)) record(current.category, `closed-tree/${split}`);
-        if (prefix.endsWith("\n") && json(resolverReferences(prefix)) !== json(oracle(prefix).references))
-          record(current.category, `published-references/${split}`);
-      }
-      document.finish();
-      if (json(document.render()) !== json(oneShot)) record(current.category, `finish/${split}`);
-    }
+function checkSplit(current: SweepCase, expected: ReturnType<typeof oracle>, oneShot: readonly Block[], split: 1 | "line", mismatches: Mismatches) {
+  const document = createStreamingDocument();
+  const chunks = split === 1 ? [...current.source] : lineChunks(current.source);
+  let prefix = "";
+  for (const chunk of chunks) {
+    prefix += chunk;
+    document.append(chunk);
+    const closed = withoutOpenTail(blockShape(document.render()));
+    if (!shapePrefix(closed, expected.shape)) record(mismatches, current.category, `closed-tree/${split}`);
+    if (prefix.endsWith("\n") && json(resolverReferences(prefix)) !== json(oracle(prefix).references))
+      record(mismatches, current.category, `published-references/${split}`);
   }
+  document.finish();
+  if (json(document.render()) !== json(oneShot)) record(mismatches, current.category, `finish/${split}`);
+}
 
+function checkCase(current: SweepCase, mismatches: Mismatches) {
+  const expected = oracle(current.source);
+  const oneShot = parseMarkdown(current.source);
+  if (json(blockShape(oneShot)) !== json(expected.shape)) record(mismatches, current.category, "one-shot/commonmark tree");
+  if (json(resolverReferences(current.source)) !== json(expected.references)) record(mismatches, current.category, "finished references");
+  checkSplit(current, expected, oneShot, 1, mismatches);
+  checkSplit(current, expected, oneShot, "line", mismatches);
+}
+
+test(`generated reference/container sweep (${cases.length} documents)`, () => {
+  const mismatches: Mismatches = new Map();
+  for (const current of cases) checkCase(current, mismatches);
   expect([...mismatches.entries()], [...mismatches.entries()].map(([kind, mismatch]) =>
     `${kind}: ${mismatch.count} (${mismatch.examples.join(", ")})`).join("\n")).toEqual([]);
 }, 60_000);
