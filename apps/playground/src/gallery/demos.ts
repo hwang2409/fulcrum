@@ -7,8 +7,8 @@ import { CHART_PNG } from "./chart";
  * `runs` are child runs by id, shown in a RunNavigator: a sub-agent row whose run is missing here is unavailable. A
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
-/** `open`: the demo's tool cards start open, for a demo about what their body says. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean };
+/** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean; markdownAll?: boolean };
 
 const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({ id, name, arguments: args });
 const text = (role: string, value: string) => ({ role, content: [{ type: "text", text: value }] });
@@ -355,6 +355,21 @@ export const demos: Demo[] = [
     title: "user role",
     description: "A committed message with role \"user\" (data-role=\"user\").",
     events: [{ type: "message_commit", message_id: "m-user", message: text("user", "Can you also check the transport tests?") }],
+  },
+  {
+    id: "message-user-long",
+    part: "Message",
+    title: "user role, wrapping",
+    description: "A long user message: the prompt mark hangs in its own column and every line starts at the text edge.",
+    events: [{ type: "message_commit", message_id: "m-user-long", message: text("user", "Please check why the transport tests fail on CI but pass locally, then compare the retry timing with the reconnect path and tell me which one drops the last event.") }],
+  },
+  {
+    id: "message-user-markdown",
+    part: "Message",
+    title: "user role, markdown",
+    description: "markdownFor=\"all\": user text renders as markdown and keeps the same prompt column.",
+    events: [{ type: "message_commit", message_id: "m-user-md", message: text("user", "Please check why the **transport tests** fail on CI but pass locally, then compare the retry timing with `reconnect()`.") }],
+    markdownAll: true,
   },
   {
     id: "message-long",
