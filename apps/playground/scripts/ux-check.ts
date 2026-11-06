@@ -155,7 +155,6 @@ async function measureUser(page: Page, id: string, nth: number, streaming: boole
       before.parentNode!.insertBefore(mark, before);
       return mark.getBoundingClientRect().bottom;
     };
-    // A large fence's head draws the prompt itself, in its own row.
     let prompt = stand(node, "::before");
     const own = Boolean(prompt.textContent);
     const cursor = stand(node, "::after");
@@ -163,42 +162,51 @@ async function measureUser(page: Page, id: string, nth: number, streaming: boole
     // The prompt span takes the first child's place, so the first block keeps the first child's zero top margin.
     style.textContent = "[data-probed]::before, [data-probed]::after { content: none !important; } [data-probed] > span:first-child + * { margin-top: 0 !important; }";
     document.head.append(style);
-    // The first visible text: a text node with glyphs, or a block's text drawn by ::before (a fence's language).
-    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
-    let first: Node | undefined;
-    for (let at = walker.nextNode(); at && !first; at = walker.nextNode()) {
-      if (at instanceof HTMLElement) {
+    // The first visible text: a text node with glyphs, or a block's text drawn by ::before (a fence's language). A
+    // large fence's head draws the prompt the same way.
+    const firstText = () => {
+      const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+      for (let at = walker.nextNode(); at; at = walker.nextNode()) {
+        if (!(at instanceof HTMLElement)) {
+          if (at.textContent!.trim() && at.parentNode !== prompt) return at;
+          continue;
+        }
         const caption = stand(at, "::before");
         if (!caption.textContent || getComputedStyle(at, "::before").display === "none") continue;
         at.dataset.probed = "";
         at.prepend(caption);
-        if (!own && caption.textContent === "> ") prompt = caption;
-        else first = caption.firstChild!;
-      } else if (at.textContent!.trim() && at.parentNode !== prompt) first = at;
-    }
+        if (own || caption.textContent !== "> ") return caption.firstChild!;
+        prompt = caption;
+      }
+    };
+    const first = firstText();
     const firstBlock = [...node.children].find((child) => getComputedStyle(child).position !== "absolute");
     const media = firstBlock?.matches("[data-part=image]") ? firstBlock.querySelector(":is([data-part=image-open], [data-part=image-placeholder])") : null;
     node.dataset.probed = "";
     if (own) node.prepend(prompt);
     if (streaming) node.append(cursor);
     const range = document.createRange();
-    const rects: DOMRect[] = [];
-    const texts = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-    for (let text = texts.nextNode(); text; text = texts.nextNode()) {
-      if (text.parentElement === prompt || text.parentElement?.closest("[data-part=file]")) continue;
-      // Inline code is a padded chip: the chip's box, not its glyphs, starts at the line's edge.
-      const code = text.parentElement?.closest("code");
-      range.selectNodeContents(text);
-      rects.push(...[...(code ?? range).getClientRects()].filter((rect) => rect.width > 0));
-    }
-    // One line per run of rects whose middles share a band: inline code and bold sit a little higher or lower.
-    const lines: { x: number; top: number; bottom: number; right: number }[] = [];
-    for (const rect of rects.sort((a, b) => a.top - b.top)) {
-      const middle = (rect.top + rect.bottom) / 2;
-      const line = lines.find((line) => middle > line.top && middle < line.bottom);
-      if (!line) lines.push({ x: rect.left, top: rect.top, bottom: rect.bottom, right: rect.right });
-      else Object.assign(line, { x: Math.min(line.x, rect.left), right: Math.max(line.right, rect.right) });
-    }
+    const textLines = () => {
+      const rects: DOMRect[] = [];
+      const texts = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+      for (let text = texts.nextNode(); text; text = texts.nextNode()) {
+        if (text.parentElement === prompt || text.parentElement?.closest("[data-part=file]")) continue;
+        // Inline code is a padded chip: the chip's box, not its glyphs, starts at the line's edge.
+        const code = text.parentElement?.closest("code");
+        range.selectNodeContents(text);
+        rects.push(...[...(code ?? range).getClientRects()].filter((rect) => rect.width > 0));
+      }
+      // One line per run of rects whose middles share a band: inline code and bold sit a little higher or lower.
+      const lines: { x: number; top: number; bottom: number; right: number }[] = [];
+      for (const rect of rects.sort((a, b) => a.top - b.top)) {
+        const middle = (rect.top + rect.bottom) / 2;
+        const line = lines.find((line) => middle > line.top && middle < line.bottom);
+        if (!line) lines.push({ x: rect.left, top: rect.top, bottom: rect.bottom, right: rect.right });
+        else Object.assign(line, { x: Math.min(line.x, rect.left), right: Math.max(line.right, rect.right) });
+      }
+      return lines;
+    };
+    const lines = textLines();
     // The glyph box of the prompt, like the text lines', not its line box.
     range.selectNodeContents(prompt);
     const box = range.getBoundingClientRect();
