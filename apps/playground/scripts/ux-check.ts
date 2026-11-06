@@ -130,6 +130,8 @@ type UserGeometry = { promptX: number; promptTop: number; lines: { x: number; to
 async function measureUser(page: Page, id: string, streaming = false): Promise<UserGeometry> {
   const message = page.locator(`#${id} [data-part=message][data-role=user]`);
   await message.waitFor();
+  // Measured in a fallback font, a line can fill up differently and push the cursor down.
+  await page.evaluate(() => document.fonts.ready);
   return message.evaluate((node, streaming) => {
     if (streaming) node.dataset.state = "streaming";
     const height = node.getBoundingClientRect().height;
@@ -209,7 +211,7 @@ async function checkUserLayout(browser: Browser, port: number): Promise<string[]
       for (const line of lines.slice(1)) if (Math.abs(line.x - textX) > 0.5) failures.push(`${at}: a text line starts at ${line.x.toFixed(1)}, not at the text edge ${textX.toFixed(1)}`);
       if (id === "message-user-long" && lines.length < 2) failures.push(`${at}: the long message does not wrap`);
       // Half a 14px line: a cursor on a line of its own sits a whole line lower.
-      if (cursor && !(Math.abs(cursor.top - lines.at(-1)!.top) < 10 && cursor.x > textX)) failures.push(`${at}: the cursor is not at the end of the last text line`);
+      if (cursor && !(Math.abs(cursor.top - lines.at(-1)!.top) < 10 && cursor.x > textX)) failures.push(`${at}: the cursor at (${cursor.x.toFixed(1)}, ${cursor.top.toFixed(1)}) is not at the end of the last text line (${lines.at(-1)!.x.toFixed(1)}, ${lines.at(-1)!.top.toFixed(1)}; ${lines.length} lines)`);
       if (file) {
         if (parseFloat(file.indent) !== 0) failures.push(`${at}: the file row inherits text-indent ${file.indent}`);
         if (file.labelRight > file.name) failures.push(`${at}: the file label overlaps the file name`);
