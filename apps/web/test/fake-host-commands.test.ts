@@ -5,8 +5,8 @@ import { connectZeta } from "@fulcrum/zeta";
 import { startFakeZeta } from "../scripts/fake-zeta";
 
 async function credentials(fake: Awaited<ReturnType<typeof startFakeZeta>>) {
-  const discovery = JSON.parse(await readFile(join(fake.home, "run", "serve.ws.json"), "utf8")) as { token: string };
-  return { url: `ws://127.0.0.1:${fake.port}/`, token: discovery.token };
+  const discovery = JSON.parse(await readFile(join(fake.home, "run", "serve.ws.json"), "utf8")) as { controller_token: string; observer_token: string };
+  return { url: `ws://127.0.0.1:${fake.port}/`, token: discovery.controller_token };
 }
 
 const hostCommands = () => [{

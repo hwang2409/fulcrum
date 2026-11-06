@@ -5,7 +5,7 @@ class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
   readonly listeners = new Map<string, Array<(event: { data?: unknown; code?: number }) => void>>();
   readonly sent: string[] = [];
-  constructor(readonly url: string) { FakeWebSocket.instances.push(this); }
+  constructor(readonly url: string, readonly protocols?: string[]) { FakeWebSocket.instances.push(this); }
   addEventListener(name: string, listener: (event: { data?: unknown; code?: number }) => void) {
     this.listeners.set(name, [...(this.listeners.get(name) ?? []), listener]);
   }
@@ -32,13 +32,24 @@ function error(socket: FakeWebSocket, code: number) {
   socket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code, message: "no details" } }) });
 }
 
- test("puts the token in the websocket url and omits it from hello", async () => {
+ test("uses role-bound bearer subprotocols and keeps the token out of the websocket url", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "secret", features: ["projects"] });
   const socket = await open();
-  expect(socket.url).toBe("ws://127.0.0.1:8765/?token=secret");
+  expect(socket.url).toBe("ws://127.0.0.1:8765/");
+  expect(socket.protocols).toEqual(["zeta.v1", "zeta.bearer.secret"]);
+  expect(socket.url).not.toContain("token=");
   expect(JSON.parse(socket.sent[0])).toMatchObject({ method: "hello", params: { protocol_version: "1.2", client_version: "1.2", features: ["projects"] } });
   expect(socket.sent[0]).not.toContain("secret");
+  reply(socket, { protocol_version: "1.0" });
+  await expect(connecting).resolves.toHaveProperty("request");
+});
+
+test("observer role uses the supplied observer token", async () => {
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", role: "observer", token: "observer-secret" });
+  const socket = await open();
+  expect(socket.protocols).toEqual(["zeta.v1", "zeta.bearer.observer-secret"]);
   reply(socket, { protocol_version: "1.0" });
   await expect(connecting).resolves.toHaveProperty("request");
 });
@@ -69,7 +80,7 @@ test("connectZeta opts into host commands only when a supplier is present", asyn
 
 test("failed upgrade rejects with connect_failed without exposing the token", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "secret" });
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer" });
   FakeWebSocket.instances[0].emit("error");
   const failure = await connecting.catch((error: ZetaError) => error);
   expect(failure.kind).toBe("connect_failed");
@@ -80,7 +91,7 @@ test("failed upgrade rejects with connect_failed without exposing the token", as
 test("busy and version mismatch map to their kinds", async () => {
   for (const [code, kind] of [[-32001, "busy"], [-32002, "version_mismatch"]] as const) {
     globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-    const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "secret" });
+    const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer" });
     const socket = await open(); error(socket, code);
     await expect(connecting).rejects.toMatchObject({ kind });
     FakeWebSocket.instances = [];
@@ -89,7 +100,7 @@ test("busy and version mismatch map to their kinds", async () => {
 
 test("server-level busy error maps to busy", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "secret" });
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer" });
   const socket = await open();
   socket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "another client is already connected" } }) });
   socket.emit("close", { code: 1000 });
@@ -98,7 +109,7 @@ test("server-level busy error maps to busy", async () => {
 
 test("close before hello rejects with connect_failed", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "secret" });
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer" });
   const socket = await open();
   socket.emit("close", { code: 1006 });
   await expect(connecting).rejects.toMatchObject({ kind: "connect_failed" });
@@ -106,7 +117,7 @@ test("close before hello rejects with connect_failed", async () => {
 
 test("close after connect reports closed and close code", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "secret" });
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer" });
   const socket = await open(); reply(socket, { protocol_version: "1.0" });
   const client = await connecting;
   const pending = client.request("status");
@@ -179,7 +190,7 @@ test("discoverZeta returns null for 404 and keeps only string origins", async ()
     globalThis.fetch = (async () => new Response(null, { status: 404 })) as unknown as typeof fetch;
     expect(await discoverZeta()).toBeNull();
     globalThis.fetch = (async () => Response.json({ url: "ws://127.0.0.1:1/", token: "t", origins: ["http://localhost:5180", 3] })) as unknown as typeof fetch;
-    expect(await discoverZeta()).toEqual({ url: "ws://127.0.0.1:1/", token: "t", origins: ["http://localhost:5180"] });
+    expect(await discoverZeta()).toEqual({ url: "ws://127.0.0.1:1/", controller_token: "t", observer_token: "t", origins: ["http://localhost:5180"] });
     globalThis.fetch = (async () => Response.json({ url: 1 })) as unknown as typeof fetch;
     await expect(discoverZeta()).rejects.toThrow("invalid body");
   } finally {

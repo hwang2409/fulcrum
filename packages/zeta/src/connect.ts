@@ -27,7 +27,7 @@ function isLoopbackWebSocketUrl(url: URL): boolean {
   return ["ws:", "wss:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
 }
 
-function parseWebSocketUrl(text: string): { url: string; token: string | null } | null {
+export function parseWebSocketUrl(text: string): { url: string; token: string | null } | null {
   try {
     const parsed = new URL(text);
     if (!isLoopbackWebSocketUrl(parsed)) return null;
@@ -39,24 +39,25 @@ function parseWebSocketUrl(text: string): { url: string; token: string | null } 
   }
 }
 
+export type ZetaRole = "controller" | "observer";
+
 export interface ConnectZetaOptions {
   url: string;
   token: string;
+  role?: ZetaRole;
   features?: string[];
   /** Enables host commands and supplies a fresh binding for every new session or resume. */
   hostCommands?: HostCommandSupplier | null;
 }
 
-export function connectZeta({ url, token, features, hostCommands }: ConnectZetaOptions) {
+export function connectZeta({ url, token, role = "controller", features, hostCommands }: ConnectZetaOptions) {
   let websocketUrl: string;
   try {
-    const parsed = new URL(url);
-    parsed.searchParams.set("token", token);
-    websocketUrl = parsed.toString();
+    websocketUrl = new URL(url).toString();
   } catch {
     return Promise.reject(new ZetaError("connect_failed"));
   }
-  return webSocketTransport(websocketUrl)
+  return webSocketTransport(websocketUrl, ["zeta.v1", `zeta.bearer.${token}`])
     .catch(() => {
       throw new ZetaError("connect_failed");
     })
@@ -68,7 +69,7 @@ export function connectZeta({ url, token, features, hostCommands }: ConnectZetaO
           new ZetaError(handshaken ? "closed" : "connect_failed", code),
         { hostCommands },
       );
-      return client.hello(features).catch((error: unknown) => {
+      return client.hello(features, role).catch((error: unknown) => {
         const kind =
           typeof error === "object" && error !== null && "code" in error
             ? errorKinds[(error as { code?: unknown }).code as number]
@@ -101,7 +102,7 @@ export function parseConnectFragment(hash: string): { url: string; token: string
 }
 
 /** What a dev-server discovery handoff returns. `origins` is the server's `--ws-origin` allowlist. */
-export type ZetaDiscovery = { url: string; token: string; origins: string[] };
+export type ZetaDiscovery = { url: string; controller_token: string; observer_token: string; origins: string[] };
 /** The same-origin path `zetaDiscoveryPlugin` from `@fulcrum/zeta/discovery` serves. */
 export const zetaDiscoveryPath = "/__fulcrum/zeta";
 
@@ -110,7 +111,9 @@ export async function discoverZeta(path = zetaDiscoveryPath): Promise<ZetaDiscov
   const response = await fetch(path, { cache: "no-store" });
   if (response.status === 204 || response.status === 404) return null;
   if (!response.ok) throw new Error(`zeta discovery failed (${response.status})`);
-  const value = (await response.json()) as Partial<ZetaDiscovery>;
-  if (typeof value.url !== "string" || typeof value.token !== "string") throw new Error("zeta discovery returned an invalid body");
-  return { url: value.url, token: value.token, origins: Array.isArray(value.origins) ? value.origins.filter((origin) => typeof origin === "string") : [] };
+  const value = (await response.json()) as Partial<ZetaDiscovery> & { token?: unknown };
+  if (typeof value.url !== "string") throw new Error("zeta discovery returned an invalid body");
+  const controller_token = typeof value.controller_token === "string" ? value.controller_token : value.token;
+  if (typeof controller_token !== "string") throw new Error("zeta discovery returned an invalid body");
+  return { url: value.url, controller_token, observer_token: typeof value.observer_token === "string" ? value.observer_token : controller_token, origins: Array.isArray(value.origins) ? value.origins.filter((origin) => typeof origin === "string") : [] };
 }

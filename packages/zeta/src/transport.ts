@@ -6,9 +6,9 @@ export interface Transport {
   close(): void;
 }
 
-export function webSocketTransport(url: string): Promise<Transport> {
+export function webSocketTransport(url: string, protocols?: string[]): Promise<Transport> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url);
+    const socket = new WebSocket(url, protocols);
     const messages = new Set<(text: string) => void>();
     const closes = new Set<(code?: number) => void>();
     let opened = false;

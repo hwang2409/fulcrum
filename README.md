@@ -31,7 +31,7 @@ zeta serve --ws 8765 --ws-origin http://localhost:5173
 make dev
 ```
 
-open the live zeta panel and paste the discovery url from `$ZETA_HOME/run/serve.ws.json` (the dev helper can fill it in when available).
+open the live zeta panel and paste a loopback websocket url and token from `$ZETA_HOME/run/serve.ws.json` (the dev helper can fill it in when available). Tokens are sent in the `zeta.bearer.<token>` websocket subprotocol and never in the url.
 
 ### session host commands
 
@@ -40,7 +40,8 @@ hosts can opt into zeta's negotiated `session_host_commands` feature with a supp
 ```ts
 const client = await connectZeta({
   url,
-  token,
+  token: controller_token,
+  role: "controller",
   hostCommands: async (sessionId) => [{
     name: "render",
     executable: "/opt/my-host/bin/render",

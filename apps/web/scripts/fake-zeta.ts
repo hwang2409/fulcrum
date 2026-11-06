@@ -221,7 +221,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
-  let token = crypto.randomUUID();
+  let controllerToken = crypto.randomUUID();
+  let observerToken = crypto.randomUUID();
   let mode: Mode = "ok";
   let liveEnabled = live;
   let currentHistoryMode = historyMode;
@@ -303,7 +304,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     fetch(request, bun) {
       const url = new URL(request.url);
       const origin = request.headers.get("origin");
-      if (url.searchParams.get("token") !== token || (origin && !allowed.includes(origin))) return new Response("forbidden", { status: 403 });
+      const bearer = request.headers.get("sec-websocket-protocol")?.split(",").map((value) => value.trim()).find((value) => value.startsWith("zeta.bearer."))?.slice("zeta.bearer.".length);
+      if (!bearer || ![controllerToken, observerToken].includes(bearer) || (origin && !allowed.includes(origin))) return new Response("forbidden", { status: 403 });
       return bun.upgrade(request) ? undefined : new Response("upgrade required", { status: 426 });
     },
     websocket: {
@@ -472,7 +474,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   });
 
   const write = (value: Json) => writeFile(discovery, JSON.stringify(value), { mode: 0o600 });
-  await write({ port: server.port, token, pid: process.pid, origins: allowed });
+  await write({ port: server.port, controller_token: controllerToken, observer_token: observerToken, pid: process.pid, origins: allowed });
   return {
     home,
     port: server.port,
@@ -493,14 +495,15 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     },
     async start() {
       allowed = origins;
-      token = crypto.randomUUID();
+      controllerToken = crypto.randomUUID();
+      observerToken = crypto.randomUUID();
       if (!decide) { approvalAborted = false; running = false; }
-      await write({ port: server.port, token, pid: process.pid, origins: allowed });
+      await write({ port: server.port, controller_token: controllerToken, observer_token: observerToken, pid: process.pid, origins: allowed });
     },
     /** Lists other origins in the allowlist, so this page's origin is missing. */
-    async foreignOrigin() { allowed = ["http://localhost:5173"]; await write({ port: server.port, token, pid: process.pid, origins: allowed }); },
+    async foreignOrigin() { allowed = ["http://localhost:5173"]; await write({ port: server.port, controller_token: controllerToken, observer_token: observerToken, pid: process.pid, origins: allowed }); },
     /** Hands out a token the server will refuse. */
-    async wrongToken() { await write({ port: server.port, token: "stale-token", pid: process.pid, origins: allowed }); },
+    async wrongToken() { await write({ port: server.port, controller_token: "stale-token", observer_token: "stale-token", pid: process.pid, origins: allowed }); },
     setMode(next: Mode) { mode = next; },
     setOpenDelay(ms: number) { openDelay = ms; },
     /** `true`: new_session fails the way real zeta does while a turn runs (`require_idle`). */
