@@ -121,40 +121,70 @@ async function checkNarrowHead(browser: Browser, port: number): Promise<string[]
   return failures;
 }
 
-type UserGeometry = { promptX: number; promptTop: number; lines: { x: number; top: number; right: number }[]; contentRight: number; height: number; probedHeight: number; cursor?: { x: number; top: number; width: number }; file?: { indent: string; label: number; labelRight: number; name: number } };
+type UserGeometry = {
+  promptX: number; promptTop: number; promptBaseline: number; firstBaseline?: number; mediaTop?: number;
+  lines: { x: number; top: number; right: number }[]; contentRight: number; height: number; probedHeight: number;
+  cursor?: { x: number; top: number; width: number }; file?: { indent: string; label: number; labelRight: number; name: number };
+};
 
 /**
- * Where a user message puts its prompt mark, its text lines, its streaming cursor, and its file row. The prompt and the
- * cursor are pseudo-elements with no box to measure, so the probe swaps them for real spans with the same box.
+ * Where a user message puts its prompt mark, its text lines, its streaming cursor, and its file row. The prompt, the
+ * cursor, and a code fence's language caption are pseudo-elements with no box to measure, so the probe swaps them for
+ * real spans with the same box. A baseline is the bottom of an empty inline-block put at the start of the text.
  */
-async function measureUser(page: Page, id: string, streaming = false): Promise<UserGeometry> {
-  const message = page.locator(`#${id} [data-part=message][data-role=user]`);
+async function measureUser(page: Page, id: string, nth: number, streaming: boolean): Promise<UserGeometry> {
+  const message = page.locator(`#${id} [data-part=message][data-role=user]`).nth(nth);
   await message.waitFor();
   // Measured in a fallback font, a line can fill up differently and push the cursor down.
   await page.evaluate(() => document.fonts.ready);
   return message.evaluate((node, streaming) => {
     if (streaming) node.dataset.state = "streaming";
     const height = node.getBoundingClientRect().height;
-    // A real span in place of each pseudo-element, with the same box: same content, display, float, size, and margins.
-    const stand = (pseudo: "::before" | "::after") => {
-      const from = getComputedStyle(node, pseudo);
+    // A real span in place of a pseudo-element, with the same box: same content, display, float, size, and margins.
+    const stand = (owner: HTMLElement, pseudo: "::before" | "::after") => {
+      const from = getComputedStyle(owner, pseudo);
       const span = document.createElement("span");
-      span.textContent = from.content === "none" ? "" : JSON.parse(from.content);
-      for (const name of ["display", "float", "width", "height", "margin-left", "vertical-align"]) span.style.setProperty(name, from.getPropertyValue(name));
+      const attr = from.content.match(/^attr\((.+)\)$/)?.[1];
+      span.textContent = attr ? owner.getAttribute(attr) : from.content === "none" || from.content === "normal" ? "" : JSON.parse(from.content);
+      for (const name of ["display", "float", "width", "height", "margin-left", "margin-right", "margin-top", "margin-bottom", "vertical-align", "font-size", "font-weight", "line-height"]) span.style.setProperty(name, from.getPropertyValue(name));
       return span;
     };
-    const prompt = stand("::before");
-    const cursor = stand("::after");
+    const baseline = (before: Node) => {
+      const mark = document.createElement("span");
+      mark.style.cssText = "display: inline-block; width: 0; height: 0";
+      before.parentNode!.insertBefore(mark, before);
+      return mark.getBoundingClientRect().bottom;
+    };
+    // A large fence's head draws the prompt itself, in its own row.
+    let prompt = stand(node, "::before");
+    const own = Boolean(prompt.textContent);
+    const cursor = stand(node, "::after");
     const style = document.createElement("style");
-    style.textContent = "[data-probed]::before, [data-probed]::after { content: none !important; }";
+    // The prompt span takes the first child's place, so the first block keeps the first child's zero top margin.
+    style.textContent = "[data-probed]::before, [data-probed]::after { content: none !important; } [data-probed] > span:first-child + * { margin-top: 0 !important; }";
     document.head.append(style);
+    // The first visible text: a text node with glyphs, or a block's text drawn by ::before (a fence's language).
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+    let first: Node | undefined;
+    for (let at = walker.nextNode(); at && !first; at = walker.nextNode()) {
+      if (at instanceof HTMLElement) {
+        const caption = stand(at, "::before");
+        if (!caption.textContent || getComputedStyle(at, "::before").display === "none") continue;
+        at.dataset.probed = "";
+        at.prepend(caption);
+        if (!own && caption.textContent === "> ") prompt = caption;
+        else first = caption.firstChild!;
+      } else if (at.textContent!.trim() && at.parentNode !== prompt) first = at;
+    }
+    const firstBlock = [...node.children].find((child) => getComputedStyle(child).position !== "absolute");
+    const media = firstBlock?.matches("[data-part=image]") ? firstBlock.querySelector(":is([data-part=image-open], [data-part=image-placeholder])") : null;
     node.dataset.probed = "";
-    node.prepend(prompt);
+    if (own) node.prepend(prompt);
     if (streaming) node.append(cursor);
     const range = document.createRange();
     const rects: DOMRect[] = [];
-    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+    const texts = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    for (let text = texts.nextNode(); text; text = texts.nextNode()) {
       if (text.parentElement === prompt || text.parentElement?.closest("[data-part=file]")) continue;
       // Inline code is a padded chip: the chip's box, not its glyphs, starts at the line's edge.
       const code = text.parentElement?.closest("code");
@@ -172,6 +202,8 @@ async function measureUser(page: Page, id: string, streaming = false): Promise<U
     // The glyph box of the prompt, like the text lines', not its line box.
     range.selectNodeContents(prompt);
     const box = range.getBoundingClientRect();
+    const promptBaseline = baseline(prompt.firstChild!);
+    const firstBaseline = media || !first ? undefined : baseline(first);
     const file = node.querySelector<HTMLElement>("[data-part=file]");
     const label = file?.querySelector<HTMLElement>("[data-part=block-label]")?.getBoundingClientRect();
     const name = file?.querySelector<HTMLElement>("[data-part=file-name]");
@@ -180,7 +212,10 @@ async function measureUser(page: Page, id: string, streaming = false): Promise<U
     const cursorBox = streaming ? cursor.getBoundingClientRect() : undefined;
     return {
       promptX: box.left,
-      promptTop: box.top,
+      promptTop: prompt.getBoundingClientRect().top,
+      promptBaseline,
+      firstBaseline,
+      mediaTop: media?.getBoundingClientRect().top,
       lines: lines.map(({ x, top, right }) => ({ x, top, right })),
       contentRight: node.getBoundingClientRect().right - parseFloat(getComputedStyle(node).borderRightWidth) - parseFloat(getComputedStyle(node).paddingRight),
       height,
@@ -191,43 +226,72 @@ async function measureUser(page: Page, id: string, streaming = false): Promise<U
   }, streaming);
 }
 
-// A user message reads as a terminal prompt: "> " in its own column, every text line at the text edge, the prompt on
-// the first text line, the streaming cursor on the last one; content blocks below start at the content edge, unindented.
+/** A text message: every text line at one text edge right of the prompt, the cursor at the end of the last line. */
+function checkTextLines(at: string, { promptX, lines, contentRight, cursor }: UserGeometry, wraps: boolean): string[] {
+  const failures: string[] = [];
+  const textX = lines[0]?.x ?? NaN;
+  if (!(textX - promptX > 10)) failures.push(`${at}: the first text line starts at ${textX.toFixed(1)}, in the prompt column at ${promptX.toFixed(1)}`);
+  for (const line of lines.slice(1)) if (Math.abs(line.x - textX) > 0.5) failures.push(`${at}: a text line starts at ${line.x.toFixed(1)}, not at the text edge ${textX.toFixed(1)}`);
+  if (wraps && lines.length < 2) failures.push(`${at}: the long message does not wrap`);
+  if (!cursor) return failures;
+  // The cursor ends the last text line (within half a 14px line), or starts the next one at the text edge only
+  // because the last line has no room for it.
+  const last = lines.at(-1)!;
+  const onLast = Math.abs(cursor.top - last.top) < 10 && cursor.x > textX;
+  const wrapped = cursor.top > last.top + 10 && Math.abs(cursor.x - textX) < 2 && last.right + 1 + cursor.width > contentRight;
+  if (!onLast && !wrapped) failures.push(`${at}: the cursor at (${cursor.x.toFixed(1)}, ${cursor.top.toFixed(1)}) is not at the end of the last text line (${last.x.toFixed(1)}-${last.right.toFixed(1)} of ${contentRight.toFixed(1)}, ${last.top.toFixed(1)}; ${lines.length} lines)`);
+  return failures;
+}
+
+/** Any user message: the probe left the layout alone, the prompt sits on the first text line (or the top of an image), and a file row is not indented. */
+function checkUserCase(at: string, geometry: UserGeometry): string[] {
+  const { promptX, promptTop, promptBaseline, firstBaseline, mediaTop, height, probedHeight, file } = geometry;
+  const failures: string[] = [];
+  if (Math.abs(probedHeight - height) > 0.5) failures.push(`${at}: the probe changed the layout (${height} -> ${probedHeight} px)`);
+  if (mediaTop !== undefined) {
+    if (!(Math.abs(promptTop - mediaTop) <= 1)) failures.push(`${at}: the prompt's top ${promptTop.toFixed(2)} is not the image frame's top ${mediaTop.toFixed(2)}`);
+  } else if (!(Math.abs(promptBaseline - (firstBaseline ?? NaN)) <= 1)) failures.push(`${at}: the prompt's baseline ${promptBaseline.toFixed(2)} is not the first text line's ${firstBaseline?.toFixed(2)}`);
+  if (file) {
+    if (parseFloat(file.indent) !== 0) failures.push(`${at}: the file row inherits text-indent ${file.indent}`);
+    if (file.labelRight > file.name) failures.push(`${at}: the file row label overlaps the file name`);
+    if (file.label < promptX) failures.push(`${at}: the file row starts left of the prompt column`);
+  }
+  return failures;
+}
+
+type UserCase = { id: string; nth?: number; name?: string; streaming?: boolean; text?: boolean };
+const firstBlocks = ["h1", "h2", "list", "blockquote", "code fence", "plain code fence", "large code fence", "table", "attachment only", "image only", "source", "reasoning"];
+const userCases: UserCase[] = [
+  { id: "message-user-role", text: true }, { id: "message-user-long", text: true }, { id: "message-user-role", streaming: true, text: true },
+  { id: "message-user-long", streaming: true, text: true }, { id: "message-user-markdown", text: true }, { id: "user-block-indent", text: true },
+  ...firstBlocks.map((name, nth) => ({ id: "user-first-blocks", nth, name })),
+];
+
+// A user message reads as a terminal prompt: "> " in its own column on the first text line of whatever block starts
+// the message (the top of an image), every text line at the text edge, the streaming cursor on the last one, and
+// content blocks below start at the content edge, unindented.
 async function checkUserLayout(browser: Browser, port: number): Promise<string[]> {
   const failures: string[] = [];
   const output = process.env.SCREENSHOT_DIR ?? "/tmp/fulcrum-user-layout";
   await Bun.$`mkdir -p ${output}`;
-  const cases = [["message-user-role", false], ["message-user-long", false], ["message-user-role", true], ["message-user-long", true], ["message-user-markdown", false], ["user-block-indent", false]] as const;
-  for (const theme of ["light", "dracula", "gruvbox-dark"]) for (const width of [1440, 390]) {
-    for (const [id, streaming] of cases) {
-      const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
-      await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
-      const at = `user layout @ ${theme} ${width}: ${id}${streaming ? " streaming" : ""}`;
-      const geometry = await measureUser(page, id, streaming);
-      const { promptX, promptTop, lines, contentRight, height, probedHeight, cursor, file } = geometry;
-      if (Math.abs(probedHeight - height) > 0.5) failures.push(`${at}: the probe changed the layout (${height} -> ${probedHeight} px)`);
-      const textX = lines[0]?.x ?? NaN;
-      if (!(Math.abs(promptTop - (lines[0]?.top ?? NaN)) < 0.5)) failures.push(`${at}: the prompt is not on the first text line (${promptTop.toFixed(1)} vs ${lines[0]?.top.toFixed(1)})`);
-      if (!(textX - promptX > 10)) failures.push(`${at}: the first text line starts at ${textX.toFixed(1)}, in the prompt column at ${promptX.toFixed(1)}`);
-      for (const line of lines.slice(1)) if (Math.abs(line.x - textX) > 0.5) failures.push(`${at}: a text line starts at ${line.x.toFixed(1)}, not at the text edge ${textX.toFixed(1)}`);
-      if (id === "message-user-long" && lines.length < 2) failures.push(`${at}: the long message does not wrap`);
-      // The cursor ends the last text line (within half a 14px line), or starts the next one at the text edge only
-      // because the last line has no room for it.
-      const last = lines.at(-1)!;
-      const onLast = cursor && Math.abs(cursor.top - last.top) < 10 && cursor.x > textX;
-      const wrapped = cursor && cursor.top > last.top + 10 && Math.abs(cursor.x - textX) < 2 && last.right + 1 + cursor.width > contentRight;
-      if (cursor && !onLast && !wrapped) failures.push(`${at}: the cursor at (${cursor.x.toFixed(1)}, ${cursor.top.toFixed(1)}) is not at the end of the last text line (${last.x.toFixed(1)}-${last.right.toFixed(1)} of ${contentRight.toFixed(1)}, ${last.top.toFixed(1)}; ${lines.length} lines)`);
-      if (file) {
-        if (parseFloat(file.indent) !== 0) failures.push(`${at}: the file row inherits text-indent ${file.indent}`);
-        if (file.labelRight > file.name) failures.push(`${at}: the file label overlaps the file name`);
-        if (file.label < promptX) failures.push(`${at}: the file row starts left of the prompt column`);
-      }
-      if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ theme, width, id, streaming, ...geometry }));
-      if (id === "user-block-indent" || id === "message-user-long") await page.locator(`#${id} [data-part=message]`).screenshot({ path: `${output}/${id}-${theme}-${width}.png` });
-      await page.close();
-    }
+  for (const theme of ["light", "dracula", "gruvbox-dark"]) for (const width of [1440, 390]) for (const { id, nth = 0, name = id, streaming = false, text } of userCases) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
+    await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
+    const at = `user layout @ ${theme} ${width}: ${name}${streaming ? " streaming" : ""}`;
+    const geometry = await measureUser(page, id, nth, streaming);
+    failures.push(...checkUserCase(at, geometry), ...(text ? checkTextLines(at, geometry, id === "message-user-long") : []));
+    if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ theme, width, name, streaming, ...geometry, lines: geometry.lines.length }));
+    await page.close();
   }
-  if (!failures.length) console.log("ok   user layout: prompt column, text edge, cursor line, and unindented file rows in 3 themes at 1440 and 390");
+  for (const theme of ["light", "dracula", "gruvbox-dark"]) for (const width of [1440, 390]) for (const id of ["user-block-indent", "message-user-long", "user-first-blocks"]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
+    await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
+    await page.locator(`#${id} [data-part=message]`).first().waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    await page.locator(`#${id}`).screenshot({ path: `${output}/${id}-${theme}-${width}.png` });
+    await page.close();
+  }
+  if (!failures.length) console.log(`ok   user layout: prompt on the first text line of ${firstBlocks.length + 1} first-block shapes, text edge, cursor line, and unindented file rows in 3 themes at 1440 and 390`);
   return failures;
 }
 

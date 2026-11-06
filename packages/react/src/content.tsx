@@ -75,6 +75,9 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
       data-role={item.message.role}
       data-state={item.active ? "streaming" : "done"}
       data-format={Rich ? "markdown" : "text"}
+      // A non-text first block, for styles: plain text renders as bare text nodes, so :first-child cannot tell
+      // "a file row first" from "text, then a file row".
+      data-first-block={parts[0]?.block.type === "text" ? undefined : parts[0]?.block.type}
     >
       {parts.map(({ index, block }, position) => {
         const streaming = item.active && position === parts.length - 1;

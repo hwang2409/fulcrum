@@ -112,9 +112,8 @@
 [data-part="jump-to-approval"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 
 /* Messages: plain prose, no bubbles. The user's turn is a surface band with a prompt mark. */
-/* Text keeps an 80ch measure. A direct child marked data-wide (a diagram) takes the message's whole content width
-   instead, and the text around it keeps the measure: a registered length resolves 80ch where the message sets it, so
-   a larger heading font does not widen its own measure. */
+/* Text keeps an 80ch measure; a data-wide child (a diagram) takes the full width. A registered length resolves 80ch
+   where the message sets it, so a heading's larger font does not widen its measure. */
 @property --fulcrum-measure { syntax: "<length>"; inherits: true; initial-value: 0px; }
 [data-part="message"] { --fulcrum-measure: 80ch; max-width: var(--fulcrum-measure); text-wrap: pretty; }
 [data-part="message"]:has(> [data-wide]) { max-width: none; }
@@ -129,10 +128,20 @@
   font-size: 14px;
   font-weight: 600;
 }
-/* The prompt floats in the padding column with a zero-width margin box: it sits on the first line, whether that line
-   is plain text, a markdown paragraph, or a file row, and nothing flows around it or inherits an indent. */
+/* The prompt floats in the padding column with a zero-width margin box: nothing flows around it or inherits an indent. */
 [data-part="message"][data-role="user"]::before,
 [data-part="item"][data-kind="user"]::before { content: "> "; float: left; width: 2ch; margin-left: -2ch; color: var(--fulcrum-muted); }
+/* Down to a padded first block's first baseline. */
+[data-role="user"]:has(> h1:first-child)::before { margin-top: 2px; }
+[data-role="user"]:has(> table:first-child)::before { margin-top: 3px; }
+[data-role="user"][data-first-block="reasoning"]::before { margin-top: 4px; }
+[data-role="user"]:is([data-first-block="file"], [data-first-block="source"])::before { margin-top: 5px; }
+[data-role="user"]:has(> pre:first-child)::before { margin-top: 6px; }
+[data-role="user"]:has(> pre:not([data-language]):first-child)::before { margin-top: 11px; }
+/* A large fence's head centers on host-sized buttons: the prompt joins it. */
+[data-role="user"]:has(> [data-size="large"]:first-child)::before { content: none; }
+[data-role="user"] > [data-size="large"]:first-child { overflow: visible; }
+[data-role="user"] > [data-size="large"]:first-child > [data-part="text-viewer-head"]::before { content: "> "; width: 2ch; margin: -1px 1px 0 calc(-13px - 2ch); color: var(--fulcrum-muted); font-size: 14px; font-weight: 600; }
 /* A terminal block cursor while text streams in. */
 [data-part="message"][data-state="streaming"]::after {
   content: "";
@@ -642,8 +651,7 @@ span[data-part="run-crumb"] { color: var(--fulcrum-fg); font-weight: 700; outlin
   [data-part="sub-agent-open"]::after { font-size: 12px; content: "\203A"; }
 }
 
-/* Content blocks (@fulcrum/react content.tsx): reasoning, sources, files, images, and unsupported blocks, in message
-   order. One grammar: a kind label in accent, the name in fg, then facts in their --fulcrum-ui-* hue (type, size,
+/* Content blocks (content.tsx), in message order. One grammar: a kind label in accent, the name in fg, then facts in their --fulcrum-ui-* hue (type, size,
    address). Rows are hairline boxes with the state rail, like tool cards; reasoning is a quiet disclosure. */
 :is([data-part="reasoning"], [data-part="source"], [data-part="file"], [data-part="image"], [data-part="block-unknown"]) { margin: 0 0 0.75em; font-size: 13px; line-height: 1.55; }
 [data-part="block-label"] { color: var(--fulcrum-accent); font-weight: 700; white-space: nowrap; }
@@ -919,8 +927,7 @@ ul[data-part="md-list"] { list-style: "- "; }
 
 /* Composer: one hairline box under the run. The rail and the primary action carry the state: accent to send (filled)
    and to steer a running turn (outlined), danger to stop, muted while it cannot act. One inset pads the text and the
-   actions alike. The field grows with its text up to ten lines, then scrolls; a hidden copy of
-   the draft (data-value) sizes the grid cell, so growth needs no script. The status row has a fixed height, so an error
+   actions alike. The field grows up to ten lines, then scrolls; a hidden copy of the draft (data-value) sizes it. The status row has a fixed height, so an error
    never moves the layout. */
 [data-part="composer"] {
   --rail: var(--fulcrum-accent);

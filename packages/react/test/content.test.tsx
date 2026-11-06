@@ -55,6 +55,13 @@ test("a plain text message renders exactly as before content blocks", () => {
   expect(container.innerHTML).toBe('<div style="white-space: pre-wrap;" data-part="message" data-kind="message" data-id="message:m" data-role="user" data-state="done" data-format="text">hello\nthere</div>');
 });
 
+test("a message names its first block only when that block is not text", () => {
+  render([commit([{ type: "file", kind: "file", filename: "a.png" }, { type: "text", text: "hi" }], "user")]);
+  expect(q('[data-part="message"]').dataset.firstBlock).toBe("file");
+  render([commit([{ type: "text", text: "hi" }, { type: "file", kind: "file", filename: "a.png" }], "user")]);
+  expect(q('[data-part="message"]').hasAttribute("data-first-block")).toBe(false);
+});
+
 test("truncated history strings stay visible in markdown and tool cards", () => {
   const truncated = "[truncated: original utf-8 bytes=1048577]";
   const call = { id: "truncated", name: "bash", arguments: { command: "printf output" } };
