@@ -4,6 +4,7 @@ import { MermaidFence } from "@fulcrum/mermaid";
 import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvider, Timeline, useItemSelector, useRun, useRunStore, useTimeline, type LoadMedia, type Renderers } from "@fulcrum/react";
 import { ContentReadError, type SessionStore, type ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { createConnection, serveCommand, type Connection, type ConnectionState } from "./connection";
 import { createDelivery } from "./delivery";
 import { ago, createSessions, sessionPresentation, sessionTitle, topLevel, type OpenRun, type SessionMeta, type Sessions, type SessionsState } from "./session";
@@ -374,6 +375,8 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
   }, [open.lease.store, opener, focusComposer]);
   const [undelivered, setUndelivered] = useState<ReadonlySet<string>>(() => new Set());
   const [followRequest, setFollowRequest] = useState(0);
+  const [jumpTarget, setJumpTarget] = useState<HTMLDivElement | null>(null);
+  const renderJumpToLatest = useCallback((control: ReactNode) => jumpTarget ? createPortal(control, jumpTarget) : null, [jumpTarget]);
   const onUndelivered = useCallback((intents: string[]) => {
     if (intents.length) setUndelivered((current) => new Set([...current, ...intents]));
   }, []);
@@ -391,9 +394,10 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
         <RunProvider store={open.lease.store} highlight={highlight} onRetry={client ? () => client.retrySession(open.id) : undefined} loadMedia={loadMedia}>
           <RefreshOnIdle sessions={sessions} />
           <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready={ready ? "true" : undefined}>
-            <Timeline renderers={renderers} virtual scrollRef={scroll} followRequest={followRequest} aria-label="session activity" />
+            <Timeline renderers={renderers} virtual scrollRef={scroll} followRequest={followRequest} renderJumpToLatest={renderJumpToLatest} aria-label="session activity" />
             <EmptyRun />
           </div>
+          <div ref={setJumpTarget} className="jump-lane" />
           <RunComposer key={open.id} client={open.stale || readOnly ? null : client} store={open.lease.store} onUndelivered={onUndelivered} onOwnSend={() => setFollowRequest((value) => value + 1)} readOnly={readOnly} />
         </RunProvider>
       </Undelivered>

@@ -158,8 +158,10 @@ button:active:not(:disabled) { transform: scale(0.97); }
 .scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 24px; }
 .scroll:focus-visible { outline: none; }
 .scroll > [data-part="timeline"] { max-width: 880px; margin: 0 auto; }
-/* The shipped control has no hit area of its own. */
-.scroll [data-part="jump-to-latest"] { display: flex; align-items: center; min-height: var(--control); padding: 0 14px; border: 0; }
+/* The jump control gets its own lane, so it never covers transcript text on narrow screens. */
+.jump-lane { flex: none; display: flex; justify-content: center; padding: 8px 24px; background: var(--fulcrum-bg); }
+.jump-lane:empty { display: none; }
+.jump-lane [data-part="jump-to-latest"] { position: static; display: flex; align-items: center; min-height: var(--control); margin: 0; padding: 0 14px; border: 1px solid var(--fulcrum-border); }
 
 /* The composer docks under the run, on the timeline's column. */
 .dock { flex: none; padding: 8px 24px max(16px, env(safe-area-inset-bottom)); }

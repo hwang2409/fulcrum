@@ -491,6 +491,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     requests,
     /** Every accepted send and steer, in order. */
     sent: composer.sent,
+    /** Sends one server-originated event to connected clients. */
+    emit(event: Json) { for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); },
     clearSent() { composer.clearSent(); },
     get aborts() { return composer.aborts; },
     /** Closes every socket, like a network blip; the server keeps running. */

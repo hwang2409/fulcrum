@@ -1,4 +1,4 @@
-import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type RefObject } from "react";
+import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type ReactNode, type RefObject } from "react";
 import type { ApprovalDecision, OutlineChange, RunEvent, RunItem } from "@fulcrum/core";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot } from "./hooks.js";
@@ -524,6 +524,8 @@ export type TimelineProps = {
   "aria-label"?: string;
   /** Increment this after a host-accepted local send to re-pin the timeline, unless the user is actively scrolling. */
   followRequest?: number;
+  /** Places the jump control in host-owned layout. By default it stays inside the scroll viewport. */
+  renderJumpToLatest?: (control: ReactNode) => ReactNode;
   /** Virtual mode: where a new store's timeline opens. Without it, it opens at the bottom and follows. */
   initialViewport?: TimelineViewport;
   /** Virtual mode: called once with the reading position when this store's timeline unmounts or its store changes. */
@@ -559,7 +561,7 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
   return <><ResyncStatus /><TimelineForStore key={keyForStore(store)} {...props} store={store} /></>;
 });
 
-const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, followRequest, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
+const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, followRequest, renderJumpToLatest, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
   const { items, change } = useTimelineSnapshot();
   const enabled = virtual ?? items.length > 200;
   const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change, resetKey: store, cache: initialViewport?.cache });
@@ -691,10 +693,10 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
           {list.debug}
         </output>
       ) : null}
-      {list.unseenCount > 0 ? (
+      {list.unseenCount > 0 ? (renderJumpToLatest ?? ((control) => control))(
         <button type="button" data-part="jump-to-latest" data-unseen-count={list.unseenCount} onClick={list.scrollToEnd}>
           jump to latest ({list.unseenCount})
-        </button>
+        </button>,
       ) : null}
     </>
   );
