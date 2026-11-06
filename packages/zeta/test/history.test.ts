@@ -133,15 +133,33 @@ test("history fidelity preserves arguments, structured bash results, and truncat
   expect(events[1]).toMatchObject({ type: "tool_end", view: { kind: "shell", command: "false", exitCode: 2, stdout: "", stderr: "failed\\n", cwd: "/tmp" }, tool_result: { truncated: true } });
 });
 
-test("history fidelity maps dropped steers without duplicating the user row", () => {
-  const events = fromZetaHistory([
-    { id: "u", role: "user", delivery_id: "d1", content: [{ type: "text", text: "check this" }], tool_result: null },
-    { id: "s", role: "system", event: "delivery_status", delivery_id: "d1", method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" },
-  ]);
-  expect(events).toEqual([
-    { type: "user_message", message_id: "u", text: "check this", mode: "send", delivery_id: "d1" },
-    { type: "delivery_status", delivery_id: "d1", method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" },
-  ]);
+test("a real live dropped steer keeps its text and terminal reason", async () => {
+  const fixture = await Bun.file(new URL("./fixtures/history-steer-delivery.json", import.meta.url)).json();
+  const store = createRunStore((flush) => flush());
+  for (const wire of fixture.dropped.liveEvents) for (const event of fromZetaEvent(wire)) store.dispatch(event);
+  const steer = store.getOutline().map(({ id }) => store.getItem(id)).find((item) => item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === "dropped-steer");
+  expect(steer).toMatchObject({ event: { text: "this steer must be dropped", delivery_status: "dropped", delivery_reason: "abort" } });
+  expect(store.getOutline().filter((item) => item.kind === "notification")).toHaveLength(0);
+});
+
+test("real dropped-steer history becomes one compact status row without inventing the missing text", async () => {
+  const fixture = await Bun.file(new URL("./fixtures/history-steer-delivery.json", import.meta.url)).json();
+  const store = createRunStore((flush) => flush());
+  for (const event of fromZetaHistory(fixture.dropped.historyRows)) store.dispatch(event);
+  const notices = store.getOutline().filter((item) => item.kind === "notification").map(({ id }) => store.getItem(id));
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toMatchObject({ event: { data: { type: "delivery_status", status: "dropped", content: "steer dropped: abort", reason: "abort" } } });
+  expect(store.getOutline().map(({ id }) => store.getItem(id)).some((item) => item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === "dropped-steer")).toBe(false);
+});
+
+test("real delivered-steer history joins its user row without an extra status row", async () => {
+  const fixture = await Bun.file(new URL("./fixtures/history-steer-delivery.json", import.meta.url)).json();
+  const store = createRunStore((flush) => flush());
+  for (const event of fromZetaHistory(fixture.delivered.historyRows)) store.dispatch(event);
+  const steer = store.getOutline().map(({ id }) => store.getItem(id)).filter((item) => item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === "delivered-steer");
+  expect(steer).toHaveLength(1);
+  expect(steer[0]).toMatchObject({ event: { text: "After the tool finishes, include the word STEERED.", delivery_status: "delivered" } });
+  expect(store.getOutline().filter((item) => item.kind === "notification")).toHaveLength(0);
 });
 
 test("oversized history groups become compact notices", () => {

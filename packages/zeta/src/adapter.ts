@@ -31,6 +31,8 @@ const boolean = (value: unknown, name: string) => {
   if (typeof value !== "boolean") throw new Error(`${name} must be a boolean`);
   return value;
 };
+const text = (content: unknown[]) =>
+  content.flatMap((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string" ? [(block as { text: string }).text] : [])).join("");
 const optionalNumber = (value: unknown, name: string) => {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${name} must be a finite number`);
@@ -284,7 +286,8 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       case "delivery_status": {
         const status = string(wire.status, "status");
         if (status !== "delivered" && status !== "dropped") throw new Error("status must be delivered or dropped");
-        return [{ type: "delivery_status", delivery_id: string(wire.delivery_id, "delivery_id"), method: string(wire.method, "method"), status, content: string(wire.content, "content"), ...(wire.reason === undefined ? {} : { reason: string(wire.reason, "reason") }) }];
+        if (!Array.isArray(wire.content)) throw new Error("content must be an array");
+        return [{ type: "delivery_status", delivery_id: string(wire.delivery_id, "delivery_id"), method: string(wire.method, "method"), status, content: string(text(wire.content), "content text"), ...(wire.reason === undefined ? {} : { reason: string(wire.reason, "reason") }) }];
       }
       case "tool_start": {
         const call = tool(wire.tool_call);
@@ -357,9 +360,6 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
     return invalid(error);
   }
 }
-
-const text = (content: unknown[]) =>
-  content.flatMap((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string" ? [(block as { text: string }).text] : [])).join("");
 
 const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
   const row = object(value, "history row");
