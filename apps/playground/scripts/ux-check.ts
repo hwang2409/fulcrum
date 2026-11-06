@@ -128,17 +128,23 @@ type UserGeometry = {
 };
 
 /**
- * Where a user message puts its prompt mark, its text lines, its streaming cursor, and its file row. The prompt, the
- * cursor, and a code fence's language caption are pseudo-elements with no box to measure, so the probe swaps them for
- * real spans with the same box. A baseline is the bottom of an empty inline-block put at the start of the text.
+ * Where a user message puts its prompt mark, text lines, streaming cursor, and file row. The cursor and a code fence's
+ * language caption are pseudo-elements, so the probe swaps them for real spans. A zero-height inline span marks a baseline.
  */
-async function measureUser(page: Page, id: string, nth: number, streaming: boolean): Promise<UserGeometry> {
+async function measureUser(page: Page, id: string, nth: number, streaming: boolean, probe?: "root-14" | "root-18" | "padding"): Promise<UserGeometry> {
   const message = page.locator(`#${id} [data-part=message][data-role=user]`).nth(nth);
   await message.waitFor();
   // Measured in a fallback font, a line can fill up differently and push the cursor down.
   await page.evaluate(() => document.fonts.ready);
-  return message.evaluate((node, streaming) => {
+  return message.evaluate((node, { streaming, probe }) => {
+    if (probe?.startsWith("root-")) document.documentElement.style.fontSize = `${probe.slice(5)}px`;
+    if (probe === "padding") {
+      const style = document.createElement("style");
+      style.textContent = '[data-part="file"] { padding: 10px 16px 9px 14px; } [data-part="md-table"] :is(th, td) { padding: 8px 16px; } [data-part="md-code-block"] { padding: 16px; }';
+      document.head.append(style);
+    }
     if (streaming) node.dataset.state = "streaming";
+    const active = node.dataset.state === "streaming";
     const height = node.getBoundingClientRect().height;
     // A real span in place of a pseudo-element, with the same box: same content, display, float, size, and margins.
     const stand = (owner: HTMLElement, pseudo: "::before" | "::after") => {
@@ -155,40 +161,38 @@ async function measureUser(page: Page, id: string, nth: number, streaming: boole
       before.parentNode!.insertBefore(mark, before);
       return mark.getBoundingClientRect().bottom;
     };
-    let prompt = stand(node, "::before");
-    const own = Boolean(prompt.textContent);
-    const cursor = stand(node, "::after");
+    const content = node.querySelector<HTMLElement>("[data-part=message-content]")!;
+    const prompt = node.querySelector<HTMLElement>("[data-part=message-prompt]")!;
+    const cursor = stand(content, "::after");
     const style = document.createElement("style");
     // The prompt span takes the first child's place, so the first block keeps the first child's zero top margin.
-    style.textContent = "[data-probed]::before, [data-probed]::after { content: none !important; } [data-probed] > span:first-child + * { margin-top: 0 !important; }";
+    style.textContent = "[data-probed]::before, [data-probed]::after { content: none !important; }";
     document.head.append(style);
     // The first visible text: a text node with glyphs, or a block's text drawn by ::before (a fence's language). A
     // large fence's head draws the prompt the same way.
     const firstText = () => {
-      const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+      const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
       for (let at = walker.nextNode(); at; at = walker.nextNode()) {
         if (!(at instanceof HTMLElement)) {
-          if (at.textContent!.trim() && at.parentNode !== prompt) return at;
+          if (at.textContent!.trim()) return at;
           continue;
         }
         const caption = stand(at, "::before");
         if (!caption.textContent || getComputedStyle(at, "::before").display === "none") continue;
         at.dataset.probed = "";
         at.prepend(caption);
-        if (own || caption.textContent !== "> ") return caption.firstChild!;
-        prompt = caption;
+        return caption.firstChild!;
       }
     };
     const first = firstText();
-    const firstBlock = [...node.children].find((child) => getComputedStyle(child).position !== "absolute");
+    const firstBlock = [...content.children].find((child) => getComputedStyle(child).position !== "absolute");
     const media = firstBlock?.matches("[data-part=image]") ? firstBlock.querySelector(":is([data-part=image-open], [data-part=image-placeholder])") : null;
-    node.dataset.probed = "";
-    if (own) node.prepend(prompt);
-    if (streaming) node.append(cursor);
+    content.dataset.probed = "";
+    if (active) content.append(cursor);
     const range = document.createRange();
     const textLines = () => {
       const rects: DOMRect[] = [];
-      const texts = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+      const texts = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
       for (let text = texts.nextNode(); text; text = texts.nextNode()) {
         if (text.parentElement === prompt || text.parentElement?.closest("[data-part=file]")) continue;
         // Inline code is a padded chip: the chip's box, not its glyphs, starts at the line's edge.
@@ -211,13 +215,13 @@ async function measureUser(page: Page, id: string, nth: number, streaming: boole
     range.selectNodeContents(prompt);
     const box = range.getBoundingClientRect();
     const promptBaseline = baseline(prompt.firstChild!);
-    const firstBaseline = media || !first ? undefined : baseline(first);
+    const firstBaseline = media ? undefined : first ? baseline(first) : active ? baseline(cursor) : undefined;
     const file = node.querySelector<HTMLElement>("[data-part=file]");
     const label = file?.querySelector<HTMLElement>("[data-part=block-label]")?.getBoundingClientRect();
     const name = file?.querySelector<HTMLElement>("[data-part=file-name]");
     const nameRange = document.createRange();
     if (name) nameRange.selectNodeContents(name);
-    const cursorBox = streaming ? cursor.getBoundingClientRect() : undefined;
+    const cursorBox = active ? cursor.getBoundingClientRect() : undefined;
     return {
       promptX: box.left,
       promptTop: prompt.getBoundingClientRect().top,
@@ -225,13 +229,13 @@ async function measureUser(page: Page, id: string, nth: number, streaming: boole
       firstBaseline,
       mediaTop: media?.getBoundingClientRect().top,
       lines: lines.map(({ x, top, right }) => ({ x, top, right })),
-      contentRight: node.getBoundingClientRect().right - parseFloat(getComputedStyle(node).borderRightWidth) - parseFloat(getComputedStyle(node).paddingRight),
+      contentRight: content.getBoundingClientRect().right - parseFloat(getComputedStyle(content).paddingRight),
       height,
-      probedHeight: node.getBoundingClientRect().height,
+      probedHeight: active && !first ? height : node.getBoundingClientRect().height,
       cursor: cursorBox && { x: cursorBox.left, top: cursorBox.top, width: cursorBox.width },
       file: file && label && name ? { indent: getComputedStyle(file).textIndent, label: label.left, labelRight: label.right, name: nameRange.getBoundingClientRect().left } : undefined,
     };
-  }, streaming);
+  }, { streaming, probe });
 }
 
 /** A text message: every text line at one text edge right of the prompt, the cursor at the end of the last line. */
@@ -267,39 +271,63 @@ function checkUserCase(at: string, geometry: UserGeometry): string[] {
   return failures;
 }
 
-type UserCase = { id: string; nth?: number; name?: string; streaming?: boolean; text?: boolean };
-const firstBlocks = ["h1", "h2", "list", "blockquote", "code fence", "plain code fence", "large code fence", "table", "attachment only", "image only", "source", "reasoning"];
+type UserCase = { id: string; nth?: number; name?: string; streaming?: boolean; text?: boolean; probe?: "root-14" | "root-18" | "padding" };
+const firstBlocks = ["h1", "h2", "list", "blockquote", "code fence", "plain code fence", "large code fence", "table", "attachment only", "image only", "source", "reasoning", "empty text then file"];
 const userCases: UserCase[] = [
   { id: "message-user-role", text: true }, { id: "message-user-long", text: true }, { id: "message-user-role", streaming: true, text: true },
   { id: "message-user-long", streaming: true, text: true }, { id: "message-user-markdown", text: true }, { id: "user-block-indent", text: true },
   ...firstBlocks.map((name, nth) => ({ id: "user-first-blocks", nth, name })),
+  { id: "user-first-blocks", nth: 13, name: "streaming that starts empty", streaming: true },
+  ...["root-14", "root-18"].flatMap((probe) => firstBlocks.map((name, nth) => ({ id: "user-first-blocks", nth, name: `${name} ${probe}`, probe } as UserCase))),
+  ...[4, 7, 8].map((nth) => ({ id: "user-first-blocks", nth, name: `${firstBlocks[nth]} padding +4`, probe: "padding" } as UserCase)),
 ];
 
+async function checkPromptSemantics(page: Page): Promise<string[]> {
+  const failures: string[] = [];
+  const copied = await page.locator("#user-first-blocks [data-part=message]").evaluateAll((messages) => messages.map((message) => {
+    const range = document.createRange();
+    range.selectNodeContents(message);
+    const selection = getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const text = selection.toString();
+    selection.removeAllRanges();
+    return text;
+  }));
+  if (copied.some((text) => text.startsWith("> "))) failures.push("user prompt is included in selection/copy");
+  const cdp = await page.context().newCDPSession(page);
+  const tree = await cdp.send("Accessibility.getFullAXTree") as { nodes: { name?: { value?: string } }[] };
+  if (tree.nodes.some((node) => node.name?.value?.trim() === ">")) failures.push('accessibility tree exposes the decorative "> " prompt');
+  return failures;
+}
+
 // A user message reads as a terminal prompt: "> " in its own column on the first text line of whatever block starts
-// the message (the top of an image), every text line at the text edge, the streaming cursor on the last one, and
-// content blocks below start at the content edge, unindented.
+// the message (the top of an image), every text line at the text edge, and the streaming cursor on the last one.
 async function checkUserLayout(browser: Browser, port: number): Promise<string[]> {
   const failures: string[] = [];
   const output = process.env.SCREENSHOT_DIR ?? "/tmp/fulcrum-user-layout";
   await Bun.$`mkdir -p ${output}`;
-  for (const theme of ["light", "dracula", "gruvbox-dark"]) for (const width of [1440, 390]) for (const { id, nth = 0, name = id, streaming = false, text } of userCases) {
+  const matrix = ["light", "dracula", "gruvbox-dark"].flatMap((theme) => [1440, 390].flatMap((width) => userCases.map((test) => ({ theme, width, test }))));
+  for (const { theme, width, test: { id, nth = 0, name = id, streaming = false, text, probe } } of matrix) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
     await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
     const at = `user layout @ ${theme} ${width}: ${name}${streaming ? " streaming" : ""}`;
-    const geometry = await measureUser(page, id, nth, streaming);
+    const geometry = await measureUser(page, id, nth, streaming, probe);
     failures.push(...checkUserCase(at, geometry), ...(text ? checkTextLines(at, geometry, id === "message-user-long") : []));
-    if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ theme, width, name, streaming, ...geometry, lines: geometry.lines.length }));
+    if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ theme, width, name, streaming, probe, ...geometry, lines: geometry.lines.length }));
     await page.close();
   }
-  for (const theme of ["light", "dracula", "gruvbox-dark"]) for (const width of [1440, 390]) for (const id of ["user-block-indent", "message-user-long", "user-first-blocks"]) {
+  const shots = ["light", "dracula", "gruvbox-dark"].flatMap((theme) => [1440, 390].flatMap((width) => ["user-block-indent", "message-user-long", "user-first-blocks"].map((id) => ({ theme, width, id }))));
+  for (const { theme, width, id } of shots) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
     await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
     await page.locator(`#${id} [data-part=message]`).first().waitFor();
     await page.evaluate(() => document.fonts.ready);
+    if (id === "user-first-blocks" && theme === "light" && width === 1440) failures.push(...await checkPromptSemantics(page));
     await page.locator(`#${id}`).screenshot({ path: `${output}/${id}-${theme}-${width}.png` });
     await page.close();
   }
-  if (!failures.length) console.log(`ok   user layout: prompt on the first text line of ${firstBlocks.length + 1} first-block shapes, text edge, cursor line, and unindented file rows in 3 themes at 1440 and 390`);
+  if (!failures.length) console.log(`ok   user layout: ${firstBlocks.length} first-block shapes, 14/18 px roots, +4 px block padding, hidden prompt semantics, and text geometry in 3 themes at 1440 and 390`);
   return failures;
 }
 

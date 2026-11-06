@@ -430,7 +430,7 @@ export const demos: Demo[] = [
     part: "Message",
     title: "user role, first blocks",
     description: "Whatever block starts a user message, the prompt sits on its first text line, or at the top of an image.",
-    events: [
+    events: [...[
       "# Release notes\n\nplease check these",
       "## Two problems\n\nboth on CI",
       "- the first item\n- the second item",
@@ -443,7 +443,10 @@ export const demos: Demo[] = [
       chart,
       docs,
       { type: "reasoning", text: "the alias is wrong" },
-    ].map((block, i) => ({ type: "message_commit", message_id: `user-first-${i}`, message: { role: "user", content: [typeof block === "string" ? { type: "text", text: block } : block] } })),
+    ].map((block, i): RunEvent => ({ type: "message_commit", message_id: `user-first-${i}`, message: { role: "user", content: [typeof block === "string" ? { type: "text", text: block } : block] } })),
+      { type: "message_commit", message_id: "user-first-empty-file", message: { role: "user", content: [{ type: "text", text: "" }, { type: "file", filename: "empty-first.txt", mediaType: "text/plain", size: 0 }] } },
+      { type: "message_commit", message_id: "user-first-empty-stream", message: { role: "user", content: [{ type: "text", text: "" }] } },
+    ],
     markdownAll: true,
   },
   {
