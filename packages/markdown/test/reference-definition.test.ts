@@ -47,6 +47,13 @@ test("consumes duplicate definitions while keeping the first definition", () => 
   expect(resolved.references.get("SHARED")).toEqual({ href: "s", title: "e" });
 });
 
+test("a container can start a definition after interrupting a rejected candidate", () => {
+  const input = "[\n>[d]:p\n";
+  const resolved = resolve(input);
+  expect(resolved.result.map((line) => line.leaf?.kind)).toEqual(["paragraph", "reference-definition"]);
+  expect(resolved.references.get("D")).toEqual({ href: "p", title: "" });
+});
+
 test("open destinations and titles scale linearly", () => {
   const sizes = [10_000, 20_000, 40_000, 80_000];
   const measure = (prefix: string, size: number) => {

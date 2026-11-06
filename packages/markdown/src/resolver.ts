@@ -401,7 +401,7 @@ export class MarkdownLineResolver {
   ): { handled: boolean; results: LineResolution[] } {
     const results = interrupted ? this.finishReference() : [];
     if (this.activeReference) return this.continueReference(content, final, results);
-    if (continuesParagraph || lazy || interrupted) return { handled: false, results };
+    if (continuesParagraph || lazy) return { handled: false, results };
     return this.startReference(content, final, closedToDepth, opened, results);
   }
 
