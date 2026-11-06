@@ -396,31 +396,26 @@ export class MarkdownLineResolver {
     const tableRow = this.continueTableRow(line, cursor, unmatched, blank, startsContainer, startsBlock);
     if (tableRow) return [tableRow];
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
-    let { continuesParagraph, lazy } = this.lazyContinuation(blank, startsBlock, unmatched);
-    const referenceContinuesLazily = Boolean(this.activeReference || followsReference) && unmatched && !blank && !startsBlock;
-    if (referenceContinuesLazily) {
-      continuesParagraph = true;
-      lazy = true;
-    }
-    if (followsContainerOnly && startsReference) {
-      continuesParagraph = false;
-      lazy = false;
-    }
+    const { continuesParagraph, lazy, referenceContinuesLazily } = this.continuationDecision(
+      blank, startsBlock, unmatched, followsReference, followsContainerOnly, startsReference,
+    );
     const closedToDepth = this.closeToDepth(matchedDepth, continuesParagraph, unmatched, blank, unmatchedContent, marker);
 
     const opened = continuesParagraph || blank ? [] : this.openContainers(cursor);
 
     if (blank || isBlank(line, cursor.offset)) {
       const reference = this.finishReference();
+      this.referenceParagraph = false;
       this.previousContainerOnly = !blank && opened.length > 0;
       return [...reference, { continued: false, lazy: false, closedToDepth, opened }];
     }
     if (followsContainerOnly && /^ {4}/.test(line))
       return [{ continued: false, lazy: false, closedToDepth, opened }];
     const content = cursorContent(cursor);
-    const restartsReference = (followsReference || Boolean(this.activeReference)) && this.isCompleteReference(content);
-    const interruptedReference = restartsReference || this.referenceInterruptedBy(content, unmatched, startsContainer, startsBlock, referenceContinuesLazily);
-    const reference = this.resolveReference(line, cursor, content, final, closedToDepth, opened, continuesParagraph, lazy, interruptedReference);
+    const reference = this.resolveReference(
+      line, cursor, content, final, closedToDepth, opened, continuesParagraph, lazy,
+      followsReference, unmatched, startsContainer, startsBlock, referenceContinuesLazily,
+    );
     if (reference.handled) return reference.results;
     return [...reference.results, this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy)];
   }
@@ -464,8 +459,14 @@ export class MarkdownLineResolver {
     opened: OpenedContainer[],
     continuesParagraph: boolean,
     lazy: boolean,
-    interrupted: boolean,
+    followsReference: boolean,
+    unmatched: boolean,
+    startsContainer: boolean,
+    startsBlock: boolean,
+    referenceContinuesLazily: boolean,
   ): { handled: boolean; results: LineResolution[] } {
+    const restarts = (followsReference || Boolean(this.activeReference)) && this.isCompleteReference(content);
+    const interrupted = restarts || this.referenceInterruptedBy(content, unmatched, startsContainer, startsBlock, referenceContinuesLazily);
     const interruptedPath = interrupted ? this.activeReference?.path : undefined;
     const results = interrupted ? this.finishReference() : [];
     const replay = { line, cursor: { ...cursor }, closedToDepth, opened, continuesParagraph, lazy, path: this.stack.slice() };
@@ -608,9 +609,20 @@ export class MarkdownLineResolver {
     return resolutions;
   }
 
-  private lazyContinuation(blank: boolean, startsBlock: boolean, unmatched: boolean) {
-    const continuesParagraph = this.openLeaf?.kind === "paragraph" && !blank && !startsBlock;
-    return { continuesParagraph, lazy: unmatched && continuesParagraph };
+  private continuationDecision(
+    blank: boolean,
+    startsBlock: boolean,
+    unmatched: boolean,
+    followsReference: boolean,
+    followsContainerOnly: boolean,
+    startsReference: boolean,
+  ) {
+    let continuesParagraph = this.openLeaf?.kind === "paragraph" && !blank && !startsBlock;
+    let lazy = unmatched && continuesParagraph;
+    const referenceContinuesLazily = Boolean(this.activeReference || followsReference) && unmatched && !blank && !startsBlock;
+    if (referenceContinuesLazily) continuesParagraph = lazy = true;
+    if (followsContainerOnly && startsReference) continuesParagraph = lazy = false;
+    return { continuesParagraph, lazy, referenceContinuesLazily };
   }
 
   private closeToDepth(
