@@ -183,13 +183,16 @@ function listMarker(cursor: Cursor): Marker | undefined {
   const markerWidth = marker.length;
   cursor.offset += markerWidth;
   cursor.column += markerWidth;
-  if (cursor.line[cursor.offset] !== " " && cursor.line[cursor.offset] !== "\t") {
+  const separator = cursor.line[cursor.offset];
+  if (separator !== undefined && separator !== " " && separator !== "\t") {
     Object.assign(cursor, start);
     return undefined;
   }
   const whitespace = { ...cursor };
   const whitespaceColumns = consumeIndent(whitespace, 5);
-  const padding = whitespaceColumns <= 4 && !isBlank(whitespace.line, whitespace.offset) ? whitespaceColumns : 1;
+  const padding = separator !== undefined && whitespaceColumns <= 4 && !isBlank(whitespace.line, whitespace.offset)
+    ? whitespaceColumns
+    : 1;
   consumeIndent(cursor, padding);
   return { ordered: !match[1], marker, contentIndent: markerWidth + padding };
 }

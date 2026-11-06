@@ -53,7 +53,7 @@ test("a whitespace-only unfinished line after a table never throws or adds a row
 });
 
 test("an empty list item does not consume the next unindented block", () => {
-  for (const source of ["1. \n.", " 1.\n.", "- \noutside", "- 1.\n.", "- text\n>"]) for (const split of splits)
+  for (const source of ["1. \n.", " 1.\n.", "-\noutside", "- \noutside", "- 1.\n.", "- text\n>"]) for (const split of splits)
     expect(json(stream(source, split).render()), `${JSON.stringify(source)}, split ${split}`).toBe(json(parseMarkdown(source)));
 });
 
