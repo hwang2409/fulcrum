@@ -404,6 +404,13 @@ export const demos: Demo[] = [
     events: [{ type: "message_commit", message_id: "markdown-large-constructs", message: text("assistant", "A license header, then a docstring:\n\n```cpp\n/*\n" + Array.from({ length: 28 }, () => " *" + " lorem".repeat(12)).join("\n") + "\n */\n" + Array.from({ length: 220 }, (_, i) => `int value${i} = ${i};`).join("\n") + "\n```\n\n```python\n\"\"\"\n" + Array.from({ length: 28 }, () => "   " + " ipsum".repeat(12)).join("\n") + "\n\"\"\"\n" + Array.from({ length: 220 }, (_, i) => `value_${i} = ${i}`).join("\n") + "\n```\n") }],
   },
   {
+    id: "user-block-indent",
+    part: "Message",
+    title: "user attachment, aligned",
+    description: "The sent text keeps its prompt mark while the attachment row starts at the content edge.",
+    events: [{ type: "message_commit", message_id: "user-block-indent", message: { role: "user", content: [{ type: "text", text: "please inspect this image" }, { type: "file", filename: "image.png", mediaType: "image/png", size: 12 }] } }],
+  },
+  {
     id: "content-streaming",
     part: "Message",
     title: "content blocks, streaming",

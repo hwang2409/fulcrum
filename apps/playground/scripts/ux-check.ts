@@ -121,6 +121,30 @@ async function checkNarrowHead(browser: Browser, port: number): Promise<string[]
   return failures;
 }
 
+async function checkBlockIndent(browser: Browser, port: number): Promise<string[]> {
+  const failures: string[] = [];
+  const output = "/Users/henry/.zeta/scratch/fulcrum-user-block-indent";
+  await Bun.$`mkdir -p ${output}`;
+  for (const [theme, width] of [["light", 1440], ["dracula", 390]] as const) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
+    await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#user-block-indent`);
+    const message = page.locator("#user-block-indent [data-part=message]");
+    await message.waitFor();
+    const values = await message.evaluate((node) => {
+      const text = node.querySelector<HTMLElement>("[data-part=message-text]")!;
+      const file = node.querySelector<HTMLElement>("[data-part=file]")!;
+      return { textIndent: getComputedStyle(text).textIndent, fileIndent: getComputedStyle(file).textIndent, textBox: text.getBoundingClientRect().toJSON(), fileBox: file.getBoundingClientRect().toJSON() };
+    });
+    if (!values.textIndent.startsWith("-")) failures.push(`${theme}: message text indent is ${values.textIndent}`);
+    if (parseFloat(values.fileIndent) !== 0) failures.push(`${theme}: file block inherits ${values.fileIndent}`);
+    if (values.fileBox.x < values.textBox.x) failures.push(`${theme}: file row starts before message text`);
+    await page.screenshot({ path: `${output}/${width}.png`, fullPage: true });
+    await page.close();
+  }
+  if (!failures.length) console.log("ok   user attachment block indent: text hangs, file row does not");
+  return failures;
+}
+
 async function checkFocus(browser: Browser, port: number): Promise<string[]> {
   const failures: string[] = [];
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
@@ -331,7 +355,7 @@ async function checkStatusWords(browser: Browser, port: number): Promise<string[
   return failures;
 }
 
-const checks = { viewer1: (b: Browser, p: number) => checkViewer(b, p, 1), viewer4: (b: Browser, p: number) => checkViewer(b, p, 4), head: checkNarrowHead, focus: checkFocus, gallery: checkGallery, status: checkStatusWords };
+const checks = { viewer1: (b: Browser, p: number) => checkViewer(b, p, 1), viewer4: (b: Browser, p: number) => checkViewer(b, p, 4), head: checkNarrowHead, focus: checkFocus, blockIndent: checkBlockIndent, gallery: checkGallery, status: checkStatusWords };
 
 /** ONLY=focus,gallery runs some of the checks. */
 export async function checkUx(browser: Browser, port: number): Promise<string[]> {
