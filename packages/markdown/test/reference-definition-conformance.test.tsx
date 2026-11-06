@@ -206,6 +206,32 @@ for (const [marker, continuation] of [
 
 const stableBlocks = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
 
+const lazyReferenceContinuations = [
+  "> [r]: /dest\nordinary lazy prose\n\n[r]\n",
+  "> [r]: /dest \"title\"\nordinary lazy prose\n\n[r]\n",
+  "- [r]: /dest\nordinary lazy prose\n\n[r]\n",
+  "- > [r]: /dest\nordinary lazy prose\n\n[r]\n",
+  "> [r]: /dest\r\nordinary lazy prose\r\n\r\n[r]\r\n",
+  "> [r]: /dest '\ncontinued title'\n\n[r]\n",
+  "> [r]:\n/dest\n\n[r]\n",
+  ...["```js", "---", "# heading", "- item", "> quote"].map((block) => `> [r]: /dest\n${block}\n\n[r]\n`),
+  "> [r]: /dest\n\nordinary prose\n\n[r]\n",
+];
+
+test("lazy reference continuation trees agree with commonmark before and after finish", () => {
+  for (const source of lazyReferenceContinuations) {
+    expectOracleAgreement(source);
+    const expected = parseMarkdown(source);
+    const document = createStreamingDocument();
+    document.append(source);
+    expect(stableBlocks(document.render()), `before finish: ${JSON.stringify(source)}`).toBe(stableBlocks(expected));
+    document.finish();
+    expect(stableBlocks(document.render()), `after finish: ${JSON.stringify(source)}`).toBe(stableBlocks(expected));
+    expect(resolverReferences(source, false), `resolver before finish: ${JSON.stringify(source)}`).toEqual(oracle(source).references);
+    expect(resolverReferences(source), `resolver after finish: ${JSON.stringify(source)}`).toEqual(oracle(source).references);
+  }
+});
+
 test("123 container-column reference cases match commonmark before finish", () => {
   expect(referenceMatrix).toHaveLength(123);
   for (const source of referenceMatrix) {
