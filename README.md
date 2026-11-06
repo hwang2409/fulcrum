@@ -217,6 +217,8 @@ The canonical scenarios cover text stream and commit, tool argument streaming or
 
 Virtual mode mounts only the visible window, so native find-in-page can find only mounted rows. A full-session search interface is planned. Until it is available, use `<Timeline virtual={false}>` when native find-in-page must search the complete transcript.
 
+When a host accepts a local send or steer, increment `followRequest` on `Timeline` to follow that message to the bottom even if the reader was previously scrolled up. Do not bump it for replayed history or remote user messages; those are new content and must preserve the reader's position.
+
 ## use fulcrum with another harness
 
 the cards are generic; a harness maps its own tool names to them. a tool map is the middleware layer: it reads a tool call's arguments and returns one of fulcrum's agent-neutral views, defined in `@fulcrum/core`:
