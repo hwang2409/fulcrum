@@ -322,7 +322,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const settle = (id: number, callback: (request: Pending) => void) => {
     const request = pending.get(id); if (!request) return;
     pending.delete(id); if (request.timer) clearTimeout(request.timer);
-    if (request.deliveryId) settledDeliveries.set(request.deliveryId, { method: request.method, text: request.text });
+    if (request.deliveryId) {
+      settledDeliveries.set(request.deliveryId, { method: request.method, text: request.text });
+      while (settledDeliveries.size > maxPending) settledDeliveries.delete(settledDeliveries.keys().next().value!);
+    }
     callback(request);
   };
   const handleEvent = (message: TransportMessage) => {
