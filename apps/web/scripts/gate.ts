@@ -257,6 +257,83 @@ try {
       const gap = await page.locator(".scroll").evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
       if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom`);
     });
+    await check("a measured row growing by wrapped lines keeps a pinned reader at the bottom", async () => {
+      const scroll = page.locator(".scroll");
+      await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+      const row = page.locator('[data-part="timeline"] [data-virtual-id]').last();
+      const before = await row.boundingBox();
+      if (!before) throw new Error("no measured row");
+      await row.evaluate((element, height) => { (element as HTMLElement).style.minHeight = `${height + 96}px`; }, before.height);
+      await page.waitForTimeout(250);
+      const after = await row.boundingBox();
+      const gap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+      await row.evaluate((element) => { (element as HTMLElement).style.minHeight = ""; });
+      if (!after || after.height < before.height + 32) throw new Error(`row grew ${Math.round((after?.height ?? 0) - before.height)} px, expected at least 32 px`);
+      if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom after measured growth`);
+    });
+    await check("a user scroll stays put and counts unseen content", async () => {
+      const scroll = page.locator(".scroll");
+      await scroll.evaluate((element) => { element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 120); });
+      const before = await scroll.evaluate((element) => element.scrollTop);
+      const row = page.locator('[data-part="timeline"] [data-virtual-id]').last();
+      await row.evaluate((element) => { (element as HTMLElement).style.minHeight = `${element.getBoundingClientRect().height + 96}px`; });
+      await page.waitForTimeout(250);
+      const after = await scroll.evaluate((element) => element.scrollTop);
+      const unseen = await page.locator('[data-part="jump-to-latest"]').getAttribute("data-unseen-count");
+      if (Math.abs(after - before) > 4) throw new Error(`user position moved from ${Math.round(before)} to ${Math.round(after)}`);
+      if (!unseen || Number(unseen) < 1) throw new Error("unseen count did not increase");
+      await row.evaluate((element) => { (element as HTMLElement).style.minHeight = ""; });
+    });
+    await check("an accepted own send follows an unpinned reader to the bottom", async () => {
+      const scroll = page.locator(".scroll");
+      await scroll.evaluate((element) => { element.scrollTop = 0; });
+      await page.locator(".dock textarea").fill("follow my accepted message");
+      await page.getByRole("button", { name: "send" }).click();
+      await page.waitForTimeout(500);
+      const gap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+      if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom after own send`);
+    });
+    await check("a wheel-up during growth keeps the reader unpinned", async () => {
+      const scroll = page.locator(".scroll");
+      await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+      await page.mouse.wheel(0, -180);
+      const before = await scroll.evaluate((element) => element.scrollTop);
+      const row = page.locator('[data-part="timeline"] [data-virtual-id]').last();
+      await row.evaluate((element) => { (element as HTMLElement).style.minHeight = `${element.getBoundingClientRect().height + 96}px`; });
+      await page.waitForTimeout(250);
+      const after = await scroll.evaluate((element) => element.scrollTop);
+      const gap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+      await row.evaluate((element) => { (element as HTMLElement).style.minHeight = ""; });
+      if (Math.abs(after - before) > 4 || gap < 8) throw new Error(`wheel-up view moved (${Math.round(before)} to ${Math.round(after)}), gap ${Math.round(gap)} px`);
+    });
+    await check("jump-to-latest is bordered, readable, and does not cover text at 390 px", async () => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      const scroll = page.locator(".scroll");
+      await scroll.evaluate((element) => { element.scrollTop = 0; });
+      const button = page.locator('[data-part="jump-to-latest"]');
+      await button.waitFor();
+      const result = await button.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        const color = document.createElement("span");
+        color.style.color = style.color;
+        color.textContent = element.textContent;
+        element.append(color);
+        const colorValue = getComputedStyle(color).color;
+        color.remove();
+        const bg = style.backgroundColor.match(/\d+/g)?.map(Number) ?? [255, 255, 255];
+        const fg = colorValue.match(/\d+/g)?.map(Number) ?? [0, 0, 0];
+        const lum = (rgb: number[]) => rgb.map((v) => (v / 255 <= .03928 ? v / 12.92 : ((v / 255 + .055) / 1.055) ** 2.4)).reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i]!, 0);
+        const ratio = (Math.max(lum(fg), lum(bg)) + .05) / (Math.min(lum(fg), lum(bg)) + .05);
+        const overlap = [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-part="message"], [data-part="timeline"] [data-part="tool"]')].some((row) => { const r = row.getBoundingClientRect(); return r.left < rect.right && r.right > rect.left && r.top < rect.bottom && r.bottom > rect.top; });
+        return { ratio, border: style.borderStyle !== "none" && style.borderWidth !== "0px", overlap };
+      });
+      if (result.ratio < 4.5) throw new Error(`contrast ${result.ratio.toFixed(2)}:1`);
+      if (!result.border) throw new Error("button has no visible border");
+      if (result.overlap) throw new Error("button overlaps reading text");
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await auditThemes(page, "jump", 36);
+    });
     await shoot(page, "connected-1440-tokyo-night");
     for (const theme of ["gruvbox-dark", "catppuccin-latte", "dracula"]) {
       await page.evaluate((name) => { document.documentElement.dataset.fulcrumTheme = name; }, theme);
