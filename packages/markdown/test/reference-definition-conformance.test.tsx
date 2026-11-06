@@ -1,7 +1,7 @@
 import { Window } from "happy-dom";
 import * as commonmark from "commonmark";
 import { renderToStaticMarkup } from "react-dom/server";
-import { type Block, parseMarkdown } from "../src/index.js";
+import { createStreamingDocument, type Block, parseMarkdown } from "../src/index.js";
 import { Markdown } from "../src/react.js";
 import { MarkdownLineResolver } from "../src/resolver.js";
 import examples from "./fixtures/commonmark-0.31.2.json";
@@ -71,7 +71,7 @@ function links(blocks: Block[]): OracleReference[] {
 
 function expectOracleAgreement(source: string) {
   const expected = oracle(source);
-  expect(resolverReferences(source)).toEqual(expected.references);
+  expect(resolverReferences(source), source).toEqual(expected.references);
   expect(parseMarkdown(source)).toBeArray();
   const safeOracleHtml = expected.html.replace("<bar>(baz)", "&lt;bar&gt;(baz)");
   expect(normalized(renderToStaticMarkup(<Markdown source={source} />))).toBe(normalized(safeOracleHtml));
@@ -142,5 +142,78 @@ test("publishes block-indent-normalized continuation definitions before finish",
     const expected = oracle(source).references;
     expect(resolverReferences(source, false), source).toEqual(expected);
     expect(links(parseMarkdown(source)), source).toEqual(Object.values(expected));
+  }
+});
+
+const matrixSource = (definition: string, _use: string, separator = "\n") => `${definition}${separator}`;
+const referenceMatrix: string[] = [];
+
+for (const indent of ["", " ", "  ", "   ", "\t", " \t", "\t ", "  \t", "\t  ", " \t "])
+  for (const continuation of ["/url", "'title'"])
+    referenceMatrix.push(matrixSource(`[r]:${continuation === "/url" ? "" : " /url"}\n${indent}${continuation}`, "[r]", "\n\n"));
+
+for (const marker of [">", "> ", ">\t", "> \t", ">\t ", " >", "  >", "   >", " \t>", "\t>"])
+  for (const continuation of ["/url", "'title'"])
+    referenceMatrix.push(matrixSource(`${marker} [r]:${continuation === "/url" ? "" : " /url"}\n${marker} ${continuation}`, `${marker} [r]`, `\n${marker}\n`));
+
+for (const [marker, indent] of [["- ", "  "], ["-\t", "\t"], ["- \t", "  \t"], ["*\t ", "\t "], ["1. ", "   "], ["1.\t", "\t"], ["10. ", "    "], ["10.\t", "\t"]])
+  for (const continuation of ["/url", "'title'"])
+    referenceMatrix.push(matrixSource(`${marker}[r]:${continuation === "/url" ? "" : " /url"}\n${indent}${continuation}`, `${indent}[r]`));
+
+referenceMatrix.push(
+  "> [r]:\n  /url\n>\n",
+  "> [r]: /url\n  'title'\n>\n",
+  "> [r]: /url '\n  title\n  '\n>\n",
+  "- [r]:\n /url\n\n",
+  "- [r]: /url\n 'title'\n\n",
+  "1. [r]:\n /url\n\n",
+  "1. [r]: /url\n 'title'\n\n",
+  "> - [r]: /url\n  'title'\n>\n",
+);
+
+for (const depth of [2, 3, 4, 5])
+  for (const continuation of ["  /url", "  'title'"])
+    referenceMatrix.push(`${"> ".repeat(depth)}[r]:${continuation.includes("title") ? " /url" : ""}\n${continuation}\n${"> ".repeat(depth)}\n`);
+
+for (const source of [
+  "> [r]:\r\n  /url\r\n>\r\n",
+  "> [r]: /url\r\n  'title'\r\n>\r\n",
+  "> > [r]:\r\n   /url\r\n> >\r\n",
+  "- [r]:\r\n /url\r\n\r\n",
+  "1. [r]: /url\r\n 'title'\r\n\r\n",
+  ">\t[r]: /url\r\n>\r\n",
+  ">\t  [r]: /url\r\n>\r\n",
+  "-\t[r]: /url\r\n\r\n",
+]) referenceMatrix.push(source);
+
+for (const wrap of [
+  (body: string) => body,
+  (body: string) => `> ${body.replaceAll("\n", "\n> ")}`,
+  (body: string) => `- ${body.replaceAll("\n", "\n  ")}`,
+  (body: string) => `1. ${body.replaceAll("\n", "\n   ")}`,
+  (body: string) => `> - ${body.replaceAll("\n", "\n>   ")}`,
+]) for (const indent of [" ", "   ", "\t"])
+  referenceMatrix.push(wrap(`[r]: /url 'bad' junk\n${indent}next line\n`));
+
+for (const prefix of [">\t", "> \t", ">\t ", ">\t  ", " >\t", "  >\t", "> \t ", ">\t   "])
+  referenceMatrix.push(`${prefix}[r]: /url\n>\n`);
+
+for (const [marker, continuation] of [
+  ["-\t", "\t"], ["- \t", "  \t"], ["-\t ", "\t "], ["*\t", "\t"], ["+ \t", "  \t"],
+  ["1.\t", "\t"], ["1. \t", "   \t"], ["2)\t ", "\t "], ["10.\t", "\t"], ["10. \t", "    \t"],
+]) for (const suffix of ["/url", "'title'"])
+  referenceMatrix.push(`${marker}[r]:${suffix === "/url" ? "" : " /url"}\n${continuation}${suffix}\n\n`);
+
+const stableBlocks = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
+
+test("123 container-column reference cases match commonmark before finish", () => {
+  expect(referenceMatrix).toHaveLength(123);
+  for (const source of referenceMatrix) {
+    expectOracleAgreement(source);
+    const expected = parseMarkdown(source);
+    const document = createStreamingDocument();
+    document.append(source);
+    expect(stableBlocks(document.render()), source).toBe(stableBlocks(expected));
+    expect(resolverReferences(source, false), source).toEqual(oracle(source).references);
   }
 });
