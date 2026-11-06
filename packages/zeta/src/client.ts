@@ -1,5 +1,6 @@
 import { createRunStore, type RunEvent, type Scheduler, type RunState } from "@fulcrum/core";
 import { fromZetaEvent } from "./adapter.js";
+import { createDeliveryIdentity } from "./delivery-identity.js";
 import type { HelloResult, RpcError, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
 import {
@@ -117,8 +118,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
   const maxSessions = options.maxSessions ?? 100;
-  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; intent?: string; text?: unknown; deliveryId?: string };
+  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout> };
   const pending = new Map<number, Pending>();
+  const deliveryIdentity = createDeliveryIdentity(maxPending);
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
   const replaying = new Set<string>();
@@ -154,6 +156,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     quarantined.delete(id);
     quarantineRevisions.delete(id);
     replayLoads.delete(id);
+    deliveryIdentity.evictSession(id);
     const value = stores.get(id);
     if (!value) return false;
     stores.delete(id);
@@ -300,21 +303,26 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     activeLoads.delete(session);
     return true;
   };
-  const stampIntent = (event: RunEvent): RunEvent => {
+  const canMatchDeliveryId = () => negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("user_message_delivery_id");
+  const canSendImagesDeliveryId = () => negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("send_images_delivery_id");
+  const stampIntent = (event: RunEvent, sessionId?: string): RunEvent => {
     if (event.type !== "user_message") return event;
-    const deliveryIds = negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_delivery_id");
-    if (deliveryIds && event.delivery_id === undefined) return event;
-    const owner = deliveryIds
-      ? [...pending.values()].find((request) => request.deliveryId === event.delivery_id)
-      : [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text);
-    if (!owner) return event;
-    const intent = owner.intent;
-    owner.intent = undefined;
-    return { ...event, ...(intent === undefined ? {} : { intent }) };
+    const identity = deliveryIdentity.match({
+      sessionId,
+      text: event.text,
+      deliveryId: event.delivery_id,
+      hasAttachments: event.attachments !== undefined && event.attachments.length > 0,
+      canMatchDeliveryId: canMatchDeliveryId(),
+    });
+    if (identity?.deliveryId !== undefined) return { ...event, delivery_id: identity.deliveryId };
+    if (identity?.intent !== undefined) return { ...event, intent: identity.intent };
+    return event;
   };
   const settle = (id: number, callback: (request: Pending) => void) => {
     const request = pending.get(id); if (!request) return;
-    pending.delete(id); if (request.timer) clearTimeout(request.timer); callback(request);
+    pending.delete(id); if (request.timer) clearTimeout(request.timer);
+    deliveryIdentity.settle(id);
+    callback(request);
   };
   const handleEvent = (message: TransportMessage) => {
     if (!message.params || typeof message.params !== "object") return store.dispatch(adapterError("event params are invalid"));
@@ -324,7 +332,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return;
     }
     const sessionStore = eventStore(session);
-    for (const event of fromZetaEvent(message.params).map(stampIntent)) sessionStore.dispatch(event);
+    for (const event of fromZetaEvent(message.params).map((item) => stampIntent(item, session))) sessionStore.dispatch(event);
   };
   const handleReply = (message: TransportMessage) => {
     if (message.id === null && message.error) {
@@ -356,6 +364,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const error = closeError?.(handshaken, code) ?? new Error("transport closed");
     closed = true;
     closedError = error;
+    deliveryIdentity.close();
     pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
     closeSignal(error);
     closeWaiters.forEach((reject) => reject(error));
@@ -375,8 +384,15 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
       const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" })));
-      const item: Pending = { resolve, reject, intent: requestOptions.intent, text: requestOptions.intent === undefined ? undefined : params.text, deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined };
+      const item: Pending = { resolve, reject };
       pending.set(id, item);
+      deliveryIdentity.track(id, {
+        method,
+        sessionId: typeof params.session_id === "string" ? params.session_id : undefined,
+        intent: requestOptions.intent,
+        text: params.text,
+        deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined,
+      });
       if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true });
       if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs);
       try { transport.send(JSON.stringify({ jsonrpc: "2.0", id, method, params })); }
@@ -441,6 +457,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     }
   };
   const request = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
+    if (method === "send_images" && typeof params.delivery_id === "string" && !canSendImagesDeliveryId()) {
+      params = { ...params };
+      delete params.delivery_id;
+    }
     if (hostCommandsEnabled() && (method === "new_session" || method === "resume")) return attach(method, params, requestOptions);
     const gate = ["send", "send_images", "steer"].includes(method) ? attachmentGates.get(params.session_id as string) : undefined;
     const result = gate ? gate.then(() => rawRequest(method, params, requestOptions)) : rawRequest(method, params, requestOptions);
@@ -448,9 +468,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return result.catch((error) => isHostBindingRequired(error) ? recoverHostBinding(method, params, requestOptions, error) : Promise.reject(error));
   };
   const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
-    const features = options.hostCommands
-      ? [...new Set([...(requestedFeatures ?? []), "session_host_commands"])]
-      : requestedFeatures;
+    const requested = new Set(requestedFeatures ?? []);
+    const features = [...new Set([...(requestedFeatures ?? []), ...(requested.has("delivery_id") ? ["send_images_delivery_id"] : []), ...(options.hostCommands ? ["session_host_commands"] : [])])];
     const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", ...(features ? { features } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => {
       handshaken = true;

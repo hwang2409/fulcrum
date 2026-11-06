@@ -92,6 +92,22 @@ test("keeps an image's history stub and passes unknown blocks through", () => {
   expect(history).toEqual([{ type: "message_commit", message_id: "h", message: { role: "assistant", content: [{ type: "text", text: "see" }, { type: "file", filename: "shot.png", size: 5 }] } }]);
 });
 
+test("malformed attachment containers do not drop the user message", () => {
+  for (const attachments of [null, "bad", 42, {}]) {
+    expect(fromZetaEvent({ event: "user_message", text: "keep me", mode: "send", attachments })).toEqual([
+      { type: "user_message", text: "keep me", mode: "send" },
+    ]);
+  }
+});
+
+test("a live user_message's attachments become file rows, as history's do", () => {
+  // zeta's echo of a send_images turn: each stored image by name, type, and size, never its bytes.
+  const attachments = [{ name: "circle.png", mime_type: "image/png", size: 2093 }, { size: 3 }];
+  expect(fromZetaEvent({ event: "user_message", text: "describe this", mode: "send", attachments })).toEqual([
+    { type: "user_message", text: "describe this", mode: "send", attachments: [{ type: "file", filename: "circle.png", mediaType: "image/png", size: 2093 }] },
+  ]);
+});
+
 test("usage keeps the token counts and drops the provider details zeta passes through", () => {
   // A real usage event from zeta serve with an anthropic model (session id removed): counts beside strings and objects.
   const usage = { input_tokens: 4, cache_creation_input_tokens: 97, cache_read_input_tokens: 6287, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 97 }, output_tokens: 189, service_tier: "standard", inference_geo: "global", speed: "standard", output_tokens_details: { thinking_tokens: 157 } };
@@ -103,6 +119,16 @@ test("usage treats malformed containers as empty maps and keeps only nonnegative
     expect(fromZetaEvent({ event: "usage", usage })).toEqual([{ type: "usage", usage: {} }]);
   }
   expect(fromZetaEvent({ event: "usage", usage: { zero: 0, negative: -1, nan: NaN, infinity: Infinity, good: 3 } })).toEqual([{ type: "usage", usage: { zero: 0, good: 3 } }]);
+});
+
+test("usage accepts an own constructor key and history usage cannot update calls", () => {
+  expect(fromZetaEvent({ event: "usage", usage: { constructor: null, input_tokens: 2 } })).toEqual([{ type: "usage", usage: { input_tokens: 2 } }]);
+  const events = fromZetaHistory([
+    { id: "call", role: "assistant", content: [{ type: "tool_use", tool_call: { id: "call", name: "bash", arguments: {} } }] },
+    { id: "u", role: "system", event: "usage", usage: { input_tokens: 2 }, tool_call: { id: "call", name: "injected", arguments: { x: 1 } }, content: [] },
+    { id: "result", role: "tool", tool_result: { tool_call_id: "call", content: "ok", is_error: false }, content: [] },
+  ]);
+  expect(events.at(-1)).toMatchObject({ type: "tool_end", tool_call: { name: "bash" } });
 });
 
 test("history usage rows use the live usage mapping", () => {

@@ -532,6 +532,235 @@ test("negotiated delivery ids match echoes by id, not text", async () => {
   expect(users.map(({ id }) => id)).toEqual(["user:intent:second", "user:delivery:unknown", "user:intent:first"]);
 });
 
+test("send_images keeps delivery ids only when its feature is negotiated", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello(["delivery_id", "user_message_event", "user_message_delivery_id"]);
+  expect(fake.sent[0]?.params.features).toContain("send_images_delivery_id");
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id", "send_images_delivery_id"] } } });
+  await hello;
+  const sending = client.request("send_images", { text: "with id", delivery_id: "image-delivery", images: [] }, { intent: "image-intent" });
+  expect(fake.sent.at(-1)?.params).toMatchObject({ delivery_id: "image-delivery" });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "with id", mode: "send", delivery_id: "image-delivery", attachments: [{ name: "x.png" }] } });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  await sending;
+  expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:image-intent"]);
+});
+
+test("an id-less send_images echo uses text intent fallback without duplicating delivery", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello(["delivery_id", "user_message_event", "user_message_delivery_id"]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id"] } } });
+  await hello;
+  const sending = client.request("send_images", { text: "look", images: [], delivery_id: "image-delivery" }, { intent: "image-intent" });
+  expect(fake.sent.at(-1)?.params).not.toHaveProperty("delivery_id");
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "look", mode: "send", attachments: [{ name: "x.png" }] } });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  await sending;
+  expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:image-intent"]);
+});
+
+test("an id-less image echo selects send_images over a same-text send", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello(["delivery_id", "user_message_event", "user_message_delivery_id"]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id"] } } });
+  await hello;
+  const text = client.request("send", { text: "same", delivery_id: "text-delivery" }, { intent: "text-intent" });
+  const image = client.request("send_images", { text: "same", delivery_id: "image-delivery", images: [] }, { intent: "image-intent" });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "same", mode: "send", attachments: [{ name: "x.png", mime_type: "image/png", size: 1 }] } });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "same", mode: "send", delivery_id: "text-delivery" } });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  fake.receive({ jsonrpc: "2.0", id: 3, result: { accepted: true } });
+  await Promise.all([text, image]);
+  expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:image-intent", "user:intent:text-intent"]);
+});
+
+test("a late id-less image echo merges into its reconciled delivery row", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const hello = client.hello(["delivery_id", "user_message_event", "user_message_delivery_id"]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: ["delivery_id", "user_message_event", "user_message_delivery_id", "send_images_delivery_id"] } } });
+  await hello;
+  const sending = client.request("send_images", { text: "late", delivery_id: "late-delivery", images: [] }, { intent: "late-intent" });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "late", mode: "send", delivery_id: "late-delivery" } });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  await sending;
+  const echo = { jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "late", mode: "send", attachments: [{ name: "x.png", mime_type: "image/png", size: 1 }] } };
+  fake.receive(echo);
+  fake.receive(echo);
+  const users = client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user");
+  expect(users.map(({ id }) => id)).toEqual(["user:intent:late-intent"]);
+  expect(client.forSession("s").store.getItem("user:intent:late-intent")).toMatchObject({ event: { attachments: [{ filename: "x.png" }] } });
+});
+
+test("send_images delivery ids require both negotiated request features", async () => {
+  for (const features of [["delivery_id"], ["send_images_delivery_id"]]) {
+    const fake = fakeTransport();
+    const client = connect(fake.transport);
+    const ready = client.hello(features);
+    expect(fake.sent[0]?.params.features).toEqual(features.includes("delivery_id") ? ["delivery_id", "send_images_delivery_id"] : features);
+    fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+    await ready;
+    const sending = client.request("send_images", { session_id: "s", text: "partial", images: [], delivery_id: "partial-id" });
+    expect(fake.sent.at(-1)?.params).not.toHaveProperty("delivery_id");
+    fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+    await sending;
+  }
+});
+
+test("default hello does not request send_images delivery ids", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const ready = client.hello();
+  expect(fake.sent[0]?.params.features).toEqual([]);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: [] } } });
+  await ready;
+});
+
+test("send_images keeps delivery ids with the two request features", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const features = ["delivery_id", "send_images_delivery_id"];
+  const ready = client.hello(features);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+  await ready;
+  const sending = client.request("send_images", { session_id: "s", text: "minimal", images: [], delivery_id: "minimal-id" });
+  expect(fake.sent.at(-1)?.params).toMatchObject({ delivery_id: "minimal-id" });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  await sending;
+});
+
+test("delivery echo ids pair requests only when the echo carries an id", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const features = ["delivery_id", "user_message_event", "user_message_delivery_id"];
+  const ready = client.hello(features);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+  await ready;
+  const first = client.request("send", { session_id: "s", text: "same", delivery_id: "first-id" }, { intent: "first" });
+  const second = client.request("send", { session_id: "s", text: "same", delivery_id: "second-id" }, { intent: "second" });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "same", mode: "send", delivery_id: "second-id" } });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "user_message", session_id: "s", text: "same", mode: "send" } });
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  fake.receive({ jsonrpc: "2.0", id: 3, result: { accepted: true } });
+  await Promise.all([first, second]);
+  expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual([
+    "user:intent:second", "user:intent:first",
+  ]);
+});
+
+const imageEcho = (sessionId: string, text: string, deliveryId?: string) => ({
+  jsonrpc: "2.0", method: "event", params: {
+    event: "user_message", session_id: sessionId, text, mode: "send",
+    ...(deliveryId === undefined ? {} : { delivery_id: deliveryId }),
+    attachments: [{ name: "x.png", mime_type: "image/png", size: 1 }],
+  },
+});
+
+async function settleImage(fake: ReturnType<typeof fakeTransport>, client: ReturnType<typeof createClient>, id: number, sessionId: string, text: string, deliveryId: string) {
+  const sending = client.request("send_images", { session_id: sessionId, text, images: [], delivery_id: deliveryId }, { intent: `${sessionId}-intent` });
+  fake.receive(imageEcho(sessionId, text, deliveryId));
+  fake.receive({ jsonrpc: "2.0", id, result: { accepted: true } });
+  await sending;
+}
+
+test("pending image fallback is isolated between sessions with the same text", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const features = ["delivery_id", "user_message_event", "user_message_delivery_id"];
+  const ready = client.hello(features);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+  await ready;
+  const a = client.request("send_images", { session_id: "a", text: "same", images: [] }, { intent: "a-intent" });
+  const b = client.request("send_images", { session_id: "b", text: "same", images: [] }, { intent: "b-intent" });
+  fake.receive(imageEcho("b", "same"));
+  fake.receive(imageEcho("a", "same"));
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  fake.receive({ jsonrpc: "2.0", id: 3, result: { accepted: true } });
+  await Promise.all([a, b]);
+  expect(client.forSession("a").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:a-intent"]);
+  expect(client.forSession("b").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:b-intent"]);
+});
+
+test("late image fallback is isolated between sessions with the same text", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const features = ["delivery_id", "user_message_event", "user_message_delivery_id", "send_images_delivery_id"];
+  const ready = client.hello(features);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+  await ready;
+  await settleImage(fake, client, 2, "a", "same", "a-id");
+  await settleImage(fake, client, 3, "b", "same", "b-id");
+  fake.receive(imageEcho("b", "same"));
+  expect(client.forSession("b").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:b-intent"]);
+});
+
+test("evicting a session prevents reuse of its settled image delivery", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const features = ["delivery_id", "user_message_event", "user_message_delivery_id", "send_images_delivery_id"];
+  const ready = client.hello(features);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+  await ready;
+  await settleImage(fake, client, 2, "s", "reuse", "old-id");
+  expect(client.evictSession("s")).toBe(true);
+  fake.receive(imageEcho("s", "reuse"));
+  expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toHaveLength(1);
+  expect(client.forSession("s").store.getOutline()[0]?.id).not.toContain("old-id");
+});
+
+test("closing with pending requests clears retained image delivery metadata", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const features = ["delivery_id", "user_message_event", "user_message_delivery_id", "send_images_delivery_id"];
+  const ready = client.hello(features);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+  await ready;
+  const sending = client.request("send_images", { session_id: "s", text: "pending", images: [], delivery_id: "pending-id" }, { intent: "pending-intent" });
+  fake.receive(imageEcho("s", "pending", "pending-id"));
+  client.close();
+  await expect(sending).rejects.toThrow("transport closed");
+  fake.receive(imageEcho("s", "pending"));
+  expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toHaveLength(2);
+});
+
+test("text request pressure does not evict a live image fallback", async () => {
+  const fake = fakeTransport();
+  const client = createClient(fake.transport, undefined, undefined, { maxPendingRequests: 2 });
+  const features = ["delivery_id", "user_message_event", "user_message_delivery_id", "send_images_delivery_id"];
+  const ready = client.hello(features);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+  await ready;
+  await settleImage(fake, client, 2, "s", "image", "image-id");
+  for (const [id, deliveryId] of [[3, "text-1"], [4, "text-2"]] as const) {
+    const sending = client.request("send", { session_id: "s", text: deliveryId, delivery_id: deliveryId });
+    fake.receive({ jsonrpc: "2.0", id, result: { accepted: true } });
+    await sending;
+  }
+  fake.receive(imageEcho("s", "image"));
+  expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:s-intent"]);
+});
+
+test("settled image delivery fallback expires after five minutes", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = fakeTransport();
+    const client = connect(fake.transport);
+    const features = ["delivery_id", "user_message_event", "user_message_delivery_id", "send_images_delivery_id"];
+    const ready = client.hello(features);
+    fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+    await ready;
+    await settleImage(fake, client, 2, "s", "expires", "expires-id");
+    jest.advanceTimersByTime(5 * 60 * 1000 + 1);
+    fake.receive(imageEcho("s", "expires"));
+    expect(client.forSession("s").store.getOutline().filter((entry) => entry.kind === "user")).toHaveLength(2);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 test("an echoed user_message gets the intent of the pending request with the same text, never another one", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);
