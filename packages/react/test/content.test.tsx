@@ -58,6 +58,14 @@ test("a user message keeps its decorative prompt separate from its content", () 
   expect(q('[data-part="message-content"]').style.whiteSpace).toBe("pre-wrap");
 });
 
+test("plain assistant text keeps the prior direct text-node DOM", () => {
+  render([commit([{ type: "text", text: "hello" }])], { markdown: false });
+  const message = q('[data-part="message"]');
+  expect(message.childNodes).toHaveLength(1);
+  expect(message.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+  expect(message.innerHTML).toBe("hello");
+});
+
 test("empty text does not precede the first rendered content block", () => {
   render([commit([{ type: "text", text: "" }, { type: "file", kind: "file", filename: "a.png" }], "user")]);
   expect(q('[data-part="message-content"]').firstElementChild?.getAttribute("data-part")).toBe("file");

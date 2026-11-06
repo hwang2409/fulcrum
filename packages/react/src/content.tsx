@@ -4,6 +4,7 @@ import { useItem, useMedia } from "./hooks.js";
 import type { ItemProps } from "./parts.js";
 import { boundText, bytes, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { CopyButton, TextViewer, type TextFormat } from "./tools/text-viewer.js";
+import { UserMessageContent } from "./user-message.js";
 
 export type MarkdownContentProps = { id: string; source: string; streaming: boolean };
 /** What every block renderer gets, the default ones and a host's own. */
@@ -65,6 +66,7 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
   if (item?.type !== "message") return null;
   const Rich = Markdown && (markdownFor === "all" || item.message.role === "assistant") ? Markdown : undefined;
   const parts = messageParts(item);
+  const user = item.message.role === "user";
   const content = parts.map(({ index, block }, position) => {
     const streaming = item.active && position === parts.length - 1;
     // The first block keeps the message id, so a plain text message renders exactly as it did before blocks.
@@ -74,9 +76,9 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
     if (block.type !== "text") return <UnknownBlock key={index} block={block} id={blockId} streaming={streaming} />;
     const text = String(block.text);
     if (!text) return null;
-    return Rich ? <Rich key={index} id={blockId} source={text} streaming={streaming} /> : <span key={index}>{text}</span>;
+    if (Rich) return <Rich key={index} id={blockId} source={text} streaming={streaming} />;
+    return user ? <span key={index}>{text}</span> : <Fragment key={index}>{text}</Fragment>;
   });
-  const user = item.message.role === "user";
   return (
     <div
       className={className}
@@ -88,7 +90,7 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
       data-state={item.active ? "streaming" : "done"}
       data-format={Rich ? "markdown" : "text"}
     >
-      {user ? <><span data-part="message-prompt" aria-hidden="true">{"> "}</span><div data-part="message-content" style={Rich ? undefined : pre}>{content}</div></> : content}
+      {user ? <UserMessageContent style={Rich ? undefined : pre}>{content}</UserMessageContent> : content}
     </div>
   );
 });

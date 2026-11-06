@@ -130,7 +130,8 @@
   font-size: 14px;
   font-weight: 600;
 }
-[data-part="message"][data-role="user"] {
+[data-part="message"][data-role="user"],
+[data-part="item"][data-kind="user"] {
   display: grid;
   grid-template-columns: 2ch minmax(0, 1fr);
   align-items: first baseline;

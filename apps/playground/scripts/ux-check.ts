@@ -124,118 +124,120 @@ async function checkNarrowHead(browser: Browser, port: number): Promise<string[]
 type UserGeometry = {
   promptX: number; promptTop: number; promptBaseline: number; firstBaseline?: number; mediaTop?: number;
   lines: { x: number; top: number; right: number }[]; contentRight: number; height: number; probedHeight: number;
-  cursor?: { x: number; top: number; width: number }; file?: { indent: string; label: number; labelRight: number; name: number };
+  cursor?: { x: number; top: number; width: number }; file?: { indent: string; label: number; labelRight: number; name: number; bottom: number };
 };
 
-/**
- * Where a user message puts its prompt mark, text lines, streaming cursor, and file row. The cursor and a code fence's
- * language caption are pseudo-elements, so the probe swaps them for real spans. A zero-height inline span marks a baseline.
- */
-async function measureUser(page: Page, id: string, nth: number, streaming: boolean, probe?: "root-14" | "root-18" | "padding"): Promise<UserGeometry> {
-  const message = page.locator(`#${id} [data-part=message][data-role=user]`).nth(nth);
-  await message.waitFor();
-  // Measured in a fallback font, a line can fill up differently and push the cursor down.
-  await page.evaluate(() => document.fonts.ready);
-  return message.evaluate((node, { streaming, probe }) => {
-    if (probe?.startsWith("root-")) document.documentElement.style.fontSize = `${probe.slice(5)}px`;
-    if (probe === "padding") {
-      const style = document.createElement("style");
-      style.textContent = '[data-part="file"] { padding: 10px 16px 9px 14px; } [data-part="md-table"] :is(th, td) { padding: 8px 16px; } [data-part="md-code-block"] { padding: 16px; }';
-      document.head.append(style);
-    }
-    if (streaming) node.dataset.state = "streaming";
-    const active = node.dataset.state === "streaming";
-    const height = node.getBoundingClientRect().height;
-    // A real span in place of a pseudo-element, with the same box: same content, display, float, size, and margins.
-    const stand = (owner: HTMLElement, pseudo: "::before" | "::after") => {
-      const from = getComputedStyle(owner, pseudo);
-      const span = document.createElement("span");
-      const attr = from.content.match(/^attr\((.+)\)$/)?.[1];
-      span.textContent = attr ? owner.getAttribute(attr) : from.content === "none" || from.content === "normal" ? "" : JSON.parse(from.content);
-      for (const name of ["display", "float", "width", "height", "margin-left", "margin-right", "margin-top", "margin-bottom", "vertical-align", "font-size", "font-weight", "line-height"]) span.style.setProperty(name, from.getPropertyValue(name));
-      return span;
-    };
-    const baseline = (before: Node) => {
-      const mark = document.createElement("span");
-      mark.style.cssText = "display: inline-block; width: 0; height: 0";
-      before.parentNode!.insertBefore(mark, before);
-      return mark.getBoundingClientRect().bottom;
-    };
-    const content = node.querySelector<HTMLElement>("[data-part=message-content]")!;
-    const prompt = node.querySelector<HTMLElement>("[data-part=message-prompt]")!;
-    const cursor = stand(content, "::after");
+type UserProbe = { streaming: boolean; probe?: "root-14" | "root-18" | "padding" };
+
+function prepareUserProbe(node: HTMLElement, { streaming, probe }: UserProbe) {
+  if (probe?.startsWith("root-")) document.documentElement.style.fontSize = `${probe.slice(5)}px`;
+  if (probe === "padding") {
     const style = document.createElement("style");
-    // The prompt span takes the first child's place, so the first block keeps the first child's zero top margin.
-    style.textContent = "[data-probed]::before, [data-probed]::after { content: none !important; }";
+    style.textContent = '[data-part="file"] { padding: 10px 16px 9px 14px; } [data-part="md-table"] :is(th, td) { padding: 8px 16px; } [data-part="md-code-block"] { padding: 16px; }';
     document.head.append(style);
-    // The first visible text: a text node with glyphs, or a block's text drawn by ::before (a fence's language). A
-    // large fence's head draws the prompt the same way.
-    const firstText = () => {
-      const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
-      for (let at = walker.nextNode(); at; at = walker.nextNode()) {
-        if (!(at instanceof HTMLElement)) {
-          if (at.textContent!.trim()) return at;
-          continue;
-        }
-        const caption = stand(at, "::before");
-        if (!caption.textContent || getComputedStyle(at, "::before").display === "none") continue;
-        at.dataset.probed = "";
-        at.prepend(caption);
-        return caption.firstChild!;
-      }
-    };
-    const first = firstText();
-    const firstBlock = [...content.children].find((child) => getComputedStyle(child).position !== "absolute");
-    const media = firstBlock?.matches("[data-part=image]") ? firstBlock.querySelector(":is([data-part=image-open], [data-part=image-placeholder])") : null;
-    content.dataset.probed = "";
-    if (active) content.append(cursor);
-    const range = document.createRange();
-    const textLines = () => {
-      const rects: DOMRect[] = [];
-      const texts = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
-      for (let text = texts.nextNode(); text; text = texts.nextNode()) {
-        if (text.parentElement === prompt || text.parentElement?.closest("[data-part=file]")) continue;
-        // Inline code is a padded chip: the chip's box, not its glyphs, starts at the line's edge.
-        const code = text.parentElement?.closest("code");
-        range.selectNodeContents(text);
-        rects.push(...[...(code ?? range).getClientRects()].filter((rect) => rect.width > 0));
-      }
-      // One line per run of rects whose middles share a band: inline code and bold sit a little higher or lower.
-      const lines: { x: number; top: number; bottom: number; right: number }[] = [];
-      for (const rect of rects.sort((a, b) => a.top - b.top)) {
-        const middle = (rect.top + rect.bottom) / 2;
-        const line = lines.find((line) => middle > line.top && middle < line.bottom);
-        if (!line) lines.push({ x: rect.left, top: rect.top, bottom: rect.bottom, right: rect.right });
-        else Object.assign(line, { x: Math.min(line.x, rect.left), right: Math.max(line.right, rect.right) });
-      }
-      return lines;
-    };
-    const lines = textLines();
-    // The glyph box of the prompt, like the text lines', not its line box.
-    range.selectNodeContents(prompt);
-    const box = range.getBoundingClientRect();
-    const promptBaseline = baseline(prompt.firstChild!);
-    const firstBaseline = media ? undefined : first ? baseline(first) : active ? baseline(cursor) : undefined;
-    const file = node.querySelector<HTMLElement>("[data-part=file]");
-    const label = file?.querySelector<HTMLElement>("[data-part=block-label]")?.getBoundingClientRect();
-    const name = file?.querySelector<HTMLElement>("[data-part=file-name]");
-    const nameRange = document.createRange();
-    if (name) nameRange.selectNodeContents(name);
-    const cursorBox = active ? cursor.getBoundingClientRect() : undefined;
-    return {
-      promptX: box.left,
-      promptTop: prompt.getBoundingClientRect().top,
-      promptBaseline,
-      firstBaseline,
-      mediaTop: media?.getBoundingClientRect().top,
-      lines: lines.map(({ x, top, right }) => ({ x, top, right })),
-      contentRight: content.getBoundingClientRect().right - parseFloat(getComputedStyle(content).paddingRight),
-      height,
-      probedHeight: active && !first ? height : node.getBoundingClientRect().height,
-      cursor: cursorBox && { x: cursorBox.left, top: cursorBox.top, width: cursorBox.width },
-      file: file && label && name ? { indent: getComputedStyle(file).textIndent, label: label.left, labelRight: label.right, name: nameRange.getBoundingClientRect().left } : undefined,
-    };
-  }, { streaming, probe });
+  }
+  if (streaming) node.dataset.state = "streaming";
+  node.dataset.probeHeight = String(node.getBoundingClientRect().height);
+  const content = node.querySelector<HTMLElement>("[data-part=message-content]")!;
+  const prompt = node.querySelector<HTMLElement>("[data-part=message-prompt]")!;
+  const stand = (owner: HTMLElement, pseudo: "::before" | "::after") => {
+    const from = getComputedStyle(owner, pseudo);
+    const span = document.createElement("span");
+    const attr = from.content.match(/^attr\((.+)\)$/)?.[1];
+    span.textContent = attr ? owner.getAttribute(attr) : from.content === "none" || from.content === "normal" ? "" : JSON.parse(from.content);
+    for (const name of ["display", "float", "width", "height", "margin-left", "margin-right", "margin-top", "margin-bottom", "vertical-align", "font-size", "font-weight", "line-height"]) span.style.setProperty(name, from.getPropertyValue(name));
+    return span;
+  };
+  const cursor = stand(content, "::after");
+  cursor.dataset.probeCursor = "";
+  const style = document.createElement("style");
+  style.textContent = "[data-probed]::before, [data-probed]::after { content: none !important; }";
+  document.head.append(style);
+  const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  let first: Node | undefined;
+  for (let at = walker.nextNode(); at; at = walker.nextNode()) {
+    if (!(at instanceof HTMLElement)) {
+      if (at.textContent!.trim()) { first = at; break; }
+      continue;
+    }
+    const caption = stand(at, "::before");
+    if (!caption.textContent || getComputedStyle(at, "::before").display === "none") continue;
+    at.dataset.probed = "";
+    at.prepend(caption);
+    first = caption.firstChild!;
+    break;
+  }
+  content.dataset.probed = "";
+  node.dataset.probeEmpty = String(!first);
+  if (node.dataset.state === "streaming") content.append(cursor);
+}
+
+function readUserGeometry(node: HTMLElement): UserGeometry {
+  const content = node.querySelector<HTMLElement>("[data-part=message-content]")!;
+  const prompt = node.querySelector<HTMLElement>("[data-part=message-prompt]")!;
+  const range = document.createRange();
+  const rects: DOMRect[] = [];
+  const texts = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+  for (let text = texts.nextNode(); text; text = texts.nextNode()) {
+    if (text.parentElement === prompt || text.parentElement?.closest("[data-part=file]")) continue;
+    const code = text.parentElement?.closest("code");
+    range.selectNodeContents(text);
+    rects.push(...[...(code ?? range).getClientRects()].filter((rect) => rect.width > 0));
+  }
+  const lines: { x: number; top: number; bottom: number; right: number }[] = [];
+  for (const rect of rects.sort((a, b) => a.top - b.top)) {
+    const middle = (rect.top + rect.bottom) / 2;
+    const line = lines.find((line) => middle > line.top && middle < line.bottom);
+    if (!line) lines.push({ x: rect.left, top: rect.top, bottom: rect.bottom, right: rect.right });
+    else Object.assign(line, { x: Math.min(line.x, rect.left), right: Math.max(line.right, rect.right) });
+  }
+  range.selectNodeContents(prompt);
+  const box = range.getBoundingClientRect();
+  const firstText = () => {
+    const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+    for (let at = walker.nextNode(); at; at = walker.nextNode()) if (at.textContent!.trim()) return at;
+  };
+  const first = firstText();
+  const firstBlock = [...content.children].find((child) => getComputedStyle(child).position !== "absolute");
+  const media = firstBlock?.matches("[data-part=image]") ? firstBlock.querySelector(":is([data-part=image-open], [data-part=image-placeholder])") : null;
+  const baseline = (before: Node) => {
+    const mark = document.createElement("span");
+    mark.style.cssText = "display: inline-block; width: 0; height: 0";
+    before.parentNode!.insertBefore(mark, before);
+    return mark.getBoundingClientRect().bottom;
+  };
+  const cursorNode = node.querySelector<HTMLElement>("[data-probe-cursor]");
+  const promptBaseline = baseline(prompt.firstChild!);
+  const firstBaseline = media ? undefined : first ? baseline(first) : cursorNode ? baseline(cursorNode) : undefined;
+  const file = node.querySelector<HTMLElement>("[data-part=file]");
+  const label = file?.querySelector<HTMLElement>("[data-part=block-label]")?.getBoundingClientRect();
+  const name = file?.querySelector<HTMLElement>("[data-part=file-name]");
+  const nameRange = document.createRange();
+  if (name) nameRange.selectNodeContents(name);
+  const cursor = cursorNode?.getBoundingClientRect();
+  const height = Number(node.dataset.probeHeight);
+  return {
+    promptX: box.left,
+    promptTop: prompt.getBoundingClientRect().top,
+    promptBaseline,
+    firstBaseline,
+    mediaTop: media?.getBoundingClientRect().top,
+    lines: lines.map(({ x, top, right }) => ({ x, top, right })),
+    contentRight: content.getBoundingClientRect().right - parseFloat(getComputedStyle(content).paddingRight),
+    height,
+    probedHeight: node.dataset.state === "streaming" && node.dataset.probeEmpty === "true" ? height : node.getBoundingClientRect().height,
+    cursor: cursor && { x: cursor.left, top: cursor.top, width: cursor.width },
+    file: file && label && name ? { indent: getComputedStyle(file).textIndent, label: label.left, labelRight: label.right, name: nameRange.getBoundingClientRect().left, bottom: file.getBoundingClientRect().bottom - node.getBoundingClientRect().top } : undefined,
+  };
+}
+
+/** Where a user message puts its prompt mark, text lines, streaming cursor, and file row. */
+async function measureUser(page: Page, id: string, nth: number, streaming: boolean, probe?: UserProbe["probe"]): Promise<UserGeometry> {
+  const message = page.locator(`#${id} :is([data-part=message][data-role=user], [data-part=item][data-kind=user])`).nth(nth);
+  await message.waitFor();
+  await page.evaluate(() => document.fonts.ready.then(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))));
+  await message.evaluate(prepareUserProbe, { streaming, probe });
+  return message.evaluate(readUserGeometry);
 }
 
 /** A text message: every text line at one text edge right of the prompt, the cursor at the end of the last line. */
@@ -267,13 +269,15 @@ function checkUserCase(at: string, geometry: UserGeometry): string[] {
     if (parseFloat(file.indent) !== 0) failures.push(`${at}: the file row inherits text-indent ${file.indent}`);
     if (file.labelRight > file.name) failures.push(`${at}: the file row label overlaps the file name`);
     if (file.label < promptX) failures.push(`${at}: the file row starts left of the prompt column`);
+    if (file.bottom > height + 0.5) failures.push(`${at}: the file row extends ${file.bottom.toFixed(2)} px from the top of a ${height.toFixed(2)} px user row`);
   }
   return failures;
 }
 
-type UserCase = { id: string; nth?: number; name?: string; streaming?: boolean; text?: boolean; probe?: "root-14" | "root-18" | "padding" };
+type UserCase = { id: string; nth?: number; name?: string; streaming?: boolean; text?: boolean; wraps?: boolean; probe?: "root-14" | "root-18" | "padding" };
 const firstBlocks = ["h1", "h2", "list", "blockquote", "code fence", "plain code fence", "large code fence", "table", "attachment only", "image only", "source", "reasoning", "empty text then file"];
 const userCases: UserCase[] = [
+  { id: "fallback-user", name: "Fallback user row", text: true, wraps: true },
   { id: "message-user-role", text: true }, { id: "message-user-long", text: true }, { id: "message-user-role", streaming: true, text: true },
   { id: "message-user-long", streaming: true, text: true }, { id: "message-user-markdown", text: true }, { id: "user-block-indent", text: true },
   ...firstBlocks.map((name, nth) => ({ id: "user-first-blocks", nth, name })),
@@ -295,9 +299,13 @@ async function checkPromptSemantics(page: Page): Promise<string[]> {
     return text;
   }));
   if (copied.some((text) => text.startsWith("> "))) failures.push("user prompt is included in selection/copy");
-  const cdp = await page.context().newCDPSession(page);
-  const tree = await cdp.send("Accessibility.getFullAXTree") as { nodes: { name?: { value?: string } }[] };
-  if (tree.nodes.some((node) => node.name?.value?.trim() === ">")) failures.push('accessibility tree exposes the decorative "> " prompt');
+  if (page.context().browser()?.browserType().name() === "chromium") {
+    const cdp = await page.context().newCDPSession(page);
+    const tree = await cdp.send("Accessibility.getFullAXTree") as { nodes: { name?: { value?: string } }[] };
+    if (tree.nodes.some((node) => node.name?.value?.trim() === ">")) failures.push('accessibility tree exposes the decorative "> " prompt');
+  } else if ((await page.locator("#user-first-blocks").ariaSnapshot()).split("\n").some((line) => line.trim() === '- text: "> "')) {
+    failures.push('accessibility tree exposes the decorative "> " prompt');
+  }
   return failures;
 }
 
@@ -308,12 +316,12 @@ async function checkUserLayout(browser: Browser, port: number): Promise<string[]
   const output = process.env.SCREENSHOT_DIR ?? "/tmp/fulcrum-user-layout";
   await Bun.$`mkdir -p ${output}`;
   const matrix = ["light", "dracula", "gruvbox-dark"].flatMap((theme) => [1440, 390].flatMap((width) => userCases.map((test) => ({ theme, width, test }))));
-  for (const { theme, width, test: { id, nth = 0, name = id, streaming = false, text, probe } } of matrix) {
+  for (const { theme, width, test: { id, nth = 0, name = id, streaming = false, text, wraps = id === "message-user-long", probe } } of matrix) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
     await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
     const at = `user layout @ ${theme} ${width}: ${name}${streaming ? " streaming" : ""}`;
     const geometry = await measureUser(page, id, nth, streaming, probe);
-    failures.push(...checkUserCase(at, geometry), ...(text ? checkTextLines(at, geometry, id === "message-user-long") : []));
+    failures.push(...checkUserCase(at, geometry), ...(text ? checkTextLines(at, geometry, wraps) : []));
     if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ theme, width, name, streaming, probe, ...geometry, lines: geometry.lines.length }));
     await page.close();
   }

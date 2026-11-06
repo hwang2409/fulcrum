@@ -10,6 +10,7 @@ import { SubAgent, subAgentLabel, subAgentStatusText } from "./sub-agent.js";
 import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
 import { Message, ToolResultBlocks } from "./content.js";
+import { UserMessageContent } from "./user-message.js";
 
 export type ItemProps = { id: string; className?: string };
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
@@ -356,11 +357,12 @@ export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
   // An "aborted" error is the user's own stop: a neutral row, not a failure.
   const stopped = item.type === "error" && item.event.type === "error" && item.event.error.code === "aborted";
   const kind = stopped ? "stopped" : item.type;
+  const user = item.type === "user" && item.event.type === "user_message";
   const attachments = item.type === "user" && item.event.type === "user_message" ? item.event.attachments : undefined;
+  const content = <>{stopped ? "stopped" : itemLabel(item)}{attachments?.length ? <ToolResultBlocks id={id} blocks={attachments} /> : null}</>;
   return (
     <div className={className} style={pre} data-part="item" data-kind={kind} data-id={id} data-state={stopped ? "stopped" : item.type === "error" ? "error" : "done"}>
-      {stopped ? "stopped" : itemLabel(item)}
-      {attachments?.length ? <ToolResultBlocks id={id} blocks={attachments} /> : null}
+      {user ? <UserMessageContent style={pre}>{content}</UserMessageContent> : content}
     </div>
   );
 });

@@ -788,8 +788,13 @@ export const demos: Demo[] = [
     id: "fallback-user",
     part: "Fallback",
     title: "user message",
-    description: "A user_message event (kind \"user\").",
-    events: [{ type: "user_message", text: "Why does the playground build fail on CI?", mode: "default" }],
+    description: "A wrapping user_message event (kind \"user\") with an attachment.",
+    events: [{
+      type: "user_message",
+      text: "Why does the playground build fail on CI after the dependency cache is restored on a fresh runner, while the same command passes locally with the locked Bun version and a clean install? Please compare the generated package output, compiler diagnostics, and environment settings before changing any dependency versions.",
+      mode: "default",
+      attachments: [{ type: "file", kind: "file", filename: "ci-build.log", mediaType: "text/plain", size: 12_345 }],
+    }],
   },
   {
     id: "fallback-error",
