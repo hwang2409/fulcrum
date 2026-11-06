@@ -64,26 +64,33 @@ export class ReferenceDefinitionParser {
   endLine(context: ResolvedLineContext): ReferenceDisposition {
     if (this.isDone()) return this.disposition();
     if (context.blank || !context.continuation) return this.finishAtBoundary();
-    if (this.state === "label") {
-      if (!this.addLabel("\n")) return this.disposition();
-    } else if (this.state === "before-destination" || this.state === "destination-start") {
-      if (this.destinationLines) return this.reject();
-      this.state = "destination-start";
-    } else if (this.state === "destination-bare") {
-      if (this.destinationDepth) return this.reject();
-      this.destinationLines = this.lineCount;
-      this.state = "await-title-line";
-    } else if (this.state === "after-destination") {
-      this.destinationLines ||= this.lineCount;
-      this.state = "await-title-line";
-    } else if (this.state === "title") {
-      this.title.push("\n");
-    } else if (this.state === "title-closed") {
-      this.definitionLines = this.lineCount;
-      this.state = "definition";
-      return this.disposition();
-    } else {
-      return this.rejectOrRollback();
+    switch (this.state) {
+      case "label":
+        if (!this.addLabel("\n")) return this.disposition();
+        break;
+      case "before-destination":
+      case "destination-start":
+        if (this.destinationLines) return this.reject();
+        this.state = "destination-start";
+        break;
+      case "destination-bare":
+        if (this.destinationDepth) return this.reject();
+        this.destinationLines = this.lineCount;
+        this.state = "await-title-line";
+        break;
+      case "after-destination":
+        this.destinationLines ||= this.lineCount;
+        this.state = "await-title-line";
+        break;
+      case "title":
+        this.title.push("\n");
+        break;
+      case "title-closed":
+        this.definitionLines = this.lineCount;
+        this.state = "definition";
+        return this.disposition();
+      default:
+        return this.rejectOrRollback();
     }
     this.lineCount++;
     return this.disposition();
@@ -129,18 +136,21 @@ export class ReferenceDefinitionParser {
   }
 
   private advance(character: string) {
-    if (this.state === "indent") this.advanceIndent(character);
-    else if (this.state === "label") this.advanceLabel(character);
-    else if (this.state === "after-label") this.state = character === ":" ? "before-destination" : "rejected";
-    else if (this.state === "before-destination") this.advanceBeforeDestination(character);
-    else if (this.state === "destination-start") {
-      if (character !== " " && character !== "\t") this.startDestination(character);
+    switch (this.state) {
+      case "indent": return this.advanceIndent(character);
+      case "label": return this.advanceLabel(character);
+      case "after-label": this.state = character === ":" ? "before-destination" : "rejected"; return;
+      case "before-destination": return this.advanceBeforeDestination(character);
+      case "destination-start":
+        if (character !== " " && character !== "\t") this.startDestination(character);
+        return;
+      case "destination-angle": return this.advanceAngleDestination(character);
+      case "destination-bare": return this.advanceBareDestination(character);
+      case "after-destination": return this.advanceAfterDestination(character);
+      case "title": return this.advanceTitle(character);
+      case "title-closed":
+        if (character !== " " && character !== "\t") this.rejectOrRollback();
     }
-    else if (this.state === "destination-angle") this.advanceAngleDestination(character);
-    else if (this.state === "destination-bare") this.advanceBareDestination(character);
-    else if (this.state === "after-destination") this.advanceAfterDestination(character);
-    else if (this.state === "title") this.advanceTitle(character);
-    else if (this.state === "title-closed" && character !== " " && character !== "\t") this.rejectOrRollback();
   }
 
   private advanceIndent(character: string) {
@@ -213,15 +223,7 @@ export class ReferenceDefinitionParser {
   }
 
   private advanceBareDestination(character: string) {
-    if (this.escaped) {
-      if (character === " ") {
-        this.state = "rejected";
-        return;
-      }
-      this.escaped = false;
-      this.destination.push(character);
-      return;
-    }
+    if (this.advanceEscapedBare(character)) return;
     if (character === "\\") {
       this.escaped = true;
       this.destination.push(character);
@@ -247,6 +249,16 @@ export class ReferenceDefinitionParser {
       this.destinationDepth--;
     }
     this.destination.push(character);
+  }
+
+  private advanceEscapedBare(character: string) {
+    if (!this.escaped) return false;
+    if (character === " ") this.state = "rejected";
+    else {
+      this.escaped = false;
+      this.destination.push(character);
+    }
+    return true;
   }
 
   private advanceAfterDestination(character: string) {
