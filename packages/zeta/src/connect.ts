@@ -6,6 +6,7 @@ export type ZetaErrorKind =
   | "connect_failed"
   | "busy"
   | "version_mismatch"
+  | "role_mismatch"
   | "closed";
 
 const connectFailedMessage =
@@ -14,7 +15,7 @@ const connectFailedMessage =
 export class ZetaError extends Error {
   readonly name = "ZetaError";
   constructor(readonly kind: ZetaErrorKind, readonly code?: number) {
-    super(kind === "connect_failed" ? connectFailedMessage : kind === "closed" ? `zeta websocket closed (${code})` : kind);
+    super(kind === "connect_failed" ? connectFailedMessage : kind === "role_mismatch" ? "zeta credential and requested role do not match" : kind === "closed" ? `zeta websocket closed (${code})` : kind);
   }
 }
 
@@ -53,10 +54,13 @@ export interface ConnectZetaOptions {
 export function connectZeta({ url, token, role = "controller", features, hostCommands }: ConnectZetaOptions) {
   let websocketUrl: string;
   try {
-    websocketUrl = new URL(url).toString();
+    const parsed = new URL(url);
+    parsed.searchParams.delete("token");
+    websocketUrl = parsed.toString();
   } catch {
     return Promise.reject(new ZetaError("connect_failed"));
   }
+  const requestedFeatures = [...new Set([...(features ?? []), ...(role === "observer" ? ["serve_observers"] : [])])];
   return webSocketTransport(websocketUrl, ["zeta.v1", `zeta.bearer.${token}`])
     .catch(() => {
       throw new ZetaError("connect_failed");
@@ -69,12 +73,11 @@ export function connectZeta({ url, token, role = "controller", features, hostCom
           new ZetaError(handshaken ? "closed" : "connect_failed", code),
         { hostCommands },
       );
-      return client.hello(features, role).catch((error: unknown) => {
-        const kind =
-          typeof error === "object" && error !== null && "code" in error
-            ? errorKinds[(error as { code?: unknown }).code as number]
-            : undefined;
-        throw new ZetaError(kind ?? "connect_failed");
+      return client.hello(requestedFeatures, role).catch((error: unknown) => {
+        const rpc = typeof error === "object" && error !== null ? error as { code?: unknown; message?: unknown } : {};
+        const roleMismatch = rpc.code === -32602 && typeof rpc.message === "string" && rpc.message.includes("credential permits observer role only");
+        const kind = roleMismatch ? "role_mismatch" : errorKinds[rpc.code as number];
+        throw new ZetaError(kind ?? "connect_failed", typeof rpc.code === "number" ? rpc.code : undefined);
       }).then(() => client);
     });
 }

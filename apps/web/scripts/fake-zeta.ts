@@ -250,6 +250,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let controller: ServerWebSocket<unknown> | null = null;
   const reconnectControllers = new WeakSet<object>();
   const negotiatedFeatures = new WeakMap<object, Set<string>>();
+  const connectionRoles = new WeakMap<object, "controller" | "observer">();
   const hostBoundSessions = new Set<string>();
   const hostBindingRequired = new Set<string>();
   const contentReaders = new WeakSet<object>();
@@ -306,7 +307,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
       const origin = request.headers.get("origin");
       const bearer = request.headers.get("sec-websocket-protocol")?.split(",").map((value) => value.trim()).find((value) => value.startsWith("zeta.bearer."))?.slice("zeta.bearer.".length);
       if (!bearer || ![controllerToken, observerToken].includes(bearer) || (origin && !allowed.includes(origin))) return new Response("forbidden", { status: 403 });
-      return bun.upgrade(request) ? undefined : new Response("upgrade required", { status: 426 });
+      return bun.upgrade(request, { data: { bearer } }) ? undefined : new Response("upgrade required", { status: 426 });
     },
     websocket: {
       open(socket) { sockets.add(socket); },
@@ -343,6 +344,11 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         };
         const send = (event: Json) => { for (const each of sockets) each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); };
         if (method === "hello") {
+          const bearer = (socket.data as { bearer?: string }).bearer;
+          const requestedRole = params.role === "observer" ? "observer" : "controller";
+          if (bearer === observerToken && requestedRole === "controller") return reply({ error: { code: -32602, message: "credential permits observer role only" } });
+          if (requestedRole === "observer" && !(params.features as string[] | undefined)?.includes("serve_observers")) return reply({ error: { code: -32602, message: "observer requires protocol 1.1 and serve_observers" } });
+          connectionRoles.set(socket as object, requestedRole);
           if (mode === "busy" || sockets.size > 1) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
@@ -363,6 +369,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           }
           return;
         }
+        if (connectionRoles.get(socket as object) === "observer" && !["list_sessions", "status", "session_tree", "session_history", "model_catalog", "session_settings", "ping", "delivery_status", "content_read"].includes(method)) return reply({ error: { code: -32008, message: "observer is read-only", data: { code: "observer_read_only", method } } });
         const binding = parseHostBinding(socket, method, params);
         if (binding?.error) return reply({ error: { code: -32602, message: binding.error } });
         if (method === "new_session") {

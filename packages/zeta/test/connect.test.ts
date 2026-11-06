@@ -50,8 +50,28 @@ test("observer role uses the supplied observer token", async () => {
   const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", role: "observer", token: "observer-secret" });
   const socket = await open();
   expect(socket.protocols).toEqual(["zeta.v1", "zeta.bearer.observer-secret"]);
+  expect(JSON.parse(socket.sent[0]).params).toMatchObject({ role: "observer", features: ["serve_observers"] });
   reply(socket, { protocol_version: "1.0" });
   await expect(connecting).resolves.toHaveProperty("request");
+});
+
+test("connectZeta strips a legacy query token before opening the socket", async () => {
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/?token=legacy-secret", token: "bearer-secret" });
+  const socket = await open();
+  expect(socket.url).toBe("ws://127.0.0.1:8765/");
+  expect(socket.url).not.toContain("legacy-secret");
+  expect(socket.protocols).toEqual(["zeta.v1", "zeta.bearer.bearer-secret"]);
+  reply(socket, { protocol_version: "1.0" });
+  await expect(connecting).resolves.toHaveProperty("request");
+});
+
+test("observer credential rejected for controller is a typed role mismatch", async () => {
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "observer-secret" });
+  const socket = await open();
+  socket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "credential permits observer role only" } }) });
+  await expect(connecting).rejects.toMatchObject({ kind: "role_mismatch", code: -32602, message: "zeta credential and requested role do not match" });
 });
 
 test("connectZeta opts into host commands only when a supplier is present", async () => {
@@ -80,7 +100,7 @@ test("connectZeta opts into host commands only when a supplier is present", asyn
 
 test("failed upgrade rejects with connect_failed without exposing the token", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer" });
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "sentinel" });
   FakeWebSocket.instances[0].emit("error");
   const failure = await connecting.catch((error: ZetaError) => error);
   expect(failure.kind).toBe("connect_failed");
@@ -91,7 +111,7 @@ test("failed upgrade rejects with connect_failed without exposing the token", as
 test("busy and version mismatch map to their kinds", async () => {
   for (const [code, kind] of [[-32001, "busy"], [-32002, "version_mismatch"]] as const) {
     globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-    const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer" });
+    const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "sentinel" });
     const socket = await open(); error(socket, code);
     await expect(connecting).rejects.toMatchObject({ kind });
     FakeWebSocket.instances = [];
@@ -100,7 +120,7 @@ test("busy and version mismatch map to their kinds", async () => {
 
 test("server-level busy error maps to busy", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer" });
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "sentinel" });
   const socket = await open();
   socket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "another client is already connected" } }) });
   socket.emit("close", { code: 1000 });
@@ -109,7 +129,7 @@ test("server-level busy error maps to busy", async () => {
 
 test("close before hello rejects with connect_failed", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer" });
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "sentinel" });
   const socket = await open();
   socket.emit("close", { code: 1006 });
   await expect(connecting).rejects.toMatchObject({ kind: "connect_failed" });
@@ -117,7 +137,7 @@ test("close before hello rejects with connect_failed", async () => {
 
 test("close after connect reports closed and close code", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer" });
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "sentinel" });
   const socket = await open(); reply(socket, { protocol_version: "1.0" });
   const client = await connecting;
   const pending = client.request("status");
