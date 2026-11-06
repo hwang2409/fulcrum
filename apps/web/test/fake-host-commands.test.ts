@@ -6,7 +6,7 @@ import { startFakeZeta } from "../scripts/fake-zeta";
 
 async function credentials(fake: Awaited<ReturnType<typeof startFakeZeta>>) {
   const discovery = JSON.parse(await readFile(join(fake.home, "run", "serve.ws.json"), "utf8")) as { controller_token: string; observer_token: string };
-  return { url: `ws://127.0.0.1:${fake.port}/`, token: discovery.controller_token };
+  return { url: `ws://127.0.0.1:${fake.port}/`, token: discovery.controller_token, observerToken: discovery.observer_token };
 }
 
 const hostCommands = () => [{
@@ -15,6 +15,20 @@ const hostCommands = () => [{
   summary: "render a file",
   environment: { FOO: "bar" },
 }];
+
+test("fake zeta permits one controller and an observer, without observer cleanup", async () => {
+  const fake = await startFakeZeta({ origins: [], live: false });
+  try {
+    const connection = await credentials(fake);
+    const controller = await connectZeta({ url: connection.url, token: connection.token });
+    const observer = await connectZeta({ url: connection.url, role: "observer", token: connection.observerToken });
+    observer.close();
+    await expect(controller.request("status")).resolves.toHaveProperty("state", "idle");
+    controller.close();
+  } finally {
+    await fake.close();
+  }
+});
 
 test("fake zeta validates host commands and requires a fresh binding after disconnect", async () => {
   const fake = await startFakeZeta({ origins: [], live: false });

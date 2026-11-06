@@ -313,7 +313,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
       open(socket) { sockets.add(socket); },
       close(socket) {
         sockets.delete(socket);
-        if (socket !== controller) return;
+        if (connectionRoles.get(socket as object) !== "controller") return;
         controller = null;
         if (active && hostBoundSessions.has(active)) hostBindingRequired.add(active);
         if (!decide || approvalAborted) return;
@@ -349,10 +349,11 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (bearer === observerToken && requestedRole === "controller") return reply({ error: { code: -32602, message: "credential permits observer role only" } });
           if (requestedRole === "observer" && !(params.features as string[] | undefined)?.includes("serve_observers")) return reply({ error: { code: -32602, message: "observer requires protocol 1.1 and serve_observers" } });
           connectionRoles.set(socket as object, requestedRole);
-          if (mode === "busy" || sockets.size > 1) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
+          const observers = [...sockets].filter((each) => connectionRoles.get(each as object) === "observer").length;
+          if (mode === "busy" || (requestedRole === "controller" ? controller !== null : observers >= 8)) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
-          controller = socket;
+          if (requestedRole === "controller") controller = socket;
           const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect)) ?? [];
           negotiatedFeatures.set(socket as object, new Set(features));
           const reconnect = features.includes("approval_reconnect");

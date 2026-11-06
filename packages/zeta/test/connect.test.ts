@@ -55,6 +55,26 @@ test("observer role uses the supplied observer token", async () => {
   await expect(connecting).resolves.toHaveProperty("request");
 });
 
+test("connectZeta strips every case variant of legacy query tokens and fragments", async () => {
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/?a=1&Token=legacy-secret&b=2&TOKEN=other#pasted", token: "bearer-secret" });
+  const socket = await open();
+  expect(socket.url).toBe("ws://127.0.0.1:8765/?a=1&b=2");
+  expect(socket.url).not.toMatch(/token/i);
+  reply(socket, { protocol_version: "1.0" });
+  await expect(connecting).resolves.toHaveProperty("request");
+});
+
+test("connectZeta uses a legacy mixed-case query token when no explicit token is given", async () => {
+  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/?Token=legacy-secret", token: undefined });
+  const socket = await open();
+  expect(socket.url).toBe("ws://127.0.0.1:8765/");
+  expect(socket.protocols).toEqual(["zeta.v1", "zeta.bearer.legacy-secret"]);
+  reply(socket, { protocol_version: "1.0" });
+  await expect(connecting).resolves.toHaveProperty("request");
+});
+
 test("connectZeta strips a legacy query token before opening the socket", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   const connecting = connectZeta({ url: "ws://127.0.0.1:8765/?token=legacy-secret", token: "bearer-secret" });

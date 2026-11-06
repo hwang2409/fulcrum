@@ -28,23 +28,35 @@ function isLoopbackWebSocketUrl(url: URL): boolean {
   return ["ws:", "wss:"].includes(url.protocol) && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
 }
 
-export function parseWebSocketUrl(text: string): { url: string; token: string | null } | null {
+function normalizeWebSocketUrl(text: string): { url: string; token: string | null } | null {
   try {
     const parsed = new URL(text);
     if (!isLoopbackWebSocketUrl(parsed)) return null;
-    const token = parsed.searchParams.get("token");
-    parsed.searchParams.delete("token");
+    let token: string | null = null;
+    const tokenKeys = new Set<string>();
+    for (const [key, value] of parsed.searchParams) {
+      if (key.toLowerCase() === "token") {
+        token ??= value;
+        tokenKeys.add(key);
+      }
+    }
+    for (const key of tokenKeys) parsed.searchParams.delete(key);
+    parsed.hash = "";
     return { url: parsed.toString(), token };
   } catch {
     return null;
   }
 }
 
+export function parseWebSocketUrl(text: string): { url: string; token: string | null } | null {
+  return normalizeWebSocketUrl(text);
+}
+
 export type ZetaRole = "controller" | "observer";
 
 export interface ConnectZetaOptions {
   url: string;
-  token: string;
+  token?: string;
   role?: ZetaRole;
   features?: string[];
   /** Enables host commands and supplies a fresh binding for every new session or resume. */
@@ -52,16 +64,12 @@ export interface ConnectZetaOptions {
 }
 
 export function connectZeta({ url, token, role = "controller", features, hostCommands }: ConnectZetaOptions) {
-  let websocketUrl: string;
-  try {
-    const parsed = new URL(url);
-    parsed.searchParams.delete("token");
-    websocketUrl = parsed.toString();
-  } catch {
-    return Promise.reject(new ZetaError("connect_failed"));
-  }
+  const normalized = normalizeWebSocketUrl(url);
+  const bearer = token ?? normalized?.token;
+  if (!normalized || !bearer) return Promise.reject(new ZetaError("connect_failed"));
+  const websocketUrl = normalized.url;
   const requestedFeatures = [...new Set([...(features ?? []), ...(role === "observer" ? ["serve_observers"] : [])])];
-  return webSocketTransport(websocketUrl, ["zeta.v1", `zeta.bearer.${token}`])
+  return webSocketTransport(websocketUrl, ["zeta.v1", `zeta.bearer.${bearer}`])
     .catch(() => {
       throw new ZetaError("connect_failed");
     })
