@@ -252,7 +252,7 @@ const finishedView = (call: ToolCall, result: unknown) => {
   const { structured_content: extra, content, is_error } = (result ?? {}) as { structured_content?: unknown; content?: unknown; is_error?: unknown };
   const { exit_code, stdout, stderr, cwd_after } = extra && typeof extra === "object" ? (extra as Record<string, unknown>) : {};
   if (typeof stdout === "string" && typeof stderr === "string")
-    return { view: { ...view, ...(Number.isInteger(exit_code) ? { exitCode: exit_code as number } : {}), stdout, stderr, ...(typeof cwd_after === "string" ? { cwd: cwd_after } : {}) } satisfies ToolView };
+    return { view: { ...view, ...(Number.isInteger(exit_code) ? { exitCode: exit_code as number } : {}), stdout, stderr, ...(typeof cwd_after === "string" && view.cwd ? { cwd: cwd_after } : {}) } satisfies ToolView };
   const parsed = call.name === "bash" && typeof content === "string" ? bashText(content) : undefined;
   if (!parsed) return { view };
   // zeta sets is_error for a nonzero exit or a timeout, so a clean result means exit 0; a failure's code is unknown.
