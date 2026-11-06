@@ -24,6 +24,8 @@
     "@shikijs/engine-javascript": "4.6.0",
     "@shikijs/langs": "4.6.0",
     "@shikijs/types": "4.6.0",
+    "@types/commonmark": "0.27.10",
+    "commonmark": "0.31.2",
     "dompurify": "3.4.17",
     "markdown-it": "14.1.0",
     "mermaid": "12.3.0",

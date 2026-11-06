@@ -2,7 +2,7 @@ import { safeUrl } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
-import { parseReferenceDefinition } from "./reference-definition.js";
+import { normalizeReferenceLabel, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
 import { PendingInline } from "./pending-inline.js";
 import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
@@ -65,18 +65,45 @@ const pendingInlineMatches = (state: PendingInlineState | undefined, offset: num
 
 const markdown = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
 const block = (markdown as any).block;
-const stockReferenceRule = block.ruler.__rules__.find((rule: any) => rule.name === "reference").fn;
-block.ruler.at("reference", (state: any, startLine: number, endLine: number, silent: boolean) => {
+
+function referenceContinuation(state: any, line: number) {
+  if (line >= state.lineMax || state.isEmpty(line)) return false;
+  if (state.sCount[line] - state.blkIndent > 3 || state.sCount[line] < 0) return true;
+  const rules = state.md.block.ruler.getRules("reference");
+  const parent = state.parentType;
+  state.parentType = "reference";
+  const terminates = rules.some((rule: any) => rule(state, line, state.lineMax, true));
+  state.parentType = parent;
+  return !terminates;
+}
+
+function storeReference(state: any, result: Extract<ReferenceDisposition, { kind: "definition" }>, nextLine: number, silent: boolean) {
+  const href = state.md.normalizeLink(result.definition.href);
+  if (!state.md.validateLink(href)) return false;
+  if (silent) return true;
+  state.env.references ??= {};
+  state.env.references[result.definition.label] ??= { href, title: result.definition.title };
+  state.line = nextLine;
+  return true;
+}
+
+block.ruler.at("reference", (state: any, startLine: number, _endLine: number, silent: boolean) => {
   const start = state.bMarks[startLine] + state.tShift[startLine];
-  const source = state.src.slice(start, state.eMarks[startLine] + 1);
-  const candidate = state.src.slice(start);
-  if (/^ {0,3}\[/.test(source) && source.trimEnd().endsWith("]:")) {
-    const nextLine = candidate.slice(source.length).split("\n", 1)[0] ?? "";
-    if (!nextLine || !parseReferenceDefinition(`${source.trimEnd()}\n${nextLine}`)) return false;
+  if (state.sCount[startLine] - state.blkIndent >= 4 || state.src[start] !== "[") return false;
+  const parser = new ReferenceDefinitionParser();
+  for (let line = startLine; line < state.lineMax; line++) {
+    const content = state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]);
+    const appended = parser.append(content);
+    if (appended.kind === "definition")
+      return storeReference(state, appended, startLine + appended.consumedLines, silent);
+    if (appended.kind === "rejected" || appended.kind === "ineligible") return false;
+    const continuation = referenceContinuation(state, line + 1);
+    const ended = parser.endLine({ continuation });
+    if (ended.kind === "definition")
+      return storeReference(state, ended, startLine + ended.consumedLines, silent);
+    if (ended.kind === "rejected" || !continuation) return false;
   }
-  const close = source.indexOf("]:");
-  if (/^ {0,3}\[/.test(source) && close >= 0 && source.slice(close + 2).trim() && !parseReferenceDefinition(source)) return false;
-  return stockReferenceRule(state, startLine, endLine, silent);
+  return false;
 });
 
 const attr = (token: MarkdownToken, name: string) => token.attrGet(name) ?? undefined;
@@ -487,13 +514,22 @@ function parseInline(source: string, streaming: boolean, environment: Environmen
   return nodes;
 }
 
-function withoutPendingReferenceDefinition(source: string, environment: Environment) {
+function inspectReferenceLine(line: string) {
+  const parser = new ReferenceDefinitionParser();
+  let metadata = false;
+  let disposition: ReferenceDisposition = { kind: "ineligible" };
+  for (const character of line) {
+    disposition = parser.append(character);
+    if (disposition.kind === "metadata") metadata = true;
+    if (disposition.kind === "ineligible" || disposition.kind === "rejected") break;
+  }
+  return { disposition: parser.finish(), metadata };
+}
+
+function withoutPendingReferenceDefinition(source: string, _environment: Environment) {
   const lineStart = source.lastIndexOf("\n") + 1;
-  const line = source.slice(lineStart);
-  if (!/^ {0,3}\[[^\]\n]+\]:[^\n]*$/.test(line)) return source;
-  const probe: Environment = { references: environment.references ? { ...environment.references } : undefined };
-  if (parseDetailed(`${line}\n`, probe).length === 0 && Object.keys(probe.references ?? {}).length > Object.keys(environment.references ?? {}).length) return source;
-  return source.slice(0, lineStart);
+  const inspected = inspectReferenceLine(source.slice(lineStart));
+  return inspected.metadata && inspected.disposition.kind !== "definition" ? source.slice(0, lineStart) : source;
 }
 
 function parseStreamingMarkdown(source: string, environment: Environment = {}): ParsedBlock[] {
@@ -641,8 +677,6 @@ type TableCellRecord = {
 type ReferenceUser = ParagraphRecord | TableCellRecord;
 type TableRecord = { header: string; delimiter: string; cells: TableCellRecord[] };
 
-const normalizeReferenceLabel = (label: string) => label.trim().replace(/\s+/g, " ").toUpperCase();
-
 // The open paragraph's last line can still become a table header, which turns its pipes into cell borders.
 function hideTableCandidatePipes(inlines: Inline[]) {
   for (let index = inlines.length - 1; index >= 0; index--) {
@@ -736,17 +770,6 @@ function tableCells(line: string) {
   if (!cells.at(-1)?.trim()) cells.pop();
   return cells;
 }
-
-function pendingLeafContent(line: string) {
-  for (;;) {
-    const marker = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)?.[0];
-    if (!marker) return line;
-    line = line.slice(marker.length);
-  }
-}
-
-const canContinueReferenceTitle = (line: string) => /^ {0,3}\[[^\]\n]+\]:[ \t]*(?:<[^>\n]+>|\S+)[ \t]*$/.test(pendingLeafContent(line));
-const hasInlineReferenceTitle = (line: string) => /[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\))[ \t]*$/.test(line);
 
 function closeOpenCode(blocks: Block[]): boolean {
   const code = tailCode(blocks);
@@ -1003,8 +1026,10 @@ export function createStreamingDocument(): StreamingDocument {
     }
     const classified = streaming && !record.source.includes("\n") ? resolver.classifyCommitted(record.source) : undefined;
     let inlineSource = classified?.kind === "paragraph" ? classified.content : record.source;
-    if (classified?.kind === "paragraph" && /^ {0,3}\[[^\]\n]+\]:/.test(inlineSource) && !parseReferenceDefinition(inlineSource))
-      inlineSource = inlineSource.replace("[", "\\[");
+    if (classified?.kind === "paragraph") {
+      const inspected = inspectReferenceLine(inlineSource);
+      if (inspected.metadata && inspected.disposition.kind !== "definition") inlineSource = inlineSource.replace("[", "\\[");
+    }
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment())
@@ -1175,7 +1200,7 @@ export function createStreamingDocument(): StreamingDocument {
       appendParagraphLine(openParagraph, leaf.content);
       if (leaf.kind === "html-close") closeParagraph();
     } else if (leaf.kind === "reference-definition") {
-      pendingReferenceApply = !hasInlineReferenceTitle(leaf.content);
+      pendingReferenceApply = true;
       applyReferences(pendingReferenceApply);
     } else if (leaf.kind === "reference-title") {
       applyReferences();

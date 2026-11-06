@@ -1,4 +1,4 @@
-import { parseReferenceDefinition, parseReferenceTitle } from "./reference-definition.js";
+import { ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
 
 export type ContainerKind = "document" | "quote" | "list" | "item";
 
@@ -179,8 +179,10 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   const heading = /^#{1,6}[ \t]+/.exec(content);
   if (heading) content = content.slice(heading[0].length);
   const task = /^\[([ xX])\][ \t]+/.exec(content);
-  if (/^[ \t]*\[[^\]\n]+\]:/.test(content)
-    && (growing || parseReferenceDefinition(content) || /\]:[ \t]*$/.test(content))) return EMPTY;
+  const reference = new ReferenceDefinitionParser();
+  const disposition = reference.append(content.trimStart());
+  const finished = growing ? disposition : reference.finish();
+  if (finished.kind === "candidate" || finished.kind === "metadata" || finished.kind === "definition") return EMPTY;
   if (task) content = content.slice(task[0].length);
   else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
   if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
@@ -189,8 +191,7 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
     return EMPTY;
   if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
     return EMPTY;
-  // A growing `[label]` at the line start can still become a definition; labels end within 999 characters.
-  if (growing) return /^[ \t]*\[[^\]]{0,999}\]?[ \t]*$/.test(content) ? EMPTY : { content, kind: "paragraph", offset: line.length - content.length };
+  if (growing) return { content, kind: "paragraph", offset: line.length - content.length };
   // An open `[` may still close on a later line.
   const openBracket = content.lastIndexOf("[");
   if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
@@ -198,20 +199,6 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
     ? content.split("|").map((cell) => cell.trim()).join("")
     : content;
   return { content: visibleContent, kind: "paragraph", offset: 0 };
-}
-
-function referenceDefinition(line: string) {
-  const definition = parseReferenceDefinition(line);
-  if (!definition) return undefined;
-  return {
-    label: definition.label,
-    value: { href: definition.href, title: definition.title },
-    canContinueTitle: !definition.title,
-  };
-}
-
-function referenceTitle(line: string) {
-  return parseReferenceTitle(line);
 }
 
 function htmlBlockEnd(line: string) {
@@ -231,7 +218,13 @@ export class MarkdownLineResolver {
   private pendingLine: MutablePendingLine = freshPending();
   private pendingClassification?: { length: number; value: PendingClassification };
   private readonly referenceIndex = new Map<string, ReferenceDefinition>();
-  private pendingReferenceTitle?: { label: string; update: boolean };
+  private activeReference?: {
+    parser: ReferenceDefinitionParser;
+    lines: string[];
+    first: Omit<LineResolution, "leaf">;
+    path: readonly ContainerFrame[];
+    published?: { label: string; update: boolean; consumedLines: number };
+  };
   private previousContainerOnly = false;
 
   get references(): ReadonlyMap<string, ReferenceDefinition> {
@@ -308,10 +301,10 @@ export class MarkdownLineResolver {
   }
 
   private consumePendingLine() {
-    const result = this.resolveLine(this.pendingLine.content, false);
+    const results = this.resolveLine(this.pendingLine.content, false);
     this.pendingLine = freshPending();
     this.pendingClassification = undefined;
-    return result;
+    return results;
   }
 
   append(delta: string): LineResolution[] {
@@ -324,40 +317,41 @@ export class MarkdownLineResolver {
         break;
       }
       advancePending(this.pendingLine, delta.slice(offset, newline));
-      resolved.push(this.consumePendingLine());
+      resolved.push(...this.consumePendingLine());
       offset = newline + 1;
     }
     return resolved;
   }
 
   finish(): LineResolution | undefined {
-    if (!this.pendingLine.length) return undefined;
-    const result = this.resolveLine(this.pendingLine.content, true);
+    const results = this.pendingLine.length
+      ? this.resolveLine(this.pendingLine.content, true)
+      : this.finishReference();
     this.pendingLine = freshPending();
     this.pendingClassification = undefined;
-    return result;
+    return results.at(-1);
   }
 
-  resolveLine(line: string, _final: boolean): LineResolution {
+  private resolveLine(line: string, final: boolean): LineResolution[] {
     const followsContainerOnly = this.previousContainerOnly;
     this.previousContainerOnly = false;
     const { cursor, matchedDepth, unmatched, blank } = this.matchContinuations(line);
     const continuedLeaf = this.continueOpenLeaf(cursor, unmatched);
-    if (continuedLeaf) return continuedLeaf;
+    if (continuedLeaf) return [continuedLeaf];
     const { marker, startsContainer, startsBlock } = this.lineStart(cursor, unmatched);
     const unmatchedContent = line.slice(cursor.offset);
     if (!unmatched && this.openLeaf?.kind === "table" && !blank && !startsContainer && !startsBlock) {
-      return {
+      return [{
         continued: true,
         lazy: false,
         closedToDepth: this.stack.length,
         opened: [],
         leaf: { kind: "table-row", content: line.slice(cursor.offset), path: this.stack.slice() },
-      };
+      }];
     }
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
     let { continuesParagraph, lazy } = this.lazyContinuation(blank, startsBlock, unmatched);
-    if (followsContainerOnly && parseReferenceDefinition(unmatchedContent)) {
+    if (followsContainerOnly && this.isReferenceStart(unmatchedContent)) {
       continuesParagraph = false;
       lazy = false;
     }
@@ -366,14 +360,131 @@ export class MarkdownLineResolver {
     const opened = continuesParagraph || blank ? [] : this.openContainers(cursor);
 
     if (blank || isBlank(line, cursor.offset)) {
-      this.pendingReferenceTitle = undefined;
+      const reference = this.finishReference();
       this.previousContainerOnly = !blank && opened.length > 0;
-      return { continued: false, lazy: false, closedToDepth, opened };
+      return [...reference, { continued: false, lazy: false, closedToDepth, opened }];
     }
     if (followsContainerOnly && /^ {4}/.test(line))
-      return { continued: false, lazy: false, closedToDepth, opened };
+      return [{ continued: false, lazy: false, closedToDepth, opened }];
     const content = line.slice(cursor.offset);
-    return this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy);
+    const interruptedReference = Boolean(this.activeReference) && (unmatched || startsContainer || startsBlock);
+    const reference = this.resolveReference(content, final, closedToDepth, opened, continuesParagraph, lazy, interruptedReference);
+    if (reference.handled) return reference.results;
+    return [...reference.results, this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy)];
+  }
+
+  private isReferenceStart(content: string) {
+    const parser = new ReferenceDefinitionParser();
+    const result = parser.append(content);
+    return result.kind === "candidate" || result.kind === "metadata" || result.kind === "definition";
+  }
+
+  private resolveReference(
+    content: string,
+    final: boolean,
+    closedToDepth: number,
+    opened: OpenedContainer[],
+    continuesParagraph: boolean,
+    lazy: boolean,
+    interrupted: boolean,
+  ): { handled: boolean; results: LineResolution[] } {
+    const results = interrupted ? this.finishReference() : [];
+    if (this.activeReference) {
+      const appended = this.activeReference.parser.append(content);
+      if (appended.kind === "definition") {
+        results.push(...this.completeReference(appended));
+        return { handled: false, results };
+      }
+      this.activeReference.lines.push(content);
+      const ended = final
+        ? this.activeReference.parser.finish()
+        : this.activeReference.parser.endLine({ continuation: true });
+      if (ended.kind === "definition" || ended.kind === "rejected") results.push(...this.completeReference(ended));
+      else results.push(...this.publishPendingReference());
+      return { handled: true, results };
+    }
+    if (continuesParagraph || lazy || interrupted) return { handled: false, results };
+    const parser = new ReferenceDefinitionParser();
+    const appended = parser.append(content);
+    if (appended.kind !== "candidate" && appended.kind !== "metadata") return { handled: false, results };
+    this.activeReference = {
+      parser,
+      lines: [content],
+      first: { continued: false, lazy: false, closedToDepth, opened },
+      path: this.stack.slice(),
+    };
+    const ended = final ? parser.finish() : parser.endLine({ continuation: true });
+    if (ended.kind === "definition" || ended.kind === "rejected") results.push(...this.completeReference(ended));
+    else results.push(...this.publishPendingReference());
+    return { handled: true, results };
+  }
+
+  private finishReference() {
+    if (!this.activeReference) return [];
+    return this.completeReference(this.activeReference.parser.finish());
+  }
+
+  private publishPendingReference(): LineResolution[] {
+    const active = this.activeReference;
+    const pending = active?.parser.pendingDefinition();
+    if (!active || !pending || active.published) return [];
+    const { label, href, title } = pending.definition;
+    const update = !this.referenceIndex.has(label);
+    if (update) this.referenceIndex.set(label, { href, title });
+    active.published = { label, update, consumedLines: pending.consumedLines };
+    return [{
+      ...active.first,
+      leaf: {
+        kind: "reference-definition",
+        content: active.lines.slice(0, pending.consumedLines).join("\n"),
+        path: active.path,
+      },
+    }];
+  }
+
+  private completeReference(result: ReferenceDisposition): LineResolution[] {
+    const active = this.activeReference;
+    this.activeReference = undefined;
+    if (!active) return [];
+    const content = active.lines.join("\n");
+    if (result.kind !== "definition") {
+      this.openLeaf = { kind: "paragraph", content, tableEligible: true };
+      return [{ ...active.first, leaf: { kind: "paragraph", content, path: active.path } }];
+    }
+    const { label, href, title } = result.definition;
+    const firstDefinition = !this.referenceIndex.has(label);
+    if (firstDefinition) this.referenceIndex.set(label, { href, title });
+    if (active.published?.update) this.referenceIndex.get(active.published.label)!.title = title;
+    const consumed = active.lines.slice(0, result.consumedLines).join("\n");
+    const resolutions: LineResolution[] = active.published ? [] : [{
+      ...active.first,
+      leaf: { kind: "reference-definition", content: consumed, path: active.path },
+    }];
+    if (active.published && result.consumedLines > active.published.consumedLines) resolutions.push({
+      continued: false,
+      lazy: false,
+      closedToDepth: this.stack.length,
+      opened: [],
+      leaf: {
+        kind: "reference-title",
+        content: active.lines.slice(active.published.consumedLines, result.consumedLines).join("\n"),
+        path: active.path,
+      },
+    });
+    const remainder = active.lines.slice(result.consumedLines).join("\n");
+    if (remainder) {
+      this.openLeaf = { kind: "paragraph", content: remainder, tableEligible: true };
+      resolutions.push({
+        continued: false,
+        lazy: false,
+        closedToDepth: this.stack.length,
+        opened: [],
+        leaf: { kind: "paragraph", content: remainder, path: active.path },
+      });
+    } else {
+      this.openLeaf = undefined;
+    }
+    return resolutions;
   }
 
   private lazyContinuation(blank: boolean, startsBlock: boolean, unmatched: boolean) {
@@ -530,39 +641,6 @@ export class MarkdownLineResolver {
         closedToDepth,
         opened,
         leaf: { kind: "paragraph", content, path: path },
-      };
-    }
-    if (this.pendingReferenceTitle) {
-      const title = referenceTitle(content);
-      if (title !== undefined) {
-        if (this.pendingReferenceTitle.update) {
-          const reference = this.referenceIndex.get(this.pendingReferenceTitle.label)!;
-          reference.title = title;
-        }
-        this.pendingReferenceTitle = undefined;
-        this.openLeaf = undefined;
-        return {
-          continued: false,
-          lazy: false,
-          closedToDepth,
-          opened,
-          leaf: { kind: "reference-title", content, path: path },
-        };
-      }
-      this.pendingReferenceTitle = undefined;
-    }
-    const definition = referenceDefinition(content);
-    if (definition) {
-      const firstDefinition = !this.referenceIndex.has(definition.label);
-      if (firstDefinition) this.referenceIndex.set(definition.label, definition.value);
-      if (definition.canContinueTitle) this.pendingReferenceTitle = { label: definition.label, update: firstDefinition };
-      this.openLeaf = undefined;
-      return {
-        continued: false,
-        lazy: false,
-        closedToDepth,
-        opened,
-        leaf: { kind: "reference-definition", content, path: path },
       };
     }
     const htmlEnd = htmlBlockEnd(content);

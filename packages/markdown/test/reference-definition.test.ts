@@ -29,13 +29,13 @@ test("supports escaped labels, next-line destinations, and multiline titles", ()
 });
 
 test.each([
-  ["[r]:\n[", "[r]:\n["],
-  ["[d]:\n\"", "[d]:\n\""],
-] as const)("rejects an invalid multiline definition: %s", (_name, input) => {
-  expect(parseMarkdown(input)).toEqual([{ type: "paragraph", children: [{ type: "text", value: input }] }]);
+  ["R", "[r]:\n[", "%5B"],
+  ["D", "[d]:\n\"", "%22"],
+] as const)("accepts a punctuation-only next-line bare destination: %s", (label, input, href) => {
+  expect(parseMarkdown(input)).toEqual([]);
   const resolved = resolve(input);
-  expect(resolved.result.map((line) => line.leaf?.kind)).toEqual(["paragraph", "paragraph"]);
-  expect(resolved.references.size).toBe(0);
+  expect(resolved.result.map((line) => line.leaf?.kind)).toEqual(["reference-definition"]);
+  expect(resolved.references.get(label)).toEqual({ href, title: "" });
 });
 
 test("consumes duplicate definitions while keeping the first definition", () => {

@@ -49,7 +49,7 @@ const InlineView = ({ nodes }: { nodes: Inline[] }): ReactNode => nodes.map((nod
   if (node.type === "emphasis") return <em key={key} data-part="md-emphasis"><InlineView nodes={node.children} /></em>;
   if (node.type === "strong") return <strong key={key} data-part="md-strong"><InlineView nodes={node.children} /></strong>;
   if (node.type === "strike") return <del key={key} data-part="md-strike"><InlineView nodes={node.children} /></del>;
-  if (node.type === "link") return node.href
+  if (node.type === "link") return node.href !== undefined
     ? <a key={key} data-part="md-link" href={node.href} title={node.title}><InlineView nodes={node.children} /></a>
     : <Fragment key={key}><InlineView nodes={node.children} /></Fragment>;
   return node.src
