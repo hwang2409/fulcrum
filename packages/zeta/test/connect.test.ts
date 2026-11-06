@@ -37,7 +37,7 @@ function error(socket: FakeWebSocket, code: number) {
   const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "secret", features: ["projects"] });
   const socket = await open();
   expect(socket.url).toBe("ws://127.0.0.1:8765/?token=secret");
-  expect(JSON.parse(socket.sent[0])).toMatchObject({ method: "hello", params: { protocol_version: "1.2", client_version: "1.2", features: ["projects", "send_images_delivery_id"] } });
+  expect(JSON.parse(socket.sent[0])).toMatchObject({ method: "hello", params: { protocol_version: "1.2", client_version: "1.2", features: ["projects"] } });
   expect(socket.sent[0]).not.toContain("secret");
   reply(socket, { protocol_version: "1.0" });
   await expect(connecting).resolves.toHaveProperty("request");
@@ -55,7 +55,7 @@ test("connectZeta opts into host commands only when a supplier is present", asyn
     },
   });
   const socket = await open();
-  expect(JSON.parse(socket.sent[0]).params.features).toEqual(["send_images_delivery_id", "session_host_commands"]);
+  expect(JSON.parse(socket.sent[0]).params.features).toEqual(["session_host_commands"]);
   reply(socket, { protocol_version: "1.2", capabilities: { features: ["session_host_commands"] } });
   const client = await connecting;
   const creating = client.request("new_session");
