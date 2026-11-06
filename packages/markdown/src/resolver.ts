@@ -391,6 +391,7 @@ export class MarkdownLineResolver {
     if (continuedLeaf) return [continuedLeaf];
     const { marker, startsContainer, startsBlock } = this.lineStart(cursor, unmatched);
     const unmatchedContent = cursorContent(cursor);
+    const startsReference = this.isReferenceStart(unmatchedContent);
     const tableRow = this.continueTableRow(line, cursor, unmatched, blank, startsContainer, startsBlock);
     if (tableRow) return [tableRow];
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
@@ -400,7 +401,7 @@ export class MarkdownLineResolver {
       continuesParagraph = true;
       lazy = true;
     }
-    if (followsContainerOnly && this.isReferenceStart(unmatchedContent)) {
+    if (followsContainerOnly && startsReference) {
       continuesParagraph = false;
       lazy = false;
     }
@@ -416,7 +417,9 @@ export class MarkdownLineResolver {
     if (followsContainerOnly && /^ {4}/.test(line))
       return [{ continued: false, lazy: false, closedToDepth, opened }];
     const content = cursorContent(cursor);
-    const interruptedReference = Boolean(this.activeReference) && !referenceContinuesLazily && (unmatched || startsContainer || startsBlock);
+    const restartsReference = (followsReference || Boolean(this.activeReference)) && this.isCompleteReference(content);
+    const interruptedReference = restartsReference || Boolean(this.activeReference)
+      && !referenceContinuesLazily && (unmatched || startsContainer || startsBlock);
     const reference = this.resolveReference(line, cursor, content, final, closedToDepth, opened, continuesParagraph, lazy, interruptedReference);
     if (reference.handled) return reference.results;
     return [...reference.results, this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy)];
@@ -446,6 +449,12 @@ export class MarkdownLineResolver {
     return result.kind === "candidate" || result.kind === "metadata" || result.kind === "definition";
   }
 
+  private isCompleteReference(content: string) {
+    const parser = new ReferenceDefinitionParser();
+    parser.append(content);
+    return parser.finish().kind === "definition";
+  }
+
   private resolveReference(
     line: string,
     cursor: Cursor,
@@ -460,7 +469,7 @@ export class MarkdownLineResolver {
     const results = interrupted ? this.finishReference() : [];
     const replay = { line, cursor: { ...cursor }, closedToDepth, opened, continuesParagraph, lazy, path: this.stack.slice() };
     if (this.activeReference) return this.continueReference(content, final, replay, results);
-    if (continuesParagraph || lazy) return { handled: false, results };
+    if ((continuesParagraph || lazy) && !interrupted) return { handled: false, results };
     return this.startReference(content, final, replay, results);
   }
 

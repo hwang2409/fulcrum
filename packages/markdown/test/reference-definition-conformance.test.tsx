@@ -216,6 +216,9 @@ const lazyReferenceContinuations = [
   "> [r]:\n/dest\n\n[r]\n",
   ...["```\ncode\n```", "---", "# heading", "- item", "> quote"].map((block) => `> [r]: /dest\n${block}\n\n[r]\n`),
   "> [r]: /dest\n\nordinary prose\n\n[r]\n",
+  "[d]:/\n[h]:.\n\n[d] [h]\n",
+  "- [h]:t\n[d]:.\n\n  [h] [d]\n",
+  "- [h]:t ()\n[d]:.\n\n  [h] [d]\n",
 ];
 
 test("lazy reference continuation trees agree with commonmark before and after finish", () => {
