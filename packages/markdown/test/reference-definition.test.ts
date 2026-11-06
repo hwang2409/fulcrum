@@ -50,13 +50,13 @@ test("consumes duplicate definitions while keeping the first definition", () => 
 test("open destinations and titles scale linearly", () => {
   const sizes = [10_000, 20_000, 40_000, 80_000];
   const measure = (prefix: string, size: number) => {
-    const start = performance.now();
+    const start = Bun.nanoseconds();
     for (let run = 0; run < 20; run++) {
       const parser = new ReferenceDefinitionParser();
       parser.append(prefix);
       for (let index = 0; index < size; index++) parser.append("a");
     }
-    return performance.now() - start;
+    return Bun.nanoseconds() - start;
   };
   const median = (values: number[]) => values.sort((left, right) => left - right)[3]!;
 
