@@ -65,14 +65,12 @@ test("open destinations and titles scale linearly", () => {
     }
     return Bun.nanoseconds() - start;
   };
-  const median = (values: number[]) => values.sort((left, right) => left - right)[3]!;
 
   for (const prefix of ["[destination]: <", "[title]: /url \""]) {
     measure(prefix, sizes.at(-1)!);
     const samples = Array.from({ length: 7 }, () => sizes.map((size) => measure(prefix, size)));
-    for (let index = 1; index < sizes.length; index++) {
-      const ratios = samples.map((times) => times[index]! / times[index - 1]!);
-      expect(median(ratios)).toBeLessThanOrEqual(2.3);
-    }
+    const fastest = sizes.map((_, index) => Math.min(...samples.map((times) => times[index]!)));
+    for (let index = 1; index < sizes.length; index++)
+      expect(fastest[index]! / fastest[index - 1]!).toBeLessThanOrEqual(2.3);
   }
 }, 30_000);
