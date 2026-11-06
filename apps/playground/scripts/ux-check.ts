@@ -121,7 +121,7 @@ async function checkNarrowHead(browser: Browser, port: number): Promise<string[]
   return failures;
 }
 
-type UserGeometry = { promptX: number; promptTop: number; lines: { x: number; top: number }[]; height: number; probedHeight: number; cursor?: { x: number; top: number }; file?: { indent: string; label: number; labelRight: number; name: number } };
+type UserGeometry = { promptX: number; promptTop: number; lines: { x: number; top: number; right: number }[]; contentRight: number; height: number; probedHeight: number; cursor?: { x: number; top: number; width: number }; file?: { indent: string; label: number; labelRight: number; name: number } };
 
 /**
  * Where a user message puts its prompt mark, its text lines, its streaming cursor, and its file row. The prompt and the
@@ -162,12 +162,12 @@ async function measureUser(page: Page, id: string, streaming = false): Promise<U
       rects.push(...[...(code ?? range).getClientRects()].filter((rect) => rect.width > 0));
     }
     // One line per run of rects whose middles share a band: inline code and bold sit a little higher or lower.
-    const lines: { x: number; top: number; bottom: number }[] = [];
+    const lines: { x: number; top: number; bottom: number; right: number }[] = [];
     for (const rect of rects.sort((a, b) => a.top - b.top)) {
       const middle = (rect.top + rect.bottom) / 2;
       const line = lines.find((line) => middle > line.top && middle < line.bottom);
-      if (!line) lines.push({ x: rect.left, top: rect.top, bottom: rect.bottom });
-      else line.x = Math.min(line.x, rect.left);
+      if (!line) lines.push({ x: rect.left, top: rect.top, bottom: rect.bottom, right: rect.right });
+      else Object.assign(line, { x: Math.min(line.x, rect.left), right: Math.max(line.right, rect.right) });
     }
     // The glyph box of the prompt, like the text lines', not its line box.
     range.selectNodeContents(prompt);
@@ -181,10 +181,11 @@ async function measureUser(page: Page, id: string, streaming = false): Promise<U
     return {
       promptX: box.left,
       promptTop: box.top,
-      lines: lines.map(({ x, top }) => ({ x, top })),
+      lines: lines.map(({ x, top, right }) => ({ x, top, right })),
+      contentRight: node.getBoundingClientRect().right - parseFloat(getComputedStyle(node).borderRightWidth) - parseFloat(getComputedStyle(node).paddingRight),
       height,
       probedHeight: node.getBoundingClientRect().height,
-      cursor: cursorBox && { x: cursorBox.left, top: cursorBox.top },
+      cursor: cursorBox && { x: cursorBox.left, top: cursorBox.top, width: cursorBox.width },
       file: file && label && name ? { indent: getComputedStyle(file).textIndent, label: label.left, labelRight: label.right, name: nameRange.getBoundingClientRect().left } : undefined,
     };
   }, streaming);
@@ -203,15 +204,19 @@ async function checkUserLayout(browser: Browser, port: number): Promise<string[]
       await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
       const at = `user layout @ ${theme} ${width}: ${id}${streaming ? " streaming" : ""}`;
       const geometry = await measureUser(page, id, streaming);
-      const { promptX, promptTop, lines, height, probedHeight, cursor, file } = geometry;
+      const { promptX, promptTop, lines, contentRight, height, probedHeight, cursor, file } = geometry;
       if (Math.abs(probedHeight - height) > 0.5) failures.push(`${at}: the probe changed the layout (${height} -> ${probedHeight} px)`);
       const textX = lines[0]?.x ?? NaN;
       if (!(Math.abs(promptTop - (lines[0]?.top ?? NaN)) < 0.5)) failures.push(`${at}: the prompt is not on the first text line (${promptTop.toFixed(1)} vs ${lines[0]?.top.toFixed(1)})`);
       if (!(textX - promptX > 10)) failures.push(`${at}: the first text line starts at ${textX.toFixed(1)}, in the prompt column at ${promptX.toFixed(1)}`);
       for (const line of lines.slice(1)) if (Math.abs(line.x - textX) > 0.5) failures.push(`${at}: a text line starts at ${line.x.toFixed(1)}, not at the text edge ${textX.toFixed(1)}`);
       if (id === "message-user-long" && lines.length < 2) failures.push(`${at}: the long message does not wrap`);
-      // Half a 14px line: a cursor on a line of its own sits a whole line lower.
-      if (cursor && !(Math.abs(cursor.top - lines.at(-1)!.top) < 10 && cursor.x > textX)) failures.push(`${at}: the cursor at (${cursor.x.toFixed(1)}, ${cursor.top.toFixed(1)}) is not at the end of the last text line (${lines.at(-1)!.x.toFixed(1)}, ${lines.at(-1)!.top.toFixed(1)}; ${lines.length} lines)`);
+      // The cursor ends the last text line (within half a 14px line), or starts the next one at the text edge only
+      // because the last line has no room for it.
+      const last = lines.at(-1)!;
+      const onLast = cursor && Math.abs(cursor.top - last.top) < 10 && cursor.x > textX;
+      const wrapped = cursor && cursor.top > last.top + 10 && Math.abs(cursor.x - textX) < 2 && last.right + 1 + cursor.width > contentRight;
+      if (cursor && !onLast && !wrapped) failures.push(`${at}: the cursor at (${cursor.x.toFixed(1)}, ${cursor.top.toFixed(1)}) is not at the end of the last text line (${last.x.toFixed(1)}-${last.right.toFixed(1)} of ${contentRight.toFixed(1)}, ${last.top.toFixed(1)}; ${lines.length} lines)`);
       if (file) {
         if (parseFloat(file.indent) !== 0) failures.push(`${at}: the file row inherits text-indent ${file.indent}`);
         if (file.labelRight > file.name) failures.push(`${at}: the file label overlaps the file name`);
