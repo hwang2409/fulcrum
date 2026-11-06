@@ -21,6 +21,10 @@ const normalizeDestination = (value: string) => {
   try { return encodeURI(unescaped).replace(/%25([\dA-F]{2})/gi, "%$1"); } catch { return unescaped; }
 };
 
+export function normalizeReferenceLeafLine(line: string) {
+  return line.replace(/^[ \t]+/, "");
+}
+
 export function normalizeReferenceLabel(value: string) {
   value = value.trim().replace(/\s+/g, " ");
   if ("ẞ".toLowerCase() === "Ṿ") value = value.replace(/ẞ/g, "ß");

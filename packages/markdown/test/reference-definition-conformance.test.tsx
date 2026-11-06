@@ -1,7 +1,7 @@
 import { Window } from "happy-dom";
 import * as commonmark from "commonmark";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseMarkdown } from "../src/index.js";
+import { type Block, parseMarkdown } from "../src/index.js";
 import { Markdown } from "../src/react.js";
 import { MarkdownLineResolver } from "../src/resolver.js";
 import examples from "./fixtures/commonmark-0.31.2.json";
@@ -47,19 +47,31 @@ function oracle(source: string) {
   return { html: decode(new commonmark.HtmlRenderer().render(document)), references };
 }
 
-function fulcrumReferences(source: string) {
+function resolverReferences(source: string, finish = true) {
   const resolver = new MarkdownLineResolver();
   resolver.append(source.replace(/\r\n?/g, "\n"));
-  resolver.finish();
+  if (finish) resolver.finish();
   return Object.fromEntries([...resolver.references].map(([label, value]) => [label, {
     destination: value.href,
     title: value.title,
   }]));
 }
 
+function links(blocks: Block[]): OracleReference[] {
+  const found: OracleReference[] = [];
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if ("type" in value && value.type === "link" && "href" in value && "title" in value)
+      found.push({ destination: String(value.href ?? ""), title: String(value.title ?? "") });
+    for (const child of Object.values(value)) if (Array.isArray(child)) child.forEach(visit);
+  };
+  blocks.forEach(visit);
+  return found;
+}
+
 function expectOracleAgreement(source: string) {
   const expected = oracle(source);
-  expect(fulcrumReferences(source)).toEqual(expected.references);
+  expect(resolverReferences(source)).toEqual(expected.references);
   expect(parseMarkdown(source)).toBeArray();
   const safeOracleHtml = expected.html.replace("<bar>(baz)", "&lt;bar&gt;(baz)");
   expect(normalized(renderToStaticMarkup(<Markdown source={source} />))).toBe(normalized(safeOracleHtml));
@@ -104,4 +116,31 @@ const generated = [
 
 test("generated reference definitions agree with commonmark", () => {
   for (const source of generated) expectOracleAgreement(source);
+});
+
+const indentedContinuations = [
+  "[ref]: /url '\n title line1\n title line2\n '\n\n[ref]\n",
+  ...[1, 2, 3, 4].flatMap((indent) => {
+    const spaces = " ".repeat(indent);
+    return [
+      `[ref]:\n${spaces}/url\n\n[ref]\n`,
+      `[ref]: /url\n${spaces}\"title\"\n\n[ref]\n`,
+    ];
+  }),
+  "[ref]:\n\t/url\n\n[ref]\n",
+  "[ref]: /url\n\t\"title\"\n\n[ref]\n",
+  "> [ref]:\n>  /url\n>\n> [ref]\n",
+  "> [ref]: /url\n>  \"title\"\n>\n> [ref]\n",
+  "> [ref]: /url '\n>  title line1\n>  title line2\n>  '\n>\n> [ref]\n",
+  "- [ref]:\n   /url\n\n  [ref]\n",
+  "- [ref]: /url\n   \"title\"\n\n  [ref]\n",
+  "- [ref]: /url '\n   title line1\n   title line2\n   '\n\n  [ref]\n",
+];
+
+test("publishes block-indent-normalized continuation definitions before finish", () => {
+  for (const source of indentedContinuations) {
+    const expected = oracle(source).references;
+    expect(resolverReferences(source, false), source).toEqual(expected);
+    expect(links(parseMarkdown(source)), source).toEqual(Object.values(expected));
+  }
 });

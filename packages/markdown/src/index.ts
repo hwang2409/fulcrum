@@ -2,7 +2,7 @@ import { safeUrl } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
-import { normalizeReferenceLabel, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
+import { normalizeReferenceLabel, normalizeReferenceLeafLine, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
 import { PendingInline } from "./pending-inline.js";
 import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
@@ -91,7 +91,7 @@ function parseReferenceBlock(state: any, startLine: number) {
   const parser = new ReferenceDefinitionParser();
   for (let line = startLine; line < state.lineMax; line++) {
     const content = state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]);
-    const appended = parser.append(content);
+    const appended = parser.append(normalizeReferenceLeafLine(content));
     if (appended.kind === "definition") return appended;
     if (appended.kind === "rejected" || appended.kind === "ineligible") return undefined;
     const continuation = referenceContinuation(state, line + 1);

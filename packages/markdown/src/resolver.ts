@@ -1,4 +1,4 @@
-import { ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
+import { normalizeReferenceLeafLine, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
 
 export type ContainerKind = "document" | "quote" | "list" | "item";
 
@@ -407,7 +407,7 @@ export class MarkdownLineResolver {
 
   private continueReference(content: string, final: boolean, results: LineResolution[]) {
     const active = this.activeReference!;
-    const appended = active.parser.append(content);
+    const appended = active.parser.append(normalizeReferenceLeafLine(content));
     if (appended.kind === "definition") {
       results.push(...this.completeReference(appended));
       return { handled: false, results };
