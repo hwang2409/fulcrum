@@ -189,7 +189,7 @@ test("Message composes assistant markdown while user and explicit plain modes st
     </RunProvider>,
   );
   expect(q('[data-id="message:assistant"] [data-part="md-code-inline"]')?.textContent).toBe("code");
-  expect(q('[data-id="message:user"]').textContent).toBe("use `plain`");
+  expect(q('[data-id="message:user"] [data-part="message-content"]').textContent).toBe("use `plain`");
   expect(q(".plain").textContent).toBe("use `code`");
 });
 
