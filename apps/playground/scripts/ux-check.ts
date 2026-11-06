@@ -123,7 +123,7 @@ async function checkNarrowHead(browser: Browser, port: number): Promise<string[]
 
 async function checkBlockIndent(browser: Browser, port: number): Promise<string[]> {
   const failures: string[] = [];
-  const output = "/Users/henry/.zeta/scratch/fulcrum-user-block-indent";
+  const output = process.env.SCREENSHOT_DIR ?? "/tmp/fulcrum-user-block-indent";
   await Bun.$`mkdir -p ${output}`;
   for (const [theme, width] of [["light", 1440], ["dracula", 390]] as const) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
