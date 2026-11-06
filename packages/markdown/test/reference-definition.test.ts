@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { parseMarkdown } from "../src/index.js";
+import { ReferenceDefinitionParser } from "../src/reference-definition.js";
 import { MarkdownLineResolver } from "../src/resolver.js";
 
 const source = (label: string, suffix = "") => `[${label}]: /url${suffix}\n\nUse [${label}].`;
@@ -45,3 +46,26 @@ test("consumes duplicate definitions while keeping the first definition", () => 
   expect(resolved.result.map((line) => line.leaf?.kind)).toEqual(["reference-definition", "reference-definition", "reference-title"]);
   expect(resolved.references.get("SHARED")).toEqual({ href: "s", title: "e" });
 });
+
+test("open destinations and titles scale linearly", () => {
+  const sizes = [10_000, 20_000, 40_000, 80_000];
+  const measure = (prefix: string, size: number) => {
+    const start = performance.now();
+    for (let run = 0; run < 20; run++) {
+      const parser = new ReferenceDefinitionParser();
+      parser.append(prefix);
+      for (let index = 0; index < size; index++) parser.append("a");
+    }
+    return performance.now() - start;
+  };
+  const median = (values: number[]) => values.sort((left, right) => left - right)[3]!;
+
+  for (const prefix of ["[destination]: <", "[title]: /url \""]) {
+    measure(prefix, sizes.at(-1)!);
+    const samples = Array.from({ length: 7 }, () => sizes.map((size) => measure(prefix, size)));
+    for (let index = 1; index < sizes.length; index++) {
+      const ratios = samples.map((times) => times[index]! / times[index - 1]!);
+      expect(median(ratios)).toBeLessThanOrEqual(2.3);
+    }
+  }
+}, 30_000);
