@@ -666,22 +666,34 @@ async function settleImage(fake: ReturnType<typeof fakeTransport>, client: Retur
   await sending;
 }
 
-test("pending and late image fallback are isolated between sessions with the same text", async () => {
+test("pending image fallback is isolated between sessions with the same text", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  const features = ["delivery_id", "user_message_event", "user_message_delivery_id"];
+  const ready = client.hello(features);
+  fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
+  await ready;
+  const a = client.request("send_images", { session_id: "a", text: "same", images: [] }, { intent: "a-intent" });
+  const b = client.request("send_images", { session_id: "b", text: "same", images: [] }, { intent: "b-intent" });
+  fake.receive(imageEcho("b", "same"));
+  fake.receive(imageEcho("a", "same"));
+  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
+  fake.receive({ jsonrpc: "2.0", id: 3, result: { accepted: true } });
+  await Promise.all([a, b]);
+  expect(client.forSession("a").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:a-intent"]);
+  expect(client.forSession("b").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:b-intent"]);
+});
+
+test("late image fallback is isolated between sessions with the same text", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);
   const features = ["delivery_id", "user_message_event", "user_message_delivery_id", "send_images_delivery_id"];
   const ready = client.hello(features);
   fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
   await ready;
-  const a = client.request("send_images", { session_id: "a", text: "same", images: [], delivery_id: "a-id" }, { intent: "a-intent" });
-  const b = client.request("send_images", { session_id: "b", text: "same", images: [], delivery_id: "b-id" }, { intent: "b-intent" });
+  await settleImage(fake, client, 2, "a", "same", "a-id");
+  await settleImage(fake, client, 3, "b", "same", "b-id");
   fake.receive(imageEcho("b", "same"));
-  fake.receive(imageEcho("a", "same"));
-  fake.receive({ jsonrpc: "2.0", id: 2, result: { accepted: true } });
-  fake.receive({ jsonrpc: "2.0", id: 3, result: { accepted: true } });
-  await Promise.all([a, b]);
-  fake.receive(imageEcho("b", "same"));
-  expect(client.forSession("a").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:a-intent"]);
   expect(client.forSession("b").store.getOutline().filter((entry) => entry.kind === "user").map(({ id }) => id)).toEqual(["user:intent:b-intent"]);
 });
 

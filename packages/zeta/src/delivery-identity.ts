@@ -33,8 +33,8 @@ export function createDeliveryIdentity(cap: number, ttlMs = 5 * 60 * 1000) {
   };
   const match = (echo: DeliveryEcho) => {
     const owner = echo.canMatchDeliveryId && echo.deliveryId !== undefined
-      ? [...pending.values()].find((delivery) => delivery.deliveryId === echo.deliveryId)
-      : [...pending.values()].find((delivery) => delivery.intent !== undefined && delivery.text === echo.text && (echo.hasAttachments ? delivery.method === "send_images" : delivery.method !== "send_images"));
+      ? [...pending.values()].find((delivery) => delivery.deliveryId === echo.deliveryId && (delivery.sessionId === undefined || delivery.sessionId === echo.sessionId))
+      : [...pending.values()].find((delivery) => delivery.intent !== undefined && delivery.text === echo.text && (delivery.sessionId === undefined || delivery.sessionId === echo.sessionId) && (echo.hasAttachments ? delivery.method === "send_images" : delivery.method !== "send_images"));
     if (owner) {
       owner.sessionId ??= echo.sessionId;
       const intent = owner.intent;
