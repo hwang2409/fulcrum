@@ -129,12 +129,10 @@
   font-size: 14px;
   font-weight: 600;
 }
-[data-part="message"][data-role="user"] > [data-part="message-text"] {
-  display: block;
-  text-indent: -2ch;
-}
+/* The prompt floats in the padding column with a zero-width margin box: it sits on the first line, whether that line
+   is plain text, a markdown paragraph, or a file row, and nothing flows around it or inherits an indent. */
 [data-part="message"][data-role="user"]::before,
-[data-part="item"][data-kind="user"]::before { content: "> "; color: var(--fulcrum-muted); }
+[data-part="item"][data-kind="user"]::before { content: "> "; float: left; width: 2ch; margin-left: -2ch; color: var(--fulcrum-muted); }
 /* A terminal block cursor while text streams in. */
 [data-part="message"][data-state="streaming"]::after {
   content: "";

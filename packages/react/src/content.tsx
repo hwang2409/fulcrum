@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
 import { safeUrl, type ContentBlock, type FileContentBlock, type ImageContentBlock, type RunItem } from "@fulcrum/core";
 import { useItem, useMedia } from "./hooks.js";
 import type { ItemProps } from "./parts.js";
@@ -84,9 +84,7 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
         if (Block) return <Block key={index} block={block} id={blockId} streaming={streaming} markdown={Rich} onOpen={onOpen} />;
         if (block.type !== "text") return <UnknownBlock key={index} block={block} id={blockId} streaming={streaming} />;
         const text = String(block.text);
-        return Rich
-          ? <Rich key={index} id={blockId} source={text} streaming={streaming} />
-          : <span key={index} data-part="message-text">{text}</span>;
+        return Rich ? <Rich key={index} id={blockId} source={text} streaming={streaming} /> : <Fragment key={index}>{text}</Fragment>;
       })}
     </div>
   );

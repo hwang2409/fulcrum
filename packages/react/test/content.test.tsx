@@ -52,15 +52,7 @@ const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJA
 
 test("a plain text message renders exactly as before content blocks", () => {
   render([commit([{ type: "text", text: "hello\nthere" }], "user")]);
-  expect(container.innerHTML).toBe('<div style="white-space: pre-wrap;" data-part="message" data-kind="message" data-id="message:m" data-role="user" data-state="done" data-format="text"><span data-part="message-text">hello\nthere</span></div>');
-});
-
-test("user text gets the hanging indent without leaking into content blocks", () => {
-  render([commit([{ type: "text", text: "see attached" }, { type: "file", filename: "image.png", mediaType: "image/png", size: 12 }], "user")], { markdown: false });
-  const message = q('[data-part="message"]');
-  expect(message.querySelector('[data-part="message-text"]')?.textContent).toBe("see attached");
-  expect(message.querySelector('[data-part="file"]')?.textContent).toContain("image.png");
-  expect(message.querySelector('[data-part="file"]')?.closest('[data-part="message-text"]')).toBeNull();
+  expect(container.innerHTML).toBe('<div style="white-space: pre-wrap;" data-part="message" data-kind="message" data-id="message:m" data-role="user" data-state="done" data-format="text">hello\nthere</div>');
 });
 
 test("truncated history strings stay visible in markdown and tool cards", () => {
