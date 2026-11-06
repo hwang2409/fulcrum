@@ -2,6 +2,7 @@ import { safeUrl } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
+import { normalizeReferenceLabel, normalizeReferenceLeafLine, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
 import { PendingInline } from "./pending-inline.js";
 import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
@@ -63,6 +64,54 @@ const pendingInlineMatches = (state: PendingInlineState | undefined, offset: num
   state?.offset === offset && state.continues === continues && state.tableCandidate === tableCandidate && state.referenceCount === referenceCount;
 
 const markdown = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
+const block = (markdown as any).block;
+
+function referenceContinuation(state: any, line: number) {
+  if (line >= state.lineMax || state.isEmpty(line)) return false;
+  if (state.sCount[line] - state.blkIndent > 3 || state.sCount[line] < 0) return true;
+  const rules = state.md.block.ruler.getRules("reference");
+  const parent = state.parentType;
+  state.parentType = "reference";
+  const terminates = rules.some((rule: any) => rule(state, line, state.lineMax, true));
+  state.parentType = parent;
+  return !terminates;
+}
+
+function storeReference(state: any, result: Extract<ReferenceDisposition, { kind: "definition" }>, nextLine: number, silent: boolean) {
+  const href = state.md.normalizeLink(result.definition.href);
+  if (!state.md.validateLink(href)) return false;
+  if (silent) return true;
+  state.env.references ??= {};
+  state.env.references[result.definition.label] ??= { href, title: result.definition.title };
+  // The spec appendix keeps paragraph remainder after definitions in the same container.
+  if (state.sCount[nextLine] < state.blkIndent && referenceContinuation(state, nextLine))
+    state.sCount[nextLine] = state.blkIndent;
+  state.line = nextLine;
+  return true;
+}
+
+function parseReferenceBlock(state: any, startLine: number) {
+  const parser = new ReferenceDefinitionParser();
+  for (let line = startLine; line < state.lineMax; line++) {
+    const content = state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]);
+    const appended = parser.append(normalizeReferenceLeafLine(content));
+    if (appended.kind === "definition") return appended;
+    if (appended.kind === "rejected" || appended.kind === "ineligible") return undefined;
+    const continuation = referenceContinuation(state, line + 1);
+    const ended = parser.endLine({ continuation });
+    if (ended.kind === "definition") return ended;
+    if (ended.kind === "rejected" || !continuation) return undefined;
+  }
+}
+
+function referenceRule(state: any, startLine: number, _endLine: number, silent: boolean) {
+  const start = state.bMarks[startLine] + state.tShift[startLine];
+  if (state.sCount[startLine] - state.blkIndent >= 4 || state.src[start] !== "[") return false;
+  const result = parseReferenceBlock(state, startLine);
+  return result ? storeReference(state, result, startLine + result.consumedLines, silent) : false;
+}
+
+block.ruler.at("reference", referenceRule);
 
 const attr = (token: MarkdownToken, name: string) => token.attrGet(name) ?? undefined;
 
@@ -361,7 +410,7 @@ function bracketMarks(source: string) {
   return marks;
 }
 
-function withoutOpenLink(source: string) {
+function withoutOpenLink(source: string, references?: Environment["references"]) {
   if (source.endsWith("!") && !escaped(source, source.length - 1)) source = source.slice(0, -1);
   const image = lastUnescaped(source, "![");
   if (image >= 0 && !/\]\([^\n)]*\)/.test(source.slice(image + 1))) return source.slice(0, image);
@@ -376,7 +425,10 @@ function withoutOpenLink(source: string) {
   const label = source[bracket - 1] === "]";
   if (close < 0) return source.slice(0, bracket) + (label ? "" : rest);
   const destination = rest.slice(close + 1);
-  if (!destination) return source.slice(0, bracket) + (label ? "" : rest.slice(0, close));
+  if (!destination) {
+    const shortcut = normalizeReferenceLabel(rest.slice(0, close));
+    return references?.[shortcut] ? source : source.slice(0, bracket) + (label ? "" : rest.slice(0, close));
+  }
   return !destination.startsWith("(") || closesDestination(destination) ? source : source.slice(0, bracket) + rest.slice(0, close);
 }
 
@@ -447,10 +499,10 @@ function withoutTrailingLookahead(source: string) {
   return entity ? source.slice(0, entity.index) : source;
 }
 
-const withoutOpenSyntax = (source: string) => withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(withoutOpenAngle(source))));
+const withoutOpenSyntax = (source: string, references?: Environment["references"]) => withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(withoutOpenAngle(source), references)));
 
-function safeInlineContent(source: string): SafeInlineContent {
-  source = withoutOpenSyntax(source);
+function safeInlineContent(source: string, references?: Environment["references"]): SafeInlineContent {
+  source = withoutOpenSyntax(source, references);
   const opener = unmatchedCodeSpan(source);
   if (!opener) return { source };
   let content = source.slice(opener.index + opener.length);
@@ -460,7 +512,7 @@ function safeInlineContent(source: string): SafeInlineContent {
 }
 
 function parseInline(source: string, streaming: boolean, environment: Environment = {}) {
-  const safe = streaming ? safeInlineContent(source) : { source };
+  const safe = streaming ? safeInlineContent(source, environment.references) : { source };
   const tokens = markdown.parseInline(safe.source, environment);
   const nodes = inlineNodes(tokens[0]?.children ?? []);
   // An unclosed span may stay literal, so its preview shows only the text its content renders as markdown.
@@ -472,13 +524,22 @@ function parseInline(source: string, streaming: boolean, environment: Environmen
   return nodes;
 }
 
-function withoutPendingReferenceDefinition(source: string, environment: Environment) {
+function inspectReferenceLine(line: string) {
+  const parser = new ReferenceDefinitionParser();
+  let metadata = false;
+  let disposition: ReferenceDisposition = { kind: "ineligible" };
+  for (const character of line) {
+    disposition = parser.append(character);
+    if (disposition.kind === "metadata") metadata = true;
+    if (disposition.kind === "ineligible" || disposition.kind === "rejected") break;
+  }
+  return { disposition: parser.finish(), metadata };
+}
+
+function withoutPendingReferenceDefinition(source: string, _environment: Environment) {
   const lineStart = source.lastIndexOf("\n") + 1;
-  const line = source.slice(lineStart);
-  if (!/^ {0,3}\[[^\]\n]+\]:[^\n]*$/.test(line)) return source;
-  const probe: Environment = { references: environment.references ? { ...environment.references } : undefined };
-  if (parseDetailed(`${line}\n`, probe).length === 0 && Object.keys(probe.references ?? {}).length > Object.keys(environment.references ?? {}).length) return source;
-  return source.slice(0, lineStart);
+  const inspected = inspectReferenceLine(source.slice(lineStart));
+  return inspected.metadata && inspected.disposition.kind !== "definition" ? source.slice(0, lineStart) : source;
 }
 
 function parseStreamingMarkdown(source: string, environment: Environment = {}): ParsedBlock[] {
@@ -626,8 +687,6 @@ type TableCellRecord = {
 type ReferenceUser = ParagraphRecord | TableCellRecord;
 type TableRecord = { header: string; delimiter: string; cells: TableCellRecord[] };
 
-const normalizeReferenceLabel = (label: string) => label.trim().replace(/\s+/g, " ").toUpperCase();
-
 // The open paragraph's last line can still become a table header, which turns its pipes into cell borders.
 function hideTableCandidatePipes(inlines: Inline[]) {
   for (let index = inlines.length - 1; index >= 0; index--) {
@@ -721,17 +780,6 @@ function tableCells(line: string) {
   if (!cells.at(-1)?.trim()) cells.pop();
   return cells;
 }
-
-function pendingLeafContent(line: string) {
-  for (;;) {
-    const marker = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)?.[0];
-    if (!marker) return line;
-    line = line.slice(marker.length);
-  }
-}
-
-const canContinueReferenceTitle = (line: string) => /^ {0,3}\[[^\]\n]+\]:[ \t]*(?:<[^>\n]+>|\S+)[ \t]*$/.test(pendingLeafContent(line));
-const hasInlineReferenceTitle = (line: string) => /[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\))[ \t]*$/.test(line);
 
 function closeOpenCode(blocks: Block[]): boolean {
   const code = tailCode(blocks);
@@ -988,6 +1036,10 @@ export function createStreamingDocument(): StreamingDocument {
     }
     const classified = streaming && !record.source.includes("\n") ? resolver.classifyCommitted(record.source) : undefined;
     let inlineSource = classified?.kind === "paragraph" ? classified.content : record.source;
+    if (classified?.kind === "paragraph") {
+      const inspected = inspectReferenceLine(inlineSource);
+      if (inspected.metadata && inspected.disposition.kind !== "definition") inlineSource = inlineSource.replace("[", "\\[");
+    }
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment())
@@ -1003,7 +1055,7 @@ export function createStreamingDocument(): StreamingDocument {
     const block: Extract<Block, { type: "paragraph" }> = {
       type: "paragraph",
       children: [],
-      tight: lists.length && !lists.some((frame) => looseLists.has(frame.block)) || undefined,
+      tight: frames.at(-1)?.kind === "item" && !lists.some((frame) => looseLists.has(frame.block)) || undefined,
     };
     let item: ListItem | undefined;
     for (let index = frames.length - 1; index >= 0; index--) {
@@ -1158,7 +1210,7 @@ export function createStreamingDocument(): StreamingDocument {
       appendParagraphLine(openParagraph, leaf.content);
       if (leaf.kind === "html-close") closeParagraph();
     } else if (leaf.kind === "reference-definition") {
-      pendingReferenceApply = !hasInlineReferenceTitle(leaf.content);
+      pendingReferenceApply = true;
       applyReferences(pendingReferenceApply);
     } else if (leaf.kind === "reference-title") {
       applyReferences();

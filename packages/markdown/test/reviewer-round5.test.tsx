@@ -53,7 +53,7 @@ test("a whitespace-only unfinished line after a table never throws or adds a row
 });
 
 test("an empty list item does not consume the next unindented block", () => {
-  for (const source of ["1. \n.", " 1.\n.", "- \noutside", "- 1.\n.", "- text\n>"]) for (const split of splits)
+  for (const source of ["1. \n.", " 1.\n.", "-\noutside", "- \noutside", "- 1.\n.", "- text\n>"]) for (const split of splits)
     expect(json(stream(source, split).render()), `${JSON.stringify(source)}, split ${split}`).toBe(json(parseMarkdown(source)));
 });
 
@@ -114,6 +114,15 @@ test("a container opener terminates a table instead of becoming a row", () => {
     expect(json(document.render()), `split ${split}`).toBe(json(parseMarkdown(source)));
     document.finish();
     expect(json(document.render()), `finished split ${split}`).toBe(json(parseMarkdown(source)));
+  }
+});
+
+test("a rejected reference candidate can still become a table", () => {
+  for (const source of ["[|\n|-\n4.\n", ">|\n|-\n"]) {
+    const document = createStreamingDocument();
+    document.append(source);
+    if (source.startsWith(">")) document.finish();
+    expect(json(document.render())).toBe(json(parseMarkdown(source)));
   }
 });
 

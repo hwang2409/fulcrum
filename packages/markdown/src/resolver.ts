@@ -1,3 +1,5 @@
+import { normalizeReferenceLeafLine, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
+
 export type ContainerKind = "document" | "quote" | "list" | "item";
 
 export type ContainerFrame =
@@ -56,7 +58,7 @@ type MutablePendingLine = {
   settledProseStart: boolean;
 };
 
-type Cursor = { line: string; offset: number; column: number };
+type Cursor = { line: string; offset: number; column: number; partialTab: number };
 
 export type ReferenceDefinition = { href: string; title: string };
 
@@ -64,6 +66,16 @@ type Marker = {
   ordered: boolean;
   marker: string;
   contentIndent: number;
+};
+
+type ReferenceReplay = {
+  line: string;
+  cursor: Cursor;
+  closedToDepth: number;
+  opened: OpenedContainer[];
+  continuesParagraph: boolean;
+  lazy: boolean;
+  path: readonly ContainerFrame[];
 };
 
 const freshPending = (): MutablePendingLine => ({
@@ -103,48 +115,85 @@ function advancePending(scan: MutablePendingLine, delta: string) {
 
 function consumeIndent(cursor: Cursor, maximum: number) {
   let columns = 0;
-  while (cursor.offset < cursor.line.length && columns < maximum) {
+  while (columns < maximum) {
+    if (cursor.partialTab) {
+      const consumed = Math.min(cursor.partialTab, maximum - columns);
+      cursor.partialTab -= consumed;
+      cursor.column += consumed;
+      columns += consumed;
+      continue;
+    }
     const character = cursor.line[cursor.offset];
-    if (character === " ") columns++;
-    else if (character === "\t") columns += 4 - columns % 4;
-    else break;
+    if (character !== " " && character !== "\t") break;
+    const width = character === " " ? 1 : 4 - cursor.column % 4;
+    const consumed = Math.min(width, maximum - columns);
     cursor.offset++;
+    cursor.column += consumed;
+    columns += consumed;
+    cursor.partialTab = width - consumed;
   }
-  cursor.column += columns;
   return columns;
+}
+
+function cursorContent(cursor: Cursor) {
+  let offset = cursor.offset;
+  let column = cursor.column + cursor.partialTab;
+  let leading = " ".repeat(cursor.partialTab);
+  while (offset < cursor.line.length) {
+    const character = cursor.line[offset];
+    if (character === " ") {
+      leading += " ";
+      column++;
+    } else if (character === "\t") {
+      const width = 4 - column % 4;
+      leading += " ".repeat(width);
+      column += width;
+    } else break;
+    offset++;
+  }
+  return leading + cursor.line.slice(offset);
 }
 
 function consumeQuote(cursor: Cursor) {
   const start = { ...cursor };
   consumeIndent(cursor, 3);
-  if (cursor.line[cursor.offset] !== ">") {
+  if (cursor.partialTab || cursor.line[cursor.offset] !== ">") {
     Object.assign(cursor, start);
     return false;
   }
   cursor.offset++;
   cursor.column++;
-  if (cursor.line[cursor.offset] === " " || cursor.line[cursor.offset] === "\t") {
-    cursor.offset++;
-    cursor.column++;
-  }
+  if (cursor.line[cursor.offset] === " " || cursor.line[cursor.offset] === "\t") consumeIndent(cursor, 1);
   return true;
 }
 
 function listMarker(cursor: Cursor): Marker | undefined {
   const start = { ...cursor };
   consumeIndent(cursor, 3);
-  const rest = cursor.line.slice(cursor.offset, cursor.offset + 15);
-  const match = /^(?:([-+*])|(\d{1,9})([.)]))([ \t]+)/.exec(rest);
+  if (cursor.partialTab) {
+    Object.assign(cursor, start);
+    return undefined;
+  }
+  const match = /^(?:([-+*])|(\d{1,9})([.)]))/.exec(cursor.line.slice(cursor.offset, cursor.offset + 11));
   if (!match) {
     Object.assign(cursor, start);
     return undefined;
   }
   const marker = match[1] ?? `${match[2]}${match[3]}`;
   const markerWidth = marker.length;
-  const whitespace = match[4]!;
-  const padding = whitespace.includes("\t") || whitespace.length > 4 ? 1 : whitespace.length;
-  cursor.offset += markerWidth + padding;
-  cursor.column += markerWidth + padding;
+  cursor.offset += markerWidth;
+  cursor.column += markerWidth;
+  const separator = cursor.line[cursor.offset];
+  if (separator !== undefined && separator !== " " && separator !== "\t") {
+    Object.assign(cursor, start);
+    return undefined;
+  }
+  const whitespace = { ...cursor };
+  const whitespaceColumns = consumeIndent(whitespace, 5);
+  const padding = separator !== undefined && whitespaceColumns <= 4 && !isBlank(whitespace.line, whitespace.offset)
+    ? whitespaceColumns
+    : 1;
+  consumeIndent(cursor, padding);
   return { ordered: !match[1], marker, contentIndent: markerWidth + padding };
 }
 
@@ -160,11 +209,9 @@ const isBlank = (line: string, offset = 0) => {
   for (; offset < line.length; offset++) if (line[offset] !== " " && line[offset] !== "\t") return false;
   return true;
 };
-const isTableDelimiter = (line: string) => /^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$/.test(line)
+const isTableDelimiter = (line: string) => /^ {0,3}\|[ \t]*:?-+:?[ \t]*\|?[ \t]*$/.test(line)
   || /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/.test(line);
 const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
-const normalizeReference = (label: string) => label.trim().replace(/\s+/g, " ").toUpperCase();
-
 function stripPendingContainers(line: string) {
   for (;;) {
     const marker = /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])[ \t]+)/.exec(line)?.[0];
@@ -179,7 +226,10 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   const heading = /^#{1,6}[ \t]+/.exec(content);
   if (heading) content = content.slice(heading[0].length);
   const task = /^\[([ xX])\][ \t]+/.exec(content);
-  if (/^[ \t]*\[[^\]\n]+\]:/.test(content)) return EMPTY;
+  const reference = new ReferenceDefinitionParser();
+  const disposition = reference.append(content.trimStart());
+  const finished = growing ? disposition : reference.finish();
+  if (finished.kind === "candidate" || finished.kind === "metadata" || finished.kind === "definition") return EMPTY;
   if (task) content = content.slice(task[0].length);
   else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
   if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
@@ -188,8 +238,7 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
     return EMPTY;
   if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
     return EMPTY;
-  // A growing `[label]` at the line start can still become a definition; labels end within 999 characters.
-  if (growing) return /^[ \t]*\[[^\]]{0,999}\]?[ \t]*$/.test(content) ? EMPTY : { content, kind: "paragraph", offset: line.length - content.length };
+  if (growing) return { content, kind: "paragraph", offset: line.length - content.length };
   // An open `[` may still close on a later line.
   const openBracket = content.lastIndexOf("[");
   if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
@@ -197,20 +246,6 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
     ? content.split("|").map((cell) => cell.trim()).join("")
     : content;
   return { content: visibleContent, kind: "paragraph", offset: 0 };
-}
-
-function referenceDefinition(line: string) {
-  const match = /^ {0,3}\[([^\]\n]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))(?:[ \t]+(?:"([^"]*)"|'([^']*)'|\(([^)]*)\)))?[ \t]*$/.exec(line);
-  if (!match) return undefined;
-  return {
-    label: normalizeReference(match[1]!),
-    value: { href: match[2] ?? match[3]!, title: match[4] ?? match[5] ?? match[6] ?? "" },
-    canContinueTitle: match[4] === undefined && match[5] === undefined && match[6] === undefined,
-  };
-}
-
-function referenceTitle(line: string) {
-  return /^ {0,3}(?:"([^"]*)"|'([^']*)'|\(([^)]*)\))[ \t]*$/.exec(line)?.slice(1).find((value) => value !== undefined);
 }
 
 function htmlBlockEnd(line: string) {
@@ -230,8 +265,18 @@ export class MarkdownLineResolver {
   private pendingLine: MutablePendingLine = freshPending();
   private pendingClassification?: { length: number; value: PendingClassification };
   private readonly referenceIndex = new Map<string, ReferenceDefinition>();
-  private pendingReferenceTitle?: { label: string };
+  private activeReference?: {
+    parser: ReferenceDefinitionParser;
+    lines: string[];
+    replay: ReferenceReplay[];
+    openLeaf: MarkdownLineResolver["openLeaf"];
+    first: Omit<LineResolution, "leaf">;
+    path: readonly ContainerFrame[];
+    published?: { label: string; update: boolean; consumedLines: number };
+  };
   private previousContainerOnly = false;
+  private referenceParagraph = false;
+  private rejectedReference = false;
 
   get references(): ReadonlyMap<string, ReferenceDefinition> {
     return this.referenceIndex;
@@ -242,13 +287,13 @@ export class MarkdownLineResolver {
   }
 
   get pendingLeafContent() {
-    const cursor: Cursor = { line: this.pendingLine.content, offset: 0, column: 0 };
+    const cursor: Cursor = { line: this.pendingLine.content, offset: 0, column: 0, partialTab: 0 };
     for (const frame of this.stack.slice(1)) {
       if (frame.kind === "quote") {
         if (!consumeQuote(cursor)) break;
       } else if (frame.kind === "item" && !consumeItemIndent(cursor, frame.contentIndent)) break;
     }
-    return cursor.line.slice(cursor.offset);
+    return cursorContent(cursor);
   }
 
   classifyPending(line = this.pendingLine.content): Readonly<PendingClassification> {
@@ -256,7 +301,7 @@ export class MarkdownLineResolver {
     if (line === this.pendingLine.content && cached && line.length === cached.length) return cached.value;
     const { cursor, unmatched } = this.matchContinuations(line);
     if (!unmatched && this.openLeaf?.kind === "fence") {
-      const content = line.slice(cursor.offset);
+      const content = cursorContent(cursor);
       const marker = this.openLeaf.marker;
       if (new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(content))
         return FENCE;
@@ -307,10 +352,10 @@ export class MarkdownLineResolver {
   }
 
   private consumePendingLine() {
-    const result = this.resolveLine(this.pendingLine.content, false);
+    const results = this.resolveLine(this.pendingLine.content, false);
     this.pendingLine = freshPending();
     this.pendingClassification = undefined;
-    return result;
+    return results;
   }
 
   append(delta: string): LineResolution[] {
@@ -323,57 +368,261 @@ export class MarkdownLineResolver {
         break;
       }
       advancePending(this.pendingLine, delta.slice(offset, newline));
-      resolved.push(this.consumePendingLine());
+      resolved.push(...this.consumePendingLine());
       offset = newline + 1;
     }
     return resolved;
   }
 
   finish(): LineResolution | undefined {
-    if (!this.pendingLine.length) return undefined;
-    const result = this.resolveLine(this.pendingLine.content, true);
+    const results = this.pendingLine.length
+      ? this.resolveLine(this.pendingLine.content, true)
+      : this.finishReference();
     this.pendingLine = freshPending();
     this.pendingClassification = undefined;
-    return result;
+    return results.at(-1);
   }
 
-  resolveLine(line: string, _final: boolean): LineResolution {
+  private resolveLine(line: string, final: boolean): LineResolution[] {
     const followsContainerOnly = this.previousContainerOnly;
-    this.previousContainerOnly = false;
+    const followsReference = this.referenceParagraph;
+    this.previousContainerOnly = this.referenceParagraph = false;
     const { cursor, matchedDepth, unmatched, blank } = this.matchContinuations(line);
     const continuedLeaf = this.continueOpenLeaf(cursor, unmatched);
-    if (continuedLeaf) return continuedLeaf;
+    if (continuedLeaf) return [continuedLeaf];
     const { marker, startsContainer, startsBlock } = this.lineStart(cursor, unmatched);
-    const unmatchedContent = line.slice(cursor.offset);
-    if (!unmatched && this.openLeaf?.kind === "table" && !blank && !startsContainer && !startsBlock) {
-      return {
-        continued: true,
-        lazy: false,
-        closedToDepth: this.stack.length,
-        opened: [],
-        leaf: { kind: "table-row", content: line.slice(cursor.offset), path: this.stack.slice() },
-      };
-    }
+    const unmatchedContent = cursorContent(cursor);
+    const startsReference = this.isReferenceStart(unmatchedContent);
+    const tableRow = this.continueTableRow(line, cursor, unmatched, blank, startsContainer, startsBlock);
+    if (tableRow) return [tableRow];
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
-    const { continuesParagraph, lazy } = this.lazyContinuation(blank, startsBlock, unmatched);
+    const { continuesParagraph, lazy, referenceContinuesLazily } = this.continuationDecision(
+      blank, startsBlock, unmatched, followsReference, followsContainerOnly, startsReference,
+    );
     const closedToDepth = this.closeToDepth(matchedDepth, continuesParagraph, unmatched, blank, unmatchedContent, marker);
 
     const opened = continuesParagraph || blank ? [] : this.openContainers(cursor);
 
     if (blank || isBlank(line, cursor.offset)) {
-      this.pendingReferenceTitle = undefined;
+      const reference = this.finishReference();
+      this.referenceParagraph = false;
       this.previousContainerOnly = !blank && opened.length > 0;
-      return { continued: false, lazy: false, closedToDepth, opened };
+      return [...reference, { continued: false, lazy: false, closedToDepth, opened }];
     }
     if (followsContainerOnly && /^ {4}/.test(line))
-      return { continued: false, lazy: false, closedToDepth, opened };
-    const content = line.slice(cursor.offset);
-    return this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy);
+      return [{ continued: false, lazy: false, closedToDepth, opened }];
+    const content = cursorContent(cursor);
+    const reference = this.resolveReference(
+      line, cursor, content, final, closedToDepth, opened, continuesParagraph, lazy,
+      followsReference, unmatched, startsContainer, startsBlock, referenceContinuesLazily,
+    );
+    if (reference.handled) return reference.results;
+    return [...reference.results, this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy)];
   }
 
-  private lazyContinuation(blank: boolean, startsBlock: boolean, unmatched: boolean) {
-    const continuesParagraph = this.openLeaf?.kind === "paragraph" && !blank && !startsBlock;
-    return { continuesParagraph, lazy: unmatched && continuesParagraph };
+  private continueTableRow(
+    line: string,
+    cursor: Cursor,
+    unmatched: boolean,
+    blank: boolean,
+    startsContainer: boolean,
+    startsBlock: boolean,
+  ): LineResolution | undefined {
+    if (unmatched || this.openLeaf?.kind !== "table" || blank || startsContainer || startsBlock) return undefined;
+    return {
+      continued: true,
+      lazy: false,
+      closedToDepth: this.stack.length,
+      opened: [],
+      leaf: { kind: "table-row", content: cursorContent(cursor), path: this.stack.slice() },
+    };
+  }
+
+  private isReferenceStart(content: string) {
+    const parser = new ReferenceDefinitionParser();
+    const result = parser.append(content);
+    return result.kind === "candidate" || result.kind === "metadata" || result.kind === "definition";
+  }
+
+  private isCompleteReference(content: string) {
+    const parser = new ReferenceDefinitionParser();
+    parser.append(content);
+    return parser.finish().kind === "definition";
+  }
+
+  private resolveReference(
+    line: string,
+    cursor: Cursor,
+    content: string,
+    final: boolean,
+    closedToDepth: number,
+    opened: OpenedContainer[],
+    continuesParagraph: boolean,
+    lazy: boolean,
+    followsReference: boolean,
+    unmatched: boolean,
+    startsContainer: boolean,
+    startsBlock: boolean,
+    referenceContinuesLazily: boolean,
+  ): { handled: boolean; results: LineResolution[] } {
+    const restarts = (followsReference || Boolean(this.activeReference)) && this.isCompleteReference(content);
+    const interrupted = restarts || this.referenceInterruptedBy(content, unmatched, startsContainer, startsBlock, referenceContinuesLazily);
+    const interruptedPath = interrupted ? this.activeReference?.path : undefined;
+    const results = interrupted ? this.finishReference() : [];
+    const replay = { line, cursor: { ...cursor }, closedToDepth, opened, continuesParagraph, lazy, path: this.stack.slice() };
+    if (interrupted && this.rejectedReference) {
+      this.stack.splice(0, this.stack.length, ...interruptedPath!);
+      return { handled: true, results: [...results, ...this.resolveLine(line, final)] };
+    }
+    if (this.activeReference) return this.continueReference(content, final, replay, results);
+    if ((continuesParagraph || lazy) && !interrupted) return { handled: false, results };
+    return this.startReference(content, final, replay, results);
+  }
+
+  private continueReference(
+    content: string,
+    final: boolean,
+    replay: ReferenceReplay,
+    results: LineResolution[],
+  ) {
+    const active = this.activeReference!;
+    const appended = active.parser.append(normalizeReferenceLeafLine(content));
+    if (appended.kind === "definition") {
+      results.push(...this.completeReference(appended));
+      return { handled: false, results };
+    }
+    active.lines.push(content);
+    active.replay.push(replay);
+    const ended = final ? active.parser.finish() : active.parser.endLine({ continuation: true });
+    if (ended.kind === "definition" || ended.kind === "rejected") results.push(...this.completeReference(ended));
+    else results.push(...this.publishPendingReference());
+    return { handled: true, results };
+  }
+
+  private startReference(
+    content: string,
+    final: boolean,
+    replay: ReferenceReplay,
+    results: LineResolution[],
+  ) {
+    const parser = new ReferenceDefinitionParser();
+    const appended = parser.append(content);
+    if (appended.kind !== "candidate" && appended.kind !== "metadata") return { handled: false, results };
+    this.activeReference = {
+      parser,
+      lines: [content],
+      replay: [replay],
+      openLeaf: this.openLeaf,
+      first: { continued: false, lazy: false, closedToDepth: replay.closedToDepth, opened: replay.opened },
+      path: this.stack.slice(),
+    };
+    const ended = final ? parser.finish() : parser.endLine({ continuation: true });
+    if (ended.kind === "definition" || ended.kind === "rejected") results.push(...this.completeReference(ended));
+    else results.push(...this.publishPendingReference());
+    return { handled: true, results };
+  }
+
+  private finishReference() {
+    if (!this.activeReference) return [];
+    this.rejectedReference = false;
+    return this.completeReference(this.activeReference.parser.finish());
+  }
+
+  private referenceInterruptedBy(content: string, unmatched: boolean, startsContainer: boolean, startsBlock: boolean, continues: boolean) {
+    const active = this.activeReference;
+    if (!active) return false;
+    if (!continues && (unmatched || startsContainer || startsBlock)) return true;
+    return Boolean(active.lines[0]?.includes("|") && isTableDelimiter(content));
+  }
+
+  private publishPendingReference(): LineResolution[] {
+    const active = this.activeReference;
+    const pending = active?.parser.pendingDefinition();
+    if (!active || !pending || active.published) return [];
+    const { label, href, title } = pending.definition;
+    const update = !this.referenceIndex.has(label);
+    if (update) this.referenceIndex.set(label, { href, title });
+    active.published = { label, update, consumedLines: pending.consumedLines };
+    return [{
+      ...active.first,
+      leaf: {
+        kind: "reference-definition",
+        content: active.lines.slice(0, pending.consumedLines).join("\n"),
+        path: active.path,
+      },
+    }];
+  }
+
+  private completeReference(result: ReferenceDisposition): LineResolution[] {
+    const active = this.activeReference;
+    this.activeReference = undefined;
+    if (!active) return [];
+    if (result.kind !== "definition") {
+      this.rejectedReference = true;
+      if (active.published?.update) this.referenceIndex.delete(active.published.label);
+      this.openLeaf = active.openLeaf;
+      return active.replay.map((replay, index) => this.resolveLeaf(
+        cursorContent(replay.cursor),
+        replay.line,
+        { ...replay.cursor },
+        replay.closedToDepth,
+        replay.opened,
+        index > 0 && this.openLeaf?.kind === "paragraph",
+        replay.lazy,
+        replay.path,
+      ));
+    }
+    const { label, href, title } = result.definition;
+    const firstDefinition = !this.referenceIndex.has(label);
+    if (firstDefinition) this.referenceIndex.set(label, { href, title });
+    if (active.published?.update) this.referenceIndex.get(active.published.label)!.title = title;
+    const consumed = active.lines.slice(0, result.consumedLines).join("\n");
+    const resolutions: LineResolution[] = active.published ? [] : [{
+      ...active.first,
+      leaf: { kind: "reference-definition", content: consumed, path: active.path },
+    }];
+    if (active.published && result.consumedLines > active.published.consumedLines) resolutions.push({
+      continued: false,
+      lazy: false,
+      closedToDepth: this.stack.length,
+      opened: [],
+      leaf: {
+        kind: "reference-title",
+        content: active.lines.slice(active.published.consumedLines, result.consumedLines).join("\n"),
+        path: active.path,
+      },
+    });
+    const remainder = active.lines.slice(result.consumedLines).join("\n");
+    if (remainder) {
+      this.openLeaf = { kind: "paragraph", content: remainder, tableEligible: true };
+      resolutions.push({
+        continued: false,
+        lazy: false,
+        closedToDepth: this.stack.length,
+        opened: [],
+        leaf: { kind: "paragraph", content: remainder, path: active.path },
+      });
+    } else {
+      this.openLeaf = undefined;
+      this.referenceParagraph = true;
+    }
+    return resolutions;
+  }
+
+  private continuationDecision(
+    blank: boolean,
+    startsBlock: boolean,
+    unmatched: boolean,
+    followsReference: boolean,
+    followsContainerOnly: boolean,
+    startsReference: boolean,
+  ) {
+    let continuesParagraph = this.openLeaf?.kind === "paragraph" && !blank && !startsBlock;
+    let lazy = unmatched && continuesParagraph;
+    const referenceContinuesLazily = Boolean(this.activeReference || followsReference) && unmatched && !blank && !startsBlock;
+    if (referenceContinuesLazily) continuesParagraph = lazy = true;
+    if (followsContainerOnly && startsReference) continuesParagraph = lazy = false;
+    return { continuesParagraph, lazy, referenceContinuesLazily };
   }
 
   private closeToDepth(
@@ -411,7 +660,7 @@ export class MarkdownLineResolver {
     const marker = startsQuote ? undefined : listMarker(probe);
     const startsContainer = startsQuote || Boolean(marker);
     const startsInterruptingContainer = startsQuote || Boolean(marker && (!marker.ordered || /^1[.)]$/.test(marker.marker) || unmatched && this.stack.length > 1 || this.stack.some((frame) => frame.kind === "list" && frame.ordered)));
-    const startsBlock = startsInterruptingContainer || this.startsLeafBlock(cursor);
+    const startsBlock = startsInterruptingContainer || this.startsLeafBlock(cursor, unmatched);
     return { marker, startsContainer, startsBlock };
   }
 
@@ -421,23 +670,22 @@ export class MarkdownLineResolver {
    * before any regex runs: the growing line is checked on every delta, and a whole-line regex would make each
    * continuation line quadratic.
    */
-  private startsLeafBlock(cursor: Cursor) {
-    const { line, offset } = cursor;
-    let first = offset;
-    while (line.charCodeAt(first) === 32 || line.charCodeAt(first) === 9) first++;
-    const lead = line[first];
+  private startsLeafBlock(cursor: Cursor, unmatched: boolean) {
+    const unmatchedContent = cursorContent(cursor);
+    let first = 0;
+    while (unmatchedContent.charCodeAt(first) === 32 || unmatchedContent.charCodeAt(first) === 9) first++;
+    const lead = unmatchedContent[first];
     if (lead === undefined || !"#`~*-_=|:".includes(lead)) return false;
-    const unmatchedContent = line.slice(offset);
     const leaf = this.openLeaf;
     if (leaf?.kind === "paragraph" && leaf.tableEligible) {
-      if ("|-:".includes(lead) && leaf.content.includes("|") && isTableDelimiter(unmatchedContent)) return true;
+      if (!unmatched && "|-:".includes(lead) && leaf.content.includes("|") && isTableDelimiter(unmatchedContent)) return true;
       if ("=-".includes(lead) && /^ {0,3}(?:=+|-+)\s*$/.test(unmatchedContent)) return true;
     }
     return /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/.test(unmatchedContent);
   }
 
   private matchContinuations(line: string) {
-    const cursor: Cursor = { line, offset: 0, column: 0 };
+    const cursor: Cursor = { line, offset: 0, column: 0, partialTab: 0 };
     let matchedDepth = 1;
     for (; matchedDepth < this.stack.length; matchedDepth++) {
       const frame = this.stack[matchedDepth]!;
@@ -457,7 +705,7 @@ export class MarkdownLineResolver {
 
   private continueOpenLeaf(cursor: Cursor, unmatched: boolean): LineResolution | undefined {
     if (unmatched || this.openLeaf?.kind !== "fence" && this.openLeaf?.kind !== "html") return undefined;
-    const content = cursor.line.slice(cursor.offset);
+    const content = cursorContent(cursor);
     if (this.openLeaf.kind === "fence") {
       const marker = this.openLeaf.marker;
       const closes = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(content);
@@ -490,7 +738,7 @@ export class MarkdownLineResolver {
         opened.push(frame);
         continue;
       }
-      if (isThematicBreak(cursor.line.slice(cursor.offset))) break;
+      if (isThematicBreak(cursorContent(cursor))) break;
       const marker = listMarker(cursor);
       if (!marker) break;
       const existing = this.stack.at(-1);
@@ -514,47 +762,21 @@ export class MarkdownLineResolver {
     opened: OpenedContainer[],
     continuesParagraph: boolean,
     lazy: boolean,
+    resolvedPath?: readonly ContainerFrame[],
   ): LineResolution {
-    const path = this.stack.slice();
+    const path = resolvedPath ?? this.stack.slice();
     if (continuesParagraph && this.openLeaf?.kind === "paragraph") {
-      this.openLeaf.content += `\n${content}`;
+      const paragraphCursor = { ...cursor };
+      consumeIndent(paragraphCursor, 4);
+      const paragraphLine = cursorContent(paragraphCursor);
+      this.openLeaf.content += `\n${paragraphLine}`;
       if (lazy) this.openLeaf.tableEligible = false;
       return {
         continued: true,
         lazy: true,
         closedToDepth,
         opened,
-        leaf: { kind: "paragraph", content, path: path },
-      };
-    }
-    if (this.pendingReferenceTitle) {
-      const title = referenceTitle(content);
-      if (title !== undefined) {
-        const reference = this.referenceIndex.get(this.pendingReferenceTitle.label)!;
-        reference.title = title;
-        this.pendingReferenceTitle = undefined;
-        this.openLeaf = undefined;
-        return {
-          continued: false,
-          lazy: false,
-          closedToDepth,
-          opened,
-          leaf: { kind: "reference-title", content, path: path },
-        };
-      }
-      this.pendingReferenceTitle = undefined;
-    }
-    const definition = referenceDefinition(content);
-    if (definition) {
-      this.referenceIndex.set(definition.label, definition.value);
-      if (definition.canContinueTitle) this.pendingReferenceTitle = { label: definition.label };
-      this.openLeaf = undefined;
-      return {
-        continued: false,
-        lazy: false,
-        closedToDepth,
-        opened,
-        leaf: { kind: "reference-definition", content, path: path },
+        leaf: { kind: "paragraph", content: paragraphLine, path: path },
       };
     }
     const htmlEnd = htmlBlockEnd(content);
@@ -634,19 +856,22 @@ export class MarkdownLineResolver {
         lazy: false,
         closedToDepth,
         opened,
-        leaf: { kind: "indented-code", content: line.slice(indented.offset), path: path },
+        leaf: { kind: "indented-code", content: cursorContent(indented), path: path },
       };
     }
     const previousParagraph = this.openLeaf?.kind === "paragraph" ? this.openLeaf : undefined;
     const continued = Boolean(previousParagraph) && opened.length === 0;
-    const paragraphContent = continued ? `${previousParagraph!.content}\n${content}` : content;
+    const paragraphCursor = { ...cursor };
+    consumeIndent(paragraphCursor, previousParagraph ? 4 : 3);
+    const paragraphLine = cursorContent(paragraphCursor);
+    const paragraphContent = continued ? `${previousParagraph!.content}\n${paragraphLine}` : paragraphLine;
     this.openLeaf = { kind: "paragraph", content: paragraphContent, tableEligible: true };
     return {
       continued,
       lazy,
       closedToDepth,
       opened,
-      leaf: { kind: "paragraph", content, path: path },
+      leaf: { kind: "paragraph", content: paragraphLine, path: path },
     };
   }
 }
