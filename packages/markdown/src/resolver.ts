@@ -275,6 +275,7 @@ export class MarkdownLineResolver {
     published?: { label: string; update: boolean; consumedLines: number };
   };
   private previousContainerOnly = false;
+  private referenceParagraph = false;
 
   get references(): ReadonlyMap<string, ReferenceDefinition> {
     return this.referenceIndex;
@@ -383,7 +384,8 @@ export class MarkdownLineResolver {
 
   private resolveLine(line: string, final: boolean): LineResolution[] {
     const followsContainerOnly = this.previousContainerOnly;
-    this.previousContainerOnly = false;
+    const followsReference = this.referenceParagraph;
+    this.previousContainerOnly = this.referenceParagraph = false;
     const { cursor, matchedDepth, unmatched, blank } = this.matchContinuations(line);
     const continuedLeaf = this.continueOpenLeaf(cursor, unmatched);
     if (continuedLeaf) return [continuedLeaf];
@@ -393,7 +395,7 @@ export class MarkdownLineResolver {
     if (tableRow) return [tableRow];
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
     let { continuesParagraph, lazy } = this.lazyContinuation(blank, startsBlock, unmatched);
-    const referenceContinuesLazily = Boolean(this.activeReference) && unmatched && !blank && !startsBlock;
+    const referenceContinuesLazily = Boolean(this.activeReference || followsReference) && unmatched && !blank && !startsBlock;
     if (referenceContinuesLazily) {
       continuesParagraph = true;
       lazy = true;
@@ -578,6 +580,7 @@ export class MarkdownLineResolver {
       });
     } else {
       this.openLeaf = undefined;
+      this.referenceParagraph = true;
     }
     return resolutions;
   }

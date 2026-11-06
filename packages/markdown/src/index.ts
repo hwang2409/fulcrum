@@ -83,6 +83,9 @@ function storeReference(state: any, result: Extract<ReferenceDisposition, { kind
   if (silent) return true;
   state.env.references ??= {};
   state.env.references[result.definition.label] ??= { href, title: result.definition.title };
+  // The spec appendix keeps paragraph remainder after definitions in the same container.
+  if (state.sCount[nextLine] < state.blkIndent && referenceContinuation(state, nextLine))
+    state.sCount[nextLine] = state.blkIndent;
   state.line = nextLine;
   return true;
 }
@@ -407,7 +410,7 @@ function bracketMarks(source: string) {
   return marks;
 }
 
-function withoutOpenLink(source: string) {
+function withoutOpenLink(source: string, references?: Environment["references"]) {
   if (source.endsWith("!") && !escaped(source, source.length - 1)) source = source.slice(0, -1);
   const image = lastUnescaped(source, "![");
   if (image >= 0 && !/\]\([^\n)]*\)/.test(source.slice(image + 1))) return source.slice(0, image);
@@ -422,7 +425,10 @@ function withoutOpenLink(source: string) {
   const label = source[bracket - 1] === "]";
   if (close < 0) return source.slice(0, bracket) + (label ? "" : rest);
   const destination = rest.slice(close + 1);
-  if (!destination) return source.slice(0, bracket) + (label ? "" : rest.slice(0, close));
+  if (!destination) {
+    const shortcut = normalizeReferenceLabel(rest.slice(0, close));
+    return references?.[shortcut] ? source : source.slice(0, bracket) + (label ? "" : rest.slice(0, close));
+  }
   return !destination.startsWith("(") || closesDestination(destination) ? source : source.slice(0, bracket) + rest.slice(0, close);
 }
 
@@ -493,10 +499,10 @@ function withoutTrailingLookahead(source: string) {
   return entity ? source.slice(0, entity.index) : source;
 }
 
-const withoutOpenSyntax = (source: string) => withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(withoutOpenAngle(source))));
+const withoutOpenSyntax = (source: string, references?: Environment["references"]) => withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(withoutOpenAngle(source), references)));
 
-function safeInlineContent(source: string): SafeInlineContent {
-  source = withoutOpenSyntax(source);
+function safeInlineContent(source: string, references?: Environment["references"]): SafeInlineContent {
+  source = withoutOpenSyntax(source, references);
   const opener = unmatchedCodeSpan(source);
   if (!opener) return { source };
   let content = source.slice(opener.index + opener.length);
@@ -506,7 +512,7 @@ function safeInlineContent(source: string): SafeInlineContent {
 }
 
 function parseInline(source: string, streaming: boolean, environment: Environment = {}) {
-  const safe = streaming ? safeInlineContent(source) : { source };
+  const safe = streaming ? safeInlineContent(source, environment.references) : { source };
   const tokens = markdown.parseInline(safe.source, environment);
   const nodes = inlineNodes(tokens[0]?.children ?? []);
   // An unclosed span may stay literal, so its preview shows only the text its content renders as markdown.
@@ -1049,7 +1055,7 @@ export function createStreamingDocument(): StreamingDocument {
     const block: Extract<Block, { type: "paragraph" }> = {
       type: "paragraph",
       children: [],
-      tight: lists.length && !lists.some((frame) => looseLists.has(frame.block)) || undefined,
+      tight: frames.at(-1)?.kind === "item" && !lists.some((frame) => looseLists.has(frame.block)) || undefined,
     };
     let item: ListItem | undefined;
     for (let index = frames.length - 1; index >= 0; index--) {

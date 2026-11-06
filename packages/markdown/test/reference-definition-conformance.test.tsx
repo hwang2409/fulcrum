@@ -214,7 +214,7 @@ const lazyReferenceContinuations = [
   "> [r]: /dest\r\nordinary lazy prose\r\n\r\n[r]\r\n",
   "> [r]: /dest '\ncontinued title'\n\n[r]\n",
   "> [r]:\n/dest\n\n[r]\n",
-  ...["```js", "---", "# heading", "- item", "> quote"].map((block) => `> [r]: /dest\n${block}\n\n[r]\n`),
+  ...["```\ncode\n```", "---", "# heading", "- item", "> quote"].map((block) => `> [r]: /dest\n${block}\n\n[r]\n`),
   "> [r]: /dest\n\nordinary prose\n\n[r]\n",
 ];
 
