@@ -154,35 +154,35 @@ for (const indent of ["", " ", "  ", "   ", "\t", " \t", "\t ", "  \t", "\t  ", 
 
 for (const marker of [">", "> ", ">\t", "> \t", ">\t ", " >", "  >", "   >", " \t>", "\t>"])
   for (const continuation of ["/url", "'title'"])
-    referenceMatrix.push(matrixSource(`${marker} [r]:${continuation === "/url" ? "" : " /url"}\n${marker} ${continuation}`, `${marker} [r]`, `\n${marker}\n`));
+    referenceMatrix.push(matrixSource(`${marker} [r]:${continuation === "/url" ? "" : " /url"}\n${marker} ${continuation}`, `${marker} [r]`));
 
 for (const [marker, indent] of [["- ", "  "], ["-\t", "\t"], ["- \t", "  \t"], ["*\t ", "\t "], ["1. ", "   "], ["1.\t", "\t"], ["10. ", "    "], ["10.\t", "\t"]])
   for (const continuation of ["/url", "'title'"])
     referenceMatrix.push(matrixSource(`${marker}[r]:${continuation === "/url" ? "" : " /url"}\n${indent}${continuation}`, `${indent}[r]`));
 
 referenceMatrix.push(
-  "> [r]:\n  /url\n>\n",
-  "> [r]: /url\n  'title'\n>\n",
-  "> [r]: /url '\n  title\n  '\n>\n",
+  "> [r]:\n  /url\n",
+  "> [r]: /url\n  'title'\n",
+  "> [r]: /url '\n  title\n  '\n",
   "- [r]:\n /url\n\n",
   "- [r]: /url\n 'title'\n\n",
   "1. [r]:\n /url\n\n",
   "1. [r]: /url\n 'title'\n\n",
-  "> - [r]: /url\n  'title'\n>\n",
+  "> - [r]: /url\n  'title'\n",
 );
 
 for (const depth of [2, 3, 4, 5])
   for (const continuation of ["  /url", "  'title'"])
-    referenceMatrix.push(`${"> ".repeat(depth)}[r]:${continuation.includes("title") ? " /url" : ""}\n${continuation}\n${"> ".repeat(depth)}\n`);
+    referenceMatrix.push(`${"> ".repeat(depth)}[r]:${continuation.includes("title") ? " /url" : ""}\n${continuation}\n`);
 
 for (const source of [
-  "> [r]:\r\n  /url\r\n>\r\n",
-  "> [r]: /url\r\n  'title'\r\n>\r\n",
-  "> > [r]:\r\n   /url\r\n> >\r\n",
+  "> [r]:\r\n  /url\r\n",
+  "> [r]: /url\r\n  'title'\r\n",
+  "> > [r]:\r\n   /url\r\n",
   "- [r]:\r\n /url\r\n\r\n",
   "1. [r]: /url\r\n 'title'\r\n\r\n",
-  ">\t[r]: /url\r\n>\r\n",
-  ">\t  [r]: /url\r\n>\r\n",
+  ">\t[r]: /url\r\n",
+  ">\t  [r]: /url\r\n",
   "-\t[r]: /url\r\n\r\n",
 ]) referenceMatrix.push(source);
 
@@ -196,7 +196,7 @@ for (const wrap of [
   referenceMatrix.push(wrap(`[r]: /url 'bad' junk\n${indent}next line\n`));
 
 for (const prefix of [">\t", "> \t", ">\t ", ">\t  ", " >\t", "  >\t", "> \t ", ">\t   "])
-  referenceMatrix.push(`${prefix}[r]: /url\n>\n`);
+  referenceMatrix.push(`${prefix}[r]: /url\n`);
 
 for (const [marker, continuation] of [
   ["-\t", "\t"], ["- \t", "  \t"], ["-\t ", "\t "], ["*\t", "\t"], ["+ \t", "  \t"],

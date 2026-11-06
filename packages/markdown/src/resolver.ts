@@ -58,7 +58,7 @@ type MutablePendingLine = {
   settledProseStart: boolean;
 };
 
-type Cursor = { line: string; offset: number; column: number };
+type Cursor = { line: string; offset: number; column: number; partialTab: number };
 
 export type ReferenceDefinition = { href: string; title: string };
 
@@ -66,6 +66,16 @@ type Marker = {
   ordered: boolean;
   marker: string;
   contentIndent: number;
+};
+
+type ReferenceReplay = {
+  line: string;
+  cursor: Cursor;
+  closedToDepth: number;
+  opened: OpenedContainer[];
+  continuesParagraph: boolean;
+  lazy: boolean;
+  path: readonly ContainerFrame[];
 };
 
 const freshPending = (): MutablePendingLine => ({
@@ -105,48 +115,82 @@ function advancePending(scan: MutablePendingLine, delta: string) {
 
 function consumeIndent(cursor: Cursor, maximum: number) {
   let columns = 0;
-  while (cursor.offset < cursor.line.length && columns < maximum) {
+  while (columns < maximum) {
+    if (cursor.partialTab) {
+      const consumed = Math.min(cursor.partialTab, maximum - columns);
+      cursor.partialTab -= consumed;
+      cursor.column += consumed;
+      columns += consumed;
+      continue;
+    }
     const character = cursor.line[cursor.offset];
-    if (character === " ") columns++;
-    else if (character === "\t") columns += 4 - columns % 4;
-    else break;
+    if (character !== " " && character !== "\t") break;
+    const width = character === " " ? 1 : 4 - cursor.column % 4;
+    const consumed = Math.min(width, maximum - columns);
     cursor.offset++;
+    cursor.column += consumed;
+    columns += consumed;
+    cursor.partialTab = width - consumed;
   }
-  cursor.column += columns;
   return columns;
+}
+
+function cursorContent(cursor: Cursor) {
+  let offset = cursor.offset;
+  let column = cursor.column + cursor.partialTab;
+  let leading = " ".repeat(cursor.partialTab);
+  while (offset < cursor.line.length) {
+    const character = cursor.line[offset];
+    if (character === " ") {
+      leading += " ";
+      column++;
+    } else if (character === "\t") {
+      const width = 4 - column % 4;
+      leading += " ".repeat(width);
+      column += width;
+    } else break;
+    offset++;
+  }
+  return leading + cursor.line.slice(offset);
 }
 
 function consumeQuote(cursor: Cursor) {
   const start = { ...cursor };
   consumeIndent(cursor, 3);
-  if (cursor.line[cursor.offset] !== ">") {
+  if (cursor.partialTab || cursor.line[cursor.offset] !== ">") {
     Object.assign(cursor, start);
     return false;
   }
   cursor.offset++;
   cursor.column++;
-  if (cursor.line[cursor.offset] === " " || cursor.line[cursor.offset] === "\t") {
-    cursor.offset++;
-    cursor.column++;
-  }
+  if (cursor.line[cursor.offset] === " " || cursor.line[cursor.offset] === "\t") consumeIndent(cursor, 1);
   return true;
 }
 
 function listMarker(cursor: Cursor): Marker | undefined {
   const start = { ...cursor };
   consumeIndent(cursor, 3);
-  const rest = cursor.line.slice(cursor.offset, cursor.offset + 15);
-  const match = /^(?:([-+*])|(\d{1,9})([.)]))([ \t]+)/.exec(rest);
+  if (cursor.partialTab) {
+    Object.assign(cursor, start);
+    return undefined;
+  }
+  const match = /^(?:([-+*])|(\d{1,9})([.)]))/.exec(cursor.line.slice(cursor.offset, cursor.offset + 11));
   if (!match) {
     Object.assign(cursor, start);
     return undefined;
   }
   const marker = match[1] ?? `${match[2]}${match[3]}`;
   const markerWidth = marker.length;
-  const whitespace = match[4]!;
-  const padding = whitespace.includes("\t") || whitespace.length > 4 ? 1 : whitespace.length;
-  cursor.offset += markerWidth + padding;
-  cursor.column += markerWidth + padding;
+  cursor.offset += markerWidth;
+  cursor.column += markerWidth;
+  if (cursor.line[cursor.offset] !== " " && cursor.line[cursor.offset] !== "\t") {
+    Object.assign(cursor, start);
+    return undefined;
+  }
+  const whitespace = { ...cursor };
+  const whitespaceColumns = consumeIndent(whitespace, 5);
+  const padding = whitespaceColumns <= 4 && !isBlank(whitespace.line, whitespace.offset) ? whitespaceColumns : 1;
+  consumeIndent(cursor, padding);
   return { ordered: !match[1], marker, contentIndent: markerWidth + padding };
 }
 
@@ -221,6 +265,8 @@ export class MarkdownLineResolver {
   private activeReference?: {
     parser: ReferenceDefinitionParser;
     lines: string[];
+    replay: ReferenceReplay[];
+    openLeaf: MarkdownLineResolver["openLeaf"];
     first: Omit<LineResolution, "leaf">;
     path: readonly ContainerFrame[];
     published?: { label: string; update: boolean; consumedLines: number };
@@ -236,13 +282,13 @@ export class MarkdownLineResolver {
   }
 
   get pendingLeafContent() {
-    const cursor: Cursor = { line: this.pendingLine.content, offset: 0, column: 0 };
+    const cursor: Cursor = { line: this.pendingLine.content, offset: 0, column: 0, partialTab: 0 };
     for (const frame of this.stack.slice(1)) {
       if (frame.kind === "quote") {
         if (!consumeQuote(cursor)) break;
       } else if (frame.kind === "item" && !consumeItemIndent(cursor, frame.contentIndent)) break;
     }
-    return cursor.line.slice(cursor.offset);
+    return cursorContent(cursor);
   }
 
   classifyPending(line = this.pendingLine.content): Readonly<PendingClassification> {
@@ -250,7 +296,7 @@ export class MarkdownLineResolver {
     if (line === this.pendingLine.content && cached && line.length === cached.length) return cached.value;
     const { cursor, unmatched } = this.matchContinuations(line);
     if (!unmatched && this.openLeaf?.kind === "fence") {
-      const content = line.slice(cursor.offset);
+      const content = cursorContent(cursor);
       const marker = this.openLeaf.marker;
       if (new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(content))
         return FENCE;
@@ -339,7 +385,7 @@ export class MarkdownLineResolver {
     const continuedLeaf = this.continueOpenLeaf(cursor, unmatched);
     if (continuedLeaf) return [continuedLeaf];
     const { marker, startsContainer, startsBlock } = this.lineStart(cursor, unmatched);
-    const unmatchedContent = line.slice(cursor.offset);
+    const unmatchedContent = cursorContent(cursor);
     const tableRow = this.continueTableRow(line, cursor, unmatched, blank, startsContainer, startsBlock);
     if (tableRow) return [tableRow];
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
@@ -359,9 +405,10 @@ export class MarkdownLineResolver {
     }
     if (followsContainerOnly && /^ {4}/.test(line))
       return [{ continued: false, lazy: false, closedToDepth, opened }];
-    const content = line.slice(cursor.offset);
-    const interruptedReference = Boolean(this.activeReference) && (unmatched || startsContainer || startsBlock);
-    const reference = this.resolveReference(content, final, closedToDepth, opened, continuesParagraph, lazy, interruptedReference);
+    const content = cursorContent(cursor);
+    const lazyReference = Boolean(this.activeReference) && unmatched && !blank && !startsBlock;
+    const interruptedReference = Boolean(this.activeReference) && !lazyReference && (unmatched || startsContainer || startsBlock);
+    const reference = this.resolveReference(line, cursor, content, final, closedToDepth, opened, continuesParagraph, lazyReference || lazy, interruptedReference);
     if (reference.handled) return reference.results;
     return [...reference.results, this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy)];
   }
@@ -380,7 +427,7 @@ export class MarkdownLineResolver {
       lazy: false,
       closedToDepth: this.stack.length,
       opened: [],
-      leaf: { kind: "table-row", content: line.slice(cursor.offset), path: this.stack.slice() },
+      leaf: { kind: "table-row", content: cursorContent(cursor), path: this.stack.slice() },
     };
   }
 
@@ -391,6 +438,8 @@ export class MarkdownLineResolver {
   }
 
   private resolveReference(
+    line: string,
+    cursor: Cursor,
     content: string,
     final: boolean,
     closedToDepth: number,
@@ -400,12 +449,18 @@ export class MarkdownLineResolver {
     interrupted: boolean,
   ): { handled: boolean; results: LineResolution[] } {
     const results = interrupted ? this.finishReference() : [];
-    if (this.activeReference) return this.continueReference(content, final, results);
+    const replay = { line, cursor: { ...cursor }, closedToDepth, opened, continuesParagraph, lazy, path: this.stack.slice() };
+    if (this.activeReference) return this.continueReference(content, final, replay, results);
     if (continuesParagraph || lazy) return { handled: false, results };
-    return this.startReference(content, final, closedToDepth, opened, results);
+    return this.startReference(content, final, replay, results);
   }
 
-  private continueReference(content: string, final: boolean, results: LineResolution[]) {
+  private continueReference(
+    content: string,
+    final: boolean,
+    replay: ReferenceReplay,
+    results: LineResolution[],
+  ) {
     const active = this.activeReference!;
     const appended = active.parser.append(normalizeReferenceLeafLine(content));
     if (appended.kind === "definition") {
@@ -413,6 +468,7 @@ export class MarkdownLineResolver {
       return { handled: false, results };
     }
     active.lines.push(content);
+    active.replay.push(replay);
     const ended = final ? active.parser.finish() : active.parser.endLine({ continuation: true });
     if (ended.kind === "definition" || ended.kind === "rejected") results.push(...this.completeReference(ended));
     else results.push(...this.publishPendingReference());
@@ -422,8 +478,7 @@ export class MarkdownLineResolver {
   private startReference(
     content: string,
     final: boolean,
-    closedToDepth: number,
-    opened: OpenedContainer[],
+    replay: ReferenceReplay,
     results: LineResolution[],
   ) {
     const parser = new ReferenceDefinitionParser();
@@ -432,7 +487,9 @@ export class MarkdownLineResolver {
     this.activeReference = {
       parser,
       lines: [content],
-      first: { continued: false, lazy: false, closedToDepth, opened },
+      replay: [replay],
+      openLeaf: this.openLeaf,
+      first: { continued: false, lazy: false, closedToDepth: replay.closedToDepth, opened: replay.opened },
       path: this.stack.slice(),
     };
     const ended = final ? parser.finish() : parser.endLine({ continuation: true });
@@ -468,10 +525,19 @@ export class MarkdownLineResolver {
     const active = this.activeReference;
     this.activeReference = undefined;
     if (!active) return [];
-    const content = active.lines.join("\n");
     if (result.kind !== "definition") {
-      this.openLeaf = { kind: "paragraph", content, tableEligible: true };
-      return [{ ...active.first, leaf: { kind: "paragraph", content, path: active.path } }];
+      if (active.published?.update) this.referenceIndex.delete(active.published.label);
+      this.openLeaf = active.openLeaf;
+      return active.replay.map((replay, index) => this.resolveLeaf(
+        cursorContent(replay.cursor),
+        replay.line,
+        { ...replay.cursor },
+        replay.closedToDepth,
+        replay.opened,
+        index > 0 && this.openLeaf?.kind === "paragraph",
+        replay.lazy,
+        replay.path,
+      ));
     }
     const { label, href, title } = result.definition;
     const firstDefinition = !this.referenceIndex.has(label);
@@ -560,12 +626,11 @@ export class MarkdownLineResolver {
    * continuation line quadratic.
    */
   private startsLeafBlock(cursor: Cursor) {
-    const { line, offset } = cursor;
-    let first = offset;
-    while (line.charCodeAt(first) === 32 || line.charCodeAt(first) === 9) first++;
-    const lead = line[first];
+    const unmatchedContent = cursorContent(cursor);
+    let first = 0;
+    while (unmatchedContent.charCodeAt(first) === 32 || unmatchedContent.charCodeAt(first) === 9) first++;
+    const lead = unmatchedContent[first];
     if (lead === undefined || !"#`~*-_=|:".includes(lead)) return false;
-    const unmatchedContent = line.slice(offset);
     const leaf = this.openLeaf;
     if (leaf?.kind === "paragraph" && leaf.tableEligible) {
       if ("|-:".includes(lead) && leaf.content.includes("|") && isTableDelimiter(unmatchedContent)) return true;
@@ -575,7 +640,7 @@ export class MarkdownLineResolver {
   }
 
   private matchContinuations(line: string) {
-    const cursor: Cursor = { line, offset: 0, column: 0 };
+    const cursor: Cursor = { line, offset: 0, column: 0, partialTab: 0 };
     let matchedDepth = 1;
     for (; matchedDepth < this.stack.length; matchedDepth++) {
       const frame = this.stack[matchedDepth]!;
@@ -595,7 +660,7 @@ export class MarkdownLineResolver {
 
   private continueOpenLeaf(cursor: Cursor, unmatched: boolean): LineResolution | undefined {
     if (unmatched || this.openLeaf?.kind !== "fence" && this.openLeaf?.kind !== "html") return undefined;
-    const content = cursor.line.slice(cursor.offset);
+    const content = cursorContent(cursor);
     if (this.openLeaf.kind === "fence") {
       const marker = this.openLeaf.marker;
       const closes = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}\\s*$`).test(content);
@@ -628,7 +693,7 @@ export class MarkdownLineResolver {
         opened.push(frame);
         continue;
       }
-      if (isThematicBreak(cursor.line.slice(cursor.offset))) break;
+      if (isThematicBreak(cursorContent(cursor))) break;
       const marker = listMarker(cursor);
       if (!marker) break;
       const existing = this.stack.at(-1);
@@ -652,17 +717,21 @@ export class MarkdownLineResolver {
     opened: OpenedContainer[],
     continuesParagraph: boolean,
     lazy: boolean,
+    resolvedPath?: readonly ContainerFrame[],
   ): LineResolution {
-    const path = this.stack.slice();
+    const path = resolvedPath ?? this.stack.slice();
     if (continuesParagraph && this.openLeaf?.kind === "paragraph") {
-      this.openLeaf.content += `\n${content}`;
+      const paragraphCursor = { ...cursor };
+      consumeIndent(paragraphCursor, 4);
+      const paragraphLine = cursorContent(paragraphCursor);
+      this.openLeaf.content += `\n${paragraphLine}`;
       if (lazy) this.openLeaf.tableEligible = false;
       return {
         continued: true,
         lazy: true,
         closedToDepth,
         opened,
-        leaf: { kind: "paragraph", content, path: path },
+        leaf: { kind: "paragraph", content: paragraphLine, path: path },
       };
     }
     const htmlEnd = htmlBlockEnd(content);
@@ -742,19 +811,22 @@ export class MarkdownLineResolver {
         lazy: false,
         closedToDepth,
         opened,
-        leaf: { kind: "indented-code", content: line.slice(indented.offset), path: path },
+        leaf: { kind: "indented-code", content: cursorContent(indented), path: path },
       };
     }
     const previousParagraph = this.openLeaf?.kind === "paragraph" ? this.openLeaf : undefined;
     const continued = Boolean(previousParagraph) && opened.length === 0;
-    const paragraphContent = continued ? `${previousParagraph!.content}\n${content}` : content;
+    const paragraphCursor = { ...cursor };
+    consumeIndent(paragraphCursor, previousParagraph ? 4 : 3);
+    const paragraphLine = cursorContent(paragraphCursor);
+    const paragraphContent = continued ? `${previousParagraph!.content}\n${paragraphLine}` : paragraphLine;
     this.openLeaf = { kind: "paragraph", content: paragraphContent, tableEligible: true };
     return {
       continued,
       lazy,
       closedToDepth,
       opened,
-      leaf: { kind: "paragraph", content, path: path },
+      leaf: { kind: "paragraph", content: paragraphLine, path: path },
     };
   }
 }
