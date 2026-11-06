@@ -22,12 +22,29 @@ function normalized(html: string) {
 }
 
 function oracle(source: string) {
-  const parser = new commonmark.Parser();
-  const document = parser.parse(source);
-  return {
-    html: new commonmark.HtmlRenderer().render(document),
-    references: (parser as unknown as { refmap: Record<string, OracleReference> }).refmap,
+  // commonmark.js counts UTF-16 units; map astral code points one-to-one so its 999-character gate follows the spec.
+  const astral = new Map<string, string>();
+  const encoded = source.replace(/[\u{10000}-\u{10ffff}]/gu, (character) => {
+    let replacement = astral.get(character);
+    if (!replacement) {
+      replacement = String.fromCodePoint(0xe000 + astral.size);
+      astral.set(character, replacement);
+    }
+    return replacement;
+  });
+  const decode = (value: string) => {
+    for (const [character, replacement] of astral) value = value.replaceAll(replacement, character);
+    return value;
   };
+  const parser = new commonmark.Parser();
+  const document = parser.parse(encoded);
+  const references = Object.fromEntries(Object.entries(
+    (parser as unknown as { refmap: Record<string, OracleReference> }).refmap,
+  ).map(([label, value]) => [decode(label), {
+    destination: decode(value.destination),
+    title: decode(value.title),
+  }]));
+  return { html: decode(new commonmark.HtmlRenderer().render(document)), references };
 }
 
 function fulcrumReferences(source: string) {
@@ -75,6 +92,7 @@ const generated = [
   `[${"a".repeat(998)}]: /url\n\n[${"a".repeat(998)}]`,
   `[${"a".repeat(999)}]: /url\n\n[${"a".repeat(999)}]`,
   `[${"a".repeat(1000)}]: /url\n\n[${"a".repeat(1000)}]`,
+  `[${"😀".repeat(998)}]: /url\n\n[${"😀".repeat(998)}]`,
   `[${"😀".repeat(999)}]: /url\n\n[${"😀".repeat(999)}]`,
   `[${"😀".repeat(1000)}]: /url\n\n[${"😀".repeat(1000)}]`,
   `[${"\\*".repeat(499)}a]: /url\n\n[${"\\*".repeat(499)}a]`,
@@ -84,6 +102,6 @@ const generated = [
   "[foldẞ]: /url\n\n[foldß]",
 ];
 
-test.each(generated)("generated reference definition agrees with commonmark: %s", (source) => {
-  expectOracleAgreement(source);
+test("generated reference definitions agree with commonmark", () => {
+  for (const source of generated) expectOracleAgreement(source);
 });
