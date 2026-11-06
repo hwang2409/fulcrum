@@ -163,7 +163,7 @@ for (const [marker, indent] of [["- ", "  "], ["-\t", "\t"], ["- \t", "  \t"], [
 referenceMatrix.push(
   "> [r]:\n  /url\n",
   "> [r]: /url\n  'title'\n",
-  "> [r]: /url '\n  title\n  '\n",
+  "> [r]: /url '\n  title\n> '\n",
   "- [r]:\n /url\n\n",
   "- [r]: /url\n 'title'\n\n",
   "1. [r]:\n /url\n\n",

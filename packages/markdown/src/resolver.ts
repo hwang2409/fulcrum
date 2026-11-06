@@ -390,6 +390,11 @@ export class MarkdownLineResolver {
     if (tableRow) return [tableRow];
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
     let { continuesParagraph, lazy } = this.lazyContinuation(blank, startsBlock, unmatched);
+    const referenceContinuesLazily = Boolean(this.activeReference) && unmatched && !blank && !startsBlock;
+    if (referenceContinuesLazily) {
+      continuesParagraph = true;
+      lazy = true;
+    }
     if (followsContainerOnly && this.isReferenceStart(unmatchedContent)) {
       continuesParagraph = false;
       lazy = false;
@@ -406,9 +411,8 @@ export class MarkdownLineResolver {
     if (followsContainerOnly && /^ {4}/.test(line))
       return [{ continued: false, lazy: false, closedToDepth, opened }];
     const content = cursorContent(cursor);
-    const lazyReference = Boolean(this.activeReference) && unmatched && !blank && !startsBlock;
-    const interruptedReference = Boolean(this.activeReference) && !lazyReference && (unmatched || startsContainer || startsBlock);
-    const reference = this.resolveReference(line, cursor, content, final, closedToDepth, opened, continuesParagraph, lazyReference || lazy, interruptedReference);
+    const interruptedReference = Boolean(this.activeReference) && !referenceContinuesLazily && (unmatched || startsContainer || startsBlock);
+    const reference = this.resolveReference(line, cursor, content, final, closedToDepth, opened, continuesParagraph, lazy, interruptedReference);
     if (reference.handled) return reference.results;
     return [...reference.results, this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy)];
   }
