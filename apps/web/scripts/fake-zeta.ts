@@ -143,7 +143,11 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
     e("assistant_message", { message: { role: "assistant", content: [text(reply)] } });
     histories[session] = [...(histories[session] ?? []), { id: `reply-${sent.length}`, role: "assistant", content: [text(reply)], tool_result: null }];
     // As in zeta: a turn with no tool call reaches no provider boundary, so steering still queued at its end is dropped.
-    for (const id of turn.steers) statuses.set(id, "dropped");
+    for (const id of turn.steers) {
+      statuses.set(id, "dropped");
+      e("delivery_status", { delivery_id: id, method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" });
+      histories[session] = [...(histories[session] ?? []), { id: `delivery-${id}`, role: "system", event: "delivery_status", delivery_id: id, method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" }];
+    }
     e("turn_end", { data: { turn: sent.length } });
     chat = null;
     running.set(false);

@@ -26,6 +26,7 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
   return (
     <>
       {cutByHeader(command) ? <Command text={boundText(command).text} id={`${item.id}:command`} /> : null}
+      {item.result?.truncated ? <div data-part="tool-truncated">output truncated</div> : null}
       {split ? (
         <>
           {stdout ? <Output text={stdout} id={`${item.id}:stdout`} done={done} /> : null}

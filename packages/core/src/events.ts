@@ -64,6 +64,7 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Adapter metadata for bounded wire projections. */
   meta?: Record<string, unknown>;
 }
 /**
@@ -88,6 +89,8 @@ export interface ToolResult {
   is_canceled?: boolean;
   /** What the result carries beside its text, such as images, in order. Renderers show them under the output. */
   blocks?: ContentBlock[];
+  /** A retained structured result was bounded by the wire. */
+  truncated?: boolean;
 }
 export type SubAgentStatus =
   | "running"
@@ -212,7 +215,11 @@ export type RunEvent =
        * a new message stays one row. Leave it unset when the transport cannot tell; every message is then its own row.
        */
       intent?: string;
+      delivery_status?: "delivered" | "dropped";
+      delivery_reason?: string;
     }
+  | { type: "delivery_status"; delivery_id: string; method: string; status: "delivered" | "dropped"; content: string; reason?: string }
+  | { type: "history_truncated"; text: string }
   /** `code: "aborted"` means the user stopped the run (a stop, not a failure); parts show it as a neutral "stopped". */
   | { type: "error"; error: { code: string; message: string } }
   | {

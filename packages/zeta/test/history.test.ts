@@ -11,6 +11,12 @@ const rows = [
   { id: "e5", role: "system", content: [{ type: "text", text: "agent finished" }], tool_result: null, notification: { notification_id: "n1", kind: "agent_completion" } },
 ];
 
+test("history image stubs keep metadata without inventing a zero-byte size", () => {
+  const [event] = fromZetaHistory([{ id: "t1", role: "tool_result", content: [], tool_result: { tool_call_id: "call", content: "", is_error: false, content_blocks: [{ type: "image", mimeType: "image/png", width: 3, height: 2, data_omitted: true }] } }]);
+  expect(event).toMatchObject({ type: "tool_end", tool_result: { blocks: [{ type: "image", mediaType: "image/png", width: 3, height: 2 }] } });
+  expect(event).not.toHaveProperty("tool_result.blocks[0].size");
+});
+
 test("maps negotiated history image stubs to generic lazy images without storing bytes", () => {
   const events = fromZetaHistory([
     { id: "m1", role: "user", content: [{ type: "attachment", name: "shot.png", size: 12, handle: "opaque-message" }], tool_result: null },
@@ -105,6 +111,43 @@ test("bash text that is not zeta's stdout/stderr shape stays raw output", () => 
     expect(end).toMatchObject({ type: "tool_end", view: { kind: "shell", command: "sleep 9" } });
     expect((end as { view: object }).view).not.toHaveProperty("stdout");
   }
+});
+
+test("live events and history rows project the same tool turn", () => {
+  const call = { id: "t1", name: "bash", arguments: { command: "printf ok" } };
+  const result = { tool_call_id: "t1", content: "stdout:\\nok\\nstderr:\\n", is_error: false, content_blocks: [], structured_content: { exit_code: 0, stdout: "ok", stderr: "", stdout_truncated: false, stderr_truncated: false, cwd_after: "/tmp" }, structured_content_truncated: false };
+  const live = [...fromZetaEvent({ event: "tool_start", tool_call: call }), ...fromZetaEvent({ event: "tool_end", tool_call: call, tool_result: result })];
+  const history = fromZetaHistory([
+    { id: "a", role: "assistant", content: [{ type: "tool_use", tool_call: call }], tool_result: null },
+    { id: "r", role: "tool_result", content: [], tool_result: result },
+  ]);
+  expect(history.map(({ type, tool_call, view, tool_result }) => ({ type, tool_call, view, tool_result }))).toEqual(live.map(({ type, tool_call, view, tool_result }) => ({ type, tool_call, view, tool_result })));
+});
+
+test("history fidelity preserves arguments, structured bash results, and truncation flags", () => {
+  const events = fromZetaHistory([
+    { id: "a", role: "assistant", content: [{ type: "tool_use", tool_call: { id: "t1", name: "bash", arguments: { command: "false", cwd: "/tmp" }, arguments_truncated: true } }], tool_result: null },
+    { id: "r", role: "tool_result", content: [], tool_result: { tool_call_id: "t1", content: "stdout:\\n\\nstderr:\\nfailed\\n", is_error: true, content_blocks: [], structured_content: { exit_code: 2, stdout: "", stderr: "failed\\n", stdout_truncated: false, stderr_truncated: true, cwd_after: "/tmp" }, structured_content_truncated: true } },
+  ]);
+  expect(events[0]).toMatchObject({ type: "tool_start", tool_call: { arguments: { command: "false", cwd: "/tmp" }, meta: { argumentsTruncated: true } } });
+  expect(events[1]).toMatchObject({ type: "tool_end", view: { kind: "shell", command: "false", exitCode: 2, stdout: "", stderr: "failed\\n", cwd: "/tmp" }, tool_result: { truncated: true } });
+});
+
+test("history fidelity maps dropped steers without duplicating the user row", () => {
+  const events = fromZetaHistory([
+    { id: "u", role: "user", delivery_id: "d1", content: [{ type: "text", text: "check this" }], tool_result: null },
+    { id: "s", role: "system", event: "delivery_status", delivery_id: "d1", method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" },
+  ]);
+  expect(events).toEqual([
+    { type: "user_message", message_id: "u", text: "check this", mode: "send", delivery_id: "d1" },
+    { type: "delivery_status", delivery_id: "d1", method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" },
+  ]);
+});
+
+test("oversized history groups become compact notices", () => {
+  expect(fromZetaHistory([{ id: "g", role: "system", event: "history_group_truncated", content: [{ type: "text", text: "[history group too large; truncated]" }] }])).toEqual([
+    { type: "history_truncated", text: "[history group too large; truncated]" },
+  ]);
 });
 
 test("a bash call with no arguments in history keeps the generic card until zeta keeps arguments (GAPS #3)", () => {
