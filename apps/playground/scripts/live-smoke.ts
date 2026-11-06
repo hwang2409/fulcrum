@@ -61,7 +61,7 @@ try {
   child.once("error", (error) => { spawnError = error; });
 
   const discovery = join(home, "run", "serve.ws.json");
-  let connection: { port: number; token: string } | undefined;
+  let connection: { port: number; controller_token: string; observer_token: string } | undefined;
   for (let attempt = 0; attempt < 100; attempt++) {
     try {
       connection = JSON.parse(await readFile(discovery, "utf8"));
@@ -77,7 +77,7 @@ try {
   }
 
   const url = `ws://127.0.0.1:${connection.port}/`;
-  const token = connection.token;
+  const token = connection.controller_token;
   const rows: Array<[string, string]> = [];
   const check = async (name: string, run: () => Promise<void>) => {
     try {
@@ -91,7 +91,7 @@ try {
   const settle = () => Bun.sleep(50);
 
   await check("hello", async () => {
-    const transport = await webSocketTransport(`${url}?token=${encodeURIComponent(token)}`);
+    const transport = await webSocketTransport(url, ["zeta.v1", `zeta.bearer.${token}`]);
     const client = createClient(transport);
     const hello = await client.hello();
     console.log(
@@ -132,7 +132,7 @@ try {
 
   const raw = (payload: string | ArrayBuffer, expected: number) =>
     new Promise<void>((resolve, reject) => {
-      const socket = new WebSocket(`${url}?token=${encodeURIComponent(token)}`);
+      const socket = new WebSocket(url, ["zeta.v1", `zeta.bearer.${token}`]);
       const timeout = setTimeout(() => {
         socket.close();
         reject(new Error("timed out waiting for close"));

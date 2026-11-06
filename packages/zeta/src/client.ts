@@ -467,10 +467,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!hostCommandsEnabled() || (method !== "send" && method !== "send_images")) return result;
     return result.catch((error) => isHostBindingRequired(error) ? recoverHostBinding(method, params, requestOptions, error) : Promise.reject(error));
   };
-  const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
+  const hello = (requestedFeatures?: string[], role: "controller" | "observer" = "controller"): Promise<HelloResult> => {
     const requested = new Set(requestedFeatures ?? []);
     const features = [...new Set([...(requestedFeatures ?? []), ...(requested.has("delivery_id") ? ["send_images_delivery_id"] : []), ...(options.hostCommands ? ["session_host_commands"] : [])])];
-    const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", ...(features ? { features } : {}) }) as Promise<HelloResult>;
+    const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", role, ...(features ? { features } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => {
       handshaken = true;
       negotiatedProtocol = typeof result.protocol_version === "string" ? result.protocol_version : "1.0";

@@ -221,7 +221,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
-  let token = crypto.randomUUID();
+  let controllerToken = crypto.randomUUID();
+  let observerToken = crypto.randomUUID();
   let mode: Mode = "ok";
   let liveEnabled = live;
   let currentHistoryMode = historyMode;
@@ -249,6 +250,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let controller: ServerWebSocket<unknown> | null = null;
   const reconnectControllers = new WeakSet<object>();
   const negotiatedFeatures = new WeakMap<object, Set<string>>();
+  const connectionRoles = new WeakMap<object, "controller" | "observer">();
   const hostBoundSessions = new Set<string>();
   const hostBindingRequired = new Set<string>();
   const contentReaders = new WeakSet<object>();
@@ -303,14 +305,15 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     fetch(request, bun) {
       const url = new URL(request.url);
       const origin = request.headers.get("origin");
-      if (url.searchParams.get("token") !== token || (origin && !allowed.includes(origin))) return new Response("forbidden", { status: 403 });
-      return bun.upgrade(request) ? undefined : new Response("upgrade required", { status: 426 });
+      const bearer = request.headers.get("sec-websocket-protocol")?.split(",").map((value) => value.trim()).find((value) => value.startsWith("zeta.bearer."))?.slice("zeta.bearer.".length);
+      if (!bearer || ![controllerToken, observerToken].includes(bearer) || (origin && !allowed.includes(origin))) return new Response("forbidden", { status: 403 });
+      return bun.upgrade(request, { data: { bearer } }) ? undefined : new Response("upgrade required", { status: 426 });
     },
     websocket: {
       open(socket) { sockets.add(socket); },
       close(socket) {
         sockets.delete(socket);
-        if (socket !== controller) return;
+        if (connectionRoles.get(socket as object) !== "controller") return;
         controller = null;
         if (active && hostBoundSessions.has(active)) hostBindingRequired.add(active);
         if (!decide || approvalAborted) return;
@@ -341,10 +344,16 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         };
         const send = (event: Json) => { for (const each of sockets) each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); };
         if (method === "hello") {
-          if (mode === "busy" || sockets.size > 1) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
+          const bearer = (socket.data as { bearer?: string }).bearer;
+          const requestedRole = params.role === "observer" ? "observer" : "controller";
+          if (bearer === observerToken && requestedRole === "controller") return reply({ error: { code: -32602, message: "credential permits observer role only" } });
+          if (requestedRole === "observer" && !(params.features as string[] | undefined)?.includes("serve_observers")) return reply({ error: { code: -32602, message: "observer requires protocol 1.1 and serve_observers" } });
+          connectionRoles.set(socket as object, requestedRole);
+          const observers = [...sockets].filter((each) => connectionRoles.get(each as object) === "observer").length;
+          if (mode === "busy" || (requestedRole === "controller" ? controller !== null : observers >= 8)) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
-          controller = socket;
+          if (requestedRole === "controller") controller = socket;
           const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect)) ?? [];
           negotiatedFeatures.set(socket as object, new Set(features));
           const reconnect = features.includes("approval_reconnect");
@@ -361,6 +370,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           }
           return;
         }
+        if (connectionRoles.get(socket as object) === "observer" && !["list_sessions", "status", "session_tree", "session_history", "model_catalog", "session_settings", "ping", "delivery_status", "content_read"].includes(method)) return reply({ error: { code: -32008, message: "observer is read-only", data: { code: "observer_read_only", method } } });
         const binding = parseHostBinding(socket, method, params);
         if (binding?.error) return reply({ error: { code: -32602, message: binding.error } });
         if (method === "new_session") {
@@ -472,7 +482,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   });
 
   const write = (value: Json) => writeFile(discovery, JSON.stringify(value), { mode: 0o600 });
-  await write({ port: server.port, token, pid: process.pid, origins: allowed });
+  await write({ port: server.port, controller_token: controllerToken, observer_token: observerToken, pid: process.pid, origins: allowed });
   return {
     home,
     port: server.port,
@@ -493,14 +503,15 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     },
     async start() {
       allowed = origins;
-      token = crypto.randomUUID();
+      controllerToken = crypto.randomUUID();
+      observerToken = crypto.randomUUID();
       if (!decide) { approvalAborted = false; running = false; }
-      await write({ port: server.port, token, pid: process.pid, origins: allowed });
+      await write({ port: server.port, controller_token: controllerToken, observer_token: observerToken, pid: process.pid, origins: allowed });
     },
     /** Lists other origins in the allowlist, so this page's origin is missing. */
-    async foreignOrigin() { allowed = ["http://localhost:5173"]; await write({ port: server.port, token, pid: process.pid, origins: allowed }); },
+    async foreignOrigin() { allowed = ["http://localhost:5173"]; await write({ port: server.port, controller_token: controllerToken, observer_token: observerToken, pid: process.pid, origins: allowed }); },
     /** Hands out a token the server will refuse. */
-    async wrongToken() { await write({ port: server.port, token: "stale-token", pid: process.pid, origins: allowed }); },
+    async wrongToken() { await write({ port: server.port, controller_token: "stale-token", observer_token: "stale-token", pid: process.pid, origins: allowed }); },
     setMode(next: Mode) { mode = next; },
     setOpenDelay(ms: number) { openDelay = ms; },
     /** `true`: new_session fails the way real zeta does while a turn runs (`require_idle`). */

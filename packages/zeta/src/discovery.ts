@@ -35,11 +35,13 @@ export function createZetaDiscoveryHandler(
       return;
     }
     try {
-      const data = JSON.parse(await readFile(file, "utf8")) as { port: number; token: string; pid?: unknown; origins?: unknown };
+      const data = JSON.parse(await readFile(file, "utf8")) as { port: number; controller_token?: string; observer_token?: string; token?: string; pid?: unknown; origins?: unknown };
       // A crash leaves the file behind; a dead pid means the server is not running.
       if (!alive(data.pid)) throw new Error("stale discovery file");
       const allowed = Array.isArray(data.origins) ? data.origins.filter((origin): origin is string => typeof origin === "string") : [];
-      const body: ZetaDiscovery = { url: `ws://127.0.0.1:${data.port}/`, token: data.token, origins: allowed };
+      const controller_token = data.controller_token ?? data.token;
+      if (typeof controller_token !== "string") throw new Error("invalid discovery file");
+      const body: ZetaDiscovery = { url: `ws://127.0.0.1:${data.port}/`, controller_token, observer_token: data.observer_token ?? controller_token, origins: allowed };
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "no-store");

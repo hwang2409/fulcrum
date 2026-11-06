@@ -8,7 +8,7 @@ import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
 import { MermaidFence } from "@fulcrum/mermaid";
 import { Approval, Message, RunProvider, Timeline, useItem, useTimeline, type Renderers } from "@fulcrum/react";
-import { connectZeta, discoverZeta, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
+import { connectZeta, discoverZeta, parseConnectFragment, parseZetaUrl, type ZetaError } from "@fulcrum/zeta";
 import { fromZetaEvent, type EventParams } from "@fulcrum/zeta";
 import { relabel, replayStep } from "./replay";
 import { Shell } from "./shell";
@@ -274,9 +274,9 @@ function Live() {
   const [sessions, setSessions] = useState<Array<{ id: string; name?: string }>>([]);
   const [error, setError] = useState("");
   const [text, setText] = useState("");
-  useEffect(() => { void discoverZeta().then((value) => { if (value) setInput(`${value.url}?token=${encodeURIComponent(value.token)}`); }).catch(() => {}); }, []);
+  useEffect(() => { void discoverZeta().then((value) => { if (value) setInput(`#ws=${encodeURIComponent(value.url)}&token=${encodeURIComponent(value.controller_token)}`); }).catch(() => {}); }, []);
   const connect = async () => {
-    const parsed = parseZetaUrl(input);
+    const parsed = parseZetaUrl(input) ?? parseConnectFragment(input);
     if (!parsed) { setError("paste a loopback websocket url with its token"); return; }
     try {
       const next = await connectZeta(parsed);
@@ -308,7 +308,7 @@ function Live() {
     <Shell page="playground">
       <div className="toolbar">
         <strong>live zeta</strong>
-        <input aria-label="zeta websocket url" value={input} onChange={(e) => setInput(e.target.value)} placeholder="ws://127.0.0.1:8765/?token=..." />
+        <input aria-label="zeta websocket url" value={input} onChange={(e) => setInput(e.target.value)} placeholder="ws://127.0.0.1:8765/ + token (or a #ws=...&token=... fragment)" />
         <button type="button" onClick={() => void connect()}>connect</button>
         <select aria-label="session" value={session ?? ""} onChange={(e) => setSession(e.target.value)}><option value="">session</option>{sessions.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.id}</option>)}</select>
         {error && <span role="alert">{error}</span>}

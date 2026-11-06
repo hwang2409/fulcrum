@@ -31,7 +31,9 @@ zeta serve --ws 8765 --ws-origin http://localhost:5173
 make dev
 ```
 
-open the live zeta panel and paste the discovery url from `$ZETA_HOME/run/serve.ws.json` (the dev helper can fill it in when available).
+open the live zeta panel and paste a loopback websocket url and token from `$ZETA_HOME/run/serve.ws.json` (the dev helper can fill it in when available). Tokens are sent in the `zeta.bearer.<token>` websocket subprotocol and never in the url. `connectZeta` removes a legacy `?token=` query parameter before opening the socket; it does not send query credentials.
+
+connection errors are typed as `ZetaError`: `connect_failed` means the socket or hello failed, `busy` means zeta already has its controller, `version_mismatch` means the protocol is unsupported, `role_mismatch` means the credential cannot use the requested role, and `closed` means the socket closed after hello. `role_mismatch` has the human message `zeta credential and requested role do not match`; credentials are never included in errors.
 
 ### session host commands
 
@@ -40,7 +42,8 @@ hosts can opt into zeta's negotiated `session_host_commands` feature with a supp
 ```ts
 const client = await connectZeta({
   url,
-  token,
+  token: controller_token,
+  role: "controller",
   hostCommands: async (sessionId) => [{
     name: "render",
     executable: "/opt/my-host/bin/render",

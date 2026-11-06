@@ -12,7 +12,7 @@ let previousHome: string | undefined;
 beforeAll(async () => {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-zeta-home-"));
   await mkdir(join(home, "run"));
-  await writeFile(join(home, "run", "serve.ws.json"), JSON.stringify({ port: 8765, token: "secret" }));
+  await writeFile(join(home, "run", "serve.ws.json"), JSON.stringify({ port: 8765, controller_token: "controller", observer_token: "observer" }));
   previousHome = process.env.ZETA_HOME;
   process.env.ZETA_HOME = home;
   server = await createServer({ configFile: false, plugins: [zetaDiscoveryPlugin()], server: { port: 0, cors: false } });
@@ -34,7 +34,7 @@ const sameOrigin = () => ({ "Sec-Fetch-Site": "same-origin", Origin: base });
 test("works on the actually bound port with no CORS headers", async () => {
   const response = await request(sameOrigin());
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ url: "ws://127.0.0.1:8765/", token: "secret", origins: [] });
+  expect(await response.json()).toEqual({ url: "ws://127.0.0.1:8765/", controller_token: "controller", observer_token: "observer", origins: [] });
   expect([...response.headers.keys()].filter((key) => key.startsWith("access-control-"))).toEqual([]);
 });
 
