@@ -87,24 +87,28 @@ function storeReference(state: any, result: Extract<ReferenceDisposition, { kind
   return true;
 }
 
-block.ruler.at("reference", (state: any, startLine: number, _endLine: number, silent: boolean) => {
-  const start = state.bMarks[startLine] + state.tShift[startLine];
-  if (state.sCount[startLine] - state.blkIndent >= 4 || state.src[start] !== "[") return false;
+function parseReferenceBlock(state: any, startLine: number) {
   const parser = new ReferenceDefinitionParser();
   for (let line = startLine; line < state.lineMax; line++) {
     const content = state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]);
     const appended = parser.append(content);
-    if (appended.kind === "definition")
-      return storeReference(state, appended, startLine + appended.consumedLines, silent);
-    if (appended.kind === "rejected" || appended.kind === "ineligible") return false;
+    if (appended.kind === "definition") return appended;
+    if (appended.kind === "rejected" || appended.kind === "ineligible") return undefined;
     const continuation = referenceContinuation(state, line + 1);
     const ended = parser.endLine({ continuation });
-    if (ended.kind === "definition")
-      return storeReference(state, ended, startLine + ended.consumedLines, silent);
-    if (ended.kind === "rejected" || !continuation) return false;
+    if (ended.kind === "definition") return ended;
+    if (ended.kind === "rejected" || !continuation) return undefined;
   }
-  return false;
-});
+}
+
+function referenceRule(state: any, startLine: number, _endLine: number, silent: boolean) {
+  const start = state.bMarks[startLine] + state.tShift[startLine];
+  if (state.sCount[startLine] - state.blkIndent >= 4 || state.src[start] !== "[") return false;
+  const result = parseReferenceBlock(state, startLine);
+  return result ? storeReference(state, result, startLine + result.consumedLines, silent) : false;
+}
+
+block.ruler.at("reference", referenceRule);
 
 const attr = (token: MarkdownToken, name: string) => token.attrGet(name) ?? undefined;
 

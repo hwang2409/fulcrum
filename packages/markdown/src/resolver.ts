@@ -340,15 +340,8 @@ export class MarkdownLineResolver {
     if (continuedLeaf) return [continuedLeaf];
     const { marker, startsContainer, startsBlock } = this.lineStart(cursor, unmatched);
     const unmatchedContent = line.slice(cursor.offset);
-    if (!unmatched && this.openLeaf?.kind === "table" && !blank && !startsContainer && !startsBlock) {
-      return [{
-        continued: true,
-        lazy: false,
-        closedToDepth: this.stack.length,
-        opened: [],
-        leaf: { kind: "table-row", content: line.slice(cursor.offset), path: this.stack.slice() },
-      }];
-    }
+    const tableRow = this.continueTableRow(line, cursor, unmatched, blank, startsContainer, startsBlock);
+    if (tableRow) return [tableRow];
     if (this.openLeaf?.kind === "table") this.openLeaf = undefined;
     let { continuesParagraph, lazy } = this.lazyContinuation(blank, startsBlock, unmatched);
     if (followsContainerOnly && this.isReferenceStart(unmatchedContent)) {
@@ -373,6 +366,24 @@ export class MarkdownLineResolver {
     return [...reference.results, this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy)];
   }
 
+  private continueTableRow(
+    line: string,
+    cursor: Cursor,
+    unmatched: boolean,
+    blank: boolean,
+    startsContainer: boolean,
+    startsBlock: boolean,
+  ): LineResolution | undefined {
+    if (unmatched || this.openLeaf?.kind !== "table" || blank || startsContainer || startsBlock) return undefined;
+    return {
+      continued: true,
+      lazy: false,
+      closedToDepth: this.stack.length,
+      opened: [],
+      leaf: { kind: "table-row", content: line.slice(cursor.offset), path: this.stack.slice() },
+    };
+  }
+
   private isReferenceStart(content: string) {
     const parser = new ReferenceDefinitionParser();
     const result = parser.append(content);
@@ -389,21 +400,32 @@ export class MarkdownLineResolver {
     interrupted: boolean,
   ): { handled: boolean; results: LineResolution[] } {
     const results = interrupted ? this.finishReference() : [];
-    if (this.activeReference) {
-      const appended = this.activeReference.parser.append(content);
-      if (appended.kind === "definition") {
-        results.push(...this.completeReference(appended));
-        return { handled: false, results };
-      }
-      this.activeReference.lines.push(content);
-      const ended = final
-        ? this.activeReference.parser.finish()
-        : this.activeReference.parser.endLine({ continuation: true });
-      if (ended.kind === "definition" || ended.kind === "rejected") results.push(...this.completeReference(ended));
-      else results.push(...this.publishPendingReference());
-      return { handled: true, results };
-    }
+    if (this.activeReference) return this.continueReference(content, final, results);
     if (continuesParagraph || lazy || interrupted) return { handled: false, results };
+    return this.startReference(content, final, closedToDepth, opened, results);
+  }
+
+  private continueReference(content: string, final: boolean, results: LineResolution[]) {
+    const active = this.activeReference!;
+    const appended = active.parser.append(content);
+    if (appended.kind === "definition") {
+      results.push(...this.completeReference(appended));
+      return { handled: false, results };
+    }
+    active.lines.push(content);
+    const ended = final ? active.parser.finish() : active.parser.endLine({ continuation: true });
+    if (ended.kind === "definition" || ended.kind === "rejected") results.push(...this.completeReference(ended));
+    else results.push(...this.publishPendingReference());
+    return { handled: true, results };
+  }
+
+  private startReference(
+    content: string,
+    final: boolean,
+    closedToDepth: number,
+    opened: OpenedContainer[],
+    results: LineResolution[],
+  ) {
     const parser = new ReferenceDefinitionParser();
     const appended = parser.append(content);
     if (appended.kind !== "candidate" && appended.kind !== "metadata") return { handled: false, results };
