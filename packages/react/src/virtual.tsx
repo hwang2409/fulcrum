@@ -35,6 +35,8 @@ export type VirtualListState<Id extends string> = {
   observeRow(id: Id): RefCallback<HTMLElement>;
   scrollToId(id: Id, viewportOffset?: number): void;
   scrollToEnd(): void;
+  /** Re-pins after a host-confirmed local action, unless the user is touching the viewport. */
+  requestFollow(): void;
   /** Measured row sizes, to seed a later list over the same outline through `cache`. */
   snapshotCache(): VirtualCache<Id>;
 };
@@ -60,6 +62,7 @@ export function useVirtualList<Id extends string>(
   const resizeFrame = useRef<number | null>(null);
   const pendingEntries = useRef(new Map<Id, number>());
   const touching = useRef(false);
+  const userScrollUntil = useRef(0);
   const touchY = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -149,6 +152,7 @@ export function useVirtualList<Id extends string>(
     const userIntent = () => { ignoreScrollUntil.current = 0; };
     const onWheel = (event: WheelEvent) => {
       userIntent();
+      userScrollUntil.current = performance.now() + 200;
       if (event.deltaY < 0) engine.setFollow(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -244,6 +248,14 @@ export function useVirtualList<Id extends string>(
     container.scrollTop = engine.scrollToEnd();
     ignoreScrollUntil.current = performance.now() + 50;
   }, [engine]);
+  const requestFollow = useCallback(() => {
+    if (touching.current || performance.now() < userScrollUntil.current) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const next = engine.requestFollow();
+    if (next !== null) container.scrollTop = next;
+    ignoreScrollUntil.current = performance.now() + 50;
+  }, [engine]);
 
   const visibleSnapshot = resetPending
     ? { ...snapshot, totalSize: 0, topSpacer: 0, bottomSpacer: 0, rows: [] }
@@ -256,6 +268,7 @@ export function useVirtualList<Id extends string>(
     observeRow,
     scrollToId,
     scrollToEnd,
+    requestFollow,
     snapshotCache: engine.snapshotCache,
   };
 }

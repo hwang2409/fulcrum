@@ -30,6 +30,28 @@ test("fake zeta permits one controller and an observer, without observer cleanup
   }
 });
 
+test("fake zeta enforces eight observers and preserves a controller claim", async () => {
+  const fake = await startFakeZeta({ origins: [], live: false });
+  const connections: Array<{ close(): void }> = [];
+  const rejectedHello = (url: string, token: string, role: "controller" | "observer") => new Promise<{ error?: { code: number; message: string } }>((resolve) => {
+    const socket = new WebSocket(url, ["zeta.v1", `zeta.bearer.${token}`]);
+    socket.onopen = () => socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "hello", params: { role, features: role === "observer" ? ["serve_observers"] : [] } }));
+    socket.onmessage = (event) => { resolve(JSON.parse(String(event.data))); socket.close(); };
+  });
+  try {
+    const connection = await credentials(fake);
+    const controller = await connectZeta({ url: connection.url, token: connection.token });
+    connections.push(controller);
+    for (let index = 0; index < 8; index++) connections.push(await connectZeta({ url: connection.url, role: "observer", token: connection.observerToken }));
+    await expect(rejectedHello(connection.url, connection.observerToken, "observer")).resolves.toMatchObject({ error: { code: -32004, message: "observer limit reached" } });
+    await expect(rejectedHello(connection.url, connection.token, "controller")).resolves.toMatchObject({ error: { code: -32001 } });
+    await expect(controller.request("status")).resolves.toHaveProperty("state", "idle");
+  } finally {
+    for (const connection of connections) connection.close();
+    await fake.close();
+  }
+});
+
 test("fake zeta validates host commands and requires a fresh binding after disconnect", async () => {
   const fake = await startFakeZeta({ origins: [], live: false });
   try {

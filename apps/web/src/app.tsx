@@ -373,6 +373,7 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
     } else if (!opener.current?.closest("#sessions") && (document.activeElement === opener.current || document.activeElement === document.body)) scroll.current?.focus({ preventScroll: true });
   }, [open.lease.store, opener, focusComposer]);
   const [undelivered, setUndelivered] = useState<ReadonlySet<string>>(() => new Set());
+  const [followRequest, setFollowRequest] = useState(0);
   const onUndelivered = useCallback((intents: string[]) => {
     if (intents.length) setUndelivered((current) => new Set([...current, ...intents]));
   }, []);
@@ -390,10 +391,10 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
         <RunProvider store={open.lease.store} highlight={highlight} onRetry={client ? () => client.retrySession(open.id) : undefined} loadMedia={loadMedia}>
           <RefreshOnIdle sessions={sessions} />
           <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready={ready ? "true" : undefined}>
-            <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
+            <Timeline renderers={renderers} virtual scrollRef={scroll} followRequest={followRequest} aria-label="session activity" />
             <EmptyRun />
           </div>
-          <RunComposer key={open.id} client={open.stale || readOnly ? null : client} store={open.lease.store} onUndelivered={onUndelivered} readOnly={readOnly} />
+          <RunComposer key={open.id} client={open.stale || readOnly ? null : client} store={open.lease.store} onUndelivered={onUndelivered} onOwnSend={() => setFollowRequest((value) => value + 1)} readOnly={readOnly} />
         </RunProvider>
       </Undelivered>
     </Decisions.Provider>
@@ -414,7 +415,7 @@ function EmptyRun() {
 const offline = () => Promise.reject(new Error("not connected to zeta serve"));
 
 /** The message box: send while idle, steer while a turn runs (zeta always takes steering), stop the turn. */
-function RunComposer({ client, store, onUndelivered, readOnly }: { client: ZetaClient | null; store: SessionStore; onUndelivered(intents: string[]): void; readOnly: boolean }) {
+function RunComposer({ client, store, onUndelivered, onOwnSend, readOnly }: { client: ZetaClient | null; store: SessionStore; onUndelivered(intents: string[]): void; onOwnSend(): void; readOnly: boolean }) {
   const running = useRun((state) => state.agent === "running");
   const delivery = useMemo(() => createDelivery(undefined, (event) => {
     const deliveryId = event.type === "user_message" && event.delivery_id;
@@ -426,7 +427,10 @@ function RunComposer({ client, store, onUndelivered, readOnly }: { client: ZetaC
     if (!running && wasRunning.current && client) delivery.turnEnded(client).then(onUndelivered, () => {});
     wasRunning.current = running;
   }, [running, client, delivery, onUndelivered]);
-  const onSubmit = useCallback((text: string, { steer }: { steer: boolean }) => (client ? delivery.submit(client, text, steer) : offline()), [client, delivery]);
+  const onSubmit = useCallback((text: string, { steer }: { steer: boolean }) => {
+    if (!client) return offline();
+    return delivery.submit(client, text, steer).then(() => { onOwnSend(); });
+  }, [client, delivery, onOwnSend]);
   const onStop = useCallback(() => (client ? delivery.stop(client) : offline()), [client, delivery]);
   return (
     <div className="dock">

@@ -590,6 +590,22 @@ test("explicit upward intent releases follow until the user reaches the exact bo
   expect(virtual.getSnapshot()).toMatchObject({ pinned: true, unseenCount: 0 });
 });
 
+test("measurement growth keeps a pinned viewport at the bottom", () => {
+  const virtual = engine([100, 100], 100, 100);
+  virtual.setFollow(true);
+  const token = virtual.beforeMutation();
+  virtual.measure("row-1", 200);
+  virtual.afterMutation(token);
+  expect(virtual.getSnapshot()).toMatchObject({ pinned: true, scrollTop: 200 });
+});
+
+test("a host follow request re-pins an unpinned viewport", () => {
+  const virtual = engine([100, 100], 100, 0);
+  virtual.setFollow(false);
+  expect(virtual.requestFollow()).toBe(100);
+  expect(virtual.getSnapshot()).toMatchObject({ pinned: true, scrollTop: 100, unseenCount: 0 });
+});
+
 test("scrollToEnd and scrollToId notify with follow mode already updated", () => {
   const virtual = engine(Array(50).fill(20), 100, 0);
   virtual.setViewport({ scrollTop: 0, size: 100, source: "user" });

@@ -522,6 +522,8 @@ export type TimelineProps = {
   scrollRef?: RefObject<HTMLElement | null>;
   /** Accessible name for the chronological activity log. */
   "aria-label"?: string;
+  /** Increment this after a host-accepted local send to re-pin the timeline, unless the user is actively scrolling. */
+  followRequest?: number;
   /** Virtual mode: where a new store's timeline opens. Without it, it opens at the bottom and follows. */
   initialViewport?: TimelineViewport;
   /** Virtual mode: called once with the reading position when this store's timeline unmounts or its store changes. */
@@ -557,10 +559,15 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
   return <><ResyncStatus /><TimelineForStore key={keyForStore(store)} {...props} store={store} /></>;
 });
 
-const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
+const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, followRequest, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
   const { items, change } = useTimelineSnapshot();
   const enabled = virtual ?? items.length > 200;
   const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change, resetKey: store, cache: initialViewport?.cache });
+  const priorFollowRequest = useRef(followRequest);
+  useLayoutEffect(() => {
+    if (followRequest !== undefined && followRequest !== priorFollowRequest.current) list.requestFollow();
+    priorFollowRequest.current = followRequest;
+  }, [followRequest, list.requestFollow]);
   const initialScroll = useRef(enabled);
   const restore = useRef(initialViewport);
   useLayoutEffect(() => {

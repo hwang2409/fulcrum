@@ -69,15 +69,17 @@
 
 [data-part="jump-to-latest"] {
   position: sticky;
-  inset-block-end: 12px;
-  min-height: 32px;
+  inset-block-end: 16px;
+  z-index: 2;
+  display: block;
+  min-height: 34px;
   margin: 0 auto;
   padding: 0 12px;
   appearance: none;
-  border: 0;
+  border: 1px solid var(--fulcrum-border);
   border-radius: 0;
-  background: var(--fulcrum-fg);
-  color: var(--fulcrum-bg);
+  background: var(--fulcrum-panel);
+  color: var(--fulcrum-fg);
   font: 600 13px/1 var(--fulcrum-font);
   font-variant-numeric: tabular-nums;
   cursor: pointer;

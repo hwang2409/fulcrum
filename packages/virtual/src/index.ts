@@ -92,6 +92,8 @@ export type Virtualizer<Id extends string = string> = {
   flushPendingCorrection(): MutationResult;
   scrollToId(id: Id, viewportOffset?: number): number;
   scrollToEnd(): number;
+  /** Requests bottom follow for a host action such as its own newly submitted message. */
+  requestFollow(): number | null;
   snapshotCache(): VirtualCache<Id>;
   subscribe(listener: () => void): () => void;
   getSnapshot(): VirtualSnapshot<Id>;
@@ -562,6 +564,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     setViewport,
     measure(id, size) {
       const expectedAnchor = captureExpectedAnchor();
+      const wasPinned = pinned;
       checkSize(size);
       const index = layout.indexOf(id);
       if (index === undefined) throw new Error("cannot measure an id outside the outline");
@@ -577,6 +580,8 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       if (index < rangeCursorIndex) rangeCursorStart += size - previousSize;
       calibrateKindEstimates();
       restoreExpectedAnchor(expectedAnchor);
+      // A size change is not user input. Keep an already-following viewport following the new bottom.
+      if (wasPinned) pinned = true;
       log("measure", { index, size, totalSize: layout.total });
       changed();
     },
@@ -654,6 +659,13 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       return scrollTop;
     },
     scrollToEnd() {
+      pinned = true;
+      unseenIds.clear();
+      setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
+      return scrollTop;
+    },
+    requestFollow() {
+      if (pinned) return null;
       pinned = true;
       unseenIds.clear();
       setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
