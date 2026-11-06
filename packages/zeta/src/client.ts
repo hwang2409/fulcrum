@@ -1,5 +1,6 @@
 import { createRunStore, type RunEvent, type Scheduler, type RunState } from "@fulcrum/core";
 import { fromZetaEvent } from "./adapter.js";
+import { createDeliveryIdentity } from "./delivery-identity.js";
 import type { HelloResult, RpcError, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
 import {
@@ -117,10 +118,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
   const maxSessions = options.maxSessions ?? 100;
-  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout>; method: string; sessionId?: string; intent?: string; text?: unknown; deliveryId?: string };
+  type Pending = { resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: ReturnType<typeof setTimeout> };
   const pending = new Map<number, Pending>();
-  const settledDeliveries = new Map<string, { sessionId?: string; method: string; text?: unknown; expiresAt: number }>();
-  const SETTLED_DELIVERY_TTL_MS = 5 * 60 * 1000;
+  const deliveryIdentity = createDeliveryIdentity(maxPending);
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
   const replaying = new Set<string>();
@@ -156,7 +156,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     quarantined.delete(id);
     quarantineRevisions.delete(id);
     replayLoads.delete(id);
-    for (const [deliveryId, delivery] of settledDeliveries) if (delivery.sessionId === id) settledDeliveries.delete(deliveryId);
+    deliveryIdentity.evictSession(id);
     const value = stores.get(id);
     if (!value) return false;
     stores.delete(id);
@@ -303,35 +303,25 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     activeLoads.delete(session);
     return true;
   };
+  const canMatchDeliveryId = () => negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("user_message_delivery_id");
+  const canSendImagesDeliveryId = () => negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("send_images_delivery_id");
   const stampIntent = (event: RunEvent, sessionId?: string): RunEvent => {
     if (event.type !== "user_message") return event;
-    const deliveryIds = negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_delivery_id");
-    const hasAttachments = event.attachments !== undefined && event.attachments.length > 0;
-    const owner = deliveryIds && event.delivery_id !== undefined
-      ? [...pending.values()].find((request) => request.deliveryId === event.delivery_id)
-      : [...pending.values()].find((request) => request.intent !== undefined && request.text === event.text && (hasAttachments ? request.method === "send_images" : request.method !== "send_images"));
-    if (owner) {
-      owner.sessionId ??= sessionId;
-      const intent = owner.intent;
-      owner.intent = undefined;
-      return { ...event, ...(intent === undefined ? {} : { intent }) };
-    }
-    if (hasAttachments) {
-      const now = Date.now();
-      for (const [deliveryId, request] of settledDeliveries) {
-        if (request.expiresAt <= now) settledDeliveries.delete(deliveryId);
-        else if (request.sessionId === sessionId && request.method === "send_images" && request.text === event.text) return { ...event, delivery_id: deliveryId };
-      }
-    }
+    const identity = deliveryIdentity.match({
+      sessionId,
+      text: event.text,
+      deliveryId: event.delivery_id,
+      hasAttachments: event.attachments !== undefined && event.attachments.length > 0,
+      canMatchDeliveryId: canMatchDeliveryId(),
+    });
+    if (identity?.deliveryId !== undefined) return { ...event, delivery_id: identity.deliveryId };
+    if (identity?.intent !== undefined) return { ...event, intent: identity.intent };
     return event;
   };
   const settle = (id: number, callback: (request: Pending) => void) => {
     const request = pending.get(id); if (!request) return;
     pending.delete(id); if (request.timer) clearTimeout(request.timer);
-    if (request.deliveryId) {
-      settledDeliveries.set(request.deliveryId, { sessionId: request.sessionId, method: request.method, text: request.text, expiresAt: Date.now() + SETTLED_DELIVERY_TTL_MS });
-      while (settledDeliveries.size > maxPending) settledDeliveries.delete(settledDeliveries.keys().next().value!);
-    }
+    deliveryIdentity.settle(id);
     callback(request);
   };
   const handleEvent = (message: TransportMessage) => {
@@ -374,7 +364,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const error = closeError?.(handshaken, code) ?? new Error("transport closed");
     closed = true;
     closedError = error;
-    settledDeliveries.clear();
+    deliveryIdentity.close();
     pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
     closeSignal(error);
     closeWaiters.forEach((reject) => reject(error));
@@ -394,8 +384,15 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
       const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" })));
-      const item: Pending = { resolve, reject, method, sessionId: typeof params.session_id === "string" ? params.session_id : undefined, intent: requestOptions.intent, text: requestOptions.intent === undefined ? undefined : params.text, deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined };
+      const item: Pending = { resolve, reject };
       pending.set(id, item);
+      deliveryIdentity.track(id, {
+        method,
+        sessionId: typeof params.session_id === "string" ? params.session_id : undefined,
+        intent: requestOptions.intent,
+        text: params.text,
+        deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined,
+      });
       if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true });
       if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs);
       try { transport.send(JSON.stringify({ jsonrpc: "2.0", id, method, params })); }
@@ -460,8 +457,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     }
   };
   const request = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
-    const imageDeliveryIds = negotiatedFeatures.includes("send_images_delivery_id") && negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("user_message_delivery_id");
-    if (method === "send_images" && typeof params.delivery_id === "string" && !imageDeliveryIds) {
+    if (method === "send_images" && typeof params.delivery_id === "string" && !canSendImagesDeliveryId()) {
       params = { ...params };
       delete params.delivery_id;
     }
@@ -473,8 +469,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const hello = (requestedFeatures?: string[]): Promise<HelloResult> => {
     const requested = new Set(requestedFeatures ?? []);
-    const deliveryFeatures = ["delivery_id", "user_message_event", "user_message_delivery_id"];
-    const features = [...new Set([...(requestedFeatures ?? []), ...(deliveryFeatures.every((feature) => requested.has(feature)) ? ["send_images_delivery_id"] : []), ...(options.hostCommands ? ["session_host_commands"] : [])])];
+    const features = [...new Set([...(requestedFeatures ?? []), ...(requested.has("delivery_id") ? ["send_images_delivery_id"] : []), ...(options.hostCommands ? ["session_host_commands"] : [])])];
     const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", ...(features ? { features } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => {
       handshaken = true;
