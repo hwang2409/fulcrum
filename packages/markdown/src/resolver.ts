@@ -209,7 +209,7 @@ const isBlank = (line: string, offset = 0) => {
   for (; offset < line.length; offset++) if (line[offset] !== " " && line[offset] !== "\t") return false;
   return true;
 };
-const isTableDelimiter = (line: string) => /^ {0,3}\|[ \t]*:?-+:?[ \t]*\|[ \t]*$/.test(line)
+const isTableDelimiter = (line: string) => /^ {0,3}\|[ \t]*:?-+:?[ \t]*\|?[ \t]*$/.test(line)
   || /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/.test(line);
 const isThematicBreak = (line: string) => /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$/.test(line);
 function stripPendingContainers(line: string) {
@@ -276,6 +276,7 @@ export class MarkdownLineResolver {
   };
   private previousContainerOnly = false;
   private referenceParagraph = false;
+  private rejectedReference = false;
 
   get references(): ReadonlyMap<string, ReferenceDefinition> {
     return this.referenceIndex;
@@ -418,8 +419,7 @@ export class MarkdownLineResolver {
       return [{ continued: false, lazy: false, closedToDepth, opened }];
     const content = cursorContent(cursor);
     const restartsReference = (followsReference || Boolean(this.activeReference)) && this.isCompleteReference(content);
-    const interruptedReference = restartsReference || Boolean(this.activeReference)
-      && !referenceContinuesLazily && (unmatched || startsContainer || startsBlock);
+    const interruptedReference = restartsReference || this.referenceInterruptedBy(content, unmatched, startsContainer, startsBlock, referenceContinuesLazily);
     const reference = this.resolveReference(line, cursor, content, final, closedToDepth, opened, continuesParagraph, lazy, interruptedReference);
     if (reference.handled) return reference.results;
     return [...reference.results, this.resolveLeaf(content, line, cursor, closedToDepth, opened, continuesParagraph, lazy)];
@@ -466,8 +466,13 @@ export class MarkdownLineResolver {
     lazy: boolean,
     interrupted: boolean,
   ): { handled: boolean; results: LineResolution[] } {
+    const interruptedPath = interrupted ? this.activeReference?.path : undefined;
     const results = interrupted ? this.finishReference() : [];
     const replay = { line, cursor: { ...cursor }, closedToDepth, opened, continuesParagraph, lazy, path: this.stack.slice() };
+    if (interrupted && this.rejectedReference) {
+      this.stack.splice(0, this.stack.length, ...interruptedPath!);
+      return { handled: true, results: [...results, ...this.resolveLine(line, final)] };
+    }
     if (this.activeReference) return this.continueReference(content, final, replay, results);
     if ((continuesParagraph || lazy) && !interrupted) return { handled: false, results };
     return this.startReference(content, final, replay, results);
@@ -518,7 +523,15 @@ export class MarkdownLineResolver {
 
   private finishReference() {
     if (!this.activeReference) return [];
+    this.rejectedReference = false;
     return this.completeReference(this.activeReference.parser.finish());
+  }
+
+  private referenceInterruptedBy(content: string, unmatched: boolean, startsContainer: boolean, startsBlock: boolean, continues: boolean) {
+    const active = this.activeReference;
+    if (!active) return false;
+    if (!continues && (unmatched || startsContainer || startsBlock)) return true;
+    return Boolean(active.lines[0]?.includes("|") && isTableDelimiter(content));
   }
 
   private publishPendingReference(): LineResolution[] {
@@ -544,6 +557,7 @@ export class MarkdownLineResolver {
     this.activeReference = undefined;
     if (!active) return [];
     if (result.kind !== "definition") {
+      this.rejectedReference = true;
       if (active.published?.update) this.referenceIndex.delete(active.published.label);
       this.openLeaf = active.openLeaf;
       return active.replay.map((replay, index) => this.resolveLeaf(
@@ -634,7 +648,7 @@ export class MarkdownLineResolver {
     const marker = startsQuote ? undefined : listMarker(probe);
     const startsContainer = startsQuote || Boolean(marker);
     const startsInterruptingContainer = startsQuote || Boolean(marker && (!marker.ordered || /^1[.)]$/.test(marker.marker) || unmatched && this.stack.length > 1 || this.stack.some((frame) => frame.kind === "list" && frame.ordered)));
-    const startsBlock = startsInterruptingContainer || this.startsLeafBlock(cursor);
+    const startsBlock = startsInterruptingContainer || this.startsLeafBlock(cursor, unmatched);
     return { marker, startsContainer, startsBlock };
   }
 
@@ -644,7 +658,7 @@ export class MarkdownLineResolver {
    * before any regex runs: the growing line is checked on every delta, and a whole-line regex would make each
    * continuation line quadratic.
    */
-  private startsLeafBlock(cursor: Cursor) {
+  private startsLeafBlock(cursor: Cursor, unmatched: boolean) {
     const unmatchedContent = cursorContent(cursor);
     let first = 0;
     while (unmatchedContent.charCodeAt(first) === 32 || unmatchedContent.charCodeAt(first) === 9) first++;
@@ -652,7 +666,7 @@ export class MarkdownLineResolver {
     if (lead === undefined || !"#`~*-_=|:".includes(lead)) return false;
     const leaf = this.openLeaf;
     if (leaf?.kind === "paragraph" && leaf.tableEligible) {
-      if ("|-:".includes(lead) && leaf.content.includes("|") && isTableDelimiter(unmatchedContent)) return true;
+      if (!unmatched && "|-:".includes(lead) && leaf.content.includes("|") && isTableDelimiter(unmatchedContent)) return true;
       if ("=-".includes(lead) && /^ {0,3}(?:=+|-+)\s*$/.test(unmatchedContent)) return true;
     }
     return /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/.test(unmatchedContent);

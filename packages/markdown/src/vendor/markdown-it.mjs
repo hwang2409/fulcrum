@@ -2125,6 +2125,9 @@ function table(state, startLine, endLine, silent) {
   if (startLine + 2 > endLine) {
     return false;
   }
+  // A blockquote marker owns the header line before the GFM table extension runs.
+  const headerPos = state.bMarks[startLine] + state.tShift[startLine];
+  if (state.src.charCodeAt(headerPos) === 62) return false;
   let nextLine = startLine + 1;
   if (state.sCount[nextLine] < state.blkIndent) {
     return false;

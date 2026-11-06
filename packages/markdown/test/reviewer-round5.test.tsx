@@ -117,6 +117,15 @@ test("a container opener terminates a table instead of becoming a row", () => {
   }
 });
 
+test("a rejected reference candidate can still become a table", () => {
+  for (const source of ["[|\n|-\n4.\n", ">|\n|-\n"]) {
+    const document = createStreamingDocument();
+    document.append(source);
+    if (source.startsWith(">")) document.finish();
+    expect(json(document.render())).toBe(json(parseMarkdown(source)));
+  }
+});
+
 test("a single-column table stays visible before a whitespace-only unfinished line", () => {
   const source = "| a |\n| - |\n ";
   for (const split of splits) {
