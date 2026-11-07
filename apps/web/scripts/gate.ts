@@ -603,7 +603,7 @@ try {
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
       await page.locator('[data-catalog-ready="true"]').waitFor({ timeout: 5000 });
       fake.setOpenDelay(200);
-      await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+      await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${ACTIVE}`);
       const selected = page.locator(`button.session[data-status]`, { hasText: "fix the flaky reconnect test" });
       await selected.focus();
       await page.waitForTimeout(250);
@@ -639,23 +639,14 @@ try {
       if (gap > 1) throw new Error(`${Math.round(gap)} px from the bottom`);
     });
     await check("an unpinned 1,000-row run keeps its anchor through store replacement", async () => {
+      const anchorId = "user:l500";
       const scroll = page.locator('[data-part="timeline-scroll"]');
-      await scroll.evaluate((element) => {
-        element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
-        element.scrollTop = element.scrollHeight / 2;
-        element.dispatchEvent(new Event("scroll"));
-      });
+      await page.evaluate(({ anchorId }) => {
+        const engine = (window as typeof window & { __fulcrumVirtual?: { scrollToId(id: string, offset: number): number } }).__fulcrumVirtual;
+        if (!engine) throw new Error("no virtualizer debug handle");
+        document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop = engine.scrollToId(anchorId, 17);
+      }, { anchorId });
       await settle(page);
-      const scrollBox = await scroll.boundingBox();
-      if (!scrollBox) throw new Error("timeline scroll box is not visible");
-      const visibleRows = page.locator('[data-virtual-id]');
-      let anchorId: string | null = null;
-      for (let index = 0; index < await visibleRows.count(); index++) {
-        const row = visibleRows.nth(index);
-        const box = await row.boundingBox();
-        if (box && box.y >= scrollBox.y) { anchorId = await row.getAttribute("data-virtual-id"); break; }
-      }
-      if (!anchorId) throw new Error("no visible anchor row");
       const offset = async () => {
         const row = await page.locator(`[data-virtual-id="${anchorId}"]`).boundingBox();
         const box = await scroll.boundingBox();
