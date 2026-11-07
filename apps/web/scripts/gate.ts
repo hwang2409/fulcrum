@@ -584,6 +584,7 @@ try {
       try {
       await page.reload(); // use forward pages so the latest served_turn_end is beyond page one
       await page.addStyleTag({ content: '[data-part="virtual-debug"] { pointer-events: none !important; }' });
+      await page.getByText(/loading session history/).waitFor({ state: "detached", timeout: 15_000 });
       const historyReads = fake.servedTurnEndHistoryReads;
       await overflowThroughTurn("overflow", "a turn zeta records the end of", "connection fell behind", () => fake.setLaterHistoryDelay(2000));
       const marker = page.locator('[data-part="run-end-marker"][data-outcome="completed"]', { hasText: "run completed" });

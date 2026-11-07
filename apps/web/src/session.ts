@@ -533,7 +533,12 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   // Start this only after replay completes: replayed run_start rows can transiently make the store look live.
   const watchOutcome = (id: string, lease: OpenResult["lease"]) => {
     if (!interruptedTurns.has(id)) return;
-    const started = () => lease.store.getState().agent !== "idle" && interruptedTurns.delete(id);
+    const started = () => {
+      if (lease.store.getState().agent === "idle") return false;
+      interruptedTurns.delete(id);
+      if (lease.store.getState().endOutcome) lease.store.dispatch({ type: "run_start" });
+      return true;
+    };
     if (started()) return; // it came back running, so its end will be seen live
     const stop = lease.store.subscribe(() => { if (started()) stop(); });
   };
@@ -548,7 +553,6 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     const previous = transitionRun(state.transition);
     const previousId = previous?.id !== id ? previous?.id : null;
     try {
-      if (knownStatus && knownStatus.state !== "idle") interruptedTurns.delete(id);
       let history = { messages: 0, complete: false };
       const opened = await openSession(target, id, (messages, complete) => {
         history = { messages, complete };
