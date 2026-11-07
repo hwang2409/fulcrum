@@ -675,7 +675,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         await open(session.session_id);
         void refresh();
       } catch (error) {
-        set({ creating: false, createError: live(target) ? message(error) : null });
+        set({ creating: false, createError: live(target) && !abort.signal.aborted ? message(error) : null });
       } finally {
         if (createAbort === abort) createAbort = null;
       }

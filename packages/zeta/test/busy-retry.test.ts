@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { createClient, type Transport } from "../src/index.js";
 
 function fakeTransport() {
@@ -38,6 +38,25 @@ test.serial("resume gives up after three busy retries", async () => {
   }
   await expect(opening).rejects.toMatchObject({ code: -32004 });
   expect(fake.sent.filter((message) => message.method === "resume")).toHaveLength(4);
+});
+
+test.serial("close cancels busy backoff without leaving a timer", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = fakeTransport();
+    const client = createClient(fake.transport);
+    await hello(fake, client);
+    const opening = client.request("resume", { session_id: "s1" });
+    await Promise.resolve();
+    fake.receive({ jsonrpc: "2.0", id: 2, error: { code: -32004, message: "busy" } });
+    await Promise.resolve();
+    expect(jest.getTimerCount()).toBe(1);
+    client.close();
+    await expect(opening).rejects.toBeDefined();
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test.serial("attach does not retry other errors or after abort", async () => {

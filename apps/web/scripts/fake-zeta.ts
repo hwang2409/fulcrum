@@ -402,9 +402,12 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         if (connectionRoles.get(socket as object) === "observer" && !["list_sessions", "status", "session_tree", "session_history", "model_catalog", "session_settings", "ping", "delivery_status", "content_read"].includes(method)) return reply({ error: { code: -32008, message: "observer is read-only", data: { code: "observer_read_only", method } } });
         const binding = parseHostBinding(socket, method, params);
         if (binding?.error) return reply({ error: { code: -32602, message: binding.error } });
+        if ((method === "new_session" || method === "resume") && mode === "busy-once" && !busyOnce) {
+          busyOnce = true;
+          return reply({ error: { code: -32004, message: "a turn is already running" } });
+        }
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
-          if (mode === "busy-once" && !busyOnce) { busyOnce = true; return reply({ error: { code: -32004, message: "a turn is already running" } }); }
           if (running || rejectCreate) return reply({ error: { code: -32004, message: "a turn is already running" } });
           const created = meta(`s-new-${sessions.length}`, 0, { created_at: at(0), cwd: "/Users/dev/me/fun/fulcrum", retained_tail: 8, compaction_budget: 262144, override_audit: [], context_files: [], skill_catalog: [], agent_catalog: [], plan_mode: false, project_id: null, tool_allow: null, tool_deny: [] });
           sessions.unshift(created);
@@ -429,7 +432,6 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if (method === "resume") {
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
-          if (mode === "busy-once" && !busyOnce) { busyOnce = true; return reply({ error: { code: -32004, message: "a turn is already running" } }); }
           if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = String(params.session_id);
           applyHostBinding(active, binding?.commands);

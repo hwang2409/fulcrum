@@ -610,3 +610,16 @@ test("a failed create keeps the current session and says why", async () => {
   expect(view.state.createError).toBe("a turn is already running");
   expect(present(view).open?.id).toBe("b");
 });
+
+test("selecting a session cancels create without showing an error", async () => {
+  const fake = await server(handlers("b", { new_session: () => new Promise(() => {}) }));
+  const view = createSessions(source(fake.client));
+  await tick();
+  void view.create();
+  await tick();
+  view.select("a");
+  await tick();
+  expect(view.state.createError).toBeNull();
+  expect(present(view).selected).toBe("a");
+  expect(fake.calls.filter(([method]) => method === "new_session")).toHaveLength(1);
+});

@@ -365,8 +365,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const closeListeners = new Set<(error: unknown) => void>();
   const closeWaiters = new Set<(error: unknown) => void>();
   const attachmentGates = new Map<string, Promise<unknown>>();
-  let closeSignal!: (error: unknown) => void;
-  const closedPromise = new Promise<unknown>((resolve) => { closeSignal = resolve; });
+  const closeAbort = new AbortController();
   let closed = false;
   let closedError: unknown;
   let closeReason: CloseReason | undefined;
@@ -377,7 +376,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     closedError = error;
     deliveryIdentity.close();
     pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
-    closeSignal(error);
+    closeAbort.abort(error);
     closeWaiters.forEach((reject) => reject(error));
     closeWaiters.clear();
     attachmentGates.clear();
@@ -411,16 +410,25 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     });
   };
   const hostCommandsEnabled = () => options.hostCommands !== undefined && options.hostCommands !== null && negotiatedFeatures.includes("session_host_commands");
-  const retryDelay = (delay: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) return reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
+  const retryDelay = (delay: number, ...signals: AbortSignal[]) => new Promise<void>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const abort = () => { if (timer) clearTimeout(timer); signal?.removeEventListener("abort", abort); reject(Object.assign(new Error("request aborted"), { name: "AbortError" })); };
-    timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, delay);
-    signal?.addEventListener("abort", abort, { once: true });
+    const listeners = signals.map((signal) => [signal, () => abort(signal)] as const);
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      listeners.forEach(([signal, listener]) => signal.removeEventListener("abort", listener));
+    };
+    const abort = (signal: AbortSignal) => {
+      cleanup();
+      reject(signal.reason ?? Object.assign(new Error("request aborted"), { name: "AbortError" }));
+    };
+    const alreadyAborted = signals.find((signal) => signal.aborted);
+    if (alreadyAborted) return abort(alreadyAborted);
+    timer = setTimeout(() => { cleanup(); resolve(); }, delay);
+    listeners.forEach(([signal, listener]) => signal.addEventListener("abort", listener, { once: true }));
   });
   const retryBusy = async (request: () => Promise<unknown>, requestOptions: RequestOptions) => {
     for (const delay of [0, 250, 500, 1_000]) {
-      if (delay) await Promise.race([retryDelay(delay, requestOptions.signal), closedPromise.then((error) => Promise.reject(error))]);
+      if (delay) await retryDelay(delay, ...(requestOptions.signal ? [requestOptions.signal] : []), closeAbort.signal);
       try { return await request(); }
       catch (error) {
         if ((error as { code?: unknown })?.code !== -32004 || delay === 1_000) throw error;
