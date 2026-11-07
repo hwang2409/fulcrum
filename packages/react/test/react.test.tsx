@@ -1373,7 +1373,11 @@ test.each([
     const offset = Number.parseFloat(q(`[data-virtual-id="${anchorId}"]`).style.transform.slice(11)) - viewport.scrollTop;
 
     act(() => root!.render(view(second.store)));
-    if (stagedReplay) second.replace(replacementItems, [{ index: 0, deleteCount: 0, items: replacementItems }]);
+    if (stagedReplay) {
+      const firstPage = replacementItems.slice(0, 900);
+      second.replace(firstPage, [{ index: 0, deleteCount: 0, items: firstPage }]);
+      second.replace(replacementItems, [{ index: firstPage.length, deleteCount: 0, items: replacementItems.slice(firstPage.length) }]);
+    }
     const nextViewport = hostOwned ? scrollRef.current! : q('[data-part="timeline-scroll"]');
     const nextAnchor = container.querySelector<HTMLElement>(`[data-virtual-id="${anchorId}"]`);
     expect(nextAnchor, "the replacement must keep the anchor row mounted").not.toBeNull();

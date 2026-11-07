@@ -60,6 +60,7 @@ const hostCommands = () => [{
 
 test("fake zeta persists a live user append across replay", async () => {
   const fake = await startFakeZeta({ origins: [], live: false });
+  const history = fake.historyOf(LONG);
   let client: Awaited<ReturnType<typeof connectZeta>> | undefined;
   try {
     client = await connectZeta({ ...(await credentials(fake)), features: ["session_history_backward", "user_message_event", "delivery_id", "user_message_delivery_id"] });
@@ -78,6 +79,8 @@ test("fake zeta persists a live user append across replay", async () => {
         resolve();
       });
     });
+    fake.emit({ event: "user_message", session_id: LONG, text: "no delivery id", mode: "send", attachments: [] });
+    expect(fake.historyOf(LONG), "zeta persists an id-less echo only when its turn starts").toHaveLength(history.length);
     fake.emit({ event: "user_message", session_id: LONG, text: "after replay", mode: "send", attachments: [], delivery_id: "append-after-replay" });
     await appended;
     first.release();
@@ -87,6 +90,7 @@ test("fake zeta persists a live user append across replay", async () => {
     second.release();
   } finally {
     client?.close();
+    fake.restoreHistory(LONG, history);
     await fake.close();
   }
 });

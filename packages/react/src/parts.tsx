@@ -645,7 +645,8 @@ const TimelineForStore = memo(function TimelineForStore({ store, runKey, rendere
   const invalidMeasurements = useMemo(() => priorStore.current === store ? undefined : items
     .filter(({ id }) => !sameValue(priorStore.current.getItem(id), store.getItem(id)))
     .map(({ id }) => id), [items, store]);
-  const enabled = replacementGap ? priorVirtual.current : virtual ?? items.length > 200;
+  // Once a run needs virtualization, keep its one engine alive while a replacement store replays short pages.
+  const enabled = virtual ?? (priorVirtual.current || items.length > 200);
   const ownedScrollRef = useRef<HTMLDivElement>(null);
   const activeScrollRef = scrollRef ?? ownedScrollRef;
   const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef: activeScrollRef, enabled, outlineUpdate: change, resetKey: runKey, invalidateMeasurements: invalidMeasurements, cache: initialViewport?.cache });

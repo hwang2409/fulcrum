@@ -471,12 +471,13 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     calibrateKindEstimates();
     restoreExpectedAnchor(expectedAnchor);
     const nextScrollTop = clampScroll(viewport.scrollTop);
-    const isCorrection = viewport.source === "user" && expectedCorrectionScroll !== null && Math.abs(nextScrollTop - expectedCorrectionScroll) < 0.5;
+    const isCorrection = viewport.source === "user" && expectedCorrectionScroll !== null && Math.abs(nextScrollTop - expectedCorrectionScroll) < 1;
     if (viewport.source === "programmatic" && writesScroll) expectedCorrectionScroll = nextScrollTop;
     scrollTop = nextScrollTop;
     correctionEvent = isCorrection;
     programmatic = viewport.source === "programmatic" || isCorrection;
-    if (viewport.source === "user" && !isCorrection && layout.length > 0) {
+    const ownsRecovery = missingAnchor !== null || recoveryOutline !== null;
+    if (viewport.source === "user" && !isCorrection && layout.length > 0 && (!ownsRecovery || writesScroll)) {
       missingAnchor = null;
       recoveryOutline = null;
       const distance = layout.total - scrollTop - viewportSize;
@@ -564,9 +565,10 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
         idsByKind = new Map();
         totalMeasuredSize = 0;
         layout = new Sequence(items.map(entry));
-        if (!recoveryOutline || items.length > 0) for (const id of unseenIds) if (!ids.has(id)) unseenIds.delete(id);
+        const recoveryComplete = !recoveryOutline || items.length >= recoveryOutline.length;
+        if (recoveryComplete) for (const id of unseenIds) if (!ids.has(id)) unseenIds.delete(id);
         if (appendedFrom >= 0) for (let index = appendedFrom; index < items.length; index++) unseenIds.add(items[index]!.id);
-        if (items.length > 0) recoveryOutline = null;
+        if (recoveryComplete) recoveryOutline = null;
       }
       appliedOutline = items;
       rangeCursorIndex = cursorId === undefined ? 0 : (layout.indexOf(cursorId) ?? Math.min(rangeCursorIndex, Math.max(0, layout.length - 1)));
@@ -627,7 +629,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       changed();
     },
     setFollow(follow) {
-      if (follow || layout.length > 0) {
+      if (follow || (pinned && layout.length > 0)) {
         missingAnchor = null;
         recoveryOutline = null;
       }

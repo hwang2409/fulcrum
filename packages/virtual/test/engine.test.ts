@@ -79,6 +79,9 @@ describe("prefix and range math", () => {
     virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
     virtual.setOutline([]);
     virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
+    virtual.setOutline(Array.from({ length: 2 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    virtual.setFollow(false);
+    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
     virtual.setOutline(Array.from({ length: 7 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
     expect(virtual.getSnapshot().unseenCount).toBe(2);
     virtual.setOutline([
@@ -292,6 +295,12 @@ describe("bottom and scroll semantics", () => {
     const virtual = engine([10, 10, 10], 10, 12);
     const result = mutate(virtual, () => virtual.measure("row-0", 20));
     virtual.setViewport({ scrollTop: result.scrollTop, size: 10, source: "user" });
+    expect(virtual.getSnapshot()).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
+  });
+  test("a correction rounded to a device pixel is not user intent", () => {
+    const virtual = engine([10, 10, 10], 10, 12);
+    const result = mutate(virtual, () => virtual.measure("row-0", 20.5));
+    virtual.setViewport({ scrollTop: Math.round(result.scrollTop), size: 10, source: "user" });
     expect(virtual.getSnapshot()).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
   });
   test("a later user scroll changes state normally", () => {

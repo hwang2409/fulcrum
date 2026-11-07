@@ -86,6 +86,21 @@ function audit(minHeight: number) {
 }
 
 const settle = (page: Page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+const stableRowOffset = (page: Page, id: string, engine: string) => page.evaluate(async ({ id, engine }) => {
+  let prior: number | null = null;
+  let stable = 0;
+  for (let frame = 0; frame < 240; frame++) {
+    await new Promise(requestAnimationFrame);
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    const row = document.querySelector<HTMLElement>(`[data-virtual-id="${CSS.escape(id)}"]`);
+    if (!scroll || !row) { prior = null; stable = 0; continue; }
+    const offset = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+    stable = prior !== null && Math.abs(offset - prior) < 0.1 ? stable + 1 : 0;
+    prior = offset;
+    if (stable >= 3) return offset;
+  }
+  throw new Error(`${engine}: ${id} did not settle after measured layout`);
+}, { id, engine });
 const shoot = (page: Page, name: string) => page.screenshot({ path: join(shots, `${name}.png`) });
 const tokenReport = new Map<string, Set<string>>();
 async function auditThemes(page: Page, label: string, minHeight: number) {
@@ -329,9 +344,22 @@ async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => 
   await settle(page);
 }
 
+// Restores the fake state this check changes (LONG's durable echoes, a stopped server) even when it fails.
 async function checkReconnectAnchor(page: Page, engine: string) {
+  const history = fake.historyOf(LONG);
+  try {
+    await reconnectAnchorScenario(page, engine);
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
+}
+
+async function reconnectAnchorScenario(page: Page, engine: string) {
   await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
   await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+  await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 }).catch(() => {
+    throw new Error(`${engine}: the 1,000-row history did not finish loading`);
+  });
   const scroll = page.locator('[data-part="timeline-scroll"]');
   await page.waitForFunction((selector) => {
     const element = document.querySelector<HTMLElement>(selector);
@@ -350,9 +378,13 @@ async function checkReconnectAnchor(page: Page, engine: string) {
   let reached = false;
   for (let step = 0; step < 80; step++) {
     const targetBox = await target.boundingBox().catch(() => null);
-    if (targetBox && targetBox.top >= box.top && targetBox.bottom <= box.bottom) { reached = true; break; }
-    const delta = targetBox ? (targetBox.top < box.top ? 180 : -180) : -1_000;
-    const before = await scroll.evaluate((element) => element.scrollTop);
+    if (targetBox && targetBox.y >= box.y && targetBox.y + targetBox.height <= box.y + box.height) { reached = true; break; }
+    const position = await scroll.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
+    const rawDelta = targetBox
+      ? targetBox.y + targetBox.height / 2 - (box.y + box.height / 2)
+      : position.range * 499 / 999 - position.top;
+    const delta = Math.max(-10_000, Math.min(10_000, rawDelta));
+    const before = position.top;
     await page.mouse.wheel(0, delta);
     await page.waitForFunction(({ selector, before, delta }) => {
       const element = document.querySelector<HTMLElement>(selector);
@@ -365,25 +397,32 @@ async function checkReconnectAnchor(page: Page, engine: string) {
     const position = await scroll.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
     throw new Error(`${engine}: ${targetId} was not visible after 80 wheel steps (${position.top.toFixed(1)} / ${position.range.toFixed(1)} px)`);
   }
-  const beforeBox = await target.boundingBox();
-  if (!beforeBox) throw new Error(`${engine}: ${targetId} was not mounted before reconnect`);
-  const beforeOffset = beforeBox.top - box.top;
+  fake.emit({ event: "user_message", session_id: LONG, text: `before ${engine} reconnect`, mode: "send", attachments: [], delivery_id: `${engine}-before-anchor-check` });
+  await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
+  const beforeOffset = await stableRowOffset(page, targetId, engine);
 
+  const historiesBefore = fake.requests.filter(({ method }) => method === "session_history").length;
   await fake.stop();
-  await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5_000 });
-  await fake.start();
+  try {
+    await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5_000 });
+  } finally {
+    await fake.start();
+  }
   await page.getByRole("button", { name: "retry now" }).click();
-  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+  for (let attempt = 0; ; attempt++) {
+    if (fake.requests.filter(({ method }) => method === "session_history").length > historiesBefore) break;
+    if (attempt === 150) throw new Error(`${engine}: reconnect did not request replacement history`);
+    await Bun.sleep(100);
+  }
   await target.waitFor({ timeout: 15_000 });
-  await settle(page);
-  const afterBox = await target.boundingBox();
-  if (!afterBox) throw new Error(`${engine}: ${targetId} was not mounted after reconnect`);
-  const drift = Math.abs((afterBox.top - box.top) - beforeOffset);
+  const afterOffset = await stableRowOffset(page, targetId, engine);
+  const drift = Math.abs(afterOffset - beforeOffset);
   console.log(`anchor ${engine.padEnd(8)} ${targetId} drift ${drift.toFixed(3)} px`);
   if (drift > 1) throw new Error(`${engine}: ${targetId} moved ${drift.toFixed(3)} px`);
 
   fake.emit({ event: "user_message", session_id: LONG, text: `after ${engine} reconnect`, mode: "send", attachments: [], delivery_id: `${engine}-anchor-check` });
-  await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
+  await page.locator('[data-part="jump-to-latest"][data-unseen-count="2"]').waitFor({ timeout: 5_000 });
 }
 
 try {

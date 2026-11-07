@@ -530,20 +530,27 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     requests,
     /** Every accepted send and steer, in order. */
     sent: composer.sent,
-    /** Sends one server-originated event to connected clients. User-message echoes are durable, as in Zeta's send path. */
+    /**
+     * Sends one server-originated event to connected clients. A `user_message` send echo with a `delivery_id` is
+     * durable first, as in zeta: `DeliveryRequests.send` commits the message with `append_client_delivery_async`
+     * before `_deliver_after_commit` echoes it (zeta src/zeta/server/delivery.py:94-109 at 13adea43). Other events
+     * leave history unchanged; call `restoreHistory` after a check that appends.
+     */
     emit(event: Json) {
-      if (event.event === "user_message" && typeof event.session_id === "string") {
-        const delivery = typeof event.delivery_id === "string" ? event.delivery_id : undefined;
+      if (event.event === "user_message" && event.mode === "send" && typeof event.session_id === "string" && typeof event.delivery_id === "string") {
         histories[event.session_id] = [...(histories[event.session_id] ?? []), {
-          id: `emitted-${delivery ?? crypto.randomUUID()}`,
+          id: `emitted-${event.delivery_id}`,
           role: "user",
           content: [text(String(event.text ?? ""))],
-          ...(delivery ? { delivery_id: delivery } : {}),
+          delivery_id: event.delivery_id,
           tool_result: null,
         }];
       }
       for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event }));
     },
+    /** Returns a session's history to what it was before this check's durable emits. */
+    restoreHistory(session: string, rows: readonly Json[]) { histories[session] = [...rows]; },
+    historyOf(session: string): readonly Json[] { return histories[session] ?? []; },
     clearSent() { composer.clearSent(); },
     get aborts() { return composer.aborts; },
     /** Closes every socket, like a network blip; the server keeps running. */
