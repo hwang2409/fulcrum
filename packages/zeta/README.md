@@ -58,6 +58,8 @@ const client = await connectZeta({
 
 `hostCommands(sessionId)` supplies a fresh binding for each `new_session` and `resume`; `sessionId` is `null` for a new session. If `send` or `send_images` returns `host_binding_required`, the client resumes that request's `session_id` with a fresh binding and retries once with the same `delivery_id`. Supplier values and failures are not logged or copied into errors. A server that does not negotiate the feature never calls the supplier.
 
+`new_session` and `resume` retry zeta's transient `-32004` busy error three times after 250, 500, and 1000 ms. The delays follow the request signal and are canceled when the client closes. After the last retry, busy is surfaced to the caller.
+
 ## history and recovery
 
 The client retries a desynced history load immediately, then after 0.5, 1, 2, 4, and 8 seconds: 15.5 seconds total. It records the final error in store diagnostics. `retrySession(id)` starts an app-owned retry. The web app passes it to `RunProvider.onRetry`; normal socket reconnect creates a fresh client and rebuilds the open session from history.
