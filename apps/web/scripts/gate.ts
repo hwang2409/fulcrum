@@ -86,21 +86,23 @@ function audit(minHeight: number) {
 }
 
 const settle = (page: Page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-const stableRowOffset = (page: Page, id: string, engine: string) => page.evaluate(async ({ id, engine }) => {
+const stableRowOffset = (page: Page, id: string, engine: string, phase: string) => page.evaluate(async ({ id, engine, phase }) => {
   let prior: number | null = null;
   let stable = 0;
+  const seen: string[] = [];
   for (let frame = 0; frame < 240; frame++) {
     await new Promise(requestAnimationFrame);
     const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
     const row = document.querySelector<HTMLElement>(`[data-virtual-id="${CSS.escape(id)}"]`);
-    if (!scroll || !row) { prior = null; stable = 0; continue; }
+    if (!scroll || !row) { prior = null; stable = 0; seen.push("unmounted"); continue; }
     const offset = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+    seen.push(`${offset.toFixed(2)}@${scroll.scrollTop.toFixed(2)}/${(scroll.scrollHeight - scroll.clientHeight).toFixed(2)}`);
     stable = prior !== null && Math.abs(offset - prior) < 0.1 ? stable + 1 : 0;
     prior = offset;
     if (stable >= 3) return offset;
   }
-  throw new Error(`${engine}: ${id} did not settle after measured layout`);
-}, { id, engine });
+  throw new Error(`${engine}: ${id} did not settle ${phase}; last offsets (offset@scrollTop/range) ${seen.slice(-8).join(" ")}`);
+}, { id, engine, phase });
 const shoot = (page: Page, name: string) => page.screenshot({ path: join(shots, `${name}.png`) });
 const tokenReport = new Map<string, Set<string>>();
 async function auditThemes(page: Page, label: string, minHeight: number) {
@@ -436,11 +438,11 @@ async function reconnectAnchorScenario(page: Page, engine: string) {
   }
   fake.emit({ event: "user_message", session_id: LONG, text: `before ${engine} reconnect`, mode: "send", attachments: [], delivery_id: `${engine}-before-anchor-check` });
   await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
-  const beforeOffset = await stableRowOffset(page, targetId, engine);
+  const beforeOffset = await stableRowOffset(page, targetId, engine, "before reconnect");
 
   await reconnectFake(page, engine);
   await target.waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine}: ${targetId} did not return after reconnect`); });
-  const afterOffset = await stableRowOffset(page, targetId, engine);
+  const afterOffset = await stableRowOffset(page, targetId, engine, "after reconnect");
   const drift = Math.abs(afterOffset - beforeOffset);
   console.log(`anchor ${engine.padEnd(8)} ${targetId} drift ${drift.toFixed(3)} px`);
   if (drift > 1) throw new Error(`${engine}: ${targetId} moved ${drift.toFixed(3)} px`);
