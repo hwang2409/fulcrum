@@ -2,7 +2,7 @@ const external = ["@fulcrum/core", "@fulcrum/highlight", "@fulcrum/markdown", "@
 const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external, ceiling: 9_000 }, // 8,563 after deterministic cross-page entity and state composition
   { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 31_200 }, // RunStatus, useRunStatus, and RunEndMarker for an unknown run outcome measure 30,805. Shared user-row layout plus history-fidelity delivery status measures 30,559 with Bun 1.4.4; bundle size is not a product goal, and this ceiling only catches accidents. measured 26,983 after content blocks (reasoning, source, file, image, unsupported). measured 25,125 after strict UX round 6 (decision focus, viewer place and narrow head, notification text). measured 24,213 after strict UX round 5 (approval fold, skip link, cut fades, whole-block colors). measured 22,089 after composer. tool-card highlighting, ANSI, JSON, and the show-full-command control: ~15.5 kB; sub-agent row, run navigator, and history path: ~3.5 kB; composer: 0.8 kB
-  { name: "zeta", entry: "packages/zeta/dist/index.js", external, ceiling: 12_000 }, // command parsing and typed wrappers add the slash-command surface; bundle size is not a product goal, this ceiling only catches accidents
+  { name: "zeta", entry: "packages/zeta/dist/index.js", external, ceiling: 12_000 }, // busy retry + #79 slash helpers; bundle size is not a product goal, this ceiling only catches accidents
   { name: "virtual", entry: "packages/virtual/dist/index.js", external, ceiling: 11_000 },
   { name: "markdown", entry: "packages/markdown/dist/react.js", external, reportOnly: true },
 ];

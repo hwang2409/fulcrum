@@ -487,6 +487,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   };
   let openGeneration = 0;
   let openAbort: AbortController | null = null;
+  let createAbort: AbortController | null = null;
   const live = (target: ZetaClient) => client === target;
 
   type Catalog = { client: ZetaClient; inFlight: Promise<void> | null; slowTimer: ReturnType<typeof setTimeout> | null };
@@ -610,6 +611,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     set({ listLoading: false, listSlow: false, listReady: false });
     openGeneration++;
     openAbort?.abort();
+    createAbort?.abort();
     markApprovalsReconnecting(disconnected);
     transition({ type: "stale" });
   };
@@ -649,6 +651,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     get state() { return state; },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     select(id: string) {
+      createAbort?.abort();
       const run = transitionRun(state.transition);
       if (id === transitionSelected(state.transition) && ((state.transition.kind === "opening" || state.transition.kind === "replacing") || (run?.id === id && !run.stale))) return;
       onSelect?.(id);
@@ -661,8 +664,10 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       const target = client;
       if (!target || state.creating) return;
       set({ creating: true, createError: null });
+      const abort = new AbortController();
+      createAbort = abort;
       try {
-        const { session } = (await target.request("new_session", {}, { timeoutMs: 30_000 })) as { session: SessionMeta };
+        const { session } = (await target.request("new_session", {}, { timeoutMs: 30_000, signal: abort.signal })) as { session: SessionMeta };
         if (!live(target)) return set({ creating: false });
         localSessions.set(session.session_id, { session, createdGeneration: listGeneration });
         set({ creating: false, sessions: [session, ...state.sessions.filter((item) => item.session_id !== session.session_id)] });
@@ -670,7 +675,9 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         await open(session.session_id);
         void refresh();
       } catch (error) {
-        set({ creating: false, createError: live(target) ? message(error) : null });
+        set({ creating: false, createError: live(target) && !abort.signal.aborted ? message(error) : null });
+      } finally {
+        if (createAbort === abort) createAbort = null;
       }
     },
     async loadMore() {
