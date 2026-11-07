@@ -34,14 +34,15 @@ const commit = (id: string, text: string): RunEvent => ({ type: "message_commit"
 const delta = (id: string, text: string): RunEvent => ({ type: "message_delta", message_id: id, delta: text });
 
 function mountRun(virtual: boolean, height = 600) {
-  const scroller = document.createElement("div");
-  scroller.style.cssText = `height: ${height}px; overflow: auto; position: relative`;
-  document.getElementById("root")!.append(scroller);
+  const host = document.createElement("div");
+  host.style.height = `${height}px`;
+  document.getElementById("root")!.append(host);
   const store = createRunStore((flush) => flush());
-  const root = createRoot(scroller);
+  const root = createRoot(host);
   const mount = () => flushSync(() => root.render(h(RunProvider, { store }, h(Timeline, { renderers, virtual }))));
   mount();
-  return { scroller, store, root, mount, remove: () => { root.unmount(); scroller.remove(); } };
+  const scroller = host.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+  return { host, scroller, store, root, mount, remove: () => { root.unmount(); host.remove(); } };
 }
 const svgsIn = (node: ParentNode) => node.querySelectorAll("[data-part=mermaid-diagram] > svg").length;
 
@@ -193,13 +194,13 @@ export async function cached() {
   await until(() => svgsIn(run.scroller) > 0);
   const firstMs = performance.now() - closed;
   run.root.unmount();
-  const root = createRoot(run.scroller);
+  const root = createRoot(run.host);
   const started = performance.now();
   flushSync(() => root.render(h(RunProvider, { store: run.store }, h(Timeline, { renderers, virtual: false }))));
-  const inFirstCommit = svgsIn(run.scroller) === 1;
+  const inFirstCommit = svgsIn(run.host) === 1;
   const cachedMs = performance.now() - started;
   root.unmount();
-  run.scroller.remove();
+  run.host.remove();
   return { firstMs: Math.round(firstMs), cachedMs: Math.round(cachedMs * 10) / 10, inFirstCommit };
 }
 

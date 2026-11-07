@@ -234,7 +234,7 @@ const historyGroups = (rows: Json[]) => {
   return groups;
 };
 
-export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, serialDelays }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; serialDelays?: Readonly<Record<string, number | readonly number[]>> }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, serialDelays, overflowSilentCloseDelayMs = 0 }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; serialDelays?: Readonly<Record<string, number | readonly number[]>>; overflowSilentCloseDelayMs?: number }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
@@ -305,7 +305,11 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   // normal close. Past its 1 s overflow deadline zeta aborts the transport instead, with no error or close frame.
   const overflow = (socket: ServerWebSocket<unknown>, role: "controller" | "observer") => {
     socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: active ?? ACTIVE, delta: "head" } }));
-    if (mode === "overflow-silent") return socket.terminate();
+    if (mode === "overflow-silent") {
+      if (controller === socket) controller = null;
+      if (overflowSilentCloseDelayMs > 0) return setTimeout(() => socket.terminate(), overflowSilentCloseDelayMs);
+      return socket.terminate();
+    }
     socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32011, message: `${role} output overflow` } }));
     socket.close(1000);
   };
@@ -342,7 +346,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
       close(socket) {
         sockets.delete(socket);
         if (connectionRoles.get(socket as object) !== "controller") return;
-        controller = null;
+        if (controller === socket) controller = null;
         if (active && hostBoundSessions.has(active)) hostBindingRequired.add(active);
         if (!decide || approvalAborted) return;
         if (approvalReconnect && reconnectControllers.has(socket as object)) {
@@ -376,11 +380,13 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           const requestedRole = params.role === "observer" ? "observer" : "controller";
           if (bearer === observerToken && requestedRole === "controller") return reply({ error: { code: -32602, message: "credential permits observer role only" } });
           if (requestedRole === "observer" && !(params.features as string[] | undefined)?.includes("serve_observers")) return reply({ error: { code: -32602, message: "observer requires protocol 1.1 and serve_observers" } });
-          connectionRoles.set(socket as object, requestedRole);
           const observers = [...sockets].filter((each) => connectionRoles.get(each as object) === "observer").length;
-          if (mode === "busy" || (requestedRole === "controller" ? controller !== null : observers >= 8)) { socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "server busy" } })); socket.close(); return; }
+          if (mode === "busy" || (requestedRole === "controller" && controller !== null)) { reply({ error: { code: -32001, message: "server busy" } }); socket.close(); return; }
+          if (requestedRole === "observer" && observers >= 8) { reply({ error: { code: -32004, message: "observer limit reached" } }); socket.close(); return; }
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
+          if (!sockets.has(socket)) return;
+          connectionRoles.set(socket as object, requestedRole);
           if (requestedRole === "controller") controller = socket;
           const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect) || (name === "served_turn_end" && servedTurnEndOffered)) ?? [];
           negotiatedFeatures.set(socket as object, new Set(features));
@@ -524,6 +530,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     requests,
     /** Every accepted send and steer, in order. */
     sent: composer.sent,
+    /** Sends one server-originated event to connected clients. */
+    emit(event: Json) { for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); },
     clearSent() { composer.clearSent(); },
     get aborts() { return composer.aborts; },
     /** Closes every socket, like a network blip; the server keeps running. */

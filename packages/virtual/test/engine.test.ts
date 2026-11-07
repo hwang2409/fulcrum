@@ -231,6 +231,19 @@ describe("bottom and scroll semantics", () => {
     expect(virtual.afterMutation(second, { deferCorrection: true }).pendingJump).toBe(10);
     expect(virtual.flushPendingCorrection()).toMatchObject({ jump: 10, pendingJump: 0, scrollTop: 22 });
   });
+  test("detaching settles a deferred correction without retaining scroll ownership", () => {
+    const virtual = engine([10, 10, 10], 10, 12);
+    const token = virtual.beforeMutation();
+    virtual.measure("row-0", 20);
+    virtual.afterMutation(token, { deferCorrection: true });
+    let notifications = 0;
+    virtual.subscribe(() => notifications++);
+    const settled = virtual.flushPendingCorrection(false, true);
+    expect(settled).toMatchObject({ scrollTop: 22, pendingJump: 0 });
+    expect(notifications).toBe(0);
+    virtual.setViewport({ scrollTop: settled.scrollTop, size: 10, source: "user" });
+    expect(virtual.getSnapshot()).toMatchObject({ programmatic: false, correctionEvent: false });
+  });
   test("the correction scroll event is not user intent", () => {
     const virtual = engine([10, 10, 10], 10, 12);
     const result = mutate(virtual, () => virtual.measure("row-0", 20));
@@ -588,6 +601,22 @@ test("explicit upward intent releases follow until the user reaches the exact bo
   expect(virtual.getSnapshot().unseenCount).toBe(1);
   virtual.setViewport({ scrollTop: 290, size: 10, source: "user" });
   expect(virtual.getSnapshot()).toMatchObject({ pinned: true, unseenCount: 0 });
+});
+
+test("measurement growth keeps a pinned viewport at the bottom", () => {
+  const virtual = engine([100, 100], 100, 100);
+  virtual.setFollow(true);
+  const token = virtual.beforeMutation();
+  virtual.measure("row-1", 200);
+  virtual.afterMutation(token);
+  expect(virtual.getSnapshot()).toMatchObject({ pinned: true, scrollTop: 200 });
+});
+
+test("a host follow request re-pins an unpinned viewport", () => {
+  const virtual = engine([100, 100], 100, 0);
+  virtual.setFollow(false);
+  expect(virtual.requestFollow()).toBe(100);
+  expect(virtual.getSnapshot()).toMatchObject({ pinned: true, scrollTop: 100, unseenCount: 0 });
 });
 
 test("scrollToEnd and scrollToId notify with follow mode already updated", () => {

@@ -77,9 +77,11 @@ code { font: inherit; color: var(--fulcrum-fg); }
 .mode[data-state="waiting"]::before { background: var(--fulcrum-warn); }
 .mode span { color: var(--fulcrum-muted); font-weight: 400; }
 
-/* No vertical padding: the virtual Timeline measures from the scroll box's top edge, and padding would offset follow. */
-.scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 24px; }
-.scroll > [data-part="timeline"] { max-width: 760px; margin: 0 auto; }
+/* Owned Timeline mode needs a definite-height host; host-owned mode keeps the scroll element explicit. */
+.scroll { flex: 1; min-height: 0; overflow: hidden; padding: 0 24px; }
+.scroll > [data-part="timeline-frame"], .host-scroll > [data-part="timeline"] { max-width: 760px; margin: 0 auto; }
+.host-scroll { overflow: auto; }
+.host-jump-lane { flex: 0 0 52px; display: flex; align-items: center; padding: 0 24px; }
 
 @keyframes shell-pulse { to { opacity: 0.25; } }
 @media (prefers-reduced-motion: reduce) {

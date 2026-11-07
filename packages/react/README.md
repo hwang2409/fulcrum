@@ -21,9 +21,40 @@ const renderers: Renderers = {
 
 ## Timeline
 
-`Timeline` uses its direct parent as the scroll viewport. Pass `scrollRef` to use a different host-owned viewport. The component creates neither a scroll area nor a separate virtual lane, so the host must give the viewport a bounded height and scrolling. Its `jump-to-latest` button is a sibling after the timeline; reserve or position its space in host styles.
+`Timeline` has two scroll modes:
 
-Outlines above 200 rows use virtual mode by default. Set `virtual={false}` when native find-in-page must search every row. Virtual mode mounts only the visible window. `initialViewport` restores a reading position, and `onViewport` receives it when the store changes or the timeline unmounts.
+| mode | interface | layout contract |
+| --- | --- | --- |
+| owned (default) | omit `scrollRef` | `Timeline` renders `timeline-frame`, an inner `timeline-scroll`, and, in virtual mode only, a permanent jump-control lane. Give the host a definite height, such as `height: 600px` or a bounded flex child with `min-height: 0`. The lane always reserves the control's space, so the control never covers transcript text or shifts it when it appears. |
+| host-owned | pass `scrollRef` and `renderJumpToLatest` | `scrollRef.current` is the existing scroll element. `Timeline` reads it and never overwrites the ref. It renders no frame, inner scroller, or lane. Put the jump control in host layout that does not cover transcript text; a portal to a permanent sibling lane is the usual shape. |
+
+Outlines above 200 rows use virtual mode by default. Set `virtual={false}` when native find-in-page must search every row. Virtual mode mounts only the visible window. `initialViewport` restores a reading position, and `onViewport` receives it when the store changes or the timeline unmounts. Non-virtual timelines have no jump lane.
+
+A scroll-host change is one atomic transfer: the engine owns the reader's position intent (follow-bottom or anchor) until a measured layout on the current host confirms it. A pinned reader lands at the new bottom, and an unpinned reader keeps the same anchor and offset, including when the outline changes in the transfer commit. A pending correction folds into that anchor instead of remaining as separate work. A null gap keeps the intent until the next host attaches. Old-host measurements are dropped for the new host to measure again, and touch, timer, and correction ownership never remains attached to the old element.
+
+In development, an owned virtual timeline warns once if more than 200 rows all mount and its inner scroll height equals its client height. This means the frame is unconstrained. Give the host a definite height, or use host-owned mode. The browser-safe default keeps this diagnostic enabled. Vite strips the branch with `define: { "globalThis.__FULCRUM_DEV__": "false" }`. Webpack strips it with `new DefinePlugin({ "globalThis.__FULCRUM_DEV__": false })`. Esbuild 0.25 keeps the unreachable warning body from an imported package; use `pure: ["console.warn"]` (or `--pure:console.warn`) to remove it. Bun 1.4.4 also keeps the imported body; use `bun build --drop console.warn`. The esbuild and Bun settings remove other `console.warn` calls too. Production mode alone does not promise removal. Real tiny-consumer builds verified all four forms.
+
+```tsx
+import { useRef } from "react";
+import { createPortal } from "react-dom";
+
+const scrollRef = useRef<HTMLDivElement>(null);
+const jumpLaneRef = useRef<HTMLDivElement>(null);
+
+<div ref={scrollRef} style={{ height: 600, overflow: "auto" }}>
+  <Timeline
+    scrollRef={scrollRef}
+    renderJumpToLatest={(control) =>
+      jumpLaneRef.current ? createPortal(control, jumpLaneRef.current) : null
+    }
+  />
+</div>
+<div ref={jumpLaneRef} className="permanent-jump-lane" />
+```
+
+Migration: before, `Timeline` scrolled its outer element; now owned mode scrolls its inner `timeline-scroll`. For a Gamma-style app that lets the library own scrolling, remove the outer scroll behavior and `scrollRef`, give the host a definite height, and target `timeline-frame` for column layout. If the outer element must remain the scroller, keep its ref, pass it as `scrollRef`, and supply `renderJumpToLatest`; the ref remains owned by the host.
+
+When a host accepts a local send or steer, increment `followRequest` on `Timeline` to follow that message to the bottom even if the reader was previously scrolled up. Do not bump it for replayed history or remote user messages; those are new content and must preserve the reader's position.
 
 ## hooks, parts, and content
 
