@@ -20,6 +20,7 @@ const stream = (id: string, value: string): RunEvent[] => [
 const answer =
   "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. " +
   "Move the import into the config's server block, or use `new URL(..., import.meta.url)` instead.";
+const userParityText = "Why does the playground build fail on CI after the dependency cache is restored on a fresh runner, while the same command passes locally with the locked Bun version and a clean install? Please compare the generated package output, compiler diagnostics, and environment settings before changing any dependency versions.";
 const markdownDemo = [
   "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move the import into the config's server block, or use `new",
   "`",
@@ -361,7 +362,14 @@ export const demos: Demo[] = [
     part: "Message",
     title: "user role, wrapping",
     description: "A long user message: the prompt mark hangs in its own column and every line starts at the text edge.",
-    events: [{ type: "message_commit", message_id: "m-user-long", message: text("user", "Please check why the transport tests fail on CI but pass locally, then compare the retry timing with the reconnect path and tell me which one drops the last event.") }],
+    events: [{ type: "message_commit", message_id: "m-user-long", message: text("user", userParityText) }],
+  },
+  {
+    id: "message-user-dropped",
+    part: "Message",
+    title: "user role, dropped-delivery text",
+    description: "The committed-message geometry reference for a dropped user_message row.",
+    events: [{ type: "message_commit", message_id: "m-user-dropped", message: text("user", `${userParityText} · not delivered · abort`) }],
   },
   {
     id: "message-user-markdown",
@@ -791,10 +799,27 @@ export const demos: Demo[] = [
     description: "A wrapping user_message event (kind \"user\") with an attachment.",
     events: [{
       type: "user_message",
-      text: "Why does the playground build fail on CI after the dependency cache is restored on a fresh runner, while the same command passes locally with the locked Bun version and a clean install? Please compare the generated package output, compiler diagnostics, and environment settings before changing any dependency versions.",
+      text: userParityText,
       mode: "default",
       attachments: [{ type: "file", kind: "file", filename: "ci-build.log", mediaType: "text/plain", size: 12_345 }],
     }],
+  },
+  {
+    id: "fallback-user-parity",
+    part: "Fallback",
+    title: "user message parity",
+    description: "The same wrapping text as the committed Message fixture, without an attachment.",
+    events: [{ type: "user_message", text: userParityText, mode: "default" }],
+  },
+  {
+    id: "fallback-user-dropped",
+    part: "Fallback",
+    title: "dropped steer",
+    description: "A dropped steer keeps the shared user layout and adds its delivery outcome.",
+    events: [
+      { type: "user_message", text: userParityText, mode: "steer", delivery_id: "gallery-dropped" },
+      { type: "delivery_status", delivery_id: "gallery-dropped", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
+    ],
   },
   {
     id: "fallback-error",

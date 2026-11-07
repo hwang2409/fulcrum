@@ -108,6 +108,7 @@ const toolResultFields = {
   content: required(string),
   is_error: required(boolean),
   is_canceled: optional(boolean),
+  truncated: optional(boolean),
 };
 
 /** Every consumed event field declares whether invalid data rejects the event or is omitted from it. */
@@ -129,8 +130,10 @@ export const eventSchemas = {
   approval_request: { request_id: required(string), tool_call: required(toolCall, toolCallFields), view: optional(object), delegated: required(boolean), state: optional(oneOf("reconnecting", "resolving")), status: optional(string), disabled_reason: optional(string) },
   approval_end: { request_id: required(string), decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
   usage: { usage: required(usage) },
-  user_message: { text: required(string), mode: required(string), attachments: optional(array), message_id: optional(string), delivery_id: optional(string), intent: optional(string) },
+  user_message: { text: required(string), mode: required(string), attachments: optional(array), message_id: optional(string), delivery_id: optional(string), intent: optional(string), delivery_status: optional(oneOf("delivered", "dropped")), delivery_reason: optional(string) },
   error: { error: required(error, { code: required(string), message: required(string) }) },
+  delivery_status: { delivery_id: required(string), method: required(string), status: required(oneOf("delivered", "dropped")), content: required(string), reason: optional(string) },
+  history_truncated: { text: required(string) },
   notification: { notification_id: optional(string), data: optional(object) },
   unknown: { name: required(string), data: required(object, { notification_id: optional(string) }, true) },
   sub_agent: {
@@ -595,9 +598,21 @@ export function reduceAllWithEntities(
         appendItem({ id, type: "error", event });
         break;
       }
+      case "delivery_status": {
+        const id = entities.getMessageAlias(messageAlias(event.delivery_id));
+        const prior = id ? getItem(id) : undefined;
+        if (prior?.type === "user" && prior.event.type === "user_message") {
+          setItem({ ...prior, event: { ...prior.event, delivery_status: event.status, ...(event.reason ? { delivery_reason: event.reason } : {}) } });
+        } else if (event.status === "dropped") {
+          const notificationId = `notification:${next.nextId++}`;
+          appendItem({ id: notificationId, type: "notification", event: { type: "notification", data: event } });
+        }
+        break;
+      }
+      case "history_truncated":
       case "notification": {
         const id = `notification:${next.nextId++}`;
-        appendItem({ id, type: "notification", event });
+        appendItem({ id, type: "notification", event: event.type === "notification" ? event : { type: "notification", data: event } });
         break;
       }
       case "sub_agent": {

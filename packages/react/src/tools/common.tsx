@@ -230,6 +230,7 @@ export function Arguments({ call, id, open }: { call: ToolCall; id: string; open
   const value = useMemo(() => expanded ? JSON.stringify(call.arguments, null, 2) : undefined, [call.arguments, expanded]);
   const content = value === undefined ? null : (
     <>
+      {call.meta?.argumentsTruncated ? <div data-part="tool-truncated">arguments truncated</div> : null}
       <TextViewer text={value} id={`${id}:arguments`} label="arguments" part="tool-args" format={JSON_FORMAT} opened={open} />
       <div data-part="tool-foot"><CopyButton label="arguments" value={value} /></div>
     </>

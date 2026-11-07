@@ -344,24 +344,34 @@ const itemLabel = (item: RunItem) => {
 };
 // A notification's data has no fixed shape: its first text field (in this order) is what it says.
 const notificationText = (data: Record<string, unknown> | undefined) => {
-  for (const key of ["text", "message", "summary", "title", "preview", "description"]) {
+  for (const key of ["text", "message", "summary", "title", "preview", "description", "content"]) {
     const value = data?.[key];
     if (typeof value === "string" && value.trim()) return value;
   }
+};
+
+const fallbackDisplay = (item: RunItem) => {
+  const user = item.type === "user" && item.event.type === "user_message" ? item.event : undefined;
+  // An "aborted" error is the user's own stop: a neutral row, not a failure.
+  const stopped = item.type === "error" && item.event.type === "error" && item.event.error.code === "aborted";
+  const label = stopped ? "stopped" : itemLabel(item);
+  return {
+    kind: stopped ? "stopped" : item.type,
+    state: stopped ? "stopped" : item.type === "error" ? "error" : "done",
+    label: user?.delivery_status === "dropped" ? `${label} · not delivered${user.delivery_reason ? ` · ${user.delivery_reason}` : ""}` : label,
+    attachments: user?.attachments,
+  };
 };
 
 /** Generic part for kinds without a renderer (user, error, notification, unknown, ...). */
 export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
   const item = useItem(id);
   if (!item) return null;
-  // An "aborted" error is the user's own stop: a neutral row, not a failure.
-  const stopped = item.type === "error" && item.event.type === "error" && item.event.error.code === "aborted";
-  const kind = stopped ? "stopped" : item.type;
+  const display = fallbackDisplay(item);
   const user = item.type === "user" && item.event.type === "user_message";
-  const attachments = item.type === "user" && item.event.type === "user_message" ? item.event.attachments : undefined;
-  const content = <>{stopped ? "stopped" : itemLabel(item)}{attachments?.length ? <ToolResultBlocks id={id} blocks={attachments} /> : null}</>;
+  const content = <>{display.label}{display.attachments?.length ? <ToolResultBlocks id={id} blocks={display.attachments} /> : null}</>;
   return (
-    <div className={className} style={pre} data-part="item" data-kind={kind} data-id={id} data-state={stopped ? "stopped" : item.type === "error" ? "error" : "done"}>
+    <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state}>
       {user ? <UserMessageContent style={pre}>{content}</UserMessageContent> : content}
     </div>
   );

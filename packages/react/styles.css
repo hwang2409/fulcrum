@@ -138,7 +138,7 @@
   padding-left: 12px;
 }
 [data-part="message-prompt"] { color: var(--fulcrum-muted); user-select: none; }
-[data-part="message-content"] { min-width: 0; }
+[data-part="message-content"] { min-width: 0; text-wrap: pretty; }
 /* A leading table contributes its first row's baseline instead of its scroll box's fallback baseline. */
 [data-part="message-content"] > [data-part="md-table"]:first-child { display: table; }
 /* An image has no text baseline, so its decorative prompt belongs at the frame's top edge. */

@@ -173,61 +173,68 @@ function prepareUserProbe(node: HTMLElement, { streaming, probe }: UserProbe) {
 }
 
 function readUserGeometry(node: HTMLElement): UserGeometry {
-  const content = node.querySelector<HTMLElement>("[data-part=message-content]")!;
-  const prompt = node.querySelector<HTMLElement>("[data-part=message-prompt]")!;
-  const range = document.createRange();
-  const rects: DOMRect[] = [];
-  const texts = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
-  for (let text = texts.nextNode(); text; text = texts.nextNode()) {
-    if (text.parentElement === prompt || text.parentElement?.closest("[data-part=file]")) continue;
-    const code = text.parentElement?.closest("code");
-    range.selectNodeContents(text);
-    rects.push(...[...(code ?? range).getClientRects()].filter((rect) => rect.width > 0));
-  }
-  const lines: { x: number; top: number; bottom: number; right: number }[] = [];
-  for (const rect of rects.sort((a, b) => a.top - b.top)) {
-    const middle = (rect.top + rect.bottom) / 2;
-    const line = lines.find((line) => middle > line.top && middle < line.bottom);
-    if (!line) lines.push({ x: rect.left, top: rect.top, bottom: rect.bottom, right: rect.right });
-    else Object.assign(line, { x: Math.min(line.x, rect.left), right: Math.max(line.right, rect.right) });
-  }
-  range.selectNodeContents(prompt);
-  const box = range.getBoundingClientRect();
-  const firstText = () => {
+  type Line = { x: number; top: number; bottom: number; right: number };
+  const textLines = (content: HTMLElement): Line[] => {
+    const range = document.createRange();
+    const rects: DOMRect[] = [];
+    const texts = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+    for (let text = texts.nextNode(); text; text = texts.nextNode()) {
+      if (text.parentElement?.closest("[data-part=file]")) continue;
+      const code = text.parentElement?.closest("code");
+      range.selectNodeContents(text);
+      rects.push(...[...(code ?? range).getClientRects()].filter((rect) => rect.width > 0));
+    }
+    const lines: Line[] = [];
+    for (const rect of rects.sort((a, b) => a.top - b.top)) {
+      const middle = (rect.top + rect.bottom) / 2;
+      const line = lines.find((candidate) => middle > candidate.top && middle < candidate.bottom);
+      if (line) Object.assign(line, { x: Math.min(line.x, rect.left), right: Math.max(line.right, rect.right) });
+      else lines.push({ x: rect.left, top: rect.top, bottom: rect.bottom, right: rect.right });
+    }
+    return lines;
+  };
+  const firstText = (content: HTMLElement) => {
     const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
     for (let at = walker.nextNode(); at; at = walker.nextNode()) if (at.textContent!.trim()) return at;
   };
-  const first = firstText();
-  const firstBlock = [...content.children].find((child) => getComputedStyle(child).position !== "absolute");
-  const media = firstBlock?.matches("[data-part=image]") ? firstBlock.querySelector(":is([data-part=image-open], [data-part=image-placeholder])") : null;
   const baseline = (before: Node) => {
     const mark = document.createElement("span");
     mark.style.cssText = "display: inline-block; width: 0; height: 0";
     before.parentNode!.insertBefore(mark, before);
     return mark.getBoundingClientRect().bottom;
   };
+  const fileGeometry = (owner: HTMLElement, file: HTMLElement | null) => {
+    const label = file?.querySelector<HTMLElement>("[data-part=block-label]")?.getBoundingClientRect();
+    const name = file?.querySelector<HTMLElement>("[data-part=file-name]");
+    if (!file || !label || !name) return undefined;
+    const range = document.createRange();
+    range.selectNodeContents(name);
+    return { indent: getComputedStyle(file).textIndent, label: label.left, labelRight: label.right, name: range.getBoundingClientRect().left, bottom: file.getBoundingClientRect().bottom - owner.getBoundingClientRect().top };
+  };
+
+  const content = node.querySelector<HTMLElement>("[data-part=message-content]")!;
+  const prompt = node.querySelector<HTMLElement>("[data-part=message-prompt]")!;
+  const promptRange = document.createRange();
+  promptRange.selectNodeContents(prompt);
+  const box = promptRange.getBoundingClientRect();
+  const first = firstText(content);
+  const firstBlock = [...content.children].find((child) => getComputedStyle(child).position !== "absolute");
+  const media = firstBlock?.matches("[data-part=image]") ? firstBlock.querySelector(":is([data-part=image-open], [data-part=image-placeholder])") : null;
   const cursorNode = node.querySelector<HTMLElement>("[data-probe-cursor]");
-  const promptBaseline = baseline(prompt.firstChild!);
-  const firstBaseline = media ? undefined : first ? baseline(first) : cursorNode ? baseline(cursorNode) : undefined;
-  const file = node.querySelector<HTMLElement>("[data-part=file]");
-  const label = file?.querySelector<HTMLElement>("[data-part=block-label]")?.getBoundingClientRect();
-  const name = file?.querySelector<HTMLElement>("[data-part=file-name]");
-  const nameRange = document.createRange();
-  if (name) nameRange.selectNodeContents(name);
   const cursor = cursorNode?.getBoundingClientRect();
   const height = Number(node.dataset.probeHeight);
   return {
     promptX: box.left,
     promptTop: prompt.getBoundingClientRect().top,
-    promptBaseline,
-    firstBaseline,
+    promptBaseline: baseline(prompt.firstChild!),
+    firstBaseline: media ? undefined : first ? baseline(first) : cursorNode ? baseline(cursorNode) : undefined,
     mediaTop: media?.getBoundingClientRect().top,
-    lines: lines.map(({ x, top, right }) => ({ x, top, right })),
+    lines: textLines(content).map(({ x, top, right }) => ({ x, top, right })),
     contentRight: content.getBoundingClientRect().right - parseFloat(getComputedStyle(content).paddingRight),
     height,
     probedHeight: node.dataset.state === "streaming" && node.dataset.probeEmpty === "true" ? height : node.getBoundingClientRect().height,
     cursor: cursor && { x: cursor.left, top: cursor.top, width: cursor.width },
-    file: file && label && name ? { indent: getComputedStyle(file).textIndent, label: label.left, labelRight: label.right, name: nameRange.getBoundingClientRect().left, bottom: file.getBoundingClientRect().bottom - node.getBoundingClientRect().top } : undefined,
+    file: fileGeometry(node, node.querySelector<HTMLElement>("[data-part=file]")),
   };
 }
 
@@ -278,6 +285,7 @@ type UserCase = { id: string; nth?: number; name?: string; streaming?: boolean; 
 const firstBlocks = ["h1", "h2", "list", "blockquote", "code fence", "plain code fence", "large code fence", "table", "attachment only", "image only", "source", "reasoning", "empty text then file"];
 const userCases: UserCase[] = [
   { id: "fallback-user", name: "Fallback user row", text: true, wraps: true },
+  { id: "fallback-user-dropped", name: "Fallback dropped steer", text: true, wraps: true },
   { id: "message-user-role", text: true }, { id: "message-user-long", text: true }, { id: "message-user-role", streaming: true, text: true },
   { id: "message-user-long", streaming: true, text: true }, { id: "message-user-markdown", text: true }, { id: "user-block-indent", text: true },
   ...firstBlocks.map((name, nth) => ({ id: "user-first-blocks", nth, name })),
@@ -309,6 +317,29 @@ async function checkPromptSemantics(page: Page): Promise<string[]> {
   return failures;
 }
 
+async function checkUserParity(browser: Browser, port: number): Promise<string[]> {
+  const failures: string[] = [];
+  const pairs = [
+    { message: "message-user-long", fallback: "fallback-user-parity", name: "sent user message" },
+    { message: "message-user-dropped", fallback: "fallback-user-dropped", name: "dropped steer" },
+  ];
+  for (const theme of ["light", "dracula", "gruvbox-dark"]) for (const width of [1440, 390]) for (const pair of pairs) {
+    const geometries: UserGeometry[] = [];
+    for (const id of [pair.message, pair.fallback]) {
+      const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
+      await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
+      geometries.push(await measureUser(page, id, 0, false));
+      await page.close();
+    }
+    const [message, fallback] = geometries;
+    const at = `user parity @ ${theme} ${width}: ${pair.name}`;
+    if (message.lines.length !== fallback.lines.length) failures.push(`${at}: Message has ${message.lines.length} lines, Fallback has ${fallback.lines.length}`);
+    if (Math.abs(message.height - fallback.height) > 0.5) failures.push(`${at}: Message is ${message.height.toFixed(2)} px high, Fallback is ${fallback.height.toFixed(2)} px`);
+    if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ parity: pair.name, theme, width, message: { lines: message.lines.length, height: message.height }, fallback: { lines: fallback.lines.length, height: fallback.height } }));
+  }
+  return failures;
+}
+
 // A user message reads as a terminal prompt: "> " in its own column on the first text line of whatever block starts
 // the message (the top of an image), every text line at the text edge, and the streaming cursor on the last one.
 async function checkUserLayout(browser: Browser, port: number): Promise<string[]> {
@@ -325,6 +356,7 @@ async function checkUserLayout(browser: Browser, port: number): Promise<string[]
     if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ theme, width, name, streaming, probe, ...geometry, lines: geometry.lines.length }));
     await page.close();
   }
+  failures.push(...await checkUserParity(browser, port));
   const shots = ["light", "dracula", "gruvbox-dark"].flatMap((theme) => [1440, 390].flatMap((width) => ["user-block-indent", "message-user-long", "user-first-blocks"].map((id) => ({ theme, width, id }))));
   for (const { theme, width, id } of shots) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
