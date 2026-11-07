@@ -21,13 +21,21 @@ export interface SlashListResult {
 }
 
 export interface SlashOutputResult { kind: "output"; text: string; }
-export interface SlashModelInputResult {
+export interface SlashModelInputIdResult {
   kind: "model_input";
+  input_id: string;
   display_text: string;
-  input_id?: string;
-  text?: string;
-  origin?: string;
+  text?: never;
+  origin?: never;
 }
+export interface SlashModelInputTextResult {
+  kind: "model_input";
+  text: string;
+  display_text: string;
+  origin: string;
+  input_id?: never;
+}
+export type SlashModelInputResult = SlashModelInputIdResult | SlashModelInputTextResult;
 export interface SlashClientOnlyResult { kind: "client_only"; name: string; }
 export interface SlashUnknownResult { kind: "unknown"; name: string; }
 export interface SlashErrorResult { kind: "error"; text: string; }
@@ -50,12 +58,22 @@ function parseCommand(value: unknown): SlashCommandInfo | null {
   return row as SlashCommandInfo;
 }
 
-function parseModelInput(row: Record<string, unknown>): SlashModelInputResult | null {
-  if (typeof row.display_text !== "string") return null;
-  if (typeof row.input_id === "string") return { kind: "model_input", input_id: row.input_id, display_text: row.display_text };
-  return typeof row.text === "string"
-    ? { kind: "model_input", text: row.text, display_text: row.display_text, ...(typeof row.origin === "string" ? { origin: row.origin } : {}) }
-    : null;
+export interface ParseModelInputOptions { requireInputId: true; }
+
+export function parseModelInput(value: unknown, options: ParseModelInputOptions): SlashModelInputIdResult | null;
+export function parseModelInput(value: unknown): SlashModelInputResult | null;
+/** Validates either zeta model_input shape, or only the opaque-id shape when requested. */
+export function parseModelInput(value: unknown, options?: ParseModelInputOptions): SlashModelInputResult | null {
+  const row = object(value);
+  if (!row || row.kind !== "model_input" || typeof row.display_text !== "string") return null;
+  // Zeta src/zeta/server/slash_commands.py:474-489 serializes these two negotiated shapes.
+  if ("input_id" in row) {
+    return typeof row.input_id === "string"
+      ? { kind: "model_input", input_id: row.input_id, display_text: row.display_text }
+      : null;
+  }
+  if (options?.requireInputId || typeof row.text !== "string" || typeof row.origin !== "string") return null;
+  return { kind: "model_input", text: row.text, display_text: row.display_text, origin: row.origin };
 }
 
 /** Parses slash_list and drops malformed command rows without losing the list. */
@@ -81,10 +99,8 @@ export function parseSlashRun(value: unknown): ParsedSlashRunResult {
     case "client_only":
     case "unknown":
       return typeof row.name === "string" ? { kind: row.kind, name: row.name } : { kind: "malformed" };
-    case "model_input": {
-      const result = parseModelInput(row);
-      return result ?? { kind: "malformed" };
-    }
+    case "model_input":
+      return parseModelInput(row) ?? { kind: "malformed" };
     default:
       return { kind: "malformed" };
   }
