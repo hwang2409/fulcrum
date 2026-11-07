@@ -22,6 +22,7 @@ const origin = `http://127.0.0.1:${port}`;
 const shots = process.env.WEB_SHOTS ?? join(root, "gate-artifacts");
 await mkdir(shots, { recursive: true });
 const fake = await startFakeZeta({ origins: [origin] });
+fake.setLive(false);
 const vite = spawn("bun", ["x", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: root, env: { ...process.env, ZETA_HOME: fake.home }, stdio: "ignore" });
 const failures: string[] = [];
 const fail = (message: string) => { failures.push(message); console.log(`FAIL ${message}`); };

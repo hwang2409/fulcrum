@@ -385,6 +385,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (requestedRole === "observer" && observers >= 8) { reply({ error: { code: -32004, message: "observer limit reached" } }); socket.close(); return; }
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
+          if (!sockets.has(socket)) return;
           connectionRoles.set(socket as object, requestedRole);
           if (requestedRole === "controller") controller = socket;
           const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect) || (name === "served_turn_end" && servedTurnEndOffered)) ?? [];
