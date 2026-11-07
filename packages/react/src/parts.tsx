@@ -574,7 +574,7 @@ function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest
 const storeKeys = new WeakMap<object, number>();
 let nextStoreKey = 0;
 let warnedUnconstrainedTimeline = false;
-const development = globalThis.__FULCRUM_DEV__ ?? import.meta.env?.DEV ?? true;
+const development = globalThis.__FULCRUM_DEV__ ?? (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV ?? true;
 const useUnconstrainedWarning: (enabled: boolean, hostOwned: boolean, scroll: RefObject<HTMLElement | null>, itemCount: number, mountedCount: number) => void = development
   ? (enabled, hostOwned, scroll, itemCount, mountedCount) => useEffect(() => {
       if (!enabled || hostOwned || warnedUnconstrainedTimeline || itemCount <= 200 || mountedCount !== itemCount) return;
