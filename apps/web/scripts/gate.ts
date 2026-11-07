@@ -770,6 +770,19 @@ try {
       if (!(await page.evaluate(() => location.hash.includes("s-long")))) throw new Error("selection not in the url");
     });
     await check("chromium: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(page, "chromium"));
+    // Here, not with the later WebKit lane check: the mobile checks re-arm the fake's live turn, and a running turn
+    // keeps zeta from opening another session. The Chromium page leaves meanwhile, so WebKit gets the one controller.
+    await check("webkit: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", async () => {
+      await page.goto("about:blank");
+      const webkitBrowser = await webkit.launch();
+      try {
+        await checkReconnectAnchor(await webkitBrowser.newPage({ viewport: { width: 1440, height: 900 } }), "webkit");
+      } finally {
+        await webkitBrowser.close();
+        await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+        await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+      }
+    });
     await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
       await page.locator("button.session", { hasText: "check every theme" }).click();
       await page.locator('[data-part="md-table"]').waitFor({ timeout: 5000 });
@@ -994,12 +1007,11 @@ try {
     await mobile.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
     await phone.close();
 
-    await check("webkit: jump placement and reconnect anchor match chromium", async () => {
+    await check("webkit: jump-to-latest uses the same stable, non-overlapping lane", async () => {
       const webkitBrowser = await webkit.launch();
       try {
         const webkitPage = await webkitBrowser.newPage({ viewport: { width: 1440, height: 900 } });
         await checkJumpPlacement(webkitPage, "webkit", () => fake.emit({ event: "user_message", session_id: ACTIVE, text: "webkit placement check", mode: "send", attachments: [] }), true, true);
-        await checkReconnectAnchor(webkitPage, "webkit");
       } finally {
         await webkitBrowser.close();
       }
