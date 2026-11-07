@@ -533,7 +533,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   // The interrupted turn ends when its next run starts, as seen by any lease.
   const watchOutcome = (id: string, lease: OpenResult["lease"]) => {
     if (!interruptedTurns.has(id)) return;
-    const started = () => lease.store.getState().agent === "running" && interruptedTurns.delete(id);
+    const started = () => lease.store.getState().agent !== "idle" && interruptedTurns.delete(id);
     if (started()) return; // it came back running, so its end will be seen live
     const stop = lease.store.subscribe(() => { if (started()) stop(); });
   };
