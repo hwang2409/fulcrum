@@ -415,13 +415,15 @@ const servedReasons: Record<string, RunEndOutcome> = { completed: "completed", u
 
 /**
  * The outcome zeta recorded for the served turn `turnId` (the `turn_start.data.turn_id` of feature `served_turn_end`)
- * in `session_history` rows, or undefined when the rows hold no `served_turn_end` for it.
+ * in `session_history` rows. Only the newest `served_turn_end` counts: when it belongs to another turn, a later turn
+ * ran unseen, so the result is undefined, as it is when the rows hold no recorded end.
  */
 export function servedTurnOutcome(rows: readonly unknown[], turnId: string): RunEndOutcome | undefined {
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index] as { event?: unknown; data?: { turn_id?: unknown; reason?: unknown } } | null;
-    if (row?.event === "served_turn_end" && row.data?.turn_id === turnId)
-      return typeof row.data.reason === "string" && Object.hasOwn(servedReasons, row.data.reason) ? servedReasons[row.data.reason] : undefined;
+    if (row?.event !== "served_turn_end") continue;
+    const reason = row.data?.reason;
+    return row.data?.turn_id === turnId && typeof reason === "string" && Object.hasOwn(servedReasons, reason) ? servedReasons[reason] : undefined;
   }
   return undefined;
 }

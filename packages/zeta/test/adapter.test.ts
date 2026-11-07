@@ -146,7 +146,9 @@ test("served_turn_end history rows map to the run outcome by turn id and add no 
   ];
   expect(fromZetaHistory(rows).map((event) => event.type)).toEqual(["user_message", "message_commit"]);
   expect(servedTurnOutcome(rows, "a1b2c3d4e5f60718293a4b5c6d7e8f90")).toBe("completed");
-  expect(servedTurnOutcome(rows, "5ec6b9bb4c8c44d29bfa315da83a4190")).toBe("cancelled");
+  // An older turn's end does not count: a newer turn ran after it.
+  expect(servedTurnOutcome(rows, "5ec6b9bb4c8c44d29bfa315da83a4190")).toBeUndefined();
+  expect(servedTurnOutcome([end("t", "user_stop")], "t")).toBe("cancelled");
   expect(servedTurnOutcome([end("t", "error")], "t")).toBe("failed");
   expect(servedTurnOutcome([end("t", "disconnect")], "t")).toBe("disconnected");
   expect(servedTurnOutcome(rows, "ffffffffffffffffffffffffffffffff")).toBeUndefined();

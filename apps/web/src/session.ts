@@ -476,6 +476,9 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   // Sessions whose running turn an overflow hid, with the served turn id it had (feature `served_turn_end`) and, once
   // a history snapshot holds that turn's recorded end, its outcome.
   const hiddenEnds = new Map<string, { turn?: string; outcome?: RunEndOutcome }>();
+  // The last served turn id seen per session. A client that connected mid-turn never saw that turn's turn_start, so a
+  // repeat overflow keeps the id an earlier client saw.
+  const servedTurns = new Map<string, string>();
   const endOutcome = (id: string): EndOutcome => (rows) => {
     const hidden = hiddenEnds.get(id);
     if (!hidden) return undefined;
@@ -599,8 +602,11 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     const run = transitionRun(state.transition);
     // Only an overflow says frames were dropped; a run it interrupts that comes back idle ended unseen, and zeta's
     // recorded end for its served turn, if history has one, says how.
-    if (connection.state.phase === "overflow" && run?.lease.store.getState().agent === "running")
-      hiddenEnds.set(run.id, { turn: disconnected?.servedTurn(run.id) });
+    if (connection.state.phase === "overflow" && run?.lease.store.getState().agent === "running") {
+      const turn = disconnected?.servedTurn(run.id) ?? servedTurns.get(run.id);
+      if (turn) servedTurns.set(run.id, turn);
+      hiddenEnds.set(run.id, { turn });
+    }
     set({ listLoading: false, listSlow: false, listReady: false });
     openGeneration++;
     openAbort?.abort();

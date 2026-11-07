@@ -198,6 +198,35 @@ test("with served_turn_end, an overflow-hidden end takes zeta's recorded outcome
   }
 });
 
+test("a repeat overflow on a client that connected mid-turn keeps the served turn id an earlier client saw", async () => {
+  const turn = "5ec6b9bb4c8c44d29bfa315da83a4190";
+  const features = ["list_sessions_paging", "served_turn_end"];
+  const first = await server(handlers("b"), features);
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  for (let attempt = 0; attempt < 20 && !present(view).open?.history.complete; attempt++) await tick();
+  first.event({ event: "agent_start", session_id: "b" });
+  first.event({ event: "turn_start", session_id: "b", data: { turn: 1, turn_id: turn } });
+  connection.set(null, "overflow");
+  // Reconnected while the turn still runs: this client never sees the turn's turn_start.
+  const middle = await server(handlers("b", { status: () => ({ session: meta("b", "x"), state: "running", pending_approvals: [] }) }), features);
+  connection.set(middle.client);
+  for (let attempt = 0; attempt < 40 && !(present(view).open && !present(view).open!.stale && present(view).open!.lease.store.getState().agent === "running"); attempt++) await tick();
+  expect(present(view).open?.lease.store.getState().agent).toBe("running");
+  connection.set(null, "overflow");
+  const last = await server(handlers("b", {
+    session_history: (params) => {
+      const rows = [...history.b!, { id: "end-1", role: "system", event: "served_turn_end", data: { turn_id: turn, reason: "completed" } }];
+      const offset = params.offset as number;
+      return { messages: rows.slice(offset, offset + 1), next_offset: offset + 1 < rows.length ? offset + 1 : null };
+    },
+  }), features);
+  connection.set(last.client);
+  for (let attempt = 0; attempt < 40 && !(present(view).open && !present(view).open!.stale && present(view).open!.history.complete); attempt++) await tick();
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("completed");
+  view.dispose();
+});
+
 test("on connect opens the active session before requesting the catalog", async () => {
   let release!: () => void;
   const catalog = new Promise<{ sessions: SessionMeta[]; next_offset: null }>((resolve) => { release = () => resolve({ sessions, next_offset: null }); });
