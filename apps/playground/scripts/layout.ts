@@ -80,6 +80,16 @@ function pageProblems(minHeight: number) {
   if (actions !== "approve deny" && actions !== "approve approve-always deny") problems.push(`${card.dataset.id}: actions "${actions}", expected approve, optional approve-always, and deny`);
   // The actions share one row at every width: a wrapped action reads as a separate, unrelated control.
   if (new Set(buttons.map((button) => Math.round(button.getBoundingClientRect().top))).size > 1) problems.push(`${card.dataset.id}: approval actions wrap onto two rows`);
+  // The actions share the row's height: a wrapped long label must not leave its neighbours shorter.
+  const heights = buttons.map((button) => Math.round(button.getBoundingClientRect().height));
+  if (new Set(heights).size > 1) problems.push(`${card.dataset.id}: approval action heights differ (${heights.join(", ")} px)`);
+  // The plain two-action row keeps its one-line metrics: a 13 px label on a 13 px line, at exactly the minimum hit height.
+  if (actions === "approve deny")
+    for (const button of buttons) {
+      const { fontSize, lineHeight } = getComputedStyle(button);
+      if (lineHeight !== fontSize || Math.round(button.getBoundingClientRect().height) !== minHeight)
+        problems.push(`${card.dataset.id} ${button.dataset.action}: two-action metrics changed (line-height ${lineHeight} for a ${fontSize} font, ${Math.round(button.getBoundingClientRect().height)} px tall, expected ${minHeight} px)`);
+    }
   for (const button of buttons) {
     const name = `${card.dataset.id} ${button.textContent?.trim() || "(unnamed button)"}`;
     let opacity = 1;
