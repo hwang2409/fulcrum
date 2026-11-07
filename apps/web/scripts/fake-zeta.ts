@@ -69,13 +69,13 @@ const histories: Record<string, Json[]> = {
 };
 
 /** The live turn that runs when the active session opens: prose, code, a shell call, an approval, then a summary. */
-const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "deny" | "abort">, wait: (ms: number) => Promise<void>, done: () => void, historyMode: HistoryMode) => async () => {
+const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "deny" | "abort">, wait: (ms: number) => Promise<void>, turnId: string, done: (reason: "completed" | "disconnect") => void, historyMode: HistoryMode) => async () => {
   // Committed rows also land in history, as in zeta, so a reconnect rebuilds what the live stream showed.
   const history = histories[ACTIVE]!;
   const row = (id: string, role: string, content: Json[], toolResult: Json | null = null) => history.push({ id, role, content, tool_result: toolResult });
   const e = (event: string, body: Json = {}) => send({ event, session_id: ACTIVE, ...body });
   e("agent_start");
-  e("turn_start", { data: { turn: 2 } });
+  e("turn_start", { data: { turn: 2, turn_id: turnId } });
   for (const chunk of ["Running the test ", "in a loop to confirm ", "the race:\n\n```sh\nfor i in $(seq 20); do bun test test/rpc.test.ts; done\n```\n"]) {
     e("assistant_delta", { delta: chunk, kind: "assistant" });
     await wait(40);
@@ -96,7 +96,7 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
   e("approval_request", { request_id: "approval-1", tool_call: clean, delegated: false });
   if (historyMode === "new") history.push({ id: "approval-request-1", role: "system", event: "approval_request", request_id: "approval-1", tool_call: clean, delegated: false });
   const decision = await approval;
-  if (decision === "abort") return done();
+  if (decision === "abort") return done("disconnect");
   // zeta's event says "allow" for an approve call (src/zeta/core/approval.py), not the method name.
   const wire = { decision: decision === "approve" ? "allow" : decision };
   e("approval_end", { request_id: "approval-1", data: wire });
@@ -110,7 +110,7 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
   row("r5", "assistant", [text(summary)]);
   e("assistant_message", { message: { role: "assistant", content: [text(summary)] } });
   e("turn_end", { data: { turn: 2, tool_calls: 2 } });
-  done();
+  done("completed");
   e("agent_end");
 };
 
@@ -124,11 +124,19 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
  * event_contract.served_turn_end_row). zeta writes it for every turn; `session_history` returns it only to a connection
  * that negotiated the feature.
  */
-const servedTurnEnd = (turnId: string, reason: "completed" | "user_stop" | "error" | "disconnect"): Json =>
+type TurnEndReason = "completed" | "user_stop" | "error" | "disconnect";
+const servedTurnEnd = (turnId: string, reason: TurnEndReason): Json =>
   ({ id: `turn-end-${turnId}`, role: "system", event: "served_turn_end", data: { turn_id: turnId, reason } });
 
 /** `turnIds` says whether the controller negotiated `served_turn_end`, so `turn_start` carries `data.turn_id`. */
-export function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): boolean; set(value: boolean): void }, turnIds: () => boolean = () => false) {
+export function composerMethods(
+  wait: (ms: number) => Promise<void>,
+  running: { get(): boolean; set(value: boolean): void },
+  turnIds: () => boolean = () => false,
+  recordEnd: (session: string, turnId: string, reason: TurnEndReason) => void = (session, turnId, reason) => {
+    histories[session] = [...(histories[session] ?? []), servedTurnEnd(turnId, reason)];
+  },
+) {
   const sent: Json[] = [];
   const deliveries = new Map<string, Json>();
   const statuses = new Map<string, "queued" | "delivered" | "dropped">();
@@ -160,7 +168,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
       histories[session] = [...(histories[session] ?? []), { id: `delivery-${id}`, role: "system", event: "delivery_status", delivery_id: id, method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" }];
     }
     e("turn_end", { data: { turn: sent.length } });
-    histories[session] = [...(histories[session] ?? []), servedTurnEnd(turn.id, "completed")];
+    recordEnd(session, turn.id, "completed");
     chat = null;
     running.set(false);
     e("agent_end");
@@ -190,7 +198,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
     chat = null;
     running.set(false);
     turn.aborted = true;
-    histories[turn.session] = [...(histories[turn.session] ?? []), servedTurnEnd(turn.id, "user_stop")];
+    recordEnd(turn.session, turn.id, "user_stop");
     aborts++;
     send({ event: "turn_aborted", session_id: turn.session, data: { reason: "abort" } });
     send({ event: "agent_end", session_id: turn.session, data: {} });
@@ -202,6 +210,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
     clearSent() { sent.splice(0); },
     get history() { return histories[ACTIVE] ?? []; },
     get aborts() { return aborts; },
+    get currentTurnId() { return chat?.id; },
     /** The reply body for a composer method, or undefined for any other method. */
     handle(method: string, params: Json, active: string | null, send: Send): Json | undefined {
       if (method === "send" || method === "steer") return deliver(method, params, active, send);
@@ -314,7 +323,21 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     socket.close(1000);
   };
   let servedTurnEndOffered = true;
-  const composer = composerMethods(wait, { get: () => running, set: (value) => { running = value; } }, () => !!controller && !!negotiatedFeatures.get(controller as object)?.has("served_turn_end"));
+  let backwardHistoryOffered = true;
+  let laterHistoryDelay = 0;
+  let servedTurnEndHistoryReads = 0;
+  const lastTurnEnds = new Map<string, { turn_id: string; reason: TurnEndReason }>();
+  const recordTurnEnd = (session: string, turnId: string, reason: TurnEndReason) => {
+    const end = { turn_id: turnId, reason };
+    lastTurnEnds.set(session, end);
+    histories[session] = [...(histories[session] ?? []), servedTurnEnd(turnId, reason)];
+  };
+  const composer = composerMethods(
+    wait,
+    { get: () => running, set: (value) => { running = value; } },
+    () => !!controller && !!negotiatedFeatures.get(controller as object)?.has("served_turn_end"),
+    recordTurnEnd,
+  );
   let serialTail = Promise.resolve<unknown>(undefined);
   const delayCalls = new Map<string, number>();
   const requestDelay = (method: string) => {
@@ -358,6 +381,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         const resolve = decide;
         decide = null;
         running = false;
+        if (composer.currentTurnId) recordTurnEnd(ACTIVE, composer.currentTurnId, "disconnect");
         histories[ACTIVE]!.push({ id: `drop-${Date.now()}`, role: "tool_result", content: [text("")], tool_result: result("live-2", "connection lost", { is_canceled: true }) });
         if (currentHistoryMode === "new") histories[ACTIVE]!.push({ id: `approval-end-drop-${Date.now()}`, role: "system", event: "approval_end", request_id: "approval-1", tool_call: approvalCall, data: { decision: "abort", reason: "controller_disconnected" } });
         resolve("abort");
@@ -388,7 +412,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (!sockets.has(socket)) return;
           connectionRoles.set(socket as object, requestedRole);
           if (requestedRole === "controller") controller = socket;
-          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect) || (name === "served_turn_end" && servedTurnEndOffered)) ?? [];
+          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || (name === "session_history_backward" && backwardHistoryOffered) || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect) || (name === "served_turn_end" && servedTurnEndOffered)) ?? [];
           negotiatedFeatures.set(socket as object, new Set(features));
           const reconnect = features.includes("approval_reconnect");
           if (reconnect) reconnectControllers.add(socket as object);
@@ -434,7 +458,9 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if (method === "status") {
           const pending = decide && !approvalAborted ? [{ request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, delegated: false }] : [];
-          return reply({ result: { session: active ? sessions.find((session) => session.session_id === active) ?? null : null, state: running ? (decide ? "tool" : "running") : "idle", explicit_finish: false, pending_approvals: pending, usage: {}, compaction_markers: 0 } });
+          // Mirrors feature negotiation, capture, and projection in zeta connections.py at 5feea2fc:594-629, 762-806, 822-837.
+          const servedEnds = negotiatedFeatures.get(socket as object)?.has("served_turn_end");
+          return reply({ result: { session: active ? sessions.find((session) => session.session_id === active) ?? null : null, state: running ? (decide ? "tool" : "running") : "idle", explicit_finish: false, pending_approvals: pending, usage: {}, compaction_markers: 0, ...(servedEnds ? { last_turn_outcome: active ? lastTurnEnds.get(active) ?? null : null } : {}) } });
         }
         if (method === "resume") {
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
@@ -486,12 +512,17 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
                 approvalAborted = false;
                 decide = (decision) => { decide = null; resolve(decision); };
               });
-              setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; }, currentHistoryMode)(), 300);
+              const turnId = crypto.randomUUID().replaceAll("-", "");
+              setTimeout(() => void liveTurn(send, ask, wait, turnId, (reason) => { recordTurnEnd(ACTIVE, turnId, reason); running = false; }, currentHistoryMode)(), 300);
             }
             return;
           }
           const offset = Number(params.offset ?? 0);
-          reply({ result: { messages: groups.slice(offset, offset + pageSize).flat(), next_offset: offset + pageSize < groups.length ? offset + pageSize : null } });
+          if (offset > 0 && laterHistoryDelay > 0) await wait(laterHistoryDelay);
+          const pageRows = groups.slice(offset, offset + pageSize).flat();
+          const latestTurnId = lastTurnEnds.get(active!)?.turn_id;
+          if (latestTurnId && pageRows.some((row) => row.event === "served_turn_end" && row.data?.turn_id === latestTurnId)) servedTurnEndHistoryReads++;
+          reply({ result: { messages: pageRows, next_offset: offset + pageSize < groups.length ? offset + pageSize : null } });
           // The run starts once, after the first open of the active session finishes its history.
           if (liveEnabled && active === ACTIVE && offset + pageSize >= groups.length && !turnStarted) {
             turnStarted = true;
@@ -500,7 +531,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
               approvalAborted = false;
               decide = (decision) => { decide = null; resolve(decision); };
             });
-            setTimeout(() => void liveTurn(send, ask, wait, () => { running = false; }, currentHistoryMode)(), 300);
+            const turnId = crypto.randomUUID().replaceAll("-", "");
+              setTimeout(() => void liveTurn(send, ask, wait, turnId, (reason) => { recordTurnEnd(ACTIVE, turnId, reason); running = false; }, currentHistoryMode)(), 300);
           }
           return;
         }
@@ -565,6 +597,9 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     },
     /** `false` makes the server not offer `served_turn_end`, like a zeta older than 8c03f606. */
     setServedTurnEnd(next: boolean) { servedTurnEndOffered = next; },
+    setBackwardHistory(next: boolean) { backwardHistoryOffered = next; },
+    setLaterHistoryDelay(ms: number) { laterHistoryDelay = ms; },
+    get servedTurnEndHistoryReads() { return servedTurnEndHistoryReads; },
     /** Whether a turn runs on the server, independent of what any client saw. */
     get running() { return running; },
     setOpenDelay(ms: number) { openDelay = ms; },
