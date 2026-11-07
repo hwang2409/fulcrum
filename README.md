@@ -224,7 +224,7 @@ The canonical scenarios cover text stream and commit, tool argument streaming or
 | owned (default) | omit `scrollRef` | `Timeline` renders `timeline-frame`, an inner `timeline-scroll`, and, in virtual mode only, a permanent jump-control lane. The host must have a definite height, such as `height: 600px` or a bounded flex child with `min-height: 0`. |
 | host-owned | pass `scrollRef` and `renderJumpToLatest` | `scrollRef.current` is the existing scroll element. `Timeline` reads it and never overwrites the ref. It renders no frame, inner scroller, or lane. The renderer must put the jump control in host layout that does not cover transcript text; a portal to a permanent sibling lane is the usual shape. |
 
-In development, an owned virtual timeline warns once if more than 200 rows all mount and its inner scroll height equals its client height. This means the frame is unconstrained. Give the host a definite height, or use host-owned mode.
+In development, an owned virtual timeline warns once if more than 200 rows all mount and its inner scroll height equals its client height. This means the frame is unconstrained. Give the host a definite height, or use host-owned mode. The warning is enabled when `process` is unavailable or `process.env.NODE_ENV` is not `"production"`; production bundlers should replace `process.env.NODE_ENV` with `"production"` so dead-code elimination strips the warning.
 
 ```tsx
 import { useRef } from "react";

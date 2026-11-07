@@ -746,6 +746,76 @@ test("host-owned Timeline uses the supplied scroll element without replacing its
   expect(container.querySelectorAll("[data-virtual-id]").length).toBeLessThanOrEqual(200);
 });
 
+function hostAttachmentHarness() {
+  const items = Array.from({ length: 300 }, (_, index) => committedItem(String(index)));
+  const { store } = timelineStore(items);
+  const scrollRef = { current: null as HTMLElement | null };
+  const view = (target: "inner" | "outer" | "replacement" | "removed", owned = false) => (
+    <RunProvider store={store}>
+      <div data-testid="outer" ref={target === "outer" ? scrollRef : undefined}>
+        <div data-testid="inner" ref={target === "inner" ? scrollRef : undefined} />
+      </div>
+      {target === "replacement" ? <div data-testid="replacement" ref={scrollRef} /> : null}
+      {owned
+        ? <Timeline virtual />
+        : <Timeline virtual scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />}
+    </RunProvider>
+  );
+  return { scrollRef, view };
+}
+
+const attachedHost = (testId: string) => {
+  const host = q(`[data-testid="${testId}"]`);
+  expect(host.style.overflowAnchor).toBe("none");
+  expect(container.querySelectorAll("[data-virtual-id]").length).toBeLessThanOrEqual(200);
+  return host;
+};
+
+test("host-owned Timeline moves one stable ref from an inner to an outer element", () => {
+  const { scrollRef, view } = hostAttachmentHarness();
+  mount(view("inner"));
+  const inner = attachedHost("inner");
+  act(() => root!.render(view("outer")));
+  expect(scrollRef.current).toBe(q('[data-testid="outer"]'));
+  expect(inner.style.overflowAnchor).toBe("");
+  attachedHost("outer");
+});
+
+test("host-owned Timeline reattaches when the element behind a stable ref is replaced", () => {
+  const { scrollRef, view } = hostAttachmentHarness();
+  mount(view("inner"));
+  const inner = attachedHost("inner");
+  act(() => root!.render(view("replacement")));
+  expect(scrollRef.current).toBe(q('[data-testid="replacement"]'));
+  expect(inner.style.overflowAnchor).toBe("");
+  attachedHost("replacement");
+});
+
+test("host-owned Timeline detaches on null and reattaches when the stable ref returns", () => {
+  const { scrollRef, view } = hostAttachmentHarness();
+  mount(view("inner"));
+  const inner = attachedHost("inner");
+  act(() => root!.render(view("removed")));
+  expect(scrollRef.current).toBeNull();
+  expect(inner.style.overflowAnchor).toBe("");
+  act(() => root!.render(view("outer")));
+  attachedHost("outer");
+});
+
+test("Timeline keeps attachment correct while switching between owned and host-owned modes", () => {
+  const { view } = hostAttachmentHarness();
+  mount(view("inner"));
+  const inner = attachedHost("inner");
+  act(() => root!.render(view("outer")));
+  expect(inner.style.overflowAnchor).toBe("");
+  attachedHost("outer");
+  act(() => root!.render(view("outer", true)));
+  expect(q('[data-testid="outer"]').style.overflowAnchor).toBe("");
+  expect(q('[data-part="timeline-scroll"]').style.overflowAnchor).toBe("none");
+  act(() => root!.render(view("outer")));
+  attachedHost("outer");
+});
+
 test("useVirtualList ignores a stale outline hint and resets when the outline owner changes", () => {
   const a = Array.from({ length: 201 }, (_, index) => ({ id: `a-${index}`, kind: "message" }));
   const b = Array.from({ length: 201 }, (_, index) => ({ id: `b-${index}`, kind: "message" }));

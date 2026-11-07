@@ -70,6 +70,7 @@ export function useVirtualList<Id extends string>(
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
+  const attachment = useRef<{ element: HTMLElement; detach(): void } | null>(null);
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
 
@@ -93,15 +94,25 @@ export function useVirtualList<Id extends string>(
   }, [engine, outline, options.enabled, options.outlineUpdate, options.resetKey, resetPending]);
 
   useLayoutEffect(() => {
-    if (options.enabled === false || typeof ResizeObserver === "undefined") return;
-    const container = options.scrollRef?.current ?? timelineElement.current?.parentElement ?? null;
+    const container = options.enabled === false || typeof ResizeObserver === "undefined"
+      ? null
+      : options.scrollRef?.current ?? timelineElement.current?.parentElement ?? null;
+    if (attachment.current?.element === container) return;
+    const priorViewport = containerRef.current ? engine.getSnapshot() : null;
+    attachment.current?.detach();
+    attachment.current = null;
+    containerRef.current = null;
     if (!container) return;
     containerRef.current = container;
     const priorOverflowAnchor = container.style.overflowAnchor;
     container.style.overflowAnchor = "none";
     const updateViewport = (source: "user" | "programmatic") =>
       engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
-    updateViewport("user");
+    if (priorViewport) {
+      if (!priorViewport.pinned) container.scrollTop = priorViewport.scrollTop;
+      updateViewport("programmatic");
+      if (priorViewport.pinned) container.scrollTop = engine.scrollToEnd();
+    } else updateViewport("user");
     lastScrollTop.current = container.scrollTop;
 
     const flushMeasurements = () => {
@@ -192,7 +203,7 @@ export function useVirtualList<Id extends string>(
       ignoreScrollUntil.current = performance.now() + 50;
     });
     viewportObserver.observe(container);
-    return () => {
+    const detach = () => {
       observer.disconnect();
       viewportObserver.disconnect();
       observerRef.current = null;
@@ -206,9 +217,19 @@ export function useVirtualList<Id extends string>(
       container.removeEventListener("touchcancel", onTouchEnd);
       if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
       if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
+      resizeFrame.current = null;
+      scrollEndTimer.current = null;
+      pendingEntries.current.clear();
       container.style.overflowAnchor = priorOverflowAnchor;
     };
-  }, [engine, options.scrollRef, options.enabled]);
+    attachment.current = { element: container, detach };
+  });
+
+  useLayoutEffect(() => () => {
+    attachment.current?.detach();
+    attachment.current = null;
+    containerRef.current = null;
+  }, []);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
