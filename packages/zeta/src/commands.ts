@@ -40,8 +40,10 @@ export interface SlashClientOnlyResult { kind: "client_only"; name: string; }
 export interface SlashUnknownResult { kind: "unknown"; name: string; }
 export interface SlashErrorResult { kind: "error"; text: string; }
 export interface SlashMalformedResult { kind: "malformed"; }
+/** The command was not sent because the server did not negotiate the feature needed to keep model input opaque. */
+export interface SlashUnavailableResult { kind: "unavailable"; feature: typeof MODEL_INPUT_IDS_FEATURE; }
 export type SlashRunResult = SlashOutputResult | SlashModelInputResult | SlashClientOnlyResult | SlashUnknownResult | SlashErrorResult;
-export type ParsedSlashRunResult = SlashRunResult | SlashMalformedResult;
+export type ParsedSlashRunResult = SlashRunResult | SlashMalformedResult | SlashUnavailableResult;
 
 const object = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === "object" ? value as Record<string, unknown> : null;
@@ -107,7 +109,13 @@ export function parseSlashRun(value: unknown): ParsedSlashRunResult {
 }
 
 export interface CommandClient {
+  readonly features: readonly string[];
   request(method: string, params?: Record<string, unknown>, options?: RequestOptions): Promise<unknown>;
+}
+
+// Keep this guard shared with the future input_prepare helper so model input cannot leak through either path.
+function requireModelInputIds(client: CommandClient): SlashUnavailableResult | null {
+  return client.features.includes(MODEL_INPUT_IDS_FEATURE) ? null : { kind: "unavailable", feature: MODEL_INPUT_IDS_FEATURE };
 }
 
 export function listSlashCommands(client: CommandClient, sessionId: string, includeUnavailable = false, options?: RequestOptions): Promise<SlashListResult> {
@@ -115,7 +123,8 @@ export function listSlashCommands(client: CommandClient, sessionId: string, incl
 }
 
 export function runSlashCommand(client: CommandClient, sessionId: string, text: string, options?: RequestOptions): Promise<ParsedSlashRunResult> {
-  return client.request("slash_run", { session_id: sessionId, text }, options).then(parseSlashRun);
+  const unavailable = requireModelInputIds(client);
+  return unavailable ? Promise.resolve(unavailable) : client.request("slash_run", { session_id: sessionId, text }, options).then(parseSlashRun);
 }
 
 export interface SendResult { accepted: true; session_id: string; }
