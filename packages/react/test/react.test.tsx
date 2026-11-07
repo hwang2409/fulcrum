@@ -779,15 +779,15 @@ function hostAttachmentHarness() {
   let items = Array.from({ length: 300 }, (_, index) => committedItem(String(index)));
   const timeline = timelineStore(items);
   const scrollRef = { current: null as HTMLElement | null };
-  const view = (target: "inner" | "outer" | "replacement" | "removed", owned = false, followRequest = 0) => (
+  const view = (target: "inner" | "outer" | "replacement" | "removed", owned = false, followRequest = 0, virtual = true) => (
     <RunProvider store={timeline.store}>
       <div data-testid="outer" ref={target === "outer" ? scrollRef : undefined}>
         <div data-testid="inner" ref={target === "inner" ? scrollRef : undefined} />
       </div>
       {target === "replacement" ? <div data-testid="replacement" ref={scrollRef} /> : null}
       {owned
-        ? <Timeline virtual followRequest={followRequest} />
-        : <Timeline virtual followRequest={followRequest} scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />}
+        ? <Timeline virtual={virtual} followRequest={followRequest} />
+        : <Timeline virtual={virtual} followRequest={followRequest} scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />}
     </RunProvider>
   );
   const append = () => {
@@ -808,6 +808,168 @@ const attachedHost = (testId: string) => {
   expect(container.querySelectorAll("[data-virtual-id]").length).toBeLessThanOrEqual(200);
   return host;
 };
+
+type TransferKind = "direct swap" | "null gap: 0 commits" | "null gap: 1 commit" | "null gap: N commits" | "owned -> host-owned" | "host-owned -> owned" | "unmount";
+type TransferInteraction = "idle pinned" | "idle unpinned" | "touch (active)" | "momentum" | "pending correction" | "pending jump";
+
+const transferKinds: TransferKind[] = [
+  "direct swap",
+  "null gap: 0 commits",
+  "null gap: 1 commit",
+  "null gap: N commits",
+  "owned -> host-owned",
+  "host-owned -> owned",
+  "unmount",
+];
+const transferInteractions: TransferInteraction[] = [
+  "idle pinned",
+  "idle unpinned",
+  "touch (active)",
+  "momentum",
+  "pending correction",
+  "pending jump",
+];
+
+// Every product-reachable transfer/state pair is present. Unmount has no post-transfer host by definition,
+// so those cells assert cleanup only instead of follow, append, anchor, and jump behavior.
+test.each(transferKinds.flatMap((transfer) => transferInteractions.map((interaction) => [transfer, interaction] as const)))(
+  "host transfer matrix: %s / %s",
+  (transfer, interaction) => {
+    const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    const userAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent");
+    const positions = new WeakMap<HTMLElement, number>();
+    const listeners = new Map<EventTarget, Map<string, Set<EventListenerOrEventListenerObject>>>();
+    const add = HTMLElement.prototype.addEventListener;
+    const remove = HTMLElement.prototype.removeEventListener;
+    const OriginalResizeObserver = globalThis.ResizeObserver;
+    let activeObservers = 0;
+    class MatrixResizeObserver implements ResizeObserver {
+      constructor(_callback: ResizeObserverCallback) { activeObservers++; }
+      disconnect() { activeObservers--; }
+      observe() {}
+      unobserve() {}
+    }
+    Object.defineProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"),
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() { return positions.get(this as HTMLElement) ?? 0; },
+      set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+    });
+    HTMLElement.prototype.addEventListener = function(type, listener, options) {
+      if (this.dataset.testid && listener) {
+        const byType = listeners.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
+        const entries = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+        entries.add(listener);
+        byType.set(type, entries);
+        listeners.set(this, byType);
+      }
+      add.call(this, type, listener, options);
+    };
+    HTMLElement.prototype.removeEventListener = function(type, listener, options) {
+      if (listener) listeners.get(this)?.get(type)?.delete(listener);
+      remove.call(this, type, listener, options);
+    };
+    globalThis.ResizeObserver = MatrixResizeObserver;
+    const listenerCount = () => [...listeners.values()].flatMap((types) => [...types.values()]).reduce((sum, entries) => sum + entries.size, 0);
+    try {
+      const { append, prepend, view } = hostAttachmentHarness();
+      let followRequest = 0;
+      const startsOwned = transfer === "owned -> host-owned";
+      mount(view("inner", startsOwned, followRequest));
+      const oldHost = startsOwned ? q('[data-part="timeline-scroll"]') : attachedHost("inner");
+      oldHost.scrollTop = oldHost.scrollHeight;
+      act(() => oldHost.dispatchEvent(new Event("scroll")));
+
+      const unpinned = interaction !== "idle pinned";
+      if (unpinned) {
+        oldHost.scrollTop = 3_000;
+        act(() => {
+          oldHost.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+          oldHost.dispatchEvent(new Event("scroll"));
+        });
+      }
+      if (interaction === "touch (active)" || interaction === "momentum" || interaction === "pending jump") {
+        const touch = new Event("touchstart") as TouchEvent;
+        Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+        act(() => oldHost.dispatchEvent(touch));
+      }
+      if (interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump") prepend();
+      if (interaction === "momentum") act(() => oldHost.dispatchEvent(new Event("touchend")));
+      const expectedTop = interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump" ? 3_072 : 3_000;
+
+      const render = (target: "inner" | "outer" | "replacement" | "removed", owned = false, virtual = true) =>
+        act(() => root!.render(view(target, owned, followRequest, virtual)));
+      let newHost: HTMLElement | null = null;
+      if (transfer === "unmount") {
+        act(() => root!.unmount());
+        root = undefined;
+        expect(oldHost.style.overflowAnchor).toBe("");
+        expect(listenerCount()).toBe(0);
+        expect(activeObservers).toBe(0);
+        return;
+      }
+      if (transfer === "null gap: 1 commit" || transfer === "null gap: N commits") {
+        globalThis.ResizeObserver = undefined as unknown as typeof ResizeObserver;
+        render("removed");
+        if (transfer === "null gap: N commits") {
+          render("removed");
+          render("removed");
+        }
+        globalThis.ResizeObserver = MatrixResizeObserver;
+        render("outer");
+        newHost = attachedHost("outer");
+      } else if (transfer === "null gap: 0 commits") {
+        // React clears and assigns the ref during one replacement commit; no committed render observes null.
+        render("replacement");
+        newHost = attachedHost("replacement");
+      } else if (transfer === "owned -> host-owned") {
+        render("outer");
+        newHost = attachedHost("outer");
+      } else if (transfer === "host-owned -> owned") {
+        render("inner", true);
+        newHost = q('[data-part="timeline-scroll"]');
+      } else {
+        render("outer");
+        newHost = attachedHost("outer");
+      }
+
+      expect(oldHost.style.overflowAnchor).toBe("");
+      if (unpinned) expect(newHost.scrollTop).toBeCloseTo(expectedTop, 0);
+      else expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+      followRequest++;
+      if (transfer === "host-owned -> owned") render("inner", true);
+      else render(transfer === "null gap: 0 commits" ? "replacement" : "outer");
+      expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+      append();
+      expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+      newHost.scrollTop -= 1_000;
+      act(() => {
+        newHost!.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+        newHost!.dispatchEvent(new Event("scroll"));
+      });
+      append();
+      const jump = q('[data-part="jump-to-latest"]');
+      expect(jump).toBeTruthy();
+      act(() => jump.click());
+      expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+    } finally {
+      if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+      if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+      if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+      if (userAgent) Object.defineProperty(Navigator.prototype, "userAgent", userAgent);
+      HTMLElement.prototype.addEventListener = add;
+      HTMLElement.prototype.removeEventListener = remove;
+      globalThis.ResizeObserver = OriginalResizeObserver;
+    }
+  },
+);
 
 test("host-owned Timeline moves one stable ref from an inner to an outer element", () => {
   const { scrollRef, view } = hostAttachmentHarness();
