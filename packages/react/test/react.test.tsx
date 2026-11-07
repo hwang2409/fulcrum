@@ -1036,6 +1036,9 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
       }
 
       expect(oldHost.style.overflowAnchor).toBe("");
+      const measuredRow = q("[data-virtual-id]");
+      expect(Number.parseFloat(measuredRow.style.transform.slice("translateY(".length)))
+        .toBeCloseTo(Number(measuredRow.dataset.virtualIndex) * 72, 0);
       if (unpinned) {
         const expectedOutlineTop = outlineChange === "prepend" ? expectedTop + 72 : expectedTop;
         expect(newHost.scrollTop).toBeCloseTo(expectedOutlineTop, 0);
