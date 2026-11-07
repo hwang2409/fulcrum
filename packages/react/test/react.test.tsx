@@ -281,6 +281,12 @@ test("run status and the compact end marker expose an unknown outcome accessibly
   send({ type: "run_start" });
   expect(container.querySelector('[data-part="run-end-marker"]')).toBeNull();
   expect(q('[data-part="run-status"]').textContent).toBe("running");
+
+  // A reported outcome shows as plain marker text; the header reads idle.
+  send({ type: "run_end", outcome: "cancelled" } as RunEvent);
+  expect(q('[data-part="run-end-marker"]').textContent).toBe("run stopped");
+  expect(q('[data-part="run-end-marker"]').dataset.outcome).toBe("cancelled");
+  expect(q('[data-part="run-status"]').textContent).toBe("idle");
 });
 
 test("dispose leaves the last mounted snapshot and stops notifications", () => {

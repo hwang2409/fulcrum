@@ -116,7 +116,7 @@ const toolResultFields = {
 /** Every consumed event field declares whether invalid data rejects the event or is omitted from it. */
 export const eventSchemas = {
   run_start: { data: optional(object) },
-  run_end: { outcome: optional(oneOf("unknown")), data: optional(object) },
+  run_end: { outcome: optional(oneOf("completed", "cancelled", "failed", "disconnected", "unknown")), data: optional(object) },
   turn_start: { data: optional(object) },
   turn_end: { data: optional(object) },
   message_start: { data: optional(object) },

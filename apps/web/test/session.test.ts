@@ -170,6 +170,34 @@ test("overflow marks only the running session until that session starts its next
   expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
 });
 
+test("with served_turn_end, an overflow-hidden end takes zeta's recorded outcome for that turn, else stays unknown", async () => {
+  const turn = "5ec6b9bb4c8c44d29bfa315da83a4190";
+  const ended = (turnId: string, reason: string) => handlers("b", {
+    session_history: (params) => {
+      const rows = [...history.b!, { id: "end-1", role: "system", event: "served_turn_end", data: { turn_id: turnId, reason } }];
+      const offset = params.offset as number;
+      return { messages: rows.slice(offset, offset + 1), next_offset: offset + 1 < rows.length ? offset + 1 : null };
+    },
+  });
+  const features = ["list_sessions_paging", "served_turn_end"];
+  for (const [rows, outcome] of [[ended(turn, "user_stop"), "cancelled"], [ended("0000000000000000000000000000beef", "completed"), "unknown"]] as const) {
+    const first = await server(handlers("b"), features);
+    const connection = source(first.client);
+    const view = createSessions(connection);
+    for (let attempt = 0; attempt < 20 && !present(view).open?.history.complete; attempt++) await tick();
+    first.event({ event: "agent_start", session_id: "b" });
+    first.event({ event: "turn_start", session_id: "b", data: { turn: 1, turn_id: turn } });
+    connection.set(null, "overflow");
+    const second = await server(rows, features);
+    connection.set(second.client);
+    for (let attempt = 0; attempt < 40 && !(present(view).open && !present(view).open!.stale && present(view).open!.history.complete); attempt++) await tick();
+    expect(present(view).open?.lease.store.getState().endOutcome).toBe(outcome);
+    // The recorded end is a fact for the outcome, not a transcript row.
+    expect(kinds(view.state)).not.toContain("error");
+    view.dispose();
+  }
+});
+
 test("on connect opens the active session before requesting the catalog", async () => {
   let release!: () => void;
   const catalog = new Promise<{ sessions: SessionMeta[]; next_offset: null }>((resolve) => { release = () => resolve({ sessions, next_offset: null }); });

@@ -154,8 +154,11 @@ export type RunItem =
       event: RunEvent;
     }
   | ({ id: string } & SubAgentEvent);
-/** What is known about how a run ended. `unknown` means transport loss prevented the adapter from observing it. */
-export type RunEndOutcome = "unknown";
+/**
+ * How a run ended, when the host reports it: `cancelled` is a user stop, `disconnected` a stop because the client stayed
+ * gone, and `unknown` an end the host could not observe at all (a transport loss hid it).
+ */
+export type RunEndOutcome = "completed" | "cancelled" | "failed" | "disconnected" | "unknown";
 export type RunEvent =
   | {
       type:

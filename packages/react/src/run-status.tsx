@@ -1,3 +1,4 @@
+import type { RunEndOutcome } from "@fulcrum/core";
 import { useCallback } from "react";
 import { useRun, useRunStore } from "./hooks.js";
 
@@ -23,12 +24,24 @@ export function RunStatus({ className }: { className?: string }) {
   return <span className={className} data-part="run-status" data-status={status}>{text}</span>;
 }
 
-/** A compact transcript terminator shown only when transport loss made the run outcome unknowable. */
+const endText: Record<RunEndOutcome, string> = {
+  completed: "run completed",
+  cancelled: "run stopped",
+  failed: "run failed",
+  disconnected: "run stopped: client disconnected",
+  unknown: "? outcome unknown",
+};
+
+/**
+ * A compact marker for how the run ended, shown only when the host reported an outcome (`run_end.outcome`) and until
+ * the next run starts. An unknown outcome has its own screen-reader text, without the "?".
+ */
 export function RunEndMarker({ className }: { className?: string }) {
-  const unknown = useRun((state) => state.endOutcome === "unknown");
-  return unknown ? (
-    <div className={className} data-part="run-end-marker" data-outcome="unknown" role="status" aria-label="run ended while disconnected; outcome unknown">
-      <span aria-hidden="true">? outcome unknown</span>
+  const outcome = useRun((state) => state.endOutcome);
+  if (!outcome) return null;
+  return (
+    <div className={className} data-part="run-end-marker" data-outcome={outcome} role="status" aria-label={outcome === "unknown" ? "run ended while disconnected; outcome unknown" : undefined}>
+      {outcome === "unknown" ? <span aria-hidden="true">{endText.unknown}</span> : endText[outcome]}
     </div>
-  ) : null;
+  );
 }
