@@ -52,7 +52,7 @@ try {
     assert(mounted <= 201, `${count}: mounted ${mounted} rows`);
     const measuredFps = await fps(page);
     const metrics = await page.evaluate(async () => {
-      const scroll = document.querySelector<HTMLElement>('[data-testid="scroll"]')!;
+      const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
       const controls = (window as typeof window & { __virtualControls: { append(n?: number): void; prepend(n?: number): void; resize(id: string, height: number): void } }).__virtualControls;
       const frames = (count: number) => new Promise<void>((resolve) => { const next = () => count-- <= 0 ? resolve() : requestAnimationFrame(next); next(); });
       scroll.scrollTop = scroll.scrollHeight / 2;
@@ -125,7 +125,7 @@ try {
   }
   const crossing = await open(200, true);
   const crossingResult = await crossing.evaluate(async () => {
-    const scroll = document.querySelector<HTMLElement>('[data-testid="scroll"]')!;
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
     const controls = (window as typeof window & { __virtualControls: { append(n?: number): void } }).__virtualControls;
     scroll.scrollTop = 3_000;
     await new Promise((resolve) => setTimeout(resolve, 200));

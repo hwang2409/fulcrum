@@ -575,7 +575,7 @@ try {
   await replay.selectOption("#mode", "static:100000");
   await replay.waitForFunction(() => document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize") === "100000");
   await replay.evaluate(() => {
-    const scroll = document.querySelector<HTMLElement>(".scroll")!;
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
     scroll.scrollTop = 0;
     scroll.dispatchEvent(new Event("scroll"));
     const mode = document.querySelector<HTMLSelectElement>("#mode")!;
@@ -586,7 +586,7 @@ try {
   await replay.waitForFunction(() => document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize") === "201");
   await replay.waitForTimeout(250);
   const swap = await replay.evaluate(() => {
-    const scroll = document.querySelector<HTMLElement>(".scroll")!;
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
     return { scrollTop: scroll.scrollTop, maxScroll: scroll.scrollHeight - scroll.clientHeight };
   });
   if (Math.abs(swap.scrollTop - swap.maxScroll) > 1 || pageErrors.length)
@@ -595,7 +595,7 @@ try {
 
   // Real user intent right after a swap must win over the stale-scroll guard (review 3 blocker).
   const intent = await replay.evaluate(async () => {
-    const scroll = document.querySelector<HTMLElement>(".scroll")!;
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
     const mode = document.querySelector<HTMLSelectElement>("#mode")!;
     mode.value = "static:100000";
     mode.dispatchEvent(new Event("change", { bubbles: true }));
