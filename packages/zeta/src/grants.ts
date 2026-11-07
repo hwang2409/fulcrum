@@ -8,15 +8,15 @@ export type PermissionRuleSet = {
   allow: string[];
 };
 
+export type SessionGrantDefault = "allow" | "deny" | "ask";
+
 export interface SessionGrantsSnapshot {
   session_id: string;
-  default: string;
+  default: SessionGrantDefault;
   precedence: string[];
   rules: PermissionRuleSet;
   session_grants: string[];
 }
-
-export type RevokeSessionGrantsParams = { grant: string } | { clear: true };
 
 export interface RevokeSessionGrantsResult {
   removed: string[];
@@ -50,7 +50,8 @@ const snapshot = (value: unknown): SessionGrantsSnapshot | null => {
   const allow = strings(rules?.allow);
   const precedence = strings(row?.precedence);
   const sessionGrants = strings(row?.session_grants);
-  if (!row || !rules || typeof row.session_id !== "string" || typeof row.default !== "string" ||
+  if (!row || !rules || typeof row.session_id !== "string" ||
+      row.default !== "allow" && row.default !== "deny" && row.default !== "ask" ||
       !precedence || !deny || !ask || !allow || !sessionGrants) return null;
   return {
     session_id: row.session_id,
@@ -95,10 +96,14 @@ export interface GrantsClient {
   request(method: string, params?: Record<string, unknown>, options?: RequestOptions): Promise<unknown>;
 }
 
-export function getSessionGrants(client: GrantsClient, sessionId: string, options?: RequestOptions): Promise<SessionGrantsSnapshot | null> {
-  return client.request("session_grants", { session_id: sessionId }, options).then(parseSessionGrants);
+export function getSessionGrants(client: GrantsClient, options?: RequestOptions): Promise<SessionGrantsSnapshot | null> {
+  return client.request("session_grants", {}, options).then(parseSessionGrants);
 }
 
-export function revokeSessionGrants(client: GrantsClient, sessionId: string, params: RevokeSessionGrantsParams, options?: RequestOptions): Promise<RevokeSessionGrantsResult | null> {
-  return client.request("revoke_session_grants", { session_id: sessionId, ...params }, options).then(parseRevokeSessionGrants);
+export function revokeSessionGrant(client: GrantsClient, grant: string, options?: RequestOptions): Promise<RevokeSessionGrantsResult | null> {
+  return client.request("revoke_session_grants", { grant }, options).then(parseRevokeSessionGrants);
+}
+
+export function clearSessionGrants(client: GrantsClient, options?: RequestOptions): Promise<RevokeSessionGrantsResult | null> {
+  return client.request("revoke_session_grants", { clear: true }, options).then(parseRevokeSessionGrants);
 }

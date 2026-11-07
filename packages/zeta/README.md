@@ -8,9 +8,9 @@
 
 ## session grants
 
-`SESSION_GRANTS_FEATURE` is the feature name to request during the hello handshake. `parseSessionGrants`, `parseRevokeSessionGrants`, and `parseSessionGrantsChanged` validate session-grant snapshots and events without throwing; malformed string rows are dropped. `getSessionGrants` reads the active approval policy and `revokeSessionGrants` removes one exact grant or clears all session grants. `isSessionGrantError` recognizes the three session-grant error data codes from zeta.
+`SESSION_GRANTS_FEATURE` is the feature name to request during the hello handshake. `parseSessionGrants`, `parseRevokeSessionGrants`, and `parseSessionGrantsChanged` validate session-grant snapshots and events without throwing; malformed string rows are dropped. `getSessionGrants(client)` reads the active connection's approval policy. `revokeSessionGrant(client, grant)` removes one exact grant, and `clearSessionGrants(client)` removes all session grants. `isSessionGrantError` recognizes the three session-grant error data codes from zeta.
 
-The `session_grants_changed` event stays host-level. It describes approval policy state, not a generic run event, so the zeta adapter does not map it into `@fulcrum/core`.
+The `session_grants_changed` event stays host-level. Register with `client.onSessionGrantsChanged(handler)` and use the returned function to unsubscribe. The event describes approval policy state, not a generic run event, so the zeta adapter does not map it into `@fulcrum/core`.
 
 ## connect
 
