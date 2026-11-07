@@ -70,7 +70,7 @@ export function useVirtualList<Id extends string>(
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
-  const attachment = useRef<{ element: HTMLElement; detach(): void } | null>(null);
+  const attachment = useRef<{ element: HTMLElement; detach(): VirtualSnapshot<Id> } | null>(null);
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
 
@@ -98,8 +98,9 @@ export function useVirtualList<Id extends string>(
       ? null
       : options.scrollRef?.current ?? timelineElement.current?.parentElement ?? null;
     if (attachment.current?.element === container) return;
-    const priorViewport = containerRef.current ? engine.getSnapshot() : null;
-    attachment.current?.detach();
+    // Transfer post-state: pinned stays pinned at the new bottom; unpinned keeps its anchor; any pending
+    // correction is settled into that anchor (or dropped with no host), and no interaction owner survives detach.
+    const priorViewport = attachment.current?.detach() ?? null;
     attachment.current = null;
     containerRef.current = null;
     if (!container) return;
@@ -204,6 +205,19 @@ export function useVirtualList<Id extends string>(
     });
     viewportObserver.observe(container);
     const detach = () => {
+      if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
+      if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
+      resizeFrame.current = null;
+      scrollEndTimer.current = null;
+      touching.current = false;
+      touchY.current = null;
+      userScrollUntil.current = 0;
+      ignoreScrollUntil.current = 0;
+      flushMeasurements();
+      const settled = engine.flushPendingCorrection();
+      if (Math.abs(settled.jump) >= 0.5) container.scrollTop = settled.scrollTop;
+      engine.setViewport({ scrollTop: settled.scrollTop, size: container.clientHeight, source: "user" });
+      const viewport = engine.getSnapshot();
       observer.disconnect();
       viewportObserver.disconnect();
       observerRef.current = null;
@@ -215,12 +229,9 @@ export function useVirtualList<Id extends string>(
       container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("touchend", onTouchEnd);
       container.removeEventListener("touchcancel", onTouchEnd);
-      if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
-      if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
-      resizeFrame.current = null;
-      scrollEndTimer.current = null;
       pendingEntries.current.clear();
       container.style.overflowAnchor = priorOverflowAnchor;
+      return viewport;
     };
     attachment.current = { element: container, detach };
   });

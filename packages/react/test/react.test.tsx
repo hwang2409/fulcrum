@@ -766,7 +766,11 @@ function hostAttachmentHarness() {
     const added = committedItem(String(index));
     timeline.replace(items = [...items, added], [{ index, deleteCount: 0, items: [added] }]);
   };
-  return { append, scrollRef, view };
+  const prepend = () => {
+    const added = committedItem(`before-${items.length}`);
+    timeline.replace(items = [added, ...items], [{ index: 0, deleteCount: 0, items: [added] }]);
+  };
+  return { append, prepend, scrollRef, view };
 }
 
 const attachedHost = (testId: string) => {
@@ -884,6 +888,131 @@ test("follow, pinning, jump control, and bounded mounts survive every scroll-hos
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
     if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
     if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+  }
+});
+
+test.each([
+  ["active touch", false],
+  ["momentum settle", true],
+])("host transfer settles an iOS correction during %s", (_state, endTouch) => {
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const userAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent");
+  const positions = new WeakMap<HTMLElement, number>();
+  Object.defineProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+  });
+  try {
+    const { append, prepend, view } = hostAttachmentHarness();
+    let followRequest = 0;
+    mount(view("inner", false, followRequest));
+    const inner = attachedHost("inner");
+    inner.scrollTop = 3_000;
+    act(() => {
+      inner.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+      inner.dispatchEvent(new Event("scroll"));
+    });
+    const touch = new Event("touchstart") as TouchEvent;
+    Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+    act(() => inner.dispatchEvent(touch));
+    prepend();
+    if (endTouch) act(() => inner.dispatchEvent(new Event("touchend")));
+
+    act(() => root!.render(view("outer", false, followRequest)));
+    const outer = attachedHost("outer");
+    expect(outer.scrollTop).toBe(3_072);
+    followRequest++;
+    act(() => root!.render(view("outer", false, followRequest)));
+    expect(outer.scrollTop).toBe(outer.scrollHeight - outer.clientHeight);
+    append();
+    expect(outer.scrollTop).toBe(outer.scrollHeight - outer.clientHeight);
+    outer.scrollTop -= 1_000;
+    act(() => {
+      outer.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+      outer.dispatchEvent(new Event("scroll"));
+    });
+    append();
+    const jump = q('[data-part="jump-to-latest"]');
+    expect(jump).toBeTruthy();
+    act(() => jump.click());
+    expect(outer.scrollTop).toBe(outer.scrollHeight - outer.clientHeight);
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+    if (userAgent) Object.defineProperty(Navigator.prototype, "userAgent", userAgent);
+  }
+});
+
+test("100 host swaps release every adapter listener and observer", () => {
+  const added = new Map<EventTarget, Map<string, Set<EventListenerOrEventListenerObject>>>();
+  const add = HTMLElement.prototype.addEventListener;
+  const remove = HTMLElement.prototype.removeEventListener;
+  const OriginalResizeObserver = globalThis.ResizeObserver;
+  let activeObservers = 0;
+  class CountingResizeObserver implements ResizeObserver {
+    constructor(_callback: ResizeObserverCallback) { activeObservers++; }
+    disconnect() { activeObservers--; }
+    observe() {}
+    unobserve() {}
+  }
+  HTMLElement.prototype.addEventListener = function(type, listener, options) {
+    if (this.dataset.testid && listener) {
+      const byType = added.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
+      const listeners = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+      listeners.add(listener);
+      byType.set(type, listeners);
+      added.set(this, byType);
+    }
+    add.call(this, type, listener, options);
+  };
+  HTMLElement.prototype.removeEventListener = function(type, listener, options) {
+    if (listener) added.get(this)?.get(type)?.delete(listener);
+    remove.call(this, type, listener, options);
+  };
+  globalThis.ResizeObserver = CountingResizeObserver;
+  try {
+    const { view } = hostAttachmentHarness();
+    mount(view("inner"));
+    for (let index = 0; index < 100; index++) act(() => root!.render(view(index % 2 ? "inner" : "outer")));
+    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(8);
+    expect(activeObservers).toBe(2);
+    act(() => root!.unmount());
+    root = undefined;
+    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(0);
+    expect(activeObservers).toBe(0);
+  } finally {
+    HTMLElement.prototype.addEventListener = add;
+    HTMLElement.prototype.removeEventListener = remove;
+    globalThis.ResizeObserver = OriginalResizeObserver;
+  }
+});
+
+test("10k-row commits do no layout work when the scroll element is unchanged", () => {
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const rect = HTMLElement.prototype.getBoundingClientRect;
+  let scrollHeightReads = 0;
+  let rectReads = 0;
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { scrollHeightReads++; return 200_000; } });
+  HTMLElement.prototype.getBoundingClientRect = function() { rectReads++; return rect.call(this); };
+  try {
+    const timeline = timelineStore(Array.from({ length: 10_000 }, (_, index) => committedItem(String(index))));
+    const view = <RunProvider store={timeline.store}><Timeline virtual /></RunProvider>;
+    mount(view);
+    scrollHeightReads = 0;
+    rectReads = 0;
+    for (let index = 0; index < 100; index++) act(() => root!.render(view));
+    expect(scrollHeightReads).toBe(0);
+    expect(rectReads).toBe(0);
+  } finally {
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    HTMLElement.prototype.getBoundingClientRect = rect;
   }
 });
 

@@ -12,7 +12,7 @@ import { useWarm, warmToolBody } from "./warm.js";
 import { Message, ToolResultBlocks } from "./content.js";
 import { UserMessageContent } from "./user-message.js";
 
-declare const process: { env: { NODE_ENV?: string } } | undefined;
+declare const __FULCRUM_DEV__: boolean | undefined;
 
 export type ItemProps = { id: string; className?: string };
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
@@ -574,7 +574,7 @@ function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest
 const storeKeys = new WeakMap<object, number>();
 let nextStoreKey = 0;
 let warnedUnconstrainedTimeline = false;
-const development = typeof process === "undefined" || process.env.NODE_ENV !== "production";
+const development = typeof __FULCRUM_DEV__ === "undefined" || __FULCRUM_DEV__;
 
 function warnIfUnconstrained(scroll: HTMLElement | null, itemCount: number, mountedCount: number) {
   if (warnedUnconstrainedTimeline || !scroll || itemCount <= 200 || mountedCount !== itemCount) return;
