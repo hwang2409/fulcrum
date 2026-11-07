@@ -12,7 +12,7 @@ import { useWarm, warmToolBody } from "./warm.js";
 import { Message, ToolResultBlocks } from "./content.js";
 import { UserMessageContent } from "./user-message.js";
 
-declare const __FULCRUM_DEV__: boolean | undefined;
+declare global { var __FULCRUM_DEV__: boolean | undefined; }
 
 export type ItemProps = { id: string; className?: string };
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
@@ -574,14 +574,19 @@ function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest
 const storeKeys = new WeakMap<object, number>();
 let nextStoreKey = 0;
 let warnedUnconstrainedTimeline = false;
-const development = typeof __FULCRUM_DEV__ === "undefined" || __FULCRUM_DEV__;
-
-function warnIfUnconstrained(scroll: HTMLElement | null, itemCount: number, mountedCount: number) {
-  if (warnedUnconstrainedTimeline || !scroll || itemCount <= 200 || mountedCount !== itemCount) return;
-  if (!scroll.clientHeight || scroll.scrollHeight !== scroll.clientHeight) return;
-  warnedUnconstrainedTimeline = true;
-  console.warn("Timeline virtual mode needs a definite-height host. Set a height, or use scrollRef with renderJumpToLatest for host-owned scrolling.");
-}
+const development = globalThis.__FULCRUM_DEV__ ?? true;
+const useUnconstrainedWarning: (enabled: boolean, hostOwned: boolean, scroll: RefObject<HTMLElement | null>, itemCount: number, mountedCount: number) => void = development
+  ? (enabled, hostOwned, scroll, itemCount, mountedCount) => useEffect(() => {
+      if (!enabled || hostOwned || warnedUnconstrainedTimeline || itemCount <= 200 || mountedCount !== itemCount) return;
+      const frame = requestAnimationFrame(() => {
+        const element = scroll.current;
+        if (!element?.clientHeight || element.scrollHeight !== element.clientHeight) return;
+        warnedUnconstrainedTimeline = true;
+        console.warn("Timeline virtual mode needs a definite-height host. Set a height, or use scrollRef with renderJumpToLatest for host-owned scrolling.");
+      });
+      return () => cancelAnimationFrame(frame);
+    }, [enabled, hostOwned, itemCount, mountedCount, scroll])
+  : () => {};
 const keyForStore = (store: object) => {
   let key = storeKeys.get(store);
   if (key === undefined) { key = nextStoreKey++; storeKeys.set(store, key); }
@@ -612,11 +617,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
   const ownedScrollRef = useRef<HTMLDivElement>(null);
   const activeScrollRef = scrollRef ?? ownedScrollRef;
   const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef: activeScrollRef, enabled, outlineUpdate: change, resetKey: store, cache: initialViewport?.cache });
-  useEffect(() => {
-    if (!development || !enabled || scrollRef) return;
-    const frame = requestAnimationFrame(() => warnIfUnconstrained(ownedScrollRef.current, items.length, list.snapshot.rows.length));
-    return () => cancelAnimationFrame(frame);
-  }, [enabled, items.length, list.snapshot.rows.length, scrollRef]);
+  useUnconstrainedWarning(enabled, !!scrollRef, ownedScrollRef, items.length, list.snapshot.rows.length);
   const priorFollowRequest = useRef(followRequest);
   useLayoutEffect(() => {
     if (followRequest !== undefined && followRequest !== priorFollowRequest.current) list.requestFollow();
