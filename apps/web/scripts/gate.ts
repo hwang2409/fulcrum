@@ -639,14 +639,19 @@ try {
       if (gap > 1) throw new Error(`${Math.round(gap)} px from the bottom`);
     });
     await check("an unpinned 1,000-row run keeps its anchor through store replacement", async () => {
-      const anchorId = "user:l500";
       const scroll = page.locator('[data-part="timeline-scroll"]');
-      await page.evaluate(({ anchorId }) => {
-        const engine = (window as typeof window & { __fulcrumVirtual?: { scrollToId(id: string, offset: number): number } }).__fulcrumVirtual;
-        if (!engine) throw new Error("no virtualizer debug handle");
-        document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop = engine.scrollToId(anchorId, 17);
-      }, { anchorId });
+      await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight / 2; });
       await settle(page);
+      const scrollBox = await scroll.boundingBox();
+      if (!scrollBox) throw new Error("timeline scroll box is not visible");
+      const visibleRows = page.locator('[data-virtual-id]');
+      let anchorId: string | null = null;
+      for (let index = 0; index < await visibleRows.count(); index++) {
+        const row = visibleRows.nth(index);
+        const box = await row.boundingBox();
+        if (box && box.y >= scrollBox.y) { anchorId = await row.getAttribute("data-virtual-id"); break; }
+      }
+      if (!anchorId) throw new Error("no visible anchor row");
       const offset = async () => {
         const row = await page.locator(`[data-virtual-id="${anchorId}"]`).boundingBox();
         const box = await scroll.boundingBox();

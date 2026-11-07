@@ -270,8 +270,11 @@ export function useVirtualList<Id extends string>(
 
   useLayoutEffect(() => {
     const container = containerRef.current;
-    if (container && Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5)
+    if (!container) return;
+    if (Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5)
       container.scrollTop = snapshot.scrollTop;
+    if (snapshot.pinned && Math.abs(container.scrollTop - snapshot.scrollTop) < 1)
+      container.scrollTop = container.scrollHeight - container.clientHeight;
   }, [snapshot]);
 
   useLayoutEffect(() => () => engine.destroy(), [engine]);
