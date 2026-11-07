@@ -77,6 +77,8 @@ describe("prefix and range math", () => {
     virtual.setOutline(Array.from({ length: 5 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
     virtual.setLoaded("all");
     virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
+    virtual.setOutline([]);
+    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
     virtual.setOutline(Array.from({ length: 7 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
     expect(virtual.getSnapshot().unseenCount).toBe(2);
     virtual.setOutline([

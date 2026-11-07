@@ -329,6 +329,54 @@ async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => 
   await settle(page);
 }
 
+async function checkReconnectAnchor(page: Page, engine: string) {
+  await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+  const scroll = page.locator('[data-part="timeline-scroll"]');
+  const targetId = "message:l499";
+  const target = page.locator(`[data-virtual-id="${targetId}"]`);
+  const box = await scroll.boundingBox();
+  if (!box) throw new Error(`${engine}: no scroll viewport`);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+
+  let reached = false;
+  for (let step = 0; step < 250; step++) {
+    const targetBox = await target.boundingBox().catch(() => null);
+    if (targetBox && targetBox.top >= box.top && targetBox.bottom <= box.bottom) { reached = true; break; }
+    const before = await scroll.evaluate((element) => element.scrollTop);
+    await page.mouse.wheel(0, -180);
+    await page.waitForFunction(({ selector, before }) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      return element !== null && element.scrollTop < before;
+    }, { selector: '[data-part="timeline-scroll"]', before }, { timeout: 2_000 }).catch(() => {
+      throw new Error(`${engine}: wheel step did not move the timeline from ${before.toFixed(1)} px`);
+    });
+  }
+  if (!reached) {
+    const position = await scroll.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
+    throw new Error(`${engine}: ${targetId} was not visible after 250 wheel steps (${position.top.toFixed(1)} / ${position.range.toFixed(1)} px)`);
+  }
+  const beforeBox = await target.boundingBox();
+  if (!beforeBox) throw new Error(`${engine}: ${targetId} was not mounted before reconnect`);
+  const beforeOffset = beforeBox.top - box.top;
+
+  await fake.stop();
+  await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5_000 });
+  await fake.start();
+  await page.getByRole("button", { name: "retry now" }).click();
+  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+  await target.waitFor({ timeout: 15_000 });
+  await settle(page);
+  const afterBox = await target.boundingBox();
+  if (!afterBox) throw new Error(`${engine}: ${targetId} was not mounted after reconnect`);
+  const drift = Math.abs((afterBox.top - box.top) - beforeOffset);
+  console.log(`anchor ${engine.padEnd(8)} ${targetId} drift ${drift.toFixed(3)} px`);
+  if (drift > 1) throw new Error(`${engine}: ${targetId} moved ${drift.toFixed(3)} px`);
+
+  fake.emit({ event: "user_message", session_id: LONG, text: `after ${engine} reconnect`, mode: "send", attachments: [], delivery_id: `${engine}-anchor-check` });
+  await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
+}
+
 try {
   for (let attempt = 0; ; attempt++) {
     if (vite.exitCode !== null) throw new Error("vite exited");
@@ -643,12 +691,13 @@ try {
       await page.keyboard.press("Escape");
       if (await page.getByRole("listbox").count()) throw new Error("Escape did not close the picker");
     });
-    await check("a 400-row history opens in virtual mode and lands at the bottom", async () => {
-      await page.locator("button.session", { hasText: "400 rows" }).click();
+    await check("a 1,000-row history opens in virtual mode and lands at the bottom", async () => {
+      await page.locator("button.session", { hasText: "1,000 rows" }).click();
       await page.locator('[data-part="timeline"][data-virtual="true"]').waitFor({ timeout: 10_000 });
-      await page.getByText("frame 399 took").waitFor({ timeout: 5000 });
+      await page.getByText("frame 999 took").waitFor({ timeout: 5000 });
       if (!(await page.evaluate(() => location.hash.includes("s-long")))) throw new Error("selection not in the url");
     });
+    await check("chromium: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(page, "chromium"));
     await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
       await page.locator("button.session", { hasText: "check every theme" }).click();
       await page.locator('[data-part="md-table"]').waitFor({ timeout: 5000 });
@@ -725,8 +774,8 @@ try {
     // This exact gamma sequence already stays pinned on main; it guards the path rather than proving the fix fail-first.
     await check("a stopped queued steer and later turns stay pinned through the next own send", () => runStoppedSteerFollowScenario(page, fake.clearSent));
     await check("the page never scrolls: after IME typing the document fits the viewport and the headers stay in view", async () => {
-      // A tall run: the Timeline's hidden live region sits at the end of 400 rows.
-      await page.locator("button.session", { hasText: "400 rows" }).click();
+      // A tall run: the Timeline's hidden live region sits at the end of 1,000 rows.
+      await page.locator("button.session", { hasText: "1,000 rows" }).click();
       await page.locator('[data-part="timeline"][data-virtual="true"]').waitFor({ timeout: 10_000 });
       const field = page.locator(".dock textarea");
       await field.click();
@@ -873,11 +922,12 @@ try {
     await mobile.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
     await phone.close();
 
-    await check("webkit: jump-to-latest uses the same stable, non-overlapping lane", async () => {
+    await check("webkit: jump placement and reconnect anchor match chromium", async () => {
       const webkitBrowser = await webkit.launch();
       try {
         const webkitPage = await webkitBrowser.newPage({ viewport: { width: 1440, height: 900 } });
         await checkJumpPlacement(webkitPage, "webkit", () => fake.emit({ event: "user_message", session_id: ACTIVE, text: "webkit placement check", mode: "send", attachments: [] }), true, true);
+        await checkReconnectAnchor(webkitPage, "webkit");
       } finally {
         await webkitBrowser.close();
       }

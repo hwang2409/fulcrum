@@ -530,8 +530,20 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     requests,
     /** Every accepted send and steer, in order. */
     sent: composer.sent,
-    /** Sends one server-originated event to connected clients. */
-    emit(event: Json) { for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); },
+    /** Sends one server-originated event to connected clients. User-message echoes are durable, as in Zeta's send path. */
+    emit(event: Json) {
+      if (event.event === "user_message" && typeof event.session_id === "string") {
+        const delivery = typeof event.delivery_id === "string" ? event.delivery_id : undefined;
+        histories[event.session_id] = [...(histories[event.session_id] ?? []), {
+          id: `emitted-${delivery ?? crypto.randomUUID()}`,
+          role: "user",
+          content: [text(String(event.text ?? ""))],
+          ...(delivery ? { delivery_id: delivery } : {}),
+          tool_result: null,
+        }];
+      }
+      for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event }));
+    },
     clearSent() { composer.clearSent(); },
     get aborts() { return composer.aborts; },
     /** Closes every socket, like a network blip; the server keeps running. */

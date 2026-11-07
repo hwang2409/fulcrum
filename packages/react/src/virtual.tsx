@@ -40,6 +40,8 @@ export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   outlineUpdate?: OutlineUpdate<Id> | null;
   /** Resets the virtual engine when the outline owner changes. */
   resetKey?: unknown;
+  /** Rows whose content changed while their stable ids survived an outline replacement. */
+  invalidateMeasurements?: readonly Id[];
 };
 
 export type VirtualListState<Id extends string> = {
@@ -102,13 +104,14 @@ export function useVirtualList<Id extends string>(
     if (appliedOutline.current !== outline) {
       appliedOutline.current = outline;
       const token = engine.beforeMutation();
+      if (options.invalidateMeasurements) engine.invalidateMeasurements(options.invalidateMeasurements);
       engine.setOutline(outline, options.outlineUpdate);
       engine.setLoaded("all");
       if (initial.current) initial.current = false;
-      else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
+      else if (wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
     }
     wasEnabled.current = options.enabled !== false;
-  }, [engine, outline, options.enabled, options.outlineUpdate, options.resetKey, resetPending]);
+  }, [engine, outline, options.enabled, options.invalidateMeasurements, options.outlineUpdate, options.resetKey, resetPending]);
 
   useLayoutEffect(() => {
     const transfer = (next: HTMLElement | null) => {

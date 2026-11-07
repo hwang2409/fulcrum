@@ -30,13 +30,14 @@ afterAll(() => GlobalRegistrator.unregister());
 const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
 const call = (id: string, name: string) => ({ id, name, arguments: {} });
 
-function timelineStore(initialItems: RunItem[]) {
+function timelineStore(initialItems: RunItem[], runId?: string) {
   let items = initialItems;
   let snapshot: OutlineSnapshot = { items: items.map(({ id, type: kind }) => ({ id, kind })), change: null };
   const entities = new Map(items.map((item) => [item.id, item]));
   const outlineListeners = new Set<() => void>();
   const itemListeners = new Map<string, Set<() => void>>();
   const store: RunStore = {
+    runId,
     getState: () => initialState,
     getItem: (id) => entities.get(id),
     getOutline: () => snapshot.items,
@@ -1329,6 +1330,96 @@ test("useVirtualList ignores a stale outline hint and resets when the outline ow
   expect(() => act(() => root!.render(<Harness outline={b} from={a} owner={ownerA} />))).not.toThrow();
   expect(() => act(() => root!.render(<Harness outline={c} from={b} owner={ownerB} />))).not.toThrow();
   expect(() => act(() => root!.render(<Harness outline={a} from={b} owner={ownerB} />))).not.toThrow();
+});
+
+test.each([
+  ["owned", false, false, false],
+  ["host-owned", true, false, false],
+  ["owned strict mode", false, true, false],
+  ["owned through an empty replay", false, false, true],
+])("same-run replacement keeps an unpinned reader's anchor in %s", (_name, hostOwned, strict, stagedReplay) => {
+  const items = Array.from({ length: 1_000 }, (_, index) => committedItem(String(index)));
+  const replacementItems = [...items.map((item, index) => index === 500
+    ? { ...item, message: message("replacement text that is much longer than the streamed text ".repeat(8)), version: 2 }
+    : item), ...Array.from({ length: 10 }, (_, index) => committedItem(`new-${index}`))];
+  const first = timelineStore(items, "same-run");
+  const second = timelineStore(stagedReplay ? [] : replacementItems, "same-run");
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const positions = new WeakMap<HTMLElement, number>();
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+  });
+  try {
+    const scrollRef = { current: null as HTMLElement | null };
+    const view = (store: RunStore) => {
+      const timeline = <RunProvider store={store}><Timeline {...(stagedReplay ? {} : { virtual: true })} {...(hostOwned ? { scrollRef, renderJumpToLatest: (control: ReactNode) => <aside>{control}</aside> } : {})} /></RunProvider>;
+      const content = hostOwned ? <div ref={scrollRef}>{timeline}</div> : timeline;
+      return strict ? <StrictMode>{content}</StrictMode> : content;
+    };
+    mount(view(first.store));
+    const viewport = hostOwned ? scrollRef.current! : q('[data-part="timeline-scroll"]');
+    viewport.scrollTop = 500 * 72 + 17;
+    act(() => {
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+      viewport.dispatchEvent(new Event("scroll"));
+    });
+    const anchorId = q('[data-virtual-index="500"]').dataset.virtualId!;
+    const offset = Number.parseFloat(q(`[data-virtual-id="${anchorId}"]`).style.transform.slice(11)) - viewport.scrollTop;
+
+    act(() => root!.render(view(second.store)));
+    if (stagedReplay) second.replace(replacementItems, [{ index: 0, deleteCount: 0, items: replacementItems }]);
+    const nextViewport = hostOwned ? scrollRef.current! : q('[data-part="timeline-scroll"]');
+    const nextAnchor = container.querySelector<HTMLElement>(`[data-virtual-id="${anchorId}"]`);
+    expect(nextAnchor, "the replacement must keep the anchor row mounted").not.toBeNull();
+    const nextOffset = Number.parseFloat(nextAnchor!.style.transform.slice(11)) - nextViewport.scrollTop;
+    expect(Math.abs(nextOffset - offset)).toBeLessThanOrEqual(1);
+    expect(nextViewport.scrollTop).toBe(viewport.scrollTop);
+    expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("10");
+    expect(q('[data-part="jump-to-latest"]')).toBeTruthy();
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+  }
+});
+
+test("same-run replacement keeps a pinned reader at bottom while a different run starts at bottom", () => {
+  const source = timelineStore(Array.from({ length: 1_000 }, (_, index) => committedItem(String(index))), "run-a");
+  const same = timelineStore(Array.from({ length: 1_010 }, (_, index) => committedItem(String(index))), "run-a");
+  const different = timelineStore(Array.from({ length: 300 }, (_, index) => committedItem(`other-${index}`)), "run-b");
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const positions = new WeakMap<HTMLElement, number>();
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); } });
+  const view = (store: RunStore) => <RunProvider store={store}><Timeline virtual /></RunProvider>;
+  try {
+    mount(view(source.store));
+    let viewport = q('[data-part="timeline-scroll"]');
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
+    act(() => root!.render(view(same.store)));
+    viewport = q('[data-part="timeline-scroll"]');
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+    viewport.scrollTop -= 5_000;
+    act(() => viewport.dispatchEvent(new Event("scroll")));
+    act(() => root!.render(view(different.store)));
+    viewport = q('[data-part="timeline-scroll"]');
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+  }
 });
 
 test("virtual Timeline keeps its frame when a store is disposed, then replaces it mid-stream", () => {
