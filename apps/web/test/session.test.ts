@@ -370,6 +370,7 @@ test("a busy server is reported as busy and the selection stays", async () => {
   const view = createSessions(source(fake.client));
   await tick();
   view.select("a");
+  await Bun.sleep(1_800);
   await tick();
   expect(present(view).openError).toEqual({ id: "a", message: "a turn is already running", busy: true });
   expect(present(view).selected).toBe("a");
