@@ -63,6 +63,49 @@ test("same-run replay drops the cached height of a changed streamed row", () => 
   }
 });
 
+test("a pinned late row measurement re-applies the bottom after the browser shifts the range", () => {
+  const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
+  const frames: FrameRequestCallback[] = [];
+  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
+  globalThis.ResizeObserver = class {
+    private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+    constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+    observe(element: Element) { this.entry.observed.add(element); }
+    unobserve(element: Element) { this.entry.observed.delete(element); }
+    disconnect() { this.entry.observed.clear(); }
+  } as unknown as typeof ResizeObserver;
+  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
+  globalThis.cancelAnimationFrame = () => {};
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    const store = createRunStore((flush) => flush());
+    store.resync(commits("late", 201));
+    act(() => root.render(<RunProvider store={store}><Timeline virtual /></RunProvider>));
+    const scroll = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    expect(scroll).not.toBeNull();
+    let corrected = false;
+    Object.defineProperty(scroll!, "scrollTop", { configurable: true, get: () => 0, set: () => { corrected = true; } });
+    Object.defineProperty(scroll!, "scrollHeight", { configurable: true, get: () => 602 + (corrected ? -2 : 0) });
+    const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")));
+    expect(rows).toBeDefined();
+    const target = [...rows!.observed][0]!;
+    act(() => rows!.report([{ target, borderBoxSize: [{ blockSize: 72, inlineSize: 800 }], contentRect: { height: 72 } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+    act(() => { for (const frame of frames.splice(0)) frame(0); });
+    expect(corrected).toBe(true);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    globalThis.ResizeObserver = saved.ResizeObserver;
+    globalThis.requestAnimationFrame = saved.raf;
+    globalThis.cancelAnimationFrame = saved.caf;
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+  }
+});
+
 test("a row resize reported just before a resync replaces its id is not measured into the new outline", () => {
   // A controllable ResizeObserver and frame queue: the browser reports a resize, then React commits before the frame.
   // Timeline has two observers (rows and the viewport); keep each one's callback and targets.

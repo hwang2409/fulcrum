@@ -147,6 +147,13 @@ export function useVirtualList<Id extends string>(
         for (const [id, size] of pendingEntries.current) engine.measure(id, size);
         pendingEntries.current.clear();
         engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
+        // A late layout pass can leave WebKit a few pixels behind the new end after the measurement correction.
+        // Re-apply the existing follow intent only when the DOM has not moved independently since the last scroll.
+        const { pinned } = engine.getSnapshot();
+        if (pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5) {
+          container.scrollTop = engine.scrollToEnd();
+          lastScrollTop.current = container.scrollTop;
+        }
       };
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
