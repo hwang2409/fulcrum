@@ -370,6 +370,7 @@ test("a busy server is reported as busy and the selection stays", async () => {
   const view = createSessions(source(fake.client));
   await tick();
   view.select("a");
+  await Bun.sleep(1_800);
   await tick();
   expect(present(view).openError).toEqual({ id: "a", message: "a turn is already running", busy: true });
   expect(present(view).selected).toBe("a");
@@ -608,4 +609,17 @@ test("a failed create keeps the current session and says why", async () => {
   await view.create();
   expect(view.state.createError).toBe("a turn is already running");
   expect(present(view).open?.id).toBe("b");
+});
+
+test("selecting a session cancels create without showing an error", async () => {
+  const fake = await server(handlers("b", { new_session: () => new Promise(() => {}) }));
+  const view = createSessions(source(fake.client));
+  await tick();
+  void view.create();
+  await tick();
+  view.select("a");
+  await tick();
+  expect(view.state.createError).toBeNull();
+  expect(present(view).selected).toBe("a");
+  expect(fake.calls.filter(([method]) => method === "new_session")).toHaveLength(1);
 });
