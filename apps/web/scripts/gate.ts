@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright";
 import { themes } from "@fulcrum/react";
-import { ACTIVE, startFakeZeta } from "./fake-zeta";
+import { ACTIVE, LONG, startFakeZeta } from "./fake-zeta";
 
 const root = new URL("..", import.meta.url).pathname;
 const port = Number(process.env.WEB_GATE_PORT ?? 4180);
@@ -151,6 +151,18 @@ try {
     await check("retry now connects once the server is back", async () => {
       await page.goto(`${origin}/?theme=tokyo-night`);
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+    });
+
+    await check("busy resume retries and opens without the busy panel", async () => {
+      await page.goto("about:blank");
+      fake.drop();
+      fake.setMode("busy-once");
+      await fake.start();
+      const resumesBefore = fake.requests.filter(({ method }) => method === "resume").length;
+      await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+      await page.locator('[data-part="timeline"] [data-part="message"], [data-part="timeline"] [data-part="tool"]').first().waitFor({ timeout: 5000 });
+      if (fake.requests.filter(({ method }) => method === "resume").length < resumesBefore + 2) throw new Error("busy resume was not retried");
+      if (await page.getByText("zeta is busy with another session", { exact: true }).count()) throw new Error("busy panel remained after retry");
     });
 
     await check("slow catalog keeps the selected transcript and composer usable", async () => {
