@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { CommandClient, ZetaClient } from "../src/index.js";
 import {
   MODEL_INPUT_IDS_FEATURE,
   listSlashCommands,
@@ -66,10 +67,24 @@ test("drops malformed discriminators, fields, and rows independently", () => {
   expect(MODEL_INPUT_IDS_FEATURE).toBe("model_input_ids");
 });
 
+test("refuses slash_run when opaque model input ids were not negotiated", async () => {
+  let requestCalls = 0;
+  const client = {
+    features: [],
+    request() {
+      requestCalls++;
+      return Promise.resolve({ kind: "model_input", text: "hidden prompt", display_text: "/build", origin: "skill" });
+    },
+  };
+
+  await expect(runSlashCommand(client, "s1", "/build")).resolves.toEqual({ kind: "unavailable", feature: "model_input_ids" });
+  expect(requestCalls).toBe(0);
+});
+
 test("wrappers forward methods, params, and request options", async () => {
   const options = { signal: new AbortController().signal, timeoutMs: 250, intent: "send" };
   const calls: Array<[string, Record<string, unknown>, unknown]> = [];
-  const client = { request(method: string, params?: Record<string, unknown>, receivedOptions?: unknown) {
+  const client = { features: [MODEL_INPUT_IDS_FEATURE], request(method: string, params?: Record<string, unknown>, receivedOptions?: unknown) {
     calls.push([method, params ?? {}, receivedOptions]);
     if (method === "slash_list") return Promise.resolve(catalog);
     if (method === "slash_run") return Promise.resolve({ kind: "unknown", name: "missing" });
@@ -86,3 +101,7 @@ test("wrappers forward methods, params, and request options", async () => {
     ["send", { session_id: "s1", input_id: "opaque-1" }, options],
   ]);
 });
+
+type ZetaClientSatisfiesCommandClient = ZetaClient extends CommandClient ? true : false;
+const zetaClientSatisfiesCommandClient: ZetaClientSatisfiesCommandClient = true;
+void zetaClientSatisfiesCommandClient;
