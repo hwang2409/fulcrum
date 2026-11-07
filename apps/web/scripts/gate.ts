@@ -6,7 +6,8 @@
 // title, the exact `zeta serve --ws-origin` command, or a retry; a session list, history, markdown, highlighting,
 // tool card, approval, or follow-bottom that does not work; a reconnect that loses or duplicates rows; a drawer,
 // theme picker, or session list that the keyboard cannot drive; a fresh zeta where the page cannot start a session;
-// a run header that says "running" while an approval waits; or a discovery retry that logs an error.
+// a run header that says "running" while an approval waits; an output overflow that marks the wrong run, or none, or
+// reconnects every 0.5 s; or a discovery retry that logs an error.
 // Screenshots go to $WEB_SHOTS (default apps/web/gate-artifacts).
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -212,10 +213,12 @@ try {
       const row = await page.locator("button.session[aria-current] .state").textContent();
       if (row !== "needs approval") throw new Error(`the session row says "${row}" while an approval waits`);
       await shoot(page, "connected-approval-1440-tokyo-night");
-      await fake.start();
-      // A stopped server (not a blip): the banner and the offline composer resize the scroll box while it waits.
+      // One zeta output overflow: the -32011 frame and a close. "ok" right after keeps it to one.
+      fake.setMode("overflow");
+      fake.setMode("ok");
+      await page.locator(".notice", { hasText: "connection fell behind" }).waitFor({ timeout: 5000 });
+      // Hold the server down so the stale view can be checked before the 0.5 s retry reconnects.
       await fake.stop();
-      await page.getByText(/connection lost|reconnecting/).first().waitFor({ timeout: 3000 });
       // A drop keeps the reader where they were: still pinned to the bottom, the pending approval still in view.
       await page.getByText(/sending is paused/).first().waitFor({ timeout: 3000 });
       await settle(page);
@@ -247,6 +250,8 @@ try {
       const rebuilt = page.locator('[data-part="tool"]', { has: page.locator('[data-part="tool-approval"]') });
       await rebuilt.waitFor({ timeout: 5000 });
       if (await rebuilt.count() !== 1 || await page.locator('[data-part="approval"]').count()) throw new Error("approval did not fold once after the resumed command");
+      // The turn came back running and its end is seen live, so its outcome is known.
+      if (await page.locator('[data-part="run-end-marker"]').count()) throw new Error("a run that came back running was marked outcome unknown");
       if (await page.locator('[data-tone="danger"]').count()) throw new Error("reconnect showed an app error");
       if (fake.decisions.filter((decision) => decision.method === "approve" && decision.request_id === "approval-1").length !== 1) throw new Error("server did not receive exactly one resumed approval");
       // Reported after the reconnect, so a failure here does not leave the server stopped for later checks.
@@ -273,12 +278,97 @@ try {
     });
     await check("desktop layout, controls, and contrast in all 12 themes", () => auditThemes(page, "1440", 36));
 
+    const hellos = () => fake.requests.filter((request) => request.method === "hello").length;
+    const idleServer = async () => {
+      for (let attempt = 0; fake.running && attempt < 300; attempt++) await Bun.sleep(100);
+      if (fake.running) throw new Error("the server turn did not end");
+    };
+    const uniqueRows = async () => {
+      const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((node) => node.dataset.id));
+      if (new Set(ids).size !== ids.length) throw new Error("the rebuild has duplicate transcript rows");
+    };
+    // Starts a chat turn and makes zeta keep overflowing for 4 s, past the turn's end; returns the reconnect count.
+    const overflowThroughTurn = async (mode: "overflow" | "overflow-silent", prompt: string, notice: string) => {
+      await idleServer();
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".dock textarea").fill(prompt);
+      await page.locator(".dock").getByRole("button", { name: "send" }).click();
+      await page.locator('.run-meta .state[data-status="running"]').waitFor({ timeout: 5000 });
+      const before = hellos();
+      fake.setMode(mode);
+      await page.locator(".notice", { hasText: notice }).waitFor({ timeout: 3000 });
+      await Bun.sleep(4000);
+      const attempts = hellos() - before;
+      fake.setMode("ok");
+      await idleServer();
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+      await page.locator(".notice").waitFor({ state: "detached" });
+      // 0.5, 1, then 2 s apart (or later, after an earlier short connection): not one every 0.5 s.
+      if (attempts > 4) throw new Error(`${attempts} reconnects in 4 s while the server kept overflowing`);
+      return attempts;
+    };
+    await check("an overflow that hides a turn's end marks that run outcome unknown until its next run starts", async () => {
+      // The reconnect does not get served_turn_end, so no recorded turn end can name the outcome.
+      fake.setServedTurnEnd(false);
+      if (await overflowThroughTurn("overflow", "a turn whose end the overflow hides", "connection fell behind") < 1) throw new Error("the server never overflowed a reconnect");
+      const marker = page.locator('[data-part="run-end-marker"]');
+      await marker.waitFor({ timeout: 5000 }).catch(() => { throw new Error("no outcome-unknown marker after the overflow hid the turn's end"); });
+      await settle(page);
+      const inView = await marker.evaluate((node) => { const box = node.getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight; });
+      if (!inView) throw new Error("the end marker is not in view");
+      if (await marker.getAttribute("aria-label") !== "run ended while disconnected; outcome unknown") throw new Error("the marker has no screen-reader text");
+      await page.locator('.run-meta [data-part="run-status"][data-status="unknown"]', { hasText: "outcome unknown" }).waitFor();
+      if (await page.getByText("a turn whose end the overflow hides", { exact: true }).count() !== 1) throw new Error("the prompt is not shown exactly once");
+      const end = await page.locator(".scroll").evaluate((element) => ({ gap: element.scrollHeight - element.clientHeight - element.scrollTop, last: [...element.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].at(-1)?.dataset.id }));
+      if (end.gap > 4) throw new Error(`the rebuilt run is ${Math.round(end.gap)} px from the bottom`);
+      if (!end.last?.startsWith("message:reply-")) throw new Error(`the rebuilt run ends with ${end.last}, not the reply the overflow hid`);
+      await uniqueRows();
+      await shoot(page, "overflow-outcome-unknown-1440");
+      await page.locator("button.session", { hasText: "check every theme" }).click();
+      await page.locator('[data-part="md-table"]').waitFor({ timeout: 5000 });
+      if (await marker.count()) throw new Error("another session shows the unknown outcome");
+      await page.locator("button.session", { hasText: "fix the flaky reconnect test" }).click();
+      await marker.waitFor({ timeout: 5000 }).catch(() => { throw new Error("reopening the session lost its unknown outcome"); });
+      await page.locator(".dock textarea").fill("the next run clears it");
+      await page.locator(".dock").getByRole("button", { name: "send" }).click();
+      await marker.waitFor({ state: "detached", timeout: 5000 });
+      await idleServer();
+      await page.locator('.run-meta .state[data-status="idle"]').waitFor({ timeout: 5000 });
+      if (await marker.count()) throw new Error("a run seen to its end was marked outcome unknown");
+      fake.setServedTurnEnd(true);
+      fake.clearSent();
+    });
+    await check("with served_turn_end, an overflow-hidden turn shows the outcome zeta recorded for it", async () => {
+      await page.reload(); // a fresh connection, which negotiates served_turn_end
+      await overflowThroughTurn("overflow", "a turn zeta records the end of", "connection fell behind");
+      const marker = page.locator('[data-part="run-end-marker"][data-outcome="completed"]', { hasText: "run completed" });
+      await marker.waitFor({ timeout: 5000 }).catch(async () => { throw new Error(`no completed marker from zeta's served_turn_end; the marker says "${await page.locator('[data-part="run-end-marker"]').textContent({ timeout: 1000 }).catch(() => "nothing")}"`); });
+      await page.locator('.run-meta .state[data-status="idle"]').waitFor({ timeout: 5000 });
+      await uniqueRows();
+      if (await page.locator('[data-part="timeline"] [data-kind="error"], [data-part="timeline"] [data-kind="unknown"]').count()) throw new Error("the recorded turn end rendered as a transcript row");
+      await shoot(page, "overflow-outcome-completed-1440");
+      await page.locator(".dock textarea").fill("the next run clears the recorded outcome");
+      await page.locator(".dock").getByRole("button", { name: "send" }).click();
+      await page.locator('[data-part="run-end-marker"]').waitFor({ state: "detached", timeout: 5000 });
+      await idleServer();
+      fake.clearSent();
+    });
+    await check("a silent overflow reads as a lost connection, backs off, and marks no run", async () => {
+      await overflowThroughTurn("overflow-silent", "a turn cut by a silent overflow", "connection lost");
+      await page.locator('.run-meta .state[data-status="idle"]').waitFor({ timeout: 5000 });
+      if (await page.locator('[data-part="run-end-marker"]').count()) throw new Error("a close without the overflow frame marked the run");
+      if (await page.getByText("a turn cut by a silent overflow", { exact: true }).count() !== 1) throw new Error("the prompt is not shown exactly once");
+      await uniqueRows();
+      fake.clearSent();
+    });
+
     await check("a dropped socket shows 'connection lost', reconnects, and rebuilds without lost or duplicate rows", async () => {
       await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
       await settle(page);
       await page.locator(".dock textarea").fill("draft kept across disconnect");
       await fake.stop();
-      await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 });
+      // The previous checks' short connections continue the reconnect backoff, so the retry that finds the server gone can take up to 8 s.
+      await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 15_000 });
       // The command names the port the page was connected to, not a default.
       const command = await page.locator(".notice .command code").textContent();
       if (command !== `zeta serve --ws ${fake.port} --ws-origin ${origin}`) throw new Error(`the banner command is "${command}"`);
@@ -293,7 +383,7 @@ try {
       if (stale.length) throw new Error(`the session list shows live status "${stale.join(", ")}" while not connected`);
       await fake.start();
       await page.getByRole("button", { name: "retry now" }).click();
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(() => { throw new Error("retry now did not reconnect"); });
       await page.locator(".notice").waitFor({ state: "detached" });
       await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
       const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));

@@ -11,6 +11,7 @@ export type ConnectionState =
   | { phase: "auth_failed"; reason: "origin" | "rejected"; origins: string[]; attempt: number; retryAt: number; lost: boolean }
   | { phase: "busy"; attempt: number; retryAt: number; lost: boolean }
   | { phase: "dropped"; attempt: number; retryAt: number; lost: true }
+  | { phase: "overflow"; attempt: number; retryAt: number; lost: true }
   | { phase: "incompatible"; lost: boolean };
 
 export type ConnectionEvent =
@@ -20,7 +21,9 @@ export type ConnectionEvent =
   | { type: "auth_failed"; reason: "origin" | "rejected"; origins: string[]; now: number }
   | { type: "busy"; now: number }
   | { type: "incompatible" }
-  | { type: "closed"; now: number };
+  /** `attempt` counts sockets in a row that closed soon after they connected, so a flapping server backs off. */
+  | { type: "closed"; attempt: number; now: number }
+  | { type: "overflow"; attempt: number; now: number };
 
 /** The command that starts a server this page may connect to. The origin is exact: localhost and 127.0.0.1 differ. */
 export const serveCommand = (origin: string, port: number) => `zeta serve --ws ${port} --ws-origin ${origin}`;
@@ -42,7 +45,8 @@ export function reduceConnection(state: ConnectionState, event: ConnectionEvent)
     case "connected":
       return { phase: "connected" };
     case "closed":
-      return state.phase === "connected" ? { phase: "dropped", attempt: 1, retryAt: event.now + backoff(1), lost: true } : state;
+    case "overflow":
+      return state.phase === "connected" ? { phase: event.type === "closed" ? "dropped" : "overflow", attempt: event.attempt, retryAt: event.now + backoff(event.attempt), lost: true } : state;
     case "incompatible":
       return { phase: "incompatible", lost };
     default: {
@@ -98,6 +102,8 @@ export function createConnection({
   let timer: unknown = null;
   let generation = 0;
   let stopped = false;
+  let connectedAt = 0;
+  let flaps = 0;
   const listeners = new Set<() => void>();
   const send = (event: ConnectionEvent) => {
     const next = reduceConnection(state, event);
@@ -140,11 +146,15 @@ export function createConnection({
     }
     if (!current()) return next.close();
     client = next;
-    next.onClose(() => {
+    next.onClose((error) => {
       if (client !== next) return;
       client = null;
-      send({ type: "closed", now: now() });
+      // A socket that lived less than the longest backoff continues the streak: a server that overflows every
+      // connection right after hello is retried at 0.5, 1, 2, 4, 8, then 10 s, not every 0.5 s forever.
+      flaps = now() - connectedAt < backoff(Infinity) ? flaps + 1 : 1;
+      send({ type: error instanceof ZetaError && error.kind === "output_overflow" ? "overflow" : "closed", attempt: flaps, now: now() });
     });
+    connectedAt = now();
     send({ type: "connected" });
   };
   void attempt();

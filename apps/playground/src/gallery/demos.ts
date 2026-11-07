@@ -299,6 +299,14 @@ const subAgentStates: RunEvent[] = [
 ];
 const stateRuns = Object.fromEntries(["st-run", "st-approve", "st-input", "st-idle", "st-done", "st-error", "st-canceled", "st-long"].map((id) => [id, [note(`${id}-note`, `The ${id.slice(3)} child run's own transcript opens here.`)]]));
 
+// A run whose end the host could not observe: the transport dropped output before the run ended.
+const unknownEnd: RunEvent[] = [
+  { type: "run_start" },
+  { type: "user_message", text: "Rebuild the docs site and tell me what changed.", mode: "default" },
+  ...stream("unknown-m1", "Rebuilding the docs site now; the output is long, so this takes a minute."),
+  { type: "run_end", outcome: "unknown" },
+];
+
 export const demos: Demo[] = [
   {
     id: "timeline-run",
@@ -736,6 +744,21 @@ export const demos: Demo[] = [
     description: "One fixed-height row per child run: state, name, task, elapsed time, tool count, and the latest activity. Waiting on you is a warn badge. Click a row (or Enter) to open its run; \"docs\" started before child runs were recorded, so it says why it cannot open.",
     events: subAgentStates,
     runs: stateRuns,
+  },
+  {
+    id: "run-status-outcome",
+    part: "RunStatus",
+    title: "running, then outcome unknown",
+    description: "The compact header status: running while the run streams, then \"outcome unknown\" in the warn color when the run ended where the host could not see how. The next run start clears it.",
+    live: 300,
+    events: unknownEnd,
+  },
+  {
+    id: "run-end-marker-unknown",
+    part: "RunEndMarker",
+    title: "outcome unknown",
+    description: "The compact marker a host places after the transcript. It renders only for an unknown outcome and has screen-reader text \"run ended while disconnected; outcome unknown\".",
+    events: unknownEnd,
   },
   {
     id: "run-navigator-nested",

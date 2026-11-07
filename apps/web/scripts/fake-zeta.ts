@@ -11,7 +11,7 @@ import type { ServerWebSocket } from "bun";
 import { validateHostCommands } from "@fulcrum/zeta";
 
 type Json = Record<string, unknown>;
-export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog" | "broken-session";
+export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog" | "broken-session" | "overflow" | "overflow-silent";
 export type HistoryMode = "new" | "old";
 export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
@@ -119,20 +119,31 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
  * text-only reply that streams for about 2.5 s, long enough to steer and to stop. As in zeta, an accepted message is
  * echoed as `user_message` before the reply, and a steer is persisted only once a turn takes it.
  */
-export function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): boolean; set(value: boolean): void }) {
+/**
+ * zeta's durable whole-turn end (feature `served_turn_end`, docs/serve-protocol.md; row shape from
+ * event_contract.served_turn_end_row). zeta writes it for every turn; `session_history` returns it only to a connection
+ * that negotiated the feature.
+ */
+const servedTurnEnd = (turnId: string, reason: "completed" | "user_stop" | "error" | "disconnect"): Json =>
+  ({ id: `turn-end-${turnId}`, role: "system", event: "served_turn_end", data: { turn_id: turnId, reason } });
+
+/** `turnIds` says whether the controller negotiated `served_turn_end`, so `turn_start` carries `data.turn_id`. */
+export function composerMethods(wait: (ms: number) => Promise<void>, running: { get(): boolean; set(value: boolean): void }, turnIds: () => boolean = () => false) {
   const sent: Json[] = [];
   const deliveries = new Map<string, Json>();
   const statuses = new Map<string, "queued" | "delivered" | "dropped">();
   let aborts = 0;
-  let chat: { session: string; steers: string[]; aborted: boolean } | null = null;
+  let rows = 0; // history row ids stay unique when `clearSent` empties `sent`
+  let chat: { session: string; id: string; steers: string[]; aborted: boolean } | null = null;
   type Send = (event: Json) => void;
   const chatTurn = async (session: string, send: Send) => {
-    const turn = { session, steers: [] as string[], aborted: false }; // steers holds delivery ids
+    // steers holds delivery ids; the turn id is a lowercase uuid4 hex string, as zeta's
+    const turn = { session, id: crypto.randomUUID().replaceAll("-", ""), steers: [] as string[], aborted: false };
     chat = turn;
     running.set(true);
     const e = (event: string, body: Json = {}) => { if (!turn.aborted) send({ event, session_id: session, ...body }); };
     e("agent_start");
-    e("turn_start", { data: { turn: sent.length } });
+    e("turn_start", { data: { turn: sent.length, ...(turnIds() ? { turn_id: turn.id } : {}) } });
     let reply = "";
     for (const word of "Reading the files you named, then running the focused tests before the full suite. ".repeat(3).match(/\S+\s*/g)!) {
       await wait(Number(process.env.FAKE_ZETA_WORD_MS ?? 60));
@@ -141,7 +152,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
       e("assistant_delta", { delta: word, kind: "assistant" });
     }
     e("assistant_message", { message: { role: "assistant", content: [text(reply)] } });
-    histories[session] = [...(histories[session] ?? []), { id: `reply-${sent.length}`, role: "assistant", content: [text(reply)], tool_result: null }];
+    histories[session] = [...(histories[session] ?? []), { id: `reply-${rows}`, role: "assistant", content: [text(reply)], tool_result: null }];
     // As in zeta: a turn with no tool call reaches no provider boundary, so steering still queued at its end is dropped.
     for (const id of turn.steers) {
       statuses.set(id, "dropped");
@@ -149,6 +160,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
       histories[session] = [...(histories[session] ?? []), { id: `delivery-${id}`, role: "system", event: "delivery_status", delivery_id: id, method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" }];
     }
     e("turn_end", { data: { turn: sent.length } });
+    histories[session] = [...(histories[session] ?? []), servedTurnEnd(turn.id, "completed")];
     chat = null;
     running.set(false);
     e("agent_end");
@@ -166,7 +178,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
     const accepted = method === "send" ? { accepted: true, session_id: active } : { accepted: true };
     if (delivery) { deliveries.set(delivery, accepted); statuses.set(delivery, method === "steer" ? "queued" : "delivered"); }
     if (method === "steer") { if (delivery) chat?.steers.push(delivery); return { result: accepted }; }
-    histories[active] = [...(histories[active] ?? []), { id: `sent-${sent.length}`, role: "user", content: [text(value)], ...(delivery ? { delivery_id: delivery } : {}), tool_result: null }];
+    histories[active] = [...(histories[active] ?? []), { id: `sent-${++rows}`, role: "user", content: [text(value)], ...(delivery ? { delivery_id: delivery } : {}), tool_result: null }];
     // After the reply, as zeta starts the turn once the send is persisted.
     queueMicrotask(() => void chatTurn(active, send));
     return { result: accepted };
@@ -178,6 +190,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
     chat = null;
     running.set(false);
     turn.aborted = true;
+    histories[turn.session] = [...(histories[turn.session] ?? []), servedTurnEnd(turn.id, "user_stop")];
     aborts++;
     send({ event: "turn_aborted", session_id: turn.session, data: { reason: "abort" } });
     send({ event: "agent_end", session_id: turn.session, data: {} });
@@ -286,7 +299,17 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   };
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   let openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
-  const composer = composerMethods(wait, { get: () => running, set: (value) => { running = value; } });
+  // The frames zeta sends when a connection falls behind (zeta tests/test_server_output.py,
+  // test_controller_overflow_does_not_cancel_active_turn): the frame being written, the reserved -32011 error, then a
+  // normal close. Past its 1 s overflow deadline zeta aborts the transport instead, with no error or close frame.
+  const overflow = (socket: ServerWebSocket<unknown>, role: "controller" | "observer") => {
+    socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: active ?? ACTIVE, delta: "head" } }));
+    if (mode === "overflow-silent") return socket.terminate();
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32011, message: `${role} output overflow` } }));
+    socket.close(1000);
+  };
+  let servedTurnEndOffered = true;
+  const composer = composerMethods(wait, { get: () => running, set: (value) => { running = value; } }, () => !!controller && !!negotiatedFeatures.get(controller as object)?.has("served_turn_end"));
   let serialTail = Promise.resolve<unknown>(undefined);
   const delayCalls = new Map<string, number>();
   const requestDelay = (method: string) => {
@@ -358,12 +381,13 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
           if (requestedRole === "controller") controller = socket;
-          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect)) ?? [];
+          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect) || (name === "served_turn_end" && servedTurnEndOffered)) ?? [];
           negotiatedFeatures.set(socket as object, new Set(features));
           const reconnect = features.includes("approval_reconnect");
           if (reconnect) reconnectControllers.add(socket as object);
           if (features.includes("session_history_fidelity") && features.includes("content_read")) contentReaders.add(socket as object);
           reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features } } });
+          if (mode === "overflow" || mode === "overflow-silent") setTimeout(() => overflow(socket, requestedRole), 0);
           if (decide && !approvalAborted) {
             if (!reconnect) expireApproval();
             else {
@@ -426,7 +450,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
             delayedOpen = true;
             await wait(openDelay);
           }
-          const rows = (histories[active!] ?? []).filter((row) => approvalHistoryMode !== "not-advertised-without-rows" || (row.event !== "approval_request" && row.event !== "approval_end"));
+          const servedEnds = negotiatedFeatures.get(socket as object)?.has("served_turn_end");
+          const rows = (histories[active!] ?? []).filter((row) => (approvalHistoryMode !== "not-advertised-without-rows" || (row.event !== "approval_request" && row.event !== "approval_end")) && (servedEnds || row.event !== "served_turn_end"));
           const groups = historyGroups(rows);
           const pageSize = active === LARGE ? 128 : 8;
           if (Object.hasOwn(params, "before")) {
@@ -516,7 +541,18 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     async foreignOrigin() { allowed = ["http://localhost:5173"]; await write({ port: server.port, controller_token: controllerToken, observer_token: observerToken, pid: process.pid, origins: allowed }); },
     /** Hands out a token the server will refuse. */
     async wrongToken() { await write({ port: server.port, controller_token: "stale-token", observer_token: "stale-token", pid: process.pid, origins: allowed }); },
-    setMode(next: Mode) { mode = next; },
+    /**
+     * `overflow` and `overflow-silent` overflow the controller now and every connection after its hello until the
+     * mode changes; set "ok" right after to overflow once. The turn keeps running, as in zeta.
+     */
+    setMode(next: Mode) {
+      mode = next;
+      if ((next === "overflow" || next === "overflow-silent") && controller) overflow(controller, "controller");
+    },
+    /** `false` makes the server not offer `served_turn_end`, like a zeta older than 8c03f606. */
+    setServedTurnEnd(next: boolean) { servedTurnEndOffered = next; },
+    /** Whether a turn runs on the server, independent of what any client saw. */
+    get running() { return running; },
     setOpenDelay(ms: number) { openDelay = ms; },
     /** `true`: new_session fails the way real zeta does while a turn runs (`require_idle`). */
     setRejectCreate(next: boolean) { rejectCreate = next; },

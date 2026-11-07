@@ -1,4 +1,4 @@
-import type { RunEvent, RunItem, SubAgentEvent } from "./events.js";
+import type { RunEndOutcome, RunEvent, RunItem, SubAgentEvent } from "./events.js";
 import { appendText } from "./stream.js";
 import { messageAlias } from "./message-identity.js";
 
@@ -23,6 +23,8 @@ export interface RunState {
   usage: Record<string, number>;
   agent: "idle" | "running";
   turn: "idle" | "running";
+  /** The adapter's explicit outcome for the last ended run. Cleared when the next run starts. */
+  endOutcome?: RunEndOutcome;
   receipts: Record<string, boolean>;
   receiptOrder: string[];
   nextId: number;
@@ -114,7 +116,7 @@ const toolResultFields = {
 /** Every consumed event field declares whether invalid data rejects the event or is omitted from it. */
 export const eventSchemas = {
   run_start: { data: optional(object) },
-  run_end: { data: optional(object) },
+  run_end: { outcome: optional(oneOf("completed", "cancelled", "failed", "disconnected", "unknown")), data: optional(object) },
   turn_start: { data: optional(object) },
   turn_end: { data: optional(object) },
   message_start: { data: optional(object) },
@@ -339,6 +341,7 @@ export function reduceAllWithEntities(
     usage: state.usage,
     agent: state.agent,
     turn: state.turn,
+    endOutcome: state.endOutcome,
     receipts: state.receipts,
     receiptOrder: state.receiptOrder,
     nextId: state.nextId,
@@ -432,10 +435,12 @@ export function reduceAllWithEntities(
     switch (event.type) {
       case "run_start":
         next.agent = "running";
+        next.endOutcome = undefined;
         break;
       case "run_end":
         next.agent = "idle";
         next.turn = "idle";
+        if (event.outcome !== undefined) next.endOutcome = event.outcome;
         endActiveStreams();
         break;
       case "turn_start":

@@ -51,8 +51,13 @@ function source(client: ZetaClient | null) {
   const listeners = new Set<() => void>();
   return {
     client,
+    state: { phase: "connected" },
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener); },
-    set(next: ZetaClient | null) { this.client = next; listeners.forEach((listener) => listener()); },
+    set(next: ZetaClient | null, phase = next ? "connected" : "dropped") {
+      this.client = next;
+      this.state = { phase };
+      listeners.forEach((listener) => listener());
+    },
   };
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -127,6 +132,99 @@ test("a failed replacement restores the old active session and its readiness", a
   expect(present(view).selected).toBe("b");
   expect(selected).toEqual(["a", "b"]);
   expect(present(view).openError?.message).toBe("session log is invalid at line 12");
+});
+
+test("overflow marks only the running session until that session starts its next run", async () => {
+  const first = await server(handlers("b"));
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  for (let attempt = 0; attempt < 20 && !present(view).open?.history.complete; attempt++) await tick();
+  first.event({ event: "agent_start", session_id: "b" });
+  expect(present(view).open?.lease.store.getState().agent).toBe("running");
+
+  connection.set(null, "overflow");
+  const second = await server(handlers("b"));
+  connection.set(second.client);
+  for (let attempt = 0; attempt < 20 && present(view).open?.stale; attempt++) await tick();
+  expect(present(view).open?.stale).toBe(false);
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("unknown");
+  expect(new Set(present(view).open?.lease.store.getOutline().map(({ id }) => id)).size).toBe(present(view).open?.lease.store.getOutline().length);
+
+  view.select("a");
+  await tick();
+  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
+  view.select("b");
+  await tick();
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("unknown");
+
+  second.event({ event: "agent_start", session_id: "b" });
+  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
+
+  // An ordinary drop of a running turn that comes back idle is not an overflow: no marker.
+  connection.set(null);
+  const third = await server(handlers("b"));
+  connection.set(third.client);
+  for (let attempt = 0; attempt < 20 && present(view).open?.stale; attempt++) await tick();
+  expect(present(view).open?.stale).toBe(false);
+  expect(present(view).open?.lease.store.getState().agent).toBe("idle");
+  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
+});
+
+test("with served_turn_end, an overflow-hidden end takes zeta's recorded outcome for that turn, else stays unknown", async () => {
+  const turn = "5ec6b9bb4c8c44d29bfa315da83a4190";
+  const ended = (turnId: string, reason: string) => handlers("b", {
+    session_history: (params) => {
+      const rows = [...history.b!, { id: "end-1", role: "system", event: "served_turn_end", data: { turn_id: turnId, reason } }];
+      const offset = params.offset as number;
+      return { messages: rows.slice(offset, offset + 1), next_offset: offset + 1 < rows.length ? offset + 1 : null };
+    },
+  });
+  const features = ["list_sessions_paging", "served_turn_end"];
+  for (const [rows, outcome] of [[ended(turn, "user_stop"), "cancelled"], [ended("0000000000000000000000000000beef", "completed"), "unknown"]] as const) {
+    const first = await server(handlers("b"), features);
+    const connection = source(first.client);
+    const view = createSessions(connection);
+    for (let attempt = 0; attempt < 20 && !present(view).open?.history.complete; attempt++) await tick();
+    first.event({ event: "agent_start", session_id: "b" });
+    first.event({ event: "turn_start", session_id: "b", data: { turn: 1, turn_id: turn } });
+    connection.set(null, "overflow");
+    const second = await server(rows, features);
+    connection.set(second.client);
+    for (let attempt = 0; attempt < 40 && !(present(view).open && !present(view).open!.stale && present(view).open!.history.complete); attempt++) await tick();
+    expect(present(view).open?.lease.store.getState().endOutcome).toBe(outcome);
+    // The recorded end is a fact for the outcome, not a transcript row.
+    expect(kinds(view.state)).not.toContain("error");
+    view.dispose();
+  }
+});
+
+test("a repeat overflow on a client that connected mid-turn keeps the served turn id an earlier client saw", async () => {
+  const turn = "5ec6b9bb4c8c44d29bfa315da83a4190";
+  const features = ["list_sessions_paging", "served_turn_end"];
+  const first = await server(handlers("b"), features);
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  for (let attempt = 0; attempt < 20 && !present(view).open?.history.complete; attempt++) await tick();
+  first.event({ event: "agent_start", session_id: "b" });
+  first.event({ event: "turn_start", session_id: "b", data: { turn: 1, turn_id: turn } });
+  connection.set(null, "overflow");
+  // Reconnected while the turn still runs: this client never sees the turn's turn_start.
+  const middle = await server(handlers("b", { status: () => ({ session: meta("b", "x"), state: "running", pending_approvals: [] }) }), features);
+  connection.set(middle.client);
+  for (let attempt = 0; attempt < 40 && !(present(view).open && !present(view).open!.stale && present(view).open!.lease.store.getState().agent === "running"); attempt++) await tick();
+  expect(present(view).open?.lease.store.getState().agent).toBe("running");
+  connection.set(null, "overflow");
+  const last = await server(handlers("b", {
+    session_history: (params) => {
+      const rows = [...history.b!, { id: "end-1", role: "system", event: "served_turn_end", data: { turn_id: turn, reason: "completed" } }];
+      const offset = params.offset as number;
+      return { messages: rows.slice(offset, offset + 1), next_offset: offset + 1 < rows.length ? offset + 1 : null };
+    },
+  }), features);
+  connection.set(last.client);
+  for (let attempt = 0; attempt < 40 && !(present(view).open && !present(view).open!.stale && present(view).open!.history.complete); attempt++) await tick();
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("completed");
+  view.dispose();
 });
 
 test("on connect opens the active session before requesting the catalog", async () => {

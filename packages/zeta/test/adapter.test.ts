@@ -134,3 +134,13 @@ test("usage accepts an own constructor key and history usage cannot update calls
 test("history usage rows use the live usage mapping", () => {
   expect(fromZetaHistory([{ id: "u", role: "system", event: "usage", usage: { input_tokens: 2 }, content: [] }])).toEqual([{ type: "usage", usage: { input_tokens: 2 } }]);
 });
+
+test("served_turn_end history rows add no transcript row", () => {
+  // Row shape from zeta event_contract.served_turn_end_row (docs/serve-protocol.md, feature served_turn_end).
+  const rows = [
+    { id: "u1", role: "user", content: [{ type: "text", text: "hi" }], tool_result: null },
+    { id: "a1", role: "assistant", content: [{ type: "text", text: "done" }], tool_result: null },
+    { id: "e1", role: "system", event: "served_turn_end", data: { turn_id: "a1b2c3d4e5f60718293a4b5c6d7e8f90", reason: "completed" } },
+  ];
+  expect(fromZetaHistory(rows).map((event) => event.type)).toEqual(["user_message", "message_commit"]);
+});

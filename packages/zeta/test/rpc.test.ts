@@ -600,7 +600,7 @@ test("send_images delivery ids require both negotiated request features", async 
     const fake = fakeTransport();
     const client = connect(fake.transport);
     const ready = client.hello(features);
-    expect(fake.sent[0]?.params.features).toEqual(features.includes("delivery_id") ? ["delivery_id", "send_images_delivery_id"] : features);
+    expect(fake.sent[0]?.params.features).toEqual([...(features.includes("delivery_id") ? ["delivery_id", "send_images_delivery_id"] : features), "served_turn_end"]);
     fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features } } });
     await ready;
     const sending = client.request("send_images", { session_id: "s", text: "partial", images: [], delivery_id: "partial-id" });
@@ -614,7 +614,7 @@ test("default hello does not request send_images delivery ids", async () => {
   const fake = fakeTransport();
   const client = connect(fake.transport);
   const ready = client.hello();
-  expect(fake.sent[0]?.params.features).toEqual([]);
+  expect(fake.sent[0]?.params.features).toEqual(["served_turn_end"]);
   fake.receive({ jsonrpc: "2.0", id: 1, result: { protocol_version: "1.2", capabilities: { features: [] } } });
   await ready;
 });
@@ -778,4 +778,14 @@ test("an echoed user_message gets the intent of the pending request with the sam
   expect(ids[1]).not.toContain("intent");
   expect(ids[2]).toBe("user:intent:a");
   client.close();
+});
+
+test("the client remembers each session's last served turn id from live turn_start", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport);
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "turn_start", session_id: "s", data: { turn: 1, turn_id: "5ec6b9bb4c8c44d29bfa315da83a4190" } } });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "turn_start", session_id: "s", data: { turn: 2, turn_id: "5ec6b9bb4c8c44d29bfa315da83a4190" } } });
+  fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "turn_start", session_id: "other", data: { turn: 1 } } });
+  expect(client.servedTurn("s")).toBe("5ec6b9bb4c8c44d29bfa315da83a4190");
+  expect(client.servedTurn("other")).toBeUndefined();
 });

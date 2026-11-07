@@ -1,5 +1,5 @@
-import { fromZetaEvent, fromZetaHistory, type SessionLease, type ZetaClient } from "@fulcrum/zeta";
-import type { RunEvent } from "@fulcrum/core";
+import { fromZetaEvent, fromZetaHistory, servedTurnOutcome, type SessionLease, type ZetaClient } from "@fulcrum/zeta";
+import type { RunEndOutcome, RunEvent } from "@fulcrum/core";
 
 /** The `SessionMetadata` fields this app reads from `list_sessions` (zeta docs/serve-protocol.md). */
 export type SessionMeta = {
@@ -59,7 +59,9 @@ type HistoryPage = { messages?: unknown[]; next_offset?: number | null };
 type HistoryValidator = { end: number; entry_id: string | null };
 type BackwardHistoryPage = { messages?: unknown[]; next_before?: number | null; history_validator?: HistoryValidator };
 const isApprovalEvent = (event: RunEvent) => event.type === "approval_request" || event.type === "approval_end";
-const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true, liveApprovalStatus = false): RunEvent[] => {
+/** The outcome for an idle snapshot's `run_end`, given every history row the open has loaded so far. */
+type EndOutcome = (rows: unknown[]) => RunEndOutcome | undefined;
+const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true, liveApprovalStatus = false, endOutcome: () => RunEndOutcome | undefined = () => undefined): RunEvent[] => {
   let events = fromZetaHistory(rows).filter((event) => historyApprovals || !isApprovalEvent(event));
   if (liveApprovalStatus && !status.pending_approvals_truncated) {
     const pending = new Set((status.pending_approvals ?? []).map((approval) => approval.request_id));
@@ -71,7 +73,8 @@ const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, histo
       event: "approval_request", session_id: id, ...approval,
       ...(approval.resolution_pending ? { state: "resolving", status: "resolving…", disabled_reason: "the server is saving this decision" } : {}),
     }));
-  events.push({ type: status.state === "idle" ? "run_end" : "run_start" });
+  const outcome = status.state === "idle" ? endOutcome() : undefined;
+  events.push(status.state === "idle" ? { type: "run_end", ...(outcome ? { outcome } : {}) } : { type: "run_start" });
   return events;
 };
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -103,6 +106,8 @@ async function openBackwardSession(
   progress?: OpenProgress,
   signal?: AbortSignal,
   knownStatus?: ServerStatus,
+  /** Read at each idle snapshot: the session's next run start can clear it while the open is in flight. */
+  endOutcome: EndOutcome = () => undefined,
 ): Promise<OpenResult> {
   const approvalReconnect = client.features.includes("approval_reconnect");
   let pages: BackwardHistoryPage[] = [];
@@ -116,6 +121,7 @@ async function openBackwardSession(
   let initialEvents: RunEvent[] = [];
   const combinedSignal = (replaySignal: AbortSignal) => signal ? AbortSignal.any([signal, replaySignal]) : replaySignal;
   const rows = () => [...pages].reverse().flatMap((page) => page.messages ?? []).concat(tail);
+  const outcome = () => endOutcome(rows());
   const requestNewest = async () => {
     const page = await client.request("session_history", { session_id: id, before: null }, { timeoutMs: 15_000, signal: activeSignal }) as BackwardHistoryPage;
     if (!page.history_validator || !Number.isInteger(page.history_validator.end)) throw new Error("backward history response has no validator");
@@ -131,9 +137,9 @@ async function openBackwardSession(
     return item?.type === "user" && item.event.type === "user_message" && item.event.intent && item.event.delivery_id ? [item.event] : [];
   });
   const publishSnapshot = (status: ServerStatus, pending: readonly RunEvent[] = []) =>
-    lease.store.resync([...snapshotEvents(id, rows(), status, true, approvalReconnect), ...pending]);
+    lease.store.resync([...snapshotEvents(id, rows(), status, true, approvalReconnect, outcome), ...pending]);
   const publishStatus = (status: ServerStatus) => {
-    for (const event of snapshotEvents(id, [], status, true, approvalReconnect)) lease.store.dispatch(event);
+    for (const event of snapshotEvents(id, [], status, true, approvalReconnect, outcome)) lease.store.dispatch(event);
   };
   const loadOlder = async (publishPages = true) => {
     while (pages.at(-1)?.next_before != null) {
@@ -188,7 +194,7 @@ async function openBackwardSession(
     if (!firstLoad) {
       await requestNewest();
       await loadOlder(false);
-      return snapshotEvents(id, rows(), await getStatus(client, activeSignal), true, approvalReconnect);
+      return snapshotEvents(id, rows(), await getStatus(client, activeSignal), true, approvalReconnect, outcome);
     }
     firstLoad = false;
     const before = knownStatus ?? await getStatus(client, activeSignal);
@@ -199,7 +205,7 @@ async function openBackwardSession(
     }
     const page = await requestNewest();
     progress?.(rows().length, page.next_before == null);
-    initialEvents = snapshotEvents(id, rows(), initialStatus, page.next_before == null, approvalReconnect);
+    initialEvents = snapshotEvents(id, rows(), initialStatus, page.next_before == null, approvalReconnect, outcome);
     return initialEvents;
   }, true);
   lease.store.beginHistory();
@@ -242,9 +248,11 @@ export async function openSession(
   progress?: OpenProgress,
   signal?: AbortSignal,
   knownStatus?: ServerStatus,
+  /** Read at each idle snapshot: the session's next run start can clear it while the open is in flight. */
+  endOutcome: EndOutcome = () => undefined,
 ): Promise<OpenResult> {
   if (client.features.includes("session_replay_seq")) throw new Error("session_replay_seq needs the sequence replay coordinator");
-  if (client.features.includes("session_history_backward")) return openBackwardSession(client, id, progress, signal, knownStatus);
+  if (client.features.includes("session_history_backward")) return openBackwardSession(client, id, progress, signal, knownStatus, endOutcome);
   const approvalReconnect = client.features.includes("approval_reconnect");
   let pages: LoadedPage[] = [];
   let incomplete = false;
@@ -260,14 +268,15 @@ export async function openSession(
     return { offset, rows: page.messages ?? [], nextOffset: page.next_offset ?? null };
   };
   const allRows = () => pages.flatMap((page) => page.rows);
+  const outcome = () => endOutcome(allRows());
   let publishedPages = 1;
   const stableRows = () => (pages.length === 1 ? pages : pages.slice(0, -1)).flatMap((page) => page.rows);
   const publishStablePrefix = (status: ServerStatus) => {
-    lease.store.resync(snapshotEvents(id, stableRows(), status, false, approvalReconnect));
+    lease.store.resync(snapshotEvents(id, stableRows(), status, false, approvalReconnect, outcome));
     publishedPages = pages.length === 1 ? 1 : pages.length - 1;
   };
   const publishApprovals = (status: ServerStatus) => {
-    for (const event of snapshotEvents(id, [], status, true, approvalReconnect)) if (event.type === "approval_request") lease.store.dispatch(event);
+    for (const event of snapshotEvents(id, [], status, true, approvalReconnect, outcome)) if (event.type === "approval_request") lease.store.dispatch(event);
   };
   const loadPageRange = async (start: number) => {
     const loaded: LoadedPage[] = [];
@@ -302,7 +311,7 @@ export async function openSession(
       for (const event of fromZetaHistory(page.rows)) if (!isApprovalEvent(event)) lease.store.dispatch(event);
     if (pages.length > 1)
       for (const event of fromZetaHistory(allRows())) if (isApprovalEvent(event)) lease.store.dispatch(event);
-    for (const event of snapshotEvents(id, [], status, true, approvalReconnect)) lease.store.dispatch(event);
+    for (const event of snapshotEvents(id, [], status, true, approvalReconnect, outcome)) lease.store.dispatch(event);
     publishedPages = pages.length;
   };
   const waitUntilIdle = async (status = initialStatus): Promise<ServerStatus> => {
@@ -322,7 +331,7 @@ export async function openSession(
     activeSignal = combinedSignal(replaySignal);
     if (!firstLoad) {
       await loadFullHistory();
-      return snapshotEvents(id, allRows(), await getStatus(client, activeSignal), true, approvalReconnect);
+      return snapshotEvents(id, allRows(), await getStatus(client, activeSignal), true, approvalReconnect, outcome);
     }
     firstLoad = false;
     const before = knownStatus ?? await getStatus(client, activeSignal);
@@ -333,7 +342,7 @@ export async function openSession(
     }
     pages = [await historyPage(0, activeSignal)];
     progress?.(allRows().length, pages[0]!.nextOffset === null);
-    return snapshotEvents(id, allRows(), initialStatus, pages[0]!.nextOffset === null, approvalReconnect);
+    return snapshotEvents(id, allRows(), initialStatus, pages[0]!.nextOffset === null, approvalReconnect, outcome);
   }, true);
 
   const reconcileTail = async () => {
@@ -449,7 +458,7 @@ export type SessionsState = {
   createError: string | null;
 };
 
-type Source = { readonly client: ZetaClient | null; subscribe(listener: () => void): () => void };
+type Source = { readonly client: ZetaClient | null; readonly state: { readonly phase: string }; subscribe(listener: () => void): () => void };
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -464,6 +473,18 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const set = (patch: Partial<SessionsState>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); };
   const transition = (event: TransitionEvent) => set({ transition: reduceSessionTransition(state.transition, event) });
   let client: ZetaClient | null = null;
+  // Sessions whose running turn an overflow hid, with the served turn id it had (feature `served_turn_end`) and, once
+  // a history snapshot holds that turn's recorded end, its outcome.
+  const hiddenEnds = new Map<string, { turn?: string; outcome?: RunEndOutcome }>();
+  // The last served turn id seen per session. A client that connected mid-turn never saw that turn's turn_start, so a
+  // repeat overflow keeps the id an earlier client saw.
+  const servedTurns = new Map<string, string>();
+  const endOutcome = (id: string): EndOutcome => (rows) => {
+    const hidden = hiddenEnds.get(id);
+    if (!hidden) return undefined;
+    if (!hidden.outcome && hidden.turn) hidden.outcome = servedTurnOutcome(rows, hidden.turn);
+    return hidden.outcome ?? "unknown";
+  };
   let openGeneration = 0;
   let openAbort: AbortController | null = null;
   const live = (target: ZetaClient) => client === target;
@@ -507,6 +528,13 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     return owner.inFlight;
   };
 
+  // The hidden end belongs to the run the overflow hid; the session's next run start, seen by any lease, ends it.
+  const watchOutcome = (id: string, lease: OpenResult["lease"]) => {
+    if (!hiddenEnds.has(id)) return;
+    const started = () => lease.store.getState().agent === "running" && hiddenEnds.delete(id);
+    if (started()) return; // it came back running, so its end will be seen live
+    const stop = lease.store.subscribe(() => { if (started()) stop(); });
+  };
   const open = async (id: string, knownStatus?: ServerStatus) => {
     const target = client;
     const mine = ++openGeneration;
@@ -523,18 +551,20 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         history = { messages, complete };
         if (mine !== openGeneration) return;
         transition({ type: "progress", id, messages });
-      }, abort.signal, knownStatus);
+      }, abort.signal, knownStatus, endOutcome(id));
       if (!state.listLoading && !state.listReady) void refresh();
       const { lease } = opened;
       if (mine !== openGeneration || !live(target)) return lease.release();
       previous?.lease.release();
       transition({ type: "opened", run: { id, lease, stale: false, history, syncing: opened.syncing } });
+      watchOutcome(id, lease);
       void opened.complete.then((result) => {
         if (mine !== openGeneration || !live(target)) return result.lease?.release();
         if (result.lease) {
           const run = transitionRun(state.transition);
           run?.lease.release();
           transition({ type: "updated", run: { id, lease: result.lease, stale: false, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
+          watchOutcome(id, result.lease);
         } else {
           const run = transitionRun(state.transition);
           if (run?.id === id) transition({ type: "updated", run: { ...run, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
@@ -569,6 +599,14 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   };
   const disconnect = (disconnected: ZetaClient | null) => {
     retireCatalog();
+    const run = transitionRun(state.transition);
+    // Only an overflow says frames were dropped; a run it interrupts that comes back idle ended unseen, and zeta's
+    // recorded end for its served turn, if history has one, says how.
+    if (connection.state.phase === "overflow" && run?.lease.store.getState().agent === "running") {
+      const turn = disconnected?.servedTurn(run.id) ?? servedTurns.get(run.id);
+      if (turn) servedTurns.set(run.id, turn);
+      hiddenEnds.set(run.id, { turn });
+    }
     set({ listLoading: false, listSlow: false, listReady: false });
     openGeneration++;
     openAbort?.abort();

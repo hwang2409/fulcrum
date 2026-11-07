@@ -11,7 +11,7 @@ import { createRunStore, type RunSource } from "@fulcrum/core";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
 import { MermaidFence } from "@fulcrum/mermaid";
-import { Approval, Message, RunNavigator, RunProvider, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunLocation } from "@fulcrum/react";
+import { Approval, Message, RunEndMarker, RunNavigator, RunProvider, RunStatus, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunLocation } from "@fulcrum/react";
 import { CodeCard, codeDemos } from "./code-demos";
 import { ComposerCard, composerDemos } from "./composer-demos";
 import { demos, type Demo } from "./demos";
@@ -184,7 +184,9 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
             <RunNavigator key={generation} store={store} source={source} {...runPath} highlight={highlight} renderers={renderers} label="run" />
           ) : (
             <RunProvider key={generation} store={store} highlight={highlight}>
+              {demo.part === "RunStatus" ? <RunStatus /> : null}
               <Timeline renderers={demo.markdownAll ? markdownAllRenderers : renderers} />
+              {demo.part === "RunEndMarker" ? <RunEndMarker /> : null}
             </RunProvider>
           )}
         </ActContext.Provider>
