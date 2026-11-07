@@ -376,9 +376,10 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
           <RefreshOnIdle sessions={sessions} />
           <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready={ready ? "true" : undefined}>
             <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
-            <RunEndMarker />
             <EmptyRun />
           </div>
+          {/* Outside the scroll box, so it is always in view and never moves the timeline's bottom. */}
+          <RunEndMarker />
           <RunComposer key={open.id} client={open.stale || readOnly ? null : client} store={open.lease.store} onUndelivered={onUndelivered} readOnly={readOnly} />
         </RunProvider>
       </Undelivered>

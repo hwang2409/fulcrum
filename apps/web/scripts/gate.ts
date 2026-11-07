@@ -216,6 +216,8 @@ try {
       fake.setMode("overflow");
       fake.setMode("ok");
       await page.locator(".notice", { hasText: "connection fell behind" }).waitFor({ timeout: 5000 });
+      // Hold the server down so the stale view can be checked before the 0.5 s retry reconnects.
+      await fake.stop();
       // A drop keeps the reader where they were: still pinned to the bottom, the pending approval still in view.
       await page.getByText(/sending is paused/).first().waitFor({ timeout: 3000 });
       await settle(page);
@@ -231,6 +233,9 @@ try {
       await staleApproval.getByRole("button", { name: "deny" }).waitFor();
       if (!(await staleApproval.getByRole("button", { name: "approve" }).isDisabled()) || !(await staleApproval.getByRole("button", { name: "deny" }).isDisabled())) throw new Error("reconnecting approval buttons were not disabled");
       await staleApproval.getByText(/decisions are disabled/).waitFor();
+      await fake.start();
+      // The client's retry backoff grows while the server is down; retry at once, as a user would.
+      await page.locator(".notice").getByRole("button", { name: "retry now" }).click({ timeout: 2000 }).catch(() => {});
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
       await page.locator(".notice").waitFor({ state: "detached" });
       const reconnected = page.locator('[data-part="approval"]');
@@ -297,14 +302,17 @@ try {
       await idleServer();
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
       await page.locator(".notice").waitFor({ state: "detached" });
-      // 0.5, 1, then 2 s apart: three tries in 4 s, not one every 0.5 s.
-      if (attempts < 1 || attempts > 4) throw new Error(`${attempts} reconnects in 4 s while the server kept overflowing`);
+      // 0.5, 1, then 2 s apart (or later, after an earlier short connection): not one every 0.5 s.
+      if (attempts > 4) throw new Error(`${attempts} reconnects in 4 s while the server kept overflowing`);
       return attempts;
     };
     await check("an overflow that hides a turn's end marks that run outcome unknown until its next run starts", async () => {
-      await overflowThroughTurn("overflow", "a turn whose end the overflow hides", "connection fell behind");
+      if (await overflowThroughTurn("overflow", "a turn whose end the overflow hides", "connection fell behind") < 1) throw new Error("the server never overflowed a reconnect");
       const marker = page.locator('[data-part="run-end-marker"]');
       await marker.waitFor({ timeout: 5000 });
+      await settle(page);
+      const inView = await marker.evaluate((node) => { const box = node.getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight; });
+      if (!inView) throw new Error("the end marker is not in view");
       if (await marker.getAttribute("aria-label") !== "run ended while disconnected; outcome unknown") throw new Error("the marker has no screen-reader text");
       await page.locator('.run-meta [data-part="run-status"][data-status="unknown"]', { hasText: "outcome unknown" }).waitFor();
       if (await page.getByText("a turn whose end the overflow hides", { exact: true }).count() !== 1) throw new Error("the prompt is not shown exactly once");
@@ -321,6 +329,7 @@ try {
       await idleServer();
       await page.locator('.run-meta [data-part="run-status"][data-status="idle"]').waitFor({ timeout: 5000 });
       if (await marker.count()) throw new Error("a run seen to its end was marked outcome unknown");
+      fake.clearSent();
     });
     await check("a silent overflow reads as a lost connection, backs off, and marks no run", async () => {
       await overflowThroughTurn("overflow-silent", "a turn cut by a silent overflow", "connection lost");

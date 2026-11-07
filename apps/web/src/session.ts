@@ -59,7 +59,7 @@ type HistoryPage = { messages?: unknown[]; next_offset?: number | null };
 type HistoryValidator = { end: number; entry_id: string | null };
 type BackwardHistoryPage = { messages?: unknown[]; next_before?: number | null; history_validator?: HistoryValidator };
 const isApprovalEvent = (event: RunEvent) => event.type === "approval_request" || event.type === "approval_end";
-const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true, liveApprovalStatus = false, outcomeUnknown = false): RunEvent[] => {
+const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true, liveApprovalStatus = false, outcomeUnknown = () => false): RunEvent[] => {
   let events = fromZetaHistory(rows).filter((event) => historyApprovals || !isApprovalEvent(event));
   if (liveApprovalStatus && !status.pending_approvals_truncated) {
     const pending = new Set((status.pending_approvals ?? []).map((approval) => approval.request_id));
@@ -71,7 +71,7 @@ const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, histo
       event: "approval_request", session_id: id, ...approval,
       ...(approval.resolution_pending ? { state: "resolving", status: "resolving…", disabled_reason: "the server is saving this decision" } : {}),
     }));
-  events.push(status.state === "idle" ? { type: "run_end", ...(outcomeUnknown ? { outcome: "unknown" as const } : {}) } : { type: "run_start" });
+  events.push(status.state === "idle" ? { type: "run_end", ...(outcomeUnknown() ? { outcome: "unknown" as const } : {}) } : { type: "run_start" });
   return events;
 };
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -103,7 +103,8 @@ async function openBackwardSession(
   progress?: OpenProgress,
   signal?: AbortSignal,
   knownStatus?: ServerStatus,
-  outcomeUnknown = false,
+  /** Read at each idle snapshot: the session's next run start can clear it while the open is in flight. */
+  outcomeUnknown = () => false,
 ): Promise<OpenResult> {
   const approvalReconnect = client.features.includes("approval_reconnect");
   let pages: BackwardHistoryPage[] = [];
@@ -243,7 +244,8 @@ export async function openSession(
   progress?: OpenProgress,
   signal?: AbortSignal,
   knownStatus?: ServerStatus,
-  outcomeUnknown = false,
+  /** Read at each idle snapshot: the session's next run start can clear it while the open is in flight. */
+  outcomeUnknown = () => false,
 ): Promise<OpenResult> {
   if (client.features.includes("session_replay_seq")) throw new Error("session_replay_seq needs the sequence replay coordinator");
   if (client.features.includes("session_history_backward")) return openBackwardSession(client, id, progress, signal, knownStatus, outcomeUnknown);
@@ -513,11 +515,9 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   // The unknown outcome belongs to the run the overflow hid; the session's next run start, seen by any lease, ends it.
   const watchOutcome = (id: string, lease: OpenResult["lease"]) => {
     if (!unknownOutcomes.has(id)) return;
-    const stop = lease.store.subscribe(() => {
-      if (lease.store.getState().agent !== "running") return;
-      unknownOutcomes.delete(id);
-      stop();
-    });
+    const started = () => lease.store.getState().agent === "running" && unknownOutcomes.delete(id);
+    if (started()) return; // it came back running, so its end will be seen live
+    const stop = lease.store.subscribe(() => { if (started()) stop(); });
   };
   const open = async (id: string, knownStatus?: ServerStatus) => {
     const target = client;
@@ -535,7 +535,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         history = { messages, complete };
         if (mine !== openGeneration) return;
         transition({ type: "progress", id, messages });
-      }, abort.signal, knownStatus, unknownOutcomes.has(id));
+      }, abort.signal, knownStatus, () => unknownOutcomes.has(id));
       if (!state.listLoading && !state.listReady) void refresh();
       const { lease } = opened;
       if (mine !== openGeneration || !live(target)) return lease.release();

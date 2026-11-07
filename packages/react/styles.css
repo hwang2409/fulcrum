@@ -65,7 +65,7 @@
 [data-part="run-status"][data-status="unknown"] { color: var(--fulcrum-warn); font-weight: 700; }
 [data-part="run-end-marker"] {
   width: fit-content;
-  margin: 8px 12px 16px;
+  margin: 8px 12px;
   padding: 3px 8px;
   border: 1px solid color-mix(in srgb, var(--fulcrum-warn) 55%, var(--fulcrum-border));
   background: color-mix(in srgb, var(--fulcrum-warn) 8%, var(--fulcrum-surface));
