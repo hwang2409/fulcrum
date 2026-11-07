@@ -38,6 +38,7 @@ Outlines above 200 rows use virtual mode by default. Set `virtual={false}` when 
   ```
 
   Every URL goes through `safeUrl` from `@fulcrum/core`: links are http, https, mailto, or relative; images may also be inline png, jpeg, gif, webp, avif, or bmp `data:` URLs. Any URL longer than `MAX_URL_CHARS` (8 MiB) is refused before any other work. Addresses never become labels, titles, or data attributes.
+- approval actions: `Approval` takes `onApprove` and `onDeny`, each called with the request id. Return a promise to keep the card busy (`approving` or `denying`, every action `aria-disabled`) until it settles; reject to show the error and re-enable the actions. Pass `onApproveAlways` to offer a third action between them (`data-action="approve-always"`, text `approveAlwaysLabel`, default `always allow`) for a host that can approve this call and remember the grant. It shares approve's busy word, error, and disabled states; without it the card renders exactly as before. The decided card still reads `approved`, because `approval_end` does not say whether the grant was remembered. `disabledReason` disables every action and shows the reason.
 - tool body slot: `ToolCall` and `Approval` own the one header row (`tool-name`, `tool-summary`, `tool-status`), the disclosure, the state rail, and the approval actions. A per-tool card passes only what goes inside `data-part="tool-body"`, so it never draws a second header:
 
   ```tsx

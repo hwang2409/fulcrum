@@ -513,6 +513,29 @@ test("an approval's decision word is colored by styles.css: approved ok, denied 
   }
 });
 
+test("styles.css keeps a host's own approve-* button quiet; only the approval's three actions are loud", () => {
+  const style = document.createElement("style");
+  style.textContent = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+  document.head.append(style);
+  try {
+    const card = mount(
+      <div data-part="approval">
+        <button type="button" data-action="approve-changes">approve changes</button>
+        <div data-part="approval-actions">
+          <button type="button" data-action="approve">approve</button>
+          <button type="button" data-action="approve-always">always allow</button>
+          <button type="button" data-action="deny">deny</button>
+        </div>
+      </div>,
+    );
+    const minHeight = (action: string) => getComputedStyle(card.querySelector<HTMLElement>(`[data-action="${action}"]`)!).minHeight;
+    expect(minHeight("approve-changes")).toBe("32px");
+    for (const action of ["approve", "approve-always", "deny"]) expect(minHeight(action)).toBe("36px");
+  } finally {
+    style.remove();
+  }
+});
+
 test("a denied call, replayed from history, says denied once and keeps the harness's note closed", () => {
   const tool_call = { id: "bash-3", name: "bash", arguments: { command: "rm -rf packages/core/dist" } };
   // zeta's history: the call, its error result (src/zeta/tools/registry.py "tool execution denied"), then the approval.
