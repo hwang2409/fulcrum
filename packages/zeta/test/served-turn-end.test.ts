@@ -1,5 +1,18 @@
 import { expect, test } from "bun:test";
-import { servedTurnOutcome } from "../src/index.js";
+import { servedTurnOutcome, statusTurnOutcome } from "../src/index.js";
+
+test("statusTurnOutcome validates correlation and maps zeta reasons", () => {
+  const turn = { turn_id: "turn-1", reason: "user_stop" };
+  expect(statusTurnOutcome({ ...turn, reason: "completed" })).toBe("completed");
+  expect(statusTurnOutcome(turn)).toBe("cancelled");
+  expect(statusTurnOutcome({ ...turn, reason: "error" }, "turn-1")).toBe("failed");
+  expect(statusTurnOutcome({ ...turn, reason: "disconnect" })).toBe("disconnected");
+  expect(statusTurnOutcome({ ...turn, reason: "disconnect" }, "other")).toBeUndefined();
+  expect(statusTurnOutcome({ ...turn, reason: "invalid" })).toBeUndefined();
+  expect(statusTurnOutcome({ turn_id: "turn-1" })).toBeUndefined();
+  expect(statusTurnOutcome([])).toBeUndefined();
+  expect(statusTurnOutcome(null)).toBeUndefined();
+});
 
 test("servedTurnOutcome maps the newest served_turn_end to its turn's outcome", () => {
   // Shapes from zeta docs/serve-protocol.md (feature served_turn_end) and event_contract.served_turn_end_row.

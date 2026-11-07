@@ -12,6 +12,7 @@ import type {
   ToolResult,
   ToolView,
 } from "@fulcrum/core";
+import type { ServedTurnEnd } from "./wire.js";
 import { resolveToolView } from "@fulcrum/core";
 import { zetaTools } from "./tool-map.js";
 
@@ -417,6 +418,16 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] =>
 };
 
 const servedReasons: Record<string, RunEndOutcome> = { completed: "completed", user_stop: "cancelled", error: "failed", disconnect: "disconnected" };
+const servedTurnOutcomeValue = (value: unknown, expectedTurnId?: string): RunEndOutcome | undefined => {
+  if (value === null || !value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Partial<ServedTurnEnd>;
+  return typeof input.turn_id === "string" && (expectedTurnId === undefined || input.turn_id === expectedTurnId) && typeof input.reason === "string" && Object.hasOwn(servedReasons, input.reason)
+    ? servedReasons[input.reason]
+    : undefined;
+};
+
+/** Maps zeta's latest status outcome to fulcrum's run outcome, when it is valid and optionally correlated. */
+export const statusTurnOutcome = (value: unknown, expectedTurnId?: string): RunEndOutcome | undefined => servedTurnOutcomeValue(value, expectedTurnId);
 
 /**
  * The outcome zeta recorded for the served turn `turnId` (the `turn_start.data.turn_id` of feature `served_turn_end`)
@@ -427,8 +438,7 @@ export function servedTurnOutcome(rows: readonly unknown[], turnId: string): Run
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index] as { event?: unknown; data?: { turn_id?: unknown; reason?: unknown } } | null;
     if (row?.event !== "served_turn_end") continue;
-    const reason = row.data?.reason;
-    return row.data?.turn_id === turnId && typeof reason === "string" && Object.hasOwn(servedReasons, reason) ? servedReasons[reason] : undefined;
+    return servedTurnOutcomeValue(row.data, turnId);
   }
   return undefined;
 }

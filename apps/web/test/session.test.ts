@@ -61,6 +61,11 @@ function source(client: ZetaClient | null) {
   };
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+const waitFor = async (condition: () => boolean, message: string, timeoutMs = 2_000) => {
+  const deadline = performance.now() + timeoutMs;
+  while (!condition() && performance.now() < deadline) await tick();
+  expect(condition(), message).toBe(true);
+};
 
 function handlers(active: string | null, extra: Record<string, Handler> = {}): Record<string, Handler> {
   let current = active;
@@ -134,97 +139,149 @@ test("a failed replacement restores the old active session and its readiness", a
   expect(present(view).openError?.message).toBe("session log is invalid at line 12");
 });
 
-test("overflow marks only the running session until that session starts its next run", async () => {
-  const first = await server(handlers("b"));
-  const connection = source(first.client);
-  const view = createSessions(connection);
-  for (let attempt = 0; attempt < 20 && !present(view).open?.history.complete; attempt++) await tick();
-  first.event({ event: "agent_start", session_id: "b" });
-  expect(present(view).open?.lease.store.getState().agent).toBe("running");
+const turn = "5ec6b9bb4c8c44d29bfa315da83a4190";
+const endRow = (turnId = turn, reason = "completed") => ({ id: `end-${turnId}`, role: "system", event: "served_turn_end", data: { turn_id: turnId, reason } });
+const pagedHistory = (rows: unknown[]): Handler => (params) => {
+  const offset = params.offset as number;
+  return { messages: rows.slice(offset, offset + 1), next_offset: offset + 1 < rows.length ? offset + 1 : null };
+};
 
-  connection.set(null, "overflow");
-  const second = await server(handlers("b"));
-  connection.set(second.client);
-  for (let attempt = 0; attempt < 20 && present(view).open?.stale; attempt++) await tick();
-  expect(present(view).open?.stale).toBe(false);
-  expect(present(view).open?.lease.store.getState().endOutcome).toBe("unknown");
-  expect(new Set(present(view).open?.lease.store.getOutline().map(({ id }) => id)).size).toBe(present(view).open?.lease.store.getOutline().length);
-
-  view.select("a");
-  await tick();
-  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
-  view.select("b");
-  await tick();
-  expect(present(view).open?.lease.store.getState().endOutcome).toBe("unknown");
-
-  second.event({ event: "agent_start", session_id: "b" });
-  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
-
-  // An ordinary drop of a running turn that comes back idle is not an overflow: no marker.
-  connection.set(null);
-  const third = await server(handlers("b"));
-  connection.set(third.client);
-  for (let attempt = 0; attempt < 20 && present(view).open?.stale; attempt++) await tick();
-  expect(present(view).open?.stale).toBe(false);
-  expect(present(view).open?.lease.store.getState().agent).toBe("idle");
-  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
-});
-
-test("with served_turn_end, an overflow-hidden end takes zeta's recorded outcome for that turn, else stays unknown", async () => {
-  const turn = "5ec6b9bb4c8c44d29bfa315da83a4190";
-  const ended = (turnId: string, reason: string) => handlers("b", {
-    session_history: (params) => {
-      const rows = [...history.b!, { id: "end-1", role: "system", event: "served_turn_end", data: { turn_id: turnId, reason } }];
-      const offset = params.offset as number;
-      return { messages: rows.slice(offset, offset + 1), next_offset: offset + 1 < rows.length ? offset + 1 : null };
-    },
-  });
-  const features = ["list_sessions_paging", "served_turn_end"];
-  for (const [rows, outcome] of [[ended(turn, "user_stop"), "cancelled"], [ended("0000000000000000000000000000beef", "completed"), "unknown"]] as const) {
-    const first = await server(handlers("b"), features);
-    const connection = source(first.client);
-    const view = createSessions(connection);
-    for (let attempt = 0; attempt < 20 && !present(view).open?.history.complete; attempt++) await tick();
-    first.event({ event: "agent_start", session_id: "b" });
-    first.event({ event: "turn_start", session_id: "b", data: { turn: 1, turn_id: turn } });
-    connection.set(null, "overflow");
-    const second = await server(rows, features);
-    connection.set(second.client);
-    for (let attempt = 0; attempt < 40 && !(present(view).open && !present(view).open!.stale && present(view).open!.history.complete); attempt++) await tick();
-    expect(present(view).open?.lease.store.getState().endOutcome).toBe(outcome);
-    // The recorded end is a fact for the outcome, not a transcript row.
-    expect(kinds(view.state)).not.toContain("error");
-    view.dispose();
-  }
-});
-
-test("a repeat overflow on a client that connected mid-turn keeps the served turn id an earlier client saw", async () => {
-  const turn = "5ec6b9bb4c8c44d29bfa315da83a4190";
-  const features = ["list_sessions_paging", "served_turn_end"];
+async function interruptedReconnect({ phase = "dropped", status, rows = history.b!, features = ["list_sessions_paging", "served_turn_end"], approval = false, waitForComplete = true }: {
+  phase?: string;
+  status: Record<string, unknown>;
+  rows?: unknown[];
+  features?: string[];
+  approval?: boolean;
+  waitForComplete?: boolean;
+}) {
   const first = await server(handlers("b"), features);
   const connection = source(first.client);
   const view = createSessions(connection);
-  for (let attempt = 0; attempt < 20 && !present(view).open?.history.complete; attempt++) await tick();
+  await waitFor(() => !!present(view).open?.history.complete, "initial history did not complete");
+  first.event({ event: "agent_start", session_id: "b" });
+  first.event({ event: "turn_start", session_id: "b", data: { turn: 1, turn_id: turn } });
+  if (approval) first.event({ event: "approval_request", session_id: "b", request_id: "pending", tool_call: { id: "tool", name: "bash", arguments: {} }, delegated: false });
+  expect(present(view).open?.lease.store.getState().agent).toBe("running");
+  connection.set(null, phase);
+  const second = await server(handlers("b", { status: () => status, session_history: pagedHistory(rows) }), features);
+  connection.set(second.client);
+  await waitFor(() => !!present(view).open && !present(view).open!.stale && (waitForComplete ? !!present(view).open!.history.complete : present(view).open!.lease.store.getState().agent === "running"), "reconnected session did not reach its expected state");
+  return { view, connection, second };
+}
+
+test("ordinary disconnect takes the interrupted turn outcome from matching idle status", async () => {
+  const { view } = await interruptedReconnect({ status: { session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: { turn_id: turn, reason: "disconnect" } } });
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("disconnected");
+  view.dispose();
+});
+
+test("overflow takes the interrupted turn outcome from matching idle status", async () => {
+  const { view } = await interruptedReconnect({ phase: "overflow", status: { session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: { turn_id: turn, reason: "completed" } } });
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("completed");
+  view.dispose();
+});
+
+test("status names an interrupted turn before its later history page is released", async () => {
+  let release!: () => void;
+  const later = new Promise<{ messages: unknown[]; next_offset: null }>((resolve) => { release = () => resolve({ messages: [endRow()], next_offset: null }); });
+  const first = await server(handlers("b"), ["list_sessions_paging", "served_turn_end"]);
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  await waitFor(() => !!present(view).open?.history.complete, "initial history did not complete");
   first.event({ event: "agent_start", session_id: "b" });
   first.event({ event: "turn_start", session_id: "b", data: { turn: 1, turn_id: turn } });
   connection.set(null, "overflow");
-  // Reconnected while the turn still runs: this client never sees the turn's turn_start.
-  const middle = await server(handlers("b", { status: () => ({ session: meta("b", "x"), state: "running", pending_approvals: [] }) }), features);
-  connection.set(middle.client);
-  for (let attempt = 0; attempt < 40 && !(present(view).open && !present(view).open!.stale && present(view).open!.lease.store.getState().agent === "running"); attempt++) await tick();
-  expect(present(view).open?.lease.store.getState().agent).toBe("running");
-  connection.set(null, "overflow");
-  const last = await server(handlers("b", {
-    session_history: (params) => {
-      const rows = [...history.b!, { id: "end-1", role: "system", event: "served_turn_end", data: { turn_id: turn, reason: "completed" } }];
-      const offset = params.offset as number;
-      return { messages: rows.slice(offset, offset + 1), next_offset: offset + 1 < rows.length ? offset + 1 : null };
-    },
-  }), features);
-  connection.set(last.client);
-  for (let attempt = 0; attempt < 40 && !(present(view).open && !present(view).open!.stale && present(view).open!.history.complete); attempt++) await tick();
+  const second = await server(handlers("b", {
+    status: () => ({ session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: { turn_id: turn, reason: "error" } }),
+    session_history: (params) => params.offset === 0 ? { messages: history.b!.slice(0, 1), next_offset: 1 } : later,
+  }), ["list_sessions_paging", "served_turn_end"]);
+  connection.set(second.client);
+  await waitFor(() => !!present(view).open && !present(view).open!.stale, "first reconnected page was not published");
+  expect(present(view).open?.history.complete).toBe(false);
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("failed");
+  release();
+  await waitFor(() => !!present(view).open?.history.complete, "later page did not complete");
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("failed");
+  view.dispose();
+});
+
+test("status null falls back to matching history and missing facts become unknown", async () => {
+  const fromHistory = await interruptedReconnect({ status: { session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: null }, rows: [...history.b!, endRow(turn, "user_stop")] });
+  expect(present(fromHistory.view).open?.lease.store.getState().endOutcome).toBe("cancelled");
+  fromHistory.view.dispose();
+
+  const missing = await interruptedReconnect({ status: { session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: null } });
+  expect(present(missing.view).open?.lease.store.getState().endOutcome).toBe("unknown");
+  missing.view.dispose();
+});
+
+test("an omitted status field does not mark a fresh attach and uses history only for an interrupted turn", async () => {
+  const fresh = await server(handlers("b"));
+  const freshView = createSessions(source(fresh.client));
+  await waitFor(() => !!present(freshView).open?.history.complete, "fresh history did not complete");
+  expect(present(freshView).open?.lease.store.getState().endOutcome).toBeUndefined();
+  freshView.dispose();
+
+  const oldServer = await interruptedReconnect({ status: { session: meta("b", "x"), state: "idle", pending_approvals: [] }, rows: [...history.b!, endRow(turn, "error")], features: ["list_sessions_paging"] });
+  expect(present(oldServer.view).open?.lease.store.getState().endOutcome).toBe("failed");
+  oldServer.view.dispose();
+});
+
+test("running and tool status never applies the previous turn outcome", async () => {
+  for (const state of ["running", "tool"] as const) {
+    const result = await interruptedReconnect({ status: { session: meta("b", "x"), state, pending_approvals: [], last_turn_outcome: { turn_id: turn, reason: "completed" } }, waitForComplete: false });
+    expect(present(result.view).open?.lease.store.getState().agent).toBe("running");
+    expect(present(result.view).open?.lease.store.getState().endOutcome).toBeUndefined();
+    result.view.dispose();
+  }
+});
+
+test("status for another session is ignored", async () => {
+  const fake = await server(handlers("a", { status: () => ({ session: meta("a", "x"), state: "idle", pending_approvals: [], last_turn_outcome: { turn_id: turn, reason: "completed" } }) }), ["list_sessions_paging", "served_turn_end"]);
+  const view = createSessions(source(fake.client), { selected: "b" });
+  await waitFor(() => !!present(view).open?.history.complete, "selected session did not open");
+  expect(present(view).open?.id).toBe("b");
+  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
+  view.dispose();
+});
+
+test("fresh observer-style attach shows the active session's latest status outcome", async () => {
+  const fake = await server(handlers("b", { status: () => ({ session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: { turn_id: turn, reason: "completed" } }) }), ["list_sessions_paging", "served_turn_end"]);
+  const view = createSessions(source(fake.client));
+  await waitFor(() => !!present(view).open?.history.complete, "observer history did not complete");
   expect(present(view).open?.lease.store.getState().endOutcome).toBe("completed");
   view.dispose();
+});
+
+test("a mismatched status turn falls back to the interrupted turn's history", async () => {
+  const result = await interruptedReconnect({
+    status: { session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: { turn_id: "0000000000000000000000000000beef", reason: "completed" } },
+    rows: [...history.b!, endRow(turn, "error")],
+  });
+  expect(present(result.view).open?.lease.store.getState().endOutcome).toBe("failed");
+  result.view.dispose();
+});
+
+test("a pending approval does not hide a turn aborted by disconnect", async () => {
+  const { view } = await interruptedReconnect({ approval: true, status: { session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: { turn_id: turn, reason: "disconnect" } } });
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("disconnected");
+  view.dispose();
+});
+
+test("replay-transient running state does not erase an interrupted outcome", async () => {
+  const replayRows = [
+    { id: "start", role: "system", event: "agent_start" },
+    ...history.b!,
+    endRow(turn, "error"),
+  ];
+  const result = await interruptedReconnect({ status: { session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: null }, rows: replayRows });
+  expect(present(result.view).open?.lease.store.getState().endOutcome).toBe("failed");
+  result.view.select("a");
+  await waitFor(() => present(result.view).open?.id === "a", "other session did not open");
+  result.view.select("b");
+  await waitFor(() => present(result.view).open?.id === "b" && !!present(result.view).open?.history.complete, "interrupted session did not reopen");
+  expect(present(result.view).open?.lease.store.getState().endOutcome).toBe("failed");
+  result.view.dispose();
 });
 
 test("on connect opens the active session before requesting the catalog", async () => {
@@ -486,7 +543,8 @@ test("a negotiated drop keeps the same approval row in reconnecting state across
 
   const second = await server(handlers("b"), features);
   connection.set(second.client);
-  await tick();
+  await waitFor(() => !!present(view).open && !present(view).open!.stale, "approval reconnect did not reopen");
+  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
   connection.set(null);
   expect(present(view).open!.lease.store.getItem("approval:r1")).toMatchObject({
     id: "approval:r1", request: { state: "reconnecting" },

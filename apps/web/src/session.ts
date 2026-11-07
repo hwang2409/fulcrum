@@ -1,4 +1,4 @@
-import { fromZetaEvent, fromZetaHistory, servedTurnOutcome, type SessionLease, type ZetaClient } from "@fulcrum/zeta";
+import { fromZetaEvent, fromZetaHistory, servedTurnOutcome, statusTurnOutcome, type ServedTurnEnd, type SessionLease, type ZetaClient } from "@fulcrum/zeta";
 import type { RunEndOutcome, RunEvent } from "@fulcrum/core";
 
 /** The `SessionMetadata` fields this app reads from `list_sessions` (zeta docs/serve-protocol.md). */
@@ -19,6 +19,7 @@ export type ServerStatus = {
   state: "idle" | "running" | "tool";
   pending_approvals: Array<{ request_id: string; tool_call: unknown; delegated: boolean; agent_instance_id?: string; resolution_pending?: "approve" | "deny" | "expire" | "abort" }>;
   pending_approvals_truncated?: boolean;
+  last_turn_outcome?: ServedTurnEnd | null;
 };
 
 export const PAGE_SIZE = 100;
@@ -60,8 +61,8 @@ type HistoryValidator = { end: number; entry_id: string | null };
 type BackwardHistoryPage = { messages?: unknown[]; next_before?: number | null; history_validator?: HistoryValidator };
 const isApprovalEvent = (event: RunEvent) => event.type === "approval_request" || event.type === "approval_end";
 /** The outcome for an idle snapshot's `run_end`, given every history row the open has loaded so far. */
-type EndOutcome = (rows: unknown[]) => RunEndOutcome | undefined;
-const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true, liveApprovalStatus = false, endOutcome: () => RunEndOutcome | undefined = () => undefined): RunEvent[] => {
+type EndOutcome = (rows: unknown[], status: ServerStatus) => RunEndOutcome | undefined;
+const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true, liveApprovalStatus = false, endOutcome: EndOutcome = () => undefined): RunEvent[] => {
   let events = fromZetaHistory(rows).filter((event) => historyApprovals || !isApprovalEvent(event));
   if (liveApprovalStatus && !status.pending_approvals_truncated) {
     const pending = new Set((status.pending_approvals ?? []).map((approval) => approval.request_id));
@@ -73,7 +74,7 @@ const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, histo
       event: "approval_request", session_id: id, ...approval,
       ...(approval.resolution_pending ? { state: "resolving", status: "resolving…", disabled_reason: "the server is saving this decision" } : {}),
     }));
-  const outcome = status.state === "idle" ? endOutcome() : undefined;
+  const outcome = status.state === "idle" ? endOutcome(rows, status) : undefined;
   events.push(status.state === "idle" ? { type: "run_end", ...(outcome ? { outcome } : {}) } : { type: "run_start" });
   return events;
 };
@@ -121,7 +122,7 @@ async function openBackwardSession(
   let initialEvents: RunEvent[] = [];
   const combinedSignal = (replaySignal: AbortSignal) => signal ? AbortSignal.any([signal, replaySignal]) : replaySignal;
   const rows = () => [...pages].reverse().flatMap((page) => page.messages ?? []).concat(tail);
-  const outcome = () => endOutcome(rows());
+  const outcome: EndOutcome = (_loadedRows, status) => endOutcome(rows(), status);
   const requestNewest = async () => {
     const page = await client.request("session_history", { session_id: id, before: null }, { timeoutMs: 15_000, signal: activeSignal }) as BackwardHistoryPage;
     if (!page.history_validator || !Number.isInteger(page.history_validator.end)) throw new Error("backward history response has no validator");
@@ -268,7 +269,7 @@ export async function openSession(
     return { offset, rows: page.messages ?? [], nextOffset: page.next_offset ?? null };
   };
   const allRows = () => pages.flatMap((page) => page.rows);
-  const outcome = () => endOutcome(allRows());
+  const outcome: EndOutcome = (_loadedRows, status) => endOutcome(allRows(), status);
   let publishedPages = 1;
   const stableRows = () => (pages.length === 1 ? pages : pages.slice(0, -1)).flatMap((page) => page.rows);
   const publishStablePrefix = (status: ServerStatus) => {
@@ -473,17 +474,17 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const set = (patch: Partial<SessionsState>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); };
   const transition = (event: TransitionEvent) => set({ transition: reduceSessionTransition(state.transition, event) });
   let client: ZetaClient | null = null;
-  // Sessions whose running turn an overflow hid, with the served turn id it had (feature `served_turn_end`) and, once
-  // a history snapshot holds that turn's recorded end, its outcome.
-  const hiddenEnds = new Map<string, { turn?: string; outcome?: RunEndOutcome }>();
+  // Sessions whose running turn was interrupted, with the served turn id it had (feature `served_turn_end`).
+  const interruptedTurns = new Map<string, { turn?: string }>();
   // The last served turn id seen per session. A client that connected mid-turn never saw that turn's turn_start, so a
   // repeat overflow keeps the id an earlier client saw.
   const servedTurns = new Map<string, string>();
-  const endOutcome = (id: string): EndOutcome => (rows) => {
-    const hidden = hiddenEnds.get(id);
-    if (!hidden) return undefined;
-    if (!hidden.outcome && hidden.turn) hidden.outcome = servedTurnOutcome(rows, hidden.turn);
-    return hidden.outcome ?? "unknown";
+  const endOutcome = (id: string): EndOutcome => (rows, status) => {
+    const interrupted = interruptedTurns.get(id);
+    const statusOutcome = status.session?.session_id === id && status.state === "idle" ? statusTurnOutcome(status.last_turn_outcome, interrupted?.turn) : undefined;
+    if (statusOutcome) return statusOutcome;
+    if (!interrupted) return undefined;
+    return interrupted.turn ? servedTurnOutcome(rows, interrupted.turn) ?? "unknown" : "unknown";
   };
   let openGeneration = 0;
   let openAbort: AbortController | null = null;
@@ -529,10 +530,15 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     return owner.inFlight;
   };
 
-  // The hidden end belongs to the run the overflow hid; the session's next run start, seen by any lease, ends it.
+  // Start this only after replay completes: replayed run_start rows can transiently make the store look live.
   const watchOutcome = (id: string, lease: OpenResult["lease"]) => {
-    if (!hiddenEnds.has(id)) return;
-    const started = () => lease.store.getState().agent === "running" && hiddenEnds.delete(id);
+    if (!interruptedTurns.has(id)) return;
+    const started = () => {
+      if (lease.store.getState().agent === "idle") return false;
+      interruptedTurns.delete(id);
+      lease.store.dispatch({ type: "run_start" });
+      return true;
+    };
     if (started()) return; // it came back running, so its end will be seen live
     const stop = lease.store.subscribe(() => { if (started()) stop(); });
   };
@@ -555,21 +561,26 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       }, abort.signal, knownStatus, endOutcome(id));
       if (!state.listLoading && !state.listReady) void refresh();
       const { lease } = opened;
+      if (knownStatus && knownStatus.state !== "idle" && interruptedTurns.delete(id)) lease.store.dispatch({ type: "run_start" });
       if (mine !== openGeneration || !live(target)) return lease.release();
       previous?.lease.release();
       transition({ type: "opened", run: { id, lease, stale: false, history, syncing: opened.syncing } });
-      watchOutcome(id, lease);
       void opened.complete.then((result) => {
         if (mine !== openGeneration || !live(target)) return result.lease?.release();
+        let completedLease = lease;
         if (result.lease) {
           const run = transitionRun(state.transition);
           run?.lease.release();
+          completedLease = result.lease;
           transition({ type: "updated", run: { id, lease: result.lease, stale: false, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
-          watchOutcome(id, result.lease);
         } else {
           const run = transitionRun(state.transition);
-          if (run?.id === id) transition({ type: "updated", run: { ...run, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
+          if (run?.id === id) {
+            completedLease = run.lease;
+            transition({ type: "updated", run: { ...run, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
+          }
         }
+        watchOutcome(id, completedLease);
       }).catch((error) => {
         if (mine === openGeneration && live(target) && (error as { name?: string }).name !== "AbortError")
           transition({ type: "failed", id, error: { id, message: message(error), busy: isBusyError(error) } });
@@ -601,12 +612,15 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const disconnect = (disconnected: ZetaClient | null) => {
     retireCatalog();
     const run = transitionRun(state.transition);
-    // Only an overflow says frames were dropped; a run it interrupts that comes back idle ended unseen, and zeta's
-    // recorded end for its served turn, if history has one, says how.
-    if (connection.state.phase === "overflow" && run?.lease.store.getState().agent === "running") {
+    const reconnectingApproval = disconnected?.features.includes("approval_reconnect") && run?.lease.store.getOutline().some(({ id }) => {
+      const item = run.lease.store.getItem(id);
+      return item?.type === "approval" && !item.ended;
+    });
+    // approval_reconnect preserves its running turn; every other disconnected running turn may have ended unseen.
+    if (run?.lease.store.getState().agent === "running" && !reconnectingApproval) {
       const turn = disconnected?.servedTurn(run.id) ?? servedTurns.get(run.id);
       if (turn) servedTurns.set(run.id, turn);
-      hiddenEnds.set(run.id, { turn });
+      interruptedTurns.set(run.id, { turn });
     }
     set({ listLoading: false, listSlow: false, listReady: false });
     openGeneration++;
