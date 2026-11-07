@@ -556,6 +556,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       }, abort.signal, knownStatus, endOutcome(id));
       if (!state.listLoading && !state.listReady) void refresh();
       const { lease } = opened;
+      if (lease.store.getState().agent !== "idle") interruptedTurns.delete(id);
       if (mine !== openGeneration || !live(target)) return lease.release();
       previous?.lease.release();
       transition({ type: "opened", run: { id, lease, stale: false, history, syncing: opened.syncing } });

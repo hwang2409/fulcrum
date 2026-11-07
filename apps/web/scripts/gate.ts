@@ -365,10 +365,10 @@ try {
       await idleServer();
       fake.clearSent();
     });
-    await check("a silent overflow reads as a lost connection, backs off, and marks no run", async () => {
+    await check("a silent overflow reads as a lost connection, backs off, and names the interrupted run", async () => {
       await overflowThroughTurn("overflow-silent", "a turn cut by a silent overflow", "connection lost");
       await page.locator('.run-meta .state[data-status="idle"]').waitFor({ timeout: 5000 });
-      if (await page.locator('[data-part="run-end-marker"]').count()) throw new Error("a close without the overflow frame marked the run");
+      await page.locator('[data-part="run-end-marker"]').waitFor({ timeout: 5000 });
       if (await page.getByText("a turn cut by a silent overflow", { exact: true }).count() !== 1) throw new Error("the prompt is not shown exactly once");
       await uniqueRows();
       fake.clearSent();
