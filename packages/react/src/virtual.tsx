@@ -226,7 +226,11 @@ export function useVirtualList<Id extends string>(
         rows.current.set(id, element);
         rowIds.current.set(element, id);
         observerRef.current?.observe(element);
-      } else rows.current.delete(id);
+      } else {
+        rows.current.delete(id);
+        // A resize reported before an unmount must not reach the engine: the id may have left the outline.
+        pendingEntries.current.delete(id);
+      }
     };
     rowCallbacks.current.set(id, callback);
     return callback;
