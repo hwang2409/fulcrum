@@ -71,24 +71,41 @@ function pageProblems(minHeight: number) {
     const [light, dark] = [luminance(over(rgba(color), background)), luminance(background)].sort((a, b) => b - a);
     return (light + 0.05) / (dark + 0.05);
   };
+  // One pending approval card: its action row shape, metrics, labels, contrast, hit size, and opacity.
+  const approvalProblems = (card: HTMLElement) => {
+    const found: string[] = [];
+    const buttons = [...card.querySelectorAll<HTMLButtonElement>("[data-part=approval-actions] button")];
+    const actions = buttons.map((button) => button.dataset.action).join(" ");
+    if (actions !== "approve deny" && actions !== "approve approve-always deny") found.push(`${card.dataset.id}: actions "${actions}", expected approve, optional approve-always, and deny`);
+    // The actions share one row at every width: a wrapped action reads as a separate, unrelated control.
+    if (new Set(buttons.map((button) => Math.round(button.getBoundingClientRect().top))).size > 1) found.push(`${card.dataset.id}: approval actions wrap onto two rows`);
+    // The actions share the row's height: a wrapped long label must not leave its neighbours shorter.
+    const heights = buttons.map((button) => Math.round(button.getBoundingClientRect().height));
+    if (new Set(heights).size > 1) found.push(`${card.dataset.id}: approval action heights differ (${heights.join(", ")} px)`);
+    // The plain two-action row keeps its one-line metrics: a 13 px label on a 13 px line, at exactly the minimum hit height.
+    if (actions === "approve deny")
+      for (const button of buttons) {
+        const { fontSize, lineHeight } = getComputedStyle(button);
+        if (lineHeight !== fontSize || Math.round(button.getBoundingClientRect().height) !== minHeight)
+          found.push(`${card.dataset.id} ${button.dataset.action}: two-action metrics changed (line-height ${lineHeight} for a ${fontSize} font, ${Math.round(button.getBoundingClientRect().height)} px tall, expected ${minHeight} px)`);
+      }
+    for (const button of buttons) {
+      const name = `${card.dataset.id} ${button.textContent?.trim() || "(unnamed button)"}`;
+      let opacity = 1;
+      for (let node: HTMLElement | null = button; node; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
+      const contrast = contrastOn(getComputedStyle(button).color, backgroundOf(button));
+      const height = button.getBoundingClientRect().height;
+      if (button.textContent?.trim() === "") found.push(`${name} has no visible label`);
+      if (contrast < 4.5) found.push(`${name} text contrast ${contrast.toFixed(2)}:1, needs 4.5:1`);
+      if (height < minHeight) found.push(`${name} is ${Math.round(height)} px tall, needs ${minHeight} px`);
+      if (opacity < 1) found.push(`${name} is faded to opacity ${opacity.toFixed(2)}`);
+    }
+    return found;
+  };
   const problems: string[] = [];
   const cards = [...document.querySelectorAll<HTMLElement>("[data-part=approval][data-state=pending]")];
   if (!cards.length) return ["no pending approval on the page"];
-  for (const card of cards) {
-  const buttons = [...card.querySelectorAll<HTMLButtonElement>("[data-part=approval-actions] button")];
-  if (buttons.length !== 2) problems.push(`${card.dataset.id}: ${buttons.length} buttons, expected approve and deny`);
-  for (const button of buttons) {
-    const name = `${card.dataset.id} ${button.textContent?.trim() || "(unnamed button)"}`;
-    let opacity = 1;
-    for (let node: HTMLElement | null = button; node; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
-    const contrast = contrastOn(getComputedStyle(button).color, backgroundOf(button));
-    const height = button.getBoundingClientRect().height;
-    if (button.textContent?.trim() === "") problems.push(`${name} has no visible label`);
-    if (contrast < 4.5) problems.push(`${name} text contrast ${contrast.toFixed(2)}:1, needs 4.5:1`);
-    if (height < minHeight) problems.push(`${name} is ${Math.round(height)} px tall, needs ${minHeight} px`);
-    if (opacity < 1) problems.push(`${name} is faded to opacity ${opacity.toFixed(2)}`);
-  }
-  }
+  for (const card of cards) problems.push(...approvalProblems(card));
   const root = getComputedStyle(document.documentElement);
   const bg = rgba(root.getPropertyValue("--fulcrum-bg"));
   for (const [name, min] of [["fg", 4.5], ["muted", 4.5], ["ok", 3], ["warn", 3], ["danger", 3], ["accent", 3]] as const) {

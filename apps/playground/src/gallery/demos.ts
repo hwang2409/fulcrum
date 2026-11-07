@@ -8,7 +8,12 @@ import { CHART_PNG } from "./chart";
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
 /** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean; markdownAll?: boolean };
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean; markdownAll?: boolean; approval?: DemoApproval };
+/**
+ * How the gallery's fake host answers approvals. `always` lists the request ids that get the third action (the rest
+ * keep approve and deny); `reply` holds the decision until the card's "answer" button, or rejects it.
+ */
+export type DemoApproval = { always?: string[]; label?: string; disabledReason?: string; reply?: "hold" | "reject" };
 
 const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({ id, name, arguments: args });
 const text = (role: string, value: string) => ({ role, content: [{ type: "text", text: value }] });
@@ -698,6 +703,56 @@ export const demos: Demo[] = [
     title: "pending, write",
     description: "The write approval shows the file it would write, with line numbers.",
     events: [ask("r-write", calls("ap").write)],
+  },
+  {
+    id: "approval-always",
+    part: "Approval",
+    title: "pending, with always allow",
+    description: "A host that can remember a grant passes onApproveAlways: a third action between approve and deny that approves this call and lets the tool run without asking again. It shares approve's busy, error, and disabled states.",
+    events: [ask("r-always", calls("ap").bash)],
+    approval: { always: ["r-always"] },
+  },
+  {
+    id: "approval-always-approving",
+    part: "Approval",
+    title: "approving, held",
+    description: "The host has not answered yet: the header says approving, every action is disabled, and focus stays on the clicked button. Click answer in this card's header to finish both requests.",
+    events: [ask("r-hold-3", calls("hold3").bash), ask("r-hold-2", calls("hold2").bash)],
+    approval: { always: ["r-hold-3"], reply: "hold" },
+  },
+  {
+    id: "approval-always-rejected",
+    part: "Approval",
+    title: "decision failed",
+    description: "The host's promise rejects: the actions come back and the error shows under them, so the user can retry.",
+    events: [ask("r-fail-3", calls("fail3").bash), ask("r-fail-2", calls("fail2").bash)],
+    approval: { always: ["r-fail-3"], reply: "reject" },
+  },
+  {
+    id: "approval-always-reconnecting",
+    part: "Approval",
+    title: "reconnecting",
+    // The event shape the web host dispatches on a lost connection: apps/web/src/session.ts:597.
+    description: "The adapter marks the request reconnecting: the header says so and every action is disabled with the reason beside it.",
+    events: (["r-reconnect-3", "r-reconnect-2"] as const).map((id, n): RunEvent => ({ ...(ask(id, calls(`reconnect${n}`).bash) as Extract<RunEvent, { type: "approval_request" }>), state: "reconnecting", status: "reconnecting…", disabled_reason: "decisions are disabled while disconnected" })),
+    approval: { always: ["r-reconnect-3"] },
+  },
+  {
+    id: "approval-always-disabled",
+    part: "Approval",
+    title: "disabled by the host",
+    // The reason the web host passes while it opens another session: apps/web/src/app.tsx:345.
+    description: "The host passes disabledReason: every action is disabled and the reason is read beside them.",
+    events: [ask("r-off-3", calls("off3").bash), ask("r-off-2", calls("off2").bash)],
+    approval: { always: ["r-off-3"], disabledReason: "opening another session — decisions are paused" },
+  },
+  {
+    id: "approval-always-long",
+    part: "Approval",
+    title: "long tool name and label",
+    description: "A long tool name and a long custom approveAlwaysLabel: the header truncates, and the long label wraps inside its button so all three actions keep one row.",
+    events: (["r-long-3", "r-long-2"] as const).map((id) => ask(id, call(`${id}-call`, "mcp__workspace_filesystem_server__read_multiple_files_with_metadata", { paths: ["packages/core/src/store.ts", "packages/react/src/parts.tsx"] }))),
+    approval: { always: ["r-long-3"], label: "always allow this tool for the rest of the session" },
   },
   {
     id: "approval-generic",

@@ -60,6 +60,10 @@ const client = await connectZeta({
 
 `new_session` and `resume` retry zeta's transient `-32004` busy error three times after 250, 500, and 1000 ms. The delays follow the request signal and are canceled when the client closes. After the last retry, busy is surfaced to the caller.
 
+## approvals
+
+Send a decision with `client.request("approve", { request_id })` or `client.request("deny", { request_id })`. For `Approval`'s `onApproveAlways`, send `approve` with `scope: "always_tool"`: zeta approves the call and lets the same tool run without asking for the rest of the session. Do not offer it for a `delegated` request; zeta rejects that scope there.
+
 ## history and recovery
 
 The client retries a desynced history load immediately, then after 0.5, 1, 2, 4, and 8 seconds: 15.5 seconds total. It records the final error in store diagnostics. `retrySession(id)` starts an app-owned retry. The web app passes it to `RunProvider.onRetry`; normal socket reconnect creates a fresh client and rebuilds the open session from history.

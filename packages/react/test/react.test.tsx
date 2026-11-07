@@ -512,6 +512,72 @@ test("approval is a labelled group and submits once until the handler fails or t
   expect(group.querySelector("button")).toBeNull();
 });
 
+test("an approval without onApproveAlways renders exactly the approve and deny actions it always had", () => {
+  const { store } = setup([{ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false }]);
+  mount(<RunProvider store={store}><Approval id="approval:r1" approveAlwaysLabel="always allow bash" onApprove={() => {}} onDeny={() => {}} /></RunProvider>);
+  // The markup origin/main renders: a label alone offers nothing, so existing callers see no change.
+  expect(q('[data-part="approval-actions"]').outerHTML).toBe('<div data-part="approval-actions"><button type="button" data-action="approve">approve</button><button type="button" data-action="deny">deny</button></div>');
+});
+
+test("onApproveAlways adds a third action that decides like approve: once, busy, and retryable", async () => {
+  const { store, send } = setup([{ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false }]);
+  const calls: string[] = [];
+  let fail: (error: Error) => void = () => {};
+  mount(
+    <RunProvider store={store}>
+      <Approval
+        id="approval:r1"
+        onApprove={(id) => void calls.push(`approve:${id}`)}
+        onApproveAlways={(id) => {
+          calls.push(`always:${id}`);
+          return new Promise((_, reject) => (fail = reject));
+        }}
+        onDeny={(id) => void calls.push(`deny:${id}`)}
+      />
+    </RunProvider>,
+  );
+  const group = q('[data-part="approval"]');
+  const buttons = () => [...group.querySelectorAll<HTMLButtonElement>('[data-part="approval-actions"] button')];
+  expect(buttons().map((b) => [b.dataset.action, b.textContent])).toEqual([["approve", "approve"], ["approve-always", "always allow"], ["deny", "deny"]]);
+
+  const always = q('[data-action="approve-always"]');
+  act(() => always.focus());
+  act(() => always.click());
+  act(() => always.click());
+  act(() => q('[data-action="approve"]').click());
+  expect(calls).toEqual(["always:r1"]);
+  expect(group.getAttribute("data-state")).toBe("submitting");
+  expect(q('[data-part="tool-status"]').textContent).toBe("approving");
+  // In flight every action is aria-disabled, not disabled, so the keyboard user's focus stays on the pressed button.
+  expect(buttons().map((b) => [b.disabled, b.getAttribute("aria-disabled")])).toEqual([[false, "true"], [false, "true"], [false, "true"]]);
+  expect(document.activeElement).toBe(always);
+
+  await act(async () => fail(new Error("offline")));
+  expect(q('[role="alert"]').textContent).toBe("offline");
+  expect(group.getAttribute("data-state")).toBe("pending");
+  expect(always.getAttribute("aria-disabled")).toBeNull();
+
+  send({ type: "approval_end", request_id: "r1", decision: "approve" });
+  expect(q('[data-part="tool-status"]').textContent).toBe("approved");
+  expect(group.querySelector("button")).toBeNull();
+});
+
+test("the approve-always action takes the host's label and is disabled with the others while decisions are unavailable", () => {
+  const { store, send } = setup([{ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false }]);
+  const calls: string[] = [];
+  mount(<RunProvider store={store}><Approval id="approval:r1" onApprove={() => {}} onApproveAlways={(id) => void calls.push(id)} approveAlwaysLabel="allow bash for this session" /></RunProvider>);
+  expect(q('[data-action="approve-always"]').textContent).toBe("allow bash for this session");
+  send({
+    type: "approval_request", request_id: "r1", delegated: false, tool_call: call("t1", "bash"),
+    state: "reconnecting", status: "reconnecting…", disabled_reason: "decisions are disabled while disconnected",
+  } as RunEvent);
+  const always = q('[data-action="approve-always"]') as HTMLButtonElement;
+  expect(always.disabled).toBe(true);
+  expect(always.getAttribute("aria-disabled")).toBe("true");
+  act(() => always.click());
+  expect(calls).toEqual([]);
+});
+
 test("tool header shows name, a one-line summary, and status; json loads when expanded", () => {
   const big = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
   const grep = { id: "t1", name: "grep", arguments: { pattern: "TODO", path: "packages/" } };
