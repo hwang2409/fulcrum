@@ -52,7 +52,7 @@ try {
     assert(mounted <= 201, `${count}: mounted ${mounted} rows`);
     const measuredFps = await fps(page);
     const metrics = await page.evaluate(async () => {
-      const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+      const scroll = document.querySelector<HTMLElement>('[data-testid="scroll"]')!;
       const controls = (window as typeof window & { __virtualControls: { append(n?: number): void; prepend(n?: number): void; resize(id: string, height: number): void } }).__virtualControls;
       const frames = (count: number) => new Promise<void>((resolve) => { const next = () => count-- <= 0 ? resolve() : requestAnimationFrame(next); next(); });
       scroll.scrollTop = scroll.scrollHeight / 2;
@@ -98,8 +98,16 @@ try {
       controls.append(10);
       await frames(4);
       const unpinnedError = Math.abs(held.getBoundingClientRect().top - heldTop);
+      (window as typeof window & { __virtualFollow(): void }).__virtualFollow();
+      await frames(4);
+      const followRequestError = Math.abs(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight);
+      scroll.scrollTop -= 1_000;
+      await frames(3);
+      controls.append(10);
+      await frames(4);
       const jump = document.querySelector<HTMLButtonElement>('[data-part="jump-to-latest"]')!;
       const unseen = Number(jump.dataset.unseenCount);
+      const hostPlacement = jump.parentElement?.classList.contains("host-jump-lane") && !document.querySelector('[data-part="timeline-frame"]');
       jump.click();
       await frames(4);
       const jumpBottomError = Math.abs(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight);
@@ -108,14 +116,16 @@ try {
       const before = { ...idle };
       await new Promise((resolve) => setTimeout(resolve, 300));
       const actions = (globalThis as typeof globalThis & { __fulcrumVirtual: { getActions(): unknown[] } }).__fulcrumVirtual.getActions().slice(-8);
-      return { resizeError, splitCorrectionError, prependError, prependScrollDelta, bottomError, unpinnedError, unseen, jumpBottomError, focusAway: Number(focusAway), focusBack: Number(focusBack), idleRaf: idle.raf - before.raf, idleTimers: idle.timers - before.timers - 1, actions };
+      return { resizeError, splitCorrectionError, prependError, prependScrollDelta, bottomError, unpinnedError, followRequestError, unseen, hostPlacement: Number(hostPlacement), jumpBottomError, focusAway: Number(focusAway), focusBack: Number(focusBack), idleRaf: idle.raf - before.raf, idleTimers: idle.timers - before.timers - 1, actions };
     });
     assert(metrics.resizeError < 1, `${count}: resize anchor error ${metrics.resizeError}`);
     assert(metrics.splitCorrectionError < 1, `${count}: split correction error ${metrics.splitCorrectionError}`);
     assert(metrics.prependError < 1, `${count}: prepend anchor error ${metrics.prependError}, scroll delta ${metrics.prependScrollDelta}, actions ${JSON.stringify(metrics.actions)}`);
     assert(metrics.bottomError < 1, `${count}: bottom follow error ${metrics.bottomError}`);
     assert(metrics.unpinnedError < 1, `${count}: unpinned append error ${metrics.unpinnedError}`);
+    assert(metrics.followRequestError < 1, `${count}: follow request error ${metrics.followRequestError}`);
     assert(metrics.unseen === 10, `${count}: unseen count ${metrics.unseen}`);
+    assert(metrics.hostPlacement === 1, `${count}: host-owned jump control was not in the host lane`);
     assert(metrics.jumpBottomError < 1, `${count}: jump-to-latest error ${metrics.jumpBottomError}`);
     assert(metrics.focusAway === 1 && metrics.focusBack === 1, `${count}: focus was not retained`);
     assert(metrics.idleRaf === 0, `${count}: ${metrics.idleRaf} idle animation frames`);
@@ -125,7 +135,7 @@ try {
   }
   const crossing = await open(200, true);
   const crossingResult = await crossing.evaluate(async () => {
-    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+    const scroll = document.querySelector<HTMLElement>('[data-testid="scroll"]')!;
     const controls = (window as typeof window & { __virtualControls: { append(n?: number): void } }).__virtualControls;
     scroll.scrollTop = 3_000;
     await new Promise((resolve) => setTimeout(resolve, 200));

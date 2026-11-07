@@ -59,8 +59,7 @@
 [data-part="resync-retry"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 /* The timeline's scroll root positions the hidden live region, including when a host supplies it. */
 :where(:has(> [data-part="timeline"])) { position: relative; }
-/* The default frame keeps scrolling transcript text and the jump control in separate rows. The lane is permanent,
-   so showing its control does not resize the transcript viewport. */
+/* Owned virtual mode keeps transcript text and its permanent jump lane in separate rows. */
 [data-part="timeline-frame"] {
   display: flex;
   flex-direction: column;

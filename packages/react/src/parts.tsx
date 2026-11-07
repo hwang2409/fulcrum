@@ -525,45 +525,61 @@ const estimateRowSize = (kind: string) => kind === "tool" ? 120 : kind === "appr
 const virtualContainerStyle: CSSProperties = { position: "relative", display: "block", contain: "size style", overflowAnchor: "none" };
 const virtualRowStyle: CSSProperties = { position: "absolute", insetBlockStart: 0, insetInline: 0, display: "flex", flexDirection: "column", boxSizing: "border-box", paddingBlockEnd: "var(--fulcrum-gap, 12px)", contain: "layout style" };
 
-export type TimelineProps = {
+type TimelineBaseProps = {
   renderers?: Renderers;
   className?: string;
   /** Defaults to virtual mode above 200 rows. A replacement RunProvider store starts pinned to the bottom. */
   virtual?: boolean;
-  /** Scroll viewport. When omitted, Timeline uses its direct parent. */
-  scrollRef?: RefObject<HTMLElement | null>;
   /** Accessible name for the chronological activity log. */
   "aria-label"?: string;
   /** Increment this after a host-accepted local send to re-pin the timeline, unless the user is actively scrolling. */
   followRequest?: number;
-  /** Places the jump control in host-owned layout instead of the default reserved lane. */
-  renderJumpToLatest?: (control: ReactNode) => ReactNode;
   /** Virtual mode: where a new store's timeline opens. Without it, it opens at the bottom and follows. */
   initialViewport?: TimelineViewport;
   /** Virtual mode: called once with the reading position when this store's timeline unmounts or its store changes. */
   onViewport?: (viewport: TimelineViewport) => void;
 };
 
+type JumpRenderer = (control: ReactNode) => ReactNode;
+/**
+ * Timeline owns its frame, inner scroll element, and reserved jump lane by default. Its host must have a definite
+ * height. Pass `scrollRef` to use an existing host scroll element instead; Timeline never writes to that ref, renders
+ * no frame or lane, and requires `renderJumpToLatest` so the host can place the control outside transcript text.
+ */
+export type TimelineProps = TimelineBaseProps & (
+  | { scrollRef?: undefined; renderJumpToLatest?: JumpRenderer }
+  | { scrollRef: RefObject<HTMLElement | null>; renderJumpToLatest: JumpRenderer }
+);
+
 /** A reading position by item id, not pixels: the item at the top, its offset, follow mode, and measured row sizes. */
 export type TimelineViewport = { anchorId?: string; offset: number; following: boolean; cache?: VirtualCache };
 
-function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest, scrollRef }: Pick<TimelineProps, "renderJumpToLatest" | "scrollRef"> & { children: ReactNode; unseenCount: number; scrollToEnd(): void }) {
+function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest, ownedScrollRef, hostOwned, virtual }: Pick<TimelineProps, "renderJumpToLatest"> & { children: ReactNode; unseenCount: number; scrollToEnd(): void; ownedScrollRef: RefObject<HTMLDivElement | null>; hostOwned: boolean; virtual: boolean }) {
   const control = unseenCount > 0 ? (
     <button type="button" data-part="jump-to-latest" data-unseen-count={unseenCount} onClick={scrollToEnd}>
       jump to latest ({unseenCount})
     </button>
   ) : null;
-  if (renderJumpToLatest) return <>{children}{control && renderJumpToLatest(control)}</>;
+  if (hostOwned) return <>{children}{control && renderJumpToLatest!(control)}</>;
   return (
     <div data-part="timeline-frame">
-      <div data-part="timeline-scroll" ref={(node) => { if (scrollRef) scrollRef.current = node; }}>{children}</div>
-      <div data-part="jump-to-latest-lane">{control}</div>
+      <div data-part="timeline-scroll" ref={ownedScrollRef}>{children}</div>
+      {virtual ? <div data-part="jump-to-latest-lane">{control}</div> : null}
     </div>
   );
 }
 
 const storeKeys = new WeakMap<object, number>();
 let nextStoreKey = 0;
+let warnedUnconstrainedTimeline = false;
+const development = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
+
+function warnIfUnconstrained(scroll: HTMLElement | null, itemCount: number, mountedCount: number) {
+  if (warnedUnconstrainedTimeline || !scroll || itemCount <= 200 || mountedCount !== itemCount) return;
+  if (!scroll.clientHeight || scroll.scrollHeight !== scroll.clientHeight) return;
+  warnedUnconstrainedTimeline = true;
+  console.warn("Timeline virtual mode needs a definite-height host. Set a height, or use scrollRef with renderJumpToLatest for host-owned scrolling.");
+}
 const keyForStore = (store: object) => {
   let key = storeKeys.get(store);
   if (key === undefined) { key = nextStoreKey++; storeKeys.set(store, key); }
@@ -591,7 +607,14 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
 const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, followRequest, renderJumpToLatest, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
   const { items, change } = useTimelineSnapshot();
   const enabled = virtual ?? items.length > 200;
-  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef, enabled, outlineUpdate: change, resetKey: store, cache: initialViewport?.cache });
+  const ownedScrollRef = useRef<HTMLDivElement>(null);
+  const activeScrollRef = scrollRef ?? ownedScrollRef;
+  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef: activeScrollRef, enabled, outlineUpdate: change, resetKey: store, cache: initialViewport?.cache });
+  useEffect(() => {
+    if (!development || !enabled || scrollRef) return;
+    const frame = requestAnimationFrame(() => warnIfUnconstrained(ownedScrollRef.current, items.length, list.snapshot.rows.length));
+    return () => cancelAnimationFrame(frame);
+  }, [enabled, items.length, list.snapshot.rows.length, scrollRef]);
   const priorFollowRequest = useRef(followRequest);
   useLayoutEffect(() => {
     if (followRequest !== undefined && followRequest !== priorFollowRequest.current) list.requestFollow();
@@ -622,7 +645,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
   const priorMode = useRef(enabled);
   const modeAnchor = useRef<{ id: string; offset: number } | null>(null);
   useLayoutEffect(() => {
-    const container = scrollRef?.current ?? plainRef.current?.parentElement ?? null;
+    const container = activeScrollRef.current ?? plainRef.current?.parentElement ?? null;
     if (!container || priorMode.current === enabled) return;
     if (enabled && modeAnchor.current) list.scrollToId(modeAnchor.current.id, modeAnchor.current.offset);
     if (!enabled && modeAnchor.current) {
@@ -631,13 +654,13 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
       if (row) container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - modeAnchor.current.offset;
     }
     priorMode.current = enabled;
-  }, [enabled, items, list.scrollToId, scrollRef]);
+  }, [activeScrollRef, enabled, items, list.scrollToId]);
   useLayoutEffect(() => {
     if (enabled && list.snapshot.anchor) modeAnchor.current = { id: list.snapshot.anchor.id, offset: list.snapshot.anchor.offset };
   }, [enabled, list.snapshot.anchor]);
   useLayoutEffect(() => {
     if (enabled) return;
-    const container = scrollRef?.current ?? plainRef.current?.parentElement ?? null;
+    const container = activeScrollRef.current ?? plainRef.current?.parentElement ?? null;
     if (!container) return;
     const capture = () => {
       const top = container.getBoundingClientRect().top;
@@ -649,10 +672,10 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
     capture();
     container.addEventListener("scroll", capture, { passive: true });
     return () => container.removeEventListener("scroll", capture);
-  }, [enabled, items, scrollRef]);
+  }, [activeScrollRef, enabled, items]);
   if (!enabled) {
     return (
-      <TimelineLayout unseenCount={0} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} scrollRef={scrollRef}>
+      <TimelineLayout unseenCount={0} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} ownedScrollRef={ownedScrollRef} hostOwned={scrollRef !== undefined} virtual={false}>
         <div ref={plainRef} className={className} data-part="timeline" data-virtual="false" role="log" aria-label={ariaLabel} aria-live="off">
           <ApprovalSkip items={items} reveal={(id) => {
             const card = plainRef.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`) ?? null;
@@ -671,7 +694,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
     : -1;
   const retainedRow = retained >= 0 ? { ...items[retained]!, index: retained, start: -10_000, size: 0, loaded: true } : null;
   return (
-    <TimelineLayout unseenCount={list.unseenCount} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} scrollRef={scrollRef}>
+    <TimelineLayout unseenCount={list.unseenCount} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} ownedScrollRef={ownedScrollRef} hostOwned={scrollRef !== undefined} virtual>
       <div
         ref={list.timelineRef}
         className={className}

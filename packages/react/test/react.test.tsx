@@ -712,6 +712,7 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
   ));
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("false");
   expect(container.querySelectorAll('[data-part="message"]')).toHaveLength(201);
+  expect(container.querySelector('[data-part="jump-to-latest-lane"]')).toBeNull();
 
   act(() => root!.render(
     <RunProvider store={store}>
@@ -721,12 +722,28 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
   expect(container.querySelectorAll('[data-part="message"]').length).toBeLessThanOrEqual(200);
 
-  act(() => root!.render(
-    <RunProvider store={store}>
-      <Timeline virtual renderJumpToLatest={(control) => <aside>{control}</aside>} />
-    </RunProvider>,
-  ));
+});
+
+test("host-owned Timeline uses the supplied scroll element without replacing its ref", () => {
+  const { store } = setup(Array.from({ length: 300 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: String(index),
+    message: message(String(index)),
+  })));
+  const scrollRef = { current: null as HTMLElement | null };
+  mount(
+    <div ref={scrollRef} data-testid="host-scroll">
+      <RunProvider store={store}>
+        <Timeline virtual scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />
+      </RunProvider>
+    </div>,
+  );
+  expect(scrollRef.current?.dataset.testid).toBe("host-scroll");
+  expect(q('[data-part="timeline"]').parentElement).toBe(scrollRef.current);
   expect(container.querySelector('[data-part="timeline-frame"]')).toBeNull();
+  expect(container.querySelector('[data-part="timeline-scroll"]')).toBeNull();
+  expect(container.querySelector('[data-part="jump-to-latest-lane"]')).toBeNull();
+  expect(container.querySelectorAll("[data-virtual-id]").length).toBeLessThanOrEqual(200);
 });
 
 test("useVirtualList ignores a stale outline hint and resets when the outline owner changes", () => {

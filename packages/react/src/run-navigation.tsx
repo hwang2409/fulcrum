@@ -204,7 +204,6 @@ export function RunNavigator({ store, source, path, onPathChange, runId, label =
   // A path the app changed (browser back, a deep link) moves focus only if it was in this navigator.
   const rootElement = useRef<HTMLDivElement>(null);
   const crumbRef = useRef<HTMLSpanElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const shown = useRef<readonly string[]>([]);
   useLayoutEffect(() => {
     const before = shown.current;
@@ -222,7 +221,7 @@ export function RunNavigator({ store, source, path, onPathChange, runId, label =
     let frame = 0;
     let tries = 0;
     const find = () => {
-      const row = scrollRef.current?.querySelector<HTMLElement>(`[data-part="sub-agent"][data-id="${CSS.escape(rowId(left))}"]`);
+      const row = rootElement.current?.querySelector<HTMLElement>(`[data-part="sub-agent"][data-id="${CSS.escape(rowId(left))}"]`);
       if (row) row.focus({ preventScroll: true });
       else if (++tries < 5) frame = requestAnimationFrame(find);
     };
@@ -295,7 +294,6 @@ export function RunNavigator({ store, source, path, onPathChange, runId, label =
               <Timeline
                 renderers={renderers}
                 virtual={virtual}
-                scrollRef={scrollRef}
                 aria-label={`${currentLabel} activity`}
                 initialViewport={viewport.get(viewKey)}
                 onViewport={(next) => { viewport.set(viewKey, next); }}
