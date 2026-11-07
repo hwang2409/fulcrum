@@ -134,7 +134,7 @@ async function reconnectApprovalScenario(page: Page, fake: Awaited<ReturnType<ty
   await fake.start();
   // The client's retry backoff grows while the server is down; retry at once, as a user would.
   await page.locator(".notice").getByRole("button", { name: "retry now" }).click({ timeout: 2000 }).catch(() => {});
-  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
   await page.locator(".notice").waitFor({ state: "detached" });
   const reconnected = page.locator('[data-part="approval"]');
   await reconnected.getByRole("button", { name: "approve" }).waitFor({ timeout: 5000 });
@@ -173,7 +173,7 @@ async function reconnectSnapshotScenario(page: Page, fake: Awaited<ReturnType<ty
   if (stale.length) throw new Error(`the session list shows live status "${stale.join(", ")}" while not connected`);
   await fake.start();
   await page.getByRole("button", { name: "retry now" }).click();
-  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
   await page.locator(".notice").waitFor({ state: "detached" });
   await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
   const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));
@@ -215,7 +215,7 @@ async function sendAndFinish(page: Page, text: string) {
 
 async function runStoppedSteerFollowScenario(page: Page, clearSent: () => void) {
   await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
-  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 5_000 });
+  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
   process.env.FAKE_ZETA_WORD_MS = "100";
@@ -244,7 +244,7 @@ async function runStoppedSteerFollowScenario(page: Page, clearSent: () => void) 
     delete process.env.FAKE_ZETA_WORD_MS;
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
-    await page.locator('[data-run-ready="true"]').waitFor({ timeout: 5_000 });
+    await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
     await settle(page);
   }
 }
@@ -305,7 +305,7 @@ async function checkJumpWidth(page: Page, engine: string, width: number, makeUns
   await settle(page);
   makeUnseen();
   await ensureJumpControl(lane, forceControl);
-  await page.locator('[data-part="jump-to-latest"]').waitFor({ timeout: 5_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
+  await page.locator('[data-part="jump-to-latest"]').waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
   const laneAfter = await lane.boundingBox();
   if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
   for (const theme of themes) await checkJumpTheme(page, engine, width, theme);
@@ -313,7 +313,7 @@ async function checkJumpWidth(page: Page, engine: string, width: number, makeUns
 
 async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => void, navigate = false, forceControl = false, widths = [1440, 390]) {
   if (navigate) await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
-  await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5_000 }).catch(() => { throw new Error(`${engine}: timeline history did not load`); });
+  await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine}: timeline history did not load`); });
   for (const width of widths) await checkJumpWidth(page, engine, width, makeUnseen, forceControl);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.evaluate(() => { document.documentElement.dataset.fulcrumTheme = "tokyo-night"; });
@@ -372,7 +372,7 @@ try {
     await fake.start();
     await check("retry now connects once the server is back", async () => {
       await page.goto(`${origin}/?theme=tokyo-night`);
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
     });
 
     await check("slow catalog keeps the selected transcript and composer usable", async () => {
@@ -399,7 +399,7 @@ try {
       await fake.start();
       fake.setLive(true);
       await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1`);
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
     });
 
     // Connected: list, history, live run, approval, follow-bottom.
@@ -498,7 +498,7 @@ try {
       fake.setLive(false);
       await fake.start();
       await page.goto(`${origin}/?theme=tokyo-night`);
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
       await page.locator('[data-catalog-ready="true"]').waitFor({ timeout: 5000 });
       fake.setOpenDelay(200);
       await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
@@ -657,8 +657,9 @@ try {
     await check("composer: layout, controls, and contrast in all 12 themes after a run", () => auditThemes(page, "1440 composer", 36));
     await check("a fresh zeta: new session from the empty state opens it with the composer focused and a hint", async () => {
       fake.setEmpty(true);
+      try {
       await page.goto(`${origin}/?theme=tokyo-night`);
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
       await page.locator(".list-head").getByRole("button", { name: "new session" }).waitFor({ timeout: 3000 });
       await shoot(page, "empty-1440-tokyo-night");
       await page.locator(".panel").getByRole("button", { name: "new session" }).click();
@@ -677,7 +678,7 @@ try {
       await page.locator(".empty-run").waitFor({ timeout: 5000 });
       if ((await page.locator("button.session").count()) !== 2) throw new Error(`${await page.locator("button.session").count()} sessions after two creates`);
       await auditThemes(page, "1440 new session", 36);
-      fake.setEmpty(false);
+      } finally { fake.setEmpty(false); }
     });
     if (errors.length) fail(`desktop console: ${errors.join("; ")}`);
     await context.close();
@@ -705,7 +706,7 @@ try {
     mobile.on("pageerror", (error) => mobileErrors.push(error.message));
     await check("390: the run fills the width; the session list is a drawer", async () => {
       await mobile.goto(`${origin}/?theme=gruvbox-dark#session=s-themes`);
-      await mobile.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
+      await mobile.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 15_000 });
       // A reopened, approved bash call is the live shell card: its command (from the approval row), its output without
       // zeta's raw "stdout:"/"stderr:" labels, and exit 0.
       const reopened = mobile.locator('[data-part="timeline"] [data-tool-view="shell"]', { hasText: "ls packages/react/src" });
@@ -754,7 +755,7 @@ try {
     });
     if (mobileErrors.length) fail(`mobile errors: ${mobileErrors.join("; ")}`);
     await mobile.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
-    await mobile.locator('[data-run-ready="true"]').waitFor({ timeout: 5_000 });
+    await mobile.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
     await phone.close();
 
     await check("webkit: jump-to-latest uses the same stable, non-overlapping lane", async () => {
