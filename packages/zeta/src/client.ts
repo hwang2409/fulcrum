@@ -109,7 +109,9 @@ async function readContentChunks(handle: string, cap: number, read: (offset: num
   }
 }
 
-export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
+export type CloseReason = { kind: "output_overflow"; message: string; role: "controller" | "observer" };
+
+export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number, reason?: CloseReason) => unknown, options: ClientOptions = {}) {
   let nextId = 1;
   let handshaken = false;
   let negotiatedProtocol = "1.0";
@@ -125,6 +127,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const holders = new Map<string, number>();
   const replaying = new Set<string>();
   const quarantined = new Set<string>();
+  // The last served turn each session started (feature `served_turn_end`), so a host can look up its recorded end.
+  const servedTurns = new Map<string, string>();
   const quarantineRevisions = new Map<string, number>();
   const replayLoads = new Map<string, (signal: AbortSignal) => Promise<RunEvent[]>>();
   const activeLoads = new Map<string, AbortController>();
@@ -331,11 +335,17 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       quarantineRevisions.set(session, (quarantineRevisions.get(session) ?? 0) + 1);
       return;
     }
+    const turnId = message.params.event === "turn_start" ? (message.params.data as { turn_id?: unknown } | undefined)?.turn_id : undefined;
+    if (session !== undefined && typeof turnId === "string") servedTurns.set(session, turnId);
     const sessionStore = eventStore(session);
     for (const event of fromZetaEvent(message.params).map((item) => stampIntent(item, session))) sessionStore.dispatch(event);
   };
   const handleReply = (message: TransportMessage) => {
     if (message.id === null && message.error) {
+      if (message.error.code === -32011) {
+        const role = message.error.message.includes("observer") ? "observer" : "controller";
+        closeReason = { kind: "output_overflow", message: message.error.message, role };
+      }
       const error = Object.assign(new Error(message.error.message), message.error);
       pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
       return;
@@ -359,9 +369,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const closedPromise = new Promise<unknown>((resolve) => { closeSignal = resolve; });
   let closed = false;
   let closedError: unknown;
+  let closeReason: CloseReason | undefined;
   const closeClient = (code?: number) => {
     if (closed) return;
-    const error = closeError?.(handshaken, code) ?? new Error("transport closed");
+    const error = closeError?.(handshaken, code, closeReason) ?? new Error("transport closed");
     closed = true;
     closedError = error;
     deliveryIdentity.close();
@@ -469,7 +480,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const hello = (requestedFeatures?: string[], role: "controller" | "observer" = "controller"): Promise<HelloResult> => {
     const requested = new Set(requestedFeatures ?? []);
-    const features = [...new Set([...(requestedFeatures ?? []), ...(requested.has("delivery_id") ? ["send_images_delivery_id"] : []), ...(options.hostCommands ? ["session_host_commands"] : [])])];
+    const features = [...new Set([...(requestedFeatures ?? []), ...(requested.has("delivery_id") ? ["send_images_delivery_id"] : []), ...(options.hostCommands ? ["session_host_commands"] : []), "served_turn_end"])];
     const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", role, ...(features ? { features } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => {
       handshaken = true;
@@ -494,7 +505,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return await readContentChunks(handle, cap, (offset) => request("content_read", { handle, offset }, { signal: options.signal }));
     } catch (error) { return contentReadError(error); }
   };
-  return { store, stores, forSession, replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { closeClient(); transport.close(); } };
+  return { store, stores, forSession, servedTurn: (sessionId: string) => servedTurns.get(sessionId), replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { closeClient(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler, options?: ClientOptions) { return createClient(transport, scheduler, undefined, options); }

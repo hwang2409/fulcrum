@@ -7,7 +7,8 @@ export type ZetaErrorKind =
   | "busy"
   | "version_mismatch"
   | "role_mismatch"
-  | "closed";
+  | "closed"
+  | "output_overflow";
 
 const connectFailedMessage =
   "zeta connection failed; check the websocket url and token, the --ws-origin allowlist, and that zeta serve is running";
@@ -15,7 +16,7 @@ const connectFailedMessage =
 export class ZetaError extends Error {
   readonly name = "ZetaError";
   constructor(readonly kind: ZetaErrorKind, readonly code?: number) {
-    super(kind === "connect_failed" ? connectFailedMessage : kind === "role_mismatch" ? "zeta credential and requested role do not match" : kind === "closed" ? `zeta websocket closed (${code})` : kind);
+    super(kind === "connect_failed" ? connectFailedMessage : kind === "role_mismatch" ? "zeta credential and requested role do not match" : kind === "output_overflow" ? "zeta output overflow; connection fell behind" : kind === "closed" ? `zeta websocket closed (${code})` : kind);
   }
 }
 
@@ -77,8 +78,8 @@ export function connectZeta({ url, token, role = "controller", features, hostCom
       const client = createClient(
         transport,
         undefined,
-        (handshaken, code) =>
-          new ZetaError(handshaken ? "closed" : "connect_failed", code),
+        (handshaken, code, reason) =>
+          new ZetaError(reason?.kind === "output_overflow" ? "output_overflow" : handshaken ? "closed" : "connect_failed", code),
         { hostCommands },
       );
       return client.hello(requestedFeatures, role).catch((error: unknown) => {

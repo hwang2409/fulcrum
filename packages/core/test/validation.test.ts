@@ -119,7 +119,8 @@ test("malformed event fuzz is total and equals a valid-only replay", () => {
 
 const tool = { id: "t", name: "bash", arguments: {} };
 const fieldCases: Array<{ event: Record<string, unknown>; fields: Array<[string, unknown]> }> = [
-  ...["run_start", "run_end", "turn_start", "turn_end", "message_start", "message_reset"].map((type) => ({ event: { type, data: {} }, fields: [["type", 1], ["data", 1]] as Array<[string, unknown]> })),
+  { event: { type: "run_end", outcome: "unknown", data: {} }, fields: [["type", 1], ["outcome", "wrong"], ["data", 1]] },
+  ...["run_start", "turn_start", "turn_end", "message_start", "message_reset"].map((type) => ({ event: { type, data: {} }, fields: [["type", 1], ["data", 1]] as Array<[string, unknown]> })),
   { event: { type: "retry" }, fields: [["type", 1]] },
   { event: { type: "message_delta", message_id: "m", delta: "x", kind: "text" }, fields: [["type", 1], ["message_id", 1], ["delta", 1], ["kind", 1]] },
   { event: { type: "message_block", message_id: "m", block: { type: "text" } }, fields: [["type", 1], ["message_id", 1], ["block", null], ["block.type", 1]] },
@@ -173,6 +174,10 @@ const finish = (start: RunEvent[], end: unknown) => {
 
 const terminalCases: Array<[string, RunEvent[], unknown, (store: ReturnType<typeof createRunStore>) => void]> = [
   ["run_end.data", [{ type: "run_start" }], { type: "run_end", data: 7 }, (store) => expect(store.getState().agent).toBe("idle")],
+  ["run_end.outcome", [{ type: "run_start" }], { type: "run_end", outcome: "lost" }, (store) => {
+    expect(store.getState().agent).toBe("idle");
+    expect(store.getState().endOutcome).toBeUndefined();
+  }],
   ["turn_end.data", [{ type: "turn_start" }], { type: "turn_end", data: 7 }, (store) => expect(store.getState().turn).toBe("idle")],
   ["message_commit.message_id", [{ type: "message_delta", message_id: "m", delta: "draft" }], { type: "message_commit", message_id: 7, message: { role: "assistant", content: [{ type: "text", text: "done" }] } }, (store) => {
     expect(store.getState().activeMessageId).toBeUndefined();

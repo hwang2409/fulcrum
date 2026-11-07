@@ -4,7 +4,8 @@ GlobalRegistrator.register();
 
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { act, Profiler, StrictMode, useState, type ReactNode } from "react";
+import { act, Profiler, StrictMode, useState, type ComponentType, type ReactNode } from "react";
+import * as FulcrumReact from "../src/index.js";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, initialState, type OutlineSnapshot, type RunEvent, type RunItem, type ToolCall as ToolCallData } from "@fulcrum/core";
 import { Markdown } from "../../markdown/src/react.js";
@@ -259,6 +260,34 @@ test("useRun applies a changed selector without a store update", () => {
   expect(container.textContent).toBe("agent=running");
   act(selectTurn);
   expect(container.textContent).toBe("turn=idle");
+});
+
+test("run status and the compact end marker expose an unknown outcome accessibly", () => {
+  const { store, send } = setup([
+    { type: "run_start" },
+    { type: "run_end", outcome: "unknown" } as RunEvent,
+  ]);
+  const exports = FulcrumReact as unknown as Record<string, ComponentType>;
+  const Status = exports.RunStatus ?? (() => null);
+  const EndMarker = exports.RunEndMarker ?? (() => null);
+  mount(<RunProvider store={store}><Status /><EndMarker /></RunProvider>);
+
+  expect(container.textContent).toContain("outcome unknown");
+  expect(q('[data-part="run-status"]').textContent).toBe("outcome unknown");
+  const marker = q('[data-part="run-end-marker"]');
+  expect(marker.textContent).toContain("outcome unknown");
+  expect(marker.getAttribute("role")).toBe("status");
+  expect(marker.getAttribute("aria-label")).toBe("run ended while disconnected; outcome unknown");
+
+  send({ type: "run_start" });
+  expect(container.querySelector('[data-part="run-end-marker"]')).toBeNull();
+  expect(q('[data-part="run-status"]').textContent).toBe("running");
+
+  // A reported outcome shows as plain marker text; the header reads idle.
+  send({ type: "run_end", outcome: "cancelled" } as RunEvent);
+  expect(q('[data-part="run-end-marker"]').textContent).toBe("run stopped");
+  expect(q('[data-part="run-end-marker"]').dataset.outcome).toBe("cancelled");
+  expect(q('[data-part="run-status"]').textContent).toBe("idle");
 });
 
 test("dispose leaves the last mounted snapshot and stops notifications", () => {

@@ -20,7 +20,7 @@ test("a failure only ends an attempt in flight and counts up", () => {
 
 test("a drop after a connection is marked lost until it reconnects, and a mismatch is final", () => {
   let state = reduceConnection(initialConnection, { type: "connected" });
-  state = reduceConnection(state, { type: "closed", now: 100 });
+  state = reduceConnection(state, { type: "closed", attempt: 1, now: 100 });
   expect(state).toEqual({ phase: "dropped", attempt: 1, retryAt: 600, lost: true });
   state = reduceConnection(reduceConnection(state, { type: "attempt" }), { type: "not_running", now: 600 });
   expect(state).toMatchObject({ phase: "not_running", attempt: 2, lost: true });
@@ -111,6 +111,31 @@ test("a drop reconnects with a new client, and retryNow skips the wait", async (
   expect(connection.client).toBe(second);
   first.drop(); // a late close from the old socket must not tear down the new one
   expect(connection.state.phase).toBe("connected");
+});
+
+test("a server that overflows every connection right after hello is retried with growing delays", async () => {
+  const closers: Array<(error: unknown) => void> = [];
+  const clients = Array.from({ length: 4 }, () => {
+    const client = fakeClient();
+    client.onClose = (listener) => { closers.push(listener); return () => {}; };
+    return client;
+  });
+  const { connection, settle, advance } = harness(clients.map(() => async () => found), clients.map((client) => async () => client));
+  await settle();
+  const delays: number[] = [];
+  for (let index = 0; index < 3; index++) {
+    expect(connection.state.phase).toBe("connected");
+    closers[index]!(new ZetaError("output_overflow"));
+    const state = connection.state as Extract<ConnectionState, { phase: "overflow" }>;
+    expect(state.phase).toBe("overflow");
+    delays.push(state.retryAt - delays.reduce((sum, delay) => sum + delay, 0));
+    await advance(delays.at(-1)!);
+  }
+  expect(delays).toEqual([500, 1000, 2000]);
+  // A connection that lasts longer than the longest backoff starts the count over.
+  await advance(10_000);
+  closers[3]!(new ZetaError("closed", 1006));
+  expect(connection.state).toMatchObject({ phase: "dropped", attempt: 1 });
 });
 
 test("stop closes the client and ignores attempts still in flight", async () => {

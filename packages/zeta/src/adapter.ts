@@ -3,6 +3,7 @@ import type {
   ContentBlock,
   ImageContentBlock,
   Message,
+  RunEndOutcome,
   RunEvent,
   SubAgentEvent,
   SubAgentStatus,
@@ -365,6 +366,7 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] =>
   const row = object(value, "history row");
   if (row.event === "usage") return fromZetaEvent(row);
   if (row.event === "delivery_status") return fromZetaEvent(row);
+  if (row.event === "served_turn_end") return []; // a turn-end fact for `servedTurnOutcome`, not a transcript row
   if (row.event === "history_group_truncated") return [{ type: "history_truncated", text: "[history group too large; truncated]" }];
   if (Array.isArray(row.content) && text(row.content) === "[history group too large; truncated]") return [{ type: "history_truncated", text: "[history group too large; truncated]" }];
   if (row.event === "approval_request" || row.event === "approval_end") {
@@ -408,6 +410,23 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] =>
   if (failed) events.push({ type: "error", error: { code: string(failed.code, "failed_turn.code"), message: string(failed.message, "failed_turn.message") } });
   return events;
 };
+
+const servedReasons: Record<string, RunEndOutcome> = { completed: "completed", user_stop: "cancelled", error: "failed", disconnect: "disconnected" };
+
+/**
+ * The outcome zeta recorded for the served turn `turnId` (the `turn_start.data.turn_id` of feature `served_turn_end`)
+ * in `session_history` rows. Only the newest `served_turn_end` counts: when it belongs to another turn, a later turn
+ * ran unseen, so the result is undefined, as it is when the rows hold no recorded end.
+ */
+export function servedTurnOutcome(rows: readonly unknown[], turnId: string): RunEndOutcome | undefined {
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index] as { event?: unknown; data?: { turn_id?: unknown; reason?: unknown } } | null;
+    if (row?.event !== "served_turn_end") continue;
+    const reason = row.data?.reason;
+    return row.data?.turn_id === turnId && typeof reason === "string" && Object.hasOwn(servedReasons, reason) ? servedReasons[reason] : undefined;
+  }
+  return undefined;
+}
 
 /**
  * Maps `session_history` rows (oldest first, every page in order) to run events. Tool calls open at their `tool_use`

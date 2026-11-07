@@ -154,17 +154,22 @@ export type RunItem =
       event: RunEvent;
     }
   | ({ id: string } & SubAgentEvent);
+/**
+ * How a run ended, when the host reports it: `cancelled` is a user stop, `disconnected` a stop because the client stayed
+ * gone, and `unknown` an end the host could not observe at all (a transport loss hid it).
+ */
+export type RunEndOutcome = "completed" | "cancelled" | "failed" | "disconnected" | "unknown";
 export type RunEvent =
   | {
       type:
         | "run_start"
-        | "run_end"
         | "turn_start"
         | "turn_end"
         | "message_start"
         | "message_reset";
       data?: Record<string, unknown>;
     }
+  | { type: "run_end"; outcome?: RunEndOutcome; data?: Record<string, unknown> }
   /** Streams text into a message. A `kind` other than text ("reasoning") streams into its own block of that type. */
   | { type: "message_delta"; message_id?: string; delta: string; kind?: string }
   /** Adds a whole block (a source, a file, an image) to the streaming message, after what it has so far. */
