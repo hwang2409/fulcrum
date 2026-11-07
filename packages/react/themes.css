@@ -20,13 +20,13 @@
   --fulcrum-surface: #32302f;
   --fulcrum-border: #504945;
   --fulcrum-accent: #83a598;
-  --fulcrum-danger: color-mix(in srgb, #fb4934 80%, white);
+  --fulcrum-danger: color-mix(in srgb, #fb4934 79%, white);
   --fulcrum-ok: #b8bb26;
   --fulcrum-warn: #fabd2f;
-  --fulcrum-tok-keyword: #ff6b56; /* official #fb4934 is 3.68:1 on inserted row; OKLCH L +0.048 */
+  --fulcrum-tok-keyword: #ff6c57; /* official #fb4934 is 3.66:1 on inserted row; OKLCH L +0.050 */
   --fulcrum-tok-string: #b8bb26;
   --fulcrum-tok-number: #d3869b;
-  --fulcrum-tok-comment: #a79888; /* official #928374 is 3.44:1 on inserted row; OKLCH L +0.068 */
+  --fulcrum-tok-comment: #a89889; /* official #928374 is 3.43:1 on inserted row; OKLCH L +0.070 */
   --fulcrum-tok-function: #8ec07c;
   --fulcrum-tok-type: #fabd2f;
   --fulcrum-tok-variable: #83a598;
@@ -37,7 +37,7 @@
   --fulcrum-tok-attribute: #8ec07c;
   --fulcrum-tok-regexp: #fe8019;
   --fulcrum-tok-inserted: #b8bb26;
-  --fulcrum-tok-deleted: #ff6b56; /* official #fb4934 is 3.68:1 on inserted row; OKLCH L +0.048 */
+  --fulcrum-tok-deleted: #ff6c57; /* official #fb4934 is 3.66:1 on inserted row; OKLCH L +0.050 */
   --fulcrum-ui-path: #8ec07c; /* tok-function #8ec07c */
   --fulcrum-ui-number: #d3869b; /* tok-number #d3869b */
   --fulcrum-ui-added: #b8bb26; /* tok-inserted #b8bb26 */
@@ -74,17 +74,17 @@
   --fulcrum-accent: #076678;
   --fulcrum-danger: #9d0006;
   --fulcrum-ok: color-mix(in srgb, #79740e 88%, black);
-  --fulcrum-warn: color-mix(in srgb, #b57614 76%, black);
+  --fulcrum-warn: color-mix(in srgb, #b57614 75%, black);
   --fulcrum-tok-keyword: #9d0006;
   --fulcrum-tok-string: #6b6600; /* official #79740e is 3.69:1 on deleted row; OKLCH L -0.046 */
   --fulcrum-tok-number: #8f3f71;
   --fulcrum-tok-comment: #706153; /* official #928374 is 2.79:1 on deleted row; OKLCH L -0.116 */
   --fulcrum-tok-function: #366f4d; /* official #427b58 is 3.79:1 on deleted row; OKLCH L -0.040 */
-  --fulcrum-tok-type: #8c5800; /* official #b57614 is 2.86:1 on deleted row; OKLCH L -0.111 */
+  --fulcrum-tok-type: #8c5900; /* official #b57614 is 2.87:1 on deleted row; OKLCH L -0.110 */
   --fulcrum-tok-variable: #076678;
   --fulcrum-tok-constant: #8f3f71;
   --fulcrum-tok-operator: #af3a03;
-  --fulcrum-tok-punctuation: #6e6157; /* official #7c6f64 is 3.69:1 on deleted row; OKLCH L -0.048 */
+  --fulcrum-tok-punctuation: #6e6157; /* official #7c6f64 is 3.70:1 on deleted row; OKLCH L -0.048 */
   --fulcrum-tok-tag: #076678;
   --fulcrum-tok-attribute: #366f4d; /* official #427b58 is 3.79:1 on deleted row; OKLCH L -0.040 */
   --fulcrum-tok-regexp: #af3a03;
@@ -123,13 +123,13 @@
   --fulcrum-surface: #21222c;
   --fulcrum-border: #44475a;
   --fulcrum-accent: #bd93f9;
-  --fulcrum-danger: color-mix(in srgb, #ff5555 81%, white);
+  --fulcrum-danger: color-mix(in srgb, #ff5555 80%, white);
   --fulcrum-ok: #50fa7b;
   --fulcrum-warn: #ffb86c;
   --fulcrum-tok-keyword: #ff79c6;
   --fulcrum-tok-string: #f1fa8c;
   --fulcrum-tok-number: #bd93f9;
-  --fulcrum-tok-comment: #8d9fd4; /* official #6272a4 is 2.50:1 on inserted row; OKLCH L +0.148 */
+  --fulcrum-tok-comment: #8ea0d5; /* official #6272a4 is 2.49:1 on inserted row; OKLCH L +0.151 */
   --fulcrum-tok-function: #50fa7b;
   --fulcrum-tok-type: #8be9fd;
   --fulcrum-tok-variable: #f8f8f2;
@@ -138,9 +138,9 @@
   --fulcrum-tok-punctuation: #f8f8f2;
   --fulcrum-tok-tag: #ff79c6;
   --fulcrum-tok-attribute: #50fa7b;
-  --fulcrum-tok-regexp: #ff7671; /* official #ff5555 is 3.74:1 on inserted row; OKLCH L +0.045 */
+  --fulcrum-tok-regexp: #ff7671; /* official #ff5555 is 3.73:1 on inserted row; OKLCH L +0.045 */
   --fulcrum-tok-inserted: #50fa7b;
-  --fulcrum-tok-deleted: #ff7671; /* official #ff5555 is 3.74:1 on inserted row; OKLCH L +0.045 */
+  --fulcrum-tok-deleted: #ff7671; /* official #ff5555 is 3.73:1 on inserted row; OKLCH L +0.045 */
   --fulcrum-ui-path: #50fa7b; /* tok-function #50fa7b */
   --fulcrum-ui-number: #bd93f9; /* tok-number #bd93f9 */
   --fulcrum-ui-added: #50fa7b; /* tok-inserted #50fa7b */
@@ -328,23 +328,23 @@
   --fulcrum-border: #ccd0da;
   --fulcrum-accent: color-mix(in srgb, #1e66f5 89%, black);
   --fulcrum-danger: color-mix(in srgb, #d20f39 95%, black);
-  --fulcrum-ok: color-mix(in srgb, #40a02b 71%, black);
+  --fulcrum-ok: color-mix(in srgb, #40a02b 72%, black);
   --fulcrum-warn: color-mix(in srgb, #df8e1d 63%, black);
-  --fulcrum-tok-keyword: #8331e9; /* official #8839ef is 4.16:1 on deleted row; OKLCH L -0.018 */
+  --fulcrum-tok-keyword: #8331e9; /* official #8839ef is 4.17:1 on deleted row; OKLCH L -0.018 */
   --fulcrum-tok-string: #1d7400; /* official #40a02b is 2.57:1 on deleted row; OKLCH L -0.135 */
   --fulcrum-tok-number: #af4100; /* official #fe640b is 2.29:1 on deleted row; OKLCH L -0.170 */
-  --fulcrum-tok-comment: #616377; /* official #7c7f93 is 3.03:1 on deleted row; OKLCH L -0.095 */
-  --fulcrum-tok-function: #0f58e7; /* official #1e66f5 is 3.77:1 on deleted row; OKLCH L -0.041 */
+  --fulcrum-tok-comment: #616377; /* official #7c7f93 is 3.04:1 on deleted row; OKLCH L -0.095 */
+  --fulcrum-tok-function: #0f58e7; /* official #1e66f5 is 3.78:1 on deleted row; OKLCH L -0.041 */
   --fulcrum-tok-type: #905800; /* official #df8e1d is 2.01:1 on deleted row; OKLCH L -0.202 */
   --fulcrum-tok-variable: #4c4f69;
   --fulcrum-tok-constant: #af4100; /* official #fe640b is 2.29:1 on deleted row; OKLCH L -0.170 */
-  --fulcrum-tok-operator: #006b97; /* official #04a5e5 is 2.14:1 on deleted row; OKLCH L -0.182 */
-  --fulcrum-tok-punctuation: #616377; /* official #7c7f93 is 3.03:1 on deleted row; OKLCH L -0.095 */
-  --fulcrum-tok-tag: #0f58e7; /* official #1e66f5 is 3.77:1 on deleted row; OKLCH L -0.041 */
+  --fulcrum-tok-operator: #006b97; /* official #04a5e5 is 2.15:1 on deleted row; OKLCH L -0.182 */
+  --fulcrum-tok-punctuation: #616377; /* official #7c7f93 is 3.04:1 on deleted row; OKLCH L -0.095 */
+  --fulcrum-tok-tag: #0f58e7; /* official #1e66f5 is 3.78:1 on deleted row; OKLCH L -0.041 */
   --fulcrum-tok-attribute: #905800; /* official #df8e1d is 2.01:1 on deleted row; OKLCH L -0.202 */
   --fulcrum-tok-regexp: #a7378c; /* official #ea76cb is 2.03:1 on deleted row; OKLCH L -0.198 */
   --fulcrum-tok-inserted: #1d7400; /* official #40a02b is 2.57:1 on deleted row; OKLCH L -0.135 */
-  --fulcrum-tok-deleted: #ca0034; /* official #d20f39 is 4.17:1 on deleted row; OKLCH L -0.019 */
+  --fulcrum-tok-deleted: #cb0034; /* official #d20f39 is 4.18:1 on deleted row; OKLCH L -0.018 */
   --fulcrum-ui-path: #155dec; /* tok-function #1e66f5 is 4.04:1 on surface; OKLCH L -0.026 */
   --fulcrum-ui-number: #b64400; /* tok-number #fe640b is 2.45:1 on surface; OKLCH L -0.155 */
   --fulcrum-ui-added: #1e7900; /* tok-inserted #40a02b is 2.75:1 on surface; OKLCH L -0.121 */
@@ -539,7 +539,7 @@
   --fulcrum-tok-string: #0a3069;
   --fulcrum-tok-number: #0550ae;
   --fulcrum-tok-comment: #59636e;
-  --fulcrum-tok-function: #7f4ddc; /* official #8250df is 4.33:1 on deleted row; OKLCH L -0.009 */
+  --fulcrum-tok-function: #7f4ddc; /* official #8250df is 4.32:1 on deleted row; OKLCH L -0.009 */
   --fulcrum-tok-type: #953800;
   --fulcrum-tok-variable: #953800;
   --fulcrum-tok-constant: #0550ae;

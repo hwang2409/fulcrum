@@ -27,6 +27,7 @@ const ACCENTS = ["path", "number", "added", "removed", "pattern", "type"].map((n
 const TOKENS = TOKEN_TYPES.map((name) => `tok-${name}`);
 
 type Rgb = [number, number, number];
+// Browsers store a color-mix() result in 8-bit channels, so mixes (the diff row tints too) are rounded as the page renders them.
 function color(value: string, vars: Record<string, string>): Rgb {
   value = value.trim();
   const variable = /^var\(--fulcrum-([\w-]+)\)$/.exec(value);
@@ -40,7 +41,7 @@ function color(value: string, vars: Record<string, string>): Rgb {
   const mix = /^color-mix\(in srgb,\s*(.+?)\s+(\d+(?:\.\d+)?)%,\s*(.+?)(?:\s+\d+%)?\)$/.exec(value);
   if (mix) {
     const [a, b, p] = [color(mix[1]!, vars), color(mix[3]!, vars), Number(mix[2]) / 100];
-    return a.map((c, i) => c * p + b[i]! * (1 - p)) as Rgb;
+    return a.map((c, i) => Math.round(c * p + b[i]! * (1 - p))) as Rgb;
   }
   throw new Error(`cannot read color ${JSON.stringify(value)}`);
 }
@@ -59,7 +60,7 @@ function oklch(c: Rgb) {
 
 function backgrounds(vars: Record<string, string>, key: string): Record<string, Rgb> {
   const bg = color(vars.bg!, vars);
-  const tint = (name: string): Rgb => color(vars[name]!, vars).map((c, i) => c * 0.08 + bg[i]! * 0.92) as Rgb;
+  const tint = (name: string): Rgb => color(vars[name]!, vars).map((c, i) => Math.round(c * 0.08 + bg[i]! * 0.92)) as Rgb;
   const base = { bg, surface: color(vars.surface!, vars) };
   return key.startsWith("ansi-") ? base : { ...base, "inserted row": tint("tok-inserted"), "deleted row": tint("tok-deleted") };
 }
