@@ -67,6 +67,9 @@ export function parseSlashRun(value: unknown): ParsedSlashRunResult {
     case "output":
     case "error":
       return typeof row.text === "string" ? { kind: row.kind, text: row.text } : { kind: "malformed" };
+    case "text":
+      // legacy alias for /mcp status from zeta slash_commands.py:413-425 at 5feea2fc.
+      return typeof row.text === "string" ? { kind: "output", text: row.text } : { kind: "malformed" };
     case "client_only":
     case "unknown":
       return typeof row.name === "string" ? { kind: row.kind, name: row.name } : { kind: "malformed" };
