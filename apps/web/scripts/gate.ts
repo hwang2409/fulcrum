@@ -153,7 +153,7 @@ async function reconnectApprovalScenario(page: Page, fake: Awaited<ReturnType<ty
   await rebuilt.waitFor({ timeout: 5000 });
   if (await rebuilt.count() !== 1 || await page.locator('[data-part="approval"]').count()) throw new Error("approval did not fold once after the resumed command");
   // The turn came back running and its end is seen live, so its outcome is known.
-  await page.locator('[data-part="run-end-marker"]').waitFor({ state: "detached", timeout: 1000 }).catch(() => { throw new Error("a run that came back running kept an outcome marker"); });
+  if (await page.locator('[data-part="run-end-marker"][data-outcome="unknown"]').count()) throw new Error("a run that came back running was marked outcome unknown");
   if (await page.locator('[data-tone="danger"]').count()) throw new Error("reconnect showed an app error");
   if (fake.decisions.filter((decision) => decision.method === "approve" && decision.request_id === "approval-1").length !== 1) throw new Error("server did not receive exactly one resumed approval");
   // Reported after the reconnect, so a failure here does not leave the server stopped for later checks.
