@@ -317,26 +317,33 @@ async function checkPromptSemantics(page: Page): Promise<string[]> {
   return failures;
 }
 
-async function checkUserParity(browser: Browser, port: number): Promise<string[]> {
+type UserParity = { message: string; fallback: string; name: string };
+
+async function checkUserParityPair(browser: Browser, port: number, theme: string, width: number, pair: UserParity): Promise<string[]> {
+  const geometries: UserGeometry[] = [];
+  for (const id of [pair.message, pair.fallback]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
+    await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
+    geometries.push(await measureUser(page, id, 0, false));
+    await page.close();
+  }
+  const [message, fallback] = geometries;
+  const at = `user parity @ ${theme} ${width}: ${pair.name}`;
   const failures: string[] = [];
-  const pairs = [
+  if (message.lines.length !== fallback.lines.length) failures.push(`${at}: Message has ${message.lines.length} lines, Fallback has ${fallback.lines.length}`);
+  if (Math.abs(message.height - fallback.height) > 0.5) failures.push(`${at}: Message is ${message.height.toFixed(2)} px high, Fallback is ${fallback.height.toFixed(2)} px`);
+  if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ parity: pair.name, theme, width, message: { lines: message.lines.length, height: message.height }, fallback: { lines: fallback.lines.length, height: fallback.height } }));
+  return failures;
+}
+
+async function checkUserParity(browser: Browser, port: number): Promise<string[]> {
+  const pairs: UserParity[] = [
     { message: "message-user-long", fallback: "fallback-user-parity", name: "sent user message" },
     { message: "message-user-dropped", fallback: "fallback-user-dropped", name: "dropped steer" },
   ];
-  for (const theme of ["light", "dracula", "gruvbox-dark"]) for (const width of [1440, 390]) for (const pair of pairs) {
-    const geometries: UserGeometry[] = [];
-    for (const id of [pair.message, pair.fallback]) {
-      const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
-      await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
-      geometries.push(await measureUser(page, id, 0, false));
-      await page.close();
-    }
-    const [message, fallback] = geometries;
-    const at = `user parity @ ${theme} ${width}: ${pair.name}`;
-    if (message.lines.length !== fallback.lines.length) failures.push(`${at}: Message has ${message.lines.length} lines, Fallback has ${fallback.lines.length}`);
-    if (Math.abs(message.height - fallback.height) > 0.5) failures.push(`${at}: Message is ${message.height.toFixed(2)} px high, Fallback is ${fallback.height.toFixed(2)} px`);
-    if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ parity: pair.name, theme, width, message: { lines: message.lines.length, height: message.height }, fallback: { lines: fallback.lines.length, height: fallback.height } }));
-  }
+  const matrix = ["light", "dracula", "gruvbox-dark"].flatMap((theme) => [1440, 390].flatMap((width) => pairs.map((pair) => ({ theme, width, pair }))));
+  const failures: string[] = [];
+  for (const { theme, width, pair } of matrix) failures.push(...await checkUserParityPair(browser, port, theme, width, pair));
   return failures;
 }
 
