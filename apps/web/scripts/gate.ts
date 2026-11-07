@@ -158,8 +158,10 @@ try {
       fake.drop();
       fake.setMode("busy-once");
       await fake.start();
+      const resumesBefore = fake.requests.filter(({ method }) => method === "resume").length;
       await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
       await page.locator('[data-part="timeline"] [data-part="message"], [data-part="timeline"] [data-part="tool"]').first().waitFor({ timeout: 5000 });
+      if (fake.requests.filter(({ method }) => method === "resume").length < resumesBefore + 2) throw new Error("busy resume was not retried");
       if (await page.getByText("zeta is busy with another session", { exact: true }).count()) throw new Error("busy panel remained after retry");
     });
 
