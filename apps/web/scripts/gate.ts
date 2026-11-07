@@ -663,7 +663,6 @@ try {
         return row.y - box.y;
       };
       const before = await offset();
-      if (!(await page.locator('[data-part="jump-to-latest"]').count())) throw new Error("reader stayed pinned after moving to the middle");
       await fake.stop();
       await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 });
       await fake.start();
@@ -673,7 +672,8 @@ try {
       await settle(page);
       const after = await offset();
       if (Math.abs(after - before) > 1) throw new Error(`anchor moved ${Math.abs(after - before).toFixed(2)} px`);
-      if (!(await page.locator('[data-part="jump-to-latest"]').count())) throw new Error("replacement re-enabled follow mode");
+      fake.emit({ event: "user_message", session_id: "s-long", text: "after reconnect", mode: "send", delivery_id: "anchor-check" });
+      await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5000 });
     });
     await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
       await page.locator("button.session", { hasText: "check every theme" }).click();
@@ -751,8 +751,8 @@ try {
     // This exact gamma sequence already stays pinned on main; it guards the path rather than proving the fix fail-first.
     await check("a stopped queued steer and later turns stay pinned through the next own send", () => runStoppedSteerFollowScenario(page, fake.clearSent));
     await check("the page never scrolls: after IME typing the document fits the viewport and the headers stay in view", async () => {
-      // A tall run: the Timeline's hidden live region sits at the end of 400 rows.
-      await page.locator("button.session", { hasText: "400 rows" }).click();
+      // A tall run: the Timeline's hidden live region sits at the end of 1,000 rows.
+      await page.locator("button.session", { hasText: "1,000 rows" }).click();
       await page.locator('[data-part="timeline"][data-virtual="true"]').waitFor({ timeout: 10_000 });
       const field = page.locator(".dock textarea");
       await field.click();
