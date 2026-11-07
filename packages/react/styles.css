@@ -332,15 +332,15 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   line-height: 1;
   cursor: pointer;
 }
-:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action^="approve"], [data-action="deny"]) {
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action="approve"], [data-action="approve-always"], [data-action="deny"]) {
   min-height: 32px;
   padding: 0 8px;
 }
-:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action^="approve"], [data-action="deny"]):hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
-:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action^="approve"], [data-action="deny"]):active { background: var(--fulcrum-border); }
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action="approve"], [data-action="approve-always"], [data-action="deny"]):hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
+:is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action="approve"], [data-action="approve-always"], [data-action="deny"]):active { background: var(--fulcrum-border); }
 :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 [data-part="tool-body"] button:is([data-action="open-viewer"], [data-action="show-command"], [data-action="expand"]) { display: block; width: 100%; padding: 0 12px; color: var(--fulcrum-accent); text-align: left; }
-@media (pointer: coarse) { :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action^="approve"], [data-action="deny"]) { min-height: 44px; } }
+@media (pointer: coarse) { :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button:not([data-action="approve"], [data-action="approve-always"], [data-action="deny"]) { min-height: 44px; } }
 
 [data-part="approval-actions"] {
   display: flex;
