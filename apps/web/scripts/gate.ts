@@ -643,12 +643,13 @@ try {
       const scrollBox = await scroll.boundingBox();
       if (!scrollBox) throw new Error("no scroll viewport");
       await page.mouse.move(scrollBox.x + scrollBox.width / 2, scrollBox.y + scrollBox.height / 2);
-      await page.waitForTimeout(100);
+      await page.waitForTimeout(500);
+      const bottom = await scroll.evaluate((element) => element.scrollTop);
       for (let step = 0; step < 5; step++) {
-        const before = await scroll.evaluate((element) => element.scrollTop);
         await page.mouse.wheel(0, -180);
-        await page.waitForFunction((prior) => document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop < prior, before);
+        await page.waitForTimeout(50);
       }
+      await page.waitForFunction((prior) => document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop < prior, bottom);
       await page.waitForTimeout(100);
       const anchorId = await page.locator('[data-virtual-id]').evaluateAll((rows, top) =>
         rows.find((row) => row.getBoundingClientRect().top >= top)?.getAttribute("data-virtual-id") ?? null,
