@@ -734,7 +734,7 @@ export const demos: Demo[] = [
     title: "reconnecting",
     // The event shape the web host dispatches on a lost connection: apps/web/src/session.ts:597.
     description: "The adapter marks the request reconnecting: the header says so and every action is disabled with the reason beside it.",
-    events: (["r-reconnect-3", "r-reconnect-2"] as const).map((id, n) => ({ ...ask(id, calls(`reconnect${n}`).bash), state: "reconnecting", status: "reconnecting…", disabled_reason: "decisions are disabled while disconnected" })),
+    events: (["r-reconnect-3", "r-reconnect-2"] as const).map((id, n): RunEvent => ({ ...(ask(id, calls(`reconnect${n}`).bash) as Extract<RunEvent, { type: "approval_request" }>), state: "reconnecting", status: "reconnecting…", disabled_reason: "decisions are disabled while disconnected" })),
     approval: { always: ["r-reconnect-3"] },
   },
   {
