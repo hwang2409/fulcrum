@@ -31,6 +31,8 @@ const boolean = (value: unknown, name: string) => {
   if (typeof value !== "boolean") throw new Error(`${name} must be a boolean`);
   return value;
 };
+const text = (content: unknown[]) =>
+  content.flatMap((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string" ? [(block as { text: string }).text] : [])).join("");
 const optionalNumber = (value: unknown, name: string) => {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${name} must be a finite number`);
@@ -43,6 +45,7 @@ const tool = (value: unknown): ToolCall => {
     id: string(input.id, "tool_call.id"),
     name: string(input.name, "tool_call.name"),
     arguments: { ...object(input.arguments, "tool_call.arguments") },
+    ...(input.arguments_truncated === true ? { meta: { argumentsTruncated: true } } : {}),
   };
 };
 
@@ -56,7 +59,7 @@ const image = (input: Record<string, unknown>, at: string): ImageContentBlock =>
   const mediaType = input.mimeType === undefined ? undefined : string(input.mimeType, `${at}.mimeType`);
   const handle = input.handle === undefined ? undefined : string(input.handle, `${at}.handle`);
   const data = input.data === undefined ? undefined : string(input.data, `${at}.data`);
-  if (!handle && !data) throw new Error(`${at} must contain data or handle`);
+  if (!handle && !data && input.data_omitted !== true) throw new Error(`${at} must contain data or handle`);
   const filename = input.path === undefined || input.path === null ? undefined : basename(string(input.path, `${at}.path`));
   return {
     type: "image",
@@ -64,7 +67,7 @@ const image = (input: Record<string, unknown>, at: string): ImageContentBlock =>
     ...(handle ? { source: { kind: "lazy", key: handle } } : {}),
     ...(mediaType ? { mediaType } : {}),
     ...(filename ? { filename } : {}),
-    ...(finite(input.size) ? { size: input.size } : {}),
+    ...(positive(input.size) ? { size: input.size } : {}),
   };
 };
 // A tool's ToolImageBlock adds an optional caption and pixel size to the message image's fields.
@@ -92,7 +95,7 @@ const contentBlock = (value: unknown, index: number): ContentBlock => {
       const filename = string(input.name, `message.content[${index}].name`);
       return input.handle === undefined
         ? { type: "file", filename, ...(finite(input.size) ? { size: input.size } : {}) }
-        : { type: "image", filename, source: { kind: "lazy", key: string(input.handle, `message.content[${index}].handle`) }, ...(finite(input.size) ? { size: input.size } : {}) };
+        : { type: "image", filename, source: { kind: "lazy", key: string(input.handle, `message.content[${index}].handle`) }, ...(positive(input.size) ? { size: input.size } : {}) };
     }
     case "redacted_thinking":
       return { type: "reasoning", text: "", redacted: true, data: string(input.data, `message.content[${index}].data`) };
@@ -118,6 +121,7 @@ const toolResult = (value: unknown): ToolResult => {
     is_error: boolean(input.is_error, "tool_result.is_error"),
     ...(input.is_canceled === undefined ? {} : { is_canceled: boolean(input.is_canceled, "tool_result.is_canceled") }),
     ...(blocks.length ? { blocks } : {}),
+    ...(input.structured_content_truncated === true ? { truncated: true } : {}),
   };
 };
 
@@ -248,9 +252,9 @@ const finishedView = (call: ToolCall, result: unknown) => {
   const view = resolveToolView(zetaTools, call);
   if (view?.kind !== "shell") return view ? { view } : {};
   const { structured_content: extra, content, is_error } = (result ?? {}) as { structured_content?: unknown; content?: unknown; is_error?: unknown };
-  const { exit_code, stdout, stderr } = extra && typeof extra === "object" ? (extra as Record<string, unknown>) : {};
+  const { exit_code, stdout, stderr, cwd_after } = extra && typeof extra === "object" ? (extra as Record<string, unknown>) : {};
   if (typeof stdout === "string" && typeof stderr === "string")
-    return { view: { ...view, ...(Number.isInteger(exit_code) ? { exitCode: exit_code as number } : {}), stdout, stderr } satisfies ToolView };
+    return { view: { ...view, ...(Number.isInteger(exit_code) ? { exitCode: exit_code as number } : {}), stdout, stderr, ...(typeof cwd_after === "string" && view.cwd ? { cwd: cwd_after } : {}) } satisfies ToolView };
   const parsed = call.name === "bash" && typeof content === "string" ? bashText(content) : undefined;
   if (!parsed) return { view };
   // zeta sets is_error for a nonzero exit or a timeout, so a clean result means exit 0; a failure's code is unknown.
@@ -279,6 +283,12 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
       case "assistant_message": return [{ type: "message_commit", message_id: optionalString(data.message_id, "data.message_id"), message: message(wire.message) }];
       case "assistant_reset": return [{ type: "message_reset", data }];
       case "retry": return [{ type: "retry" }];
+      case "delivery_status": {
+        const status = string(wire.status, "status");
+        if (status !== "delivered" && status !== "dropped") throw new Error("status must be delivered or dropped");
+        if (!Array.isArray(wire.content)) throw new Error("content must be an array");
+        return [{ type: "delivery_status", delivery_id: string(wire.delivery_id, "delivery_id"), method: string(wire.method, "method"), status, content: string(text(wire.content), "content text"), ...(wire.reason === undefined ? {} : { reason: string(wire.reason, "reason") }) }];
+      }
       case "tool_start": {
         const call = tool(wire.tool_call);
         return [{ type: "tool_start", tool_call: call, ...viewOf(call), data }];
@@ -351,12 +361,12 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
   }
 }
 
-const text = (content: unknown[]) =>
-  content.flatMap((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string" ? [(block as { text: string }).text] : [])).join("");
-
 const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
   const row = object(value, "history row");
   if (row.event === "usage") return fromZetaEvent(row);
+  if (row.event === "delivery_status") return fromZetaEvent(row);
+  if (row.event === "history_group_truncated") return [{ type: "history_truncated", text: "[history group too large; truncated]" }];
+  if (Array.isArray(row.content) && text(row.content) === "[history group too large; truncated]") return [{ type: "history_truncated", text: "[history group too large; truncated]" }];
   if (row.event === "approval_request" || row.event === "approval_end") {
     // History empties tool_use arguments, but an approval row keeps them: the call's result row then gets its full view.
     let call: ToolCall | undefined;

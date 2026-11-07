@@ -562,6 +562,18 @@ test("a generic tool's summary is colored, and a list argument reads as a count 
   expect(summary("write_file").querySelector('[data-part="summary-path"]')?.textContent).toBe("fixtures/session.json");
 });
 
+test("dropped steering is explicit live and compact after reload", () => {
+  const store = createRunStore(() => {});
+  [
+    { type: "user_message", text: "this steer must be dropped", mode: "steer", delivery_id: "dropped-steer" },
+    { type: "delivery_status", delivery_id: "dropped-steer", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
+    { type: "delivery_status", delivery_id: "history-only", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
+  ].forEach((event) => store.dispatch(event as RunEvent));
+  mount(<RunProvider store={store}><Fallback id="user:delivery:dropped-steer" /><Fallback id="notification:1" /></RunProvider>);
+  expect(q('[data-id="user:delivery:dropped-steer"]').textContent).toBe("this steer must be dropped · not delivered · abort");
+  expect(q('[data-id="notification:1"]').textContent).toBe("steer dropped: abort");
+});
+
 test("a notification row says what the notification says", () => {
   const store = createRunStore(() => {});
   [
