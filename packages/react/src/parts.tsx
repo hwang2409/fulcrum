@@ -547,7 +547,7 @@ type JumpRenderer = (control: ReactNode) => ReactNode;
  * no frame or lane, and requires `renderJumpToLatest` so the host can place the control outside transcript text.
  */
 export type TimelineProps = TimelineBaseProps & (
-  | { scrollRef?: undefined; renderJumpToLatest?: JumpRenderer }
+  | { scrollRef?: undefined; renderJumpToLatest?: never }
   | { scrollRef: RefObject<HTMLElement | null>; renderJumpToLatest: JumpRenderer }
 );
 
