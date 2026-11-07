@@ -354,21 +354,47 @@ async function checkReconnectAnchor(page: Page, engine: string) {
   }
 }
 
+// Stops and restarts the fake server, reconnects through the real retry button, and waits for replacement history.
+async function reconnectFake(page: Page, engine: string) {
+  const historiesBefore = fake.requests.filter(({ method }) => method === "session_history").length;
+  await fake.stop();
+  try {
+    await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5_000 });
+  } finally {
+    await fake.start();
+  }
+  await page.getByRole("button", { name: "retry now" }).click();
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+  for (let attempt = 0; ; attempt++) {
+    if (fake.requests.filter(({ method }) => method === "session_history").length > historiesBefore) break;
+    if (attempt === 150) throw new Error(`${engine}: reconnect did not request replacement history`);
+    await Bun.sleep(100);
+  }
+}
+
+const waitAtBottom = (page: Page, failure: string) => page.waitForFunction((selector) => {
+  const element = document.querySelector<HTMLElement>(selector);
+  if (!element) return false;
+  const range = element.scrollHeight - element.clientHeight;
+  return range > 0 && Math.abs(element.scrollTop - range) <= 1;
+}, '[data-part="timeline-scroll"]', { timeout: 15_000 }).catch(() => { throw new Error(failure); });
+
 async function reconnectAnchorScenario(page: Page, engine: string) {
+  // The app reads the session hash only at load, and a hash-only goto keeps the document, so reload to open LONG.
   await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+  await page.reload();
   await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
   await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 }).catch(() => {
     throw new Error(`${engine}: the 1,000-row history did not finish loading`);
   });
   const scroll = page.locator('[data-part="timeline-scroll"]');
-  await page.waitForFunction((selector) => {
-    const element = document.querySelector<HTMLElement>(selector);
-    if (!element) return false;
-    const range = element.scrollHeight - element.clientHeight;
-    return range > 0 && Math.abs(element.scrollTop - range) <= 1;
-  }, '[data-part="timeline-scroll"]', { timeout: 15_000 }).catch(() => {
-    throw new Error(`${engine}: the 1,000-row run did not settle at the bottom before wheel input`);
-  });
+  await waitAtBottom(page, `${engine}: the 1,000-row run did not settle at the bottom`);
+  await reconnectFake(page, engine);
+  await waitAtBottom(page, `${engine}: a pinned reader left the bottom after reconnect`);
+  await settle(page);
+  const pinnedGap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+  console.log(`pinned ${engine.padEnd(8)} gap ${pinnedGap.toFixed(3)} px after reconnect`);
+  if (Math.abs(pinnedGap) > 1) throw new Error(`${engine}: a pinned reader is ${pinnedGap.toFixed(3)} px from the bottom after reconnect`);
   const targetId = "message:l499";
   const target = page.locator(`[data-virtual-id="${targetId}"]`);
   const box = await scroll.boundingBox();
@@ -401,20 +427,7 @@ async function reconnectAnchorScenario(page: Page, engine: string) {
   await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
   const beforeOffset = await stableRowOffset(page, targetId, engine);
 
-  const historiesBefore = fake.requests.filter(({ method }) => method === "session_history").length;
-  await fake.stop();
-  try {
-    await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5_000 });
-  } finally {
-    await fake.start();
-  }
-  await page.getByRole("button", { name: "retry now" }).click();
-  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
-  for (let attempt = 0; ; attempt++) {
-    if (fake.requests.filter(({ method }) => method === "session_history").length > historiesBefore) break;
-    if (attempt === 150) throw new Error(`${engine}: reconnect did not request replacement history`);
-    await Bun.sleep(100);
-  }
+  await reconnectFake(page, engine);
   await target.waitFor({ timeout: 15_000 });
   const afterOffset = await stableRowOffset(page, targetId, engine);
   const drift = Math.abs(afterOffset - beforeOffset);
