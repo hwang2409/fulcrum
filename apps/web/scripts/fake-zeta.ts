@@ -304,7 +304,10 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   // normal close. Past its 1 s overflow deadline zeta aborts the transport instead, with no error or close frame.
   const overflow = (socket: ServerWebSocket<unknown>, role: "controller" | "observer") => {
     socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: active ?? ACTIVE, delta: "head" } }));
-    if (mode === "overflow-silent") return socket.terminate();
+    if (mode === "overflow-silent") {
+      if (controller === socket) controller = null;
+      return socket.terminate();
+    }
     socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32011, message: `${role} output overflow` } }));
     socket.close(1000);
   };
@@ -341,7 +344,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
       close(socket) {
         sockets.delete(socket);
         if (connectionRoles.get(socket as object) !== "controller") return;
-        controller = null;
+        if (controller === socket) controller = null;
         if (active && hostBoundSessions.has(active)) hostBindingRequired.add(active);
         if (!decide || approvalAborted) return;
         if (approvalReconnect && reconnectControllers.has(socket as object)) {

@@ -164,14 +164,16 @@ async function reconnectSnapshotScenario(page: Page, fake: Awaited<ReturnType<ty
   await settle(page);
   await page.locator(".dock textarea").fill("draft kept across disconnect");
   await fake.stop();
-  await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 });
+  await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 }).catch(async () => {
+    throw new Error(`disconnect banner did not appear; badge is "${await page.locator(".badge").textContent().catch(() => "missing")}"; notices are ${JSON.stringify(await page.locator(".notice").allTextContents())}`);
+  });
   // The command names the port the page was connected to, not a default.
   const command = await page.locator(".notice .command code").textContent();
   if (command !== `zeta serve --ws ${fake.port} --ws-origin ${origin}`) throw new Error(`the banner command is "${command}"`);
   await Bun.sleep(2000); // a few quiet retries; the console listener fails the gate on any error
   await shoot(page, "state-lost-1440");
   if (!(await page.locator('[data-part="timeline"] [data-kind="user"]').count())) throw new Error("transcript hidden while offline");
-  await page.locator('.dock [data-part="composer"][data-state="read-only"] [data-part="composer-reason"]', { hasText: "sending is paused" }).waitFor({ timeout: 2000 });
+  await page.locator('.dock [data-part="composer"][data-state="read-only"] [data-part="composer-reason"]', { hasText: "sending is paused" }).waitFor({ timeout: 2000 }).catch(() => { throw new Error("composer did not become read-only after disconnect"); });
   if (await page.locator(".dock button").count()) throw new Error("the composer offers actions while offline");
   const draft = page.locator('.dock [data-part="composer"][data-state="read-only"] textarea');
   if (!(await draft.count()) || (await draft.inputValue()) !== "draft kept across disconnect" || !(await draft.evaluate((node) => (node as HTMLTextAreaElement).readOnly))) throw new Error("the read-only composer does not show the draft, read-only");
@@ -179,9 +181,9 @@ async function reconnectSnapshotScenario(page: Page, fake: Awaited<ReturnType<ty
   if (stale.length) throw new Error(`the session list shows live status "${stale.join(", ")}" while not connected`);
   await fake.start();
   await page.getByRole("button", { name: "retry now" }).click();
-  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(async () => { throw new Error(`retry did not reconnect; badge is "${await page.locator(".badge").textContent().catch(() => "missing")}"`); });
   await page.locator(".notice").waitFor({ state: "detached" });
-  await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
+  await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 }).catch(() => { throw new Error("timeline did not rebuild after reconnect"); });
   const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));
   if (new Set(ids).size !== ids.length) throw new Error("duplicate rows after reconnect");
   if (await page.locator('[data-part="approval"][data-state="pending"]').count()) throw new Error("a dropped approval came back as pending");
@@ -499,6 +501,8 @@ try {
     });
     await check("desktop layout, controls, and contrast in all 12 themes", () => auditThemes(page, "1440", 36));
 
+    // The debug overlay intentionally sits above the app. Keep it visible without intercepting the overflow checks' real composer clicks.
+    await page.addStyleTag({ content: '[data-part="virtual-debug"] { pointer-events: none !important; }' });
     const hellos = () => fake.requests.filter((request) => request.method === "hello").length;
     const idleServer = async () => {
       for (let attempt = 0; fake.running && attempt < 300; attempt++) await Bun.sleep(100);
@@ -522,7 +526,9 @@ try {
       const attempts = hellos() - before;
       fake.setMode("ok");
       await idleServer();
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(async () => {
+        throw new Error(`no healthy reconnect after ${hellos() - before} hello(s); badge is "${await page.locator(".badge").textContent().catch(() => "missing")}"`);
+      });
       await page.locator(".notice").waitFor({ state: "detached" });
       // 0.5, 1, then 2 s apart (or later, after an earlier short connection): not one every 0.5 s.
       if (attempts > 4) throw new Error(`${attempts} reconnects in 4 s while the server kept overflowing`);
@@ -561,6 +567,7 @@ try {
     });
     await check("with served_turn_end, an overflow-hidden turn shows the outcome zeta recorded for it", async () => {
       await page.reload(); // a fresh connection, which negotiates served_turn_end
+      await page.addStyleTag({ content: '[data-part="virtual-debug"] { pointer-events: none !important; }' });
       await overflowThroughTurn("overflow", "a turn zeta records the end of", "connection fell behind");
       const marker = page.locator('[data-part="run-end-marker"][data-outcome="completed"]', { hasText: "run completed" });
       await marker.waitFor({ timeout: 5000 }).catch(async () => { throw new Error(`no completed marker from zeta's served_turn_end; the marker says "${await page.locator('[data-part="run-end-marker"]').textContent({ timeout: 1000 }).catch(() => "nothing")}"`); });
@@ -583,7 +590,12 @@ try {
       fake.clearSent();
     });
 
-    await check("a dropped socket shows 'connection lost', reconnects, and rebuilds without lost or duplicate rows", () => reconnectSnapshotScenario(page, fake));
+    await check("a dropped socket shows 'connection lost', reconnects, and rebuilds without lost or duplicate rows", async () => {
+      // Isolate the ordinary stop from the overflow tests' reconnect backoff and last transport reason.
+      await page.reload();
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+      await reconnectSnapshotScenario(page, fake);
+    });
     await check("keyboard: arrows move through sessions, Enter opens one, the theme picker works", async () => {
       fake.setLive(false);
       await fake.start();
