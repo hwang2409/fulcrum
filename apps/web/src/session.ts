@@ -548,6 +548,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     const previous = transitionRun(state.transition);
     const previousId = previous?.id !== id ? previous?.id : null;
     try {
+      if (knownStatus && knownStatus.state !== "idle") interruptedTurns.delete(id);
       let history = { messages: 0, complete: false };
       const opened = await openSession(target, id, (messages, complete) => {
         history = { messages, complete };
