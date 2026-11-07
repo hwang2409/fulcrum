@@ -544,7 +544,7 @@ function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest
   if (renderJumpToLatest) return <>{children}{control && renderJumpToLatest(control)}</>;
   return (
     <div data-part="timeline-frame">
-      <div data-part="timeline-scroll" ref={scrollRef}>{children}</div>
+      <div data-part="timeline-scroll" ref={(node) => { if (scrollRef) scrollRef.current = node; }}>{children}</div>
       <div data-part="jump-to-latest-lane">{control}</div>
     </div>
   );

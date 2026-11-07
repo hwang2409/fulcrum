@@ -11,7 +11,7 @@
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { chromium, webkit, type Page } from "playwright";
+import { chromium, webkit, type Locator, type Page } from "playwright";
 import { themes } from "@fulcrum/react";
 import { ACTIVE, startFakeZeta } from "./fake-zeta";
 
@@ -194,37 +194,45 @@ async function jumpGeometry(page: Page) {
   });
 }
 
+async function ensureJumpControl(lane: Locator, forceControl: boolean) {
+  if (!forceControl) return;
+  await lane.evaluate((element) => {
+    if (element.querySelector('[data-part="jump-to-latest"]')) return;
+    const button = document.createElement("button");
+    button.dataset.part = "jump-to-latest";
+    button.textContent = "jump to latest (1)";
+    element.append(button);
+  });
+}
+
+async function checkJumpTheme(page: Page, engine: string, width: number, theme: string) {
+  await page.evaluate((name) => { document.documentElement.dataset.fulcrumTheme = name; }, theme);
+  await settle(page);
+  const result = await jumpGeometry(page);
+  console.log(`jump ${engine.padEnd(8)} ${width} ${theme.padEnd(17)} text ${result.ratio.toFixed(2)}:1 border ${result.border ? "yes" : "no"} overlap ${result.overlap ? "yes" : "no"} button ${result.button.top.toFixed(1)}..${result.button.bottom.toFixed(1)} lane ${result.lane.top.toFixed(1)}..${result.lane.bottom.toFixed(1)}`);
+  if (result.ratio < 4.5) throw new Error(`${engine} ${width} ${theme}: contrast ${result.ratio.toFixed(2)}:1`);
+  if (!result.border) throw new Error(`${engine} ${width} ${theme}: button has no visible border`);
+  if (result.overlap) throw new Error(`${engine} ${width} ${theme}: button overlaps "${result.overlap}"`);
+}
+
+async function checkJumpWidth(page: Page, engine: string, width: number, makeUnseen: () => void, forceControl: boolean) {
+  await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+  const lane = page.locator('[data-part="jump-to-latest-lane"]');
+  const laneBefore = await lane.boundingBox();
+  await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
+  await settle(page);
+  makeUnseen();
+  await ensureJumpControl(lane, forceControl);
+  await page.locator('[data-part="jump-to-latest"]').waitFor({ timeout: 5_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
+  const laneAfter = await lane.boundingBox();
+  if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
+  for (const theme of themes) await checkJumpTheme(page, engine, width, theme);
+}
+
 async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => void, navigate = false, forceControl = false, widths = [1440, 390]) {
   if (navigate) await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
   await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5_000 }).catch(() => { throw new Error(`${engine}: timeline history did not load`); });
-  for (const width of widths) {
-    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
-    const lane = page.locator('.jump-lane, [data-part="jump-to-latest-lane"]').first();
-    const laneBefore = await lane.boundingBox();
-    await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
-    await settle(page);
-    makeUnseen();
-    if (forceControl) await lane.evaluate((element) => {
-      if (element.querySelector('[data-part="jump-to-latest"]')) return;
-      const button = document.createElement("button");
-      button.dataset.part = "jump-to-latest";
-      button.textContent = "jump to latest (1)";
-      element.append(button);
-    });
-    const button = page.locator('[data-part="jump-to-latest"]');
-    await button.waitFor({ timeout: 5_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
-    const laneAfter = await lane.boundingBox();
-    if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
-    for (const theme of themes) {
-      await page.evaluate((name) => { document.documentElement.dataset.fulcrumTheme = name; }, theme);
-      await settle(page);
-      const result = await jumpGeometry(page);
-      console.log(`jump ${engine.padEnd(8)} ${width} ${theme.padEnd(17)} text ${result.ratio.toFixed(2)}:1 border ${result.border ? "yes" : "no"} overlap ${result.overlap ? "yes" : "no"} button ${result.button.top.toFixed(1)}..${result.button.bottom.toFixed(1)} lane ${result.lane.top.toFixed(1)}..${result.lane.bottom.toFixed(1)}`);
-      if (result.ratio < 4.5) throw new Error(`${engine} ${width} ${theme}: contrast ${result.ratio.toFixed(2)}:1`);
-      if (!result.border) throw new Error(`${engine} ${width} ${theme}: button has no visible border`);
-      if (result.overlap) throw new Error(`${engine} ${width} ${theme}: button overlaps "${result.overlap}"`);
-    }
-  }
+  for (const width of widths) await checkJumpWidth(page, engine, width, makeUnseen, forceControl);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.evaluate(() => { document.documentElement.dataset.fulcrumTheme = "tokyo-night"; });
   await settle(page);
