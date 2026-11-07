@@ -11,7 +11,7 @@ import type { ServerWebSocket } from "bun";
 import { validateHostCommands } from "@fulcrum/zeta";
 
 type Json = Record<string, unknown>;
-export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog" | "broken-session" | "overflow" | "overflow-silent";
+export type Mode = "ok" | "busy" | "busy-once" | "incompatible" | "slow" | "slow-catalog" | "broken-session" | "overflow" | "overflow-silent";
 export type HistoryMode = "new" | "old";
 export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
@@ -259,6 +259,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let approvalAborted = false;
   let running = false;
   let rejectCreate = false;
+  let busyOnce = false;
   let delayedOpen = false;
   let catalogBusy = false;
   const decisions: Json[] = [];
@@ -403,6 +404,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         if (binding?.error) return reply({ error: { code: -32602, message: binding.error } });
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
+          if (mode === "busy-once" && !busyOnce) { busyOnce = true; return reply({ error: { code: -32004, message: "a turn is already running" } }); }
           if (running || rejectCreate) return reply({ error: { code: -32004, message: "a turn is already running" } });
           const created = meta(`s-new-${sessions.length}`, 0, { created_at: at(0), cwd: "/Users/dev/me/fun/fulcrum", retained_tail: 8, compaction_budget: 262144, override_audit: [], context_files: [], skill_catalog: [], agent_catalog: [], plan_mode: false, project_id: null, tool_allow: null, tool_deny: [] });
           sessions.unshift(created);
@@ -427,6 +429,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if (method === "resume") {
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
+          if (mode === "busy-once" && !busyOnce) { busyOnce = true; return reply({ error: { code: -32004, message: "a turn is already running" } }); }
           if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = String(params.session_id);
           applyHostBinding(active, binding?.commands);
@@ -547,6 +550,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
      */
     setMode(next: Mode) {
       mode = next;
+      busyOnce = false;
       if ((next === "overflow" || next === "overflow-silent") && controller) overflow(controller, "controller");
     },
     /** `false` makes the server not offer `served_turn_end`, like a zeta older than 8c03f606. */

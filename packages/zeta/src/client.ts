@@ -411,6 +411,24 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     });
   };
   const hostCommandsEnabled = () => options.hostCommands !== undefined && options.hostCommands !== null && negotiatedFeatures.includes("session_host_commands");
+  const retryDelay = (delay: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const abort = () => { if (timer) clearTimeout(timer); signal?.removeEventListener("abort", abort); reject(Object.assign(new Error("request aborted"), { name: "AbortError" })); };
+    timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, delay);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+  const retryBusy = async (request: () => Promise<unknown>, requestOptions: RequestOptions) => {
+    for (const delay of [0, 250, 500, 1_000]) {
+      if (delay) await Promise.race([retryDelay(delay, requestOptions.signal), closedPromise.then((error) => Promise.reject(error))]);
+      try { return await request(); }
+      catch (error) {
+        if ((error as { code?: unknown })?.code !== -32004 || delay === 1_000) throw error;
+      }
+    }
+  };
+  const performAttachWithRetry = (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) =>
+    retryBusy(() => performAttach(method, params, requestOptions), requestOptions);
   const performAttach = async (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
     const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
     if (closed) throw closedError;
@@ -438,10 +456,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const attach = (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
     const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
-    if (sessionId === null) return performAttach(method, params, requestOptions);
+    if (sessionId === null) return performAttachWithRetry(method, params, requestOptions);
     const previous = attachmentGates.get(sessionId);
-    const operation = previous?.catch(() => {}).then(() => performAttach(method, params, requestOptions))
-      ?? performAttach(method, params, requestOptions);
+    const operation = previous?.catch(() => {}).then(() => performAttachWithRetry(method, params, requestOptions))
+      ?? performAttachWithRetry(method, params, requestOptions);
     const gate = operation;
     attachmentGates.set(sessionId, gate);
     const clear = () => {
@@ -472,7 +490,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       params = { ...params };
       delete params.delivery_id;
     }
-    if (hostCommandsEnabled() && (method === "new_session" || method === "resume")) return attach(method, params, requestOptions);
+    if (method === "new_session" || method === "resume") {
+      if (hostCommandsEnabled()) return attach(method, params, requestOptions);
+      return retryBusy(() => rawRequest(method, params, requestOptions), requestOptions);
+    }
     const gate = ["send", "send_images", "steer"].includes(method) ? attachmentGates.get(params.session_id as string) : undefined;
     const result = gate ? gate.then(() => rawRequest(method, params, requestOptions)) : rawRequest(method, params, requestOptions);
     if (!hostCommandsEnabled() || (method !== "send" && method !== "send_images")) return result;

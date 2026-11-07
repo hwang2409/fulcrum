@@ -53,7 +53,7 @@ const client = await connectZeta({
 });
 ```
 
-`hostCommands(sessionId)` runs with a fresh value for every `new_session` and `resume`; `sessionId` is `null` for `new_session`. after zeta reports `host_binding_required` for a `send` or `send_images` request, fulcrum uses that request's `session_id` to resume with another fresh value, then retries once with the same `delivery_id`. supplier values and failures are never logged or copied into errors. servers that do not negotiate the feature never call the supplier.
+`new_session` and `resume` retry zeta's transient `-32004` busy error three times after 250, 500, and 1000 ms; the delay follows the request signal and is canceled when the client closes. `hostCommands(sessionId)` runs with a fresh value for every `new_session` and `resume`; `sessionId` is `null` for `new_session`. after zeta reports `host_binding_required` for a `send` or `send_images` request, fulcrum uses that request's `session_id` to resume with another fresh value, then retries once with the same `delivery_id`. supplier values and failures are never logged or copied into errors. servers that do not negotiate the feature never call the supplier.
 
 ## store
 
