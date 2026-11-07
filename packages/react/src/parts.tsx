@@ -201,25 +201,32 @@ const approvalEnd = (ended: RunEvent | undefined) => {
   return { decision, text: (decision && decisionWords[decision]) ?? endReasons[reason] ?? (decision === "abort" ? "canceled" : "ended") };
 };
 
-const ApprovalButton = ({ action, handler, sending, disabledReason, decide }: { action: "approve" | "deny"; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: "approve" | "deny", handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{action}</button> : null;
+type ApprovalAction = "approve" | "approve-always" | "deny";
+
+const ApprovalButton = ({ action, label = action, handler, sending, disabledReason, decide }: { action: ApprovalAction; label?: string; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: ApprovalAction, handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{label}</button> : null;
 
 const ApprovalActions = function ApprovalActions({
   sending,
   onApprove,
+  onApproveAlways,
+  approveAlwaysLabel,
   onDeny,
   disabledReason,
   decide,
 }: {
-  sending: "approve" | "deny" | undefined;
+  sending: ApprovalAction | undefined;
   onApprove?: Decide;
+  onApproveAlways?: Decide;
+  approveAlwaysLabel: string | undefined;
   onDeny?: Decide;
   disabledReason?: string;
-  decide: (action: "approve" | "deny", handler: Decide) => () => void;
+  decide: (action: ApprovalAction, handler: Decide) => () => void;
 }) {
-  if (!onApprove && !onDeny && !disabledReason) return null;
+  if (!onApprove && !onApproveAlways && !onDeny && !disabledReason) return null;
   const busy = Boolean(sending);
   return <div data-part="approval-actions">
     <ApprovalButton action="approve" handler={onApprove} sending={busy} disabledReason={disabledReason} decide={decide} />
+    {approveAlwaysLabel !== undefined ? <ApprovalButton action="approve-always" label={approveAlwaysLabel} handler={onApproveAlways} sending={busy} disabledReason={disabledReason} decide={decide} /> : null}
     <ApprovalButton action="deny" handler={onDeny} sending={busy} disabledReason={disabledReason} decide={decide} />
     {disabledReason ? <span role="status">{disabledReason}</span> : null}
   </div>;
@@ -258,13 +265,13 @@ function useDecisionFocus(pending: boolean, available: boolean, callId: string) 
   return { card, remember };
 }
 
-function approvalState(item: Extract<RunItem, { type: "approval" }>, sending: "approve" | "deny" | undefined, disabledReason: string | undefined) {
+function approvalState(item: Extract<RunItem, { type: "approval" }>, sending: ApprovalAction | undefined, disabledReason: string | undefined) {
   const pending = !item.ended;
   const end = approvalEnd(item.ended);
   const reason = item.request.type === "approval_request" ? item.request.disabled_reason ?? disabledReason : disabledReason;
   const buttonsEnabled = !reason && item.request.type === "approval_request" && item.request.state !== "resolving";
   const state = !pending ? "done" : sending ? "submitting" : item.request.type === "approval_request" ? item.request.state ?? "pending" : "pending";
-  const label = pending ? sending ? (sending === "approve" ? "approving" : "denying") : item.request.type === "approval_request" ? item.request.status : undefined : end.text;
+  const label = pending ? sending ? (sending === "deny" ? "denying" : "approving") : item.request.type === "approval_request" ? item.request.status : undefined : end.text;
   return { pending, end, reason, buttonsEnabled, state, label } as const;
 }
 
@@ -272,13 +279,15 @@ export const Approval = memo(function Approval({
   id,
   className,
   onApprove,
+  onApproveAlways,
+  approveAlwaysLabel = "always allow",
   onDeny,
   summary,
   body: Body = ToolBody,
   disabledReason,
-}: ItemProps & ToolViewProps & { onApprove?: Decide; onDeny?: Decide; disabledReason?: string }) {
+}: ItemProps & ToolViewProps & { onApprove?: Decide; onApproveAlways?: Decide; approveAlwaysLabel?: string; onDeny?: Decide; disabledReason?: string }) {
   const item = useItem(id);
-  const [sending, setSending] = useState<"approve" | "deny">();
+  const [sending, setSending] = useState<ApprovalAction>();
   const [decisionError, setDecisionError] = useState<string>();
   const labelId = useId();
   const request = item?.type === "approval" && item.request.type === "approval_request" ? item.request : undefined;
@@ -289,7 +298,7 @@ export const Approval = memo(function Approval({
   const requested: ToolItem = { id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false };
   const { pending, end, reason, buttonsEnabled, state, label } = approvalState(item, sending, disabledReason);
   // One decision per request: later clicks are ignored until the handler fails or the request resolves.
-  const decide = (action: "approve" | "deny", handler: Decide) => () => {
+  const decide = (action: ApprovalAction, handler: Decide) => () => {
     if (sending) return;
     focus.remember();
     setDecisionError(undefined);
@@ -329,7 +338,7 @@ export const Approval = memo(function Approval({
           <div data-part="tool-body">
             <Body item={requested} output="" state={state} />
           </div>
-          <ApprovalActions sending={sending} onApprove={buttonsEnabled ? onApprove : undefined} onDeny={buttonsEnabled ? onDeny : undefined} disabledReason={reason} decide={decide} />
+          <ApprovalActions sending={sending} onApprove={buttonsEnabled ? onApprove : undefined} onApproveAlways={buttonsEnabled ? onApproveAlways : undefined} approveAlwaysLabel={onApproveAlways ? approveAlwaysLabel : undefined} onDeny={buttonsEnabled ? onDeny : undefined} disabledReason={reason} decide={decide} />
           {decisionError ? <span role="alert" data-part="approval-error">{decisionError}</span> : null}
         </>
       ) : null}

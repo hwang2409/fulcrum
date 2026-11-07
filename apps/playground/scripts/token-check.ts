@@ -33,6 +33,8 @@ const expectedPlain: Record<string, number[]> = {
   "approval:r-edit-pending tool-diff": [1],
   "approval:r-write tool-lines": [],
   "approval:r-generic text-viewer": [], // a pending approval opens its arguments in the viewer, never cut
+  "approval:r-long-3 tool-args": [], // the long tool name and label demo: json arguments
+  "approval:r-long-2 tool-args": [],
 };
 
 type Run = [text: string, colored: boolean];
