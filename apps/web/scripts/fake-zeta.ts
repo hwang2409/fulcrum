@@ -124,6 +124,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
   const deliveries = new Map<string, Json>();
   const statuses = new Map<string, "queued" | "delivered" | "dropped">();
   let aborts = 0;
+  let rows = 0; // history row ids stay unique when `clearSent` empties `sent`
   let chat: { session: string; steers: string[]; aborted: boolean } | null = null;
   type Send = (event: Json) => void;
   const chatTurn = async (session: string, send: Send) => {
@@ -141,7 +142,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
       e("assistant_delta", { delta: word, kind: "assistant" });
     }
     e("assistant_message", { message: { role: "assistant", content: [text(reply)] } });
-    histories[session] = [...(histories[session] ?? []), { id: `reply-${sent.length}`, role: "assistant", content: [text(reply)], tool_result: null }];
+    histories[session] = [...(histories[session] ?? []), { id: `reply-${rows}`, role: "assistant", content: [text(reply)], tool_result: null }];
     // As in zeta: a turn with no tool call reaches no provider boundary, so steering still queued at its end is dropped.
     for (const id of turn.steers) {
       statuses.set(id, "dropped");
@@ -166,7 +167,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
     const accepted = method === "send" ? { accepted: true, session_id: active } : { accepted: true };
     if (delivery) { deliveries.set(delivery, accepted); statuses.set(delivery, method === "steer" ? "queued" : "delivered"); }
     if (method === "steer") { if (delivery) chat?.steers.push(delivery); return { result: accepted }; }
-    histories[active] = [...(histories[active] ?? []), { id: `sent-${sent.length}`, role: "user", content: [text(value)], ...(delivery ? { delivery_id: delivery } : {}), tool_result: null }];
+    histories[active] = [...(histories[active] ?? []), { id: `sent-${++rows}`, role: "user", content: [text(value)], ...(delivery ? { delivery_id: delivery } : {}), tool_result: null }];
     // After the reply, as zeta starts the turn once the send is persisted.
     queueMicrotask(() => void chatTurn(active, send));
     return { result: accepted };

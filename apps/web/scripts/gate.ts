@@ -316,6 +316,9 @@ try {
       if (await marker.getAttribute("aria-label") !== "run ended while disconnected; outcome unknown") throw new Error("the marker has no screen-reader text");
       await page.locator('.run-meta [data-part="run-status"][data-status="unknown"]', { hasText: "outcome unknown" }).waitFor();
       if (await page.getByText("a turn whose end the overflow hides", { exact: true }).count() !== 1) throw new Error("the prompt is not shown exactly once");
+      const end = await page.locator(".scroll").evaluate((element) => ({ gap: element.scrollHeight - element.clientHeight - element.scrollTop, last: [...element.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].at(-1)?.dataset.id }));
+      if (end.gap > 4) throw new Error(`the rebuilt run is ${Math.round(end.gap)} px from the bottom`);
+      if (!end.last?.startsWith("message:reply-")) throw new Error(`the rebuilt run ends with ${end.last}, not the reply the overflow hid`);
       await uniqueRows();
       await shoot(page, "overflow-outcome-unknown-1440");
       await page.locator("button.session", { hasText: "check every theme" }).click();
@@ -345,7 +348,8 @@ try {
       await settle(page);
       await page.locator(".dock textarea").fill("draft kept across disconnect");
       await fake.stop();
-      await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 });
+      // The previous checks' short connections continue the reconnect backoff, so the retry that finds the server gone can take up to 8 s.
+      await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 15_000 });
       // The command names the port the page was connected to, not a default.
       const command = await page.locator(".notice .command code").textContent();
       if (command !== `zeta serve --ws ${fake.port} --ws-origin ${origin}`) throw new Error(`the banner command is "${command}"`);
@@ -360,7 +364,7 @@ try {
       if (stale.length) throw new Error(`the session list shows live status "${stale.join(", ")}" while not connected`);
       await fake.start();
       await page.getByRole("button", { name: "retry now" }).click();
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(() => { throw new Error("retry now did not reconnect"); });
       await page.locator(".notice").waitFor({ state: "detached" });
       await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
       const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));
