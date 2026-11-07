@@ -865,7 +865,12 @@ function hostAttachmentHarness() {
     const added = committedItem(`before-${items.length}`);
     timeline.replace(items = [added, ...items], [{ index: 0, deleteCount: 0, items: [added] }]);
   };
-  return { append, prepend, scrollRef, view };
+  const replace = () => {
+    const index = items.length - 1;
+    const added = committedItem(`replacement-${items.length}`);
+    timeline.replace(items = [...items.slice(0, index), added], [{ index, deleteCount: 1, items: [added] }]);
+  };
+  return { append, prepend, replace, scrollRef, view };
 }
 
 const attachedHost = (testId: string) => {
@@ -877,6 +882,7 @@ const attachedHost = (testId: string) => {
 
 type TransferKind = "direct swap" | "null gap: 0 commits" | "null gap: 1 commit" | "null gap: N commits" | "owned -> host-owned" | "host-owned -> owned" | "unmount";
 type TransferInteraction = "idle pinned" | "idle unpinned" | "touch (active)" | "momentum" | "pending correction" | "pending jump";
+type TransferOutlineChange = "none" | "append" | "prepend" | "replace";
 
 const transferKinds: TransferKind[] = [
   "direct swap",
@@ -895,12 +901,15 @@ const transferInteractions: TransferInteraction[] = [
   "pending correction",
   "pending jump",
 ];
+const transferOutlineChanges: TransferOutlineChange[] = ["none", "append", "prepend", "replace"];
 
-// Every product-reachable transfer/state pair is present. Unmount has no post-transfer host by definition,
-// so those cells assert cleanup only instead of follow, append, anchor, and jump behavior.
-test.each(transferKinds.flatMap((transfer) => transferInteractions.map((interaction) => [transfer, interaction] as const)))(
-  "host transfer matrix: %s / %s",
-  (transfer, interaction) => {
+// Every product-reachable transfer/state/outline-change cell is present. Unmount has no post-transfer host by
+// definition, so those cells assert cleanup only instead of follow, append, anchor, and jump behavior.
+test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((interaction) =>
+  transferOutlineChanges.map((outlineChange) => [transfer, interaction, outlineChange] as const),
+)))(
+  "host transfer matrix: %s / %s / %s outline change",
+  (transfer, interaction, outlineChange) => {
     const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
     const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
     const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
@@ -944,8 +953,16 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.map((interact
     };
     globalThis.ResizeObserver = MatrixResizeObserver;
     const listenerCount = () => [...listeners.values()].flatMap((types) => [...types.values()]).reduce((sum, entries) => sum + entries.size, 0);
+    const viewportAnchor = (host: HTMLElement, scrollTop = host.scrollTop) => {
+      const rows = [...container.querySelectorAll<HTMLElement>("[data-virtual-id]")].map((row) => ({
+        id: row.dataset.virtualId!,
+        top: Number.parseFloat(row.style.transform.slice("translateY(".length)),
+      }));
+      const anchor = rows.filter(({ top }) => top <= scrollTop).at(-1)!;
+      return { id: anchor.id, offset: anchor.top - scrollTop };
+    };
     try {
-      const { append, prepend, view } = hostAttachmentHarness();
+      const { append, prepend, replace, view } = hostAttachmentHarness();
       let followRequest = 0;
       const startsOwned = transfer === "owned -> host-owned";
       mount(view("inner", startsOwned, followRequest));
@@ -969,12 +986,24 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.map((interact
       if (interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump") prepend();
       if (interaction === "momentum") act(() => oldHost.dispatchEvent(new Event("touchend")));
       const expectedTop = interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump" ? 3_072 : 3_000;
+      const anchorBefore = unpinned ? viewportAnchor(oldHost) : null;
 
-      const render = (target: "inner" | "outer" | "replacement" | "removed", owned = false, virtual = true) =>
-        act(() => root!.render(view(target, owned, followRequest, virtual)));
+      const changeOutline = () => {
+        if (outlineChange === "append") append();
+        else if (outlineChange === "prepend") prepend();
+        else if (outlineChange === "replace") replace();
+      };
+      const render = (target: "inner" | "outer" | "replacement" | "removed", owned = false, virtual = true, withOutlineChange = false) =>
+        act(() => {
+          if (withOutlineChange) changeOutline();
+          root!.render(view(target, owned, followRequest, virtual));
+        });
       let newHost: HTMLElement | null = null;
       if (transfer === "unmount") {
-        act(() => root!.unmount());
+        act(() => {
+          changeOutline();
+          root!.unmount();
+        });
         root = undefined;
         expect(oldHost.style.overflowAnchor).toBe("");
         expect(listenerCount()).toBe(0);
@@ -989,26 +1018,32 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.map((interact
           render("removed");
         }
         globalThis.ResizeObserver = MatrixResizeObserver;
-        render("outer");
+        render("outer", false, true, true);
         newHost = attachedHost("outer");
       } else if (transfer === "null gap: 0 commits") {
         // React clears and assigns the ref during one replacement commit; no committed render observes null.
-        render("replacement");
+        render("replacement", false, true, true);
         newHost = attachedHost("replacement");
       } else if (transfer === "owned -> host-owned") {
-        render("outer");
+        render("outer", false, true, true);
         newHost = attachedHost("outer");
       } else if (transfer === "host-owned -> owned") {
-        render("inner", true);
+        render("inner", true, true, true);
         newHost = q('[data-part="timeline-scroll"]');
       } else {
-        render("outer");
+        render("outer", false, true, true);
         newHost = attachedHost("outer");
       }
 
       expect(oldHost.style.overflowAnchor).toBe("");
-      if (unpinned) expect(newHost.scrollTop).toBeCloseTo(expectedTop, 0);
-      else expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+      if (unpinned) {
+        const expectedOutlineTop = outlineChange === "prepend" ? expectedTop + 72 : expectedTop;
+        expect(newHost.scrollTop).toBeCloseTo(expectedOutlineTop, 0);
+        expect(viewportAnchor(newHost).id).toBe(anchorBefore!.id);
+        expect(viewportAnchor(newHost).offset).toBeCloseTo(anchorBefore!.offset, 0);
+        append();
+        expect(q('[data-part="jump-to-latest"]')).toBeTruthy();
+      } else expect(newHost.scrollTop).toBeCloseTo(newHost.scrollHeight - newHost.clientHeight, 0);
       followRequest++;
       if (transfer === "host-owned -> owned") render("inner", true);
       else render(transfer === "null gap: 0 commits" ? "replacement" : "outer");
