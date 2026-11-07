@@ -747,21 +747,26 @@ test("host-owned Timeline uses the supplied scroll element without replacing its
 });
 
 function hostAttachmentHarness() {
-  const items = Array.from({ length: 300 }, (_, index) => committedItem(String(index)));
-  const { store } = timelineStore(items);
+  let items = Array.from({ length: 300 }, (_, index) => committedItem(String(index)));
+  const timeline = timelineStore(items);
   const scrollRef = { current: null as HTMLElement | null };
-  const view = (target: "inner" | "outer" | "replacement" | "removed", owned = false) => (
-    <RunProvider store={store}>
+  const view = (target: "inner" | "outer" | "replacement" | "removed", owned = false, followRequest = 0) => (
+    <RunProvider store={timeline.store}>
       <div data-testid="outer" ref={target === "outer" ? scrollRef : undefined}>
         <div data-testid="inner" ref={target === "inner" ? scrollRef : undefined} />
       </div>
       {target === "replacement" ? <div data-testid="replacement" ref={scrollRef} /> : null}
       {owned
-        ? <Timeline virtual />
-        : <Timeline virtual scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />}
+        ? <Timeline virtual followRequest={followRequest} />
+        : <Timeline virtual followRequest={followRequest} scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />}
     </RunProvider>
   );
-  return { scrollRef, view };
+  const append = () => {
+    const index = items.length;
+    const added = committedItem(String(index));
+    timeline.replace(items = [...items, added], [{ index, deleteCount: 0, items: [added] }]);
+  };
+  return { append, scrollRef, view };
 }
 
 const attachedHost = (testId: string) => {
@@ -814,6 +819,72 @@ test("Timeline keeps attachment correct while switching between owned and host-o
   expect(q('[data-part="timeline-scroll"]').style.overflowAnchor).toBe("none");
   act(() => root!.render(view("outer")));
   attachedHost("outer");
+});
+
+test("follow, pinning, jump control, and bounded mounts survive every scroll-host transition", () => {
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const positions = new WeakMap<HTMLElement, number>();
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+  });
+  try {
+    const { append, view } = hostAttachmentHarness();
+    let followRequest = 0;
+    let target: "inner" | "outer" | "replacement" = "inner";
+    const render = (owned = false) => act(() => root!.render(view(target, owned, followRequest)));
+    const exercise = (host: HTMLElement, owned = false) => {
+      host.scrollTop = host.scrollHeight;
+      act(() => host.dispatchEvent(new Event("scroll")));
+      append();
+      expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+      host.scrollTop -= 1_000;
+      act(() => {
+        host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+        host.dispatchEvent(new Event("scroll"));
+      });
+      append();
+      const jump = q('[data-part="jump-to-latest"]');
+      expect(jump).toBeTruthy();
+      act(() => jump.click());
+      expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+      host.scrollTop -= 1_000;
+      act(() => host.dispatchEvent(new Event("scroll")));
+      followRequest++;
+      render(owned);
+      expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+      expect(container.querySelectorAll("[data-virtual-id]").length).toBeLessThanOrEqual(200);
+    };
+
+    mount(view(target));
+    exercise(attachedHost(target));
+    target = "outer";
+    render();
+    exercise(attachedHost(target));
+    target = "replacement";
+    render();
+    const replacement = attachedHost(target);
+    exercise(replacement);
+    act(() => root!.render(view("removed", false, followRequest)));
+    expect(replacement.style.overflowAnchor).toBe("");
+    target = "inner";
+    render();
+    exercise(attachedHost(target));
+    render(true);
+    exercise(q('[data-part="timeline-scroll"]'), true);
+    target = "outer";
+    render();
+    exercise(attachedHost(target));
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+  }
 });
 
 test("useVirtualList ignores a stale outline hint and resets when the outline owner changes", () => {
