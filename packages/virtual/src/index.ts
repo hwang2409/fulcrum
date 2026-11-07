@@ -41,7 +41,7 @@ export type MutationResult = {
 export type VirtualAction = {
   sequence: number;
   time: number;
-  type: "outline" | "viewport" | "measure" | "loaded" | "anchor" | "correction" | "scroll-to-id";
+  type: "outline" | "viewport" | "measure" | "invalidate" | "loaded" | "anchor" | "correction" | "scroll-to-id";
   detail: Readonly<Record<string, number | boolean | null>>;
 };
 export type VirtualSnapshot<Id extends string = string> = {
@@ -85,6 +85,7 @@ export type Virtualizer<Id extends string = string> = {
   setOutline(items: readonly OutlineItem<Id>[], update?: OutlineUpdate<Id> | null): void;
   setViewport(viewport: Viewport): void;
   measure(id: Id, size: number): void;
+  invalidateMeasurements(ids: Iterable<Id>): void;
   setLoaded(ids: Iterable<Id> | "all"): void;
   setFollow(follow: boolean): void;
   beforeMutation(options?: { mode?: "anchor" | "shift" }): MutationToken<Id>;
@@ -547,11 +548,16 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
           if (ids.has(id)) throw new Error("outline ids must be unique");
           ids.add(id);
         }
+        const appendedFrom = !pinned && appliedOutline && appliedOutline.length <= items.length
+          && appliedOutline.every(({ id }, index) => items[index]?.id === id)
+          ? appliedOutline.length
+          : -1;
         measuredByKind.clear();
         idsByKind = new Map();
         totalMeasuredSize = 0;
         layout = new Sequence(items.map(entry));
         for (const id of unseenIds) if (!ids.has(id)) unseenIds.delete(id);
+        if (appendedFrom >= 0) for (let index = appendedFrom; index < items.length; index++) unseenIds.add(items[index]!.id);
       }
       appliedOutline = items;
       rangeCursorIndex = cursorId === undefined ? 0 : (layout.indexOf(cursorId) ?? Math.min(rangeCursorIndex, Math.max(0, layout.length - 1)));
@@ -583,6 +589,27 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       // A size change is not user input. Keep an already-following viewport following the new bottom.
       if (wasPinned) pinned = true;
       log("measure", { index, size, totalSize: layout.total });
+      changed();
+    },
+    invalidateMeasurements(ids) {
+      let count = 0;
+      for (const id of ids) {
+        const size = measured.get(id);
+        if (size === undefined) continue;
+        measured.delete(id);
+        totalMeasuredSize -= size;
+        const index = layout.indexOf(id);
+        if (index === undefined) continue;
+        const item = layout.at(index)!;
+        measuredByKind.get(item.kind)?.delete(id);
+        const estimate = checkSize(kindMedians.get(item.kind) ?? options.estimateSize(item.kind));
+        const previousSize = layout.valueAt(index);
+        layout.update(index, estimate);
+        if (index < rangeCursorIndex) rangeCursorStart += estimate - previousSize;
+        count++;
+      }
+      if (count === 0) return;
+      log("invalidate", { count, totalSize: layout.total });
       changed();
     },
     setLoaded(ids) {

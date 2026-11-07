@@ -364,6 +364,11 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
 
 const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
   const row = object(value, "history row");
+  if (row.event === "sub_agent_receipt" || row.event === "notification_by_kind"
+      || row.event === "child_idle" || row.event === "child_question" || row.event === "child_question_withdrawn") {
+    const data = optionalObject(row.data, "history row data") ?? {};
+    if (childNotification(row.event, data)) return fromZetaEvent(row);
+  }
   if (row.event === "usage") return fromZetaEvent(row);
   if (row.event === "delivery_status") return fromZetaEvent(row);
   if (row.event === "served_turn_end") return []; // a turn-end fact for `servedTurnOutcome`, not a transcript row

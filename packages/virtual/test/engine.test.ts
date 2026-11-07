@@ -72,6 +72,34 @@ describe("prefix and range math", () => {
     virtual.measure("b-0", 80);
     expect(virtual.getSnapshot().totalSize).toBe(240);
   });
+  test("full same-run rebuild keeps surviving unseen rows and adds only an exact suffix", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10, bottomThreshold: 0 });
+    virtual.setOutline(Array.from({ length: 5 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    virtual.setLoaded("all");
+    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
+    virtual.setOutline(Array.from({ length: 7 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    expect(virtual.getSnapshot().unseenCount).toBe(2);
+    virtual.setOutline([
+      { id: "row-0", kind: "row" },
+      { id: "replacement", kind: "row" },
+      ...Array.from({ length: 5 }, (_, index) => ({ id: `row-${index + 2}`, kind: "row" })),
+    ]);
+    expect(virtual.getSnapshot().unseenCount).toBe(2);
+    virtual.scrollToEnd();
+    virtual.setOutline(Array.from({ length: 8 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    expect(virtual.getSnapshot().unseenCount).toBe(0);
+  });
+
+  test("invalidating changed-row measurements removes their cached size", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10 });
+    virtual.setOutline([{ id: "changed", kind: "row" }, { id: "stable", kind: "row" }]);
+    virtual.measure("changed", 30);
+    virtual.measure("stable", 20);
+    virtual.invalidateMeasurements(["changed"]);
+    expect(virtual.snapshotCache().sizes).toEqual([["stable", 20]]);
+    expect(virtual.getSnapshot().totalSize).toBe(30);
+  });
+
   test("restores measured sizes and kind medians by stable id", () => {
     const first = createVirtualizer({ estimateSize: () => 100 });
     first.setOutline([{ id: "a", kind: "x" }, { id: "b", kind: "x" }]);

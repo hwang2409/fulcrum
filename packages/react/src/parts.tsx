@@ -1,7 +1,7 @@
 import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type ReactNode, type RefObject } from "react";
 import type { ApprovalDecision, OutlineChange, RunEvent, RunItem } from "@fulcrum/core";
 import type { VirtualCache } from "@fulcrum/virtual";
-import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot } from "./hooks.js";
+import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot, type RunStore } from "./hooks.js";
 import { HighlightContext, Tokens, useTokens } from "./highlight.js";
 import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
@@ -592,10 +592,21 @@ const useUnconstrainedWarning: (enabled: boolean, hostOwned: boolean, scroll: Re
       });
     }, [enabled, hostOwned, itemCount, mountedCount, scroll])
   : () => {};
-const keyForStore = (store: object) => {
+const keyForStore = (store: RunStore) => {
+  if (store.runId !== undefined) return `run:${store.runId}`;
   let key = storeKeys.get(store);
   if (key === undefined) { key = nextStoreKey++; storeKeys.set(store, key); }
-  return key;
+  return `store:${key}`;
+};
+
+const sameValue = (left: unknown, right: unknown): boolean => {
+  if (Object.is(left, right)) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  const leftKeys = Object.keys(left);
+  const rightRecord = right as Record<string, unknown>;
+  return leftKeys.length === Object.keys(rightRecord).length && leftKeys.every((key) =>
+    Object.prototype.hasOwnProperty.call(rightRecord, key)
+      && sameValue((left as Record<string, unknown>)[key], rightRecord[key]));
 };
 
 const ResyncStatus = () => {
@@ -613,15 +624,21 @@ const ResyncStatus = () => {
 /** Pass a stable `renderers` object (module scope or memoized) so appends do not re-render every row. */
 export const Timeline = memo(function Timeline(props: TimelineProps) {
   const store = useRunStore();
-  return <><ResyncStatus /><TimelineForStore key={keyForStore(store)} {...props} store={store} /></>;
+  const runKey = keyForStore(store);
+  return <><ResyncStatus /><TimelineForStore key={runKey} {...props} store={store} runKey={runKey} /></>;
 });
 
-const TimelineForStore = memo(function TimelineForStore({ store, renderers, className, virtual, scrollRef, followRequest, renderJumpToLatest, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: object }) {
+const TimelineForStore = memo(function TimelineForStore({ store, runKey, renderers, className, virtual, scrollRef, followRequest, renderJumpToLatest, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: RunStore; runKey: string }) {
   const { items, change } = useTimelineSnapshot();
+  const priorStore = useRef(store);
+  const invalidMeasurements = useMemo(() => priorStore.current === store ? undefined : items
+    .filter(({ id }) => !sameValue(priorStore.current.getItem(id), store.getItem(id)))
+    .map(({ id }) => id), [items, store]);
   const enabled = virtual ?? items.length > 200;
   const ownedScrollRef = useRef<HTMLDivElement>(null);
   const activeScrollRef = scrollRef ?? ownedScrollRef;
-  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef: activeScrollRef, enabled, outlineUpdate: change, resetKey: store, cache: initialViewport?.cache });
+  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef: activeScrollRef, enabled, outlineUpdate: change, resetKey: runKey, invalidateMeasurements: invalidMeasurements, cache: initialViewport?.cache });
+  useLayoutEffect(() => { priorStore.current = store; }, [store]);
   useUnconstrainedWarning(enabled, !!scrollRef, ownedScrollRef, items.length, list.snapshot.rows.length);
   const priorFollowRequest = useRef(followRequest);
   useLayoutEffect(() => {

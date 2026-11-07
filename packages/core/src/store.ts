@@ -55,6 +55,8 @@ const mergeSplices = (base: readonly OutlineSplice[], edits: readonly OutlineSpl
 };
 
 export interface StoreOptions {
+  /** Stable identity for replacement snapshots of one logical run. Different runs must use different non-empty ids. */
+  readonly runId?: string;
   /** Called when validated reduction still throws. The store stays readable but refuses dispatches until `resync`. */
   onError?: (error: unknown) => void;
 }
@@ -83,6 +85,7 @@ const outlineSuffixLength = (older: readonly OutlineItem[], newer: readonly Outl
   return older.every((item, index) => item.id === newer[offset + index]?.id) ? offset : -1;
 };
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
+  if (options.runId === "") throw new RangeError("runId must be non-empty");
   let entities = new Map<string, RunItem>();
   let messageAliases = new Map<string, string>();
   let current: RunState = structuredClone(initialState);
@@ -263,6 +266,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   }
 
   return {
+    get runId() { return options.runId; },
     getState() {
       if (!notifying) flush(), flushPrepend();
       return current;

@@ -7,6 +7,16 @@ const message = (text: string) => ({
   content: [{ type: "text", text }],
 });
 
+test("store exposes logical-run identity without scheduling reducer work", () => {
+  let scheduled = 0;
+  const identified = createRunStore(() => { scheduled++; }, { runId: "run-1" });
+  const anonymous = createRunStore(() => {});
+  expect(identified.runId).toBe("run-1");
+  expect(anonymous.runId).toBeUndefined();
+  expect(scheduled).toBe(0);
+  expect(() => createRunStore(() => {}, { runId: "" })).toThrow("runId must be non-empty");
+});
+
 test("100 dispatches in one burst notify subscribers exactly once", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));

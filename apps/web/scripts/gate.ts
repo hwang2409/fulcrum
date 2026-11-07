@@ -630,11 +630,41 @@ try {
       await page.keyboard.press("Escape");
       if (await page.getByRole("listbox").count()) throw new Error("Escape did not close the picker");
     });
-    await check("a 400-row history opens in virtual mode and lands at the bottom", async () => {
-      await page.locator("button.session", { hasText: "400 rows" }).click();
+    await check("a 1,000-row history opens in virtual mode and lands at the bottom", async () => {
+      await page.locator("button.session", { hasText: "1,000 rows" }).click();
       await page.locator('[data-part="timeline"][data-virtual="true"]').waitFor({ timeout: 10_000 });
-      await page.getByText("frame 399 took").waitFor({ timeout: 5000 });
+      await page.getByText("frame 999 took").waitFor({ timeout: 5000 });
       if (!(await page.evaluate(() => location.hash.includes("s-long")))) throw new Error("selection not in the url");
+      const gap = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+      if (gap > 1) throw new Error(`${Math.round(gap)} px from the bottom`);
+    });
+    await check("an unpinned 1,000-row run keeps its anchor through store replacement", async () => {
+      const anchorId = "user:l500";
+      const scroll = page.locator('[data-part="timeline-scroll"]');
+      await page.evaluate(({ anchorId }) => {
+        const engine = (window as typeof window & { __fulcrumVirtual?: { scrollToId(id: string, offset: number): number } }).__fulcrumVirtual;
+        if (!engine) throw new Error("no virtualizer debug handle");
+        document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop = engine.scrollToId(anchorId, 17);
+      }, { anchorId });
+      await settle(page);
+      const offset = async () => {
+        const row = await page.locator(`[data-virtual-id="${anchorId}"]`).boundingBox();
+        const box = await scroll.boundingBox();
+        if (!row || !box) throw new Error("anchor row is not mounted");
+        return row.y - box.y;
+      };
+      const before = await offset();
+      if (!(await page.locator('[data-part="jump-to-latest"]').count())) throw new Error("reader stayed pinned after moving to the middle");
+      await fake.stop();
+      await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 });
+      await fake.start();
+      await page.getByRole("button", { name: "retry now" }).click();
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+      await page.locator(`[data-virtual-id="${anchorId}"]`).waitFor({ timeout: 10_000 });
+      await settle(page);
+      const after = await offset();
+      if (Math.abs(after - before) > 1) throw new Error(`anchor moved ${Math.abs(after - before).toFixed(2)} px`);
+      if (!(await page.locator('[data-part="jump-to-latest"]').count())) throw new Error("replacement re-enabled follow mode");
     });
     await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
       await page.locator("button.session", { hasText: "check every theme" }).click();

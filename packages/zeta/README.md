@@ -58,6 +58,8 @@ const client = await connectZeta({
 
 The client retries a desynced history load immediately, then after 0.5, 1, 2, 4, and 8 seconds: 15.5 seconds total. It records the final error in store diagnostics. `retrySession(id)` starts an app-owned retry. The web app passes it to `RunProvider.onRetry`; normal socket reconnect creates a fresh client and rebuilds the open session from history.
 
+Every session store exposes the zeta session id as its Fulcrum `runId`. A replay or reconnect therefore replaces transport state without resetting a mounted React timeline for that session. The unscoped protocol-error store has no `runId`.
+
 The client requests `served_turn_end`. Live `turn_start` then includes `data.turn_id`, and `client.servedTurn(sessionId)` returns the last id. `fromZetaHistory` skips durable `served_turn_end` rows. `servedTurnOutcome(rows, turnId)` maps the newest matching reason: `completed` stays `completed`, `user_stop` becomes `cancelled`, `error` becomes `failed`, and `disconnect` becomes `disconnected`.
 
 The web app marks an outcome only when a session was running at an `output_overflow` close (`-32011`) and is idle after reconnect. It uses zeta's recorded outcome, or `unknown` when an older server or history has no matching end. An ordinary drop, a silent overflow close, another session, or a turn still running after reconnect stays unmarked. A socket that closes within 10 seconds continues reconnect backoff at 0.5, 1, 2, 4, 8, then every 10 seconds.
