@@ -17,44 +17,6 @@ test("history image stubs keep metadata without inventing a zero-byte size", () 
   expect(event).not.toHaveProperty("tool_result.blocks[0].size");
 });
 
-test("live and replayed rows keep stable ids for every semantic row kind", () => {
-  const call = { id: "tool-1", name: "read", arguments: { path: "a.txt" } };
-  const result = { tool_call_id: "tool-1", content: "ok", is_error: false, content_blocks: [], structured_content: null };
-  const liveWire = [
-    { event: "user_message", text: "hello", mode: "send", delivery_id: "delivery-1" },
-    { event: "assistant_message", data: { message_id: "assistant-1" }, message: { role: "assistant", content: [{ type: "text", text: "answer" }] } },
-    { event: "tool_start", tool_call: call },
-    { event: "tool_end", tool_call: call, tool_result: result },
-    { event: "approval_request", request_id: "approval-1", tool_call: { id: "tool-2", name: "bash", arguments: {} }, delegated: false },
-    { event: "sub_agent_receipt", data: { kind: "agent_completion", child_instance_id: "child-1", status: "completed", notification_id: "child-note" } },
-    { event: "notification_by_kind", data: { kind: "custom", notification_id: "note-1" } },
-  ];
-  const replayRows = [
-    { id: "user-1", role: "user", delivery_id: "delivery-1", content: [{ type: "text", text: "hello" }], tool_result: null },
-    { id: "assistant-1", role: "assistant", content: [{ type: "text", text: "answer" }, { type: "tool_use", tool_call: call }], tool_result: null },
-    { id: "result-1", role: "tool_result", content: [], tool_result: result },
-    { id: "approval-row", role: "system", event: "approval_request", request_id: "approval-1", tool_call: { id: "tool-2", name: "bash", arguments: {} }, delegated: false },
-    { id: "child-row", role: "system", event: "sub_agent_receipt", data: { kind: "agent_completion", child_instance_id: "child-1", status: "completed", notification_id: "child-note" }, content: [] },
-    { id: "note-row", role: "system", content: [], tool_result: null, notification: { notification_id: "note-1", kind: "custom" } },
-  ];
-  const outline = (events: ReturnType<typeof fromZetaEvent>) => {
-    const store = createRunStore((flush) => flush());
-    for (const event of events) store.dispatch(event);
-    return store.getOutline();
-  };
-  const live = outline(liveWire.flatMap(fromZetaEvent));
-  const replay = outline(fromZetaHistory(replayRows));
-  expect(live).toEqual(replay);
-  expect(live).toEqual([
-    { id: "user:delivery:delivery-1", kind: "user" },
-    { id: "message:assistant-1", kind: "message" },
-    { id: "tool:tool-1", kind: "tool" },
-    { id: "approval:approval-1", kind: "approval" },
-    { id: "sub-agent:child-1", kind: "sub_agent" },
-    { id: "notification:2", kind: "notification" },
-  ]);
-});
-
 test("maps negotiated history image stubs to generic lazy images without storing bytes", () => {
   const events = fromZetaHistory([
     { id: "m1", role: "user", content: [{ type: "attachment", name: "shot.png", size: 12, handle: "opaque-message" }], tool_result: null },

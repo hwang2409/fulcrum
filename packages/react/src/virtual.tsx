@@ -40,8 +40,6 @@ export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   outlineUpdate?: OutlineUpdate<Id> | null;
   /** Resets the virtual engine when the outline owner changes. */
   resetKey?: unknown;
-  /** Rows whose content changed while their stable ids survived an outline replacement. */
-  invalidateMeasurements?: readonly Id[];
 };
 
 export type VirtualListState<Id extends string> = {
@@ -104,14 +102,13 @@ export function useVirtualList<Id extends string>(
     if (appliedOutline.current !== outline) {
       appliedOutline.current = outline;
       const token = engine.beforeMutation();
-      if (options.invalidateMeasurements) engine.invalidateMeasurements(options.invalidateMeasurements);
       engine.setOutline(outline, options.outlineUpdate);
       engine.setLoaded("all");
       if (initial.current) initial.current = false;
       else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
     }
     wasEnabled.current = options.enabled !== false;
-  }, [engine, outline, options.enabled, options.invalidateMeasurements, options.outlineUpdate, options.resetKey, resetPending]);
+  }, [engine, outline, options.enabled, options.outlineUpdate, options.resetKey, resetPending]);
 
   useLayoutEffect(() => {
     const transfer = (next: HTMLElement | null) => {
@@ -147,13 +144,6 @@ export function useVirtualList<Id extends string>(
         for (const [id, size] of pendingEntries.current) engine.measure(id, size);
         pendingEntries.current.clear();
         engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
-        // A late layout pass can leave WebKit a few pixels behind the new end after the measurement correction.
-        // Re-apply the existing follow intent only when the DOM has not moved independently since the last scroll.
-        const { pinned } = engine.getSnapshot();
-        if (pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5) {
-          container.scrollTop = engine.scrollToEnd();
-          lastScrollTop.current = container.scrollTop;
-        }
       };
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
@@ -183,14 +173,10 @@ export function useVirtualList<Id extends string>(
           return;
         }
         const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
-        // A shorter outline or a taller box (a reconnect banner leaving) makes the browser clamp a pinned reader's scroll
-        // to the new end, often before the box's ResizeObserver runs. Landing on the end is following, not the reader's
-        // move up, so the engine keeps its follow intent.
-        const clampedToEnd = before.pinned && container.scrollTop >= container.scrollHeight - container.clientHeight - 0.5;
-        if (!correction && !clampedToEnd && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+        if (!correction && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
         lastScrollTop.current = container.scrollTop;
-        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: clampedToEnd ? "programmatic" : "user" });
-        if (correction || clampedToEnd) return;
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
+        if (correction) return;
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = setTimeout(finishScroll, 150);
       };
