@@ -9,6 +9,37 @@ async function credentials(fake: Awaited<ReturnType<typeof startFakeZeta>>) {
   return { url: `ws://127.0.0.1:${fake.port}/`, token: discovery.controller_token, observerToken: discovery.observer_token };
 }
 
+const SOCKET_EVENT_DEADLINE_MS = 10_000;
+
+async function closeSockets(sockets: readonly WebSocket[]) {
+  await Promise.all(sockets.map((socket) => {
+    if (socket.readyState === WebSocket.CLOSED) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      socket.addEventListener("close", () => resolve(), { once: true });
+      socket.close();
+    });
+  }));
+}
+
+function waitForSocketEvent<K extends "open" | "message" | "close">(
+  socket: WebSocket,
+  eventName: K,
+  involvedSockets: readonly WebSocket[],
+): Promise<WebSocketEventMap[K]> {
+  return new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => {
+      void closeSockets(involvedSockets).then(
+        () => reject(new Error(`timed out waiting for websocket ${eventName}`)),
+        (error) => reject(new Error(`timed out waiting for websocket ${eventName}; cleanup failed`, { cause: error })),
+      );
+    }, SOCKET_EVENT_DEADLINE_MS);
+    socket.addEventListener(eventName, (event) => {
+      clearTimeout(deadline);
+      resolve(event as WebSocketEventMap[K]);
+    }, { once: true });
+  });
+}
+
 const hostCommands = () => [{
   name: "gamma-render",
   executable: "/opt/gamma/render",
@@ -60,22 +91,16 @@ test("fake zeta keeps the new controller after an old controller closes late", a
     fake.setMode("overflow-silent");
     fake.setMode("ok");
     const current = new WebSocket(connection.url, ["zeta.v1", `zeta.bearer.${connection.token}`]);
-    await new Promise<void>((resolve, reject) => {
-      current.onerror = () => reject(new Error("new controller failed to connect"));
-      current.onopen = () => resolve();
-    });
-    const currentHello = new Promise<{ result?: { protocol_version: string }; error?: unknown }>((resolve, reject) => {
-      current.onerror = () => reject(new Error("new controller failed during hello"));
-      current.onmessage = (event) => resolve(JSON.parse(String(event.data)));
-    });
+    await waitForSocketEvent(current, "open", [current]);
+    const currentHello = waitForSocketEvent(current, "message", [current]);
     current.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "hello", params: { role: "controller", features: [] } }));
-    await expect(currentHello).resolves.toMatchObject({ result: { protocol_version: "1.2" } });
+    await expect(currentHello.then((event) => JSON.parse(String(event.data)))).resolves.toMatchObject({ result: { protocol_version: "1.2" } });
     const rejected = new WebSocket(connection.url, ["zeta.v1", `zeta.bearer.${connection.token}`]);
-    const response = await new Promise<{ error?: { code: number; message: string } }>((resolve, reject) => {
-      rejected.onerror = () => reject(new Error("third controller failed before hello"));
-      rejected.onmessage = (event) => resolve(JSON.parse(String(event.data)));
-      rejected.onopen = () => rejected.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "hello", params: { role: "controller", features: [] } }));
-    });
+    const rejectedOpen = waitForSocketEvent(rejected, "open", [current, rejected]);
+    const rejectedMessage = waitForSocketEvent(rejected, "message", [current, rejected]);
+    await rejectedOpen;
+    rejected.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "hello", params: { role: "controller", features: [] } }));
+    const response = JSON.parse(String((await rejectedMessage).data)) as { error?: { code: number; message: string } };
     expect(response.error).toMatchObject({ code: -32001, message: "server busy" });
     rejected.close();
     old.close();
@@ -83,7 +108,7 @@ test("fake zeta keeps the new controller after an old controller closes late", a
   } finally {
     await fake.close();
   }
-});
+}, SOCKET_EVENT_DEADLINE_MS + 5_000);
 
 test("fake zeta releases the controller immediately after overflow-silent termination", async () => {
   const fake = await startFakeZeta({ origins: [], live: false, overflowSilentCloseDelayMs: 20 });
@@ -91,24 +116,18 @@ test("fake zeta releases the controller immediately after overflow-silent termin
     const connection = await credentials(fake);
     const first = await connectZeta({ url: connection.url, token: connection.token });
     const secondSocket = new WebSocket(connection.url, ["zeta.v1", `zeta.bearer.${connection.token}`]);
-    await new Promise<void>((resolve, reject) => {
-      secondSocket.onerror = () => reject(new Error("new controller failed to connect"));
-      secondSocket.onopen = () => resolve();
-    });
+    await waitForSocketEvent(secondSocket, "open", [secondSocket]);
     fake.setMode("overflow-silent");
     fake.setMode("ok");
-    const hello = new Promise<{ result?: { protocol_version: string }; error?: unknown }>((resolve, reject) => {
-      secondSocket.onerror = () => reject(new Error("new controller failed during hello"));
-      secondSocket.onmessage = (event) => resolve(JSON.parse(String(event.data)));
-    });
+    const hello = waitForSocketEvent(secondSocket, "message", [secondSocket]);
     secondSocket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "hello", params: { role: "controller", features: [] } }));
-    await expect(hello).resolves.toMatchObject({ result: { protocol_version: "1.2" } });
+    await expect(hello.then((event) => JSON.parse(String(event.data)))).resolves.toMatchObject({ result: { protocol_version: "1.2" } });
     secondSocket.close();
     first.close();
   } finally {
     await fake.close();
   }
-});
+}, SOCKET_EVENT_DEADLINE_MS + 5_000);
 
 test("fake zeta validates host commands and requires a fresh binding after disconnect", async () => {
   const fake = await startFakeZeta({ origins: [], live: false });
