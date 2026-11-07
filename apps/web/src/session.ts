@@ -484,7 +484,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     const statusOutcome = status.session?.session_id === id && status.state === "idle" ? statusTurnOutcome(status.last_turn_outcome, interrupted?.turn) : undefined;
     if (statusOutcome) return statusOutcome;
     if (!interrupted) return status.session?.session_id === id && status.state === "idle" ? statusTurnOutcome(status.last_turn_outcome) : undefined;
-    return (interrupted.turn && servedTurnOutcome(rows, interrupted.turn)) ?? "unknown";
+    return interrupted.turn ? servedTurnOutcome(rows, interrupted.turn) ?? "unknown" : "unknown";
   };
   let openGeneration = 0;
   let openAbort: AbortController | null = null;
