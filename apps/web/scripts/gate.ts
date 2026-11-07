@@ -6,7 +6,8 @@
 // title, the exact `zeta serve --ws-origin` command, or a retry; a session list, history, markdown, highlighting,
 // tool card, approval, or follow-bottom that does not work; a reconnect that loses or duplicates rows; a drawer,
 // theme picker, or session list that the keyboard cannot drive; a fresh zeta where the page cannot start a session;
-// a run header that says "running" while an approval waits; or a discovery retry that logs an error.
+// a run header that says "running" while an approval waits; an output overflow that marks the wrong run, or none, or
+// reconnects every 0.5 s; or a discovery retry that logs an error.
 // Screenshots go to $WEB_SHOTS (default apps/web/gate-artifacts).
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -292,7 +293,7 @@ try {
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
       await page.locator(".dock textarea").fill(prompt);
       await page.locator(".dock").getByRole("button", { name: "send" }).click();
-      await page.locator('.run-meta [data-part="run-status"][data-status="running"]').waitFor({ timeout: 5000 });
+      await page.locator('.run-meta .state[data-status="running"]').waitFor({ timeout: 5000 });
       const before = hellos();
       fake.setMode(mode);
       await page.locator(".notice", { hasText: notice }).waitFor({ timeout: 3000 });
@@ -309,7 +310,7 @@ try {
     await check("an overflow that hides a turn's end marks that run outcome unknown until its next run starts", async () => {
       if (await overflowThroughTurn("overflow", "a turn whose end the overflow hides", "connection fell behind") < 1) throw new Error("the server never overflowed a reconnect");
       const marker = page.locator('[data-part="run-end-marker"]');
-      await marker.waitFor({ timeout: 5000 });
+      await marker.waitFor({ timeout: 5000 }).catch(() => { throw new Error("no outcome-unknown marker after the overflow hid the turn's end"); });
       await settle(page);
       const inView = await marker.evaluate((node) => { const box = node.getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight; });
       if (!inView) throw new Error("the end marker is not in view");
@@ -330,13 +331,13 @@ try {
       await page.locator(".dock").getByRole("button", { name: "send" }).click();
       await marker.waitFor({ state: "detached", timeout: 5000 });
       await idleServer();
-      await page.locator('.run-meta [data-part="run-status"][data-status="idle"]').waitFor({ timeout: 5000 });
+      await page.locator('.run-meta .state[data-status="idle"]').waitFor({ timeout: 5000 });
       if (await marker.count()) throw new Error("a run seen to its end was marked outcome unknown");
       fake.clearSent();
     });
     await check("a silent overflow reads as a lost connection, backs off, and marks no run", async () => {
       await overflowThroughTurn("overflow-silent", "a turn cut by a silent overflow", "connection lost");
-      await page.locator('.run-meta [data-part="run-status"][data-status="idle"]').waitFor({ timeout: 5000 });
+      await page.locator('.run-meta .state[data-status="idle"]').waitFor({ timeout: 5000 });
       if (await page.locator('[data-part="run-end-marker"]').count()) throw new Error("a close without the overflow frame marked the run");
       if (await page.getByText("a turn cut by a silent overflow", { exact: true }).count() !== 1) throw new Error("the prompt is not shown exactly once");
       await uniqueRows();
