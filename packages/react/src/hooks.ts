@@ -25,7 +25,7 @@ export type RunStore = Pick<
   | "getOutlineSnapshot"
   | "subscribe"
   | "subscribeOutline"
-> & Partial<Pick<ReturnType<typeof createRunStore>, "getDiagnostics" | "subscribeDiagnostics">>;
+> & Partial<Pick<ReturnType<typeof createRunStore>, "runId" | "getDiagnostics" | "subscribeDiagnostics">>;
 
 const StoreContext = createContext<RunStore | null>(null);
 const RetryContext = createContext<(() => void) | undefined>(undefined);

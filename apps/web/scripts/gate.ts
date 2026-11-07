@@ -86,6 +86,23 @@ function audit(minHeight: number) {
 }
 
 const settle = (page: Page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+const stableRowOffset = (page: Page, id: string, engine: string, phase: string) => page.evaluate(async ({ id, engine, phase }) => {
+  let prior: number | null = null;
+  let stable = 0;
+  const seen: string[] = [];
+  for (let frame = 0; frame < 240; frame++) {
+    await new Promise(requestAnimationFrame);
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    const row = document.querySelector<HTMLElement>(`[data-virtual-id="${CSS.escape(id)}"]`);
+    if (!scroll || !row) { prior = null; stable = 0; seen.push("unmounted"); continue; }
+    const offset = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+    seen.push(`${offset.toFixed(2)}@${scroll.scrollTop.toFixed(2)}/${(scroll.scrollHeight - scroll.clientHeight).toFixed(2)}`);
+    stable = prior !== null && Math.abs(offset - prior) < 0.1 ? stable + 1 : 0;
+    prior = offset;
+    if (stable >= 3) return offset;
+  }
+  throw new Error(`${engine}: ${id} did not settle ${phase}; last offsets (offset@scrollTop/range) ${seen.slice(-8).join(" ")}`);
+}, { id, engine, phase });
 const shoot = (page: Page, name: string) => page.screenshot({ path: join(shots, `${name}.png`) });
 const tokenReport = new Map<string, Set<string>>();
 async function auditThemes(page: Page, label: string, minHeight: number) {
@@ -259,8 +276,9 @@ async function runStoppedSteerFollowScenario(page: Page, clearSent: () => void) 
 }
 
 async function jumpGeometry(page: Page) {
-  const button = page.locator('[data-part="jump-to-latest"]');
-  return button.evaluate((element) => {
+  return page.evaluate(() => {
+    // The library's control when it shows; WebKit's stand-in only when it does not.
+    const element = document.querySelector<HTMLElement>('[data-part="jump-to-latest"]:not([data-gate-stand-in])') ?? document.querySelector<HTMLElement>('[data-part="jump-to-latest"]')!;
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     const rgb = (value: string) => {
@@ -291,6 +309,7 @@ async function ensureJumpControl(lane: Locator, forceControl: boolean) {
     if (element.querySelector('[data-part="jump-to-latest"]')) return;
     const button = document.createElement("button");
     button.dataset.part = "jump-to-latest";
+    button.dataset.gateStandIn = "true";
     button.textContent = "jump to latest (1)";
     element.append(button);
   });
@@ -314,10 +333,15 @@ async function checkJumpWidth(page: Page, engine: string, width: number, makeUns
   await settle(page);
   makeUnseen();
   await ensureJumpControl(lane, forceControl);
-  await page.locator('[data-part="jump-to-latest"]').waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
-  const laneAfter = await lane.boundingBox();
-  if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
-  for (const theme of themes) await checkJumpTheme(page, engine, width, theme);
+  try {
+    await page.locator('[data-part="jump-to-latest"]').first().waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
+    const laneAfter = await lane.boundingBox();
+    if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
+    for (const theme of themes) await checkJumpTheme(page, engine, width, theme);
+  } finally {
+    // The stand-in is the gate's node inside React's lane; remove it so no later width or check sees it.
+    await lane.evaluate((element) => element.querySelector("[data-gate-stand-in]")?.remove());
+  }
 }
 
 async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => void, navigate = false, forceControl = false, widths = [1440, 390]) {
@@ -327,6 +351,104 @@ async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.evaluate(() => { document.documentElement.dataset.fulcrumTheme = "tokyo-night"; });
   await settle(page);
+}
+
+// Restores the fake state this check changes (LONG's durable echoes, a stopped server) even when it fails.
+async function checkReconnectAnchor(page: Page, engine: string) {
+  const history = fake.historyOf(LONG);
+  try {
+    await reconnectAnchorScenario(page, engine);
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
+}
+
+// Stops and restarts the fake server, reconnects through the real retry button, and waits for replacement history.
+async function reconnectFake(page: Page, engine: string) {
+  const historiesBefore = fake.requests.filter(({ method }) => method === "session_history").length;
+  await fake.stop();
+  try {
+    await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5_000 });
+  } finally {
+    await fake.start();
+  }
+  await page.getByRole("button", { name: "retry now" }).click();
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(async () => {
+    throw new Error(`${engine}: no healthy reconnect; badge is "${await page.locator(".badge").textContent().catch(() => "missing")}"`);
+  });
+  for (let attempt = 0; ; attempt++) {
+    if (fake.requests.filter(({ method }) => method === "session_history").length > historiesBefore) break;
+    if (attempt === 150) throw new Error(`${engine}: reconnect did not request replacement history`);
+    await Bun.sleep(100);
+  }
+}
+
+const waitAtBottom = (page: Page, failure: string) => page.waitForFunction((selector) => {
+  const element = document.querySelector<HTMLElement>(selector);
+  if (!element) return false;
+  const range = element.scrollHeight - element.clientHeight;
+  return range > 0 && Math.abs(element.scrollTop - range) <= 1;
+}, '[data-part="timeline-scroll"]', { timeout: 15_000 }).catch(() => { throw new Error(failure); });
+
+async function reconnectAnchorScenario(page: Page, engine: string) {
+  // The app reads the session hash only at load, and a hash-only goto keeps the document, so reload to open LONG.
+  await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+  await page.reload();
+  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 }).catch(async () => {
+    throw new Error(`${engine}: the 1,000-row run did not open; the page says ${JSON.stringify((await page.locator("main").innerText().catch(() => "")).slice(0, 200))}`);
+  });
+  await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 }).catch(() => {
+    throw new Error(`${engine}: the 1,000-row history did not finish loading`);
+  });
+  const scroll = page.locator('[data-part="timeline-scroll"]');
+  await waitAtBottom(page, `${engine}: the 1,000-row run did not settle at the bottom`);
+  await reconnectFake(page, engine);
+  await waitAtBottom(page, `${engine}: a pinned reader left the bottom after reconnect`);
+  await settle(page);
+  const pinnedGap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+  console.log(`pinned ${engine.padEnd(8)} gap ${pinnedGap.toFixed(3)} px after reconnect`);
+  if (Math.abs(pinnedGap) > 1) throw new Error(`${engine}: a pinned reader is ${pinnedGap.toFixed(3)} px from the bottom after reconnect`);
+  const targetId = "message:l499";
+  const target = page.locator(`[data-virtual-id="${targetId}"]`);
+  const box = await scroll.boundingBox();
+  if (!box) throw new Error(`${engine}: no scroll viewport`);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+
+  let reached = false;
+  for (let step = 0; step < 80; step++) {
+    const targetBox = await target.boundingBox().catch(() => null);
+    if (targetBox && targetBox.y >= box.y && targetBox.y + targetBox.height <= box.y + box.height) { reached = true; break; }
+    const position = await scroll.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
+    const rawDelta = targetBox
+      ? targetBox.y + targetBox.height / 2 - (box.y + box.height / 2)
+      : position.range * 499 / 999 - position.top;
+    const delta = Math.max(-10_000, Math.min(10_000, rawDelta));
+    const before = position.top;
+    await page.mouse.wheel(0, delta);
+    await page.waitForFunction(({ selector, before, delta }) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      return element !== null && (delta < 0 ? element.scrollTop < before : element.scrollTop > before);
+    }, { selector: '[data-part="timeline-scroll"]', before, delta }, { timeout: 2_000 }).catch(() => {
+      throw new Error(`${engine}: wheel step ${delta} did not move the timeline from ${before.toFixed(1)} px`);
+    });
+  }
+  if (!reached) {
+    const position = await scroll.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
+    throw new Error(`${engine}: ${targetId} was not visible after 80 wheel steps (${position.top.toFixed(1)} / ${position.range.toFixed(1)} px)`);
+  }
+  fake.emit({ event: "user_message", session_id: LONG, text: `before ${engine} reconnect`, mode: "send", attachments: [], delivery_id: `${engine}-before-anchor-check` });
+  await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
+  const beforeOffset = await stableRowOffset(page, targetId, engine, "before reconnect");
+
+  await reconnectFake(page, engine);
+  await target.waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine}: ${targetId} did not return after reconnect`); });
+  const afterOffset = await stableRowOffset(page, targetId, engine, "after reconnect");
+  const drift = Math.abs(afterOffset - beforeOffset);
+  console.log(`anchor ${engine.padEnd(8)} ${targetId} drift ${drift.toFixed(3)} px`);
+  if (drift > 1) throw new Error(`${engine}: ${targetId} moved ${drift.toFixed(3)} px`);
+
+  fake.emit({ event: "user_message", session_id: LONG, text: `after ${engine} reconnect`, mode: "send", attachments: [], delivery_id: `${engine}-anchor-check` });
+  await page.locator('[data-part="jump-to-latest"][data-unseen-count="2"]').waitFor({ timeout: 5_000 });
 }
 
 try {
@@ -654,11 +776,25 @@ try {
       await page.keyboard.press("Escape");
       if (await page.getByRole("listbox").count()) throw new Error("Escape did not close the picker");
     });
-    await check("a 400-row history opens in virtual mode and lands at the bottom", async () => {
-      await page.locator("button.session", { hasText: "400 rows" }).click();
+    await check("a 1,000-row history opens in virtual mode and lands at the bottom", async () => {
+      await page.locator("button.session", { hasText: "1,000 rows" }).click();
       await page.locator('[data-part="timeline"][data-virtual="true"]').waitFor({ timeout: 10_000 });
-      await page.getByText("frame 399 took").waitFor({ timeout: 5000 });
+      await page.getByText("frame 999 took").waitFor({ timeout: 5000 });
       if (!(await page.evaluate(() => location.hash.includes("s-long")))) throw new Error("selection not in the url");
+    });
+    await check("chromium: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(page, "chromium"));
+    // Here, not with the later WebKit lane check: the mobile checks re-arm the fake's live turn, and a running turn
+    // keeps zeta from opening another session. The Chromium page leaves meanwhile, so WebKit gets the one controller.
+    await check("webkit: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", async () => {
+      await page.goto("about:blank");
+      const webkitBrowser = await webkit.launch();
+      try {
+        await checkReconnectAnchor(await webkitBrowser.newPage({ viewport: { width: 1440, height: 900 } }), "webkit");
+      } finally {
+        await webkitBrowser.close();
+        await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+        await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+      }
     });
     await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
       await page.locator("button.session", { hasText: "check every theme" }).click();
@@ -736,8 +872,8 @@ try {
     // This exact gamma sequence already stays pinned on main; it guards the path rather than proving the fix fail-first.
     await check("a stopped queued steer and later turns stay pinned through the next own send", () => runStoppedSteerFollowScenario(page, fake.clearSent));
     await check("the page never scrolls: after IME typing the document fits the viewport and the headers stay in view", async () => {
-      // A tall run: the Timeline's hidden live region sits at the end of 400 rows.
-      await page.locator("button.session", { hasText: "400 rows" }).click();
+      // A tall run: the Timeline's hidden live region sits at the end of 1,000 rows.
+      await page.locator("button.session", { hasText: "1,000 rows" }).click();
       await page.locator('[data-part="timeline"][data-virtual="true"]').waitFor({ timeout: 10_000 });
       const field = page.locator(".dock textarea");
       await field.click();
