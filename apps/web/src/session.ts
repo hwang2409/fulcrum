@@ -536,7 +536,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     const started = () => {
       if (lease.store.getState().agent === "idle") return false;
       interruptedTurns.delete(id);
-      if (lease.store.getState().endOutcome) lease.store.dispatch({ type: "run_start" });
+      lease.store.dispatch({ type: "run_start" });
       return true;
     };
     if (started()) return; // it came back running, so its end will be seen live
@@ -561,9 +561,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       }, abort.signal, knownStatus, endOutcome(id));
       if (!state.listLoading && !state.listReady) void refresh();
       const { lease } = opened;
-      if (knownStatus && knownStatus.state !== "idle" && interruptedTurns.delete(id) && lease.store.getState().endOutcome) {
-        lease.store.dispatch({ type: "run_start" });
-      }
+      if (knownStatus && knownStatus.state !== "idle" && interruptedTurns.delete(id)) lease.store.dispatch({ type: "run_start" });
       if (mine !== openGeneration || !live(target)) return lease.release();
       previous?.lease.release();
       transition({ type: "opened", run: { id, lease, stale: false, history, syncing: opened.syncing } });
