@@ -18,7 +18,7 @@ fulcrum is a fast react component library for agent runs. zeta is the first adap
 
 ## quick start
 
-`make dev` installs dependencies, builds missing packages, and starts the playground. Open `/gallery.html` in the playground.
+`make dev` installs dependencies, rebuilds packages, and starts the playground. Open `/gallery.html` in the playground. `make test` builds and tests; `make clean` removes builds.
 
 ```sh
 make dev
@@ -66,6 +66,7 @@ Open <http://localhost:5180>. For another harness, map its events to `@fulcrum/c
 - [mermaid diagrams](packages/mermaid/README.md)
 - [AI SDK streams](packages/ai-sdk/README.md)
 - [adapter verification](packages/adapter-test/README.md)
+- [repository apps and checks](docs/apps.md)
 - [other harnesses](docs/other-harnesses.md)
 
 ## development

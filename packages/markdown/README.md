@@ -1,3 +1,28 @@
+# @fulcrum/markdown
+
+`@fulcrum/markdown` is a framework-free, dependency-free streaming CommonMark and GFM document core. `@fulcrum/markdown/react` is the optional React renderer and uses `@fulcrum/react` as a peer for code blocks and large viewers.
+
+## usage
+
+```tsx
+import { Markdown } from "@fulcrum/markdown/react";
+import { Message } from "@fulcrum/react";
+
+<Message id={id} markdown={Markdown} />;
+```
+
+The streaming document freezes completed blocks, table rows, and list items. Open fences and plain paragraphs consume only appended text. `Markdown` covers CommonMark and GFM message content: ATX/setext headings, paragraphs, inline/indented/fenced code, nested/task lists, emphasis, reference and literal links, images, blockquotes, tables, rules, entities, and hard breaks. Raw HTML stays escaped.
+
+Every URL uses `safeUrl` from `@fulcrum/core`. Links allow HTTP, HTTPS, `mailto:`, and relative URLs. Images also allow inline PNG, JPEG, GIF, WebP, AVIF, or BMP `data:` URLs. A URL above `MAX_URL_CHARS` (8 MiB) is rejected before other work. Addresses never become labels, titles, or data attributes.
+
+Code blocks accept the `Highlight` returned by `createHighlighter()` from `@fulcrum/highlight`. The shared callback receives `(code, language, { id, version, state })` and returns tokens immediately or in a promise. `state` is `streaming` or `done`; stale async results are ignored. Tokens without a `type` render as plain text; styled token classes are `tok-keyword`, `tok-string`, `tok-number`, `tok-comment`, `tok-function`, `tok-type`, `tok-variable`, `tok-constant`, `tok-operator`, `tok-punctuation`, `tok-tag`, `tok-attribute`, `tok-regexp`, `tok-inserted`, and `tok-deleted`. Copy `@fulcrum/react/styles.css` and `@fulcrum/react/themes.css`; also copy `@fulcrum/highlight/styles.css` when code highlighting is enabled. Regenerate the vendored parser with `bun run vendor:markdown-it`.
+
+A fenced block over 40 lines, or with more tokens than one commit should draw, is the same bounded virtual viewer the tool cards use, at the height of 40 lines: it colors its visible 500-character ranges first; once they have colored, a block of at most 10,000 characters is also colored whole in the background, so a comment or string that crosses a range edge settles to the right colors. A larger block keeps each range's own colors, so a construct longer than a range (a long block comment or docstring) can show the wrong colors after a range edge. A streaming fence follows its newest line. Only the visible window is mounted, so browser find-in-page reaches only the visible lines; the copy control copies the whole block.
+
+The headless renderer has no visual styles. Its stable styling hooks are `data-part="md-paragraph"`, `md-heading`, `md-code-inline`, `md-code-block`, `md-list`, `md-list-item`, `md-emphasis`, `md-strong`, `md-strike`, `md-link`, `md-image`, `md-blockquote`, `md-table`, `md-rule`, and `md-break`. Code blocks also expose `data-language`.
+
+## implementation notes
+
 ## streaming resolver
 
 streaming markdown uses one physical-line resolver. it owns the open document, quote, list, and item path, plus the current leaf and the document-wide reference index. it does not create child streaming documents. committed lines are processed once; only the unfinished physical line and the immediately preceding lookahead line are previewed.
@@ -13,18 +38,3 @@ visible streaming text is monotonic: a character the reader has seen never disap
 ## fence renderers
 
 `<Markdown fences={{ mermaid: MermaidFence }} />` draws a fenced block with the component registered for its language (matched in lowercase); every other fence is the highlighted code block, unchanged. the component gets `FenceProps`: `id`, `code`, `language`, `done` (false while the fence streams), and `source`, the code block markdown would draw, to show while it is not ready or as a source view. a closed fence renders its component once, not again for later tokens of the message. pass a stable `fences` object (module scope), as with `highlight`. `@fulcrum/mermaid` is the first renderer; math or other diagram renderers plug in the same way.
-
-# @fulcrum/markdown
-
-`@fulcrum/markdown` parses streaming CommonMark and GFM content without a framework. `@fulcrum/markdown/react` exports the React renderer. It supports headings, paragraphs, code, lists, emphasis, links, images, quotes, tables, rules, entities, and hard breaks. Raw HTML stays escaped. Links and images use `safeUrl` from `@fulcrum/core`.
-
-```tsx
-import { Markdown } from "@fulcrum/markdown/react";
-import { Message } from "@fulcrum/react";
-
-<Message id={id} markdown={Markdown} />;
-```
-
-Pass a stable `highlight` callback or a highlighter from `@fulcrum/highlight`. Copy `@fulcrum/react/styles.css`, `themes.css`, and, when highlighting, `@fulcrum/highlight/styles.css`. Fenced renderers use the `fences` prop; `@fulcrum/mermaid` provides the first renderer. See its README for the bounded streaming resolver and renderer contract.
-
-The headless renderer exposes `data-part` hooks such as `md-paragraph`, `md-heading`, `md-code-block`, `md-link`, `md-image`, `md-list`, `md-blockquote`, and `md-table`. Code blocks also expose `data-language`.
