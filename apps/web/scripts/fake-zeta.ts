@@ -520,7 +520,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           const offset = Number(params.offset ?? 0);
           if (offset > 0 && laterHistoryDelay > 0) await wait(laterHistoryDelay);
           const pageRows = groups.slice(offset, offset + pageSize).flat();
-          if (pageRows.some((row) => row.event === "served_turn_end")) servedTurnEndHistoryReads++;
+          const latestTurnId = lastTurnEnds.get(active!)?.turn_id;
+          if (latestTurnId && pageRows.some((row) => row.event === "served_turn_end" && row.data?.turn_id === latestTurnId)) servedTurnEndHistoryReads++;
           reply({ result: { messages: pageRows, next_offset: offset + pageSize < groups.length ? offset + pageSize : null } });
           // The run starts once, after the first open of the active session finishes its history.
           if (liveEnabled && active === ACTIVE && offset + pageSize >= groups.length && !turnStarted) {

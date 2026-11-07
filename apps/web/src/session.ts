@@ -561,6 +561,9 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       }, abort.signal, knownStatus, endOutcome(id));
       if (!state.listLoading && !state.listReady) void refresh();
       const { lease } = opened;
+      if (knownStatus && knownStatus.state !== "idle" && interruptedTurns.delete(id) && lease.store.getState().endOutcome) {
+        lease.store.dispatch({ type: "run_start" });
+      }
       if (mine !== openGeneration || !live(target)) return lease.release();
       previous?.lease.release();
       transition({ type: "opened", run: { id, lease, stale: false, history, syncing: opened.syncing } });
