@@ -179,7 +179,6 @@ async function reconnectSnapshotScenario(page: Page, fake: Awaited<ReturnType<ty
   const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));
   if (new Set(ids).size !== ids.length) throw new Error("duplicate rows after reconnect");
   if (await page.locator('[data-part="approval"][data-state="pending"]').count()) throw new Error("a dropped approval came back as pending");
-});
 }
 
 async function growPinnedRow(page: Page) {
