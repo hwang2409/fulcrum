@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createClient, statusTurnOutcome, type Transport } from "@fulcrum/zeta";
+import { createClient, type Transport } from "@fulcrum/zeta";
 import { openSession } from "../src/session";
 
 type Json = Record<string, any>;
@@ -44,21 +44,6 @@ const idleStatus = { session: { session_id: "s", created_at: "", updated_at: "" 
 const backwardFeatures = ["delivery_id", "user_message_event", "user_message_delivery_id", "session_history_backward"];
 
 // Backward paging must publish the newest page before an older request finishes, then prepend older rows.
-test("status publishes the latest outcome before its history page loads", async () => {
-  let release!: () => void;
-  const later = new Promise<unknown>((resolve) => { release = () => resolve({ messages: [], next_offset: null }); });
-  const fake = await server((method, params) => {
-    if (method === "status") return { ...idleStatus, last_turn_outcome: { turn_id: "turn-1", reason: "error" } };
-    if (method !== "session_history") throw new Error(method);
-    return params.offset === 0 ? { messages: [], next_offset: 1 } : later;
-  });
-  const opened = await openSession(fake.client, "s", undefined, undefined, undefined, (_rows, status) => statusTurnOutcome(status.last_turn_outcome));
-  expect(opened.lease.store.getState().endOutcome).toBe("failed");
-  release();
-  await opened.complete;
-  expect(opened.lease.store.getState().endOutcome).toBe("failed");
-});
-
 test("backward history opens newest first and prepends older pages in order", async () => {
   let release!: () => void;
   const older = new Promise<unknown>((resolve) => { release = () => resolve({ messages: [row("old", "user", "old")], next_before: null, history_validator: { end: 2, entry_id: "new" } }); });

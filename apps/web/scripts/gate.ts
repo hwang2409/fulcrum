@@ -578,12 +578,17 @@ try {
       fake.setServedTurnEnd(true);
       fake.clearSent();
     });
-    await check("with served_turn_end, an overflow-hidden turn shows the outcome zeta recorded for it", async () => {
-      await page.reload(); // a fresh connection, which negotiates served_turn_end
+    await check("with served_turn_end, status names an overflow-hidden turn before its later history page", async () => {
+      fake.setBackwardHistory(false);
+      await page.reload(); // use forward pages so the latest served_turn_end is beyond page one
       await page.addStyleTag({ content: '[data-part="virtual-debug"] { pointer-events: none !important; }' });
+      fake.setLaterHistoryDelay(2000);
+      const historyReads = fake.servedTurnEndHistoryReads;
       await overflowThroughTurn("overflow", "a turn zeta records the end of", "connection fell behind");
       const marker = page.locator('[data-part="run-end-marker"][data-outcome="completed"]', { hasText: "run completed" });
-      await marker.waitFor({ timeout: 5000 }).catch(async () => { throw new Error(`no completed marker from zeta's served_turn_end; the marker says "${await page.locator('[data-part="run-end-marker"]').textContent({ timeout: 1000 }).catch(() => "nothing")}"`); });
+      await marker.waitFor({ timeout: 5000 }).catch(async () => { throw new Error(`no completed marker from zeta status; the marker says "${await page.locator('[data-part="run-end-marker"]').textContent({ timeout: 1000 }).catch(() => "nothing")}"`); });
+      if (fake.servedTurnEndHistoryReads !== historyReads) throw new Error("history supplied served_turn_end before the status marker appeared");
+      fake.setLaterHistoryDelay(0);
       await page.locator('.run-meta .state[data-status="idle"]').waitFor({ timeout: 5000 });
       await uniqueRows();
       if (await page.locator('[data-part="timeline"] [data-kind="error"], [data-part="timeline"] [data-kind="unknown"]').count()) throw new Error("the recorded turn end rendered as a transcript row");
@@ -592,6 +597,7 @@ try {
       await page.locator(".dock").getByRole("button", { name: "send" }).click();
       await page.locator('[data-part="run-end-marker"]').waitFor({ state: "detached", timeout: 5000 });
       await idleServer();
+      fake.setBackwardHistory(true);
       fake.clearSent();
     });
     await check("a silent overflow reads as a lost connection, backs off, and names the interrupted run", async () => {

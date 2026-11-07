@@ -530,7 +530,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     return owner.inFlight;
   };
 
-  // The interrupted turn ends when its next run starts, as seen by any lease.
+  // Start this only after replay completes: replayed run_start rows can transiently make the store look live.
   const watchOutcome = (id: string, lease: OpenResult["lease"]) => {
     if (!interruptedTurns.has(id)) return;
     const started = () => lease.store.getState().agent !== "idle" && interruptedTurns.delete(id);
@@ -557,22 +557,25 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       }, abort.signal, knownStatus, endOutcome(id));
       if (!state.listLoading && !state.listReady) void refresh();
       const { lease } = opened;
-      if (lease.store.getState().agent !== "idle") interruptedTurns.delete(id);
       if (mine !== openGeneration || !live(target)) return lease.release();
       previous?.lease.release();
       transition({ type: "opened", run: { id, lease, stale: false, history, syncing: opened.syncing } });
-      watchOutcome(id, lease);
       void opened.complete.then((result) => {
         if (mine !== openGeneration || !live(target)) return result.lease?.release();
+        let completedLease = lease;
         if (result.lease) {
           const run = transitionRun(state.transition);
           run?.lease.release();
+          completedLease = result.lease;
           transition({ type: "updated", run: { id, lease: result.lease, stale: false, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
-          watchOutcome(id, result.lease);
         } else {
           const run = transitionRun(state.transition);
-          if (run?.id === id) transition({ type: "updated", run: { ...run, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
+          if (run?.id === id) {
+            completedLease = run.lease;
+            transition({ type: "updated", run: { ...run, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
+          }
         }
+        watchOutcome(id, completedLease);
       }).catch((error) => {
         if (mine === openGeneration && live(target) && (error as { name?: string }).name !== "AbortError")
           transition({ type: "failed", id, error: { id, message: message(error), busy: isBusyError(error) } });
@@ -604,12 +607,8 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const disconnect = (disconnected: ZetaClient | null) => {
     retireCatalog();
     const run = transitionRun(state.transition);
-    // Any disconnected running turn may have ended unseen; status or history can name its outcome after reconnect.
-    const hasPendingApproval = run?.lease.store.getOutline().some((outline) => {
-      const item = run.lease.store.getItem(outline.id);
-      return outline.kind === "approval" && item?.type === "approval" && !item.ended;
-    });
-    if (run?.lease.store.getState().agent === "running" && !hasPendingApproval) {
+    // A disconnect aborts a pending approval too, so every disconnected running turn may have ended unseen.
+    if (run?.lease.store.getState().agent === "running") {
       const turn = disconnected?.servedTurn(run.id) ?? servedTurns.get(run.id);
       if (turn) servedTurns.set(run.id, turn);
       interruptedTurns.set(run.id, { turn });
