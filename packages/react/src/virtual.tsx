@@ -108,7 +108,7 @@ export function useVirtualList<Id extends string>(
       engine.setOutline(outline, options.outlineUpdate);
       engine.setLoaded("all");
       if (initial.current) initial.current = false;
-      else if (wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
+      else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
     }
     wasEnabled.current = options.enabled !== false;
   }, [engine, outline, options.enabled, options.invalidateMeasurements, options.outlineUpdate, options.resetKey, resetPending]);

@@ -333,6 +333,14 @@ async function checkReconnectAnchor(page: Page, engine: string) {
   await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
   await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
   const scroll = page.locator('[data-part="timeline-scroll"]');
+  await page.waitForFunction((selector) => {
+    const element = document.querySelector<HTMLElement>(selector);
+    if (!element) return false;
+    const range = element.scrollHeight - element.clientHeight;
+    return range > 0 && Math.abs(element.scrollTop - range) <= 1;
+  }, '[data-part="timeline-scroll"]', { timeout: 15_000 }).catch(() => {
+    throw new Error(`${engine}: the 1,000-row run did not settle at the bottom before wheel input`);
+  });
   const targetId = "message:l499";
   const target = page.locator(`[data-virtual-id="${targetId}"]`);
   const box = await scroll.boundingBox();
