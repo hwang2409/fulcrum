@@ -25,12 +25,15 @@ export interface SlashModelInputIdResult {
   kind: "model_input";
   input_id: string;
   display_text: string;
+  text?: never;
+  origin?: never;
 }
 export interface SlashModelInputTextResult {
   kind: "model_input";
   text: string;
   display_text: string;
   origin: string;
+  input_id?: never;
 }
 export type SlashModelInputResult = SlashModelInputIdResult | SlashModelInputTextResult;
 export interface SlashClientOnlyResult { kind: "client_only"; name: string; }
@@ -55,10 +58,12 @@ function parseCommand(value: unknown): SlashCommandInfo | null {
   return row as SlashCommandInfo;
 }
 
-export function parseModelInput(value: unknown, requireInputId: true): SlashModelInputIdResult | null;
-export function parseModelInput(value: unknown, requireInputId?: false): SlashModelInputResult | null;
+export interface ParseModelInputOptions { requireInputId: true; }
+
+export function parseModelInput(value: unknown, options: ParseModelInputOptions): SlashModelInputIdResult | null;
+export function parseModelInput(value: unknown): SlashModelInputResult | null;
 /** Validates either zeta model_input shape, or only the opaque-id shape when requested. */
-export function parseModelInput(value: unknown, requireInputId = false): SlashModelInputResult | null {
+export function parseModelInput(value: unknown, options?: ParseModelInputOptions): SlashModelInputResult | null {
   const row = object(value);
   if (!row || row.kind !== "model_input" || typeof row.display_text !== "string") return null;
   // Zeta src/zeta/server/slash_commands.py:474-489 serializes these two negotiated shapes.
@@ -67,7 +72,7 @@ export function parseModelInput(value: unknown, requireInputId = false): SlashMo
       ? { kind: "model_input", input_id: row.input_id, display_text: row.display_text }
       : null;
   }
-  if (requireInputId || typeof row.text !== "string" || typeof row.origin !== "string") return null;
+  if (options?.requireInputId || typeof row.text !== "string" || typeof row.origin !== "string") return null;
   return { kind: "model_input", text: row.text, display_text: row.display_text, origin: row.origin };
 }
 

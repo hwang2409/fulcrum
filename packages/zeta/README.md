@@ -4,7 +4,7 @@
 
 ## command helpers
 
-`MODEL_INPUT_IDS_FEATURE` is the feature name to request during the hello handshake. `parseSlashList` and `parseSlashRun` validate server results without throwing; malformed command rows are dropped and malformed result discriminators return `{ kind: "malformed" }`. `parseModelInput(value)` validates either the opaque-id or expanded-text `model_input` shape and returns `null` for malformed data; pass `true` as its second argument to require the opaque-id shape used by prepared input. `parseSlashRun` accepts the legacy `{ kind: "text" }` result from `/mcp status` and normalizes it to `{ kind: "output" }`; the protocol document omits this released-server shape. `listSlashCommands`, `runSlashCommand`, and `sendModelInput` are thin typed wrappers over the JSON-RPC client.
+`MODEL_INPUT_IDS_FEATURE` is the feature name to request during the hello handshake. `parseSlashList` and `parseSlashRun` validate server results without throwing; malformed command rows are dropped and malformed result discriminators return `{ kind: "malformed" }`. `parseModelInput(value)` validates either the opaque-id or expanded-text `model_input` shape and returns `null` for malformed data; pass `{ requireInputId: true }` as its second argument to require the opaque-id shape used by prepared input. `parseSlashRun` accepts the legacy `{ kind: "text" }` result from `/mcp status` and normalizes it to `{ kind: "output" }`; the protocol document omits this released-server shape. `listSlashCommands`, `runSlashCommand`, and `sendModelInput` are thin typed wrappers over the JSON-RPC client.
 
 ## connect
 

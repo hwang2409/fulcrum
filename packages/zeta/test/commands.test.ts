@@ -36,8 +36,8 @@ test("validates either model-input shape or requires an opaque input id", () => 
   const id = { kind: "model_input", input_id: "opaque-1", display_text: "/skill x" };
   expect(parseModelInput(text)).toEqual(text);
   expect(parseModelInput(id)).toEqual(id);
-  expect(parseModelInput(id, true)).toEqual(id);
-  expect(parseModelInput(text, true)).toBeNull();
+  expect(parseModelInput(id, { requireInputId: true })).toEqual(id);
+  expect(parseModelInput(text, { requireInputId: true })).toBeNull();
   expect(parseModelInput({ kind: "output", input_id: "opaque-1", display_text: "/skill x" })).toBeNull();
 });
 
