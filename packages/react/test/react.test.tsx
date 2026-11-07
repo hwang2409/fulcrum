@@ -881,8 +881,193 @@ const attachedHost = (testId: string) => {
   return host;
 };
 
+function installScrollGeometry(initialHeight = 600) {
+  const descriptors = {
+    clientHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight"),
+    scrollHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight"),
+    scrollTop: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop"),
+  };
+  const positions = new WeakMap<HTMLElement, number>();
+  let viewportHeight = initialHeight;
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => viewportHeight });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"),
+  });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return Math.min(positions.get(this as HTMLElement) ?? 0, Math.max(0, this.scrollHeight - this.clientHeight)); },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+  });
+  return {
+    resizeBy(delta: number) { viewportHeight += delta; },
+    restore() {
+      for (const [name, descriptor] of Object.entries(descriptors)) {
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+      }
+    },
+  };
+}
+
+test("a non-user clamp at the bottom preserves unseen intent until an explicit jump", async () => {
+  const geometry = installScrollGeometry();
+  try {
+    const { append, view } = hostAttachmentHarness();
+    mount(view("inner"));
+    const host = attachedHost("inner");
+    host.scrollTop = host.scrollHeight;
+    act(() => {
+      host.dispatchEvent(new KeyboardEvent("keydown", { key: "End" }));
+      host.dispatchEvent(new Event("scroll"));
+    });
+    host.scrollTop -= 1_000;
+    act(() => {
+      host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+      host.dispatchEvent(new Event("scroll"));
+    });
+    append();
+    expect(q('[data-part="timeline"]').dataset.unseenCount).toBe("1");
+    await act(async () => { await Bun.sleep(201); });
+
+    host.scrollTop = host.scrollHeight - host.clientHeight;
+    act(() => host.dispatchEvent(new Event("scroll")));
+    expect(q('[data-part="timeline"]').dataset.unseenCount).toBe("1");
+    expect(container.querySelector('[data-part="jump-to-latest"]')).not.toBeNull();
+
+    append();
+    expect(host.scrollTop).toBeLessThan(host.scrollHeight - host.clientHeight);
+    act(() => q('[data-part="jump-to-latest"]').click());
+    expect(q('[data-part="timeline"]').dataset.unseenCount).toBe("0");
+    expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+    append();
+    expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+  } finally {
+    geometry.restore();
+  }
+});
+
+test.each(["stale scroll first", "resize observer first"] as const)(
+  "a 313 px viewport shrink preserves follow intent with %s",
+  async (order) => {
+    const geometry = installScrollGeometry();
+    const saved = globalThis.ResizeObserver;
+    const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
+    globalThis.ResizeObserver = class {
+      private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+      constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+      observe(element: Element) { this.entry.observed.add(element); }
+      unobserve(element: Element) { this.entry.observed.delete(element); }
+      disconnect() { this.entry.observed.clear(); }
+    } as unknown as typeof ResizeObserver;
+    try {
+      const { append, view } = hostAttachmentHarness();
+      mount(view("inner"));
+      const host = attachedHost("inner");
+      host.scrollTop = host.scrollHeight;
+      act(() => {
+        host.dispatchEvent(new KeyboardEvent("keydown", { key: "End" }));
+        host.dispatchEvent(new Event("scroll"));
+      });
+      await act(async () => { await Bun.sleep(201); });
+      geometry.resizeBy(-313);
+      const viewport = observers.find(({ observed }) => observed.has(host))!;
+      const scroll = () => host.dispatchEvent(new Event("scroll"));
+      const resize = () => viewport.report([], viewport as unknown as ResizeObserver);
+      if (order === "stale scroll first") {
+        host.scrollTop -= 1;
+        act(scroll);
+        append();
+        expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+        act(resize);
+      } else {
+        act(resize);
+        act(scroll);
+        append();
+      }
+      expect(host.scrollHeight - host.clientHeight - host.scrollTop).toBeLessThan(1);
+      expect(q('[data-part="timeline"]').dataset.unseenCount).toBe("0");
+      expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+    } finally {
+      globalThis.ResizeObserver = saved;
+      geometry.restore();
+    }
+  },
+);
+
+test.each(["wheel", "keyboard", "touch", "scrollbar pointer"] as const)(
+  "%s provenance lets real input win and ignores synthetic scrolls",
+  (kind) => {
+    const geometry = installScrollGeometry();
+    try {
+      const { append, view } = hostAttachmentHarness();
+      mount(view("inner"));
+      const host = attachedHost("inner");
+      const input = (towardEnd: boolean) => {
+        if (kind === "wheel") host.dispatchEvent(new WheelEvent("wheel", { deltaY: towardEnd ? 100 : -100 }));
+        else if (kind === "keyboard") host.dispatchEvent(new KeyboardEvent("keydown", { key: towardEnd ? "End" : "ArrowUp" }));
+        else if (kind === "scrollbar pointer") host.dispatchEvent(new PointerEvent("pointerdown", { clientX: host.getBoundingClientRect().left + host.clientWidth + 1 }));
+        else {
+          const start = new Event("touchstart") as TouchEvent;
+          Object.defineProperty(start, "touches", { value: [{ clientY: 100 }] });
+          host.dispatchEvent(start);
+          const move = new Event("touchmove") as TouchEvent;
+          Object.defineProperty(move, "touches", { value: [{ clientY: towardEnd ? 50 : 150 }] });
+          host.dispatchEvent(move);
+        }
+      };
+      host.scrollTop = host.scrollHeight;
+      act(() => {
+        host.dispatchEvent(new KeyboardEvent("keydown", { key: "End" }));
+        host.dispatchEvent(new Event("scroll"));
+      });
+
+      host.scrollTop -= 1_000;
+      act(() => { input(false); host.dispatchEvent(new Event("scroll")); });
+      append();
+      expect(q('[data-part="timeline"]').dataset.unseenCount).toBe("1");
+
+      host.scrollTop = host.scrollHeight - host.clientHeight;
+      act(() => { input(true); host.dispatchEvent(new Event("scroll")); });
+      expect(q('[data-part="timeline"]').dataset.unseenCount).toBe("0");
+
+      append();
+      const userTop = host.scrollTop - 1_000;
+      host.scrollTop = userTop;
+      act(() => { input(false); host.dispatchEvent(new Event("scroll")); });
+      expect(host.scrollTop).toBe(userTop);
+
+      act(() => {
+        if (kind === "scrollbar pointer") host.dispatchEvent(new PointerEvent("pointerup"));
+        else if (kind === "touch") host.dispatchEvent(new Event("touchend"));
+      });
+    } finally {
+      geometry.restore();
+    }
+  },
+);
+
+test("a synthetic scroll cannot change follow intent", async () => {
+  const geometry = installScrollGeometry();
+  try {
+    const { append, view } = hostAttachmentHarness();
+    mount(view("inner"));
+    const host = attachedHost("inner");
+    host.scrollTop = host.scrollHeight;
+    act(() => { host.dispatchEvent(new KeyboardEvent("keydown", { key: "End" })); host.dispatchEvent(new Event("scroll")); });
+    await act(async () => { await Bun.sleep(201); });
+    host.scrollTop -= 1_000;
+    act(() => host.dispatchEvent(new Event("scroll")));
+    append();
+    expect(q('[data-part="timeline"]').dataset.unseenCount).toBe("0");
+    expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+  } finally {
+    geometry.restore();
+  }
+});
+
 type TransferKind = "direct swap" | "null gap: 0 commits" | "null gap: 1 commit" | "null gap: N commits" | "owned -> host-owned" | "host-owned -> owned" | "unmount";
-type TransferInteraction = "idle pinned" | "idle unpinned" | "touch (active)" | "momentum" | "pending correction" | "pending jump";
+type TransferInteraction = "idle pinned" | "idle unpinned" | "touch (active)" | "momentum" | "pending correction" | "pending jump" | "pending target";
 type TransferOutlineChange = "none" | "append" | "prepend" | "replace";
 
 const transferKinds: TransferKind[] = [
@@ -901,6 +1086,7 @@ const transferInteractions: TransferInteraction[] = [
   "momentum",
   "pending correction",
   "pending jump",
+  "pending target",
 ];
 const transferOutlineChanges: TransferOutlineChange[] = ["none", "append", "prepend", "replace"];
 
@@ -971,7 +1157,7 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
       oldHost.scrollTop = oldHost.scrollHeight;
       act(() => oldHost.dispatchEvent(new Event("scroll")));
 
-      const unpinned = interaction !== "idle pinned";
+      const unpinned = interaction !== "idle pinned" && interaction !== "pending target";
       if (unpinned) {
         oldHost.scrollTop = 3_000;
         act(() => {
@@ -985,6 +1171,7 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
         act(() => oldHost.dispatchEvent(touch));
       }
       if (interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump") prepend();
+      if (interaction === "pending target") append();
       if (interaction === "momentum") act(() => oldHost.dispatchEvent(new Event("touchend")));
       const expectedTop = interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump" ? 3_072 : 3_000;
       const anchorBefore = unpinned ? viewportAnchor(oldHost) : null;
@@ -1036,6 +1223,7 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
         newHost = attachedHost("outer");
       }
 
+      act(() => newHost!.dispatchEvent(new Event("scroll")));
       expect(oldHost.style.overflowAnchor).toBe("");
       const measuredRow = q("[data-virtual-id]");
       expect(Number.parseFloat(measuredRow.style.transform.slice("translateY(".length)))
@@ -1121,7 +1309,7 @@ test("Timeline keeps attachment correct while switching between owned and host-o
   attachedHost("outer");
 });
 
-test("follow, pinning, jump control, and bounded mounts survive every scroll-host transition", () => {
+test("follow, pinning, jump control, and bounded mounts survive every scroll-host transition", async () => {
   const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
@@ -1138,7 +1326,7 @@ test("follow, pinning, jump control, and bounded mounts survive every scroll-hos
     let followRequest = 0;
     let target: "inner" | "outer" | "replacement" = "inner";
     const render = (owned = false) => act(() => root!.render(view(target, owned, followRequest)));
-    const exercise = (host: HTMLElement, owned = false) => {
+    const exercise = async (host: HTMLElement, owned = false) => {
       host.scrollTop = host.scrollHeight;
       act(() => host.dispatchEvent(new Event("scroll")));
       append();
@@ -1154,7 +1342,11 @@ test("follow, pinning, jump control, and bounded mounts survive every scroll-hos
       act(() => jump.click());
       expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
       host.scrollTop -= 1_000;
-      act(() => host.dispatchEvent(new Event("scroll")));
+      act(() => {
+        host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+        host.dispatchEvent(new Event("scroll"));
+      });
+      await act(async () => { await Bun.sleep(201); });
       followRequest++;
       render(owned);
       expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
@@ -1162,24 +1354,24 @@ test("follow, pinning, jump control, and bounded mounts survive every scroll-hos
     };
 
     mount(view(target));
-    exercise(attachedHost(target));
+    await exercise(attachedHost(target));
     target = "outer";
     render();
-    exercise(attachedHost(target));
+    await exercise(attachedHost(target));
     target = "replacement";
     render();
     const replacement = attachedHost(target);
-    exercise(replacement);
+    await exercise(replacement);
     act(() => root!.render(view("removed", false, followRequest)));
     expect(replacement.style.overflowAnchor).toBe("");
     target = "inner";
     render();
-    exercise(attachedHost(target));
+    await exercise(attachedHost(target));
     render(true);
-    exercise(q('[data-part="timeline-scroll"]'), true);
+    await exercise(q('[data-part="timeline-scroll"]'), true);
     target = "outer";
     render();
-    exercise(attachedHost(target));
+    await exercise(attachedHost(target));
   } finally {
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
     if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
@@ -1277,7 +1469,7 @@ test("100 host swaps release every adapter listener and observer", () => {
     const { view } = hostAttachmentHarness();
     mount(view("inner"));
     for (let index = 0; index < 100; index++) act(() => root!.render(view(index % 2 ? "inner" : "outer")));
-    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(8);
+    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(10);
     expect(activeObservers).toBe(2);
     act(() => root!.unmount());
     root = undefined;

@@ -24,12 +24,10 @@ const settleDetachedViewport = <Id extends string>(
   touching: RefObject<boolean>,
   touchY: RefObject<number | null>,
   userScrollUntil: RefObject<number>,
-  ignoreScrollUntil: RefObject<number>,
 ): void => {
   touching.current = false;
   touchY.current = null;
   userScrollUntil.current = 0;
-  ignoreScrollUntil.current = 0;
   engine.flushPendingCorrection(false, true);
 };
 
@@ -83,7 +81,6 @@ export function useVirtualList<Id extends string>(
   const touchY = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ignoreScrollUntil = useRef(0);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
@@ -133,6 +130,10 @@ export function useVirtualList<Id extends string>(
       container.style.overflowAnchor = "none";
       const updateViewport = (source: "user" | "programmatic") =>
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
+      const applyScrollTarget = () => {
+        const target = engine.getSnapshot().scrollTarget;
+        if (target !== null && Math.abs(container.scrollTop - target) >= 0.5) container.scrollTop = target;
+      };
       if (prior) {
         const intent = engine.beforeMutation();
         updateViewport("programmatic");
@@ -147,13 +148,7 @@ export function useVirtualList<Id extends string>(
         for (const [id, size] of pendingEntries.current) engine.measure(id, size);
         pendingEntries.current.clear();
         engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
-        // A late layout pass can leave WebKit a few pixels behind the new end after the measurement correction.
-        // Re-apply the existing follow intent only when the DOM has not moved independently since the last scroll.
-        const { pinned } = engine.getSnapshot();
-        if (pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5) {
-          container.scrollTop = engine.scrollToEnd();
-          lastScrollTop.current = container.scrollTop;
-        }
+        applyScrollTarget();
       };
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
@@ -173,43 +168,41 @@ export function useVirtualList<Id extends string>(
 
       const finishScroll = () => {
         touching.current = false;
-        const result = engine.flushPendingCorrection();
-        if (Math.abs(result.jump) >= 0.5) container.scrollTop = result.scrollTop;
+        engine.flushPendingCorrection();
+        applyScrollTarget();
       };
       const onScroll = () => {
-        const before = engine.getSnapshot();
-        if (performance.now() < ignoreScrollUntil.current) {
-          container.scrollTop = before.scrollTop;
+        const user = touching.current || performance.now() <= userScrollUntil.current;
+        lastScrollTop.current = container.scrollTop;
+        updateViewport(user ? "user" : "programmatic");
+        if (!user) {
+          applyScrollTarget();
           return;
         }
-        const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
-        // A shorter outline or a taller box (a reconnect banner leaving) makes the browser clamp a pinned reader's scroll
-        // to the new end, often before the box's ResizeObserver runs. Landing on the end is following, not the reader's
-        // move up, so the engine keeps its follow intent.
-        const clampedToEnd = before.pinned && container.scrollTop >= container.scrollHeight - container.clientHeight - 0.5;
-        if (!correction && !clampedToEnd && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
-        lastScrollTop.current = container.scrollTop;
-        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: clampedToEnd ? "programmatic" : "user" });
-        if (correction || clampedToEnd) return;
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = setTimeout(finishScroll, 150);
       };
-      // The stale-scroll guard after a programmatic bottom write only covers scroll events
-      // nobody asked for; any real input means the next scroll is the user's and must win.
-      const userIntent = () => { ignoreScrollUntil.current = 0; };
       const onWheel = (event: WheelEvent) => {
-        userIntent();
         userScrollUntil.current = performance.now() + 200;
         if (event.deltaY < 0) engine.setFollow(false);
       };
+      const scrollKeys = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
       const onKeyDown = (event: KeyboardEvent) => {
-        userIntent();
-        if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
+        if (!scrollKeys.has(event.key)) return;
+        userScrollUntil.current = performance.now() + 200;
+        if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home") engine.setFollow(false);
       };
-      const onPointerDown = () => userIntent();
+      const onPointerDown = (event: PointerEvent) => {
+        const bounds = container.getBoundingClientRect();
+        const scrollbar = event.clientX >= bounds.left + container.clientWidth || event.clientY >= bounds.top + container.clientHeight;
+        if (scrollbar) userScrollUntil.current = Number.POSITIVE_INFINITY;
+      };
+      const onPointerEnd = () => {
+        if (userScrollUntil.current === Number.POSITIVE_INFINITY) userScrollUntil.current = performance.now() + 200;
+      };
       const onTouchStart = (event: TouchEvent) => {
-        userIntent();
         touching.current = true;
+        userScrollUntil.current = Number.POSITIVE_INFINITY;
         touchY.current = event.touches[0]?.clientY ?? null;
       };
       const onTouchMove = (event: TouchEvent) => {
@@ -219,6 +212,7 @@ export function useVirtualList<Id extends string>(
       };
       const onTouchEnd = () => {
         touchY.current = null;
+        userScrollUntil.current = performance.now() + 200;
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = setTimeout(finishScroll, 150);
       };
@@ -226,17 +220,18 @@ export function useVirtualList<Id extends string>(
       container.addEventListener("wheel", onWheel, { passive: true });
       container.addEventListener("keydown", onKeyDown);
       container.addEventListener("pointerdown", onPointerDown, { passive: true });
+      container.addEventListener("pointerup", onPointerEnd, { passive: true });
+      container.addEventListener("pointercancel", onPointerEnd, { passive: true });
       container.addEventListener("touchstart", onTouchStart, { passive: true });
       container.addEventListener("touchmove", onTouchMove, { passive: true });
       container.addEventListener("touchend", onTouchEnd, { passive: true });
       container.addEventListener("touchcancel", onTouchEnd, { passive: true });
       // A scroll box that changes size (a banner above it, a composer below it) keeps a pinned reader at the bottom.
       const viewportObserver = new ResizeObserver(() => {
-        const pinned = engine.getSnapshot().pinned;
+        const intent = engine.beforeMutation();
         updateViewport("programmatic");
-        if (!pinned) return;
-        container.scrollTop = engine.scrollToEnd();
-        ignoreScrollUntil.current = performance.now() + 50;
+        engine.afterMutation(intent);
+        applyScrollTarget();
       });
       viewportObserver.observe(container);
       const release = () => {
@@ -247,6 +242,8 @@ export function useVirtualList<Id extends string>(
         container.removeEventListener("wheel", onWheel);
         container.removeEventListener("keydown", onKeyDown);
         container.removeEventListener("pointerdown", onPointerDown);
+        container.removeEventListener("pointerup", onPointerEnd);
+        container.removeEventListener("pointercancel", onPointerEnd);
         container.removeEventListener("touchstart", onTouchStart);
         container.removeEventListener("touchmove", onTouchMove);
         container.removeEventListener("touchend", onTouchEnd);
@@ -255,7 +252,7 @@ export function useVirtualList<Id extends string>(
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         resizeFrame.current = null;
         scrollEndTimer.current = null;
-        settleDetachedViewport(engine, touching, touchY, userScrollUntil, ignoreScrollUntil);
+        settleDetachedViewport(engine, touching, touchY, userScrollUntil);
         pendingEntries.current.clear();
         container.style.overflowAnchor = priorOverflowAnchor;
       };
@@ -277,8 +274,8 @@ export function useVirtualList<Id extends string>(
 
   useLayoutEffect(() => {
     const container = containerRef.current;
-    if (container && Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5)
-      container.scrollTop = snapshot.scrollTop;
+    if (container && snapshot.scrollTarget !== null && Math.abs(container.scrollTop - snapshot.scrollTarget) >= 0.5)
+      container.scrollTop = snapshot.scrollTarget;
   }, [snapshot]);
 
   useLayoutEffect(() => () => engine.destroy(), [engine]);
@@ -315,7 +312,6 @@ export function useVirtualList<Id extends string>(
     const container = containerRef.current;
     if (!container) return;
     container.scrollTop = engine.scrollToEnd();
-    ignoreScrollUntil.current = performance.now() + 50;
   }, [engine]);
   const requestFollow = useCallback(() => {
     if (touching.current || performance.now() < userScrollUntil.current) return;
@@ -323,7 +319,6 @@ export function useVirtualList<Id extends string>(
     if (!container) return;
     const next = engine.requestFollow();
     if (next !== null) container.scrollTop = next;
-    ignoreScrollUntil.current = performance.now() + 50;
   }, [engine]);
 
   const visibleSnapshot = resetPending

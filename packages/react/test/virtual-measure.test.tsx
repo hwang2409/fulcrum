@@ -106,6 +106,79 @@ test("a pinned late row measurement re-applies the bottom after the browser shif
   }
 });
 
+test("an equal remeasure cannot erase an undelivered pinned append target", async () => {
+  const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
+  const frames: FrameRequestCallback[] = [];
+  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
+  const descriptors = {
+    clientHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight"),
+    scrollHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight"),
+    scrollTop: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop"),
+  };
+  globalThis.ResizeObserver = class {
+    private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+    constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+    observe(element: Element) { this.entry.observed.add(element); }
+    unobserve(element: Element) { this.entry.observed.delete(element); }
+    disconnect() { this.entry.observed.clear(); }
+  } as unknown as typeof ResizeObserver;
+  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
+  globalThis.cancelAnimationFrame = () => {};
+  let position = 0;
+  let blockWrite = false;
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"),
+  });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return Math.min(position, Math.max(0, this.scrollHeight - this.clientHeight)); },
+    set(value: number) { if (!blockWrite) position = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)); },
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    const store = createRunStore((flush) => flush());
+    store.resync(commits("ordering", 201));
+    act(() => root.render(<RunProvider store={store}><Timeline virtual /></RunProvider>));
+    const host = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+    host.scrollTop = host.scrollHeight;
+    act(() => {
+      host.dispatchEvent(new KeyboardEvent("keydown", { key: "End" }));
+      host.dispatchEvent(new Event("scroll"));
+    });
+    await act(async () => { await Bun.sleep(201); });
+
+    blockWrite = true;
+    act(() => store.dispatch(commits("ordering", 202)[201]!));
+    blockWrite = false;
+    expect(host.scrollTop).toBeLessThan(host.scrollHeight - host.clientHeight);
+
+    const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")))!;
+    const target = [...rows.observed][0]!;
+    act(() => rows.report([{ target, borderBoxSize: [{ blockSize: 72, inlineSize: 800 }], contentRect: { height: 72 } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+    act(() => host.dispatchEvent(new Event("scroll")));
+    act(() => { for (const frame of frames.splice(0)) frame(0); });
+    expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+
+    act(() => store.dispatch(commits("ordering", 203)[202]!));
+    expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    globalThis.ResizeObserver = saved.ResizeObserver;
+    globalThis.requestAnimationFrame = saved.raf;
+    globalThis.cancelAnimationFrame = saved.caf;
+    for (const [name, descriptor] of Object.entries(descriptors)) {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+    }
+  }
+});
+
 test("a row resize reported just before a resync replaces its id is not measured into the new outline", () => {
   // A controllable ResizeObserver and frame queue: the browser reports a resize, then React commits before the frame.
   // Timeline has two observers (rows and the viewport); keep each one's callback and targets.

@@ -8,10 +8,10 @@ process.on("exit", stop);
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const assert = (condition: unknown, message: string) => { if (!condition) throw new Error(message); };
 
-async function open(count: number, auto = false) {
-  const page = await browser!.newPage({ viewport: { width: 1280, height: 720 } });
+async function open(count: number, auto = false, width = 1280, cpuRate = 4) {
+  const page = await browser!.newPage({ viewport: { width, height: 720 } });
   const client = await page.context().newCDPSession(page);
-  await client.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  await client.send("Emulation.setCPUThrottlingRate", { rate: cpuRate });
   await page.addInitScript(() => {
     const state = ((window as typeof window & { __idle?: { raf: number; timers: number } }).__idle = { raf: 0, timers: 0 });
     const raf = requestAnimationFrame.bind(window);
@@ -91,6 +91,7 @@ try {
       controls.append(10);
       await frames(4);
       const bottomError = Math.abs(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight);
+      scroll.dispatchEvent(new WheelEvent("wheel", { deltaY: -1_000 }));
       scroll.scrollTop -= 1_000;
       await frames(3);
       const held = visible();
@@ -98,9 +99,11 @@ try {
       controls.append(10);
       await frames(4);
       const unpinnedError = Math.abs(held.getBoundingClientRect().top - heldTop);
+      await new Promise((resolve) => setTimeout(resolve, 210));
       (window as typeof window & { __virtualFollow(): void }).__virtualFollow();
       await frames(4);
       const followRequestError = Math.abs(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight);
+      scroll.dispatchEvent(new WheelEvent("wheel", { deltaY: -1_000 }));
       scroll.scrollTop -= 1_000;
       await frames(3);
       controls.append(10);
@@ -150,8 +153,37 @@ try {
   });
   assert(crossingResult.error < 1, `mode crossing anchor error ${crossingResult.error}; anchor ${crossingResult.id}; mounted ${crossingResult.mounted.join(",")}`);
   await crossing.close();
+
+  const ordering = await open(300, false, 390, 6);
+  const orderingResult = await ordering.evaluate(async () => {
+    const scroll = document.querySelector<HTMLElement>('[data-testid="scroll"]')!;
+    const controls = (window as typeof window & { __virtualControls: { append(n?: number): void; resize(id: string, height: number): void } }).__virtualControls;
+    const frame = () => new Promise<void>(requestAnimationFrame);
+    const failures: Array<{ attempt: number; scrollTop: number; scrollHeight: number; gap: number; unseen: string | null }> = [];
+    scroll.scrollTop = scroll.scrollHeight;
+    await frame();
+    await frame();
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const prior = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")].at(-1)!;
+      const height = prior.getBoundingClientRect().height;
+      controls.append(1);
+      controls.resize(prior.dataset.virtualId!, height + 1);
+      controls.resize(prior.dataset.virtualId!, height);
+      await frame();
+      controls.append(1);
+      await frame();
+      await frame();
+      const gap = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
+      const unseen = document.querySelector<HTMLElement>('[data-part="timeline"]')?.dataset.unseenCount ?? null;
+      if (gap >= 1 || unseen !== "0" || document.querySelector('[data-part="jump-to-latest"]'))
+        failures.push({ attempt, scrollTop: scroll.scrollTop, scrollHeight: scroll.scrollHeight, gap, unseen });
+    }
+    return failures;
+  });
+  assert(orderingResult.length === 0, `390 px / 6x append-remeasure ordering failures: ${JSON.stringify(orderingResult)}`);
+  await ordering.close();
   console.table(results);
-  console.log("3 browser cases passed (Chromium, 4x CPU throttle; includes automatic mode crossing)");
+  console.log("4 browser cases passed (includes 390 px, 6x CPU append/remeasure ordering repeated 10 times)");
 } finally {
   await browser?.close();
   stop();
