@@ -483,7 +483,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     const interrupted = interruptedTurns.get(id);
     const statusOutcome = status.session?.session_id === id && status.state === "idle" ? statusTurnOutcome(status.last_turn_outcome, interrupted?.turn) : undefined;
     if (statusOutcome) return statusOutcome;
-    if (!interrupted) return status.session?.session_id === id && status.state === "idle" ? statusTurnOutcome(status.last_turn_outcome) : undefined;
+    if (!interrupted) return undefined;
     return interrupted.turn ? servedTurnOutcome(rows, interrupted.turn) ?? "unknown" : "unknown";
   };
   let openGeneration = 0;
@@ -605,7 +605,11 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     retireCatalog();
     const run = transitionRun(state.transition);
     // Any disconnected running turn may have ended unseen; status or history can name its outcome after reconnect.
-    if (run?.lease.store.getState().agent === "running") {
+    const hasPendingApproval = run?.lease.store.getOutline().some((itemId) => {
+      const item = run.lease.store.getItem(itemId);
+      return item?.type === "approval" && !item.ended;
+    });
+    if (run?.lease.store.getState().agent === "running" && !hasPendingApproval) {
       const turn = disconnected?.servedTurn(run.id) ?? servedTurns.get(run.id);
       if (turn) servedTurns.set(run.id, turn);
       interruptedTurns.set(run.id, { turn });

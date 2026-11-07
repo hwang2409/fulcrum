@@ -134,14 +134,6 @@ test("a failed replacement restores the old active session and its readiness", a
   expect(present(view).openError?.message).toBe("session log is invalid at line 12");
 });
 
-test("an idle status names the latest outcome on attach", async () => {
-  const fake = await server(handlers("b", { status: () => ({ session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: { turn_id: "turn-1", reason: "error" } }) }));
-  const view = createSessions(source(fake.client));
-  for (let attempt = 0; attempt < 20 && !present(view).open?.history.complete; attempt++) await tick();
-  expect(present(view).open?.lease.store.getState().endOutcome).toBe("failed");
-  view.dispose();
-});
-
 test("overflow marks only the running session until that session starts its next run", async () => {
   const first = await server(handlers("b"));
   const connection = source(first.client);
