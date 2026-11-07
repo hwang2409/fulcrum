@@ -605,8 +605,9 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     retireCatalog();
     const run = transitionRun(state.transition);
     // Any disconnected running turn may have ended unseen; status or history can name its outcome after reconnect.
-    const hasPendingApproval = run?.lease.store.getOutline().some((item) => {
-      return item?.type === "approval" && !item.ended;
+    const hasPendingApproval = run?.lease.store.getOutline().some((outline) => {
+      const item = run.lease.store.getItem(outline.id);
+      return outline.kind === "approval" && item?.type === "approval" && !item.ended;
     });
     if (run?.lease.store.getState().agent === "running" && !hasPendingApproval) {
       const turn = disconnected?.servedTurn(run.id) ?? servedTurns.get(run.id);
