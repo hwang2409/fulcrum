@@ -50,6 +50,14 @@ function parseCommand(value: unknown): SlashCommandInfo | null {
   return row as SlashCommandInfo;
 }
 
+function parseModelInput(row: Record<string, unknown>): SlashModelInputResult | null {
+  if (typeof row.display_text !== "string") return null;
+  if (typeof row.input_id === "string") return { kind: "model_input", input_id: row.input_id, display_text: row.display_text };
+  return typeof row.text === "string"
+    ? { kind: "model_input", text: row.text, display_text: row.display_text, ...(typeof row.origin === "string" ? { origin: row.origin } : {}) }
+    : null;
+}
+
 /** Parses slash_list and drops malformed command rows without losing the list. */
 export function parseSlashList(value: unknown): SlashListResult {
   const row = object(value);
@@ -74,11 +82,8 @@ export function parseSlashRun(value: unknown): ParsedSlashRunResult {
     case "unknown":
       return typeof row.name === "string" ? { kind: row.kind, name: row.name } : { kind: "malformed" };
     case "model_input": {
-      if (typeof row.display_text !== "string") return { kind: "malformed" };
-      if (typeof row.input_id === "string") return { kind: "model_input", input_id: row.input_id, display_text: row.display_text };
-      return typeof row.text === "string"
-        ? { kind: "model_input", text: row.text, display_text: row.display_text, ...(typeof row.origin === "string" ? { origin: row.origin } : {}) }
-        : { kind: "malformed" };
+      const result = parseModelInput(row);
+      return result ?? { kind: "malformed" };
     }
     default:
       return { kind: "malformed" };
