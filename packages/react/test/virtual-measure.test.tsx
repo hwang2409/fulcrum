@@ -87,15 +87,17 @@ test("a pinned late row measurement re-applies the bottom after the browser shif
     act(() => root.render(<RunProvider store={store}><Timeline virtual /></RunProvider>));
     const scroll = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
     expect(scroll).not.toBeNull();
-    let corrected = false;
-    Object.defineProperty(scroll!, "scrollTop", { configurable: true, get: () => 0, set: () => { corrected = true; } });
-    Object.defineProperty(scroll!, "scrollHeight", { configurable: true, get: () => 602 + (corrected ? -2 : 0) });
+    let scrollTop = 0;
+    // The DOM range is two pixels taller than the virtualizer's measured range, as WebKit can report after reconnect.
+    const scrollHeight = 201 * 72 + 2;
+    Object.defineProperty(scroll!, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } });
+    Object.defineProperty(scroll!, "scrollHeight", { configurable: true, get: () => scrollHeight });
     const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")));
     expect(rows).toBeDefined();
     const target = [...rows!.observed][0]!;
     act(() => rows!.report([{ target, borderBoxSize: [{ blockSize: 72, inlineSize: 800 }], contentRect: { height: 72 } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
     act(() => { for (const frame of frames.splice(0)) frame(0); });
-    expect(corrected).toBe(true);
+    expect(scrollHeight - 600 - scrollTop).toBeLessThanOrEqual(0.5);
   } finally {
     act(() => root.unmount());
     container.remove();

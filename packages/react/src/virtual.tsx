@@ -133,6 +133,11 @@ export function useVirtualList<Id extends string>(
       container.style.overflowAnchor = "none";
       const updateViewport = (source: "user" | "programmatic") =>
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
+      const scrollToBottom = (syncViewport = true) => {
+        container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        lastScrollTop.current = container.scrollTop;
+        if (syncViewport) updateViewport("programmatic");
+      };
       if (prior) {
         const intent = engine.beforeMutation();
         updateViewport("programmatic");
@@ -150,10 +155,7 @@ export function useVirtualList<Id extends string>(
         // A late layout pass can leave WebKit a few pixels behind the new end after the measurement correction.
         // Re-apply the existing follow intent only when the DOM has not moved independently since the last scroll.
         const { pinned } = engine.getSnapshot();
-        if (pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5) {
-          container.scrollTop = engine.scrollToEnd();
-          lastScrollTop.current = container.scrollTop;
-        }
+        if (pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5) scrollToBottom();
       };
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
@@ -166,7 +168,7 @@ export function useVirtualList<Id extends string>(
         // The user beats the engine: a scroll the engine has not seen yet (a scrollbar drag sends no input event first)
         // is the reader's move, so the follow waits for its scroll event, which unpins; wheel, keys, and touch unpin earlier.
         const { pinned, scrollTop } = engine.getSnapshot();
-        if (pinned && Math.abs(container.scrollTop - scrollTop) < 1) container.scrollTop = container.scrollHeight - container.clientHeight;
+        if (pinned && Math.abs(container.scrollTop - scrollTop) < 1) scrollToBottom(false);
       });
       observerRef.current = observer;
       for (const row of rows.current.values()) observer.observe(row);
@@ -235,7 +237,7 @@ export function useVirtualList<Id extends string>(
         const pinned = engine.getSnapshot().pinned;
         updateViewport("programmatic");
         if (!pinned) return;
-        container.scrollTop = engine.scrollToEnd();
+        scrollToBottom();
         ignoreScrollUntil.current = performance.now() + 50;
       });
       viewportObserver.observe(container);
