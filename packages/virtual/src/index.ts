@@ -89,9 +89,11 @@ export type Virtualizer<Id extends string = string> = {
   setFollow(follow: boolean): void;
   beforeMutation(options?: { mode?: "anchor" | "shift" }): MutationToken<Id>;
   afterMutation(token: MutationToken<Id>, options?: { deferCorrection?: boolean }): MutationResult;
-  flushPendingCorrection(): MutationResult;
+  flushPendingCorrection(notify?: boolean, releaseOwnership?: boolean): MutationResult;
   scrollToId(id: Id, viewportOffset?: number): number;
   scrollToEnd(): number;
+  /** Requests bottom follow for a host action such as its own newly submitted message. */
+  requestFollow(): number | null;
   snapshotCache(): VirtualCache<Id>;
   subscribe(listener: () => void): () => void;
   getSnapshot(): VirtualSnapshot<Id>;
@@ -562,6 +564,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     setViewport,
     measure(id, size) {
       const expectedAnchor = captureExpectedAnchor();
+      const wasPinned = pinned;
       checkSize(size);
       const index = layout.indexOf(id);
       if (index === undefined) throw new Error("cannot measure an id outside the outline");
@@ -577,6 +580,8 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       if (index < rangeCursorIndex) rangeCursorStart += size - previousSize;
       calibrateKindEstimates();
       restoreExpectedAnchor(expectedAnchor);
+      // A size change is not user input. Keep an already-following viewport following the new bottom.
+      if (wasPinned) pinned = true;
       log("measure", { index, size, totalSize: layout.total });
       changed();
     },
@@ -629,17 +634,17 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       changed();
       return { scrollTop, correction, appliedCorrection, jump, pendingJump, followedBottom };
     },
-    flushPendingCorrection() {
+    flushPendingCorrection(notify = true, releaseOwnership = false) {
       const before = scrollTop;
       const correction = pendingJump;
       scrollTop = clampScroll(scrollTop + pendingJump);
       pendingJump = 0;
       jump = scrollTop - before;
-      expectedCorrectionScroll = Math.abs(jump) >= 0.5 ? scrollTop : null;
+      expectedCorrectionScroll = !releaseOwnership && Math.abs(jump) >= 0.5 ? scrollTop : null;
       correctionEvent = false;
-      programmatic = true;
+      programmatic = !releaseOwnership;
       log("correction", { correction, appliedCorrection: jump, pendingJump, followedBottom: false, scrollTop });
-      changed();
+      if (notify) changed();
       return { scrollTop, correction, appliedCorrection: jump, jump, pendingJump, followedBottom: false };
     },
     scrollToId(id, viewportOffset = 0) {
@@ -654,6 +659,13 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       return scrollTop;
     },
     scrollToEnd() {
+      pinned = true;
+      unseenIds.clear();
+      setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
+      return scrollTop;
+    },
+    requestFollow() {
+      if (pinned) return null;
       pinned = true;
       unseenIds.clear();
       setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });

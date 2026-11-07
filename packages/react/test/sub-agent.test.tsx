@@ -601,7 +601,7 @@ test("back restores the parent's exact scroll anchor and released follow mode", 
   const parent = storeOf(events);
   const { source } = fakeSource({ a: storeOf(Array.from({ length: 50 }, (_, index) => commit(`c${index}`))) });
   mount(<RunNavigator store={parent.store} source={source} />);
-  const scroller = () => q('[data-part="run-scroll"]');
+  const scroller = () => q('[data-part="timeline-scroll"]');
   await frames();
   const bottom = scroller().scrollHeight - scroller().clientHeight;
   expect(scroller().scrollTop).toBe(bottom);
@@ -650,7 +650,7 @@ test("back to a parent that was following resumes at its new bottom", async () =
   parent.send(commit("while-away-1"), commit("while-away-2"));
   act(() => q('[data-part="run-back"]').click());
   await frames();
-  const node = container.querySelector<HTMLElement>('[data-part="run-scroll"]')!;
+  const node = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
   expect(node.scrollTop).toBe(node.scrollHeight - node.clientHeight);
   expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
 });

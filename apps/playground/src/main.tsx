@@ -327,7 +327,6 @@ function App() {
   const [speed, setSpeed] = useState(20);
   const [run, setRun] = useState(0);
   const store = useReplay(mode, speed, run);
-  const scroll = useRef<HTMLDivElement>(null);
   if (import.meta.env.DEV && live) return <Live />;
   const rate = mode === STRESS ? STRESS_RATE : speed;
   const label = mode === STRESS ? "stress" : mode.startsWith(STATIC) ? "static" : "replay";
@@ -372,8 +371,8 @@ function App() {
           arrow keys. Anchoring: the virtual page.
         </p>
         <Status label={label} />
-        <div className="scroll" ref={scroll}>
-          <Timeline virtual renderers={renderers} scrollRef={scroll} />
+        <div className="scroll">
+          <Timeline virtual renderers={renderers} />
         </div>
       </Shell>
     </RunProvider>

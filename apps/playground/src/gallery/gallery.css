@@ -117,7 +117,7 @@ a { color: inherit; text-decoration: none; }
 .demo-body > [data-part=run-navigator] { height: 600px; border: 1px solid var(--fulcrum-border); }
 /* "every state" shows every row: it is as tall as its rows, not a fixed panel that starts scrolled to its bottom. */
 #subagent-states .demo-body > [data-part=run-navigator] { height: auto; }
-.demo-body > [data-part=run-navigator] [data-part=run-scroll] { padding: 0 12px; }
+.demo-body > [data-part=run-navigator] [data-part=timeline-scroll] { padding: 0 12px; }
 .demo-body > [data-part=timeline]:empty { display: grid; place-items: center; min-height: 80px; border: 1px dashed var(--fulcrum-border); }
 .demo-body > [data-part=timeline]:empty::after { content: "No events yet. The timeline renders nothing until the first event."; color: var(--fulcrum-muted); font-size: 13px; }
 .demo-attrs {

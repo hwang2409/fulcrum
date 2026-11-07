@@ -433,7 +433,7 @@ async function checkGallery(browser: Browser, port: number): Promise<string[]> {
   const facts = await page.evaluate(() => {
     const text = (selector: string) => document.querySelector(selector)?.textContent ?? "";
     // m-e: the first row of "every state" is in view.
-    const scroll = document.querySelector<HTMLElement>("#subagent-states [data-part=run-scroll]")!;
+    const scroll = document.querySelector<HTMLElement>("#subagent-states [data-part=timeline-scroll]")!;
     const first = scroll.querySelector<HTMLElement>("[data-part=sub-agent]")!;
     const firstHidden = Math.round(scroll.getBoundingClientRect().top - first.getBoundingClientRect().top);
     // m-f: a disabled steer looks like the disabled send.
@@ -473,7 +473,7 @@ async function checkGallery(browser: Browser, port: number): Promise<string[]> {
     const timeline = document.querySelector<HTMLElement>("#approval-pending [data-part=timeline]")!;
     const row = timeline.querySelector<HTMLElement>(":scope > :not([data-part=jump-to-approval])")!;
     const before = row.getBoundingClientRect().top;
-    timeline.querySelector<HTMLElement>("[data-part=jump-to-approval]")!.focus();
+    timeline.querySelector<HTMLElement>("[data-part=jump-to-approval]")!.focus({ preventScroll: true });
     const after = row.getBoundingClientRect().top;
     return Math.round(after - before);
   });

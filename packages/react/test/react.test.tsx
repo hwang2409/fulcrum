@@ -797,6 +797,8 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
     </RunProvider>,
   );
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
+  expect(q('[data-part="timeline"]').parentElement?.dataset.part).toBe("timeline-scroll");
+  expect(q('[data-part="jump-to-latest-lane"]')).toBeTruthy();
 
   act(() => root!.render(
     <RunProvider store={store}>
@@ -805,6 +807,7 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
   ));
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("false");
   expect(container.querySelectorAll('[data-part="message"]')).toHaveLength(201);
+  expect(container.querySelector('[data-part="jump-to-latest-lane"]')).toBeNull();
 
   act(() => root!.render(
     <RunProvider store={store}>
@@ -813,6 +816,502 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
   ));
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
   expect(container.querySelectorAll('[data-part="message"]').length).toBeLessThanOrEqual(200);
+
+});
+
+test("host-owned Timeline uses the supplied scroll element without replacing its ref", () => {
+  const { store } = setup(Array.from({ length: 300 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: String(index),
+    message: message(String(index)),
+  })));
+  const scrollRef = { current: null as HTMLElement | null };
+  mount(
+    <div ref={scrollRef} data-testid="host-scroll">
+      <RunProvider store={store}>
+        <Timeline virtual scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />
+      </RunProvider>
+    </div>,
+  );
+  expect(scrollRef.current?.dataset.testid).toBe("host-scroll");
+  expect(q('[data-part="timeline"]').parentElement).toBe(scrollRef.current);
+  expect(container.querySelector('[data-part="timeline-frame"]')).toBeNull();
+  expect(container.querySelector('[data-part="timeline-scroll"]')).toBeNull();
+  expect(container.querySelector('[data-part="jump-to-latest-lane"]')).toBeNull();
+  expect(container.querySelectorAll("[data-virtual-id]").length).toBeLessThanOrEqual(200);
+});
+
+function hostAttachmentHarness() {
+  let items = Array.from({ length: 300 }, (_, index) => committedItem(String(index)));
+  const timeline = timelineStore(items);
+  const scrollRef = { current: null as HTMLElement | null };
+  const view = (target: "inner" | "outer" | "replacement" | "removed", owned = false, followRequest = 0, virtual = true) => (
+    <RunProvider store={timeline.store}>
+      <div data-testid="outer" ref={target === "outer" ? scrollRef : undefined}>
+        <div data-testid="inner" ref={target === "inner" ? scrollRef : undefined} />
+      </div>
+      {target === "replacement" ? <div data-testid="replacement" ref={scrollRef} /> : null}
+      {owned
+        ? <Timeline virtual={virtual} followRequest={followRequest} />
+        : <Timeline virtual={virtual} followRequest={followRequest} scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />}
+    </RunProvider>
+  );
+  const append = () => {
+    const index = items.length;
+    const added = committedItem(String(index));
+    timeline.replace(items = [...items, added], [{ index, deleteCount: 0, items: [added] }]);
+  };
+  const prepend = () => {
+    const added = committedItem(`before-${items.length}`);
+    timeline.replace(items = [added, ...items], [{ index: 0, deleteCount: 0, items: [added] }]);
+  };
+  const replace = () => {
+    const index = items.length - 1;
+    const added = committedItem(`replacement-${items.length}`);
+    timeline.replace(items = [...items.slice(0, index), added], [{ index, deleteCount: 1, items: [added] }]);
+  };
+  return { append, prepend, replace, scrollRef, view };
+}
+
+const attachedHost = (testId: string) => {
+  const host = q(`[data-testid="${testId}"]`);
+  expect(host.style.overflowAnchor).toBe("none");
+  expect(container.querySelectorAll("[data-virtual-id]").length).toBeLessThanOrEqual(200);
+  return host;
+};
+
+type TransferKind = "direct swap" | "null gap: 0 commits" | "null gap: 1 commit" | "null gap: N commits" | "owned -> host-owned" | "host-owned -> owned" | "unmount";
+type TransferInteraction = "idle pinned" | "idle unpinned" | "touch (active)" | "momentum" | "pending correction" | "pending jump";
+type TransferOutlineChange = "none" | "append" | "prepend" | "replace";
+
+const transferKinds: TransferKind[] = [
+  "direct swap",
+  "null gap: 0 commits",
+  "null gap: 1 commit",
+  "null gap: N commits",
+  "owned -> host-owned",
+  "host-owned -> owned",
+  "unmount",
+];
+const transferInteractions: TransferInteraction[] = [
+  "idle pinned",
+  "idle unpinned",
+  "touch (active)",
+  "momentum",
+  "pending correction",
+  "pending jump",
+];
+const transferOutlineChanges: TransferOutlineChange[] = ["none", "append", "prepend", "replace"];
+
+// Every product-reachable transfer/state/outline-change cell is present. Unmount has no post-transfer host by
+// definition, so those cells assert cleanup only instead of follow, append, anchor, and jump behavior.
+test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((interaction) =>
+  transferOutlineChanges.map((outlineChange) => [transfer, interaction, outlineChange] as const),
+)))(
+  "host transfer matrix: %s / %s / %s outline change",
+  (transfer, interaction, outlineChange) => {
+    const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    const userAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent");
+    const positions = new WeakMap<HTMLElement, number>();
+    const listeners = new Map<EventTarget, Map<string, Set<EventListenerOrEventListenerObject>>>();
+    const add = HTMLElement.prototype.addEventListener;
+    const remove = HTMLElement.prototype.removeEventListener;
+    const OriginalResizeObserver = globalThis.ResizeObserver;
+    let activeObservers = 0;
+    class MatrixResizeObserver implements ResizeObserver {
+      constructor(_callback: ResizeObserverCallback) { activeObservers++; }
+      disconnect() { activeObservers--; }
+      observe() {}
+      unobserve() {}
+    }
+    Object.defineProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"),
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() { return positions.get(this as HTMLElement) ?? 0; },
+      set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+    });
+    HTMLElement.prototype.addEventListener = function(type, listener, options) {
+      if (this.dataset.testid && listener) {
+        const byType = listeners.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
+        const entries = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+        entries.add(listener);
+        byType.set(type, entries);
+        listeners.set(this, byType);
+      }
+      add.call(this, type, listener, options);
+    };
+    HTMLElement.prototype.removeEventListener = function(type, listener, options) {
+      if (listener) listeners.get(this)?.get(type)?.delete(listener);
+      remove.call(this, type, listener, options);
+    };
+    globalThis.ResizeObserver = MatrixResizeObserver;
+    const listenerCount = () => [...listeners.values()].flatMap((types) => [...types.values()]).reduce((sum, entries) => sum + entries.size, 0);
+    const viewportAnchor = (host: HTMLElement, scrollTop = host.scrollTop) => {
+      const rows = [...container.querySelectorAll<HTMLElement>("[data-virtual-id]")].map((row) => ({
+        id: row.dataset.virtualId!,
+        top: Number.parseFloat(row.style.transform.slice("translateY(".length)),
+      }));
+      const anchor = rows.filter(({ top }) => top <= scrollTop).at(-1)!;
+      return { id: anchor.id, offset: anchor.top - scrollTop };
+    };
+    try {
+      const { append, prepend, replace, view } = hostAttachmentHarness();
+      let followRequest = 0;
+      const startsOwned = transfer === "owned -> host-owned";
+      mount(view("inner", startsOwned, followRequest));
+      const oldHost = startsOwned ? q('[data-part="timeline-scroll"]') : attachedHost("inner");
+      oldHost.scrollTop = oldHost.scrollHeight;
+      act(() => oldHost.dispatchEvent(new Event("scroll")));
+
+      const unpinned = interaction !== "idle pinned";
+      if (unpinned) {
+        oldHost.scrollTop = 3_000;
+        act(() => {
+          oldHost.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+          oldHost.dispatchEvent(new Event("scroll"));
+        });
+      }
+      if (interaction === "touch (active)" || interaction === "momentum" || interaction === "pending jump") {
+        const touch = new Event("touchstart") as TouchEvent;
+        Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+        act(() => oldHost.dispatchEvent(touch));
+      }
+      if (interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump") prepend();
+      if (interaction === "momentum") act(() => oldHost.dispatchEvent(new Event("touchend")));
+      const expectedTop = interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump" ? 3_072 : 3_000;
+      const anchorBefore = unpinned ? viewportAnchor(oldHost) : null;
+
+      const changeOutline = () => {
+        if (outlineChange === "append") append();
+        else if (outlineChange === "prepend") prepend();
+        else if (outlineChange === "replace") replace();
+      };
+      const render = (target: "inner" | "outer" | "replacement" | "removed", owned = false, virtual = true, withOutlineChange = false) =>
+        act(() => {
+          if (withOutlineChange) changeOutline();
+          root!.render(view(target, owned, followRequest, virtual));
+        });
+      let newHost: HTMLElement | null = null;
+      if (transfer === "unmount") {
+        act(() => {
+          changeOutline();
+          root!.unmount();
+        });
+        root = undefined;
+        expect(oldHost.style.overflowAnchor).toBe("");
+        expect(listenerCount()).toBe(0);
+        expect(activeObservers).toBe(0);
+        return;
+      }
+      if (transfer === "null gap: 1 commit" || transfer === "null gap: N commits") {
+        globalThis.ResizeObserver = undefined as unknown as typeof ResizeObserver;
+        render("removed");
+        if (transfer === "null gap: N commits") {
+          render("removed");
+          render("removed");
+        }
+        globalThis.ResizeObserver = MatrixResizeObserver;
+        render("outer", false, true, true);
+        newHost = attachedHost("outer");
+      } else if (transfer === "null gap: 0 commits") {
+        // React clears and assigns the ref during one replacement commit; no committed render observes null.
+        render("replacement", false, true, true);
+        newHost = attachedHost("replacement");
+      } else if (transfer === "owned -> host-owned") {
+        render("outer", false, true, true);
+        newHost = attachedHost("outer");
+      } else if (transfer === "host-owned -> owned") {
+        render("inner", true, true, true);
+        newHost = q('[data-part="timeline-scroll"]');
+      } else {
+        render("outer", false, true, true);
+        newHost = attachedHost("outer");
+      }
+
+      expect(oldHost.style.overflowAnchor).toBe("");
+      const measuredRow = q("[data-virtual-id]");
+      expect(Number.parseFloat(measuredRow.style.transform.slice("translateY(".length)))
+        .toBeCloseTo(Number(measuredRow.dataset.virtualIndex) * 72, 0);
+      if (unpinned) {
+        const expectedOutlineTop = outlineChange === "prepend" ? expectedTop + 72 : expectedTop;
+        expect(newHost.scrollTop).toBeCloseTo(expectedOutlineTop, 0);
+        expect(viewportAnchor(newHost).id).toBe(anchorBefore!.id);
+        expect(viewportAnchor(newHost).offset).toBeCloseTo(anchorBefore!.offset, 0);
+        append();
+        expect(q('[data-part="jump-to-latest"]')).toBeTruthy();
+      } else expect(newHost.scrollTop).toBeCloseTo(newHost.scrollHeight - newHost.clientHeight, 0);
+      followRequest++;
+      if (transfer === "host-owned -> owned") render("inner", true);
+      else render(transfer === "null gap: 0 commits" ? "replacement" : "outer");
+      expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+      append();
+      expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+      newHost.scrollTop -= 1_000;
+      act(() => {
+        newHost!.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+        newHost!.dispatchEvent(new Event("scroll"));
+      });
+      append();
+      const jump = q('[data-part="jump-to-latest"]');
+      expect(jump).toBeTruthy();
+      act(() => jump.click());
+      expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+    } finally {
+      if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+      if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+      if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+      if (userAgent) Object.defineProperty(Navigator.prototype, "userAgent", userAgent);
+      HTMLElement.prototype.addEventListener = add;
+      HTMLElement.prototype.removeEventListener = remove;
+      globalThis.ResizeObserver = OriginalResizeObserver;
+    }
+  },
+);
+
+test("host-owned Timeline moves one stable ref from an inner to an outer element", () => {
+  const { scrollRef, view } = hostAttachmentHarness();
+  mount(view("inner"));
+  const inner = attachedHost("inner");
+  act(() => root!.render(view("outer")));
+  expect(scrollRef.current).toBe(q('[data-testid="outer"]'));
+  expect(inner.style.overflowAnchor).toBe("");
+  attachedHost("outer");
+});
+
+test("host-owned Timeline reattaches when the element behind a stable ref is replaced", () => {
+  const { scrollRef, view } = hostAttachmentHarness();
+  mount(view("inner"));
+  const inner = attachedHost("inner");
+  act(() => root!.render(view("replacement")));
+  expect(scrollRef.current).toBe(q('[data-testid="replacement"]'));
+  expect(inner.style.overflowAnchor).toBe("");
+  attachedHost("replacement");
+});
+
+test("host-owned Timeline detaches on null and reattaches when the stable ref returns", () => {
+  const { scrollRef, view } = hostAttachmentHarness();
+  mount(view("inner"));
+  const inner = attachedHost("inner");
+  act(() => root!.render(view("removed")));
+  expect(scrollRef.current).toBeNull();
+  expect(inner.style.overflowAnchor).toBe("");
+  act(() => root!.render(view("outer")));
+  attachedHost("outer");
+});
+
+test("Timeline keeps attachment correct while switching between owned and host-owned modes", () => {
+  const { view } = hostAttachmentHarness();
+  mount(view("inner"));
+  const inner = attachedHost("inner");
+  act(() => root!.render(view("outer")));
+  expect(inner.style.overflowAnchor).toBe("");
+  attachedHost("outer");
+  act(() => root!.render(view("outer", true)));
+  expect(q('[data-testid="outer"]').style.overflowAnchor).toBe("");
+  expect(q('[data-part="timeline-scroll"]').style.overflowAnchor).toBe("none");
+  act(() => root!.render(view("outer")));
+  attachedHost("outer");
+});
+
+test("follow, pinning, jump control, and bounded mounts survive every scroll-host transition", () => {
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const positions = new WeakMap<HTMLElement, number>();
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+  });
+  try {
+    const { append, view } = hostAttachmentHarness();
+    let followRequest = 0;
+    let target: "inner" | "outer" | "replacement" = "inner";
+    const render = (owned = false) => act(() => root!.render(view(target, owned, followRequest)));
+    const exercise = (host: HTMLElement, owned = false) => {
+      host.scrollTop = host.scrollHeight;
+      act(() => host.dispatchEvent(new Event("scroll")));
+      append();
+      expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+      host.scrollTop -= 1_000;
+      act(() => {
+        host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+        host.dispatchEvent(new Event("scroll"));
+      });
+      append();
+      const jump = q('[data-part="jump-to-latest"]');
+      expect(jump).toBeTruthy();
+      act(() => jump.click());
+      expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+      host.scrollTop -= 1_000;
+      act(() => host.dispatchEvent(new Event("scroll")));
+      followRequest++;
+      render(owned);
+      expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+      expect(container.querySelectorAll("[data-virtual-id]").length).toBeLessThanOrEqual(200);
+    };
+
+    mount(view(target));
+    exercise(attachedHost(target));
+    target = "outer";
+    render();
+    exercise(attachedHost(target));
+    target = "replacement";
+    render();
+    const replacement = attachedHost(target);
+    exercise(replacement);
+    act(() => root!.render(view("removed", false, followRequest)));
+    expect(replacement.style.overflowAnchor).toBe("");
+    target = "inner";
+    render();
+    exercise(attachedHost(target));
+    render(true);
+    exercise(q('[data-part="timeline-scroll"]'), true);
+    target = "outer";
+    render();
+    exercise(attachedHost(target));
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+  }
+});
+
+test.each([
+  ["active touch", false],
+  ["momentum settle", true],
+])("host transfer settles an iOS correction during %s", (_state, endTouch) => {
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const userAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent");
+  const positions = new WeakMap<HTMLElement, number>();
+  Object.defineProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+  });
+  try {
+    const { append, prepend, view } = hostAttachmentHarness();
+    let followRequest = 0;
+    mount(view("inner", false, followRequest));
+    const inner = attachedHost("inner");
+    inner.scrollTop = 3_000;
+    act(() => {
+      inner.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+      inner.dispatchEvent(new Event("scroll"));
+    });
+    const touch = new Event("touchstart") as TouchEvent;
+    Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+    act(() => inner.dispatchEvent(touch));
+    prepend();
+    if (endTouch) act(() => inner.dispatchEvent(new Event("touchend")));
+
+    act(() => root!.render(view("outer", false, followRequest)));
+    const outer = attachedHost("outer");
+    expect(outer.scrollTop).toBe(3_072);
+    followRequest++;
+    act(() => root!.render(view("outer", false, followRequest)));
+    expect(outer.scrollTop).toBe(outer.scrollHeight - outer.clientHeight);
+    append();
+    expect(outer.scrollTop).toBe(outer.scrollHeight - outer.clientHeight);
+    outer.scrollTop -= 1_000;
+    act(() => {
+      outer.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+      outer.dispatchEvent(new Event("scroll"));
+    });
+    append();
+    const jump = q('[data-part="jump-to-latest"]');
+    expect(jump).toBeTruthy();
+    act(() => jump.click());
+    expect(outer.scrollTop).toBe(outer.scrollHeight - outer.clientHeight);
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+    if (userAgent) Object.defineProperty(Navigator.prototype, "userAgent", userAgent);
+  }
+});
+
+test("100 host swaps release every adapter listener and observer", () => {
+  const added = new Map<EventTarget, Map<string, Set<EventListenerOrEventListenerObject>>>();
+  const add = HTMLElement.prototype.addEventListener;
+  const remove = HTMLElement.prototype.removeEventListener;
+  const OriginalResizeObserver = globalThis.ResizeObserver;
+  let activeObservers = 0;
+  class CountingResizeObserver implements ResizeObserver {
+    constructor(_callback: ResizeObserverCallback) { activeObservers++; }
+    disconnect() { activeObservers--; }
+    observe() {}
+    unobserve() {}
+  }
+  HTMLElement.prototype.addEventListener = function(type, listener, options) {
+    if (this.dataset.testid && listener) {
+      const byType = added.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
+      const listeners = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+      listeners.add(listener);
+      byType.set(type, listeners);
+      added.set(this, byType);
+    }
+    add.call(this, type, listener, options);
+  };
+  HTMLElement.prototype.removeEventListener = function(type, listener, options) {
+    if (listener) added.get(this)?.get(type)?.delete(listener);
+    remove.call(this, type, listener, options);
+  };
+  globalThis.ResizeObserver = CountingResizeObserver;
+  try {
+    const { view } = hostAttachmentHarness();
+    mount(view("inner"));
+    for (let index = 0; index < 100; index++) act(() => root!.render(view(index % 2 ? "inner" : "outer")));
+    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(8);
+    expect(activeObservers).toBe(2);
+    act(() => root!.unmount());
+    root = undefined;
+    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(0);
+    expect(activeObservers).toBe(0);
+  } finally {
+    HTMLElement.prototype.addEventListener = add;
+    HTMLElement.prototype.removeEventListener = remove;
+    globalThis.ResizeObserver = OriginalResizeObserver;
+  }
+});
+
+test("10k-row commits do no layout work when the scroll element is unchanged", () => {
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const rect = HTMLElement.prototype.getBoundingClientRect;
+  let layoutReads = 0;
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { layoutReads++; return 600; } });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { layoutReads++; return 200_000; } });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { layoutReads++; return 0; }, set() {} });
+  HTMLElement.prototype.getBoundingClientRect = function() { layoutReads++; return rect.call(this); };
+  try {
+    const timeline = timelineStore(Array.from({ length: 10_000 }, (_, index) => committedItem(String(index))));
+    const view = (commit: number) => <div data-commit={commit}><RunProvider store={timeline.store}><Timeline virtual /></RunProvider></div>;
+    mount(view(0));
+    layoutReads = 0;
+    for (let index = 1; index <= 100; index++) act(() => root!.render(view(index)));
+    expect(layoutReads).toBe(0);
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+    HTMLElement.prototype.getBoundingClientRect = rect;
+  }
 });
 
 test("useVirtualList ignores a stale outline hint and resets when the outline owner changes", () => {
@@ -878,12 +1377,13 @@ test("virtual Timeline resets and follows when its RunProvider store changes dur
 
   expect(() => act(() => root!.render(<RunProvider store={b.store}><Timeline virtual /></RunProvider>))).not.toThrow();
   expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("100000");
-  container.scrollTop = 0;
+  q('[data-part="timeline-scroll"]').scrollTop = 0;
 
   expect(() => act(() => root!.render(<RunProvider store={c.store}><Timeline virtual /></RunProvider>))).not.toThrow();
-  act(() => container.dispatchEvent(new Event("scroll")));
+  const viewport = q('[data-part="timeline-scroll"]');
+  act(() => viewport.dispatchEvent(new Event("scroll")));
   expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("201");
-  expect(container.scrollTop).toBe(container.scrollHeight - container.clientHeight);
+  expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
   expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
   expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
   if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
@@ -911,6 +1411,36 @@ const committedItem = (id: string): RunItem => ({
   message: message(id),
   version: 1,
   active: false,
+});
+
+test("the unconstrained-height diagnostic checks layout only once while rows stream", () => {
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const requestFrame = globalThis.requestAnimationFrame;
+  const cancelFrame = globalThis.cancelAnimationFrame;
+  const frames: FrameRequestCallback[] = [];
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100_000 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 100_001 });
+  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
+  globalThis.cancelAnimationFrame = () => {};
+  try {
+    let items = Array.from({ length: 201 }, (_, index) => committedItem(String(index)));
+    const timeline = timelineStore(items);
+    mount(<RunProvider store={timeline.store}><Timeline virtual /></RunProvider>);
+    expect(container.querySelectorAll("[data-virtual-id]")).toHaveLength(201);
+    expect(frames).toHaveLength(1);
+    frames.shift()!(0);
+
+    const added = committedItem("201");
+    timeline.replace(items = [...items, added], [{ index: 201, deleteCount: 0, items: [added] }]);
+    expect(container.querySelectorAll("[data-virtual-id]")).toHaveLength(202);
+    expect(frames).toHaveLength(0);
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    globalThis.requestAnimationFrame = requestFrame;
+    globalThis.cancelAnimationFrame = cancelFrame;
+  }
 });
 
 const waitForAnnouncement = () => act(async () => {
