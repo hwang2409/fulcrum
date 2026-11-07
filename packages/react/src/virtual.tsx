@@ -19,6 +19,11 @@ import {
 
 const isIOSWebKit = () => navigator.userAgent.includes("iP");
 
+type SettledViewport<Id extends string> = {
+  viewport: VirtualSnapshot<Id>;
+  scrollTop: number;
+};
+
 const settleDetachedViewport = <Id extends string>(
   engine: Virtualizer<Id>,
   container: HTMLElement,
@@ -26,16 +31,14 @@ const settleDetachedViewport = <Id extends string>(
   touchY: RefObject<number | null>,
   userScrollUntil: RefObject<number>,
   ignoreScrollUntil: RefObject<number>,
-  detachedScrollTop: RefObject<number>,
-) => {
+): SettledViewport<Id> => {
   touching.current = false;
   touchY.current = null;
   userScrollUntil.current = 0;
   ignoreScrollUntil.current = 0;
   const viewport = engine.getSnapshot();
   const settled = engine.flushPendingCorrection(false, true);
-  detachedScrollTop.current = viewport.pendingJump === 0 ? container.scrollTop : settled.scrollTop;
-  return viewport;
+  return { viewport, scrollTop: viewport.pendingJump === 0 ? container.scrollTop : settled.scrollTop };
 };
 
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
@@ -92,10 +95,9 @@ export function useVirtualList<Id extends string>(
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
-  const attachedElement = useRef<HTMLElement | null>(null);
-  const detachCurrent = useRef<(() => void) | null>(null);
-  const detachedViewport = useRef<VirtualSnapshot<Id> | null>(null);
-  const detachedScrollTop = useRef(0);
+  const attachment = useRef<{ host: HTMLElement | null; settled: SettledViewport<Id> | null }>({ host: null, settled: null });
+  const releaseCurrent = useRef<(() => SettledViewport<Id>) | null>(null);
+  const transferCurrent = useRef<((next: HTMLElement | null) => void) | null>(null);
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
 
@@ -120,151 +122,154 @@ export function useVirtualList<Id extends string>(
   }, [engine, outline, options.enabled, options.invalidateMeasurements, options.outlineUpdate, options.resetKey, resetPending]);
 
   useLayoutEffect(() => {
-    const container = options.enabled === false || typeof ResizeObserver === "undefined"
-      ? null
-      : options.scrollRef?.current ?? timelineElement.current?.parentElement ?? null;
-    if (attachedElement.current === container) return;
-    // Transfer post-state: pinned stays pinned at the new bottom; unpinned keeps its anchor; corrections settle
-    // into that anchor, stale measurements are dropped for the new host to remeasure, and no interaction owner survives.
-    detachCurrent.current?.();
-    const priorViewport = detachedViewport.current;
-    const priorScrollTop = detachedScrollTop.current;
-    detachedViewport.current = null;
-    attachedElement.current = null;
-    detachCurrent.current = null;
-    containerRef.current = null;
-    if (!container) return;
-    containerRef.current = container;
-    const priorOverflowAnchor = container.style.overflowAnchor;
-    container.style.overflowAnchor = "none";
-    const updateViewport = (source: "user" | "programmatic") =>
-      engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
-    if (priorViewport) {
-      if (!priorViewport.pinned) container.scrollTop = priorScrollTop;
-      updateViewport("programmatic");
-      if (priorViewport.pinned) container.scrollTop = engine.scrollToEnd();
-    } else updateViewport("user");
-    lastScrollTop.current = container.scrollTop;
-
-    const flushMeasurements = () => {
-      resizeFrame.current = null;
-      if (pendingEntries.current.size === 0) return;
-      const token = engine.beforeMutation();
-      for (const [id, size] of pendingEntries.current) engine.measure(id, size);
-      pendingEntries.current.clear();
-      engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
-    };
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const id = rowIds.current.get(entry.target);
-        if (id !== undefined) pendingEntries.current.set(id, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
+    const transfer = (next: HTMLElement | null) => {
+      if (attachment.current.host === next) return;
+      // Transfer post-state: pinned lands at the new bottom; unpinned keeps its anchor; a pending correction is
+      // applied by that anchor or dropped, never left dangling. A null gap keeps settled state until attachment.
+      if (attachment.current.host) {
+        attachment.current.settled = releaseCurrent.current?.() ?? attachment.current.settled;
+        attachment.current.host = null;
+        releaseCurrent.current = null;
+        containerRef.current = null;
       }
-      if (resizeFrame.current === null) resizeFrame.current = requestAnimationFrame(flushMeasurements);
-      // Rows are in flow, so the DOM already has the new end: a pinned reader sticks to it before this frame paints,
-      // not a frame later when the engine measures (and then agrees). Moving scroll resizes nothing: no observer loop.
-      // The user beats the engine: a scroll the engine has not seen yet (a scrollbar drag sends no input event first)
-      // is the reader's move, so the follow waits for its scroll event, which unpins; wheel, keys, and touch unpin earlier.
-      const { pinned, scrollTop } = engine.getSnapshot();
-      if (pinned && Math.abs(container.scrollTop - scrollTop) < 1) container.scrollTop = container.scrollHeight - container.clientHeight;
-    });
-    observerRef.current = observer;
-    for (const row of rows.current.values()) observer.observe(row);
-
-    const finishScroll = () => {
-      touching.current = false;
-      const result = engine.flushPendingCorrection();
-      if (Math.abs(result.jump) >= 0.5) container.scrollTop = result.scrollTop;
-    };
-    const onScroll = () => {
-      const before = engine.getSnapshot();
-      if (performance.now() < ignoreScrollUntil.current) {
-        container.scrollTop = before.scrollTop;
-        return;
-      }
-      const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
-      if (!correction && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+      if (!next) return;
+      const container = next;
+      const prior = attachment.current.settled;
+      attachment.current.settled = null;
+      containerRef.current = container;
+      const priorOverflowAnchor = container.style.overflowAnchor;
+      container.style.overflowAnchor = "none";
+      const updateViewport = (source: "user" | "programmatic") =>
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
+      if (prior) {
+        if (!prior.viewport.pinned) container.scrollTop = prior.scrollTop;
+        updateViewport("programmatic");
+        if (prior.viewport.pinned) container.scrollTop = engine.scrollToEnd();
+      } else updateViewport("user");
       lastScrollTop.current = container.scrollTop;
-      engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
-      if (correction) return;
-      if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
-      scrollEndTimer.current = setTimeout(finishScroll, 150);
+
+      const flushMeasurements = () => {
+        resizeFrame.current = null;
+        if (pendingEntries.current.size === 0) return;
+        const token = engine.beforeMutation();
+        for (const [id, size] of pendingEntries.current) engine.measure(id, size);
+        pendingEntries.current.clear();
+        engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
+      };
+      const observer = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const id = rowIds.current.get(entry.target);
+          if (id !== undefined) pendingEntries.current.set(id, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
+        }
+        if (resizeFrame.current === null) resizeFrame.current = requestAnimationFrame(flushMeasurements);
+        // Rows are in flow, so the DOM already has the new end: a pinned reader sticks to it before this frame paints,
+        // not a frame later when the engine measures (and then agrees). Moving scroll resizes nothing: no observer loop.
+        // The user beats the engine: a scroll the engine has not seen yet (a scrollbar drag sends no input event first)
+        // is the reader's move, so the follow waits for its scroll event, which unpins; wheel, keys, and touch unpin earlier.
+        const { pinned, scrollTop } = engine.getSnapshot();
+        if (pinned && Math.abs(container.scrollTop - scrollTop) < 1) container.scrollTop = container.scrollHeight - container.clientHeight;
+      });
+      observerRef.current = observer;
+      for (const row of rows.current.values()) observer.observe(row);
+
+      const finishScroll = () => {
+        touching.current = false;
+        const result = engine.flushPendingCorrection();
+        if (Math.abs(result.jump) >= 0.5) container.scrollTop = result.scrollTop;
+      };
+      const onScroll = () => {
+        const before = engine.getSnapshot();
+        if (performance.now() < ignoreScrollUntil.current) {
+          container.scrollTop = before.scrollTop;
+          return;
+        }
+        const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
+        if (!correction && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+        lastScrollTop.current = container.scrollTop;
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
+        if (correction) return;
+        if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
+        scrollEndTimer.current = setTimeout(finishScroll, 150);
+      };
+      // The stale-scroll guard after a programmatic bottom write only covers scroll events
+      // nobody asked for; any real input means the next scroll is the user's and must win.
+      const userIntent = () => { ignoreScrollUntil.current = 0; };
+      const onWheel = (event: WheelEvent) => {
+        userIntent();
+        userScrollUntil.current = performance.now() + 200;
+        if (event.deltaY < 0) engine.setFollow(false);
+      };
+      const onKeyDown = (event: KeyboardEvent) => {
+        userIntent();
+        if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
+      };
+      const onPointerDown = () => userIntent();
+      const onTouchStart = (event: TouchEvent) => {
+        userIntent();
+        touching.current = true;
+        touchY.current = event.touches[0]?.clientY ?? null;
+      };
+      const onTouchMove = (event: TouchEvent) => {
+        const next = event.touches[0]?.clientY;
+        if (next !== undefined && touchY.current != null && next > touchY.current) engine.setFollow(false);
+        touchY.current = next ?? null;
+      };
+      const onTouchEnd = () => {
+        touchY.current = null;
+        if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
+        scrollEndTimer.current = setTimeout(finishScroll, 150);
+      };
+      container.addEventListener("scroll", onScroll, { passive: true });
+      container.addEventListener("wheel", onWheel, { passive: true });
+      container.addEventListener("keydown", onKeyDown);
+      container.addEventListener("pointerdown", onPointerDown, { passive: true });
+      container.addEventListener("touchstart", onTouchStart, { passive: true });
+      container.addEventListener("touchmove", onTouchMove, { passive: true });
+      container.addEventListener("touchend", onTouchEnd, { passive: true });
+      container.addEventListener("touchcancel", onTouchEnd, { passive: true });
+      // A scroll box that changes size (a banner above it, a composer below it) keeps a pinned reader at the bottom.
+      const viewportObserver = new ResizeObserver(() => {
+        const pinned = engine.getSnapshot().pinned;
+        updateViewport("programmatic");
+        if (!pinned) return;
+        container.scrollTop = engine.scrollToEnd();
+        ignoreScrollUntil.current = performance.now() + 50;
+      });
+      viewportObserver.observe(container);
+      const release = (): SettledViewport<Id> => {
+        observer.disconnect();
+        viewportObserver.disconnect();
+        observerRef.current = null;
+        container.removeEventListener("scroll", onScroll);
+        container.removeEventListener("wheel", onWheel);
+        container.removeEventListener("keydown", onKeyDown);
+        container.removeEventListener("pointerdown", onPointerDown);
+        container.removeEventListener("touchstart", onTouchStart);
+        container.removeEventListener("touchmove", onTouchMove);
+        container.removeEventListener("touchend", onTouchEnd);
+        container.removeEventListener("touchcancel", onTouchEnd);
+        if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
+        if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
+        resizeFrame.current = null;
+        scrollEndTimer.current = null;
+        const settled = settleDetachedViewport(engine, container, touching, touchY, userScrollUntil, ignoreScrollUntil);
+        pendingEntries.current.clear();
+        container.style.overflowAnchor = priorOverflowAnchor;
+        return settled;
+      };
+      attachment.current.host = container;
+      releaseCurrent.current = release;
     };
-    // The stale-scroll guard after a programmatic bottom write only covers scroll events
-    // nobody asked for; any real input means the next scroll is the user's and must win.
-    const userIntent = () => { ignoreScrollUntil.current = 0; };
-    const onWheel = (event: WheelEvent) => {
-      userIntent();
-      userScrollUntil.current = performance.now() + 200;
-      if (event.deltaY < 0) engine.setFollow(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      userIntent();
-      if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
-    };
-    const onPointerDown = () => userIntent();
-    const onTouchStart = (event: TouchEvent) => {
-      userIntent();
-      touching.current = true;
-      touchY.current = event.touches[0]?.clientY ?? null;
-    };
-    const onTouchMove = (event: TouchEvent) => {
-      const next = event.touches[0]?.clientY;
-      if (next !== undefined && touchY.current != null && next > touchY.current) engine.setFollow(false);
-      touchY.current = next ?? null;
-    };
-    const onTouchEnd = () => {
-      touchY.current = null;
-      if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
-      scrollEndTimer.current = setTimeout(finishScroll, 150);
-    };
-    container.addEventListener("scroll", onScroll, { passive: true });
-    container.addEventListener("wheel", onWheel, { passive: true });
-    container.addEventListener("keydown", onKeyDown);
-    container.addEventListener("pointerdown", onPointerDown, { passive: true });
-    container.addEventListener("touchstart", onTouchStart, { passive: true });
-    container.addEventListener("touchmove", onTouchMove, { passive: true });
-    container.addEventListener("touchend", onTouchEnd, { passive: true });
-    container.addEventListener("touchcancel", onTouchEnd, { passive: true });
-    // A scroll box that changes size (a banner above it, a composer below it) keeps a pinned reader at the bottom.
-    const viewportObserver = new ResizeObserver(() => {
-      const pinned = engine.getSnapshot().pinned;
-      updateViewport("programmatic");
-      if (!pinned) return;
-      container.scrollTop = engine.scrollToEnd();
-      ignoreScrollUntil.current = performance.now() + 50;
-    });
-    viewportObserver.observe(container);
-    const detach = () => {
-      observer.disconnect();
-      viewportObserver.disconnect();
-      observerRef.current = null;
-      container.removeEventListener("scroll", onScroll);
-      container.removeEventListener("wheel", onWheel);
-      container.removeEventListener("keydown", onKeyDown);
-      container.removeEventListener("pointerdown", onPointerDown);
-      container.removeEventListener("touchstart", onTouchStart);
-      container.removeEventListener("touchmove", onTouchMove);
-      container.removeEventListener("touchend", onTouchEnd);
-      container.removeEventListener("touchcancel", onTouchEnd);
-      if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
-      if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
-      resizeFrame.current = null;
-      scrollEndTimer.current = null;
-      detachedViewport.current = settleDetachedViewport(
-        engine, container, touching, touchY, userScrollUntil, ignoreScrollUntil, detachedScrollTop,
-      );
-      pendingEntries.current.clear();
-      container.style.overflowAnchor = priorOverflowAnchor;
-    };
-    attachedElement.current = container;
-    detachCurrent.current = detach;
+    transferCurrent.current = transfer;
+    transfer(options.enabled === false || typeof ResizeObserver === "undefined"
+      ? null
+      : options.scrollRef?.current ?? timelineElement.current?.parentElement ?? null);
   });
 
   useLayoutEffect(() => () => {
-    detachCurrent.current?.();
-    attachedElement.current = null;
-    detachCurrent.current = null;
-    detachedViewport.current = null;
+    transferCurrent.current?.(null);
+    attachment.current.settled = null;
+    transferCurrent.current = null;
     containerRef.current = null;
   }, []);
 

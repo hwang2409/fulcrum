@@ -16,10 +16,12 @@ const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={h
 
 // Renderers stay module-level so appends never re-render every row; approvals reach the live client through context.
 type Decide = (requestId: string) => Promise<unknown>;
-const Decisions = createContext<{ approve?: Decide; deny?: Decide; disabledReason?: string } | null>(null);
+const Decisions = createContext<{ approve?: Decide; approveAlways?: Decide; deny?: Decide; disabledReason?: string } | null>(null);
 function ZetaApproval({ id }: { id: string }) {
   const decide = useContext(Decisions);
-  return <Approval id={id} onApprove={decide?.approve} onDeny={decide?.deny} disabledReason={decide?.disabledReason} />;
+  // zeta rejects an always-allow grant for a delegated approval (src/zeta/server/approval_lifecycle.py resolve_approval).
+  const delegated = useItemSelector(id, (item) => item?.type === "approval" && item.request.type === "approval_request" && item.request.delegated);
+  return <Approval id={id} onApprove={decide?.approve} onApproveAlways={delegated ? undefined : decide?.approveAlways} onDeny={decide?.deny} disabledReason={decide?.disabledReason} />;
 }
 // The intents of steers a stop dropped: zeta never gave them to the agent, so their rows must not look delivered.
 const Undelivered = createContext<ReadonlySet<string>>(new Set());
@@ -341,15 +343,15 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
   const scroll = useRef<HTMLDivElement>(null);
   const decisions = useMemo(() => {
     if (!client || open.stale || readOnly) return { disabledReason: readOnly ? "opening another session — decisions are paused" : "reconnecting — decisions are disabled until the server confirms this session" };
-    const decide = (method: "approve" | "deny"): Decide => async (request_id) => {
+    const decide = (method: "approve" | "deny", scope?: "always_tool"): Decide => async (request_id) => {
       try {
-        return await client.request(method, { request_id }, { timeoutMs: 15_000 });
+        return await client.request(method, scope ? { request_id, scope } : { request_id }, { timeoutMs: 15_000 });
       } catch (error) {
         if ((error as { code?: unknown }).code === -32006) throw new Error("this approval expired while you were disconnected");
         throw error;
       }
     };
-    return { approve: decide("approve"), deny: decide("deny") };
+    return { approve: decide("approve"), approveAlways: decide("approve", "always_tool"), deny: decide("deny") };
   }, [client, open.stale, readOnly]);
   useLayoutEffect(() => {
     if (focusComposer.current) {

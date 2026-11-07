@@ -2,6 +2,10 @@
 
 `@fulcrum/zeta` adapts zeta serve events to generic Fulcrum events and stores. It exports wire types, `fromZetaEvent`, `fromZetaHistory`, a JSON-RPC `connect(transport)` client, websocket transport, authenticated `connectZeta`, host commands, and `zetaTools`.
 
+## command helpers
+
+`MODEL_INPUT_IDS_FEATURE` is the feature name to request during the hello handshake. `parseSlashList` and `parseSlashRun` validate server results without throwing; malformed command rows are dropped and malformed result discriminators return `{ kind: "malformed" }`. `parseModelInput(value)` validates either the opaque-id or expanded-text `model_input` shape and returns `null` for malformed data; pass `{ requireInputId: true }` as its second argument to require the opaque-id shape used by prepared input. `parseSlashRun` accepts the legacy `{ kind: "text" }` result from `/mcp status` and normalizes it to `{ kind: "output" }`; the protocol document omits this released-server shape. `listSlashCommands`, `runSlashCommand`, and `sendModelInput` are thin typed wrappers over the JSON-RPC client.
+
 ## connect
 
 Start zeta with the browser origin, then start the playground:
@@ -53,6 +57,12 @@ const client = await connectZeta({
 ```
 
 `hostCommands(sessionId)` supplies a fresh binding for each `new_session` and `resume`; `sessionId` is `null` for a new session. If `send` or `send_images` returns `host_binding_required`, the client resumes that request's `session_id` with a fresh binding and retries once with the same `delivery_id`. Supplier values and failures are not logged or copied into errors. A server that does not negotiate the feature never calls the supplier.
+
+`new_session` and `resume` retry zeta's transient `-32004` busy error three times after 250, 500, and 1000 ms. The delays follow the request signal and are canceled when the client closes. After the last retry, busy is surfaced to the caller.
+
+## approvals
+
+Send a decision with `client.request("approve", { request_id })` or `client.request("deny", { request_id })`. For `Approval`'s `onApproveAlways`, send `approve` with `scope: "always_tool"`: zeta approves the call and lets the same tool run without asking for the rest of the session. Do not offer it for a `delegated` request; zeta rejects that scope there.
 
 ## history and recovery
 

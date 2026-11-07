@@ -513,6 +513,72 @@ test("approval is a labelled group and submits once until the handler fails or t
   expect(group.querySelector("button")).toBeNull();
 });
 
+test("an approval without onApproveAlways renders exactly the approve and deny actions it always had", () => {
+  const { store } = setup([{ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false }]);
+  mount(<RunProvider store={store}><Approval id="approval:r1" approveAlwaysLabel="always allow bash" onApprove={() => {}} onDeny={() => {}} /></RunProvider>);
+  // The markup origin/main renders: a label alone offers nothing, so existing callers see no change.
+  expect(q('[data-part="approval-actions"]').outerHTML).toBe('<div data-part="approval-actions"><button type="button" data-action="approve">approve</button><button type="button" data-action="deny">deny</button></div>');
+});
+
+test("onApproveAlways adds a third action that decides like approve: once, busy, and retryable", async () => {
+  const { store, send } = setup([{ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false }]);
+  const calls: string[] = [];
+  let fail: (error: Error) => void = () => {};
+  mount(
+    <RunProvider store={store}>
+      <Approval
+        id="approval:r1"
+        onApprove={(id) => void calls.push(`approve:${id}`)}
+        onApproveAlways={(id) => {
+          calls.push(`always:${id}`);
+          return new Promise((_, reject) => (fail = reject));
+        }}
+        onDeny={(id) => void calls.push(`deny:${id}`)}
+      />
+    </RunProvider>,
+  );
+  const group = q('[data-part="approval"]');
+  const buttons = () => [...group.querySelectorAll<HTMLButtonElement>('[data-part="approval-actions"] button')];
+  expect(buttons().map((b) => [b.dataset.action, b.textContent])).toEqual([["approve", "approve"], ["approve-always", "always allow"], ["deny", "deny"]]);
+
+  const always = q('[data-action="approve-always"]');
+  act(() => always.focus());
+  act(() => always.click());
+  act(() => always.click());
+  act(() => q('[data-action="approve"]').click());
+  expect(calls).toEqual(["always:r1"]);
+  expect(group.getAttribute("data-state")).toBe("submitting");
+  expect(q('[data-part="tool-status"]').textContent).toBe("approving");
+  // In flight every action is aria-disabled, not disabled, so the keyboard user's focus stays on the pressed button.
+  expect(buttons().map((b) => [b.disabled, b.getAttribute("aria-disabled")])).toEqual([[false, "true"], [false, "true"], [false, "true"]]);
+  expect(document.activeElement).toBe(always);
+
+  await act(async () => fail(new Error("offline")));
+  expect(q('[role="alert"]').textContent).toBe("offline");
+  expect(group.getAttribute("data-state")).toBe("pending");
+  expect(always.getAttribute("aria-disabled")).toBeNull();
+
+  send({ type: "approval_end", request_id: "r1", decision: "approve" });
+  expect(q('[data-part="tool-status"]').textContent).toBe("approved");
+  expect(group.querySelector("button")).toBeNull();
+});
+
+test("the approve-always action takes the host's label and is disabled with the others while decisions are unavailable", () => {
+  const { store, send } = setup([{ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false }]);
+  const calls: string[] = [];
+  mount(<RunProvider store={store}><Approval id="approval:r1" onApprove={() => {}} onApproveAlways={(id) => void calls.push(id)} approveAlwaysLabel="allow bash for this session" /></RunProvider>);
+  expect(q('[data-action="approve-always"]').textContent).toBe("allow bash for this session");
+  send({
+    type: "approval_request", request_id: "r1", delegated: false, tool_call: call("t1", "bash"),
+    state: "reconnecting", status: "reconnecting…", disabled_reason: "decisions are disabled while disconnected",
+  } as RunEvent);
+  const always = q('[data-action="approve-always"]') as HTMLButtonElement;
+  expect(always.disabled).toBe(true);
+  expect(always.getAttribute("aria-disabled")).toBe("true");
+  act(() => always.click());
+  expect(calls).toEqual([]);
+});
+
 test("tool header shows name, a one-line summary, and status; json loads when expanded", () => {
   const big = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
   const grep = { id: "t1", name: "grep", arguments: { pattern: "TODO", path: "packages/" } };
@@ -780,15 +846,15 @@ function hostAttachmentHarness() {
   let items = Array.from({ length: 300 }, (_, index) => committedItem(String(index)));
   const timeline = timelineStore(items);
   const scrollRef = { current: null as HTMLElement | null };
-  const view = (target: "inner" | "outer" | "replacement" | "removed", owned = false, followRequest = 0) => (
+  const view = (target: "inner" | "outer" | "replacement" | "removed", owned = false, followRequest = 0, virtual = true) => (
     <RunProvider store={timeline.store}>
       <div data-testid="outer" ref={target === "outer" ? scrollRef : undefined}>
         <div data-testid="inner" ref={target === "inner" ? scrollRef : undefined} />
       </div>
       {target === "replacement" ? <div data-testid="replacement" ref={scrollRef} /> : null}
       {owned
-        ? <Timeline virtual followRequest={followRequest} />
-        : <Timeline virtual followRequest={followRequest} scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />}
+        ? <Timeline virtual={virtual} followRequest={followRequest} />
+        : <Timeline virtual={virtual} followRequest={followRequest} scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />}
     </RunProvider>
   );
   const append = () => {
@@ -809,6 +875,168 @@ const attachedHost = (testId: string) => {
   expect(container.querySelectorAll("[data-virtual-id]").length).toBeLessThanOrEqual(200);
   return host;
 };
+
+type TransferKind = "direct swap" | "null gap: 0 commits" | "null gap: 1 commit" | "null gap: N commits" | "owned -> host-owned" | "host-owned -> owned" | "unmount";
+type TransferInteraction = "idle pinned" | "idle unpinned" | "touch (active)" | "momentum" | "pending correction" | "pending jump";
+
+const transferKinds: TransferKind[] = [
+  "direct swap",
+  "null gap: 0 commits",
+  "null gap: 1 commit",
+  "null gap: N commits",
+  "owned -> host-owned",
+  "host-owned -> owned",
+  "unmount",
+];
+const transferInteractions: TransferInteraction[] = [
+  "idle pinned",
+  "idle unpinned",
+  "touch (active)",
+  "momentum",
+  "pending correction",
+  "pending jump",
+];
+
+// Every product-reachable transfer/state pair is present. Unmount has no post-transfer host by definition,
+// so those cells assert cleanup only instead of follow, append, anchor, and jump behavior.
+test.each(transferKinds.flatMap((transfer) => transferInteractions.map((interaction) => [transfer, interaction] as const)))(
+  "host transfer matrix: %s / %s",
+  (transfer, interaction) => {
+    const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    const userAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent");
+    const positions = new WeakMap<HTMLElement, number>();
+    const listeners = new Map<EventTarget, Map<string, Set<EventListenerOrEventListenerObject>>>();
+    const add = HTMLElement.prototype.addEventListener;
+    const remove = HTMLElement.prototype.removeEventListener;
+    const OriginalResizeObserver = globalThis.ResizeObserver;
+    let activeObservers = 0;
+    class MatrixResizeObserver implements ResizeObserver {
+      constructor(_callback: ResizeObserverCallback) { activeObservers++; }
+      disconnect() { activeObservers--; }
+      observe() {}
+      unobserve() {}
+    }
+    Object.defineProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"),
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() { return positions.get(this as HTMLElement) ?? 0; },
+      set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+    });
+    HTMLElement.prototype.addEventListener = function(type, listener, options) {
+      if (this.dataset.testid && listener) {
+        const byType = listeners.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
+        const entries = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+        entries.add(listener);
+        byType.set(type, entries);
+        listeners.set(this, byType);
+      }
+      add.call(this, type, listener, options);
+    };
+    HTMLElement.prototype.removeEventListener = function(type, listener, options) {
+      if (listener) listeners.get(this)?.get(type)?.delete(listener);
+      remove.call(this, type, listener, options);
+    };
+    globalThis.ResizeObserver = MatrixResizeObserver;
+    const listenerCount = () => [...listeners.values()].flatMap((types) => [...types.values()]).reduce((sum, entries) => sum + entries.size, 0);
+    try {
+      const { append, prepend, view } = hostAttachmentHarness();
+      let followRequest = 0;
+      const startsOwned = transfer === "owned -> host-owned";
+      mount(view("inner", startsOwned, followRequest));
+      const oldHost = startsOwned ? q('[data-part="timeline-scroll"]') : attachedHost("inner");
+      oldHost.scrollTop = oldHost.scrollHeight;
+      act(() => oldHost.dispatchEvent(new Event("scroll")));
+
+      const unpinned = interaction !== "idle pinned";
+      if (unpinned) {
+        oldHost.scrollTop = 3_000;
+        act(() => {
+          oldHost.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+          oldHost.dispatchEvent(new Event("scroll"));
+        });
+      }
+      if (interaction === "touch (active)" || interaction === "momentum" || interaction === "pending jump") {
+        const touch = new Event("touchstart") as TouchEvent;
+        Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+        act(() => oldHost.dispatchEvent(touch));
+      }
+      if (interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump") prepend();
+      if (interaction === "momentum") act(() => oldHost.dispatchEvent(new Event("touchend")));
+      const expectedTop = interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump" ? 3_072 : 3_000;
+
+      const render = (target: "inner" | "outer" | "replacement" | "removed", owned = false, virtual = true) =>
+        act(() => root!.render(view(target, owned, followRequest, virtual)));
+      let newHost: HTMLElement | null = null;
+      if (transfer === "unmount") {
+        act(() => root!.unmount());
+        root = undefined;
+        expect(oldHost.style.overflowAnchor).toBe("");
+        expect(listenerCount()).toBe(0);
+        expect(activeObservers).toBe(0);
+        return;
+      }
+      if (transfer === "null gap: 1 commit" || transfer === "null gap: N commits") {
+        globalThis.ResizeObserver = undefined as unknown as typeof ResizeObserver;
+        render("removed");
+        if (transfer === "null gap: N commits") {
+          render("removed");
+          render("removed");
+        }
+        globalThis.ResizeObserver = MatrixResizeObserver;
+        render("outer");
+        newHost = attachedHost("outer");
+      } else if (transfer === "null gap: 0 commits") {
+        // React clears and assigns the ref during one replacement commit; no committed render observes null.
+        render("replacement");
+        newHost = attachedHost("replacement");
+      } else if (transfer === "owned -> host-owned") {
+        render("outer");
+        newHost = attachedHost("outer");
+      } else if (transfer === "host-owned -> owned") {
+        render("inner", true);
+        newHost = q('[data-part="timeline-scroll"]');
+      } else {
+        render("outer");
+        newHost = attachedHost("outer");
+      }
+
+      expect(oldHost.style.overflowAnchor).toBe("");
+      if (unpinned) expect(newHost.scrollTop).toBeCloseTo(expectedTop, 0);
+      else expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+      followRequest++;
+      if (transfer === "host-owned -> owned") render("inner", true);
+      else render(transfer === "null gap: 0 commits" ? "replacement" : "outer");
+      expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+      append();
+      expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+      newHost.scrollTop -= 1_000;
+      act(() => {
+        newHost!.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
+        newHost!.dispatchEvent(new Event("scroll"));
+      });
+      append();
+      const jump = q('[data-part="jump-to-latest"]');
+      expect(jump).toBeTruthy();
+      act(() => jump.click());
+      expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
+    } finally {
+      if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+      if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+      if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+      if (userAgent) Object.defineProperty(Navigator.prototype, "userAgent", userAgent);
+      HTMLElement.prototype.addEventListener = add;
+      HTMLElement.prototype.removeEventListener = remove;
+      globalThis.ResizeObserver = OriginalResizeObserver;
+    }
+  },
+);
 
 test("host-owned Timeline moves one stable ref from an inner to an outer element", () => {
   const { scrollRef, view } = hostAttachmentHarness();

@@ -11,7 +11,7 @@ import type { ServerWebSocket } from "bun";
 import { validateHostCommands } from "@fulcrum/zeta";
 
 type Json = Record<string, unknown>;
-export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog" | "broken-session" | "overflow" | "overflow-silent";
+export type Mode = "ok" | "busy" | "busy-once" | "incompatible" | "slow" | "slow-catalog" | "broken-session" | "overflow" | "overflow-silent";
 export type HistoryMode = "new" | "old";
 export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
@@ -259,6 +259,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let approvalAborted = false;
   let running = false;
   let rejectCreate = false;
+  let busyOnce = false;
   let delayedOpen = false;
   let catalogBusy = false;
   const decisions: Json[] = [];
@@ -384,6 +385,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (requestedRole === "observer" && observers >= 8) { reply({ error: { code: -32004, message: "observer limit reached" } }); socket.close(); return; }
           if (mode === "incompatible") { reply({ error: { code: -32002, message: "version mismatch", data: { requested: "1.2", supported: ["1.0"] } } }); socket.close(); return; }
           if (mode === "slow") await wait(60_000);
+          if (!sockets.has(socket)) return;
           connectionRoles.set(socket as object, requestedRole);
           if (requestedRole === "controller") controller = socket;
           const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || name === "session_history_backward" || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect) || (name === "served_turn_end" && servedTurnEndOffered)) ?? [];
@@ -406,6 +408,10 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         if (connectionRoles.get(socket as object) === "observer" && !["list_sessions", "status", "session_tree", "session_history", "model_catalog", "session_settings", "ping", "delivery_status", "content_read"].includes(method)) return reply({ error: { code: -32008, message: "observer is read-only", data: { code: "observer_read_only", method } } });
         const binding = parseHostBinding(socket, method, params);
         if (binding?.error) return reply({ error: { code: -32602, message: binding.error } });
+        if ((method === "new_session" || method === "resume") && mode === "busy-once" && !busyOnce) {
+          busyOnce = true;
+          return reply({ error: { code: -32004, message: "a turn is already running" } });
+        }
         if (method === "new_session") {
           // zeta's reply (server.py `new_session`): the full metadata of the new session, which becomes the server's own.
           if (running || rejectCreate) return reply({ error: { code: -32004, message: "a turn is already running" } });
@@ -554,6 +560,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
      */
     setMode(next: Mode) {
       mode = next;
+      busyOnce = false;
       if ((next === "overflow" || next === "overflow-silent") && controller) overflow(controller, "controller");
     },
     /** `false` makes the server not offer `served_turn_end`, like a zeta older than 8c03f606. */

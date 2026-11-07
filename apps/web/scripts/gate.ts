@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { chromium, webkit, type Locator, type Page } from "playwright";
 import { themes } from "@fulcrum/react";
-import { ACTIVE, startFakeZeta } from "./fake-zeta";
+import { ACTIVE, LONG, startFakeZeta } from "./fake-zeta";
 
 const root = new URL("..", import.meta.url).pathname;
 const port = Number(process.env.WEB_GATE_PORT ?? 4180);
@@ -22,6 +22,7 @@ const origin = `http://127.0.0.1:${port}`;
 const shots = process.env.WEB_SHOTS ?? join(root, "gate-artifacts");
 await mkdir(shots, { recursive: true });
 const fake = await startFakeZeta({ origins: [origin] });
+fake.setLive(false);
 const vite = spawn("bun", ["x", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: root, env: { ...process.env, ZETA_HOME: fake.home }, stdio: "ignore" });
 const failures: string[] = [];
 const fail = (message: string) => { failures.push(message); console.log(`FAIL ${message}`); };
@@ -328,6 +329,51 @@ async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => 
   await settle(page);
 }
 
+async function checkReconnectAnchor(page: Page, engine: string) {
+  await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+  const scroll = page.locator('[data-part="timeline-scroll"]');
+  await page.getByText("frame 999 took").waitFor({ timeout: 10_000 });
+  const scrollBox = await scroll.boundingBox();
+  if (!scrollBox) throw new Error("no scroll viewport");
+  await page.mouse.move(scrollBox.x + scrollBox.width / 2, scrollBox.y + scrollBox.height / 2);
+  await page.waitForTimeout(100);
+  const range = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight);
+  const target = range / 2;
+  for (let step = 0; step < 100 && await scroll.evaluate((element, middle) => element.scrollTop > middle, target); step++) {
+    await page.mouse.wheel(0, -1_000);
+    await page.waitForTimeout(25);
+  }
+  const middle = await scroll.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
+  if (Math.abs(middle.top - middle.range / 2) > 1_500) throw new Error(`wheel stopped ${Math.round(Math.abs(middle.top - middle.range / 2))} px from the middle`);
+  await page.waitForTimeout(100);
+  const anchorId = await page.locator('[data-virtual-id]').evaluateAll((rows, top) =>
+    rows.find((row) => row.getBoundingClientRect().top >= top)?.getAttribute("data-virtual-id") ?? null,
+    scrollBox.y,
+  );
+  if (!anchorId) throw new Error("no visible anchor row after wheel-up");
+  const offset = async () => {
+    const row = await page.locator(`[data-virtual-id="${anchorId}"]`).boundingBox();
+    const box = await scroll.boundingBox();
+    if (!row || !box) throw new Error("anchor row is not mounted");
+    return row.y - box.y;
+  };
+  const before = await offset();
+  await fake.stop();
+  await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5_000 });
+  await fake.start();
+  await page.getByRole("button", { name: "retry now" }).click();
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+  await page.locator(`[data-virtual-id="${anchorId}"]`).waitFor({ timeout: 10_000 });
+  await settle(page);
+  const after = await offset();
+  const drift = Math.abs(after - before);
+  console.log(`anchor ${engine.padEnd(8)} drift ${drift.toFixed(2)} px at ${Math.round(middle.top)} / ${Math.round(middle.range)} px`);
+  if (drift > 1) throw new Error(`anchor moved ${drift.toFixed(2)} px`);
+  fake.emit({ event: "user_message", session_id: LONG, text: `after ${engine} reconnect`, mode: "send", delivery_id: `${engine}-anchor-check` });
+  await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
+}
+
 try {
   for (let attempt = 0; ; attempt++) {
     if (vite.exitCode !== null) throw new Error("vite exited");
@@ -381,6 +427,18 @@ try {
     await check("retry now connects once the server is back", async () => {
       await page.goto(`${origin}/?theme=tokyo-night`);
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+    });
+
+    await check("busy resume retries and opens without the busy panel", async () => {
+      await page.goto("about:blank");
+      fake.drop();
+      fake.setMode("busy-once");
+      await fake.start();
+      const resumesBefore = fake.requests.filter(({ method }) => method === "resume").length;
+      await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+      await page.locator('[data-part="timeline"] [data-part="message"], [data-part="timeline"] [data-part="tool"]').first().waitFor({ timeout: 5000 });
+      if (fake.requests.filter(({ method }) => method === "resume").length < resumesBefore + 2) throw new Error("busy resume was not retried");
+      if (await page.getByText("zeta is busy with another session", { exact: true }).count()) throw new Error("busy panel remained after retry");
     });
 
     await check("slow catalog keeps the selected transcript and composer usable", async () => {
@@ -638,43 +696,7 @@ try {
       const gap = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
       if (gap > 1) throw new Error(`${Math.round(gap)} px from the bottom`);
     });
-    await check("an unpinned 1,000-row run keeps its anchor through store replacement", async () => {
-      const scroll = page.locator('[data-part="timeline-scroll"]');
-      const scrollBox = await scroll.boundingBox();
-      if (!scrollBox) throw new Error("no scroll viewport");
-      await page.mouse.move(scrollBox.x + scrollBox.width / 2, scrollBox.y + scrollBox.height / 2);
-      await page.waitForTimeout(500);
-      const bottom = await scroll.evaluate((element) => element.scrollTop);
-      for (let step = 0; step < 5; step++) {
-        await page.mouse.wheel(0, -180);
-        await page.waitForTimeout(50);
-      }
-      await page.waitForFunction((prior) => document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop < prior, bottom);
-      await page.waitForTimeout(100);
-      const anchorId = await page.locator('[data-virtual-id]').evaluateAll((rows, top) =>
-        rows.find((row) => row.getBoundingClientRect().top >= top)?.getAttribute("data-virtual-id") ?? null,
-        scrollBox.y,
-      );
-      if (!anchorId) throw new Error("no visible anchor row after wheel-up");
-      const offset = async () => {
-        const row = await page.locator(`[data-virtual-id="${anchorId}"]`).boundingBox();
-        const box = await scroll.boundingBox();
-        if (!row || !box) throw new Error("anchor row is not mounted");
-        return row.y - box.y;
-      };
-      const before = await offset();
-      await fake.stop();
-      await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 });
-      await fake.start();
-      await page.getByRole("button", { name: "retry now" }).click();
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
-      await page.locator(`[data-virtual-id="${anchorId}"]`).waitFor({ timeout: 10_000 });
-      await settle(page);
-      const after = await offset();
-      if (Math.abs(after - before) > 1) throw new Error(`anchor moved ${Math.abs(after - before).toFixed(2)} px`);
-      fake.emit({ event: "user_message", session_id: "s-long", text: "after reconnect", mode: "send", delivery_id: "anchor-check" });
-      await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5000 });
-    });
+    await check("chromium: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(page, "chromium"));
     await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
       await page.locator("button.session", { hasText: "check every theme" }).click();
       await page.locator('[data-part="md-table"]').waitFor({ timeout: 5000 });
@@ -899,11 +921,12 @@ try {
     await mobile.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
     await phone.close();
 
-    await check("webkit: jump-to-latest uses the same stable, non-overlapping lane", async () => {
+    await check("webkit: jump placement and reconnect anchor match chromium", async () => {
       const webkitBrowser = await webkit.launch();
       try {
         const webkitPage = await webkitBrowser.newPage({ viewport: { width: 1440, height: 900 } });
         await checkJumpPlacement(webkitPage, "webkit", () => fake.emit({ event: "user_message", session_id: ACTIVE, text: "webkit placement check", mode: "send", attachments: [] }), true, true);
+        await checkReconnectAnchor(webkitPage, "webkit");
       } finally {
         await webkitBrowser.close();
       }
