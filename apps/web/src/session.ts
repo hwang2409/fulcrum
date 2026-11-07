@@ -59,7 +59,7 @@ type HistoryPage = { messages?: unknown[]; next_offset?: number | null };
 type HistoryValidator = { end: number; entry_id: string | null };
 type BackwardHistoryPage = { messages?: unknown[]; next_before?: number | null; history_validator?: HistoryValidator };
 const isApprovalEvent = (event: RunEvent) => event.type === "approval_request" || event.type === "approval_end";
-const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true, liveApprovalStatus = false): RunEvent[] => {
+const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true, liveApprovalStatus = false, outcomeUnknown = false): RunEvent[] => {
   let events = fromZetaHistory(rows).filter((event) => historyApprovals || !isApprovalEvent(event));
   if (liveApprovalStatus && !status.pending_approvals_truncated) {
     const pending = new Set((status.pending_approvals ?? []).map((approval) => approval.request_id));
@@ -71,7 +71,7 @@ const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, histo
       event: "approval_request", session_id: id, ...approval,
       ...(approval.resolution_pending ? { state: "resolving", status: "resolving…", disabled_reason: "the server is saving this decision" } : {}),
     }));
-  events.push({ type: status.state === "idle" ? "run_end" : "run_start" });
+  events.push({ type: status.state === "idle" ? "run_end" : "run_start", ...(outcomeUnknown && status.state === "idle" ? { data: { outcome_unknown: "connection fell behind; outcome unknown" } } : {}) });
   return events;
 };
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -103,6 +103,7 @@ async function openBackwardSession(
   progress?: OpenProgress,
   signal?: AbortSignal,
   knownStatus?: ServerStatus,
+  outcomeUnknown = false,
 ): Promise<OpenResult> {
   const approvalReconnect = client.features.includes("approval_reconnect");
   let pages: BackwardHistoryPage[] = [];
@@ -131,7 +132,7 @@ async function openBackwardSession(
     return item?.type === "user" && item.event.type === "user_message" && item.event.intent && item.event.delivery_id ? [item.event] : [];
   });
   const publishSnapshot = (status: ServerStatus, pending: readonly RunEvent[] = []) =>
-    lease.store.resync([...snapshotEvents(id, rows(), status, true, approvalReconnect), ...pending]);
+    lease.store.resync([...snapshotEvents(id, rows(), status, true, approvalReconnect, outcomeUnknown), ...pending]);
   const publishStatus = (status: ServerStatus) => {
     for (const event of snapshotEvents(id, [], status, true, approvalReconnect)) lease.store.dispatch(event);
   };
@@ -188,7 +189,7 @@ async function openBackwardSession(
     if (!firstLoad) {
       await requestNewest();
       await loadOlder(false);
-      return snapshotEvents(id, rows(), await getStatus(client, activeSignal), true, approvalReconnect);
+      return snapshotEvents(id, rows(), await getStatus(client, activeSignal), true, approvalReconnect, outcomeUnknown);
     }
     firstLoad = false;
     const before = knownStatus ?? await getStatus(client, activeSignal);
@@ -199,7 +200,7 @@ async function openBackwardSession(
     }
     const page = await requestNewest();
     progress?.(rows().length, page.next_before == null);
-    initialEvents = snapshotEvents(id, rows(), initialStatus, page.next_before == null, approvalReconnect);
+    initialEvents = snapshotEvents(id, rows(), initialStatus, page.next_before == null, approvalReconnect, outcomeUnknown);
     return initialEvents;
   }, true);
   lease.store.beginHistory();
@@ -242,9 +243,10 @@ export async function openSession(
   progress?: OpenProgress,
   signal?: AbortSignal,
   knownStatus?: ServerStatus,
+  outcomeUnknown = false,
 ): Promise<OpenResult> {
   if (client.features.includes("session_replay_seq")) throw new Error("session_replay_seq needs the sequence replay coordinator");
-  if (client.features.includes("session_history_backward")) return openBackwardSession(client, id, progress, signal, knownStatus);
+  if (client.features.includes("session_history_backward")) return openBackwardSession(client, id, progress, signal, knownStatus, outcomeUnknown);
   const approvalReconnect = client.features.includes("approval_reconnect");
   let pages: LoadedPage[] = [];
   let incomplete = false;
@@ -322,7 +324,7 @@ export async function openSession(
     activeSignal = combinedSignal(replaySignal);
     if (!firstLoad) {
       await loadFullHistory();
-      return snapshotEvents(id, allRows(), await getStatus(client, activeSignal), true, approvalReconnect);
+      return snapshotEvents(id, allRows(), await getStatus(client, activeSignal), true, approvalReconnect, outcomeUnknown);
     }
     firstLoad = false;
     const before = knownStatus ?? await getStatus(client, activeSignal);
@@ -333,7 +335,7 @@ export async function openSession(
     }
     pages = [await historyPage(0, activeSignal)];
     progress?.(allRows().length, pages[0]!.nextOffset === null);
-    return snapshotEvents(id, allRows(), initialStatus, pages[0]!.nextOffset === null, approvalReconnect);
+    return snapshotEvents(id, allRows(), initialStatus, pages[0]!.nextOffset === null, approvalReconnect, outcomeUnknown);
   }, true);
 
   const reconcileTail = async () => {
@@ -464,6 +466,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const set = (patch: Partial<SessionsState>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); };
   const transition = (event: TransitionEvent) => set({ transition: reduceSessionTransition(state.transition, event) });
   let client: ZetaClient | null = null;
+  let outcomeUnknown = false;
   let openGeneration = 0;
   let openAbort: AbortController | null = null;
   const live = (target: ZetaClient) => client === target;
@@ -523,7 +526,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         history = { messages, complete };
         if (mine !== openGeneration) return;
         transition({ type: "progress", id, messages });
-      }, abort.signal, knownStatus);
+      }, abort.signal, knownStatus, outcomeUnknown);
       if (!state.listLoading && !state.listReady) void refresh();
       const { lease } = opened;
       if (mine !== openGeneration || !live(target)) return lease.release();
@@ -569,8 +572,8 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   };
   const disconnect = (disconnected: ZetaClient | null) => {
     retireCatalog();
-    set({ listLoading: false, listSlow: false, listReady: false });
-    openGeneration++;
+    outcomeUnknown = (connection as Source & { state?: { phase?: string } }).state?.phase === "overflow";
+    set({ listLoading: false, listSlow: false, listReady: false });    openGeneration++;
     openAbort?.abort();
     markApprovalsReconnecting(disconnected);
     transition({ type: "stale" });

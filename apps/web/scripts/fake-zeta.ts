@@ -11,7 +11,7 @@ import type { ServerWebSocket } from "bun";
 import { validateHostCommands } from "@fulcrum/zeta";
 
 type Json = Record<string, unknown>;
-export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog" | "broken-session";
+export type Mode = "ok" | "busy" | "incompatible" | "slow" | "slow-catalog" | "broken-session" | "overflow" | "overflow-silent";
 export type HistoryMode = "new" | "old";
 export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
@@ -364,6 +364,11 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (reconnect) reconnectControllers.add(socket as object);
           if (features.includes("session_history_fidelity") && features.includes("content_read")) contentReaders.add(socket as object);
           reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features } } });
+          if (mode === "overflow" || mode === "overflow-silent") setTimeout(() => {
+            socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: ACTIVE, delta: "queued before overflow", kind: "assistant" } }));
+            if (mode === "overflow") socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32011, message: `${requestedRole} output overflow` } }));
+            socket.close(1000);
+          }, 0);
           if (decide && !approvalAborted) {
             if (!reconnect) expireApproval();
             else {

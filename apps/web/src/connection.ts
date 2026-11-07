@@ -11,6 +11,7 @@ export type ConnectionState =
   | { phase: "auth_failed"; reason: "origin" | "rejected"; origins: string[]; attempt: number; retryAt: number; lost: boolean }
   | { phase: "busy"; attempt: number; retryAt: number; lost: boolean }
   | { phase: "dropped"; attempt: number; retryAt: number; lost: true }
+  | { phase: "overflow"; attempt: number; retryAt: number; lost: true }
   | { phase: "incompatible"; lost: boolean };
 
 export type ConnectionEvent =
@@ -20,7 +21,8 @@ export type ConnectionEvent =
   | { type: "auth_failed"; reason: "origin" | "rejected"; origins: string[]; now: number }
   | { type: "busy"; now: number }
   | { type: "incompatible" }
-  | { type: "closed"; now: number };
+  | { type: "closed"; now: number }
+  | { type: "overflow"; now: number };
 
 /** The command that starts a server this page may connect to. The origin is exact: localhost and 127.0.0.1 differ. */
 export const serveCommand = (origin: string, port: number) => `zeta serve --ws ${port} --ws-origin ${origin}`;
@@ -43,6 +45,8 @@ export function reduceConnection(state: ConnectionState, event: ConnectionEvent)
       return { phase: "connected" };
     case "closed":
       return state.phase === "connected" ? { phase: "dropped", attempt: 1, retryAt: event.now + backoff(1), lost: true } : state;
+    case "overflow":
+      return state.phase === "connected" ? { phase: "overflow", attempt: 1, retryAt: event.now + backoff(1), lost: true } : state;
     case "incompatible":
       return { phase: "incompatible", lost };
     default: {
@@ -140,10 +144,10 @@ export function createConnection({
     }
     if (!current()) return next.close();
     client = next;
-    next.onClose(() => {
+    next.onClose((error) => {
       if (client !== next) return;
       client = null;
-      send({ type: "closed", now: now() });
+      send({ type: error instanceof ZetaError && error.kind === "output_overflow" ? "overflow" : "closed", now: now() });
     });
     send({ type: "connected" });
   };

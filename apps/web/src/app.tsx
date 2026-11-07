@@ -486,6 +486,8 @@ function ConnectionNotice({ state, connection, compact = false }: { state: Conne
       title = "connection lost";
       body = <p>the socket to zeta serve closed. the run keeps going on the server; this page reconnects and rebuilds the session from its history.</p>;
       break;
+    case "overflow":
+      return <div className="notice" data-tone="busy" role="status"><strong>connection fell behind and reconnected; the run was reloaded</strong></div>;
     case "not_running":
       title = lost ? "connection lost: zeta serve stopped" : "zeta serve is not running";
       body = (

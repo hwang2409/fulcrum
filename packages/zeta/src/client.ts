@@ -109,7 +109,9 @@ async function readContentChunks(handle: string, cap: number, read: (offset: num
   }
 }
 
-export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number) => unknown, options: ClientOptions = {}) {
+export type CloseReason = { kind: "output_overflow"; message: string; role: "controller" | "observer" };
+
+export function createClient(transport: Transport, scheduler?: Scheduler, closeError?: (handshaken: boolean, code?: number, reason?: CloseReason) => unknown, options: ClientOptions = {}) {
   let nextId = 1;
   let handshaken = false;
   let negotiatedProtocol = "1.0";
@@ -336,6 +338,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const handleReply = (message: TransportMessage) => {
     if (message.id === null && message.error) {
+      if (message.error.code === -32011) {
+        const role = message.error.message.includes("observer") ? "observer" : "controller";
+        closeReason = { kind: "output_overflow", message: message.error.message, role };
+      }
       const error = Object.assign(new Error(message.error.message), message.error);
       pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
       return;
@@ -359,9 +365,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const closedPromise = new Promise<unknown>((resolve) => { closeSignal = resolve; });
   let closed = false;
   let closedError: unknown;
+  let closeReason: CloseReason | undefined;
   const closeClient = (code?: number) => {
     if (closed) return;
-    const error = closeError?.(handshaken, code) ?? new Error("transport closed");
+    const error = closeError?.(handshaken, code, closeReason) ?? new Error("transport closed");
     closed = true;
     closedError = error;
     deliveryIdentity.close();
