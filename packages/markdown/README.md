@@ -13,3 +13,18 @@ visible streaming text is monotonic: a character the reader has seen never disap
 ## fence renderers
 
 `<Markdown fences={{ mermaid: MermaidFence }} />` draws a fenced block with the component registered for its language (matched in lowercase); every other fence is the highlighted code block, unchanged. the component gets `FenceProps`: `id`, `code`, `language`, `done` (false while the fence streams), and `source`, the code block markdown would draw, to show while it is not ready or as a source view. a closed fence renders its component once, not again for later tokens of the message. pass a stable `fences` object (module scope), as with `highlight`. `@fulcrum/mermaid` is the first renderer; math or other diagram renderers plug in the same way.
+
+# @fulcrum/markdown
+
+`@fulcrum/markdown` parses streaming CommonMark and GFM content without a framework. `@fulcrum/markdown/react` exports the React renderer. It supports headings, paragraphs, code, lists, emphasis, links, images, quotes, tables, rules, entities, and hard breaks. Raw HTML stays escaped. Links and images use `safeUrl` from `@fulcrum/core`.
+
+```tsx
+import { Markdown } from "@fulcrum/markdown/react";
+import { Message } from "@fulcrum/react";
+
+<Message id={id} markdown={Markdown} />;
+```
+
+Pass a stable `highlight` callback or a highlighter from `@fulcrum/highlight`. Copy `@fulcrum/react/styles.css`, `themes.css`, and, when highlighting, `@fulcrum/highlight/styles.css`. Fenced renderers use the `fences` prop; `@fulcrum/mermaid` provides the first renderer. See its README for the bounded streaming resolver and renderer contract.
+
+The headless renderer exposes `data-part` hooks such as `md-paragraph`, `md-heading`, `md-code-block`, `md-link`, `md-image`, `md-list`, `md-blockquote`, and `md-table`. Code blocks also expose `data-language`.
