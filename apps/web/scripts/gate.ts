@@ -274,8 +274,9 @@ async function runStoppedSteerFollowScenario(page: Page, clearSent: () => void) 
 }
 
 async function jumpGeometry(page: Page) {
-  const button = page.locator('[data-part="jump-to-latest"]');
-  return button.evaluate((element) => {
+  return page.evaluate(() => {
+    // The library's control when it shows; WebKit's stand-in only when it does not.
+    const element = document.querySelector<HTMLElement>('[data-part="jump-to-latest"]:not([data-gate-stand-in])') ?? document.querySelector<HTMLElement>('[data-part="jump-to-latest"]')!;
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     const rgb = (value: string) => {
@@ -306,6 +307,7 @@ async function ensureJumpControl(lane: Locator, forceControl: boolean) {
     if (element.querySelector('[data-part="jump-to-latest"]')) return;
     const button = document.createElement("button");
     button.dataset.part = "jump-to-latest";
+    button.dataset.gateStandIn = "true";
     button.textContent = "jump to latest (1)";
     element.append(button);
   });
@@ -329,10 +331,15 @@ async function checkJumpWidth(page: Page, engine: string, width: number, makeUns
   await settle(page);
   makeUnseen();
   await ensureJumpControl(lane, forceControl);
-  await page.locator('[data-part="jump-to-latest"]').waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
-  const laneAfter = await lane.boundingBox();
-  if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
-  for (const theme of themes) await checkJumpTheme(page, engine, width, theme);
+  try {
+    await page.locator('[data-part="jump-to-latest"]').first().waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
+    const laneAfter = await lane.boundingBox();
+    if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
+    for (const theme of themes) await checkJumpTheme(page, engine, width, theme);
+  } finally {
+    // The stand-in is the gate's node inside React's lane; remove it so no later width or check sees it.
+    await lane.evaluate((element) => element.querySelector("[data-gate-stand-in]")?.remove());
+  }
 }
 
 async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => void, navigate = false, forceControl = false, widths = [1440, 390]) {
@@ -364,7 +371,9 @@ async function reconnectFake(page: Page, engine: string) {
     await fake.start();
   }
   await page.getByRole("button", { name: "retry now" }).click();
-  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(async () => {
+    throw new Error(`${engine}: no healthy reconnect; badge is "${await page.locator(".badge").textContent().catch(() => "missing")}"`);
+  });
   for (let attempt = 0; ; attempt++) {
     if (fake.requests.filter(({ method }) => method === "session_history").length > historiesBefore) break;
     if (attempt === 150) throw new Error(`${engine}: reconnect did not request replacement history`);
@@ -383,7 +392,9 @@ async function reconnectAnchorScenario(page: Page, engine: string) {
   // The app reads the session hash only at load, and a hash-only goto keeps the document, so reload to open LONG.
   await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
   await page.reload();
-  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 }).catch(async () => {
+    throw new Error(`${engine}: the 1,000-row run did not open; the page says ${JSON.stringify((await page.locator("main").innerText().catch(() => "")).slice(0, 200))}`);
+  });
   await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 }).catch(() => {
     throw new Error(`${engine}: the 1,000-row history did not finish loading`);
   });
@@ -428,7 +439,7 @@ async function reconnectAnchorScenario(page: Page, engine: string) {
   const beforeOffset = await stableRowOffset(page, targetId, engine);
 
   await reconnectFake(page, engine);
-  await target.waitFor({ timeout: 15_000 });
+  await target.waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine}: ${targetId} did not return after reconnect`); });
   const afterOffset = await stableRowOffset(page, targetId, engine);
   const drift = Math.abs(afterOffset - beforeOffset);
   console.log(`anchor ${engine.padEnd(8)} ${targetId} drift ${drift.toFixed(3)} px`);
