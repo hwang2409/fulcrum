@@ -81,3 +81,4 @@ test.serial("attach does not retry other errors or after abort", async () => {
   await Bun.sleep(260);
   expect(aborted.sent.filter((message) => message.method === "resume")).toHaveLength(1);
 });
+

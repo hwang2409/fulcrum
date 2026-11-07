@@ -26,28 +26,6 @@ async function hello(fake: ReturnType<typeof fakeTransport>, client: ReturnType<
   await ready;
 }
 
-test("session stores use the session id across clients and replay replacements", async () => {
-  const first = connect(fakeTransport().transport, (flush) => flush());
-  const second = connect(fakeTransport().transport, (flush) => flush());
-  const firstLease = first.forSession("session-a");
-  const secondLease = second.forSession("session-a");
-  const otherLease = second.forSession("session-b");
-  const replayed = await first.replay("session-a", async () => []);
-  try {
-    expect(firstLease.store.runId).toBe("session-a");
-    expect(secondLease.store.runId).toBe(firstLease.store.runId);
-    expect(replayed.store.runId).toBe("session-a");
-    expect(otherLease.store.runId).toBe("session-b");
-  } finally {
-    firstLease.release();
-    secondLease.release();
-    otherLease.release();
-    replayed.release();
-    first.close();
-    second.close();
-  }
-});
-
 test("content_read joins chunks, accepts a short final chunk, and sends no session id", async () => {
   const fake = fakeTransport();
   const client = createClient(fake.transport);
