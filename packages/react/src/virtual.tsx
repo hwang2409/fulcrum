@@ -14,9 +14,29 @@ import {
   type VirtualOptions,
   type VirtualCache,
   type VirtualSnapshot,
+  type Virtualizer,
 } from "@fulcrum/virtual";
 
 const isIOSWebKit = () => navigator.userAgent.includes("iP");
+
+const settleDetachedViewport = <Id extends string>(
+  engine: Virtualizer<Id>,
+  container: HTMLElement,
+  touching: RefObject<boolean>,
+  touchY: RefObject<number | null>,
+  userScrollUntil: RefObject<number>,
+  ignoreScrollUntil: RefObject<number>,
+  detachedScrollTop: RefObject<number>,
+) => {
+  touching.current = false;
+  touchY.current = null;
+  userScrollUntil.current = 0;
+  ignoreScrollUntil.current = 0;
+  const viewport = engine.getSnapshot();
+  const settled = engine.flushPendingCorrection(false, true);
+  detachedScrollTop.current = viewport.pendingJump === 0 ? container.scrollTop : settled.scrollTop;
+  return viewport;
+};
 
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
@@ -70,7 +90,10 @@ export function useVirtualList<Id extends string>(
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
-  const attachment = useRef<{ element: HTMLElement; detach(): VirtualSnapshot<Id> } | null>(null);
+  const attachedElement = useRef<HTMLElement | null>(null);
+  const detachCurrent = useRef<(() => void) | null>(null);
+  const detachedViewport = useRef<VirtualSnapshot<Id> | null>(null);
+  const detachedScrollTop = useRef(0);
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
 
@@ -97,11 +120,15 @@ export function useVirtualList<Id extends string>(
     const container = options.enabled === false || typeof ResizeObserver === "undefined"
       ? null
       : options.scrollRef?.current ?? timelineElement.current?.parentElement ?? null;
-    if (attachment.current?.element === container) return;
-    // Transfer post-state: pinned stays pinned at the new bottom; unpinned keeps its anchor; any pending
-    // correction is settled into that anchor (or dropped with no host), and no interaction owner survives detach.
-    const priorViewport = attachment.current?.detach() ?? null;
-    attachment.current = null;
+    if (attachedElement.current === container) return;
+    // Transfer post-state: pinned stays pinned at the new bottom; unpinned keeps its anchor; corrections settle
+    // into that anchor, stale measurements are dropped for the new host to remeasure, and no interaction owner survives.
+    detachCurrent.current?.();
+    const priorViewport = detachedViewport.current;
+    const priorScrollTop = detachedScrollTop.current;
+    detachedViewport.current = null;
+    attachedElement.current = null;
+    detachCurrent.current = null;
     containerRef.current = null;
     if (!container) return;
     containerRef.current = container;
@@ -110,7 +137,7 @@ export function useVirtualList<Id extends string>(
     const updateViewport = (source: "user" | "programmatic") =>
       engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
     if (priorViewport) {
-      if (!priorViewport.pinned) container.scrollTop = priorViewport.scrollTop;
+      if (!priorViewport.pinned) container.scrollTop = priorScrollTop;
       updateViewport("programmatic");
       if (priorViewport.pinned) container.scrollTop = engine.scrollToEnd();
     } else updateViewport("user");
@@ -205,19 +232,6 @@ export function useVirtualList<Id extends string>(
     });
     viewportObserver.observe(container);
     const detach = () => {
-      if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
-      if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
-      resizeFrame.current = null;
-      scrollEndTimer.current = null;
-      touching.current = false;
-      touchY.current = null;
-      userScrollUntil.current = 0;
-      ignoreScrollUntil.current = 0;
-      flushMeasurements();
-      const settled = engine.flushPendingCorrection();
-      if (Math.abs(settled.jump) >= 0.5) container.scrollTop = settled.scrollTop;
-      engine.setViewport({ scrollTop: settled.scrollTop, size: container.clientHeight, source: "user" });
-      const viewport = engine.getSnapshot();
       observer.disconnect();
       viewportObserver.disconnect();
       observerRef.current = null;
@@ -229,16 +243,25 @@ export function useVirtualList<Id extends string>(
       container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("touchend", onTouchEnd);
       container.removeEventListener("touchcancel", onTouchEnd);
+      if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
+      if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
+      resizeFrame.current = null;
+      scrollEndTimer.current = null;
+      detachedViewport.current = settleDetachedViewport(
+        engine, container, touching, touchY, userScrollUntil, ignoreScrollUntil, detachedScrollTop,
+      );
       pendingEntries.current.clear();
       container.style.overflowAnchor = priorOverflowAnchor;
-      return viewport;
     };
-    attachment.current = { element: container, detach };
+    attachedElement.current = container;
+    detachCurrent.current = detach;
   });
 
   useLayoutEffect(() => () => {
-    attachment.current?.detach();
-    attachment.current = null;
+    detachCurrent.current?.();
+    attachedElement.current = null;
+    detachCurrent.current = null;
+    detachedViewport.current = null;
     containerRef.current = null;
   }, []);
 

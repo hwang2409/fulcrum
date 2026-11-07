@@ -89,7 +89,7 @@ export type Virtualizer<Id extends string = string> = {
   setFollow(follow: boolean): void;
   beforeMutation(options?: { mode?: "anchor" | "shift" }): MutationToken<Id>;
   afterMutation(token: MutationToken<Id>, options?: { deferCorrection?: boolean }): MutationResult;
-  flushPendingCorrection(): MutationResult;
+  flushPendingCorrection(notify?: boolean, releaseOwnership?: boolean): MutationResult;
   scrollToId(id: Id, viewportOffset?: number): number;
   scrollToEnd(): number;
   /** Requests bottom follow for a host action such as its own newly submitted message. */
@@ -634,17 +634,17 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       changed();
       return { scrollTop, correction, appliedCorrection, jump, pendingJump, followedBottom };
     },
-    flushPendingCorrection() {
+    flushPendingCorrection(notify = true, releaseOwnership = false) {
       const before = scrollTop;
       const correction = pendingJump;
       scrollTop = clampScroll(scrollTop + pendingJump);
       pendingJump = 0;
       jump = scrollTop - before;
-      expectedCorrectionScroll = Math.abs(jump) >= 0.5 ? scrollTop : null;
+      expectedCorrectionScroll = !releaseOwnership && Math.abs(jump) >= 0.5 ? scrollTop : null;
       correctionEvent = false;
-      programmatic = true;
+      programmatic = !releaseOwnership;
       log("correction", { correction, appliedCorrection: jump, pendingJump, followedBottom: false, scrollTop });
-      changed();
+      if (notify) changed();
       return { scrollTop, correction, appliedCorrection: jump, jump, pendingJump, followedBottom: false };
     },
     scrollToId(id, viewportOffset = 0) {
