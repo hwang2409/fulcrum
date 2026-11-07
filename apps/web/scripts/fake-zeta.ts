@@ -234,7 +234,7 @@ const historyGroups = (rows: Json[]) => {
   return groups;
 };
 
-export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, serialDelays }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; serialDelays?: Readonly<Record<string, number | readonly number[]>> }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, serialDelays, overflowSilentCloseDelayMs = 0 }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; serialDelays?: Readonly<Record<string, number | readonly number[]>>; overflowSilentCloseDelayMs?: number }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
@@ -306,6 +306,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: active ?? ACTIVE, delta: "head" } }));
     if (mode === "overflow-silent") {
       if (controller === socket) controller = null;
+      if (overflowSilentCloseDelayMs > 0) return setTimeout(() => socket.terminate(), overflowSilentCloseDelayMs);
       return socket.terminate();
     }
     socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32011, message: `${role} output overflow` } }));
