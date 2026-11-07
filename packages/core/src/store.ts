@@ -265,7 +265,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     };
   }
 
-  return {
+  const store = {
     get runId() { return options.runId; },
     getState() {
       if (!notifying) flush(), flushPrepend();
@@ -384,4 +384,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       outlineChanged = false;
     },
   };
+  // Optional in the type, so hand-written store objects typed as this return type need no `runId`.
+  const typed: Omit<typeof store, "runId"> & { readonly runId?: string } = store;
+  return typed;
 }
