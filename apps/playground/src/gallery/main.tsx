@@ -35,6 +35,7 @@ const renderers: Renderers = {
   message: ({ id }) => <Message id={id} markdown={RichMarkdown} />,
   approval: GalleryApproval,
 };
+const markdownAllRenderers: Renderers = { ...renderers, message: ({ id }) => <Message id={id} markdown={RichMarkdown} markdownFor="all" /> };
 
 // A live demo starts empty and plays; paused from the start (reduced motion), it shows its in-progress state instead.
 // A demo with child runs shows its finished state when paused, since it plays once and stops.
@@ -183,7 +184,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
             <RunNavigator key={generation} store={store} source={source} {...runPath} highlight={highlight} renderers={renderers} label="run" />
           ) : (
             <RunProvider key={generation} store={store} highlight={highlight}>
-              <Timeline renderers={renderers} />
+              <Timeline renderers={demo.markdownAll ? markdownAllRenderers : renderers} />
             </RunProvider>
           )}
         </ActContext.Provider>

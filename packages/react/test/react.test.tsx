@@ -189,7 +189,7 @@ test("Message composes assistant markdown while user and explicit plain modes st
     </RunProvider>,
   );
   expect(q('[data-id="message:assistant"] [data-part="md-code-inline"]')?.textContent).toBe("code");
-  expect(q('[data-id="message:user"]').textContent).toBe("use `plain`");
+  expect(q('[data-id="message:user"] [data-part="message-content"]').textContent).toBe("use `plain`");
   expect(q(".plain").textContent).toBe("use `code`");
 });
 
@@ -358,7 +358,8 @@ test("unknown item kind uses the fallback renderer", () => {
   const items = [...container.querySelectorAll('[data-part="item"]')];
   expect(items.map((el) => el.getAttribute("data-kind"))).toEqual(["unknown", "user"]);
   expect(items[0]!.textContent).toBe("future_event");
-  expect(items[1]!.textContent).toBe("hi there");
+  expect(items[1]!.querySelector('[data-part="message-prompt"]')?.getAttribute("aria-hidden")).toBe("true");
+  expect(items[1]!.querySelector('[data-part="message-content"]')?.textContent).toBe("hi there");
 });
 
 test("a pending approval exposes adapter-supplied reconnect and resolving states", () => {

@@ -10,6 +10,7 @@ import { SubAgent, subAgentLabel, subAgentStatusText } from "./sub-agent.js";
 import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
 import { Message, ToolResultBlocks } from "./content.js";
+import { UserMessageContent } from "./user-message.js";
 
 export type ItemProps = { id: string; className?: string };
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
@@ -367,10 +368,11 @@ export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
   const item = useItem(id);
   if (!item) return null;
   const display = fallbackDisplay(item);
+  const user = item.type === "user" && item.event.type === "user_message";
+  const content = <>{display.label}{display.attachments?.length ? <ToolResultBlocks id={id} blocks={display.attachments} /> : null}</>;
   return (
     <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state}>
-      {display.label}
-      {display.attachments?.length ? <ToolResultBlocks id={id} blocks={display.attachments} /> : null}
+      {user ? <UserMessageContent style={pre}>{content}</UserMessageContent> : content}
     </div>
   );
 });

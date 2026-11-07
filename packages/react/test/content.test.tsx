@@ -40,7 +40,7 @@ function mount(node: ReactNode) {
 }
 const q = (selector: string) => container.querySelector(selector) as HTMLElement;
 // The message's direct block parts, in DOM order (markdown text shows as its md-* parts).
-const order = () => [...q('[data-part="message"]').children].map((child) => (child as HTMLElement).dataset.part).filter((part) => part !== "reasoning-live");
+const order = () => [...q('[data-part="message-content"]')?.children ?? q('[data-part="message"]').children].map((child) => (child as HTMLElement).dataset.part).filter((part) => part !== "reasoning-live");
 const commit = (content: ContentBlock[], role = "assistant"): RunEvent => ({ type: "message_commit", message_id: "m", message: { role, content } });
 const render = (events: RunEvent[], props: { blocks?: BlockRenderers; onOpen?: ContentBlockProps["onOpen"]; markdown?: boolean; loadMedia?: LoadMedia } = {}) => {
   const setupResult = setup(events);
@@ -50,9 +50,25 @@ const render = (events: RunEvent[], props: { blocks?: BlockRenderers; onOpen?: C
 
 const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-test("a plain text message renders exactly as before content blocks", () => {
+test("a user message keeps its decorative prompt separate from its content", () => {
   render([commit([{ type: "text", text: "hello\nthere" }], "user")]);
-  expect(container.innerHTML).toBe('<div style="white-space: pre-wrap;" data-part="message" data-kind="message" data-id="message:m" data-role="user" data-state="done" data-format="text">hello\nthere</div>');
+  expect(q('[data-part="message-prompt"]').getAttribute("aria-hidden")).toBe("true");
+  expect(q('[data-part="message-prompt"]').textContent).toBe("> ");
+  expect(q('[data-part="message-content"]').textContent).toBe("hello\nthere");
+  expect(q('[data-part="message-content"]').style.whiteSpace).toBe("pre-wrap");
+});
+
+test("plain assistant text keeps the prior direct text-node DOM", () => {
+  render([commit([{ type: "text", text: "hello" }])], { markdown: false });
+  const message = q('[data-part="message"]');
+  expect(message.childNodes).toHaveLength(1);
+  expect(message.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+  expect(message.innerHTML).toBe("hello");
+});
+
+test("empty text does not precede the first rendered content block", () => {
+  render([commit([{ type: "text", text: "" }, { type: "file", kind: "file", filename: "a.png" }], "user")]);
+  expect(q('[data-part="message-content"]').firstElementChild?.getAttribute("data-part")).toBe("file");
 });
 
 test("truncated history strings stay visible in markdown and tool cards", () => {

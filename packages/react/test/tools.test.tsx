@@ -570,7 +570,7 @@ test("dropped steering is explicit live and compact after reload", () => {
     { type: "delivery_status", delivery_id: "history-only", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
   ].forEach((event) => store.dispatch(event as RunEvent));
   mount(<RunProvider store={store}><Fallback id="user:delivery:dropped-steer" /><Fallback id="notification:1" /></RunProvider>);
-  expect(q('[data-id="user:delivery:dropped-steer"]').textContent).toBe("this steer must be dropped · not delivered · abort");
+  expect(q('[data-id="user:delivery:dropped-steer"] [data-part="message-content"]').textContent).toBe("this steer must be dropped · not delivered · abort");
   expect(q('[data-id="notification:1"]').textContent).toBe("steer dropped: abort");
 });
 
