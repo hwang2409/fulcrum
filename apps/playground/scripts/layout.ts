@@ -595,15 +595,17 @@ try {
 
   // Real user intent right after a swap must win over the stale-scroll guard (review 3 blocker).
   const intent = await replay.evaluate(async () => {
-    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
     const mode = document.querySelector<HTMLSelectElement>("#mode")!;
     mode.value = "static:100000";
     mode.dispatchEvent(new Event("change", { bubbles: true }));
     const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
-    for (let i = 0; i < 600; i++) {
+    let scroll: HTMLElement;
+    for (let i = 0; ; i++) {
       await frame();
+      scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
       const rows = document.querySelector('[data-virtual-id]')?.getAttribute("aria-setsize");
       if (rows === "100000" && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 1) break;
+      if (i === 599) throw new Error("the 100,000-row swap did not settle");
     }
     const swappedAt = performance.now();
     scroll.dispatchEvent(new WheelEvent("wheel", { deltaY: -2000, bubbles: true }));
