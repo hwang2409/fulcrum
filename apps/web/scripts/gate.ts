@@ -340,11 +340,11 @@ async function checkReconnectAnchor(page: Page, engine: string) {
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 
   let reached = false;
-  for (let step = 0; step < 250; step++) {
+  for (let step = 0; step < 80; step++) {
     const targetBox = await target.boundingBox().catch(() => null);
     if (targetBox && targetBox.top >= box.top && targetBox.bottom <= box.bottom) { reached = true; break; }
     const before = await scroll.evaluate((element) => element.scrollTop);
-    await page.mouse.wheel(0, -180);
+    await page.mouse.wheel(0, -1_000);
     await page.waitForFunction(({ selector, before }) => {
       const element = document.querySelector<HTMLElement>(selector);
       return element !== null && element.scrollTop < before;
@@ -354,7 +354,7 @@ async function checkReconnectAnchor(page: Page, engine: string) {
   }
   if (!reached) {
     const position = await scroll.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
-    throw new Error(`${engine}: ${targetId} was not visible after 250 wheel steps (${position.top.toFixed(1)} / ${position.range.toFixed(1)} px)`);
+    throw new Error(`${engine}: ${targetId} was not visible after 80 wheel steps (${position.top.toFixed(1)} / ${position.range.toFixed(1)} px)`);
   }
   const beforeBox = await target.boundingBox();
   if (!beforeBox) throw new Error(`${engine}: ${targetId} was not mounted before reconnect`);
