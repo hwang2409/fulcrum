@@ -15,6 +15,8 @@ fulcrum (repo hwang2409/fulcrum, public; local dir ~/me/fun/fulcrum) is a react 
 - quality bar: "fulcrum should just be a painfully good, super optimized component library. people shouldnt have issues, there shouldnt be one component that was lazily thought out, and might need to be rewritten in the future, etc. it should just be state of the art". plan: ~/.zeta/scratch/fulcrum-sota-audit.md.
 - font: JetBrains Mono on every page ("i really like jetbrains mono"), self-hosted.
 - read-only observers: Henry wants them ("i think read only observers would be nice"); requested from the zeta project.
+- "i mean it doesnt really matter. we should just try to make fulcrum good, and if its big, thats fine. just not unecessarily big. i dont want us to play code golf with fulcrum tbh"
+- size limits in scripts/size-check.ts are accident alarms; raise one with the reason in the PR when a real feature needs room; dead or duplicate code is still a defect.
 
 ## packages
 - @fulcrum/core: generic RunEvent, pure reducer (plain string streams, items + itemsById), store batched per frame.
