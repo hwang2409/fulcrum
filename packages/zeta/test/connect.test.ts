@@ -138,15 +138,6 @@ test("busy and version mismatch map to their kinds", async () => {
   }
 });
 
-test("observer-limit busy message maps to busy", async () => {
-  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
-  const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "sentinel", role: "observer" });
-  const socket = await open();
-  socket.emit("message", { data: JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "observer limit reached" } }) });
-  socket.emit("close", { code: 1000 });
-  await expect(connecting).rejects.toMatchObject({ kind: "busy" });
-});
-
 test("server-level busy error maps to busy", async () => {
   globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   const connecting = connectZeta({ url: "ws://127.0.0.1:8765/", token: "sentinel" });

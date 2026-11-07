@@ -272,6 +272,7 @@ test("run status and the compact end marker expose an unknown outcome accessibly
   const EndMarker = exports.RunEndMarker ?? (() => null);
   mount(<RunProvider store={store}><Status /><EndMarker /></RunProvider>);
 
+  expect(container.textContent).toContain("outcome unknown");
   expect(q('[data-part="run-status"]').textContent).toBe("outcome unknown");
   const marker = q('[data-part="run-end-marker"]');
   expect(marker.textContent).toContain("outcome unknown");
