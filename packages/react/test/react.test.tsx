@@ -1426,6 +1426,49 @@ test("same-run replacement keeps a pinned reader at bottom while a different run
   }
 });
 
+test("a pinned reader keeps following when a reconnect banner leaves and the browser clamps its scroll", () => {
+  const items = Array.from({ length: 1_001 }, (_, index) => committedItem(String(index)));
+  const source = timelineStore(items.slice(0, 1_000), "run-a");
+  const replay = timelineStore(items.slice(0, 1_000), "run-a");
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const positions = new WeakMap<HTMLElement, number>();
+  let height = 550;
+  let lag = 0;
+  const now = performance.now;
+  let elapsed = 0;
+  performance.now = () => now.call(performance) + elapsed;
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => height });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") - lag; } });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); } });
+  const view = (store: RunStore) => <RunProvider store={store}><Timeline /></RunProvider>;
+  try {
+    mount(view(source.store));
+    const viewport = q('[data-part="timeline-scroll"]');
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
+    elapsed = 1_000; // past the mount's stale-scroll guard
+    act(() => viewport.dispatchEvent(new Event("scroll"))); // the browser reports the mount's bottom write
+    act(() => root!.render(view(replay.store)));
+    // The banner above the box leaves: the box grows, the browser clamps scroll to the new end, and its scroll event
+    // arrives before the box's ResizeObserver callback, while the DOM still lags the engine's newest measurement
+    // (the WebKit/Chromium gate traced engine total 3748.25 px against a rendered 3742 px).
+    height = 600;
+    lag = 6;
+    viewport.scrollTop = viewport.scrollTop;
+    act(() => viewport.dispatchEvent(new Event("scroll")));
+    lag = 0;
+    act(() => replay.replace(items, [{ index: 1_000, deleteCount: 0, items: items.slice(1_000) }]));
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+  } finally {
+    performance.now = now;
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+  }
+});
+
 test("virtual Timeline keeps its frame when a store is disposed, then replaces it mid-stream", () => {
   const a = setup(Array.from({ length: 201 }, (_, index): RunEvent => ({
     type: "message_commit",

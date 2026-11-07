@@ -176,10 +176,14 @@ export function useVirtualList<Id extends string>(
           return;
         }
         const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
-        if (!correction && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+        // A shorter outline or a taller box (a reconnect banner leaving) makes the browser clamp a pinned reader's scroll
+        // to the new end, often before the box's ResizeObserver runs. Landing on the end is following, not the reader's
+        // move up, so the engine keeps its follow intent.
+        const clampedToEnd = before.pinned && container.scrollTop >= container.scrollHeight - container.clientHeight - 0.5;
+        if (!correction && !clampedToEnd && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
         lastScrollTop.current = container.scrollTop;
-        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
-        if (correction) return;
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: clampedToEnd ? "programmatic" : "user" });
+        if (correction || clampedToEnd) return;
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = setTimeout(finishScroll, 150);
       };
