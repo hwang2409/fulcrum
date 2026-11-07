@@ -88,9 +88,12 @@ export function useVirtualList<Id extends string>(
   const pendingEntries = useRef(new Map<Id, number>());
   const touching = useRef(false);
   const userScrollUntil = useRef(0);
+  const userInputUntil = useRef(0);
   const touchY = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const readerAnchor = useRef<{ id: Id; index: number; offset: number } | null>(null);
+  const readerViewportTop = useRef<number | null>(null);
   const ignoreScrollUntil = useRef(0);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
@@ -100,6 +103,29 @@ export function useVirtualList<Id extends string>(
   const transferCurrent = useRef<((next: HTMLElement | null) => void) | null>(null);
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
+  const captureMutation = () => {
+    const token = engine.beforeMutation();
+    if (token.pinned) return token;
+    const snapshot = engine.getSnapshot();
+    const recorded = readerAnchor.current;
+    if (recorded && snapshot.rows.some(({ id }) => id === recorded.id)) return { ...token, anchor: recorded };
+    const row = snapshot.rows.find(({ start }) => start >= snapshot.scrollTop);
+    return row ? { ...token, anchor: { id: row.id, index: row.index, offset: row.start - snapshot.scrollTop } } : token;
+  };
+  const recordReaderAnchor = (container: HTMLElement) => {
+    const top = readerViewportTop.current ?? container.getBoundingClientRect().top;
+    let target: { id: Id; top: number } | null = null;
+    let firstTop: number | null = null;
+    let measured = false;
+    for (const [id, element] of rows.current) {
+      const rowTop = element.getBoundingClientRect().top;
+      if (firstTop === null) firstTop = rowTop;
+      else if (rowTop !== firstTop) measured = true;
+      if (rowTop >= top && (!target || rowTop < target.top)) target = { id, top: rowTop };
+    }
+    const row = measured && target && engine.getSnapshot().rows.find(({ id }) => id === target!.id);
+    if (row && target) readerAnchor.current = { id: row.id, index: row.index, offset: target.top - top };
+  };
 
   useLayoutEffect(() => {
     if (resetPending) {
@@ -111,7 +137,7 @@ export function useVirtualList<Id extends string>(
     }
     if (appliedOutline.current !== outline) {
       appliedOutline.current = outline;
-      const token = engine.beforeMutation();
+      const token = captureMutation();
       if (options.invalidateMeasurements) engine.invalidateMeasurements(options.invalidateMeasurements);
       engine.setOutline(outline, options.outlineUpdate);
       engine.setLoaded("all");
@@ -184,16 +210,24 @@ export function useVirtualList<Id extends string>(
           return;
         }
         const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
-        if (!correction && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+        const userMoved = performance.now() < userInputUntil.current || !before.programmatic;
+        if (!correction && userMoved && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
         lastScrollTop.current = container.scrollTop;
-        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
-        if (correction) return;
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: correction || !userMoved ? "programmatic" : "user" });
+        if (userMoved) recordReaderAnchor(container);
+        if (correction || !userMoved) return;
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = setTimeout(finishScroll, 150);
       };
       // The stale-scroll guard after a programmatic bottom write only covers scroll events
       // nobody asked for; any real input means the next scroll is the user's and must win.
-      const userIntent = () => { ignoreScrollUntil.current = 0; };
+      const userIntent = () => {
+        ignoreScrollUntil.current = 0;
+        const now = performance.now();
+        if (now >= userInputUntil.current) readerViewportTop.current = container.getBoundingClientRect().top;
+        readerAnchor.current = null;
+        userInputUntil.current = now + 500;
+      };
       const onWheel = (event: WheelEvent) => {
         userIntent();
         userScrollUntil.current = performance.now() + 200;

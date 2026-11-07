@@ -318,6 +318,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   // Engine scroll writes alone create or replace this target; its first matching event consumes it at most once.
   // Scroll settlement clears it, while non-scroll mutations preserve it and adjust it when bounds move.
   let expectedCorrectionScroll: number | null = null;
+  let missingAnchor: Anchor<Id> | null = null;
   let rangeCursorIndex = 0;
   let rangeCursorStart = 0;
   let sequence = 0;
@@ -475,6 +476,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     correctionEvent = isCorrection;
     programmatic = viewport.source === "programmatic" || isCorrection;
     if (viewport.source === "user" && !isCorrection) {
+      missingAnchor = null;
       const distance = layout.total - scrollTop - viewportSize;
       pinned = pinned ? distance <= bottomThreshold : distance < 0.5;
       if (pinned) unseenIds.clear();
@@ -503,6 +505,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       jump = 0;
       pendingJump = 0;
       expectedCorrectionScroll = null;
+      missingAnchor = null;
       rangeCursorIndex = 0;
       rangeCursorStart = 0;
       actions.length = 0;
@@ -618,6 +621,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       changed();
     },
     setFollow(follow) {
+      missingAnchor = null;
       pinned = follow;
       jump = 0; // a follow change moves nothing: a stale jump would make the adapter undo the user's scroll
       if (follow) unseenIds.clear();
@@ -636,13 +640,21 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       let requested = logicalBefore;
       let followedBottom = false;
       if (token.pinned) {
+        missingAnchor = null;
         requested = maxScroll();
         followedBottom = true;
       } else if (token.mode === "shift") {
+        missingAnchor = null;
         requested = layout.total - token.distanceFromEnd;
-      } else if (token.anchor && layout.length > 0) {
-        const index = layout.indexOf(token.anchor.id) ?? Math.min(token.anchor.index, layout.length - 1);
-        requested = layout.prefix(index) - token.anchor.offset;
+      } else {
+        const returned = missingAnchor && layout.indexOf(missingAnchor.id) !== undefined ? missingAnchor : null;
+        const anchor = returned ?? token.anchor;
+        if (anchor && layout.length > 0) {
+          const exactIndex = layout.indexOf(anchor.id);
+          const index = exactIndex ?? Math.min(anchor.index, layout.length - 1);
+          requested = layout.prefix(index) - anchor.offset;
+          if (!missingAnchor && exactIndex === undefined) missingAnchor = anchor;
+        } else if (anchor && !missingAnchor) missingAnchor = anchor;
       }
       const correction = requested - logicalBefore;
       if (mutationOptions?.deferCorrection) {
@@ -675,6 +687,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       return { scrollTop, correction, appliedCorrection: jump, jump, pendingJump, followedBottom: false };
     },
     scrollToId(id, viewportOffset = 0) {
+      missingAnchor = null;
       const index = layout.indexOf(id);
       if (index === undefined) throw new Error("cannot scroll to an id outside the outline");
       // Follow mode is set before the viewport notifies, so subscribers never read a stale `pinned`.
@@ -686,6 +699,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       return scrollTop;
     },
     scrollToEnd() {
+      missingAnchor = null;
       pinned = true;
       unseenIds.clear();
       setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
@@ -693,6 +707,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     },
     requestFollow() {
       if (pinned) return null;
+      missingAnchor = null;
       pinned = true;
       unseenIds.clear();
       setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });

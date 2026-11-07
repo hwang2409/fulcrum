@@ -202,6 +202,20 @@ describe("anchoring", () => {
     expect(result.appliedCorrection).toBe(-2);
     expect(virtual.beforeMutation().anchor?.id).toBe("row-2");
   });
+  test("a stable reader anchor stays owned after progressive replay returns it", () => {
+    const virtual = engine([10, 10, 10, 10], 10, 12);
+    let token = { ...virtual.beforeMutation(), anchor: { id: "row-2", index: 2, offset: 8 } };
+    virtual.setOutline(items([10, 10, 10, 10]).outline.slice(3));
+    virtual.afterMutation(token);
+
+    token = virtual.beforeMutation();
+    virtual.setOutline(items([10, 10, 10, 10]).outline);
+    virtual.afterMutation(token);
+    token = virtual.beforeMutation();
+    virtual.measure("row-1", 20);
+    virtual.afterMutation(token);
+    expect(virtual.getSnapshot().scrollTop).toBe(22);
+  });
   test("correction clamps at the scroll bounds", () => {
     const virtual = engine([10, 10], 10, 5);
     const result = mutate(virtual, () => virtual.measure("row-0", 0));

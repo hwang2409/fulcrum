@@ -339,11 +339,11 @@ async function checkReconnectAnchor(page: Page, engine: string) {
   await page.mouse.move(scrollBox.x + scrollBox.width / 2, scrollBox.y + scrollBox.height / 2);
   await page.waitForTimeout(100);
   const range = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight);
-  const target = range / 2;
-  for (let step = 0; step < 100 && await scroll.evaluate((element, middle) => element.scrollTop > middle, target); step++) {
-    await page.mouse.wheel(0, -1_000);
-    await page.waitForTimeout(25);
+  for (let step = 0; step < 123; step++) {
+    await page.mouse.wheel(0, -180);
+    await page.waitForTimeout(50);
   }
+  await page.waitForTimeout(600);
   const middle = await scroll.evaluate((element) => ({ top: element.scrollTop, range: element.scrollHeight - element.clientHeight }));
   if (Math.abs(middle.top - middle.range / 2) > 1_500) throw new Error(`wheel stopped ${Math.round(Math.abs(middle.top - middle.range / 2))} px from the middle`);
   await page.waitForTimeout(100);

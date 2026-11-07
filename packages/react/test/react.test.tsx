@@ -1295,16 +1295,17 @@ test("useVirtualList ignores a stale outline hint and resets when the outline ow
 });
 
 test.each([
-  ["owned", false, false],
-  ["host-owned", true, false],
-  ["owned strict mode", false, true],
-])("same-run replacement keeps an unpinned reader's anchor in %s", (_name, hostOwned, strict) => {
+  ["owned", false, false, false],
+  ["host-owned", true, false, false],
+  ["owned strict mode", false, true, false],
+  ["owned through an empty replay", false, false, true],
+])("same-run replacement keeps an unpinned reader's anchor in %s", (_name, hostOwned, strict, stagedReplay) => {
   const items = Array.from({ length: 1_000 }, (_, index) => committedItem(String(index)));
   const replacementItems = [...items.map((item, index) => index === 500
     ? { ...item, message: message("replacement text that is much longer than the streamed text ".repeat(8)), version: 2 }
     : item), ...Array.from({ length: 10 }, (_, index) => committedItem(`new-${index}`))];
   const first = timelineStore(items, "same-run");
-  const second = timelineStore(replacementItems, "same-run");
+  const second = timelineStore(stagedReplay ? [] : replacementItems, "same-run");
   const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
@@ -1319,7 +1320,7 @@ test.each([
   try {
     const scrollRef = { current: null as HTMLElement | null };
     const view = (store: RunStore) => {
-      const timeline = <RunProvider store={store}><Timeline virtual {...(hostOwned ? { scrollRef, renderJumpToLatest: (control: ReactNode) => <aside>{control}</aside> } : {})} /></RunProvider>;
+      const timeline = <RunProvider store={store}><Timeline {...(stagedReplay ? {} : { virtual: true })} {...(hostOwned ? { scrollRef, renderJumpToLatest: (control: ReactNode) => <aside>{control}</aside> } : {})} /></RunProvider>;
       const content = hostOwned ? <div ref={scrollRef}>{timeline}</div> : timeline;
       return strict ? <StrictMode>{content}</StrictMode> : content;
     };
@@ -1334,6 +1335,7 @@ test.each([
     const offset = Number.parseFloat(q(`[data-virtual-id="${anchorId}"]`).style.transform.slice(11)) - viewport.scrollTop;
 
     act(() => root!.render(view(second.store)));
+    if (stagedReplay) second.replace(replacementItems, [{ index: 0, deleteCount: 0, items: replacementItems }]);
     const nextViewport = hostOwned ? scrollRef.current! : q('[data-part="timeline-scroll"]');
     const nextAnchor = container.querySelector<HTMLElement>(`[data-virtual-id="${anchorId}"]`);
     expect(nextAnchor, "the replacement must keep the anchor row mounted").not.toBeNull();

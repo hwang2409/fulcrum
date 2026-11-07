@@ -640,14 +640,16 @@ export const Timeline = memo(function Timeline(props: TimelineProps) {
 const TimelineForStore = memo(function TimelineForStore({ store, runKey, renderers, className, virtual, scrollRef, followRequest, renderJumpToLatest, initialViewport, onViewport, "aria-label": ariaLabel = "agent activity" }: TimelineProps & { store: RunStore; runKey: string }) {
   const { items, change } = useTimelineSnapshot();
   const priorStore = useRef(store);
+  const priorItems = useRef(items);
+  const replayGap = priorStore.current !== store && items.length === 0 && priorItems.current.length > 0;
+  const outline = replayGap ? priorItems.current : items;
   const invalidMeasurements = useMemo(() => priorStore.current === store ? undefined : items
     .filter(({ id }) => !sameValue(priorStore.current.getItem(id), store.getItem(id)))
     .map(({ id }) => id), [items, store]);
-  const enabled = virtual ?? items.length > 200;
+  const enabled = virtual ?? outline.length > 200;
   const ownedScrollRef = useRef<HTMLDivElement>(null);
   const activeScrollRef = scrollRef ?? ownedScrollRef;
-  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef: activeScrollRef, enabled, outlineUpdate: change, resetKey: runKey, invalidateMeasurements: invalidMeasurements, cache: initialViewport?.cache });
-  useLayoutEffect(() => { priorStore.current = store; }, [store]);
+  const list = useVirtualList(outline, { estimateSize: estimateRowSize, scrollRef: activeScrollRef, enabled, outlineUpdate: replayGap ? null : change, resetKey: runKey, invalidateMeasurements: invalidMeasurements, cache: initialViewport?.cache });
   useUnconstrainedWarning(enabled, !!scrollRef, ownedScrollRef, items.length, list.snapshot.rows.length);
   const priorFollowRequest = useRef(followRequest);
   useLayoutEffect(() => {
@@ -657,15 +659,21 @@ const TimelineForStore = memo(function TimelineForStore({ store, runKey, rendere
   const initialScroll = useRef(enabled);
   const restore = useRef(initialViewport);
   useLayoutEffect(() => {
-    if (!enabled) initialScroll.current = true;
-    else if (initialScroll.current && list.snapshot.totalSize > 0) {
+    if (!enabled) {
+      if (priorStore.current === store) initialScroll.current = true;
+    } else if (initialScroll.current && list.snapshot.totalSize > 0) {
       initialScroll.current = false;
       const viewport = restore.current;
       restore.current = undefined;
       if (viewport && !viewport.following && viewport.anchorId && items.some(({ id }) => id === viewport.anchorId)) list.scrollToId(viewport.anchorId, viewport.offset);
       else list.scrollToEnd();
     }
-  }, [enabled, items, list.scrollToEnd, list.scrollToId, list.snapshot.totalSize]);
+  }, [enabled, items, list.scrollToEnd, list.scrollToId, list.snapshot.totalSize, store]);
+  useLayoutEffect(() => {
+    if (replayGap) return;
+    priorStore.current = store;
+    priorItems.current = items;
+  }, [items, replayGap, store]);
   const leaving = useRef({ list, enabled, onViewport });
   leaving.current = { list, enabled, onViewport };
   useLayoutEffect(() => () => {
@@ -722,7 +730,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, runKey, rendere
       </TimelineLayout>
     );
   }
-  const mounted = list.snapshot.rows;
+  const mounted = replayGap ? [] : list.snapshot.rows;
   const retained = focusedId && !mounted.some(({ id }) => id === focusedId)
     ? items.findIndex(({ id }) => id === focusedId)
     : -1;
