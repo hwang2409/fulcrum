@@ -22,13 +22,13 @@ const fences: Fences = { mermaid: MermaidFence };
 const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} fences={fences} />;
 
 /** `path` is the open run path when the approval renders inside a RunNavigator. */
-type Act = (action: "approve" | "deny", requestId: string, path?: readonly RunLocation[]) => void;
+type Act = (action: "approve" | "approve-always" | "deny", requestId: string, path?: readonly RunLocation[]) => void;
 const ActContext = createContext<Act>(() => {});
 
-function GalleryApproval({ id }: { id: string }) {
+function GalleryApproval({ id, always }: { id: string; always?: boolean }) {
   const act = useContext(ActContext);
   const path = useRunNavigation()?.path;
-  return <Approval id={id} onApprove={(r) => act("approve", r, path)} onDeny={(r) => act("deny", r, path)} />;
+  return <Approval id={id} onApprove={(r) => act("approve", r, path)} onApproveAlways={always ? (r) => act("approve-always", r, path) : undefined} onDeny={(r) => act("deny", r, path)} />;
 }
 // Tools use ToolCall's default body; messages use the shared highlighted markdown renderer.
 const renderers: Renderers = {
@@ -36,6 +36,7 @@ const renderers: Renderers = {
   approval: GalleryApproval,
 };
 const markdownAllRenderers: Renderers = { ...renderers, message: ({ id }) => <Message id={id} markdown={RichMarkdown} markdownFor="all" /> };
+const approveAlwaysRenderers: Renderers = { ...renderers, approval: ({ id }) => <GalleryApproval id={id} always /> };
 
 // A live demo starts empty and plays; paused from the start (reduced motion), it shows its in-progress state instead.
 // A demo with child runs shows its finished state when paused, since it plays once and stops.
@@ -103,12 +104,12 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
   };
   const act: Act = (action, requestId, path = []) => {
     const storeOf = (location: RunLocation | undefined) => (location?.runId ? runs[location.runId]! : store);
-    storeOf(path.at(-1)).dispatch({ type: "approval_end", request_id: requestId, decision: action, data: { action } });
+    storeOf(path.at(-1)).dispatch({ type: "approval_end", request_id: requestId, decision: action === "deny" ? "deny" : "approve", data: { action } });
     // The fake harness clears the waiting badge on every ancestor row, as a real one would once the child resumes.
     path.slice(1).forEach((location, index) => {
       const row = storeOf(path[index]).getItem(`sub-agent:${location.runId}`);
       if (row?.type === "sub_agent" && row.urgency === "approval")
-        storeOf(path[index]).dispatch({ type: "sub_agent", childRunId: location.runId!, status: "running", latestActivity: `${action === "approve" ? "approved" : "denied"}: resuming` });
+        storeOf(path[index]).dispatch({ type: "sub_agent", childRunId: location.runId!, status: "running", latestActivity: `${action === "deny" ? "denied" : "approved"}: resuming` });
     });
     setTouched(true);
     toast(`${action} ${requestId}`);
@@ -185,7 +186,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
           ) : (
             <RunProvider key={generation} store={store} highlight={highlight}>
               {demo.part === "RunStatus" ? <RunStatus /> : null}
-              <Timeline renderers={demo.markdownAll ? markdownAllRenderers : renderers} />
+              <Timeline renderers={demo.markdownAll ? markdownAllRenderers : demo.approveAlways ? approveAlwaysRenderers : renderers} />
               {demo.part === "RunEndMarker" ? <RunEndMarker /> : null}
             </RunProvider>
           )}

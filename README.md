@@ -91,6 +91,7 @@ const renderers: Renderers = {
   ```
 
   Every URL goes through `safeUrl` from `@fulcrum/core`: links are http, https, mailto, or relative; images may also be inline png, jpeg, gif, webp, avif, or bmp `data:` URLs. Any URL longer than `MAX_URL_CHARS` (8 MiB) is refused before any other work. Addresses never become labels, titles, or data attributes.
+- approval actions: `Approval` takes `onApprove` and `onDeny`, each called with the request id; return a promise to keep the card busy (`approving`/`denying`, every action `aria-disabled`) until it settles, and reject to show the error and re-enable the actions. Pass `onApproveAlways` to offer a third action between them (`data-action="approve-always"`, label `approveAlwaysLabel`, default `always allow`) for a host that can approve this call and remember the grant; it shares approve's busy word, error, and disabled states, and without it the card renders exactly as before. The decided card still reads `approved`, because `approval_end` does not say whether the grant was remembered. With `@fulcrum/zeta`, send `approve` with `scope: "always_tool"`, and do not offer it for a `delegated` request: zeta rejects that scope for delegated approvals. `disabledReason` disables every action and shows the reason.
 - tool body slot: `ToolCall` and `Approval` own the one header row (`tool-name`, `tool-summary`, `tool-status`), the disclosure, the state rail, and the approval actions. A per-tool card passes only what goes inside `data-part="tool-body"`, so it never draws a second header:
 
   ```tsx

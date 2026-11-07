@@ -76,7 +76,10 @@ function pageProblems(minHeight: number) {
   if (!cards.length) return ["no pending approval on the page"];
   for (const card of cards) {
   const buttons = [...card.querySelectorAll<HTMLButtonElement>("[data-part=approval-actions] button")];
-  if (buttons.length !== 2) problems.push(`${card.dataset.id}: ${buttons.length} buttons, expected approve and deny`);
+  const actions = buttons.map((button) => button.dataset.action).join(" ");
+  if (actions !== "approve deny" && actions !== "approve approve-always deny") problems.push(`${card.dataset.id}: actions "${actions}", expected approve, optional approve-always, and deny`);
+  // The actions share one row at every width: a wrapped action reads as a separate, unrelated control.
+  if (new Set(buttons.map((button) => Math.round(button.getBoundingClientRect().top))).size > 1) problems.push(`${card.dataset.id}: approval actions wrap onto two rows`);
   for (const button of buttons) {
     const name = `${card.dataset.id} ${button.textContent?.trim() || "(unnamed button)"}`;
     let opacity = 1;

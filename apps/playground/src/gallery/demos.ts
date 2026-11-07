@@ -8,7 +8,7 @@ import { CHART_PNG } from "./chart";
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
 /** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean; markdownAll?: boolean };
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean; markdownAll?: boolean; approveAlways?: boolean };
 
 const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({ id, name, arguments: args });
 const text = (role: string, value: string) => ({ role, content: [{ type: "text", text: value }] });
@@ -698,6 +698,14 @@ export const demos: Demo[] = [
     title: "pending, write",
     description: "The write approval shows the file it would write, with line numbers.",
     events: [ask("r-write", calls("ap").write)],
+  },
+  {
+    id: "approval-always",
+    part: "Approval",
+    title: "pending, with always allow",
+    description: "A host that can remember a grant passes onApproveAlways: a third action between approve and deny that approves this call and lets the tool run without asking again. It shares approve's busy, error, and disabled states.",
+    events: [ask("r-always", calls("ap").bash)],
+    approveAlways: true,
   },
   {
     id: "approval-generic",
