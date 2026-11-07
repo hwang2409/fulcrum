@@ -1118,6 +1118,36 @@ const committedItem = (id: string): RunItem => ({
   active: false,
 });
 
+test("the unconstrained-height diagnostic checks layout only once while rows stream", () => {
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const requestFrame = globalThis.requestAnimationFrame;
+  const cancelFrame = globalThis.cancelAnimationFrame;
+  const frames: FrameRequestCallback[] = [];
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100_000 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 100_001 });
+  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
+  globalThis.cancelAnimationFrame = () => {};
+  try {
+    let items = Array.from({ length: 201 }, (_, index) => committedItem(String(index)));
+    const timeline = timelineStore(items);
+    mount(<RunProvider store={timeline.store}><Timeline virtual /></RunProvider>);
+    expect(container.querySelectorAll("[data-virtual-id]")).toHaveLength(201);
+    expect(frames).toHaveLength(1);
+    frames.shift()!(0);
+
+    const added = committedItem("201");
+    timeline.replace(items = [...items, added], [{ index: 201, deleteCount: 0, items: [added] }]);
+    expect(container.querySelectorAll("[data-virtual-id]")).toHaveLength(202);
+    expect(frames).toHaveLength(0);
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    globalThis.requestAnimationFrame = requestFrame;
+    globalThis.cancelAnimationFrame = cancelFrame;
+  }
+});
+
 const waitForAnnouncement = () => act(async () => {
   await new Promise((resolve) => setTimeout(resolve, 1_050));
 });

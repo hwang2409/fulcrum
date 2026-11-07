@@ -573,7 +573,7 @@ function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest
 
 const storeKeys = new WeakMap<object, number>();
 let nextStoreKey = 0;
-let warnedUnconstrainedTimeline = false;
+let checkedUnconstrainedTimeline = false;
 const viteDevelopment = typeof (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env === "object"
   ? (import.meta as ImportMeta & { env: { DEV?: boolean } }).env.DEV
   : undefined;
@@ -581,14 +581,15 @@ const configuredDevelopment = globalThis.__FULCRUM_DEV__;
 const development = configuredDevelopment === undefined ? viteDevelopment !== false : configuredDevelopment;
 const useUnconstrainedWarning: (enabled: boolean, hostOwned: boolean, scroll: RefObject<HTMLElement | null>, itemCount: number, mountedCount: number) => void = development
   ? (enabled, hostOwned, scroll, itemCount, mountedCount) => useEffect(() => {
-      if (!enabled || hostOwned || warnedUnconstrainedTimeline || itemCount <= 200 || mountedCount !== itemCount) return;
-      const frame = requestAnimationFrame(() => {
+      if (!enabled || hostOwned || checkedUnconstrainedTimeline || itemCount <= 200 || mountedCount !== itemCount) return;
+      checkedUnconstrainedTimeline = true;
+      requestAnimationFrame(() => {
         const element = scroll.current;
-        if (!element?.clientHeight || element.scrollHeight !== element.clientHeight) return;
-        warnedUnconstrainedTimeline = true;
+        if (!element) { checkedUnconstrainedTimeline = false; return; }
+        const height = element.clientHeight;
+        if (!height || element.scrollHeight !== height) return;
         console.warn("Timeline virtual mode needs a definite-height host. Set a height, or use scrollRef with renderJumpToLatest for host-owned scrolling.");
       });
-      return () => cancelAnimationFrame(frame);
     }, [enabled, hostOwned, itemCount, mountedCount, scroll])
   : () => {};
 const keyForStore = (store: object) => {
