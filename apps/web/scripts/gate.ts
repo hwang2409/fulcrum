@@ -640,7 +640,11 @@ try {
     });
     await check("an unpinned 1,000-row run keeps its anchor through store replacement", async () => {
       const scroll = page.locator('[data-part="timeline-scroll"]');
-      await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight / 2; });
+      await scroll.evaluate((element) => {
+        element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
+        element.scrollTop = element.scrollHeight / 2;
+        element.dispatchEvent(new Event("scroll"));
+      });
       await settle(page);
       const scrollBox = await scroll.boundingBox();
       if (!scrollBox) throw new Error("timeline scroll box is not visible");
