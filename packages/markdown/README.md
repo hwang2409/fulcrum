@@ -1,3 +1,28 @@
+# @fulcrum/markdown
+
+`@fulcrum/markdown` is a framework-free, dependency-free streaming CommonMark and GFM document core. `@fulcrum/markdown/react` is the optional React renderer and uses `@fulcrum/react` as a peer for code blocks and large viewers.
+
+## usage
+
+```tsx
+import { Markdown } from "@fulcrum/markdown/react";
+import { Message } from "@fulcrum/react";
+
+<Message id={id} markdown={Markdown} />;
+```
+
+The streaming document freezes completed blocks, table rows, and list items. Open fences and plain paragraphs consume only appended text. `Markdown` covers CommonMark and GFM message content: ATX/setext headings, paragraphs, inline/indented/fenced code, nested/task lists, emphasis, reference and literal links, images, blockquotes, tables, rules, entities, and hard breaks. Raw HTML stays escaped.
+
+Every URL uses `safeUrl` from `@fulcrum/core`. Links allow HTTP, HTTPS, `mailto:`, and relative URLs. Images also allow inline PNG, JPEG, GIF, WebP, AVIF, or BMP `data:` URLs. A URL above `MAX_URL_CHARS` (8 MiB) is rejected before other work. Addresses never become labels, titles, or data attributes.
+
+Code blocks accept the `Highlight` returned by `createHighlighter()` from `@fulcrum/highlight`. The shared callback receives `(code, language, { id, version, state })` and returns tokens immediately or in a promise. `state` is `streaming` or `done`; stale async results are ignored. Tokens without a `type` render as plain text; styled token classes are `tok-keyword`, `tok-string`, `tok-number`, `tok-comment`, `tok-function`, `tok-type`, `tok-variable`, `tok-constant`, `tok-operator`, `tok-punctuation`, `tok-tag`, `tok-attribute`, `tok-regexp`, `tok-inserted`, and `tok-deleted`. Copy `@fulcrum/react/styles.css` and `@fulcrum/react/themes.css`; also copy `@fulcrum/highlight/styles.css` when code highlighting is enabled. Regenerate the vendored parser with `bun run vendor:markdown-it`.
+
+A fenced block over 40 lines, or with more tokens than one commit should draw, is the same bounded virtual viewer the tool cards use, at the height of 40 lines: it colors its visible 500-character ranges first; once they have colored, a block of at most 10,000 characters is also colored whole in the background, so a comment or string that crosses a range edge settles to the right colors. A larger block keeps each range's own colors, so a construct longer than a range (a long block comment or docstring) can show the wrong colors after a range edge. A streaming fence follows its newest line. Only the visible window is mounted, so browser find-in-page reaches only the visible lines; the copy control copies the whole block.
+
+The headless renderer has no visual styles. Its stable styling hooks are `data-part="md-paragraph"`, `md-heading`, `md-code-inline`, `md-code-block`, `md-list`, `md-list-item`, `md-emphasis`, `md-strong`, `md-strike`, `md-link`, `md-image`, `md-blockquote`, `md-table`, `md-rule`, and `md-break`. Code blocks also expose `data-language`.
+
+## implementation notes
+
 ## streaming resolver
 
 streaming markdown uses one physical-line resolver. it owns the open document, quote, list, and item path, plus the current leaf and the document-wide reference index. it does not create child streaming documents. committed lines are processed once; only the unfinished physical line and the immediately preceding lookahead line are previewed.
