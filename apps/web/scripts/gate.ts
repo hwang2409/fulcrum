@@ -526,7 +526,7 @@ try {
       if (new Set(ids).size !== ids.length) throw new Error("the rebuild has duplicate transcript rows");
     };
     // Starts a chat turn and makes zeta keep overflowing for 4 s, past the turn's end; returns the reconnect count.
-    const overflowThroughTurn = async (mode: "overflow" | "overflow-silent", prompt: string, notice: string) => {
+    const overflowThroughTurn = async (mode: "overflow" | "overflow-silent", prompt: string, notice: string, beforeHealthyReconnect?: () => void) => {
       await idleServer();
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
       await page.locator(".dock textarea").fill(prompt);
@@ -537,6 +537,7 @@ try {
       await page.locator(".notice", { hasText: notice }).waitFor({ timeout: 3000 });
       await Bun.sleep(4000);
       const attempts = hellos() - before;
+      beforeHealthyReconnect?.();
       fake.setMode("ok");
       await idleServer();
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(async () => {
@@ -580,11 +581,11 @@ try {
     });
     await check("with served_turn_end, status names an overflow-hidden turn before its later history page", async () => {
       fake.setBackwardHistory(false);
+      try {
       await page.reload(); // use forward pages so the latest served_turn_end is beyond page one
       await page.addStyleTag({ content: '[data-part="virtual-debug"] { pointer-events: none !important; }' });
-      fake.setLaterHistoryDelay(2000);
       const historyReads = fake.servedTurnEndHistoryReads;
-      await overflowThroughTurn("overflow", "a turn zeta records the end of", "connection fell behind");
+      await overflowThroughTurn("overflow", "a turn zeta records the end of", "connection fell behind", () => fake.setLaterHistoryDelay(2000));
       const marker = page.locator('[data-part="run-end-marker"][data-outcome="completed"]', { hasText: "run completed" });
       await marker.waitFor({ timeout: 5000 }).catch(async () => { throw new Error(`no completed marker from zeta status; the marker says "${await page.locator('[data-part="run-end-marker"]').textContent({ timeout: 1000 }).catch(() => "nothing")}"`); });
       if (fake.servedTurnEndHistoryReads !== historyReads) throw new Error("history supplied served_turn_end before the status marker appeared");
@@ -597,8 +598,11 @@ try {
       await page.locator(".dock").getByRole("button", { name: "send" }).click();
       await page.locator('[data-part="run-end-marker"]').waitFor({ state: "detached", timeout: 5000 });
       await idleServer();
-      fake.setBackwardHistory(true);
       fake.clearSent();
+      } finally {
+        fake.setLaterHistoryDelay(0);
+        fake.setBackwardHistory(true);
+      }
     });
     await check("a silent overflow reads as a lost connection, backs off, and names the interrupted run", async () => {
       await overflowThroughTurn("overflow-silent", "a turn cut by a silent overflow", "connection lost");

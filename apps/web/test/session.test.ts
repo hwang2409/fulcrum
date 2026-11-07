@@ -543,7 +543,8 @@ test("a negotiated drop keeps the same approval row in reconnecting state across
 
   const second = await server(handlers("b"), features);
   connection.set(second.client);
-  await tick();
+  await waitFor(() => !!present(view).open && !present(view).open!.stale, "approval reconnect did not reopen");
+  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
   connection.set(null);
   expect(present(view).open!.lease.store.getItem("approval:r1")).toMatchObject({
     id: "approval:r1", request: { state: "reconnecting" },

@@ -607,8 +607,12 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const disconnect = (disconnected: ZetaClient | null) => {
     retireCatalog();
     const run = transitionRun(state.transition);
-    // A disconnect aborts a pending approval too, so every disconnected running turn may have ended unseen.
-    if (run?.lease.store.getState().agent === "running") {
+    const reconnectingApproval = disconnected?.features.includes("approval_reconnect") && run?.lease.store.getOutline().some(({ id }) => {
+      const item = run.lease.store.getItem(id);
+      return item?.type === "approval" && !item.ended;
+    });
+    // approval_reconnect preserves its running turn; every other disconnected running turn may have ended unseen.
+    if (run?.lease.store.getState().agent === "running" && !reconnectingApproval) {
       const turn = disconnected?.servedTurn(run.id) ?? servedTurns.get(run.id);
       if (turn) servedTurns.set(run.id, turn);
       interruptedTurns.set(run.id, { turn });
