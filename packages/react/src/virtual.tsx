@@ -19,26 +19,18 @@ import {
 
 const isIOSWebKit = () => navigator.userAgent.includes("iP");
 
-type SettledViewport<Id extends string> = {
-  viewport: VirtualSnapshot<Id>;
-  scrollTop: number;
-};
-
 const settleDetachedViewport = <Id extends string>(
   engine: Virtualizer<Id>,
-  container: HTMLElement,
   touching: RefObject<boolean>,
   touchY: RefObject<number | null>,
   userScrollUntil: RefObject<number>,
   ignoreScrollUntil: RefObject<number>,
-): SettledViewport<Id> => {
+): void => {
   touching.current = false;
   touchY.current = null;
   userScrollUntil.current = 0;
   ignoreScrollUntil.current = 0;
-  const viewport = engine.getSnapshot();
-  const settled = engine.flushPendingCorrection(false, true);
-  return { viewport, scrollTop: viewport.pendingJump === 0 ? container.scrollTop : settled.scrollTop };
+  engine.flushPendingCorrection(false, true);
 };
 
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
@@ -93,8 +85,8 @@ export function useVirtualList<Id extends string>(
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
-  const attachment = useRef<{ host: HTMLElement | null; settled: SettledViewport<Id> | null }>({ host: null, settled: null });
-  const releaseCurrent = useRef<(() => SettledViewport<Id>) | null>(null);
+  const attachment = useRef<{ host: HTMLElement | null; settled: boolean }>({ host: null, settled: false });
+  const releaseCurrent = useRef<(() => void) | null>(null);
   const transferCurrent = useRef<((next: HTMLElement | null) => void) | null>(null);
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
@@ -121,10 +113,10 @@ export function useVirtualList<Id extends string>(
   useLayoutEffect(() => {
     const transfer = (next: HTMLElement | null) => {
       if (attachment.current.host === next) return;
-      // Transfer post-state: pinned lands at the new bottom; unpinned keeps its anchor; a pending correction is
-      // applied by that anchor or dropped, never left dangling. A null gap keeps settled state until attachment.
+      // the engine owns the reader's position intent (follow-bottom or anchor) until a measured layout on the current host confirms it.
       if (attachment.current.host) {
-        attachment.current.settled = releaseCurrent.current?.() ?? attachment.current.settled;
+        releaseCurrent.current?.();
+        attachment.current.settled = true;
         attachment.current.host = null;
         releaseCurrent.current = null;
         containerRef.current = null;
@@ -132,16 +124,16 @@ export function useVirtualList<Id extends string>(
       if (!next) return;
       const container = next;
       const prior = attachment.current.settled;
-      attachment.current.settled = null;
+      attachment.current.settled = false;
       containerRef.current = container;
       const priorOverflowAnchor = container.style.overflowAnchor;
       container.style.overflowAnchor = "none";
       const updateViewport = (source: "user" | "programmatic") =>
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
       if (prior) {
-        if (!prior.viewport.pinned) container.scrollTop = prior.scrollTop;
+        const intent = engine.beforeMutation();
         updateViewport("programmatic");
-        if (prior.viewport.pinned) container.scrollTop = engine.scrollToEnd();
+        engine.afterMutation(intent);
       } else updateViewport("user");
       lastScrollTop.current = container.scrollTop;
 
@@ -233,7 +225,7 @@ export function useVirtualList<Id extends string>(
         ignoreScrollUntil.current = performance.now() + 50;
       });
       viewportObserver.observe(container);
-      const release = (): SettledViewport<Id> => {
+      const release = () => {
         observer.disconnect();
         viewportObserver.disconnect();
         observerRef.current = null;
@@ -249,10 +241,9 @@ export function useVirtualList<Id extends string>(
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         resizeFrame.current = null;
         scrollEndTimer.current = null;
-        const settled = settleDetachedViewport(engine, container, touching, touchY, userScrollUntil, ignoreScrollUntil);
+        settleDetachedViewport(engine, touching, touchY, userScrollUntil, ignoreScrollUntil);
         pendingEntries.current.clear();
         container.style.overflowAnchor = priorOverflowAnchor;
-        return settled;
       };
       attachment.current.host = container;
       releaseCurrent.current = release;
@@ -265,7 +256,7 @@ export function useVirtualList<Id extends string>(
 
   useLayoutEffect(() => () => {
     transferCurrent.current?.(null);
-    attachment.current.settled = null;
+    attachment.current.settled = false;
     transferCurrent.current = null;
     containerRef.current = null;
   }, []);
