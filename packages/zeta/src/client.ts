@@ -223,7 +223,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const createSession = (session: string) => {
     let value!: SessionStore;
-    value = createRunStore(scheduler, { onError: () => { void resyncSession(session, value).catch(() => {}); } });
+    value = createRunStore(scheduler, { runId: session, onError: () => { void resyncSession(session, value).catch(() => {}); } });
     stores.set(session, value);
     holders.set(session, 0);
     return value;

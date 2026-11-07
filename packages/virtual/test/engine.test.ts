@@ -72,6 +72,39 @@ describe("prefix and range math", () => {
     virtual.measure("b-0", 80);
     expect(virtual.getSnapshot().totalSize).toBe(240);
   });
+  test("full same-run rebuild keeps surviving unseen rows and adds only an exact suffix", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10, bottomThreshold: 0 });
+    virtual.setOutline(Array.from({ length: 5 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    virtual.setLoaded("all");
+    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
+    virtual.setOutline([]);
+    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
+    virtual.setOutline(Array.from({ length: 2 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    virtual.setFollow(false);
+    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
+    virtual.setOutline(Array.from({ length: 7 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    expect(virtual.getSnapshot().unseenCount).toBe(2);
+    virtual.setOutline([
+      { id: "row-0", kind: "row" },
+      { id: "replacement", kind: "row" },
+      ...Array.from({ length: 5 }, (_, index) => ({ id: `row-${index + 2}`, kind: "row" })),
+    ]);
+    expect(virtual.getSnapshot().unseenCount).toBe(2);
+    virtual.scrollToEnd();
+    virtual.setOutline(Array.from({ length: 8 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
+    expect(virtual.getSnapshot().unseenCount).toBe(0);
+  });
+
+  test("invalidating changed-row measurements removes their cached size", () => {
+    const virtual = createVirtualizer({ estimateSize: () => 10 });
+    virtual.setOutline([{ id: "changed", kind: "row" }, { id: "stable", kind: "row" }]);
+    virtual.measure("changed", 30);
+    virtual.measure("stable", 20);
+    virtual.invalidateMeasurements(["changed"]);
+    expect(virtual.snapshotCache().sizes).toEqual([["stable", 20]]);
+    expect(virtual.getSnapshot().totalSize).toBe(30);
+  });
+
   test("restores measured sizes and kind medians by stable id", () => {
     const first = createVirtualizer({ estimateSize: () => 100 });
     first.setOutline([{ id: "a", kind: "x" }, { id: "b", kind: "x" }]);
@@ -174,6 +207,20 @@ describe("anchoring", () => {
     expect(result.appliedCorrection).toBe(-2);
     expect(virtual.beforeMutation().anchor?.id).toBe("row-2");
   });
+  test("a stable reader anchor stays owned after progressive replay returns it", () => {
+    const virtual = engine([10, 10, 10, 10], 10, 12);
+    let token = { ...virtual.beforeMutation(), anchor: { id: "row-2", index: 2, offset: 8 } };
+    virtual.setOutline(items([10, 10, 10, 10]).outline.slice(3));
+    virtual.afterMutation(token);
+
+    token = virtual.beforeMutation();
+    virtual.setOutline(items([10, 10, 10, 10]).outline);
+    virtual.afterMutation(token);
+    token = virtual.beforeMutation();
+    virtual.measure("row-1", 20);
+    virtual.afterMutation(token);
+    expect(virtual.getSnapshot().scrollTop).toBe(22);
+  });
   test("correction clamps at the scroll bounds", () => {
     const virtual = engine([10, 10], 10, 5);
     const result = mutate(virtual, () => virtual.measure("row-0", 0));
@@ -248,6 +295,12 @@ describe("bottom and scroll semantics", () => {
     const virtual = engine([10, 10, 10], 10, 12);
     const result = mutate(virtual, () => virtual.measure("row-0", 20));
     virtual.setViewport({ scrollTop: result.scrollTop, size: 10, source: "user" });
+    expect(virtual.getSnapshot()).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
+  });
+  test("a correction rounded to a device pixel is not user intent", () => {
+    const virtual = engine([10, 10, 10], 10, 12);
+    const result = mutate(virtual, () => virtual.measure("row-0", 20.5));
+    virtual.setViewport({ scrollTop: Math.round(result.scrollTop), size: 10, source: "user" });
     expect(virtual.getSnapshot()).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
   });
   test("a later user scroll changes state normally", () => {
