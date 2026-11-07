@@ -343,13 +343,14 @@ async function checkReconnectAnchor(page: Page, engine: string) {
   for (let step = 0; step < 80; step++) {
     const targetBox = await target.boundingBox().catch(() => null);
     if (targetBox && targetBox.top >= box.top && targetBox.bottom <= box.bottom) { reached = true; break; }
+    const delta = targetBox ? (targetBox.top < box.top ? 180 : -180) : -1_000;
     const before = await scroll.evaluate((element) => element.scrollTop);
-    await page.mouse.wheel(0, -1_000);
-    await page.waitForFunction(({ selector, before }) => {
+    await page.mouse.wheel(0, delta);
+    await page.waitForFunction(({ selector, before, delta }) => {
       const element = document.querySelector<HTMLElement>(selector);
-      return element !== null && element.scrollTop < before;
-    }, { selector: '[data-part="timeline-scroll"]', before }, { timeout: 2_000 }).catch(() => {
-      throw new Error(`${engine}: wheel step did not move the timeline from ${before.toFixed(1)} px`);
+      return element !== null && (delta < 0 ? element.scrollTop < before : element.scrollTop > before);
+    }, { selector: '[data-part="timeline-scroll"]', before, delta }, { timeout: 2_000 }).catch(() => {
+      throw new Error(`${engine}: wheel step ${delta} did not move the timeline from ${before.toFixed(1)} px`);
     });
   }
   if (!reached) {
