@@ -99,6 +99,89 @@ async function auditThemes(page: Page, label: string, minHeight: number) {
 
 const scrollGap = (page: Page) => page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
 
+async function reconnectApprovalScenario(page: Page, fake: Awaited<ReturnType<typeof startFakeZeta>>) {
+  await page.locator('[data-tool-view="shell"]').first().waitFor({ timeout: 5000 });
+  await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  const approval = page.locator('[data-part="approval"][data-state="pending"]');
+  await approval.waitFor({ timeout: 5000 });
+  // The run is blocked on the user, not running: the header says so, with the warn color.
+  const header = page.locator(".run-meta .state");
+  await header.filter({ hasText: "waiting for approval" }).waitFor({ timeout: 10_000 }).catch(async () => { throw new Error(`the run header says "${await header.textContent()}" while an approval waits`); });
+  const [mark, warn] = await header.evaluate((node) => [getComputedStyle(node, "::before").backgroundColor, (() => { const probe = document.createElement("span"); probe.style.color = "var(--fulcrum-warn)"; node.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()]);
+  if (mark !== warn) throw new Error(`the header mark is ${mark}, not the warn color ${warn}`);
+  const row = await page.locator("button.session[aria-current] .state").textContent();
+  if (row !== "needs approval") throw new Error(`the session row says "${row}" while an approval waits`);
+  await shoot(page, "connected-approval-1440-tokyo-night");
+  await fake.start();
+  // A stopped server (not a blip): the banner and the offline composer resize the scroll box while it waits.
+  await fake.stop();
+  await page.getByText(/connection lost|reconnecting/).first().waitFor({ timeout: 3000 });
+  // A drop keeps the reader where they were: still pinned to the bottom, the pending approval still in view.
+  await page.getByText(/sending is paused/).first().waitFor({ timeout: 3000 });
+  await settle(page);
+  await page.waitForTimeout(500);
+  const kept = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const row = element.querySelector('[data-part="approval"][data-state="reconnecting"]')?.getBoundingClientRect();
+    return { gap: element.scrollHeight - element.clientHeight - element.scrollTop, scrollTop: element.scrollTop, inView: !!row && row.bottom > box.top && row.top < box.bottom };
+  });
+  if (!(await page.locator(".run-scroll[data-stale=true]").count())) throw new Error("old view was not marked stale");
+  const staleApproval = page.locator('[data-part="approval"][data-state="reconnecting"]');
+  await staleApproval.getByRole("button", { name: "approve" }).waitFor();
+  await staleApproval.getByRole("button", { name: "deny" }).waitFor();
+  if (!(await staleApproval.getByRole("button", { name: "approve" }).isDisabled()) || !(await staleApproval.getByRole("button", { name: "deny" }).isDisabled())) throw new Error("reconnecting approval buttons were not disabled");
+  await staleApproval.getByText(/decisions are disabled/).waitFor();
+  await fake.start();
+  // The client's retry backoff grows while the server is down; retry at once, as a user would.
+  await page.locator(".notice").getByRole("button", { name: "retry now" }).click({ timeout: 2000 }).catch(() => {});
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+  await page.locator(".notice").waitFor({ state: "detached" });
+  const reconnected = page.locator('[data-part="approval"]');
+  await reconnected.getByRole("button", { name: "approve" }).waitFor({ timeout: 5000 });
+  if (await reconnected.count() !== 1) throw new Error("duplicate approval rows after reconnect");
+  await shoot(page, "approval-reconnected-1440");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await shoot(page, "approval-reconnected-390");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await reconnected.getByRole("button", { name: "approve" }).click();
+  const rebuilt = page.locator('[data-part="tool"]', { has: page.locator('[data-part="tool-approval"]') });
+  await rebuilt.waitFor({ timeout: 5000 });
+  if (await rebuilt.count() !== 1 || await page.locator('[data-part="approval"]').count()) throw new Error("approval did not fold once after the resumed command");
+  if (await page.locator('[data-tone="danger"]').count()) throw new Error("reconnect showed an app error");
+  if (fake.decisions.filter((decision) => decision.method === "approve" && decision.request_id === "approval-1").length !== 1) throw new Error("server did not receive exactly one resumed approval");
+  // Reported after the reconnect, so a failure here does not leave the server stopped for later checks.
+  if (kept.gap > 4 || !kept.inView) throw new Error(`the stop moved the view: ${Math.round(kept.gap)} px from the bottom at scrollTop ${Math.round(kept.scrollTop)}, pending approval in view: ${kept.inView}`);
+}
+
+async function reconnectSnapshotScenario(page: Page, fake: Awaited<ReturnType<typeof startFakeZeta>>) {
+  await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
+  await settle(page);
+  await page.locator(".dock textarea").fill("draft kept across disconnect");
+  await fake.stop();
+  await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 });
+  // The command names the port the page was connected to, not a default.
+  const command = await page.locator(".notice .command code").textContent();
+  if (command !== `zeta serve --ws ${fake.port} --ws-origin ${origin}`) throw new Error(`the banner command is "${command}"`);
+  await Bun.sleep(2000); // a few quiet retries; the console listener fails the gate on any error
+  await shoot(page, "state-lost-1440");
+  if (!(await page.locator('[data-part="timeline"] [data-kind="user"]').count())) throw new Error("transcript hidden while offline");
+  await page.locator('.dock [data-part="composer"][data-state="read-only"] [data-part="composer-reason"]', { hasText: "sending is paused" }).waitFor({ timeout: 2000 });
+  if (await page.locator(".dock button").count()) throw new Error("the composer offers actions while offline");
+  const draft = page.locator('.dock [data-part="composer"][data-state="read-only"] textarea');
+  if (!(await draft.count()) || (await draft.inputValue()) !== "draft kept across disconnect" || !(await draft.evaluate((node) => (node as HTMLTextAreaElement).readOnly))) throw new Error("the read-only composer does not show the draft, read-only");
+  const stale = await page.locator("button.session .state").allTextContents();
+  if (stale.length) throw new Error(`the session list shows live status "${stale.join(", ")}" while not connected`);
+  await fake.start();
+  await page.getByRole("button", { name: "retry now" }).click();
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+  await page.locator(".notice").waitFor({ state: "detached" });
+  await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
+  const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));
+  if (new Set(ids).size !== ids.length) throw new Error("duplicate rows after reconnect");
+  if (await page.locator('[data-part="approval"][data-state="pending"]').count()) throw new Error("a dropped approval came back as pending");
+});
+}
+
 async function growPinnedRow(page: Page) {
   const scroll = page.locator('[data-part="timeline-scroll"]');
   await page.evaluate(() => {
@@ -340,59 +423,7 @@ try {
       const colors = await summary.evaluate((node) => new Set([...node.querySelectorAll('[class*="tok-"]')].map((span) => getComputedStyle(span).color)).size);
       if (colors < 2) throw new Error(`the shell header has ${colors} token color(s)`);
     });
-    await check("live run keeps one approval through a negotiated reconnect and resumes after approval", async () => {
-      await page.locator('[data-tool-view="shell"]').first().waitFor({ timeout: 5000 });
-      await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
-      const approval = page.locator('[data-part="approval"][data-state="pending"]');
-      await approval.waitFor({ timeout: 5000 });
-      // The run is blocked on the user, not running: the header says so, with the warn color.
-      const header = page.locator(".run-meta .state");
-      await header.filter({ hasText: "waiting for approval" }).waitFor({ timeout: 10_000 }).catch(async () => { throw new Error(`the run header says "${await header.textContent()}" while an approval waits`); });
-      const [mark, warn] = await header.evaluate((node) => [getComputedStyle(node, "::before").backgroundColor, (() => { const probe = document.createElement("span"); probe.style.color = "var(--fulcrum-warn)"; node.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()]);
-      if (mark !== warn) throw new Error(`the header mark is ${mark}, not the warn color ${warn}`);
-      const row = await page.locator("button.session[aria-current] .state").textContent();
-      if (row !== "needs approval") throw new Error(`the session row says "${row}" while an approval waits`);
-      await shoot(page, "connected-approval-1440-tokyo-night");
-      await fake.start();
-      // A stopped server (not a blip): the banner and the offline composer resize the scroll box while it waits.
-      await fake.stop();
-      await page.getByText(/connection lost|reconnecting/).first().waitFor({ timeout: 3000 });
-      // A drop keeps the reader where they were: still pinned to the bottom, the pending approval still in view.
-      await page.getByText(/sending is paused/).first().waitFor({ timeout: 3000 });
-      await settle(page);
-      await page.waitForTimeout(500);
-      const kept = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => {
-        const box = element.getBoundingClientRect();
-        const row = element.querySelector('[data-part="approval"][data-state="reconnecting"]')?.getBoundingClientRect();
-        return { gap: element.scrollHeight - element.clientHeight - element.scrollTop, scrollTop: element.scrollTop, inView: !!row && row.bottom > box.top && row.top < box.bottom };
-      });
-      if (!(await page.locator(".run-scroll[data-stale=true]").count())) throw new Error("old view was not marked stale");
-      const staleApproval = page.locator('[data-part="approval"][data-state="reconnecting"]');
-      await staleApproval.getByRole("button", { name: "approve" }).waitFor();
-      await staleApproval.getByRole("button", { name: "deny" }).waitFor();
-      if (!(await staleApproval.getByRole("button", { name: "approve" }).isDisabled()) || !(await staleApproval.getByRole("button", { name: "deny" }).isDisabled())) throw new Error("reconnecting approval buttons were not disabled");
-      await staleApproval.getByText(/decisions are disabled/).waitFor();
-      await fake.start();
-      // The client's retry backoff grows while the server is down; retry at once, as a user would.
-      await page.locator(".notice").getByRole("button", { name: "retry now" }).click({ timeout: 2000 }).catch(() => {});
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
-      await page.locator(".notice").waitFor({ state: "detached" });
-      const reconnected = page.locator('[data-part="approval"]');
-      await reconnected.getByRole("button", { name: "approve" }).waitFor({ timeout: 5000 });
-      if (await reconnected.count() !== 1) throw new Error("duplicate approval rows after reconnect");
-      await shoot(page, "approval-reconnected-1440");
-      await page.setViewportSize({ width: 390, height: 844 });
-      await shoot(page, "approval-reconnected-390");
-      await page.setViewportSize({ width: 1440, height: 900 });
-      await reconnected.getByRole("button", { name: "approve" }).click();
-      const rebuilt = page.locator('[data-part="tool"]', { has: page.locator('[data-part="tool-approval"]') });
-      await rebuilt.waitFor({ timeout: 5000 });
-      if (await rebuilt.count() !== 1 || await page.locator('[data-part="approval"]').count()) throw new Error("approval did not fold once after the resumed command");
-      if (await page.locator('[data-tone="danger"]').count()) throw new Error("reconnect showed an app error");
-      if (fake.decisions.filter((decision) => decision.method === "approve" && decision.request_id === "approval-1").length !== 1) throw new Error("server did not receive exactly one resumed approval");
-      // Reported after the reconnect, so a failure here does not leave the server stopped for later checks.
-      if (kept.gap > 4 || !kept.inView) throw new Error(`the stop moved the view: ${Math.round(kept.gap)} px from the bottom at scrollTop ${Math.round(kept.scrollTop)}, pending approval in view: ${kept.inView}`);
-    });
+    await check("live run keeps one approval through a negotiated reconnect and resumes after approval", () => reconnectApprovalScenario(page, fake));
     await check("follows the bottom while the run streams", async () => {
       await settle(page);
       const gap = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
@@ -463,34 +494,7 @@ try {
     });
     await check("desktop layout, controls, and contrast in all 12 themes", () => auditThemes(page, "1440", 36));
 
-    await check("a dropped socket shows 'connection lost', reconnects, and rebuilds without lost or duplicate rows", async () => {
-      await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
-      await settle(page);
-      await page.locator(".dock textarea").fill("draft kept across disconnect");
-      await fake.stop();
-      await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 });
-      // The command names the port the page was connected to, not a default.
-      const command = await page.locator(".notice .command code").textContent();
-      if (command !== `zeta serve --ws ${fake.port} --ws-origin ${origin}`) throw new Error(`the banner command is "${command}"`);
-      await Bun.sleep(2000); // a few quiet retries; the console listener fails the gate on any error
-      await shoot(page, "state-lost-1440");
-      if (!(await page.locator('[data-part="timeline"] [data-kind="user"]').count())) throw new Error("transcript hidden while offline");
-      await page.locator('.dock [data-part="composer"][data-state="read-only"] [data-part="composer-reason"]', { hasText: "sending is paused" }).waitFor({ timeout: 2000 });
-      if (await page.locator(".dock button").count()) throw new Error("the composer offers actions while offline");
-      const draft = page.locator('.dock [data-part="composer"][data-state="read-only"] textarea');
-      if (!(await draft.count()) || (await draft.inputValue()) !== "draft kept across disconnect" || !(await draft.evaluate((node) => (node as HTMLTextAreaElement).readOnly))) throw new Error("the read-only composer does not show the draft, read-only");
-      const stale = await page.locator("button.session .state").allTextContents();
-      if (stale.length) throw new Error(`the session list shows live status "${stale.join(", ")}" while not connected`);
-      await fake.start();
-      await page.getByRole("button", { name: "retry now" }).click();
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
-      await page.locator(".notice").waitFor({ state: "detached" });
-      await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
-      const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));
-      if (new Set(ids).size !== ids.length) throw new Error("duplicate rows after reconnect");
-      if (await page.locator('[data-part="approval"][data-state="pending"]').count()) throw new Error("a dropped approval came back as pending");
-    });
-
+    await check("a dropped socket shows 'connection lost', reconnects, and rebuilds without lost or duplicate rows", () => reconnectSnapshotScenario(page, fake));
     await check("keyboard: arrows move through sessions, Enter opens one, the theme picker works", async () => {
       fake.setLive(false);
       await fake.start();
