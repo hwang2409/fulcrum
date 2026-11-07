@@ -360,8 +360,12 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   cursor: pointer;
   transition: transform 100ms cubic-bezier(0.2, 0, 0, 1);
 }
-/* With a third action (approve always), all three tighten so they share one row in a 390 px wide card. */
-[data-part="approval-actions"]:has(> [data-action="approve-always"]) > button { min-width: 80px; padding: 0 12px; }
+/* With a third action (approve always), all three tighten so they share one row in a 390 px wide card; a long custom
+   label wraps inside its own button instead of pushing deny to a second row. */
+[data-part="approval-actions"]:has(> [data-action="approve-always"]) { display: grid; grid-template-columns: max-content minmax(0, max-content) max-content 1fr; align-items: start; }
+[data-part="approval-actions"]:has(> [data-action="approve-always"]) > button { min-width: 80px; padding: 6px 12px; }
+/* The reason spans the row without sizing the action columns. */
+[data-part="approval-actions"]:has(> [data-action="approve-always"]) > [role="status"] { grid-column: 1 / -1; contain: inline-size; }
 /* Approve is the inverted, primary action: fg on bg contrast holds in every theme. */
 [data-part="approval-actions"] button[data-action="approve"] { background: var(--fulcrum-fg); color: var(--fulcrum-bg); }
 [data-part="approval-actions"] button:hover { text-decoration: underline; text-underline-offset: 3px; }

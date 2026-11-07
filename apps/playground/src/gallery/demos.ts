@@ -750,7 +750,7 @@ export const demos: Demo[] = [
     id: "approval-always-long",
     part: "Approval",
     title: "long tool name and label",
-    description: "A long tool name and a long custom approveAlwaysLabel: the header truncates, and the actions wrap to a new row instead of overflowing the card.",
+    description: "A long tool name and a long custom approveAlwaysLabel: the header truncates, and the long label wraps inside its button so all three actions keep one row.",
     events: (["r-long-3", "r-long-2"] as const).map((id) => ask(id, call(`${id}-call`, "mcp__workspace_filesystem_server__read_multiple_files_with_metadata", { paths: ["packages/core/src/store.ts", "packages/react/src/parts.tsx"] }))),
     approval: { always: ["r-long-3"], label: "always allow this tool for the rest of the session" },
   },
