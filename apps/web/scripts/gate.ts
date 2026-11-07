@@ -643,11 +643,10 @@ try {
       const scrollBox = await scroll.boundingBox();
       if (!scrollBox) throw new Error("no scroll viewport");
       await page.mouse.move(scrollBox.x + scrollBox.width / 2, scrollBox.y + scrollBox.height / 2);
-      const target = await scroll.evaluate((element) => (element.scrollHeight - element.clientHeight) / 2);
-      for (let step = 0; step < 20; step++) {
+      await page.waitForTimeout(100);
+      for (let step = 0; step < 5; step++) {
         const before = await scroll.evaluate((element) => element.scrollTop);
-        if (before <= target) break;
-        await page.mouse.wheel(0, -1000);
+        await page.mouse.wheel(0, -180);
         await page.waitForFunction((prior) => document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop < prior, before);
       }
       await page.waitForTimeout(100);
