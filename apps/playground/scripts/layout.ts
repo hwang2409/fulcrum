@@ -5,9 +5,9 @@
 // rendered status word needs 4.5:1 and every state mark and state rail 3:1 against the background it is drawn on, and
 // ok, warn, danger, and accent (running) need 3:1 on bg, when a capped output box cuts through a line, or when
 // the keyword, string, comment, function, and type token colors are not all distinct. Every visible text inside the
-// parts (labels drawn by ::before/::after too) must reach 4.5:1 on the background it is drawn on, in every theme; only text
-// inside a .tok-* code span or an ANSI color span, or on an ANSI background, must reach 3:1, the floor for official
-// palette colors (packages/react/themes.css). Tool facts (paths, numbers, counts) are UI text at 4.5:1. Every button, summary, and
+// parts (labels drawn by ::before/::after too), syntax tokens included, must reach 4.5:1 on the background it is drawn on,
+// in every theme; only text inside an ANSI color span, or on an ANSI background, must reach 3:1, the floor for official
+// terminal colors (packages/react/themes.css). Tool facts (paths, numbers, counts) are UI text at 4.5:1. Every button, summary, and
 // a[role=button] inside the parts must be a styled fulcrum control, with no browser-default appearance, ButtonFace
 // background, default border, or system font, at rest and under forced :hover, :focus, :focus-visible, and :active. The large-output viewer's median open and append operations stay under 16 ms, it follows the bottom, and highlights a
 // 1,000,000-line file with no long tasks; scrolling it under 4x CPU throttling is reported. Needs a production build
@@ -146,14 +146,10 @@ function pageProblems(minHeight: number) {
     if (Math.abs(lines - Math.round(lines)) > 0.05) problems.push(`${box.dataset.part} in ${box.closest<HTMLElement>("[data-id]")?.dataset.id} shows ${lines.toFixed(2)} lines, cuts through a line`);
   }
   // Every visible text in the parts, and the text labels drawn by ::before and ::after, at 4.5:1 on what is behind it.
-  // Only code gets 3:1, by class, never by color: text inside a highlighter token span (.tok-*) or an ANSI color span,
-  // or bg-colored text on an ANSI background (.ansi-has-bg). Tool facts and every other UI text stay at 4.5:1.
+  // Only terminal output gets 3:1, by class, never by color: text inside an ANSI color span, or bg-colored text on an
+  // ANSI background (.ansi-has-bg). Syntax tokens, tool facts, and every other UI text stay at 4.5:1.
   const ansiColors = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"].flatMap((name) => [name, `bright-${name}`]);
-  const code = [
-    ...["keyword", "string", "number", "comment", "function", "type", "variable", "constant", "operator", "punctuation", "tag", "attribute", "regexp", "inserted", "deleted"].map((name) => `.tok-${name}`),
-    ...ansiColors.flatMap((name) => [`.ansi-${name}`, `.ansi-text-${name}`]),
-    ".ansi-has-bg",
-  ].join(", ");
+  const terminal = [...ansiColors.flatMap((name) => [`.ansi-${name}`, `.ansi-text-${name}`]), ".ansi-has-bg"].join(", ");
   const styles = new Map<Element, CSSStyleDeclaration>();
   const style = (node: Element) => styles.get(node) ?? styles.set(node, getComputedStyle(node)).get(node)!;
   const opacityOf = (node: Element | null) => {
@@ -165,7 +161,7 @@ function pageProblems(minHeight: number) {
   const checkText = (node: HTMLElement, color: string, sample: string) => {
     const [r, g, b, a] = rgba(color);
     const ratio = contrastOn(`rgba(${r}, ${g}, ${b}, ${a! * opacityOf(node)})`, backgroundOf(node));
-    const min = node.closest(code) ? 3 : 4.5;
+    const min = node.closest(terminal) ? 3 : 4.5;
     if (ratio >= min) return;
     const where = node.closest<HTMLElement>("[data-part]");
     const key = `${where?.dataset.part}.${node.className || node.tagName.toLowerCase()} ${color}`;

@@ -213,8 +213,8 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="approval"] > [data-part="tool-header"]::before { border-left-color: transparent; }
 
 /* Color carries meaning, one hue per kind of fact: the tool in accent, the shell prompt in ok, and paths, numbers, +/-,
-   patterns, and content types in the --fulcrum-ui-* accents (themes.css). Those are UI text at 4.5:1; tok-* colors are
-   for code only, at 3:1, so tool facts never use them (test/themes.test.ts). */
+   patterns, and content types in the --fulcrum-ui-* accents (themes.css). Those are UI text; tok-* colors are for code
+   only, so tool facts never use them (test/themes.test.ts). */
 [data-part="tool-name"] { color: var(--fulcrum-accent); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 [data-part="tool-summary"] { min-width: 0; color: var(--fulcrum-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 [data-part="summary-path"] { color: var(--fulcrum-ui-path); }
@@ -515,7 +515,7 @@ div[data-part="text-viewer-row"] { padding: 0; }
 [data-part="diff-sign"] { text-align: center; user-select: none; }
 [data-part="diff-text"] { padding-right: 12px; white-space: pre-wrap; }
 [data-part="diff-line"][data-change="hunk"] { color: var(--fulcrum-muted); }
-/* Rows are tinted 8%: syntax colors are checked at 3:1 and UI text at 4.5:1 on these tints (test/themes.test.ts). A stronger tint would
+/* Rows are tinted 8%: syntax colors and UI text are checked at 4.5:1 on these tints (test/themes.test.ts). A stronger tint would
    push low-contrast palettes (solarized, one dark) under it, so the changed span is marked with a line, not a fill. */
 [data-part="diff-line"][data-change="delete"] { background: color-mix(in srgb, var(--fulcrum-tok-deleted) 8%, var(--fulcrum-bg)); }
 [data-part="diff-line"][data-change="insert"] { background: color-mix(in srgb, var(--fulcrum-tok-inserted) 8%, var(--fulcrum-bg)); }

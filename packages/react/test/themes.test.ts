@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { TOKEN_TYPES } from "../../highlight/src/types.js";
 import { themes } from "../src/index.js";
 
 test("themes lists every palette in themes.css, in file order", () => {
@@ -7,10 +8,10 @@ test("themes lists every palette in themes.css, in file order", () => {
   expect([...css.matchAll(/^\[data-fulcrum-theme="([^"]+)"\] \{$/gm)].map((match) => match[1])).toEqual([...themes]);
 });
 
-// UI text must reach 4.5:1 on every background text sits on: bg, surface, and the 8% diff row tints of styles.css.
-// Syntax (tok-*) and terminal (ansi-*) colors keep each palette's official hex where it reaches 3:1 on the backgrounds
-// they sit on (tok-*: bg, surface, diff rows; ansi-*: bg, surface). Otherwise the value carries an
-// `/* official #rrggbb ... */` note and is the smallest OKLCH lightness change of it, at the same hue, that reaches 3:1.
+// UI text and syntax (tok-*) colors must reach 4.5:1 on every background they sit on: bg, surface, and the 8% diff row
+// tints of styles.css. Syntax and terminal (ansi-*: bg, surface, 3:1) colors keep each palette's official hex where it
+// reaches its ratio. Otherwise the value carries an `/* official #rrggbb ... */` note and is the smallest OKLCH lightness
+// change of it, at the same hue, that reaches the ratio.
 const css = readFileSync(new URL("../themes.css", import.meta.url), "utf8");
 const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({
   name: selector!.replace(/\/\*[\s\S]*?\*\//g, "").trim().replace(/\s+/g, " "),
@@ -23,7 +24,7 @@ const UI = ["fg", "muted", "accent", "ok", "warn", "danger"];
 const ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"].flatMap((name) => [`ansi-${name}`, `ansi-bright-${name}`]);
 // Tool facts are UI text, so they get their own accents, each from one official syntax hue (named in its comment).
 const ACCENTS = ["path", "number", "added", "removed", "pattern", "type"].map((name) => `ui-${name}`);
-const TOKENS = ["keyword", "string", "number", "comment", "function", "type", "variable", "constant", "operator", "punctuation", "tag", "attribute", "regexp", "inserted", "deleted"].map((name) => `tok-${name}`);
+const TOKENS = TOKEN_TYPES.map((name) => `tok-${name}`);
 
 type Rgb = [number, number, number];
 function color(value: string, vars: Record<string, string>): Rgb {
@@ -82,21 +83,22 @@ test("UI text reaches 4.5:1 on bg, surface, and diff rows in every theme", () =>
   expect(problems).toEqual([]);
 });
 
-test("syntax and ANSI colors reach 3:1 where they sit, as the official hex or its smallest OKLCH lightness change", () => {
+test("syntax colors reach 4.5:1 and ANSI colors 3:1 where they sit, as the official hex or its smallest OKLCH lightness change", () => {
   const problems: string[] = [];
   for (const { name, vars, official } of palettes) {
     for (const key of [...TOKENS, ...ANSI]) {
+      const min = key.startsWith("tok-") ? 4.5 : 3;
       const where = `${name}: --fulcrum-${key} ${vars[key]}`;
       if (!/^#[0-9a-f]{6}$/i.test(vars[key]!)) { problems.push(`${where} is not a palette hex`); continue; }
       const on = backgrounds(vars, key);
       const value = color(vars[key]!, vars);
       const ratio = worst(value, on);
-      if (ratio < 3) problems.push(`${where} is ${ratio.toFixed(2)}:1`);
+      if (ratio < min) problems.push(`${where} is ${ratio.toFixed(2)}:1, needs ${min}:1`);
       if (!official[key]) continue;
       const before = color(official[key]!, vars);
-      if (worst(before, on) >= 3) problems.push(`${where}: official ${official[key]} already reaches 3:1, use it`);
-      // Minimal: just over 3:1 (hex rounding allows a little), same hue, no added chroma.
-      if (ratio >= 3.1) problems.push(`${where} is ${ratio.toFixed(2)}:1, more change than 3:1 needs`);
+      if (worst(before, on) >= min) problems.push(`${where}: official ${official[key]} already reaches ${min}:1, use it`);
+      // Minimal: just over the ratio (hex rounding allows a little), same hue, no added chroma.
+      if (ratio >= min + 0.1) problems.push(`${where} is ${ratio.toFixed(2)}:1, more change than ${min}:1 needs`);
       const [a, b] = [oklch(before), oklch(value)];
       const hueShift = Math.abs(((a.h - b.h + 540) % 360) - 180);
       if (a.C > 0.03 && hueShift > 3) problems.push(`${where} moves hue ${hueShift.toFixed(1)} deg from ${official[key]}`);
@@ -131,7 +133,7 @@ test("ui-* accents reach 4.5:1 on bg and surface, as their source tok-* official
   expect(problems).toEqual([]);
 });
 
-// tok-* colors only pass 3:1, so only code may use them: the token spans and the diff rows' tint and changed-word line.
+// tok-* colors are code colors, so only code may use them: the token spans and the diff rows' tint and changed-word line.
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 const rules = [...styles.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector!.trim().replace(/\s+/g, " "), body: body! }));
 const CODE = /^(\.tok-[\w-]+|\[data-part="diff-line"\]\[data-change="(insert|delete)"\]|\[data-change="(insert|delete)"\] \[data-part="diff-word"\])$/;
