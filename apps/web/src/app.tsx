@@ -1,7 +1,7 @@
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
 import { MermaidFence } from "@fulcrum/mermaid";
-import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunProvider, Timeline, useItemSelector, useRun, useRunStore, useTimeline, type LoadMedia, type Renderers } from "@fulcrum/react";
+import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunEndMarker, RunProvider, RunStatus, Timeline, useRunStatus, useItemSelector, useRun, useRunStore, useTimeline, type LoadMedia, type Renderers } from "@fulcrum/react";
 import { ContentReadError, type SessionStore, type ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { createConnection, serveCommand, type Connection, type ConnectionState } from "./connection";
@@ -220,7 +220,7 @@ function SessionRow({ server, store, opening, ...row }: RowProps & { server: Ses
 function LiveStatus() {
   const status = useRunStatus();
   const value = status === "idle" ? "open" : status;
-  return <span className="state" data-status={value}>{value === "approval" ? "needs approval" : value}</span>;
+  return <span className="state" data-status={value}>{value === "approval" ? "needs approval" : value === "unknown" ? "outcome unknown" : value}</span>;
 }
 
 function Row({ session, now, selected, focusable, onSelect, status, store }: RowProps & { status: RowStatus; store: SessionStore | null }) {
@@ -246,28 +246,13 @@ function RunTitle({ session, view }: { session: SessionMeta | undefined; view: S
       <h1 title={sessionTitle(session)}>{sessionTitle(session)}</h1>
       <p className="run-meta">
         {present.open?.id === session.session_id && !present.open.stale ? (
-          <RunProvider store={present.open.lease.store}><RunStatus /></RunProvider>
+          <RunProvider store={present.open.lease.store}><RunStatus className="state" /></RunProvider>
         ) : null}
         {session.model ? <span>{session.model}</span> : null}
         {session.cwd ? <span className="cwd" title={session.cwd}>{session.cwd.replace(/^\/Users\/[^/]+|^\/home\/[^/]+/, "~")}</span> : null}
       </p>
     </div>
   );
-}
-
-/** A run blocked on an approval is waiting for the user, not running. Approvals are few, so this reads only them. */
-function useRunStatus(): "idle" | "running" | "approval" {
-  const store = useRunStore();
-  return useRun(useCallback((state: ReturnType<typeof store.getState>) => {
-    if (state.agent !== "running") return "idle";
-    const waiting = Object.values(state.toolApprovals).some((id) => { const item = store.getItem(id); return item?.type === "approval" && !item.ended; });
-    return waiting ? "approval" : "running";
-  }, [store]));
-}
-
-function RunStatus() {
-  const status = useRunStatus();
-  return <span className="state" data-status={status}>{status === "approval" ? "waiting for approval" : status}</span>;
 }
 
 /** Refreshes the list when a run ends, so times and titles stay current without polling. */
@@ -391,6 +376,7 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
           <RefreshOnIdle sessions={sessions} />
           <div ref={scroll} className="scroll" tabIndex={-1} data-stale={open.stale || undefined} data-run-ready={ready ? "true" : undefined}>
             <Timeline renderers={renderers} virtual scrollRef={scroll} aria-label="session activity" />
+            <RunEndMarker />
             <EmptyRun />
           </div>
           <RunComposer key={open.id} client={open.stale || readOnly ? null : client} store={open.lease.store} onUndelivered={onUndelivered} readOnly={readOnly} />
@@ -487,7 +473,10 @@ function ConnectionNotice({ state, connection, compact = false }: { state: Conne
       body = <p>the socket to zeta serve closed. the run keeps going on the server; this page reconnects and rebuilds the session from its history.</p>;
       break;
     case "overflow":
-      return <div className="notice" data-tone="busy" role="status"><strong>connection fell behind and reconnected; the run was reloaded</strong></div>;
+      title = "connection fell behind";
+      tone = "busy";
+      body = <p>zeta serve dropped output this page did not read in time. the run keeps going on the server; this page reconnects and rebuilds the session from its history.</p>;
+      break;
     case "not_running":
       title = lost ? "connection lost: zeta serve stopped" : "zeta serve is not running";
       body = (

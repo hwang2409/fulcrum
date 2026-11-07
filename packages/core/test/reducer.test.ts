@@ -90,6 +90,19 @@ test("all event paths replay through the store", () => {
   expect(store.getState().agent).toBe("idle");
 });
 
+test("run end outcome is retained for the finished run and cleared by its next start", () => {
+  const store = replay([
+    { type: "run_start" },
+    { type: "run_end", outcome: "unknown" } as RunEvent,
+  ]);
+  expect(store.getState().endOutcome).toBe("unknown");
+  store.dispatch({ type: "run_end" });
+  expect(store.getState().endOutcome).toBe("unknown");
+
+  store.dispatch({ type: "run_start" });
+  expect(store.getState().endOutcome).toBeUndefined();
+});
+
 test("sub-agent lifecycle is monotonic for every status pair", () => {
   const statuses = ["running", "waiting_approval", "waiting_input", "idle", "done", "error", "canceled"] as const;
   const terminal = new Set(["done", "error", "canceled"]);

@@ -65,7 +65,7 @@ button:active:not(:disabled) { transform: scale(0.97); }
 .badge::before, .state::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--fulcrum-muted); }
 .badge[data-tone="ok"]::before, .state[data-status="open"]::before { background: var(--fulcrum-ok); }
 .badge[data-tone="busy"]::before, .state[data-status="running"]::before { background: var(--fulcrum-accent); animation: pulse 1s infinite alternate; }
-.badge[data-tone="warn"]::before, .state[data-status="approval"]::before { background: var(--fulcrum-warn); }
+.badge[data-tone="warn"]::before, .state[data-status="approval"]::before, .state[data-status="unknown"]::before { background: var(--fulcrum-warn); }
 .badge[data-tone="danger"]::before { background: var(--fulcrum-danger); }
 .state[data-status="idle"]::before { background: var(--fulcrum-muted); }
 .run-meta .state[data-status="approval"] { font-weight: 700; }

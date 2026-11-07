@@ -71,7 +71,7 @@ const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, histo
       event: "approval_request", session_id: id, ...approval,
       ...(approval.resolution_pending ? { state: "resolving", status: "resolving…", disabled_reason: "the server is saving this decision" } : {}),
     }));
-  events.push({ type: status.state === "idle" ? "run_end" : "run_start", ...(outcomeUnknown && status.state === "idle" ? { data: { outcome_unknown: "connection fell behind; outcome unknown" } } : {}) });
+  events.push(status.state === "idle" ? { type: "run_end", ...(outcomeUnknown ? { outcome: "unknown" as const } : {}) } : { type: "run_start" });
   return events;
 };
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -134,7 +134,7 @@ async function openBackwardSession(
   const publishSnapshot = (status: ServerStatus, pending: readonly RunEvent[] = []) =>
     lease.store.resync([...snapshotEvents(id, rows(), status, true, approvalReconnect, outcomeUnknown), ...pending]);
   const publishStatus = (status: ServerStatus) => {
-    for (const event of snapshotEvents(id, [], status, true, approvalReconnect)) lease.store.dispatch(event);
+    for (const event of snapshotEvents(id, [], status, true, approvalReconnect, outcomeUnknown)) lease.store.dispatch(event);
   };
   const loadOlder = async (publishPages = true) => {
     while (pages.at(-1)?.next_before != null) {
@@ -265,11 +265,11 @@ export async function openSession(
   let publishedPages = 1;
   const stableRows = () => (pages.length === 1 ? pages : pages.slice(0, -1)).flatMap((page) => page.rows);
   const publishStablePrefix = (status: ServerStatus) => {
-    lease.store.resync(snapshotEvents(id, stableRows(), status, false, approvalReconnect));
+    lease.store.resync(snapshotEvents(id, stableRows(), status, false, approvalReconnect, outcomeUnknown));
     publishedPages = pages.length === 1 ? 1 : pages.length - 1;
   };
   const publishApprovals = (status: ServerStatus) => {
-    for (const event of snapshotEvents(id, [], status, true, approvalReconnect)) if (event.type === "approval_request") lease.store.dispatch(event);
+    for (const event of snapshotEvents(id, [], status, true, approvalReconnect, outcomeUnknown)) if (event.type === "approval_request") lease.store.dispatch(event);
   };
   const loadPageRange = async (start: number) => {
     const loaded: LoadedPage[] = [];
@@ -304,7 +304,7 @@ export async function openSession(
       for (const event of fromZetaHistory(page.rows)) if (!isApprovalEvent(event)) lease.store.dispatch(event);
     if (pages.length > 1)
       for (const event of fromZetaHistory(allRows())) if (isApprovalEvent(event)) lease.store.dispatch(event);
-    for (const event of snapshotEvents(id, [], status, true, approvalReconnect)) lease.store.dispatch(event);
+    for (const event of snapshotEvents(id, [], status, true, approvalReconnect, outcomeUnknown)) lease.store.dispatch(event);
     publishedPages = pages.length;
   };
   const waitUntilIdle = async (status = initialStatus): Promise<ServerStatus> => {
@@ -451,7 +451,7 @@ export type SessionsState = {
   createError: string | null;
 };
 
-type Source = { readonly client: ZetaClient | null; subscribe(listener: () => void): () => void };
+type Source = { readonly client: ZetaClient | null; readonly state: { readonly phase: string }; subscribe(listener: () => void): () => void };
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -466,7 +466,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const set = (patch: Partial<SessionsState>) => { state = { ...state, ...patch }; listeners.forEach((listener) => listener()); };
   const transition = (event: TransitionEvent) => set({ transition: reduceSessionTransition(state.transition, event) });
   let client: ZetaClient | null = null;
-  let outcomeUnknown = false;
+  const unknownOutcomes = new Set<string>();
   let openGeneration = 0;
   let openAbort: AbortController | null = null;
   const live = (target: ZetaClient) => client === target;
@@ -510,6 +510,15 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     return owner.inFlight;
   };
 
+  // The unknown outcome belongs to the run the overflow hid; the session's next run start, seen by any lease, ends it.
+  const watchOutcome = (id: string, lease: OpenResult["lease"]) => {
+    if (!unknownOutcomes.has(id)) return;
+    const stop = lease.store.subscribe(() => {
+      if (lease.store.getState().agent !== "running") return;
+      unknownOutcomes.delete(id);
+      stop();
+    });
+  };
   const open = async (id: string, knownStatus?: ServerStatus) => {
     const target = client;
     const mine = ++openGeneration;
@@ -526,18 +535,20 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         history = { messages, complete };
         if (mine !== openGeneration) return;
         transition({ type: "progress", id, messages });
-      }, abort.signal, knownStatus, outcomeUnknown);
+      }, abort.signal, knownStatus, unknownOutcomes.has(id));
       if (!state.listLoading && !state.listReady) void refresh();
       const { lease } = opened;
       if (mine !== openGeneration || !live(target)) return lease.release();
       previous?.lease.release();
       transition({ type: "opened", run: { id, lease, stale: false, history, syncing: opened.syncing } });
+      watchOutcome(id, lease);
       void opened.complete.then((result) => {
         if (mine !== openGeneration || !live(target)) return result.lease?.release();
         if (result.lease) {
           const run = transitionRun(state.transition);
           run?.lease.release();
           transition({ type: "updated", run: { id, lease: result.lease, stale: false, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
+          watchOutcome(id, result.lease);
         } else {
           const run = transitionRun(state.transition);
           if (run?.id === id) transition({ type: "updated", run: { ...run, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
@@ -572,8 +583,12 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   };
   const disconnect = (disconnected: ZetaClient | null) => {
     retireCatalog();
-    outcomeUnknown = (connection as Source & { state?: { phase?: string } }).state?.phase === "overflow";
-    set({ listLoading: false, listSlow: false, listReady: false });    openGeneration++;
+    const run = transitionRun(state.transition);
+    // Only an overflow says frames were dropped; a run it interrupts that comes back idle ended unseen.
+    if (connection.state.phase === "overflow" && run?.lease.store.getState().agent === "running")
+      unknownOutcomes.add(run.id);
+    set({ listLoading: false, listSlow: false, listReady: false });
+    openGeneration++;
     openAbort?.abort();
     markApprovalsReconnecting(disconnected);
     transition({ type: "stale" });

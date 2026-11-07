@@ -286,6 +286,15 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   };
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   let openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
+  // The frames zeta sends when a connection falls behind (zeta tests/test_server_output.py,
+  // test_controller_overflow_does_not_cancel_active_turn): the frame being written, the reserved -32011 error, then a
+  // normal close. Past its 1 s overflow deadline zeta aborts the transport instead, with no error or close frame.
+  const overflow = (socket: ServerWebSocket<unknown>, role: "controller" | "observer") => {
+    socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: active ?? ACTIVE, delta: "head" } }));
+    if (mode === "overflow-silent") return socket.terminate();
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32011, message: `${role} output overflow` } }));
+    socket.close(1000);
+  };
   const composer = composerMethods(wait, { get: () => running, set: (value) => { running = value; } });
   let serialTail = Promise.resolve<unknown>(undefined);
   const delayCalls = new Map<string, number>();
@@ -364,11 +373,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (reconnect) reconnectControllers.add(socket as object);
           if (features.includes("session_history_fidelity") && features.includes("content_read")) contentReaders.add(socket as object);
           reply({ result: { protocol_version: "1.2", server: "fake-zeta", capabilities: { features } } });
-          if (mode === "overflow" || mode === "overflow-silent") setTimeout(() => {
-            socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "assistant_delta", session_id: ACTIVE, delta: "queued before overflow", kind: "assistant" } }));
-            if (mode === "overflow") socket.send(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32011, message: `${requestedRole} output overflow` } }));
-            socket.close(1000);
-          }, 0);
+          if (mode === "overflow" || mode === "overflow-silent") setTimeout(() => overflow(socket, requestedRole), 0);
           if (decide && !approvalAborted) {
             if (!reconnect) expireApproval();
             else {
@@ -521,7 +526,16 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     async foreignOrigin() { allowed = ["http://localhost:5173"]; await write({ port: server.port, controller_token: controllerToken, observer_token: observerToken, pid: process.pid, origins: allowed }); },
     /** Hands out a token the server will refuse. */
     async wrongToken() { await write({ port: server.port, controller_token: "stale-token", observer_token: "stale-token", pid: process.pid, origins: allowed }); },
-    setMode(next: Mode) { mode = next; },
+    /**
+     * `overflow` and `overflow-silent` overflow the controller now and every connection after its hello until the
+     * mode changes; set "ok" right after to overflow once. The turn keeps running, as in zeta.
+     */
+    setMode(next: Mode) {
+      mode = next;
+      if ((next === "overflow" || next === "overflow-silent") && controller) overflow(controller, "controller");
+    },
+    /** Whether a turn runs on the server, independent of what any client saw. */
+    get running() { return running; },
     setOpenDelay(ms: number) { openDelay = ms; },
     /** `true`: new_session fails the way real zeta does while a turn runs (`require_idle`). */
     setRejectCreate(next: boolean) { rejectCreate = next; },

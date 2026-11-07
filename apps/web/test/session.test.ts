@@ -51,8 +51,13 @@ function source(client: ZetaClient | null) {
   const listeners = new Set<() => void>();
   return {
     client,
+    state: { phase: "connected" },
     subscribe(listener: () => void) { listeners.add(listener); return () => listeners.delete(listener); },
-    set(next: ZetaClient | null) { this.client = next; listeners.forEach((listener) => listener()); },
+    set(next: ZetaClient | null, phase = next ? "connected" : "dropped") {
+      this.client = next;
+      this.state = { phase };
+      listeners.forEach((listener) => listener());
+    },
   };
 }
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -127,6 +132,42 @@ test("a failed replacement restores the old active session and its readiness", a
   expect(present(view).selected).toBe("b");
   expect(selected).toEqual(["a", "b"]);
   expect(present(view).openError?.message).toBe("session log is invalid at line 12");
+});
+
+test("overflow marks only the running session until that session starts its next run", async () => {
+  const first = await server(handlers("b"));
+  const connection = source(first.client);
+  const view = createSessions(connection);
+  for (let attempt = 0; attempt < 20 && !present(view).open?.history.complete; attempt++) await tick();
+  first.event({ event: "agent_start", session_id: "b" });
+  expect(present(view).open?.lease.store.getState().agent).toBe("running");
+
+  connection.set(null, "overflow");
+  const second = await server(handlers("b"));
+  connection.set(second.client);
+  for (let attempt = 0; attempt < 20 && present(view).open?.stale; attempt++) await tick();
+  expect(present(view).open?.stale).toBe(false);
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("unknown");
+  expect(new Set(present(view).open?.lease.store.getOutline().map(({ id }) => id)).size).toBe(present(view).open?.lease.store.getOutline().length);
+
+  view.select("a");
+  await tick();
+  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
+  view.select("b");
+  await tick();
+  expect(present(view).open?.lease.store.getState().endOutcome).toBe("unknown");
+
+  second.event({ event: "agent_start", session_id: "b" });
+  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
+
+  // An ordinary drop of a running turn that comes back idle is not an overflow: no marker.
+  connection.set(null);
+  const third = await server(handlers("b"));
+  connection.set(third.client);
+  for (let attempt = 0; attempt < 20 && present(view).open?.stale; attempt++) await tick();
+  expect(present(view).open?.stale).toBe(false);
+  expect(present(view).open?.lease.store.getState().agent).toBe("idle");
+  expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
 });
 
 test("on connect opens the active session before requesting the catalog", async () => {
