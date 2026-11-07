@@ -14,7 +14,7 @@ import { MermaidFence } from "@fulcrum/mermaid";
 import { Approval, Message, RunEndMarker, RunNavigator, RunProvider, RunStatus, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunLocation } from "@fulcrum/react";
 import { CodeCard, codeDemos } from "./code-demos";
 import { ComposerCard, composerDemos } from "./composer-demos";
-import { demos, type Demo } from "./demos";
+import { demos, type Demo, type DemoApproval } from "./demos";
 import { mermaidDemos } from "./mermaid-demos";
 
 const highlight = createHighlighter();
@@ -22,13 +22,14 @@ const fences: Fences = { mermaid: MermaidFence };
 const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} fences={fences} />;
 
 /** `path` is the open run path when the approval renders inside a RunNavigator. */
-type Act = (action: "approve" | "approve-always" | "deny", requestId: string, path?: readonly RunLocation[]) => void;
-const ActContext = createContext<Act>(() => {});
+type Act = (action: "approve" | "approve-always" | "deny", requestId: string, path?: readonly RunLocation[]) => void | Promise<void>;
+const HostContext = createContext<{ act: Act; approval?: DemoApproval }>({ act: () => {} });
 
-function GalleryApproval({ id, always }: { id: string; always?: boolean }) {
-  const act = useContext(ActContext);
+function GalleryApproval({ id }: { id: string }) {
+  const { act, approval } = useContext(HostContext);
   const path = useRunNavigation()?.path;
-  return <Approval id={id} onApprove={(r) => act("approve", r, path)} onApproveAlways={always ? (r) => act("approve-always", r, path) : undefined} onDeny={(r) => act("deny", r, path)} />;
+  const always = approval?.always?.includes(id.slice("approval:".length));
+  return <Approval id={id} onApprove={(r) => act("approve", r, path)} onApproveAlways={always ? (r) => act("approve-always", r, path) : undefined} approveAlwaysLabel={approval?.label} onDeny={(r) => act("deny", r, path)} disabledReason={approval?.disabledReason} />;
 }
 // Tools use ToolCall's default body; messages use the shared highlighted markdown renderer.
 const renderers: Renderers = {
@@ -36,7 +37,6 @@ const renderers: Renderers = {
   approval: GalleryApproval,
 };
 const markdownAllRenderers: Renderers = { ...renderers, message: ({ id }) => <Message id={id} markdown={RichMarkdown} markdownFor="all" /> };
-const approveAlwaysRenderers: Renderers = { ...renderers, approval: ({ id }) => <GalleryApproval id={id} always /> };
 
 // A live demo starts empty and plays; paused from the start (reduced motion), it shows its in-progress state instead.
 // A demo with child runs shows its finished state when paused, since it plays once and stops.
@@ -87,6 +87,8 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
   const [generation, setGeneration] = useState(0);
   const [paused, setPaused] = useState(reducedMotion);
   const [touched, setTouched] = useState(false);
+  const held = useRef<(() => void)[]>([]);
+  const [holding, setHolding] = useState(0);
   const [caption, setCaption] = useState("");
   const start = (isPaused: boolean) => (demo.live && isPaused ? (demo.runs ? steps(demo) : demo.events.length - 1) : 0);
   const index = useRef(start(reducedMotion));
@@ -101,8 +103,19 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
     setTouched(false);
     setStores(fresh(demo, paused));
     setGeneration((value) => value + 1);
+    held.current = [];
+    setHolding(0);
   };
   const act: Act = (action, requestId, path = []) => {
+    // A held decision stays "approving" until the header's answer button; a rejected one shows the host's error.
+    if (demo.approval?.reply === "reject") return new Promise((_, reject) => setTimeout(() => reject(new Error("the host could not send this decision: connection reset")), 400));
+    if (demo.approval?.reply === "hold") return new Promise((resolve) => {
+      held.current.push(() => { decided(action, requestId, path); resolve(); });
+      setHolding(held.current.length);
+    });
+    decided(action, requestId, path);
+  };
+  const decided = (action: Parameters<Act>[0], requestId: string, path: readonly RunLocation[]) => {
     const storeOf = (location: RunLocation | undefined) => (location?.runId ? runs[location.runId]! : store);
     storeOf(path.at(-1)).dispatch({ type: "approval_end", request_id: requestId, decision: action === "deny" ? "deny" : "approve", data: { action } });
     // The fake harness clears the waiting badge on every ancestor row, as a real one would once the child resumes.
@@ -172,6 +185,11 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
               {paused ? "play" : "pause"}
             </button>
           ) : null}
+          {holding ? (
+            <button type="button" onClick={() => { held.current.splice(0).forEach((answer) => answer()); setHolding(0); }}>
+              answer
+            </button>
+          ) : null}
           {demo.live || touched ? (
             <button type="button" onClick={reset}>
               replay
@@ -180,17 +198,17 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
         </div>
       </header>
       <div className="demo-body" ref={body}>
-        <ActContext.Provider value={act}>
+        <HostContext.Provider value={{ act, approval: demo.approval }}>
           {demo.runs ? (
             <RunNavigator key={generation} store={store} source={source} {...runPath} highlight={highlight} renderers={renderers} label="run" />
           ) : (
             <RunProvider key={generation} store={store} highlight={highlight}>
               {demo.part === "RunStatus" ? <RunStatus /> : null}
-              <Timeline renderers={demo.markdownAll ? markdownAllRenderers : demo.approveAlways ? approveAlwaysRenderers : renderers} />
+              <Timeline renderers={demo.markdownAll ? markdownAllRenderers : renderers} />
               {demo.part === "RunEndMarker" ? <RunEndMarker /> : null}
             </RunProvider>
           )}
-        </ActContext.Provider>
+        </HostContext.Provider>
       </div>
       {inspect ? <pre className="demo-attrs" aria-label="rendered data attributes">{caption}</pre> : null}
     </article>
