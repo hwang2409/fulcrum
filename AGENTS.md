@@ -1,6 +1,6 @@
 # Brief
 
-fulcrum (repo hwang2409/fulcrum, private; local dir ~/me/fun/fulcrum) is a react component library for agent runs. zeta is the first adapter, not the only target.
+fulcrum (repo hwang2409/fulcrum, public; local dir ~/me/fun/fulcrum) is a react component library for agent runs. zeta is the first adapter, not the only target.
 
 ## goal (Henry, binding, verbatim)
 "lets try to get fulcrum to be the fastest, most performant, but also the best looking component library for agents, i think that is my ultimate goal"

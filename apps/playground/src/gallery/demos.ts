@@ -7,8 +7,8 @@ import { CHART_PNG } from "./chart";
  * `runs` are child runs by id, shown in a RunNavigator: a sub-agent row whose run is missing here is unavailable. A
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
-/** `open`: the demo's tool cards start open, for a demo about what their body says. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean };
+/** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean; markdownAll?: boolean };
 
 const call = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({ id, name, arguments: args });
 const text = (role: string, value: string) => ({ role, content: [{ type: "text", text: value }] });
@@ -20,6 +20,7 @@ const stream = (id: string, value: string): RunEvent[] => [
 const answer =
   "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. " +
   "Move the import into the config's server block, or use `new URL(..., import.meta.url)` instead.";
+const userParityText = "Why does the playground build fail on CI after the dependency cache is restored on a fresh runner, while the same command passes locally with the locked Bun version and a clean install? Please compare the generated package output, compiler diagnostics, and environment settings before changing any dependency versions.";
 const markdownDemo = [
   "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move the import into the config's server block, or use `new",
   "`",
@@ -357,6 +358,28 @@ export const demos: Demo[] = [
     events: [{ type: "message_commit", message_id: "m-user", message: text("user", "Can you also check the transport tests?") }],
   },
   {
+    id: "message-user-long",
+    part: "Message",
+    title: "user role, wrapping",
+    description: "A long user message: the prompt mark hangs in its own column and every line starts at the text edge.",
+    events: [{ type: "message_commit", message_id: "m-user-long", message: text("user", userParityText) }],
+  },
+  {
+    id: "message-user-dropped",
+    part: "Message",
+    title: "user role, dropped-delivery text",
+    description: "The committed-message geometry reference for a dropped user_message row.",
+    events: [{ type: "message_commit", message_id: "m-user-dropped", message: text("user", `${userParityText} · not delivered · abort`) }],
+  },
+  {
+    id: "message-user-markdown",
+    part: "Message",
+    title: "user role, markdown",
+    description: "markdownFor=\"all\": user text renders as markdown and keeps the same prompt column.",
+    events: [{ type: "message_commit", message_id: "m-user-md", message: text("user", "Please check why the **transport tests** fail on CI but pass locally, then compare the retry timing with `reconnect()`.") }],
+    markdownAll: true,
+  },
+  {
     id: "message-long",
     part: "Message",
     title: "long text",
@@ -402,6 +425,37 @@ export const demos: Demo[] = [
     title: "markdown, constructs across ranges",
     description: "A large fence colors its visible ranges first, then the whole block in the background: a 2,000-character block comment and a python docstring keep their colors past every range edge.",
     events: [{ type: "message_commit", message_id: "markdown-large-constructs", message: text("assistant", "A license header, then a docstring:\n\n```cpp\n/*\n" + Array.from({ length: 28 }, () => " *" + " lorem".repeat(12)).join("\n") + "\n */\n" + Array.from({ length: 220 }, (_, i) => `int value${i} = ${i};`).join("\n") + "\n```\n\n```python\n\"\"\"\n" + Array.from({ length: 28 }, () => "   " + " ipsum".repeat(12)).join("\n") + "\n\"\"\"\n" + Array.from({ length: 220 }, (_, i) => `value_${i} = ${i}`).join("\n") + "\n```\n") }],
+  },
+  {
+    id: "user-block-indent",
+    part: "Message",
+    title: "user attachment, aligned",
+    description: "The sent text keeps its prompt mark while the attachment row starts at the content edge.",
+    events: [{ type: "message_commit", message_id: "user-block-indent", message: { role: "user", content: [{ type: "text", text: "please inspect this image" }, { type: "file", filename: "image.png", mediaType: "image/png", size: 12 }] } }],
+  },
+  {
+    id: "user-first-blocks",
+    part: "Message",
+    title: "user role, first blocks",
+    description: "Whatever block starts a user message, the prompt sits on its first text line, or at the top of an image.",
+    events: [...[
+      "# Release notes\n\nplease check these",
+      "## Two problems\n\nboth on CI",
+      "- the first item\n- the second item",
+      "> the quoted line\n\nwhy does this fail?",
+      "```ts\nconst retries = 3;\n```\n\nwhat does this do?",
+      "```\nnpm test\n```",
+      "```ts\n" + Array.from({ length: 48 }, (_, i) => `const value${i} = ${i};`).join("\n") + "\n```",
+      "| test | time |\n| --- | --- |\n| transport | 2s |",
+      { type: "file", filename: "image.png", mediaType: "image/png", size: 12 },
+      chart,
+      docs,
+      { type: "reasoning", text: "the alias is wrong" },
+    ].map((block, i): RunEvent => ({ type: "message_commit", message_id: `user-first-${i}`, message: { role: "user", content: [typeof block === "string" ? { type: "text", text: block } : block] } })),
+      { type: "message_commit", message_id: "user-first-empty-file", message: { role: "user", content: [{ type: "text", text: "" }, { type: "file", filename: "empty-first.txt", mediaType: "text/plain", size: 0 }] } },
+      { type: "message_commit", message_id: "user-first-empty-stream", message: { role: "user", content: [{ type: "text", text: "" }] } },
+    ],
+    markdownAll: true,
   },
   {
     id: "content-streaming",
@@ -742,8 +796,30 @@ export const demos: Demo[] = [
     id: "fallback-user",
     part: "Fallback",
     title: "user message",
-    description: "A user_message event (kind \"user\").",
-    events: [{ type: "user_message", text: "Why does the playground build fail on CI?", mode: "default" }],
+    description: "A wrapping user_message event (kind \"user\") with an attachment.",
+    events: [{
+      type: "user_message",
+      text: userParityText,
+      mode: "default",
+      attachments: [{ type: "file", kind: "file", filename: "ci-build.log", mediaType: "text/plain", size: 12_345 }],
+    }],
+  },
+  {
+    id: "fallback-user-parity",
+    part: "Fallback",
+    title: "user message parity",
+    description: "The same wrapping text as the committed Message fixture, without an attachment.",
+    events: [{ type: "user_message", text: userParityText, mode: "default" }],
+  },
+  {
+    id: "fallback-user-dropped",
+    part: "Fallback",
+    title: "dropped steer",
+    description: "A dropped steer keeps the shared user layout and adds its delivery outcome.",
+    events: [
+      { type: "user_message", text: userParityText, mode: "steer", delivery_id: "gallery-dropped" },
+      { type: "delivery_status", delivery_id: "gallery-dropped", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
+    ],
   },
   {
     id: "fallback-error",

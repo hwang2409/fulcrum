@@ -4,6 +4,7 @@ import { useItem, useMedia } from "./hooks.js";
 import type { ItemProps } from "./parts.js";
 import { boundText, bytes, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { CopyButton, TextViewer, type TextFormat } from "./tools/text-viewer.js";
+import { UserMessageContent } from "./user-message.js";
 
 export type MarkdownContentProps = { id: string; source: string; streaming: boolean };
 /** What every block renderer gets, the default ones and a host's own. */
@@ -65,10 +66,23 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
   if (item?.type !== "message") return null;
   const Rich = Markdown && (markdownFor === "all" || item.message.role === "assistant") ? Markdown : undefined;
   const parts = messageParts(item);
+  const user = item.message.role === "user";
+  const content = parts.map(({ index, block }, position) => {
+    const streaming = item.active && position === parts.length - 1;
+    // The first block keeps the message id, so a plain text message renders exactly as it did before blocks.
+    const blockId = index === 0 ? id : `${id}#${index}`;
+    const Block = own(blocks, block.type) ?? own(defaultBlocks, block.type);
+    if (Block) return <Block key={index} block={block} id={blockId} streaming={streaming} markdown={Rich} onOpen={onOpen} />;
+    if (block.type !== "text") return <UnknownBlock key={index} block={block} id={blockId} streaming={streaming} />;
+    const text = String(block.text);
+    if (!text) return null;
+    if (Rich) return <Rich key={index} id={blockId} source={text} streaming={streaming} />;
+    return user ? <span key={index}>{text}</span> : <Fragment key={index}>{text}</Fragment>;
+  });
   return (
     <div
       className={className}
-      style={Rich ? undefined : pre}
+      style={!user && !Rich ? pre : undefined}
       data-part="message"
       data-kind="message"
       data-id={id}
@@ -76,16 +90,7 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
       data-state={item.active ? "streaming" : "done"}
       data-format={Rich ? "markdown" : "text"}
     >
-      {parts.map(({ index, block }, position) => {
-        const streaming = item.active && position === parts.length - 1;
-        // The first block keeps the message id, so a plain text message renders exactly as it did before blocks.
-        const blockId = index === 0 ? id : `${id}#${index}`;
-        const Block = own(blocks, block.type) ?? own(defaultBlocks, block.type);
-        if (Block) return <Block key={index} block={block} id={blockId} streaming={streaming} markdown={Rich} onOpen={onOpen} />;
-        if (block.type !== "text") return <UnknownBlock key={index} block={block} id={blockId} streaming={streaming} />;
-        const text = String(block.text);
-        return Rich ? <Rich key={index} id={blockId} source={text} streaming={streaming} /> : <Fragment key={index}>{text}</Fragment>;
-      })}
+      {user ? <UserMessageContent style={Rich ? undefined : pre}>{content}</UserMessageContent> : content}
     </div>
   );
 });

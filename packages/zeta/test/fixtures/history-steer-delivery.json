@@ -1,0 +1,210 @@
+{
+  "_fixture": {
+    "source": "real zeta serve TCP run",
+    "zeta_commit": "f4881e89ffe40e3d15bab113a98b7658ccbf8d31",
+    "model": "gpt-5.6-luna",
+    "capture": "Dropped run queued a steer during `sleep 20`, then aborted the session before the next provider boundary. Live events are the exact delivery-related event params; history arrays are the exact session_history rows. Only the absolute workspace path was redacted."
+  },
+  "dropped": {
+    "liveEvents": [
+      {
+        "event": "user_message",
+        "session_id": "2744eebcf12b44e08292734c99bc48bf",
+        "text": "Use the bash tool to run exactly: sleep 20. Do not change the command.",
+        "mode": "send",
+        "attachments": [],
+        "delivery_id": "initial-send"
+      },
+      {
+        "event": "user_message",
+        "session_id": "2744eebcf12b44e08292734c99bc48bf",
+        "text": "this steer must be dropped",
+        "mode": "steer",
+        "attachments": [],
+        "delivery_id": "dropped-steer"
+      },
+      {
+        "event": "delivery_status",
+        "session_id": "2744eebcf12b44e08292734c99bc48bf",
+        "id": "d04b206b038344f3b18d1441ecd1a016",
+        "role": "system",
+        "delivery_id": "dropped-steer",
+        "method": "steer",
+        "status": "dropped",
+        "content": [
+          {
+            "type": "text",
+            "text": "steer dropped: abort"
+          }
+        ],
+        "reason": "abort"
+      }
+    ],
+    "historyRows": [
+      {
+        "id": "6461effbcc744e40bae7c8b7a69069dd",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Use the bash tool to run exactly: sleep 20. Do not change the command."
+          }
+        ],
+        "tool_result": null,
+        "delivery_id": "initial-send"
+      },
+      {
+        "id": "dfc95720309c4d6c962686f7779d4179",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "text": ""
+          },
+          {
+            "type": "tool_use",
+            "tool_call": {
+              "id": "call_aa6ce837dbdd43dc8ced766db2a366b5",
+              "name": "bash",
+              "arguments": {
+                "command": "sleep 20",
+                "timeout": 30
+              },
+              "arguments_truncated": false
+            }
+          }
+        ],
+        "tool_result": null
+      },
+      {
+        "id": "ddb095ad47724d53885a2143c5c2dbaf",
+        "role": "tool_result",
+        "content": [
+          {
+            "type": "text",
+            "text": "tool execution canceled"
+          }
+        ],
+        "tool_result": {
+          "tool_call_id": "call_aa6ce837dbdd43dc8ced766db2a366b5",
+          "content": "tool execution canceled",
+          "is_error": true,
+          "is_canceled": true,
+          "content_blocks": [],
+          "structured_content": null
+        }
+      },
+      {
+        "id": "d04b206b038344f3b18d1441ecd1a016",
+        "role": "system",
+        "event": "delivery_status",
+        "delivery_id": "dropped-steer",
+        "method": "steer",
+        "status": "dropped",
+        "content": [
+          {
+            "type": "text",
+            "text": "steer dropped: abort"
+          }
+        ],
+        "reason": "abort"
+      }
+    ]
+  },
+  "delivered": {
+    "historyRows": [
+      {
+        "id": "af8edc720a984a2eb34720e0b22a44db",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Use the bash tool to run exactly: sleep 3. Then briefly say done."
+          }
+        ],
+        "tool_result": null,
+        "delivery_id": "delivered-initial"
+      },
+      {
+        "id": "4ed21475678849c9b337ebd9385d1f99",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "tool_call": {
+              "id": "call_c0715fab4646403cbad29378a7ba5ad6",
+              "name": "bash",
+              "arguments": {
+                "command": "sleep 3"
+              },
+              "arguments_truncated": false
+            }
+          }
+        ],
+        "tool_result": null
+      },
+      {
+        "id": "12b13e833b2246c39e522f499d40a301",
+        "role": "tool_result",
+        "content": [
+          {
+            "type": "text",
+            "text": "stdout:\n\nstderr:\n"
+          }
+        ],
+        "tool_result": {
+          "content": "stdout:\n\nstderr:\n",
+          "content_blocks": [],
+          "is_error": false,
+          "structured_content": {
+            "cwd_after": "<redacted-workspace>",
+            "exit_code": 0,
+            "stderr": "",
+            "stderr_truncated": false,
+            "stdout": "",
+            "stdout_truncated": false
+          },
+          "tool_call_id": "call_c0715fab4646403cbad29378a7ba5ad6",
+          "structured_content_truncated": false
+        }
+      },
+      {
+        "id": "4ea8c8d8033c4bd5a823af0d61320658",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "After the tool finishes, include the word STEERED."
+          }
+        ],
+        "tool_result": null,
+        "delivery_id": "delivered-steer"
+      },
+      {
+        "id": "82afeb9e9f2d4313944ca4deee5fd3c8",
+        "role": "system",
+        "event": "delivery_status",
+        "delivery_id": "delivered-steer",
+        "method": "steer",
+        "status": "delivered",
+        "content": [
+          {
+            "type": "text",
+            "text": "steer delivered"
+          }
+        ]
+      },
+      {
+        "id": "5f9b4966e6044cf2ad995cbdabcaff52",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "done STEERED"
+          }
+        ],
+        "tool_result": null
+      }
+    ]
+  }
+}

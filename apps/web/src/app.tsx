@@ -24,9 +24,9 @@ function ZetaApproval({ id }: { id: string }) {
 // The intents of steers a stop dropped: zeta never gave them to the agent, so their rows must not look delivered.
 const Undelivered = createContext<ReadonlySet<string>>(new Set());
 function UserRow({ id }: { id: string }) {
-  const intent = useItemSelector(id, (item) => (item?.type === "user" && item.event.type === "user_message" ? item.event.intent : undefined));
+  const delivery = useItemSelector(id, (item) => (item?.type === "user" && item.event.type === "user_message" ? { intent: item.event.intent, status: item.event.delivery_status } : undefined));
   const undelivered = useContext(Undelivered);
-  const lost = intent !== undefined && undelivered.has(intent);
+  const lost = delivery?.status !== "dropped" && delivery?.intent !== undefined && undelivered.has(delivery.intent);
   return (
     <>
       <Fallback id={id} />
