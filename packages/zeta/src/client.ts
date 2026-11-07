@@ -3,6 +3,7 @@ import { fromZetaEvent } from "./adapter.js";
 import { createDeliveryIdentity } from "./delivery-identity.js";
 import type { HelloResult, RpcError, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
+import { parseSessionGrantsChanged, type SessionGrantsChanged } from "./grants.js";
 import {
   HostCommandError,
   isHostBindingRequired,
@@ -322,6 +323,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (identity?.intent !== undefined) return { ...event, intent: identity.intent };
     return event;
   };
+  const sessionGrantsListeners = new Set<(event: SessionGrantsChanged) => void>();
   const settle = (id: number, callback: (request: Pending) => void) => {
     const request = pending.get(id); if (!request) return;
     pending.delete(id); if (request.timer) clearTimeout(request.timer);
@@ -330,6 +332,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const handleEvent = (message: TransportMessage) => {
     if (!message.params || typeof message.params !== "object") return store.dispatch(adapterError("event params are invalid"));
+    if (message.params.event === "session_grants_changed") {
+      const event = parseSessionGrantsChanged(message.params.data);
+      if (event) sessionGrantsListeners.forEach((listener) => listener(event));
+      return;
+    }
     const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
     if (session !== undefined && quarantined.has(session)) {
       quarantineRevisions.set(session, (quarantineRevisions.get(session) ?? 0) + 1);
@@ -386,6 +393,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   transport.onClose?.((code) => { closeClient(code); });
   /** Calls `listener` once when the transport closes, with the same error that rejected pending requests. */
   const onClose = (listener: (error: unknown) => void) => { closeListeners.add(listener); return () => { closeListeners.delete(listener); }; };
+  /** Delivers valid host-level session grant changes until the returned function unsubscribes. */
+  const onSessionGrantsChanged = (listener: (event: SessionGrantsChanged) => void) => {
+    sessionGrantsListeners.add(listener);
+    return () => { sessionGrantsListeners.delete(listener); };
+  };
   const rawRequest = (method: string, params: Record<string, unknown> = {}, requestOptions: RequestOptions = {}) => {
     if (closed) return Promise.reject(closedError);
     if (!handshaken && method !== "hello") return Promise.reject(new Error("hello required"));
@@ -534,7 +546,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return await readContentChunks(handle, cap, (offset) => request("content_read", { handle, offset }, { signal: options.signal }));
     } catch (error) { return contentReadError(error); }
   };
-  return { store, stores, forSession, servedTurn: (sessionId: string) => servedTurns.get(sessionId), replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { closeClient(); transport.close(); } };
+  return { store, stores, forSession, servedTurn: (sessionId: string) => servedTurns.get(sessionId), replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, onSessionGrantsChanged, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { closeClient(); transport.close(); } };
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler, options?: ClientOptions) { return createClient(transport, scheduler, undefined, options); }

@@ -19,26 +19,18 @@ import {
 
 const isIOSWebKit = () => navigator.userAgent.includes("iP");
 
-type SettledViewport<Id extends string> = {
-  viewport: VirtualSnapshot<Id>;
-  scrollTop: number;
-};
-
 const settleDetachedViewport = <Id extends string>(
   engine: Virtualizer<Id>,
-  container: HTMLElement,
   touching: RefObject<boolean>,
   touchY: RefObject<number | null>,
   userScrollUntil: RefObject<number>,
   ignoreScrollUntil: RefObject<number>,
-): SettledViewport<Id> => {
+): void => {
   touching.current = false;
   touchY.current = null;
   userScrollUntil.current = 0;
   ignoreScrollUntil.current = 0;
-  const viewport = engine.getSnapshot();
-  const settled = engine.flushPendingCorrection(false, true);
-  return { viewport, scrollTop: viewport.pendingJump === 0 ? container.scrollTop : settled.scrollTop };
+  engine.flushPendingCorrection(false, true);
 };
 
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
@@ -48,8 +40,6 @@ export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   outlineUpdate?: OutlineUpdate<Id> | null;
   /** Resets the virtual engine when the outline owner changes. */
   resetKey?: unknown;
-  /** Rows whose content changed while their stable ids survived an outline replacement. */
-  invalidateMeasurements?: readonly Id[];
 };
 
 export type VirtualListState<Id extends string> = {
@@ -88,44 +78,18 @@ export function useVirtualList<Id extends string>(
   const pendingEntries = useRef(new Map<Id, number>());
   const touching = useRef(false);
   const userScrollUntil = useRef(0);
-  const userInputUntil = useRef(0);
   const touchY = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const readerAnchor = useRef<{ id: Id; index: number; offset: number } | null>(null);
-  const readerViewportTop = useRef<number | null>(null);
   const ignoreScrollUntil = useRef(0);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
-  const attachment = useRef<{ host: HTMLElement | null; settled: SettledViewport<Id> | null }>({ host: null, settled: null });
-  const releaseCurrent = useRef<(() => SettledViewport<Id>) | null>(null);
+  const attachment = useRef<{ host: HTMLElement | null; settled: boolean }>({ host: null, settled: false });
+  const releaseCurrent = useRef<(() => void) | null>(null);
   const transferCurrent = useRef<((next: HTMLElement | null) => void) | null>(null);
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
-  const captureMutation = () => {
-    const token = engine.beforeMutation();
-    if (token.pinned) return token;
-    const snapshot = engine.getSnapshot();
-    const recorded = readerAnchor.current;
-    if (recorded && snapshot.rows.some(({ id }) => id === recorded.id)) return { ...token, anchor: recorded };
-    const row = snapshot.rows.find(({ start }) => start >= snapshot.scrollTop);
-    return row ? { ...token, anchor: { id: row.id, index: row.index, offset: row.start - snapshot.scrollTop } } : token;
-  };
-  const recordReaderAnchor = (container: HTMLElement) => {
-    const top = readerViewportTop.current ?? container.getBoundingClientRect().top;
-    let target: { id: Id; top: number } | null = null;
-    let firstTop: number | null = null;
-    let measured = false;
-    for (const [id, element] of rows.current) {
-      const rowTop = element.getBoundingClientRect().top;
-      if (firstTop === null) firstTop = rowTop;
-      else if (rowTop !== firstTop) measured = true;
-      if (rowTop >= top && (!target || rowTop < target.top)) target = { id, top: rowTop };
-    }
-    const row = measured && target && engine.getSnapshot().rows.find(({ id }) => id === target!.id);
-    if (row && target) readerAnchor.current = { id: row.id, index: row.index, offset: target.top - top };
-  };
 
   useLayoutEffect(() => {
     if (resetPending) {
@@ -137,23 +101,22 @@ export function useVirtualList<Id extends string>(
     }
     if (appliedOutline.current !== outline) {
       appliedOutline.current = outline;
-      const token = captureMutation();
-      if (options.invalidateMeasurements) engine.invalidateMeasurements(options.invalidateMeasurements);
+      const token = engine.beforeMutation();
       engine.setOutline(outline, options.outlineUpdate);
       engine.setLoaded("all");
       if (initial.current) initial.current = false;
       else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
     }
     wasEnabled.current = options.enabled !== false;
-  }, [engine, outline, options.enabled, options.invalidateMeasurements, options.outlineUpdate, options.resetKey, resetPending]);
+  }, [engine, outline, options.enabled, options.outlineUpdate, options.resetKey, resetPending]);
 
   useLayoutEffect(() => {
     const transfer = (next: HTMLElement | null) => {
       if (attachment.current.host === next) return;
-      // Transfer post-state: pinned lands at the new bottom; unpinned keeps its anchor; a pending correction is
-      // applied by that anchor or dropped, never left dangling. A null gap keeps settled state until attachment.
+      // the engine owns the reader's position intent (follow-bottom or anchor) until a measured layout on the current host confirms it.
       if (attachment.current.host) {
-        attachment.current.settled = releaseCurrent.current?.() ?? attachment.current.settled;
+        releaseCurrent.current?.();
+        attachment.current.settled = true;
         attachment.current.host = null;
         releaseCurrent.current = null;
         containerRef.current = null;
@@ -161,16 +124,16 @@ export function useVirtualList<Id extends string>(
       if (!next) return;
       const container = next;
       const prior = attachment.current.settled;
-      attachment.current.settled = null;
+      attachment.current.settled = false;
       containerRef.current = container;
       const priorOverflowAnchor = container.style.overflowAnchor;
       container.style.overflowAnchor = "none";
       const updateViewport = (source: "user" | "programmatic") =>
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
       if (prior) {
-        if (!prior.viewport.pinned) container.scrollTop = prior.scrollTop;
+        const intent = engine.beforeMutation();
         updateViewport("programmatic");
-        if (prior.viewport.pinned) container.scrollTop = engine.scrollToEnd();
+        engine.afterMutation(intent);
       } else updateViewport("user");
       lastScrollTop.current = container.scrollTop;
 
@@ -210,24 +173,16 @@ export function useVirtualList<Id extends string>(
           return;
         }
         const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
-        const userMoved = performance.now() < userInputUntil.current || !before.programmatic;
-        if (!correction && userMoved && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+        if (!correction && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
         lastScrollTop.current = container.scrollTop;
-        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: correction || !userMoved ? "programmatic" : "user" });
-        if (userMoved) recordReaderAnchor(container);
-        if (correction || !userMoved) return;
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
+        if (correction) return;
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = setTimeout(finishScroll, 150);
       };
       // The stale-scroll guard after a programmatic bottom write only covers scroll events
       // nobody asked for; any real input means the next scroll is the user's and must win.
-      const userIntent = () => {
-        ignoreScrollUntil.current = 0;
-        const now = performance.now();
-        if (now >= userInputUntil.current) readerViewportTop.current = container.getBoundingClientRect().top;
-        readerAnchor.current = null;
-        userInputUntil.current = now + 500;
-      };
+      const userIntent = () => { ignoreScrollUntil.current = 0; };
       const onWheel = (event: WheelEvent) => {
         userIntent();
         userScrollUntil.current = performance.now() + 200;
@@ -270,7 +225,7 @@ export function useVirtualList<Id extends string>(
         ignoreScrollUntil.current = performance.now() + 50;
       });
       viewportObserver.observe(container);
-      const release = (): SettledViewport<Id> => {
+      const release = () => {
         observer.disconnect();
         viewportObserver.disconnect();
         observerRef.current = null;
@@ -286,10 +241,9 @@ export function useVirtualList<Id extends string>(
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         resizeFrame.current = null;
         scrollEndTimer.current = null;
-        const settled = settleDetachedViewport(engine, container, touching, touchY, userScrollUntil, ignoreScrollUntil);
+        settleDetachedViewport(engine, touching, touchY, userScrollUntil, ignoreScrollUntil);
         pendingEntries.current.clear();
         container.style.overflowAnchor = priorOverflowAnchor;
-        return settled;
       };
       attachment.current.host = container;
       releaseCurrent.current = release;
@@ -302,18 +256,15 @@ export function useVirtualList<Id extends string>(
 
   useLayoutEffect(() => () => {
     transferCurrent.current?.(null);
-    attachment.current.settled = null;
+    attachment.current.settled = false;
     transferCurrent.current = null;
     containerRef.current = null;
   }, []);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
-    if (Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5)
+    if (container && Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5)
       container.scrollTop = snapshot.scrollTop;
-    if (snapshot.pinned && Math.abs(container.scrollTop - snapshot.scrollTop) < 1)
-      container.scrollTop = container.scrollHeight - container.clientHeight;
   }, [snapshot]);
 
   useLayoutEffect(() => () => engine.destroy(), [engine]);

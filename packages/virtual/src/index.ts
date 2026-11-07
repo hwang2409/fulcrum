@@ -713,6 +713,13 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
       return scrollTop;
     },
+    requestFollow() {
+      if (pinned) return null;
+      pinned = true;
+      unseenIds.clear();
+      setViewport({ scrollTop: maxScroll(), size: viewportSize, source: "programmatic" });
+      return scrollTop;
+    },
     snapshotCache() {
       return { sizes: [...measured], kindMedians: [...kindMedians] };
     },

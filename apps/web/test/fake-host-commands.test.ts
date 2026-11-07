@@ -10,12 +10,21 @@ async function credentials(fake: Awaited<ReturnType<typeof startFakeZeta>>) {
 }
 
 const SOCKET_EVENT_DEADLINE_MS = 10_000;
+const SOCKET_CLEANUP_DEADLINE_MS = 1_000;
 
 async function closeSockets(sockets: readonly WebSocket[]) {
   await Promise.all(sockets.map((socket) => {
     if (socket.readyState === WebSocket.CLOSED) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      socket.addEventListener("close", () => resolve(), { once: true });
+    return new Promise<void>((resolve, reject) => {
+      const deadline = setTimeout(() => {
+        socket.removeEventListener("close", onClose);
+        reject(new Error("timed out waiting for websocket close during cleanup"));
+      }, SOCKET_CLEANUP_DEADLINE_MS);
+      const onClose = () => {
+        clearTimeout(deadline);
+        resolve();
+      };
+      socket.addEventListener("close", onClose, { once: true });
       socket.close();
     });
   }));
@@ -27,16 +36,18 @@ function waitForSocketEvent<K extends "open" | "message" | "close">(
   involvedSockets: readonly WebSocket[],
 ): Promise<WebSocketEventMap[K]> {
   return new Promise((resolve, reject) => {
+    const onEvent = (event: Event) => {
+      clearTimeout(deadline);
+      resolve(event as WebSocketEventMap[K]);
+    };
     const deadline = setTimeout(() => {
+      socket.removeEventListener(eventName, onEvent);
       void closeSockets(involvedSockets).then(
         () => reject(new Error(`timed out waiting for websocket ${eventName}`)),
         (error) => reject(new Error(`timed out waiting for websocket ${eventName}; cleanup failed`, { cause: error })),
       );
     }, SOCKET_EVENT_DEADLINE_MS);
-    socket.addEventListener(eventName, (event) => {
-      clearTimeout(deadline);
-      resolve(event as WebSocketEventMap[K]);
-    }, { once: true });
+    socket.addEventListener(eventName, onEvent, { once: true });
   });
 }
 
@@ -64,11 +75,15 @@ test("fake zeta permits one controller and an observer, without observer cleanup
 test("fake zeta enforces eight observers and preserves a controller claim", async () => {
   const fake = await startFakeZeta({ origins: [], live: false });
   const connections: Array<{ close(): void }> = [];
-  const rejectedHello = (url: string, token: string, role: "controller" | "observer") => new Promise<{ error?: { code: number; message: string } }>((resolve) => {
+  const rejectedHello = async (url: string, token: string, role: "controller" | "observer") => {
     const socket = new WebSocket(url, ["zeta.v1", `zeta.bearer.${token}`]);
-    socket.onopen = () => socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "hello", params: { role, features: role === "observer" ? ["serve_observers"] : [] } }));
-    socket.onmessage = (event) => { resolve(JSON.parse(String(event.data))); socket.close(); };
-  });
+    await waitForSocketEvent(socket, "open", [socket]);
+    const message = waitForSocketEvent(socket, "message", [socket]);
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "hello", params: { role, features: role === "observer" ? ["serve_observers"] : [] } }));
+    const response = JSON.parse(String((await message).data)) as { error?: { code: number; message: string } };
+    await closeSockets([socket]);
+    return response;
+  };
   try {
     const connection = await credentials(fake);
     const controller = await connectZeta({ url: connection.url, token: connection.token });
@@ -81,7 +96,7 @@ test("fake zeta enforces eight observers and preserves a controller claim", asyn
     for (const connection of connections) connection.close();
     await fake.close();
   }
-});
+}, SOCKET_EVENT_DEADLINE_MS + SOCKET_CLEANUP_DEADLINE_MS + 5_000);
 
 test("fake zeta keeps the new controller after an old controller closes late", async () => {
   const fake = await startFakeZeta({ origins: [], live: false, overflowSilentCloseDelayMs: 20 });
@@ -108,7 +123,7 @@ test("fake zeta keeps the new controller after an old controller closes late", a
   } finally {
     await fake.close();
   }
-}, SOCKET_EVENT_DEADLINE_MS + 5_000);
+}, SOCKET_EVENT_DEADLINE_MS + SOCKET_CLEANUP_DEADLINE_MS + 5_000);
 
 test("fake zeta releases the controller immediately after overflow-silent termination", async () => {
   const fake = await startFakeZeta({ origins: [], live: false, overflowSilentCloseDelayMs: 20 });
@@ -127,7 +142,7 @@ test("fake zeta releases the controller immediately after overflow-silent termin
   } finally {
     await fake.close();
   }
-}, SOCKET_EVENT_DEADLINE_MS + 5_000);
+}, SOCKET_EVENT_DEADLINE_MS + SOCKET_CLEANUP_DEADLINE_MS + 5_000);
 
 test("fake zeta validates host commands and requires a fresh binding after disconnect", async () => {
   const fake = await startFakeZeta({ origins: [], live: false });

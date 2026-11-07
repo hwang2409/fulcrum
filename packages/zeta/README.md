@@ -6,6 +6,12 @@
 
 `MODEL_INPUT_IDS_FEATURE` is the feature name to request during the hello handshake. `parseSlashList` and `parseSlashRun` validate server results without throwing; malformed command rows are dropped and malformed result discriminators return `{ kind: "malformed" }`. `parseModelInput(value)` validates either the opaque-id or expanded-text `model_input` shape and returns `null` for malformed data; pass `{ requireInputId: true }` as its second argument to require the opaque-id shape used by prepared input. `parseSlashRun` accepts the legacy `{ kind: "text" }` result from `/mcp status` and normalizes it to `{ kind: "output" }`; the protocol document omits this released-server shape. `listSlashCommands`, `runSlashCommand`, and `sendModelInput` are thin typed wrappers over the JSON-RPC client.
 
+## session grants
+
+`SESSION_GRANTS_FEATURE` is the feature name to request during the hello handshake. `parseSessionGrants`, `parseRevokeSessionGrants`, and `parseSessionGrantsChanged` validate session-grant snapshots and events without throwing; malformed string rows are dropped. `getSessionGrants(client)` reads the active connection's approval policy. `revokeSessionGrant(client, grant)` removes one exact grant, and `clearSessionGrants(client)` removes all session grants. `isSessionGrantError` recognizes the three session-grant error data codes from zeta.
+
+The `session_grants_changed` event stays host-level. Register with `client.onSessionGrantsChanged(handler)` and use the returned function to unsubscribe. The event describes approval policy state, not a generic run event, so the zeta adapter does not map it into `@fulcrum/core`.
+
 ## connect
 
 Start zeta with the browser origin, then start the playground:
