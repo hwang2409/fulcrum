@@ -98,7 +98,7 @@ async function instrument(page: Page) {
 
 async function measure(page: Page, messages: number): Promise<Record<string, number | string>> {
   return page.evaluate(async ({ messages, durationMs, seed }) => {
-    const scroll = document.querySelector<HTMLElement>(".scroll")!;
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
     const started = performance.getEntriesByName("stress-start")[0]?.startTime ?? performance.now();
     const itemCount = () => Number(document.querySelector('[data-testid="readout"]')?.textContent?.match(/· (\d+) items/)?.[1] ?? 0);
     while (itemCount() < messages) await new Promise(requestAnimationFrame);

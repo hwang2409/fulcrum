@@ -40,7 +40,7 @@ function App() {
   return (
     <RunProvider store={store}>
       <div ref={scroll} data-testid="scroll" style={{ height: "100vh", overflow: "auto" }}>
-        <Timeline virtual scrollRef={scroll} />
+        <Timeline virtual scrollRef={scroll} renderJumpToLatest={(control) => control} />
       </div>
     </RunProvider>
   );

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { initialState, type OutlineSnapshot, type RunItem } from "@fulcrum/core";
 import { RunProvider, Timeline, useItem, type RunStore } from "@fulcrum/react";
@@ -94,13 +95,18 @@ function Stats({ scroll }: { scroll: RefObject<HTMLDivElement | null> }) {
 
 function App() {
   const scroll = useRef<HTMLDivElement>(null);
+  const jumpLane = useRef<HTMLDivElement>(null);
   const [streaming, setStreaming] = useState(false);
+  const [followRequest, setFollowRequest] = useState(0);
   const [debug, setDebug] = useState(params.has("virtualDebug"));
   useEffect(() => {
     if (!streaming) return;
     const timer = setInterval(() => controls.append(1), 250);
     return () => clearInterval(timer);
   }, [streaming]);
+  useEffect(() => {
+    Object.assign(window, { __virtualFollow: () => setFollowRequest((value) => value + 1) });
+  }, []);
   const toggleDebug = () => {
     const url = new URL(location.href);
     if (debug) url.searchParams.delete("virtualDebug");
@@ -146,8 +152,18 @@ function App() {
           <span className="mode" data-state={streaming ? "streaming" : "static"}>virtual<span>{streaming ? "streaming 4 rows/s" : "idle"}</span></span>
           <Stats scroll={scroll} />
         </div>
-        {/* className changes with debug only so the memoized Timeline re-renders and reads the new URL flag. */}
-        <div ref={scroll} data-testid="scroll" className="scroll"><Timeline className={debug ? "debug" : undefined} virtual={auto ? undefined : true} renderers={renderers} scrollRef={scroll} /></div>
+        {/* This page exercises host-owned scrolling. Its permanent sibling lane keeps the control off transcript text. */}
+        <div ref={scroll} data-testid="scroll" className="scroll host-scroll">
+          <Timeline
+            className={debug ? "debug" : undefined}
+            virtual={auto ? undefined : true}
+            renderers={renderers}
+            followRequest={followRequest}
+            scrollRef={scroll}
+            renderJumpToLatest={(control) => jumpLane.current ? createPortal(control, jumpLane.current) : null}
+          />
+        </div>
+        <div ref={jumpLane} className="host-jump-lane" data-part="jump-to-latest-lane" />
       </Shell>
     </RunProvider>
   );

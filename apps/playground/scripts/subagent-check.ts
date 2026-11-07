@@ -62,7 +62,7 @@ const rects = (page: Page) => nav(page).evaluate((root) => {
     const rect = root.querySelector(selector)!.getBoundingClientRect();
     return { top: rect.top, height: rect.height };
   };
-  return { bar: box('[data-part="run-bar"]'), scroll: box('[data-part="run-scroll"]') };
+  return { bar: box('[data-part="run-bar"]'), scroll: box('[data-part="timeline-scroll"]') };
 });
 const focused = (page: Page) => page.evaluate(() => {
   const node = document.activeElement as HTMLElement | null;
@@ -88,7 +88,7 @@ export async function checkSubAgents(browser: Browser, port: number): Promise<st
     else console.log(`ok   ${at}: ${sizes.length} rows, each ${ROW} px in a ${ROW + GAP} px slot`);
 
     // Read from above the bottom (follow released), with the reviewer row in view.
-    const scroller = nav(page).locator('[data-part="run-scroll"]');
+    const scroller = nav(page).locator('[data-part="timeline-scroll"]');
     const up = await scroller.evaluate((node) => {
       const row = node.querySelector<HTMLElement>('[data-part="sub-agent"][data-id="sub-agent:reviewer"]')!;
       // As far up as keeps the whole row in view, at most 150 px.
@@ -270,7 +270,7 @@ async function checkClock(browser: Browser, port: number): Promise<string[]> {
     const navigator = card.querySelector<HTMLElement>('[data-part="run-navigator"]')!;
     navigator.style.height = "240px";
     card.scrollIntoView({ block: "start" });
-    const scroller = navigator.querySelector<HTMLElement>('[data-part="run-scroll"]')!;
+    const scroller = navigator.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
     const row = scroller.querySelector<HTMLElement>('[data-part="sub-agent"][data-id="sub-agent:reviewer"]')!;
     scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().bottom - 24;
     return new Promise<string>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -280,7 +280,7 @@ async function checkClock(browser: Browser, port: number): Promise<string[]> {
       const live = [...document.querySelectorAll<HTMLElement>('[data-part="sub-agent"]')].filter((node) => !["done", "error", "canceled"].includes(node.dataset.state!));
       const onScreen = live.filter((node) => {
         const r = node.getBoundingClientRect();
-        const clip = node.closest('[data-part="run-scroll"]')?.getBoundingClientRect();
+        const clip = node.closest('[data-part="timeline-scroll"]')?.getBoundingClientRect();
         return r.bottom > 0 && r.top < innerHeight && (!clip || (r.bottom > clip.top && r.top < clip.bottom));
       });
       if (!rect) resolve("the reviewer row is not mounted below the scroll box, so this is not an overscan case");

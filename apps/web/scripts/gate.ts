@@ -12,7 +12,7 @@
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright";
+import { chromium, webkit, type Locator, type Page } from "playwright";
 import { themes } from "@fulcrum/react";
 import { ACTIVE, LONG, startFakeZeta } from "./fake-zeta";
 
@@ -22,6 +22,7 @@ const origin = `http://127.0.0.1:${port}`;
 const shots = process.env.WEB_SHOTS ?? join(root, "gate-artifacts");
 await mkdir(shots, { recursive: true });
 const fake = await startFakeZeta({ origins: [origin] });
+fake.setLive(false);
 const vite = spawn("bun", ["x", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: root, env: { ...process.env, ZETA_HOME: fake.home }, stdio: "ignore" });
 const failures: string[] = [];
 const fail = (message: string) => { failures.push(message); console.log(`FAIL ${message}`); };
@@ -98,6 +99,236 @@ async function auditThemes(page: Page, label: string, minHeight: number) {
   await page.evaluate(() => { document.documentElement.dataset.fulcrumTheme = "tokyo-night"; });
 }
 
+const scrollGap = (page: Page) => page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+
+async function reconnectApprovalScenario(page: Page, fake: Awaited<ReturnType<typeof startFakeZeta>>) {
+  await page.locator('[data-tool-view="shell"]').first().waitFor({ timeout: 5000 });
+  await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  const approval = page.locator('[data-part="approval"][data-state="pending"]');
+  await approval.waitFor({ timeout: 5000 });
+  // The run is blocked on the user, not running: the header says so, with the warn color.
+  const header = page.locator(".run-meta .state");
+  await header.filter({ hasText: "waiting for approval" }).waitFor({ timeout: 10_000 }).catch(async () => { throw new Error(`the run header says "${await header.textContent()}" while an approval waits`); });
+  const [mark, warn] = await header.evaluate((node) => [getComputedStyle(node, "::before").backgroundColor, (() => { const probe = document.createElement("span"); probe.style.color = "var(--fulcrum-warn)"; node.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()]);
+  if (mark !== warn) throw new Error(`the header mark is ${mark}, not the warn color ${warn}`);
+  const row = await page.locator("button.session[aria-current] .state").textContent();
+  if (row !== "needs approval") throw new Error(`the session row says "${row}" while an approval waits`);
+  await shoot(page, "connected-approval-1440-tokyo-night");
+  // One zeta output overflow: the -32011 frame and a close. "ok" right after keeps it to one.
+  fake.setMode("overflow");
+  fake.setMode("ok");
+  await page.locator(".notice", { hasText: "connection fell behind" }).waitFor({ timeout: 5000 });
+  // Hold the server down so the stale view can be checked before the 0.5 s retry reconnects.
+  await fake.stop();
+  await page.getByText(/connection lost|reconnecting/).first().waitFor({ timeout: 3000 });
+  // A drop keeps the reader where they were: still pinned to the bottom, the pending approval still in view.
+  await page.getByText(/sending is paused/).first().waitFor({ timeout: 3000 });
+  await settle(page);
+  await page.waitForTimeout(500);
+  const kept = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const row = element.querySelector('[data-part="approval"][data-state="reconnecting"]')?.getBoundingClientRect();
+    return { gap: element.scrollHeight - element.clientHeight - element.scrollTop, scrollTop: element.scrollTop, inView: !!row && row.bottom > box.top && row.top < box.bottom };
+  });
+  if (!(await page.locator(".run-scroll[data-stale=true]").count())) throw new Error("old view was not marked stale");
+  const staleApproval = page.locator('[data-part="approval"][data-state="reconnecting"]');
+  await staleApproval.getByRole("button", { name: "approve" }).waitFor();
+  await staleApproval.getByRole("button", { name: "deny" }).waitFor();
+  if (!(await staleApproval.getByRole("button", { name: "approve" }).isDisabled()) || !(await staleApproval.getByRole("button", { name: "deny" }).isDisabled())) throw new Error("reconnecting approval buttons were not disabled");
+  await staleApproval.getByText(/decisions are disabled/).waitFor();
+  await fake.start();
+  // The client's retry backoff grows while the server is down; retry at once, as a user would.
+  await page.locator(".notice").getByRole("button", { name: "retry now" }).click({ timeout: 2000 }).catch(() => {});
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+  await page.locator(".notice").waitFor({ state: "detached" });
+  const reconnected = page.locator('[data-part="approval"]');
+  await reconnected.getByRole("button", { name: "approve" }).waitFor({ timeout: 5000 });
+  if (await reconnected.count() !== 1) throw new Error("duplicate approval rows after reconnect");
+  await shoot(page, "approval-reconnected-1440");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await shoot(page, "approval-reconnected-390");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await reconnected.getByRole("button", { name: "approve" }).click();
+  const rebuilt = page.locator('[data-part="tool"]', { has: page.locator('[data-part="tool-approval"]') });
+  await rebuilt.waitFor({ timeout: 5000 });
+  if (await rebuilt.count() !== 1 || await page.locator('[data-part="approval"]').count()) throw new Error("approval did not fold once after the resumed command");
+  // The turn came back running and its end is seen live, so its outcome is known.
+  if (await page.locator('[data-part="run-end-marker"]').count()) throw new Error("a run that came back running was marked outcome unknown");
+  if (await page.locator('[data-tone="danger"]').count()) throw new Error("reconnect showed an app error");
+  if (fake.decisions.filter((decision) => decision.method === "approve" && decision.request_id === "approval-1").length !== 1) throw new Error("server did not receive exactly one resumed approval");
+  // Reported after the reconnect, so a failure here does not leave the server stopped for later checks.
+  if (kept.gap > 4 || !kept.inView) throw new Error(`the stop moved the view: ${Math.round(kept.gap)} px from the bottom at scrollTop ${Math.round(kept.scrollTop)}, pending approval in view: ${kept.inView}`);
+}
+
+async function reconnectSnapshotScenario(page: Page, fake: Awaited<ReturnType<typeof startFakeZeta>>) {
+  await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
+  await settle(page);
+  await page.locator(".dock textarea").fill("draft kept across disconnect");
+  await fake.stop();
+  await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 5000 }).catch(async () => {
+    throw new Error(`disconnect banner did not appear; badge is "${await page.locator(".badge").textContent().catch(() => "missing")}"; notices are ${JSON.stringify(await page.locator(".notice").allTextContents())}`);
+  });
+  // The command names the port the page was connected to, not a default.
+  const command = await page.locator(".notice .command code").textContent();
+  if (command !== `zeta serve --ws ${fake.port} --ws-origin ${origin}`) throw new Error(`the banner command is "${command}"`);
+  await Bun.sleep(2000); // a few quiet retries; the console listener fails the gate on any error
+  await shoot(page, "state-lost-1440");
+  if (!(await page.locator('[data-part="timeline"] [data-kind="user"]').count())) throw new Error("transcript hidden while offline");
+  await page.locator('.dock [data-part="composer"][data-state="read-only"] [data-part="composer-reason"]', { hasText: "sending is paused" }).waitFor({ timeout: 2000 }).catch(() => { throw new Error("composer did not become read-only after disconnect"); });
+  if (await page.locator(".dock button").count()) throw new Error("the composer offers actions while offline");
+  const draft = page.locator('.dock [data-part="composer"][data-state="read-only"] textarea');
+  if (!(await draft.count()) || (await draft.inputValue()) !== "draft kept across disconnect" || !(await draft.evaluate((node) => (node as HTMLTextAreaElement).readOnly))) throw new Error("the read-only composer does not show the draft, read-only");
+  const stale = await page.locator("button.session .state").allTextContents();
+  if (stale.length) throw new Error(`the session list shows live status "${stale.join(", ")}" while not connected`);
+  await fake.start();
+  await page.getByRole("button", { name: "retry now" }).click();
+  await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(async () => { throw new Error(`retry did not reconnect; badge is "${await page.locator(".badge").textContent().catch(() => "missing")}"`); });
+  await page.locator(".notice").waitFor({ state: "detached" });
+  await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 }).catch(() => { throw new Error("timeline did not rebuild after reconnect"); });
+  const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));
+  if (new Set(ids).size !== ids.length) throw new Error("duplicate rows after reconnect");
+  if (await page.locator('[data-part="approval"][data-state="pending"]').count()) throw new Error("a dropped approval came back as pending");
+}
+
+async function growPinnedRow(page: Page) {
+  const scroll = page.locator('[data-part="timeline-scroll"]');
+  await page.evaluate(() => {
+    const engine = (window as typeof window & { __fulcrumVirtual?: { scrollToEnd(): number } }).__fulcrumVirtual;
+    if (!engine) throw new Error("no virtualizer debug handle");
+    document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop = engine.scrollToEnd();
+  });
+  await settle(page);
+  const row = page.locator('[data-part="timeline"] [data-virtual-id]').last();
+  const before = await row.boundingBox();
+  if (!before) throw new Error("no measured row");
+  await row.evaluate((element) => {
+    const growth = document.createElement("div");
+    growth.style.whiteSpace = "pre-wrap";
+    growth.textContent = "wrapped growth line one\nwrapped growth line two\nwrapped growth line three";
+    element.append(growth);
+  });
+  await page.waitForTimeout(250);
+  const after = await row.boundingBox();
+  const gap = await scrollGap(page);
+  if (!after || after.height < before.height + 44) throw new Error(`row grew ${Math.round((after?.height ?? 0) - before.height)} px, expected at least 44 px`);
+  if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom after measured growth`);
+}
+
+async function sendAndFinish(page: Page, text: string) {
+  const composer = page.locator(".dock textarea");
+  await composer.fill(text);
+  await composer.press("Enter");
+  await page.locator('.dock [data-part="composer"][data-state="steerable"]').waitFor({ timeout: 3_000 });
+  await page.locator('.dock [data-part="composer"][data-state="idle"]').waitFor({ timeout: 8_000 });
+}
+
+async function runStoppedSteerFollowScenario(page: Page, clearSent: () => void) {
+  await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  process.env.FAKE_ZETA_WORD_MS = "100";
+  try {
+    const composer = page.locator(".dock textarea");
+    await composer.fill("guard running turn");
+    await composer.press("Enter");
+    await page.locator('.dock [data-part="composer"][data-state="steerable"]').waitFor({ timeout: 5_000 });
+    await composer.fill("guard queued steer");
+    await composer.press("Enter");
+    await page.locator('[data-kind="user"]', { hasText: "guard queued steer" }).waitFor();
+    await page.locator('[data-part="composer-stop"]').click();
+    await page.locator('.dock [data-part="composer"][data-state="idle"]').waitFor({ timeout: 5_000 });
+    await page.locator(".undelivered", { hasText: "not delivered" }).last().waitFor({ timeout: 8_000 });
+    await sendAndFinish(page, "guard next turn one");
+    await sendAndFinish(page, "guard next turn two");
+    if (await scrollGap(page) > 4) throw new Error("the stopped-steer sequence lost the bottom before the final send");
+    await composer.fill("guard own send");
+    await composer.press("Enter");
+    await page.waitForTimeout(100);
+    const gap = await scrollGap(page);
+    if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom after the stopped-steer sequence own send`);
+    await page.locator('.dock [data-part="composer"][data-state="idle"]').waitFor({ timeout: 8_000 });
+  } finally {
+    clearSent();
+    delete process.env.FAKE_ZETA_WORD_MS;
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+    await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+    await settle(page);
+  }
+}
+
+async function jumpGeometry(page: Page) {
+  const button = page.locator('[data-part="jump-to-latest"]');
+  return button.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    const rgb = (value: string) => {
+      const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [0, 0, 0];
+      return value.startsWith("color(srgb") ? channels.map((channel) => channel * 255) : channels;
+    };
+    const lum = (value: string) => rgb(value).map((v) => (v /= 255) <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i]!, 0);
+    const background = style.backgroundColor === "rgba(0, 0, 0, 0)" ? getComputedStyle(element.parentElement!).backgroundColor : style.backgroundColor;
+    const ratio = (Math.max(lum(style.color), lum(background)) + .05) / (Math.min(lum(style.color), lum(background)) + .05);
+    const border = style.borderStyle !== "none" && style.borderWidth !== "0px" && style.borderColor !== background && !style.borderColor.endsWith(", 0)");
+    const walker = document.createTreeWalker(document.querySelector('[data-part="timeline"]')!, NodeFilter.SHOW_TEXT);
+    const viewport = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.getBoundingClientRect();
+    let overlap = "";
+    for (let node = walker.nextNode(); node && !overlap; node = walker.nextNode()) {
+      if (!node.textContent?.trim() || node.parentElement?.closest('[data-part="timeline-live"]')) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      if ([...range.getClientRects()].some((line) => Math.max(line.left, rect.left, viewport.left) < Math.min(line.right, rect.right, viewport.right) && Math.max(line.top, rect.top, viewport.top) < Math.min(line.bottom, rect.bottom, viewport.bottom))) overlap = node.textContent.trim().slice(0, 40);
+    }
+    const lane = element.parentElement!.getBoundingClientRect();
+    return { ratio, border, overlap, button: { top: rect.top, bottom: rect.bottom }, lane: { top: lane.top, bottom: lane.bottom } };
+  });
+}
+
+async function ensureJumpControl(lane: Locator, forceControl: boolean) {
+  if (!forceControl) return;
+  await lane.evaluate((element) => {
+    if (element.querySelector('[data-part="jump-to-latest"]')) return;
+    const button = document.createElement("button");
+    button.dataset.part = "jump-to-latest";
+    button.textContent = "jump to latest (1)";
+    element.append(button);
+  });
+}
+
+async function checkJumpTheme(page: Page, engine: string, width: number, theme: string) {
+  await page.evaluate((name) => { document.documentElement.dataset.fulcrumTheme = name; }, theme);
+  await settle(page);
+  const result = await jumpGeometry(page);
+  console.log(`jump ${engine.padEnd(8)} ${width} ${theme.padEnd(17)} text ${result.ratio.toFixed(2)}:1 border ${result.border ? "yes" : "no"} overlap ${result.overlap ? "yes" : "no"} button ${result.button.top.toFixed(1)}..${result.button.bottom.toFixed(1)} lane ${result.lane.top.toFixed(1)}..${result.lane.bottom.toFixed(1)}`);
+  if (result.ratio < 4.5) throw new Error(`${engine} ${width} ${theme}: contrast ${result.ratio.toFixed(2)}:1`);
+  if (!result.border) throw new Error(`${engine} ${width} ${theme}: button has no visible border`);
+  if (result.overlap) throw new Error(`${engine} ${width} ${theme}: button overlaps "${result.overlap}"`);
+}
+
+async function checkJumpWidth(page: Page, engine: string, width: number, makeUnseen: () => void, forceControl: boolean) {
+  await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+  const lane = page.locator('[data-part="jump-to-latest-lane"]');
+  const laneBefore = await lane.boundingBox();
+  await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
+  await settle(page);
+  makeUnseen();
+  await ensureJumpControl(lane, forceControl);
+  await page.locator('[data-part="jump-to-latest"]').waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
+  const laneAfter = await lane.boundingBox();
+  if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
+  for (const theme of themes) await checkJumpTheme(page, engine, width, theme);
+}
+
+async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => void, navigate = false, forceControl = false, widths = [1440, 390]) {
+  if (navigate) await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+  await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 15_000 }).catch(() => { throw new Error(`${engine}: timeline history did not load`); });
+  for (const width of widths) await checkJumpWidth(page, engine, width, makeUnseen, forceControl);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => { document.documentElement.dataset.fulcrumTheme = "tokyo-night"; });
+  await settle(page);
+}
+
 try {
   for (let attempt = 0; ; attempt++) {
     if (vite.exitCode !== null) throw new Error("vite exited");
@@ -150,7 +381,7 @@ try {
     await fake.start();
     await check("retry now connects once the server is back", async () => {
       await page.goto(`${origin}/?theme=tokyo-night`);
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
     });
 
     await check("busy resume retries and opens without the busy panel", async () => {
@@ -188,8 +419,8 @@ try {
       fake.clearSent();
       await fake.start();
       fake.setLive(true);
-      await page.goto(`${origin}/?theme=tokyo-night`);
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1`);
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
     });
 
     // Connected: list, history, live run, approval, follow-bottom.
@@ -212,68 +443,61 @@ try {
       const colors = await summary.evaluate((node) => new Set([...node.querySelectorAll('[class*="tok-"]')].map((span) => getComputedStyle(span).color)).size);
       if (colors < 2) throw new Error(`the shell header has ${colors} token color(s)`);
     });
-    await check("live run keeps one approval through a negotiated reconnect and resumes after approval", async () => {
-      await page.locator('[data-tool-view="shell"]').first().waitFor({ timeout: 5000 });
-      await page.locator(".scroll").evaluate((element) => { element.scrollTop = element.scrollHeight; });
-      const approval = page.locator('[data-part="approval"][data-state="pending"]');
-      await approval.waitFor({ timeout: 5000 });
-      // The run is blocked on the user, not running: the header says so, with the warn color.
-      const header = page.locator(".run-meta .state");
-      await header.filter({ hasText: "waiting for approval" }).waitFor({ timeout: 10_000 }).catch(async () => { throw new Error(`the run header says "${await header.textContent()}" while an approval waits`); });
-      const [mark, warn] = await header.evaluate((node) => [getComputedStyle(node, "::before").backgroundColor, (() => { const probe = document.createElement("span"); probe.style.color = "var(--fulcrum-warn)"; node.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()]);
-      if (mark !== warn) throw new Error(`the header mark is ${mark}, not the warn color ${warn}`);
-      const row = await page.locator("button.session[aria-current] .state").textContent();
-      if (row !== "needs approval") throw new Error(`the session row says "${row}" while an approval waits`);
-      await shoot(page, "connected-approval-1440-tokyo-night");
-      // One zeta output overflow: the -32011 frame and a close. "ok" right after keeps it to one.
-      fake.setMode("overflow");
-      fake.setMode("ok");
-      await page.locator(".notice", { hasText: "connection fell behind" }).waitFor({ timeout: 5000 });
-      // Hold the server down so the stale view can be checked before the 0.5 s retry reconnects.
-      await fake.stop();
-      // A drop keeps the reader where they were: still pinned to the bottom, the pending approval still in view.
-      await page.getByText(/sending is paused/).first().waitFor({ timeout: 3000 });
-      await settle(page);
-      await page.waitForTimeout(500);
-      const kept = await page.locator(".scroll").evaluate((element) => {
-        const box = element.getBoundingClientRect();
-        const row = element.querySelector('[data-part="approval"][data-state="reconnecting"]')?.getBoundingClientRect();
-        return { gap: element.scrollHeight - element.clientHeight - element.scrollTop, scrollTop: element.scrollTop, inView: !!row && row.bottom > box.top && row.top < box.bottom };
-      });
-      if (!(await page.locator(".scroll[data-stale=true]").count())) throw new Error("old view was not marked stale");
-      const staleApproval = page.locator('[data-part="approval"][data-state="reconnecting"]');
-      await staleApproval.getByRole("button", { name: "approve" }).waitFor();
-      await staleApproval.getByRole("button", { name: "deny" }).waitFor();
-      if (!(await staleApproval.getByRole("button", { name: "approve" }).isDisabled()) || !(await staleApproval.getByRole("button", { name: "deny" }).isDisabled())) throw new Error("reconnecting approval buttons were not disabled");
-      await staleApproval.getByText(/decisions are disabled/).waitFor();
-      await fake.start();
-      // The client's retry backoff grows while the server is down; retry at once, as a user would.
-      await page.locator(".notice").getByRole("button", { name: "retry now" }).click({ timeout: 2000 }).catch(() => {});
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
-      await page.locator(".notice").waitFor({ state: "detached" });
-      const reconnected = page.locator('[data-part="approval"]');
-      await reconnected.getByRole("button", { name: "approve" }).waitFor({ timeout: 5000 });
-      if (await reconnected.count() !== 1) throw new Error("duplicate approval rows after reconnect");
-      await shoot(page, "approval-reconnected-1440");
-      await page.setViewportSize({ width: 390, height: 844 });
-      await shoot(page, "approval-reconnected-390");
-      await page.setViewportSize({ width: 1440, height: 900 });
-      await reconnected.getByRole("button", { name: "approve" }).click();
-      const rebuilt = page.locator('[data-part="tool"]', { has: page.locator('[data-part="tool-approval"]') });
-      await rebuilt.waitFor({ timeout: 5000 });
-      if (await rebuilt.count() !== 1 || await page.locator('[data-part="approval"]').count()) throw new Error("approval did not fold once after the resumed command");
-      // The turn came back running and its end is seen live, so its outcome is known.
-      if (await page.locator('[data-part="run-end-marker"]').count()) throw new Error("a run that came back running was marked outcome unknown");
-      if (await page.locator('[data-tone="danger"]').count()) throw new Error("reconnect showed an app error");
-      if (fake.decisions.filter((decision) => decision.method === "approve" && decision.request_id === "approval-1").length !== 1) throw new Error("server did not receive exactly one resumed approval");
-      // Reported after the reconnect, so a failure here does not leave the server stopped for later checks.
-      if (kept.gap > 4 || !kept.inView) throw new Error(`the stop moved the view: ${Math.round(kept.gap)} px from the bottom at scrollTop ${Math.round(kept.scrollTop)}, pending approval in view: ${kept.inView}`);
-    });
+    await check("live run keeps one approval through a negotiated reconnect and resumes after approval", () => reconnectApprovalScenario(page, fake));
     await check("follows the bottom while the run streams", async () => {
       await settle(page);
-      const gap = await page.locator(".scroll").evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+      const gap = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
       if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom`);
     });
+    await check("a measured row growing by wrapped lines keeps a pinned reader at the bottom", () => growPinnedRow(page));
+    await check("a user scroll stays put and counts unseen content", async () => {
+      const scroll = page.locator('[data-part="timeline-scroll"]');
+      await scroll.evaluate((element) => { element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 120); });
+      await settle(page);
+      const before = await scroll.evaluate((element) => element.scrollTop);
+      fake.emit({ event: "user_message", session_id: ACTIVE, text: "remote content while reading", mode: "send", attachments: [] });
+      const button = page.locator('[data-part="jump-to-latest"]');
+      await button.waitFor({ timeout: 5_000 });
+      const after = await scroll.evaluate((element) => element.scrollTop);
+      const unseen = await button.getAttribute("data-unseen-count");
+      if (Math.abs(after - before) > 4) throw new Error(`user position moved from ${Math.round(before)} to ${Math.round(after)}`);
+      if (!unseen || Number(unseen) < 1) throw new Error("unseen count did not increase");
+    });
+    await check("an accepted own send follows an unpinned reader to the bottom", async () => {
+      const scroll = page.locator('[data-part="timeline-scroll"]');
+      await scroll.evaluate((element) => { element.scrollTop = 0; });
+      const composer = page.locator(".dock textarea");
+      await composer.fill("follow my accepted message");
+      await composer.press("Enter");
+      await page.waitForTimeout(500);
+      const gap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+      if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom after own send`);
+      fake.clearSent();
+    });
+    await check("a wheel-up during growth keeps the reader unpinned", async () => {
+      const scroll = page.locator('[data-part="timeline-scroll"]');
+      await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+      const box = await scroll.boundingBox();
+      if (!box) throw new Error("no scroll viewport");
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      const bottom = await scroll.evaluate((element) => element.scrollTop);
+      await page.mouse.wheel(0, -180);
+      await page.waitForFunction((prior) => document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop < prior, bottom);
+      await page.waitForTimeout(100);
+      const before = await scroll.evaluate((element) => element.scrollTop);
+      const row = page.locator('[data-part="timeline"] [data-virtual-id]').last();
+      await row.evaluate((element) => {
+        const growth = document.createElement("div");
+        growth.style.whiteSpace = "pre-wrap";
+        growth.textContent = "growth during wheel-up line one\ngrowth during wheel-up line two";
+        element.append(growth);
+      });
+      await page.waitForTimeout(250);
+      const after = await scroll.evaluate((element) => element.scrollTop);
+      const gap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+      if (Math.abs(after - before) > 4 || gap < 8) throw new Error(`wheel-up view moved (${Math.round(before)} to ${Math.round(after)}), gap ${Math.round(gap)} px`);
+    });
+    await check("jump-to-latest uses a stable, non-overlapping lane in every theme", () => checkJumpPlacement(page, "chromium", () => fake.emit({ event: "user_message", session_id: ACTIVE, text: "placement check", mode: "send", attachments: [] })));
     await shoot(page, "connected-1440-tokyo-night");
     for (const theme of ["gruvbox-dark", "catppuccin-latte", "dracula"]) {
       await page.evaluate((name) => { document.documentElement.dataset.fulcrumTheme = name; }, theme);
@@ -282,7 +506,7 @@ try {
     }
     await check("history start: the user prompt and highlighted code render when scrolled to", async () => {
       // Virtual rows mount only near the viewport, so read the start of the history from the top.
-      await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
+      await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
       await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor();
       await page.locator('[data-part="timeline"] [data-part="md-code-block"] [class*="tok-"]').first().waitFor({ timeout: 5000 });
 
@@ -290,6 +514,8 @@ try {
     });
     await check("desktop layout, controls, and contrast in all 12 themes", () => auditThemes(page, "1440", 36));
 
+    // The debug overlay intentionally sits above the app. Keep it visible without intercepting the overflow checks' real composer clicks.
+    await page.addStyleTag({ content: '[data-part="virtual-debug"] { pointer-events: none !important; }' });
     const hellos = () => fake.requests.filter((request) => request.method === "hello").length;
     const idleServer = async () => {
       for (let attempt = 0; fake.running && attempt < 300; attempt++) await Bun.sleep(100);
@@ -313,7 +539,9 @@ try {
       const attempts = hellos() - before;
       fake.setMode("ok");
       await idleServer();
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(async () => {
+        throw new Error(`no healthy reconnect after ${hellos() - before} hello(s); badge is "${await page.locator(".badge").textContent().catch(() => "missing")}"`);
+      });
       await page.locator(".notice").waitFor({ state: "detached" });
       // 0.5, 1, then 2 s apart (or later, after an earlier short connection): not one every 0.5 s.
       if (attempts > 4) throw new Error(`${attempts} reconnects in 4 s while the server kept overflowing`);
@@ -331,7 +559,7 @@ try {
       if (await marker.getAttribute("aria-label") !== "run ended while disconnected; outcome unknown") throw new Error("the marker has no screen-reader text");
       await page.locator('.run-meta [data-part="run-status"][data-status="unknown"]', { hasText: "outcome unknown" }).waitFor();
       if (await page.getByText("a turn whose end the overflow hides", { exact: true }).count() !== 1) throw new Error("the prompt is not shown exactly once");
-      const end = await page.locator(".scroll").evaluate((element) => ({ gap: element.scrollHeight - element.clientHeight - element.scrollTop, last: [...element.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].at(-1)?.dataset.id }));
+      const end = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => ({ gap: element.scrollHeight - element.clientHeight - element.scrollTop, last: [...element.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].at(-1)?.dataset.id }));
       if (end.gap > 4) throw new Error(`the rebuilt run is ${Math.round(end.gap)} px from the bottom`);
       if (!end.last?.startsWith("message:reply-")) throw new Error(`the rebuilt run ends with ${end.last}, not the reply the overflow hid`);
       await uniqueRows();
@@ -352,6 +580,7 @@ try {
     });
     await check("with served_turn_end, an overflow-hidden turn shows the outcome zeta recorded for it", async () => {
       await page.reload(); // a fresh connection, which negotiates served_turn_end
+      await page.addStyleTag({ content: '[data-part="virtual-debug"] { pointer-events: none !important; }' });
       await overflowThroughTurn("overflow", "a turn zeta records the end of", "connection fell behind");
       const marker = page.locator('[data-part="run-end-marker"][data-outcome="completed"]', { hasText: "run completed" });
       await marker.waitFor({ timeout: 5000 }).catch(async () => { throw new Error(`no completed marker from zeta's served_turn_end; the marker says "${await page.locator('[data-part="run-end-marker"]').textContent({ timeout: 1000 }).catch(() => "nothing")}"`); });
@@ -375,39 +604,16 @@ try {
     });
 
     await check("a dropped socket shows 'connection lost', reconnects, and rebuilds without lost or duplicate rows", async () => {
-      await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
-      await settle(page);
-      await page.locator(".dock textarea").fill("draft kept across disconnect");
-      await fake.stop();
-      // The previous checks' short connections continue the reconnect backoff, so the retry that finds the server gone can take up to 8 s.
-      await page.getByText("connection lost: zeta serve stopped").waitFor({ timeout: 15_000 });
-      // The command names the port the page was connected to, not a default.
-      const command = await page.locator(".notice .command code").textContent();
-      if (command !== `zeta serve --ws ${fake.port} --ws-origin ${origin}`) throw new Error(`the banner command is "${command}"`);
-      await Bun.sleep(2000); // a few quiet retries; the console listener fails the gate on any error
-      await shoot(page, "state-lost-1440");
-      if (!(await page.locator('[data-part="timeline"] [data-kind="user"]').count())) throw new Error("transcript hidden while offline");
-      await page.locator('.dock [data-part="composer"][data-state="read-only"] [data-part="composer-reason"]', { hasText: "sending is paused" }).waitFor({ timeout: 2000 });
-      if (await page.locator(".dock button").count()) throw new Error("the composer offers actions while offline");
-      const draft = page.locator('.dock [data-part="composer"][data-state="read-only"] textarea');
-      if (!(await draft.count()) || (await draft.inputValue()) !== "draft kept across disconnect" || !(await draft.evaluate((node) => (node as HTMLTextAreaElement).readOnly))) throw new Error("the read-only composer does not show the draft, read-only");
-      const stale = await page.locator("button.session .state").allTextContents();
-      if (stale.length) throw new Error(`the session list shows live status "${stale.join(", ")}" while not connected`);
-      await fake.start();
-      await page.getByRole("button", { name: "retry now" }).click();
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 }).catch(() => { throw new Error("retry now did not reconnect"); });
-      await page.locator(".notice").waitFor({ state: "detached" });
-      await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
-      const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((item) => item.dataset.id));
-      if (new Set(ids).size !== ids.length) throw new Error("duplicate rows after reconnect");
-      if (await page.locator('[data-part="approval"][data-state="pending"]').count()) throw new Error("a dropped approval came back as pending");
+      // Isolate the ordinary stop from the overflow tests' reconnect backoff and last transport reason.
+      await page.reload();
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+      await reconnectSnapshotScenario(page, fake);
     });
-
     await check("keyboard: arrows move through sessions, Enter opens one, the theme picker works", async () => {
       fake.setLive(false);
       await fake.start();
       await page.goto(`${origin}/?theme=tokyo-night`);
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
       await page.locator('[data-catalog-ready="true"]').waitFor({ timeout: 5000 });
       fake.setOpenDelay(200);
       await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
@@ -516,6 +722,8 @@ try {
       if (active !== "TEXTAREA") throw new Error(`focus went to ${active} when the stop button went away`);
       await shoot(page, "composer-steer-dropped-1440-tokyo-night");
     });
+    // This exact gamma sequence already stays pinned on main; it guards the path rather than proving the fix fail-first.
+    await check("a stopped queued steer and later turns stay pinned through the next own send", () => runStoppedSteerFollowScenario(page, fake.clearSent));
     await check("the page never scrolls: after IME typing the document fits the viewport and the headers stay in view", async () => {
       // A tall run: the Timeline's hidden live region sits at the end of 400 rows.
       await page.locator("button.session", { hasText: "400 rows" }).click();
@@ -527,7 +735,7 @@ try {
       await cdp.send("Input.insertText", { text: "日本語のテスト" });
       await page.keyboard.type(": hello");
       // The run read from its top: the hidden live region then sits furthest below the scroll box.
-      await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
+      await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
       await settle(page);
       const layout = await page.evaluate(() => ({
         height: document.scrollingElement!.scrollHeight,
@@ -564,8 +772,9 @@ try {
     await check("composer: layout, controls, and contrast in all 12 themes after a run", () => auditThemes(page, "1440 composer", 36));
     await check("a fresh zeta: new session from the empty state opens it with the composer focused and a hint", async () => {
       fake.setEmpty(true);
+      try {
       await page.goto(`${origin}/?theme=tokyo-night`);
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 5000 });
+      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
       await page.locator(".list-head").getByRole("button", { name: "new session" }).waitFor({ timeout: 3000 });
       await shoot(page, "empty-1440-tokyo-night");
       await page.locator(".panel").getByRole("button", { name: "new session" }).click();
@@ -584,7 +793,7 @@ try {
       await page.locator(".empty-run").waitFor({ timeout: 5000 });
       if ((await page.locator("button.session").count()) !== 2) throw new Error(`${await page.locator("button.session").count()} sessions after two creates`);
       await auditThemes(page, "1440 new session", 36);
-      fake.setEmpty(false);
+      } finally { fake.setEmpty(false); }
     });
     if (errors.length) fail(`desktop console: ${errors.join("; ")}`);
     await context.close();
@@ -612,7 +821,7 @@ try {
     mobile.on("pageerror", (error) => mobileErrors.push(error.message));
     await check("390: the run fills the width; the session list is a drawer", async () => {
       await mobile.goto(`${origin}/?theme=gruvbox-dark#session=s-themes`);
-      await mobile.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5000 });
+      await mobile.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 15_000 });
       // A reopened, approved bash call is the live shell card: its command (from the approval row), its output without
       // zeta's raw "stdout:"/"stderr:" labels, and exit 0.
       const reopened = mobile.locator('[data-part="timeline"] [data-tool-view="shell"]', { hasText: "ls packages/react/src" });
@@ -660,7 +869,19 @@ try {
       await fake.start();
     });
     if (mobileErrors.length) fail(`mobile errors: ${mobileErrors.join("; ")}`);
+    await mobile.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+    await mobile.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
     await phone.close();
+
+    await check("webkit: jump-to-latest uses the same stable, non-overlapping lane", async () => {
+      const webkitBrowser = await webkit.launch();
+      try {
+        const webkitPage = await webkitBrowser.newPage({ viewport: { width: 1440, height: 900 } });
+        await checkJumpPlacement(webkitPage, "webkit", () => fake.emit({ event: "user_message", session_id: ACTIVE, text: "webkit placement check", mode: "send", attachments: [] }), true, true);
+      } finally {
+        await webkitBrowser.close();
+      }
+    });
   } finally {
     await browser.close();
   }

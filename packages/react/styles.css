@@ -57,9 +57,21 @@
 }
 [data-part="resync-retry"]:hover { text-decoration: underline; text-underline-offset: 3px; }
 [data-part="resync-retry"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
-/* The scroll root (the Timeline's parent) contains the hidden live region, which is absolutely positioned: unpositioned,
-   it would sit below the content and stretch the host page. Zero specificity, so a host's own position wins. */
+/* The timeline's scroll root positions the hidden live region, including when a host supplies it. */
 :where(:has(> [data-part="timeline"])) { position: relative; }
+/* Owned virtual mode keeps transcript text and its permanent jump lane in separate rows. */
+[data-part="timeline-frame"] {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+[data-part="timeline-scroll"] {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
 
 /* How the run ended, when the host reports it; warn (the base) for disconnected and unknown. */
 [data-part="run-status"][data-status="unknown"] { color: var(--fulcrum-warn); font-weight: 700; }
@@ -83,17 +95,23 @@
   contain-intrinsic-size: auto 2.5em;
 }
 
+[data-part="jump-to-latest-lane"] {
+  flex: 0 0 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--fulcrum-bg);
+}
 [data-part="jump-to-latest"] {
-  position: sticky;
-  inset-block-end: 12px;
-  min-height: 32px;
+  display: block;
+  min-height: 44px;
   margin: 0 auto;
   padding: 0 12px;
   appearance: none;
-  border: 0;
+  border: 1px solid var(--fulcrum-border);
   border-radius: 0;
-  background: var(--fulcrum-fg);
-  color: var(--fulcrum-bg);
+  background: var(--fulcrum-panel);
+  color: var(--fulcrum-fg);
   font: 600 13px/1 var(--fulcrum-font);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
@@ -613,7 +631,8 @@ button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-a
 
 /* Run navigator: a fixed run bar (back, breadcrumb, state) over one scrolling timeline. Give it a height. */
 [data-part="run-navigator"] { display: flex; flex-direction: column; min-height: 0; background: var(--fulcrum-bg); }
-[data-part="run-scroll"] { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+[data-part="run-scroll"] { flex: 1; min-height: 0; overflow: hidden; }
+[data-part="timeline-scroll"] { overscroll-behavior: contain; }
 [data-part="run-bar"] {
   flex: none;
   display: flex;
