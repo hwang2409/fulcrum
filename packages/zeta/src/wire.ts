@@ -46,3 +46,6 @@ export interface Message {
   tool_result?: ToolResult;
   metadata?: JsonObject;
 }
+
+export type ServedTurnEndReason = "completed" | "user_stop" | "error" | "disconnect";
+export type ServedTurnEnd = { turn_id: string; reason: ServedTurnEndReason };

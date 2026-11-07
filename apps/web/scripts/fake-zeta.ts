@@ -202,6 +202,7 @@ export function composerMethods(wait: (ms: number) => Promise<void>, running: { 
     clearSent() { sent.splice(0); },
     get history() { return histories[ACTIVE] ?? []; },
     get aborts() { return aborts; },
+    get currentTurnId() { return chat?.id; },
     /** The reply body for a composer method, or undefined for any other method. */
     handle(method: string, params: Json, active: string | null, send: Send): Json | undefined {
       if (method === "send" || method === "steer") return deliver(method, params, active, send);
@@ -354,6 +355,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         const resolve = decide;
         decide = null;
         running = false;
+        if (composer.currentTurnId) histories[ACTIVE]!.push(servedTurnEnd(composer.currentTurnId, "disconnect"));
         histories[ACTIVE]!.push({ id: `drop-${Date.now()}`, role: "tool_result", content: [text("")], tool_result: result("live-2", "connection lost", { is_canceled: true }) });
         if (currentHistoryMode === "new") histories[ACTIVE]!.push({ id: `approval-end-drop-${Date.now()}`, role: "system", event: "approval_end", request_id: "approval-1", tool_call: approvalCall, data: { decision: "abort", reason: "controller_disconnected" } });
         resolve("abort");
@@ -428,7 +430,10 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if (method === "status") {
           const pending = decide && !approvalAborted ? [{ request_id: "approval-1", tool_call: { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } }, delegated: false }] : [];
-          return reply({ result: { session: active ? sessions.find((session) => session.session_id === active) ?? null : null, state: running ? (decide ? "tool" : "running") : "idle", explicit_finish: false, pending_approvals: pending, usage: {}, compaction_markers: 0 } });
+          // mirrors zeta src/zeta/server/connections.py at 5feea2fc:594-629, 762-869.
+          const servedEnds = negotiatedFeatures.get(socket as object)?.has("served_turn_end");
+          const latestEnd = [...(histories[active!] ?? [])].reverse().find((row) => row.event === "served_turn_end");
+          return reply({ result: { session: active ? sessions.find((session) => session.session_id === active) ?? null : null, state: running ? (decide ? "tool" : "running") : "idle", explicit_finish: false, pending_approvals: pending, usage: {}, compaction_markers: 0, ...(servedEnds ? { last_turn_outcome: latestEnd?.data ?? null } : {}) } });
         }
         if (method === "resume") {
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
