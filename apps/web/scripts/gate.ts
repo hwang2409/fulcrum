@@ -11,7 +11,7 @@
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright";
+import { chromium, webkit, type Page } from "playwright";
 import { themes } from "@fulcrum/react";
 import { ACTIVE, startFakeZeta } from "./fake-zeta";
 
@@ -95,6 +95,139 @@ async function auditThemes(page: Page, label: string, minHeight: number) {
     for (const token of tokens) (tokenReport.get(theme) ?? tokenReport.set(theme, new Set()).get(theme)!).add(token.replace(/ "[^"]*"/, ""));
   }
   await page.evaluate(() => { document.documentElement.dataset.fulcrumTheme = "tokyo-night"; });
+}
+
+const scrollGap = (page: Page) => page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+
+async function growPinnedRow(page: Page) {
+  const scroll = page.locator('[data-part="timeline-scroll"]');
+  await page.evaluate(() => {
+    const engine = (window as typeof window & { __fulcrumVirtual?: { scrollToEnd(): number } }).__fulcrumVirtual;
+    if (!engine) throw new Error("no virtualizer debug handle");
+    document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop = engine.scrollToEnd();
+  });
+  await settle(page);
+  const row = page.locator('[data-part="timeline"] [data-virtual-id]').last();
+  const before = await row.boundingBox();
+  if (!before) throw new Error("no measured row");
+  await row.evaluate((element) => {
+    const growth = document.createElement("div");
+    growth.style.whiteSpace = "pre-wrap";
+    growth.textContent = "wrapped growth line one\nwrapped growth line two\nwrapped growth line three";
+    element.append(growth);
+  });
+  await page.waitForTimeout(250);
+  const after = await row.boundingBox();
+  const gap = await scrollGap(page);
+  if (!after || after.height < before.height + 44) throw new Error(`row grew ${Math.round((after?.height ?? 0) - before.height)} px, expected at least 44 px`);
+  if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom after measured growth`);
+}
+
+async function sendAndFinish(page: Page, text: string) {
+  const composer = page.locator(".dock textarea");
+  await composer.fill(text);
+  await composer.press("Enter");
+  await page.locator('.dock [data-part="composer"][data-state="steerable"]').waitFor({ timeout: 3_000 });
+  await page.locator('.dock [data-part="composer"][data-state="idle"]').waitFor({ timeout: 8_000 });
+}
+
+async function runStoppedSteerFollowScenario(page: Page, clearSent: () => void) {
+  await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 5_000 });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  process.env.FAKE_ZETA_WORD_MS = "100";
+  try {
+    const composer = page.locator(".dock textarea");
+    await composer.fill("guard running turn");
+    await composer.press("Enter");
+    await page.locator('.dock [data-part="composer"][data-state="steerable"]').waitFor({ timeout: 5_000 });
+    await composer.fill("guard queued steer");
+    await composer.press("Enter");
+    await page.locator('[data-kind="user"]', { hasText: "guard queued steer" }).waitFor();
+    await page.locator('[data-part="composer-stop"]').click();
+    await page.locator('.dock [data-part="composer"][data-state="idle"]').waitFor({ timeout: 5_000 });
+    await page.locator(".undelivered", { hasText: "not delivered" }).last().waitFor({ timeout: 8_000 });
+    await sendAndFinish(page, "guard next turn one");
+    await sendAndFinish(page, "guard next turn two");
+    if (await scrollGap(page) > 4) throw new Error("the stopped-steer sequence lost the bottom before the final send");
+    await composer.fill("guard own send");
+    await composer.press("Enter");
+    await page.waitForTimeout(100);
+    const gap = await scrollGap(page);
+    if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom after the stopped-steer sequence own send`);
+    await page.locator('.dock [data-part="composer"][data-state="idle"]').waitFor({ timeout: 8_000 });
+  } finally {
+    clearSent();
+    delete process.env.FAKE_ZETA_WORD_MS;
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+    await page.locator('[data-run-ready="true"]').waitFor({ timeout: 5_000 });
+    await settle(page);
+  }
+}
+
+async function jumpGeometry(page: Page) {
+  const button = page.locator('[data-part="jump-to-latest"]');
+  return button.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    const rgb = (value: string) => {
+      const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [0, 0, 0];
+      return value.startsWith("color(srgb") ? channels.map((channel) => channel * 255) : channels;
+    };
+    const lum = (value: string) => rgb(value).map((v) => (v /= 255) <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i]!, 0);
+    const background = style.backgroundColor === "rgba(0, 0, 0, 0)" ? getComputedStyle(element.parentElement!).backgroundColor : style.backgroundColor;
+    const ratio = (Math.max(lum(style.color), lum(background)) + .05) / (Math.min(lum(style.color), lum(background)) + .05);
+    const border = style.borderStyle !== "none" && style.borderWidth !== "0px" && style.borderColor !== background && !style.borderColor.endsWith(", 0)");
+    const walker = document.createTreeWalker(document.querySelector('[data-part="timeline"]')!, NodeFilter.SHOW_TEXT);
+    const viewport = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.getBoundingClientRect();
+    let overlap = "";
+    for (let node = walker.nextNode(); node && !overlap; node = walker.nextNode()) {
+      if (!node.textContent?.trim() || node.parentElement?.closest('[data-part="timeline-live"]')) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      if ([...range.getClientRects()].some((line) => Math.max(line.left, rect.left, viewport.left) < Math.min(line.right, rect.right, viewport.right) && Math.max(line.top, rect.top, viewport.top) < Math.min(line.bottom, rect.bottom, viewport.bottom))) overlap = node.textContent.trim().slice(0, 40);
+    }
+    const lane = element.parentElement!.getBoundingClientRect();
+    return { ratio, border, overlap, button: { top: rect.top, bottom: rect.bottom }, lane: { top: lane.top, bottom: lane.bottom } };
+  });
+}
+
+async function checkJumpPlacement(page: Page, engine: string, makeUnseen: () => void, navigate = false, forceControl = false, widths = [1440, 390]) {
+  if (navigate) await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+  await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 5_000 }).catch(() => { throw new Error(`${engine}: timeline history did not load`); });
+  for (const width of widths) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+    const lane = page.locator('.jump-lane, [data-part="jump-to-latest-lane"]').first();
+    const laneBefore = await lane.boundingBox();
+    await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
+    await settle(page);
+    makeUnseen();
+    if (forceControl) await lane.evaluate((element) => {
+      if (element.querySelector('[data-part="jump-to-latest"]')) return;
+      const button = document.createElement("button");
+      button.dataset.part = "jump-to-latest";
+      button.textContent = "jump to latest (1)";
+      element.append(button);
+    });
+    const button = page.locator('[data-part="jump-to-latest"]');
+    await button.waitFor({ timeout: 5_000 }).catch(() => { throw new Error(`${engine} ${width}: jump control did not appear`); });
+    const laneAfter = await lane.boundingBox();
+    if (!laneBefore || !laneAfter || Math.abs(laneBefore.height - laneAfter.height) > .5) throw new Error(`${engine} ${width}: lane shifted while the control toggled`);
+    for (const theme of themes) {
+      await page.evaluate((name) => { document.documentElement.dataset.fulcrumTheme = name; }, theme);
+      await settle(page);
+      const result = await jumpGeometry(page);
+      console.log(`jump ${engine.padEnd(8)} ${width} ${theme.padEnd(17)} text ${result.ratio.toFixed(2)}:1 border ${result.border ? "yes" : "no"} overlap ${result.overlap ? "yes" : "no"} button ${result.button.top.toFixed(1)}..${result.button.bottom.toFixed(1)} lane ${result.lane.top.toFixed(1)}..${result.lane.bottom.toFixed(1)}`);
+      if (result.ratio < 4.5) throw new Error(`${engine} ${width} ${theme}: contrast ${result.ratio.toFixed(2)}:1`);
+      if (!result.border) throw new Error(`${engine} ${width} ${theme}: button has no visible border`);
+      if (result.overlap) throw new Error(`${engine} ${width} ${theme}: button overlaps "${result.overlap}"`);
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => { document.documentElement.dataset.fulcrumTheme = "tokyo-night"; });
+  await settle(page);
 }
 
 try {
@@ -201,7 +334,7 @@ try {
     });
     await check("live run keeps one approval through a negotiated reconnect and resumes after approval", async () => {
       await page.locator('[data-tool-view="shell"]').first().waitFor({ timeout: 5000 });
-      await page.locator(".scroll").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+      await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
       const approval = page.locator('[data-part="approval"][data-state="pending"]');
       await approval.waitFor({ timeout: 5000 });
       // The run is blocked on the user, not running: the header says so, with the warn color.
@@ -220,12 +353,12 @@ try {
       await page.getByText(/sending is paused/).first().waitFor({ timeout: 3000 });
       await settle(page);
       await page.waitForTimeout(500);
-      const kept = await page.locator(".scroll").evaluate((element) => {
+      const kept = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => {
         const box = element.getBoundingClientRect();
         const row = element.querySelector('[data-part="approval"][data-state="reconnecting"]')?.getBoundingClientRect();
         return { gap: element.scrollHeight - element.clientHeight - element.scrollTop, scrollTop: element.scrollTop, inView: !!row && row.bottom > box.top && row.top < box.bottom };
       });
-      if (!(await page.locator(".scroll[data-stale=true]").count())) throw new Error("old view was not marked stale");
+      if (!(await page.locator(".run-scroll[data-stale=true]").count())) throw new Error("old view was not marked stale");
       const staleApproval = page.locator('[data-part="approval"][data-state="reconnecting"]');
       await staleApproval.getByRole("button", { name: "approve" }).waitFor();
       await staleApproval.getByRole("button", { name: "deny" }).waitFor();
@@ -254,35 +387,14 @@ try {
     });
     await check("follows the bottom while the run streams", async () => {
       await settle(page);
-      const gap = await page.locator(".scroll").evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+      const gap = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
       if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom`);
     });
-    await check("a measured row growing by wrapped lines keeps a pinned reader at the bottom", async () => {
-      const scroll = page.locator(".scroll");
-      await page.evaluate(() => {
-        const engine = (window as typeof window & { __fulcrumVirtual?: { scrollToEnd(): number } }).__fulcrumVirtual;
-        if (!engine) throw new Error("no virtualizer debug handle");
-        document.querySelector<HTMLElement>(".scroll")!.scrollTop = engine.scrollToEnd();
-      });
-      await settle(page);
-      const row = page.locator('[data-part="timeline"] [data-virtual-id]').last();
-      const before = await row.boundingBox();
-      if (!before) throw new Error("no measured row");
-      await row.evaluate((element) => {
-        const growth = document.createElement("div");
-        growth.style.whiteSpace = "pre-wrap";
-        growth.textContent = "wrapped growth line one\nwrapped growth line two\nwrapped growth line three";
-        element.append(growth);
-      });
-      await page.waitForTimeout(250);
-      const after = await row.boundingBox();
-      const gap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
-      if (!after || after.height < before.height + 44) throw new Error(`row grew ${Math.round((after?.height ?? 0) - before.height)} px, expected at least 44 px`);
-      if (gap > 4) throw new Error(`${Math.round(gap)} px from the bottom after measured growth`);
-    });
+    await check("a measured row growing by wrapped lines keeps a pinned reader at the bottom", () => growPinnedRow(page));
     await check("a user scroll stays put and counts unseen content", async () => {
-      const scroll = page.locator(".scroll");
+      const scroll = page.locator('[data-part="timeline-scroll"]');
       await scroll.evaluate((element) => { element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 120); });
+      await settle(page);
       const before = await scroll.evaluate((element) => element.scrollTop);
       fake.emit({ event: "user_message", session_id: ACTIVE, text: "remote content while reading", mode: "send", attachments: [] });
       const button = page.locator('[data-part="jump-to-latest"]');
@@ -293,7 +405,7 @@ try {
       if (!unseen || Number(unseen) < 1) throw new Error("unseen count did not increase");
     });
     await check("an accepted own send follows an unpinned reader to the bottom", async () => {
-      const scroll = page.locator(".scroll");
+      const scroll = page.locator('[data-part="timeline-scroll"]');
       await scroll.evaluate((element) => { element.scrollTop = 0; });
       const composer = page.locator(".dock textarea");
       await composer.fill("follow my accepted message");
@@ -304,14 +416,14 @@ try {
       fake.clearSent();
     });
     await check("a wheel-up during growth keeps the reader unpinned", async () => {
-      const scroll = page.locator(".scroll");
+      const scroll = page.locator('[data-part="timeline-scroll"]');
       await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
       const box = await scroll.boundingBox();
       if (!box) throw new Error("no scroll viewport");
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       const bottom = await scroll.evaluate((element) => element.scrollTop);
       await page.mouse.wheel(0, -180);
-      await page.waitForFunction((prior) => document.querySelector<HTMLElement>(".scroll")!.scrollTop < prior, bottom);
+      await page.waitForFunction((prior) => document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop < prior, bottom);
       await page.waitForTimeout(100);
       const before = await scroll.evaluate((element) => element.scrollTop);
       const row = page.locator('[data-part="timeline"] [data-virtual-id]').last();
@@ -326,53 +438,7 @@ try {
       const gap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
       if (Math.abs(after - before) > 4 || gap < 8) throw new Error(`wheel-up view moved (${Math.round(before)} to ${Math.round(after)}), gap ${Math.round(gap)} px`);
     });
-    await check("jump-to-latest is bordered, readable, and does not cover text at 390 px", async () => {
-      await page.setViewportSize({ width: 390, height: 844 });
-      const scroll = page.locator(".scroll");
-      await scroll.evaluate((element) => { element.scrollTop = 0; });
-      fake.emit({ event: "user_message", session_id: ACTIVE, text: "remote content for the jump control", mode: "send", attachments: [] });
-      const button = page.locator('[data-part="jump-to-latest"]');
-      await button.waitFor({ timeout: 5_000 });
-      await shoot(page, "jump-to-latest-390");
-      const pillProblems: string[] = [];
-      for (const theme of themes) {
-        await page.evaluate((name) => { document.documentElement.dataset.fulcrumTheme = name; }, theme);
-        await settle(page);
-        const result = await button.evaluate((element) => {
-          const style = getComputedStyle(element);
-          const rect = element.getBoundingClientRect();
-          const rgb = (value: string) => {
-            const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [0, 0, 0];
-            return value.startsWith("color(srgb") ? channels.map((channel) => channel * 255) : channels;
-          };
-          const lum = (value: string) => rgb(value).map((v) => (v /= 255) <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i]!, 0);
-          const background = style.backgroundColor === "rgba(0, 0, 0, 0)" ? getComputedStyle(element.parentElement!).backgroundColor : style.backgroundColor;
-          const fg = lum(style.color);
-          const bg = lum(background);
-          const ratio = (Math.max(fg, bg) + .05) / (Math.min(fg, bg) + .05);
-          const border = style.borderStyle !== "none" && style.borderWidth !== "0px" && !style.borderColor.endsWith(", 0)");
-          const walker = document.createTreeWalker(document.querySelector('[data-part="timeline"]')!, NodeFilter.SHOW_TEXT);
-          let overlap = "";
-          const viewport = document.querySelector(".scroll")!.getBoundingClientRect();
-          if (rect.left < viewport.right && rect.right > viewport.left && rect.top < viewport.bottom && rect.bottom > viewport.top) {
-            for (let node = walker.nextNode(); node && !overlap; node = walker.nextNode()) {
-              if (!node.textContent?.trim() || node.parentElement?.closest('[data-part="jump-to-latest"], [data-part="timeline-live"]')) continue;
-              const range = document.createRange();
-              range.selectNodeContents(node);
-              if ([...range.getClientRects()].some((line) => line.left < rect.right && line.right > rect.left && line.top < rect.bottom && line.bottom > rect.top)) overlap = node.textContent.trim().slice(0, 40);
-            }
-          }
-          return { ratio, border, overlap };
-        });
-        console.log(`pill ${theme.padEnd(17)} text ${result.ratio.toFixed(2)}:1  border ${result.border ? "yes" : "no "}  mid-line overlap ${result.overlap ? "yes" : "no"}`);
-        if (result.ratio < 4.5) pillProblems.push(`${theme} contrast ${result.ratio.toFixed(2)}:1`);
-        if (!result.border) pillProblems.push(`${theme} button has no visible border`);
-        if (result.overlap) pillProblems.push(`${theme} button overlaps the text line "${result.overlap}"`);
-      }
-      await page.evaluate(() => { document.documentElement.dataset.fulcrumTheme = "tokyo-night"; });
-      await page.setViewportSize({ width: 1440, height: 900 });
-      if (pillProblems.length) throw new Error(pillProblems[0]);
-    });
+    await check("jump-to-latest uses a stable, non-overlapping lane in every theme", () => checkJumpPlacement(page, "chromium", () => fake.emit({ event: "user_message", session_id: ACTIVE, text: "placement check", mode: "send", attachments: [] })));
     await shoot(page, "connected-1440-tokyo-night");
     for (const theme of ["gruvbox-dark", "catppuccin-latte", "dracula"]) {
       await page.evaluate((name) => { document.documentElement.dataset.fulcrumTheme = name; }, theme);
@@ -381,7 +447,7 @@ try {
     }
     await check("history start: the user prompt and highlighted code render when scrolled to", async () => {
       // Virtual rows mount only near the viewport, so read the start of the history from the top.
-      await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
+      await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
       await page.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor();
       await page.locator('[data-part="timeline"] [data-part="md-code-block"] [class*="tok-"]').first().waitFor({ timeout: 5000 });
 
@@ -390,7 +456,7 @@ try {
     await check("desktop layout, controls, and contrast in all 12 themes", () => auditThemes(page, "1440", 36));
 
     await check("a dropped socket shows 'connection lost', reconnects, and rebuilds without lost or duplicate rows", async () => {
-      await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
+      await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
       await settle(page);
       await page.locator(".dock textarea").fill("draft kept across disconnect");
       await fake.stop();
@@ -530,6 +596,8 @@ try {
       if (active !== "TEXTAREA") throw new Error(`focus went to ${active} when the stop button went away`);
       await shoot(page, "composer-steer-dropped-1440-tokyo-night");
     });
+    // This exact gamma sequence already stays pinned on main; it guards the path rather than proving the fix fail-first.
+    await check("a stopped queued steer and later turns stay pinned through the next own send", () => runStoppedSteerFollowScenario(page, fake.clearSent));
     await check("the page never scrolls: after IME typing the document fits the viewport and the headers stay in view", async () => {
       // A tall run: the Timeline's hidden live region sits at the end of 400 rows.
       await page.locator("button.session", { hasText: "400 rows" }).click();
@@ -541,7 +609,7 @@ try {
       await cdp.send("Input.insertText", { text: "日本語のテスト" });
       await page.keyboard.type(": hello");
       // The run read from its top: the hidden live region then sits furthest below the scroll box.
-      await page.locator(".scroll").evaluate((element) => { element.scrollTop = 0; });
+      await page.locator('[data-part="timeline-scroll"]').evaluate((element) => { element.scrollTop = 0; });
       await settle(page);
       const layout = await page.evaluate(() => ({
         height: document.scrollingElement!.scrollHeight,
@@ -674,7 +742,19 @@ try {
       await fake.start();
     });
     if (mobileErrors.length) fail(`mobile errors: ${mobileErrors.join("; ")}`);
+    await mobile.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+    await mobile.locator('[data-run-ready="true"]').waitFor({ timeout: 5_000 });
     await phone.close();
+
+    await check("webkit: jump-to-latest uses the same stable, non-overlapping lane", async () => {
+      const webkitBrowser = await webkit.launch();
+      try {
+        const webkitPage = await webkitBrowser.newPage({ viewport: { width: 1440, height: 900 } });
+        await checkJumpPlacement(webkitPage, "webkit", () => fake.emit({ event: "user_message", session_id: ACTIVE, text: "webkit placement check", mode: "send", attachments: [] }), true, true);
+      } finally {
+        await webkitBrowser.close();
+      }
+    });
   } finally {
     await browser.close();
   }

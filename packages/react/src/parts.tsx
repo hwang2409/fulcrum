@@ -524,7 +524,7 @@ export type TimelineProps = {
   "aria-label"?: string;
   /** Increment this after a host-accepted local send to re-pin the timeline, unless the user is actively scrolling. */
   followRequest?: number;
-  /** Places the jump control in host-owned layout. By default it stays inside the scroll viewport. */
+  /** Places the jump control in host-owned layout instead of the default reserved lane. */
   renderJumpToLatest?: (control: ReactNode) => ReactNode;
   /** Virtual mode: where a new store's timeline opens. Without it, it opens at the bottom and follows. */
   initialViewport?: TimelineViewport;
@@ -534,6 +534,21 @@ export type TimelineProps = {
 
 /** A reading position by item id, not pixels: the item at the top, its offset, follow mode, and measured row sizes. */
 export type TimelineViewport = { anchorId?: string; offset: number; following: boolean; cache?: VirtualCache };
+
+function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest, scrollRef }: Pick<TimelineProps, "renderJumpToLatest" | "scrollRef"> & { children: ReactNode; unseenCount: number; scrollToEnd(): void }) {
+  const control = unseenCount > 0 ? (
+    <button type="button" data-part="jump-to-latest" data-unseen-count={unseenCount} onClick={scrollToEnd}>
+      jump to latest ({unseenCount})
+    </button>
+  ) : null;
+  if (renderJumpToLatest) return <>{children}{control && renderJumpToLatest(control)}</>;
+  return (
+    <div data-part="timeline-frame">
+      <div data-part="timeline-scroll" ref={scrollRef}>{children}</div>
+      <div data-part="jump-to-latest-lane">{control}</div>
+    </div>
+  );
+}
 
 const storeKeys = new WeakMap<object, number>();
 let nextStoreKey = 0;
@@ -625,7 +640,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
   }, [enabled, items, scrollRef]);
   if (!enabled) {
     return (
-      <>
+      <TimelineLayout unseenCount={0} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} scrollRef={scrollRef}>
         <div ref={plainRef} className={className} data-part="timeline" data-virtual="false" role="log" aria-label={ariaLabel} aria-live="off">
           <ApprovalSkip items={items} reveal={(id) => {
             const card = plainRef.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`) ?? null;
@@ -635,7 +650,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
           {items.map(({ id }) => <Row key={id} id={id} renderers={renderers} />)}
         </div>
         <LiveAnnouncer items={items} change={change} />
-      </>
+      </TimelineLayout>
     );
   }
   const mounted = list.snapshot.rows;
@@ -644,7 +659,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
     : -1;
   const retainedRow = retained >= 0 ? { ...items[retained]!, index: retained, start: -10_000, size: 0, loaded: true } : null;
   return (
-    <>
+    <TimelineLayout unseenCount={list.unseenCount} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} scrollRef={scrollRef}>
       <div
         ref={list.timelineRef}
         className={className}
@@ -693,11 +708,6 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
           {list.debug}
         </output>
       ) : null}
-      {list.unseenCount > 0 ? (renderJumpToLatest ?? ((control) => control))(
-        <button type="button" data-part="jump-to-latest" data-unseen-count={list.unseenCount} onClick={list.scrollToEnd}>
-          jump to latest ({list.unseenCount})
-        </button>,
-      ) : null}
-    </>
+    </TimelineLayout>
   );
 });

@@ -57,9 +57,22 @@
 }
 [data-part="resync-retry"]:hover { text-decoration: underline; text-underline-offset: 3px; }
 [data-part="resync-retry"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
-/* The scroll root (the Timeline's parent) contains the hidden live region, which is absolutely positioned: unpositioned,
-   it would sit below the content and stretch the host page. Zero specificity, so a host's own position wins. */
+/* The timeline's scroll root positions the hidden live region, including when a host supplies it. */
 :where(:has(> [data-part="timeline"])) { position: relative; }
+/* The default frame keeps scrolling transcript text and the jump control in separate rows. The lane is permanent,
+   so showing its control does not resize the transcript viewport. */
+[data-part="timeline-frame"] {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+[data-part="timeline-scroll"] {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
 
 /* Skip layout and paint for off-screen items in long timelines. */
 [data-part="timeline"][data-virtual="false"] > * {
@@ -67,12 +80,16 @@
   contain-intrinsic-size: auto 2.5em;
 }
 
+[data-part="jump-to-latest-lane"] {
+  flex: 0 0 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--fulcrum-bg);
+}
 [data-part="jump-to-latest"] {
-  position: sticky;
-  inset-block-end: 16px;
-  z-index: 2;
   display: block;
-  min-height: 34px;
+  min-height: 44px;
   margin: 0 auto;
   padding: 0 12px;
   appearance: none;
@@ -579,7 +596,8 @@ button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-a
 
 /* Run navigator: a fixed run bar (back, breadcrumb, state) over one scrolling timeline. Give it a height. */
 [data-part="run-navigator"] { display: flex; flex-direction: column; min-height: 0; background: var(--fulcrum-bg); }
-[data-part="run-scroll"] { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+[data-part="run-scroll"] { flex: 1; min-height: 0; overflow: hidden; }
+[data-part="timeline-scroll"] { overscroll-behavior: contain; }
 [data-part="run-bar"] {
   flex: none;
   display: flex;

@@ -288,7 +288,7 @@ export function RunNavigator({ store, source, path, onPathChange, runId, label =
         <span data-part="run-notice" role="status" data-tone={notice.error ? "error" : undefined} title={notice.text || undefined}>{notice.text}</span>
         {barExtra}
       </div>
-      <div data-part="run-scroll" ref={scrollRef}>
+      <div data-part="run-scroll">
         <RunNavigationContext.Provider value={context}>
           <SubAgentContext.Provider value={navigation}>
             <RunProvider store={stores.at(-1)!} highlight={highlight}>

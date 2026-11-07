@@ -701,6 +701,8 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
     </RunProvider>,
   );
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
+  expect(q('[data-part="timeline"]').parentElement?.dataset.part).toBe("timeline-scroll");
+  expect(q('[data-part="jump-to-latest-lane"]')).toBeTruthy();
 
   act(() => root!.render(
     <RunProvider store={store}>
@@ -717,6 +719,13 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
   ));
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
   expect(container.querySelectorAll('[data-part="message"]').length).toBeLessThanOrEqual(200);
+
+  act(() => root!.render(
+    <RunProvider store={store}>
+      <Timeline virtual renderJumpToLatest={(control) => <aside>{control}</aside>} />
+    </RunProvider>,
+  ));
+  expect(container.querySelector('[data-part="timeline-frame"]')).toBeNull();
 });
 
 test("useVirtualList ignores a stale outline hint and resets when the outline owner changes", () => {
@@ -782,12 +791,13 @@ test("virtual Timeline resets and follows when its RunProvider store changes dur
 
   expect(() => act(() => root!.render(<RunProvider store={b.store}><Timeline virtual /></RunProvider>))).not.toThrow();
   expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("100000");
-  container.scrollTop = 0;
+  q('[data-part="timeline-scroll"]').scrollTop = 0;
 
   expect(() => act(() => root!.render(<RunProvider store={c.store}><Timeline virtual /></RunProvider>))).not.toThrow();
-  act(() => container.dispatchEvent(new Event("scroll")));
+  const viewport = q('[data-part="timeline-scroll"]');
+  act(() => viewport.dispatchEvent(new Event("scroll")));
   expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("201");
-  expect(container.scrollTop).toBe(container.scrollHeight - container.clientHeight);
+  expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
   expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
   expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
   if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
