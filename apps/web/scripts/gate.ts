@@ -603,7 +603,7 @@ try {
       await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
       await page.locator('[data-catalog-ready="true"]').waitFor({ timeout: 5000 });
       fake.setOpenDelay(200);
-      await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${ACTIVE}`);
+      await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
       const selected = page.locator(`button.session[data-status]`, { hasText: "fix the flaky reconnect test" });
       await selected.focus();
       await page.waitForTimeout(250);
@@ -639,14 +639,23 @@ try {
       if (gap > 1) throw new Error(`${Math.round(gap)} px from the bottom`);
     });
     await check("an unpinned 1,000-row run keeps its anchor through store replacement", async () => {
-      const anchorId = "user:l500";
       const scroll = page.locator('[data-part="timeline-scroll"]');
-      await page.evaluate(({ anchorId }) => {
-        const engine = (window as typeof window & { __fulcrumVirtual?: { scrollToId(id: string, offset: number): number } }).__fulcrumVirtual;
-        if (!engine) throw new Error("no virtualizer debug handle");
-        document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop = engine.scrollToId(anchorId, 17);
-      }, { anchorId });
-      await settle(page);
+      const scrollBox = await scroll.boundingBox();
+      if (!scrollBox) throw new Error("no scroll viewport");
+      await page.mouse.move(scrollBox.x + scrollBox.width / 2, scrollBox.y + scrollBox.height / 2);
+      const target = await scroll.evaluate((element) => (element.scrollHeight - element.clientHeight) / 2);
+      for (let step = 0; step < 20; step++) {
+        const before = await scroll.evaluate((element) => element.scrollTop);
+        if (before <= target) break;
+        await page.mouse.wheel(0, -1000);
+        await page.waitForFunction((prior) => document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop < prior, before);
+      }
+      await page.waitForTimeout(100);
+      const anchorId = await page.locator('[data-virtual-id]').evaluateAll((rows, top) =>
+        rows.find((row) => row.getBoundingClientRect().top >= top)?.getAttribute("data-virtual-id") ?? null,
+        scrollBox.y,
+      );
+      if (!anchorId) throw new Error("no visible anchor row after wheel-up");
       const offset = async () => {
         const row = await page.locator(`[data-virtual-id="${anchorId}"]`).boundingBox();
         const box = await scroll.boundingBox();
