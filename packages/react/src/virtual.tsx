@@ -102,6 +102,8 @@ function createScrollLeases(onTouchSettled: () => void) {
       return fromReader;
     },
     held: () => held.size > 0,
+    /** Whether reader input is in flight, without consuming it. */
+    active: () => armed || held.size > 0,
     touching: () => touching,
     /** The browser reports the scroll gesture finished. */
     scrollEnd() {
@@ -438,9 +440,9 @@ export function useVirtualList<Id extends string>(
 
   useLayoutEffect(() => {
     const container = containerRef.current;
-    // A position nobody has reported yet (the reader's key or drag scroll in flight) wins over a correction.
+    // The reader's scroll in flight (input armed, a position we have not seen yet) wins over a correction.
     if (container && Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5
-      && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5)
+      && !(leases.current?.active() && Math.abs(container.scrollTop - lastScrollTop.current) >= 0.5))
       writeScroll(snapshot.scrollTop);
   }, [snapshot, writeScroll]);
 
