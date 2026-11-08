@@ -19,7 +19,7 @@ Code blocks accept the `Highlight` returned by `createHighlighter()` from `@fulc
 
 A fenced block over 40 lines, or with more tokens than one commit should draw, is the same bounded virtual viewer the tool cards use, at the height of 40 lines: it colors its visible 500-character ranges first; once they have colored, a block of at most 10,000 characters is also colored whole in the background, so a comment or string that crosses a range edge settles to the right colors. A larger block keeps each range's own colors, so a construct longer than a range (a long block comment or docstring) can show the wrong colors after a range edge. A streaming fence follows its newest line. Only the visible window is mounted, so browser find-in-page reaches only the visible lines; the copy control copies the whole block.
 
-The headless renderer has no visual styles. Its stable styling hooks are `data-part="md-paragraph"`, `md-heading`, `md-code-inline`, `md-code-block`, `md-list`, `md-list-item`, `md-emphasis`, `md-strong`, `md-strike`, `md-link`, `md-image`, `md-blockquote`, `md-table`, `md-rule`, and `md-break`. Code blocks also expose `data-language`.
+The headless renderer has no visual styles. Its stable styling hooks are `data-part="md-paragraph"`, `md-heading`, `md-code-inline`, `md-code-block`, `md-list`, `md-list-item`, `md-emphasis`, `md-strong`, `md-strike`, `md-link`, `md-image`, `md-blockquote`, `md-table`, `md-rule`, and `md-break`. Code blocks also expose `data-language`, and `data-state="streaming"` while their fence is still open (`"done"` once it closes).
 
 ## implementation notes
 
