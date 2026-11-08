@@ -3,9 +3,40 @@
 // timeline's first tab stop through a skip link.
 import type { Browser } from "playwright";
 
+async function checkSystemModes(page: import("playwright").Page, port: number, failures: string[]) {
+  await page.emulateMedia({ forcedColors: "active", reducedMotion: "reduce" });
+  await page.goto(`http://127.0.0.1:${port}/gallery.html#message-streaming`);
+  await page.locator("#message-streaming").scrollIntoViewIfNeeded();
+  const message = await page.waitForSelector("#message-streaming [data-part=message]", { state: "attached", timeout: 10_000 });
+  const cursorStyle = await message.evaluate((element) => {
+    const content = document.createElement("div");
+    content.dataset.part = "message-content";
+    element.append(content);
+    const style = getComputedStyle(content, "::after");
+    const probe = document.createElement("span");
+    probe.style.color = "CanvasText";
+    document.body.append(probe);
+    const systemColor = getComputedStyle(probe).color;
+    probe.remove();
+    return { background: style.backgroundColor, systemColor, animation: style.animationName, forcedColorAdjust: style.forcedColorAdjust };
+  });
+  if (cursorStyle.background !== cursorStyle.systemColor || cursorStyle.forcedColorAdjust !== "none") {
+    failures.push(`message-streaming: forced cursor is ${cursorStyle.background}/${cursorStyle.forcedColorAdjust}, expected ${cursorStyle.systemColor}/none`);
+  }
+  if (cursorStyle.animation !== "none") failures.push(`message-streaming: reduced motion leaves cursor animation as ${cursorStyle.animation}`);
+
+  await page.goto(`http://127.0.0.1:${port}/gallery.html#approval-pending`);
+  const approval = await page.waitForSelector("#approval-pending [data-part=approval]");
+  const approvalState = await approval.evaluate((element) => ({ borderWidth: getComputedStyle(element).borderLeftWidth, text: element.textContent ?? "" }));
+  if (approvalState.borderWidth !== "2px") failures.push(`approval-pending: forced-colors border is ${approvalState.borderWidth}, expected 2px`);
+  if (!approvalState.text.trim()) failures.push("approval-pending: status words are not visible in forced colors");
+  await page.emulateMedia({ forcedColors: "none", reducedMotion: "reduce" });
+}
+
 export async function checkCards(browser: Browser, port: number): Promise<string[]> {
   const failures: string[] = [];
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  await checkSystemModes(page, port, failures);
   await page.goto(`http://127.0.0.1:${port}/gallery.html#tools-done`);
   await page.waitForSelector("#tools-done [data-part=tool-body]");
   await page.waitForTimeout(500);

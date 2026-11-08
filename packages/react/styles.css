@@ -1135,7 +1135,7 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="reasoning-status"]::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
-  [data-part="message"][data-state="streaming"]::after { forced-color-adjust: none; background: CanvasText; }
+  [data-part="message"][data-state="streaming"] > [data-part="message-content"]::after { forced-color-adjust: none; background: CanvasText; }
   [data-part="sub-agent"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }
   :is([data-part="sub-agent-status"], [data-part="run-state"])::before,
