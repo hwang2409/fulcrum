@@ -48,6 +48,7 @@ const capabilityEvents = [
   {
     capability: "reasoning",
     matches: (event: RunEvent) => (event.type === "message_delta" && (event.kind === "reasoning" || event.kind === "thinking"))
+      || (event.type === "message_block" && (event.block.type === "reasoning" || event.block.type === "thinking"))
       || (event.type === "message_commit" && event.message.content.some((part) => part.type === "reasoning" || part.type === "thinking")),
   },
   { capability: "reset", matches: (event: RunEvent) => event.type === "message_reset" || event.type === "retry" },

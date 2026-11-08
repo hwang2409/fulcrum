@@ -60,6 +60,8 @@ test("false capabilities reject feature events from any scenario", () => {
     if ((value as AdapterFixture).scenario !== "text") return [];
     return [
       { type: "message_delta", message_id: "reasoning", delta: "thinking", kind: "reasoning" },
+      { type: "message_block", message_id: "reasoning", block: { type: "reasoning", text: "thinking" } },
+      { type: "message_block", message_id: "thinking", block: { type: "thinking", text: "legacy thinking" } },
       { type: "approval_request", request_id: "approval", tool_call: { id: "tool", name: "deploy", arguments: {} }, delegated: false },
       { type: "message_reset" },
       { type: "usage", usage: { inputTokens: 1 } },
@@ -72,6 +74,15 @@ test("false capabilities reject feature events from any scenario", () => {
   expect(failures).toContain("approval: emitted while capability is false");
   expect(failures).toContain("reset: emitted while capability is false");
   expect(failures).toContain("usage: emitted while capability is false");
+});
+
+test("false reasoning rejects message blocks", () => {
+  for (const blockType of ["reasoning", "thinking"] as const) {
+    const configured = options((value) => (value as AdapterFixture).scenario === "text"
+      ? [{ type: "message_block", message_id: blockType, block: { type: blockType, text: "secret chain" } }]
+      : []);
+    expect(runAdapterConformance(configured), blockType).toContain("reasoning: emitted while capability is false");
+  }
 });
 
 test("usage capability rejects an empty usage object", () => {
