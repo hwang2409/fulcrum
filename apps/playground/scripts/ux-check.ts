@@ -124,7 +124,7 @@ async function checkNarrowHead(browser: Browser, port: number): Promise<string[]
 type UserGeometry = {
   promptX: number; promptTop: number; promptBaseline: number; firstBaseline?: number; mediaTop?: number;
   lines: { x: number; top: number; right: number }[]; contentRight: number; height: number; probedHeight: number;
-  cursor?: { x: number; top: number; width: number }; file?: { indent: string; label: number; labelRight: number; name: number; bottom: number };
+  cursor?: { x: number; top: number; width: number; height: number }; file?: { indent: string; label: number; labelRight: number; name: number; bottom: number };
 };
 
 type UserProbe = { streaming: boolean; probe?: "root-14" | "root-18" | "padding" };
@@ -148,8 +148,10 @@ function prepareUserProbe(node: HTMLElement, { streaming, probe }: UserProbe) {
     for (const name of ["display", "float", "width", "height", "margin-left", "margin-right", "margin-top", "margin-bottom", "vertical-align", "font-size", "font-weight", "line-height"]) span.style.setProperty(name, from.getPropertyValue(name));
     return span;
   };
-  const cursor = stand(content, "::after");
-  cursor.dataset.probeCursor = "";
+  // The real cursor: styles.css draws it as an empty ::after in the element that ends the text, never a probe's guess.
+  const holder = [content, ...content.querySelectorAll<HTMLElement>("*")].find((element) => getComputedStyle(element, "::after").content === '""');
+  const cursor = holder && stand(holder, "::after");
+  if (cursor) cursor.dataset.probeCursor = "";
   const style = document.createElement("style");
   style.textContent = "[data-probed]::before, [data-probed]::after { content: none !important; }";
   document.head.append(style);
@@ -169,7 +171,10 @@ function prepareUserProbe(node: HTMLElement, { streaming, probe }: UserProbe) {
   }
   content.dataset.probed = "";
   node.dataset.probeEmpty = String(!first);
-  if (node.dataset.state === "streaming") content.append(cursor);
+  if (holder && cursor) {
+    holder.dataset.probed = "";
+    holder.append(cursor);
+  }
 }
 
 function readUserGeometry(node: HTMLElement): UserGeometry {
@@ -233,7 +238,7 @@ function readUserGeometry(node: HTMLElement): UserGeometry {
     contentRight: content.getBoundingClientRect().right - parseFloat(getComputedStyle(content).paddingRight),
     height,
     probedHeight: node.dataset.state === "streaming" && node.dataset.probeEmpty === "true" ? height : node.getBoundingClientRect().height,
-    cursor: cursor && { x: cursor.left, top: cursor.top, width: cursor.width },
+    cursor: cursor && { x: cursor.left, top: cursor.top, width: cursor.width, height: cursor.height },
     file: fileGeometry(node, node.querySelector<HTMLElement>("[data-part=file]")),
   };
 }
@@ -360,6 +365,7 @@ async function checkUserLayout(browser: Browser, port: number): Promise<string[]
     const at = `user layout @ ${theme} ${width}: ${name}${streaming ? " streaming" : ""}`;
     const geometry = await measureUser(page, id, nth, streaming, probe);
     failures.push(...checkUserCase(at, geometry), ...(text ? checkTextLines(at, geometry, wraps) : []));
+    if (streaming && !(geometry.cursor?.width && geometry.cursor.height)) failures.push(`${at}: no streaming cursor (${geometry.cursor ? `${geometry.cursor.width}x${geometry.cursor.height} px` : "none drawn"})`);
     if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ theme, width, name, streaming, probe, ...geometry, lines: geometry.lines.length }));
     await page.close();
   }

@@ -7,8 +7,8 @@ import { CHART_PNG } from "./chart";
  * `runs` are child runs by id, shown in a RunNavigator: a sub-agent row whose run is missing here is unavailable. A
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
-/** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean; markdownAll?: boolean; approval?: DemoApproval };
+/** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. `plain`: no markdown at all. */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean; markdownAll?: boolean; plain?: boolean; approval?: DemoApproval };
 /**
  * How the gallery's fake host answers approvals. `always` lists the request ids that get the third action (the rest
  * keep approve and deny); `reply` holds the decision until the card's "answer" button, or rejects it.
@@ -355,6 +355,15 @@ export const demos: Demo[] = [
     description: "Text arrives one word at a time with data-state=\"streaming\" until the commit.",
     events: stream("m-live", answer),
     live: 70,
+  },
+  {
+    id: "message-plain-streaming",
+    part: "Message",
+    title: "plain text after reasoning, streaming",
+    description: "markdown={false}: text streams after a reasoning block, and the terminal cursor ends its last line.",
+    events: blockStream("m-plain-live", [thinking, answer]),
+    live: 70,
+    plain: true,
   },
   {
     id: "message-done",

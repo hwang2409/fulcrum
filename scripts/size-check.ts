@@ -31,7 +31,7 @@ for (const file of highlightFiles) {
   console.log(`highlight/${file}: ${bytes} bytes gzipped (reporting only)`);
 }
 const styles = [
-  { name: "react styles.css", file: "packages/react/styles.css", ceiling: 14_200 }, // 13,878 after approve-always (three-action grid, decision error); 13,524 after the unknown-outcome run status and end marker; 12,658 after content blocks: ~1.3 kB; 11,424 after strict UX round 6 (narrow viewer head, status word colors); sub-agent row and run bar: ~0.9 kB; composer: 1.1 kB; approval decisions, skip link, cut fades: 0.7 kB
+  { name: "react styles.css", file: "packages/react/styles.css", ceiling: 14_600 }, // the streaming cursor on real assistant markup (plain, markdown, after blocks) and reduced motion for every part: ~0.35 kB; 13,878 after approve-always (three-action grid, decision error); 13,524 after the unknown-outcome run status and end marker; 12,658 after content blocks: ~1.3 kB; 11,424 after strict UX round 6 (narrow viewer head, status word colors); sub-agent row and run bar: ~0.9 kB; composer: 1.1 kB; approval decisions, skip link, cut fades: 0.7 kB
   { name: "react themes.css", file: "packages/react/themes.css", ceiling: 8_000 },
 ];
 for (const sheet of styles) {

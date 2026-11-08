@@ -66,6 +66,14 @@ test("plain assistant text keeps the prior direct text-node DOM", () => {
   expect(message.innerHTML).toBe("hello");
 });
 
+test("plain assistant text beside blocks has its own span, so the streaming cursor can end it", () => {
+  render([{ type: "message_delta", message_id: "m", kind: "reasoning", delta: "let me check" }, { type: "message_delta", message_id: "m", delta: "the answer" }], { markdown: false });
+  const last = q('[data-part="message"]').lastChild as HTMLElement;
+  expect(last.tagName).toBe("SPAN");
+  expect(last.dataset.part).toBeUndefined();
+  expect(last.textContent).toBe("the answer");
+});
+
 test("empty text does not precede the first rendered content block", () => {
   render([commit([{ type: "text", text: "" }, { type: "file", kind: "file", filename: "a.png" }], "user")]);
   expect(q('[data-part="message-content"]').firstElementChild?.getAttribute("data-part")).toBe("file");

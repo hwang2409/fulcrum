@@ -77,7 +77,8 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
     const text = String(block.text);
     if (!text) return null;
     if (Rich) return <Rich key={index} id={blockId} source={text} streaming={streaming} />;
-    return user ? <span key={index}>{text}</span> : <Fragment key={index}>{text}</Fragment>;
+    // Beside blocks, text needs its own element: the streaming cursor (styles.css) ends the last text span.
+    return user || parts.length > 1 ? <span key={index}>{text}</span> : <Fragment key={index}>{text}</Fragment>;
   });
   return (
     <div

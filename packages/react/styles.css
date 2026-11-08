@@ -177,16 +177,24 @@
 [data-part="message-content"] > [data-part="md-table"]:first-child { display: table; }
 /* An image has no text baseline, so its decorative prompt belongs at the frame's top edge. */
 [data-part="message"][data-role="user"]:has(> [data-part="message-content"] > [data-part="image"]:first-child) [data-part="message-prompt"] { align-self: start; }
-/* A terminal block cursor while text streams in. */
-[data-part="message"][data-state="streaming"] > [data-part="message-content"]::after {
+/* A terminal block cursor that ends the last streaming text line, drawn in the element holding that line: the text
+   container (the message, or a user's message-content) while it has no child elements, else its last text span or,
+   for markdown, the last paragraph, heading, text-ending list item, or code line through last children only. A
+   message whose newest part is another block (reasoning, a file, a table) shows none: that block shows its own state. */
+:is([data-part="message"][data-state="streaming"]:not([data-role="user"]), [data-part="message"][data-state="streaming"] > [data-part="message-content"]):not(:has(> *))::after,
+:is([data-part="message"][data-state="streaming"]:not([data-role="user"]), [data-part="message"][data-state="streaming"] > [data-part="message-content"]) > span:not([data-part]):last-child::after,
+:is([data-part="message"][data-state="streaming"]:not([data-role="user"]), [data-part="message"][data-state="streaming"] > [data-part="message-content"])
+  :is([data-part="md-paragraph"], [data-part="md-heading"], [data-part="md-code-block"] > code,
+    [data-part="md-list-item"]:not(:has(> :is([data-part="md-paragraph"], [data-part="md-heading"], [data-part="md-code-block"], [data-part="md-list"], [data-part="md-blockquote"], [data-part="md-table"], [data-part="md-rule"], div):last-child))):last-child:not([data-part="message"] :not(:last-child) *)::after {
   content: "";
   display: inline-block;
   width: 0.6em;
   height: 1.15em;
   margin-left: 1px;
   vertical-align: text-bottom;
-  background: var(--fulcrum-fg);
+  background: var(--fulcrum-cursor, var(--fulcrum-fg));
   animation: fulcrum-blink 1s steps(1) infinite;
+  forced-color-adjust: none;
 }
 
 /* Tools and approvals: a hairline box, one header row (name, summary, status), the rest below it.
@@ -791,7 +799,6 @@ a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--f
 [data-part="image-placeholder"] { position: relative; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; color: var(--fulcrum-muted); font-size: 12px; text-align: center; }
 [data-part="image"][data-state="loading"] [data-part="image-placeholder"] { background: linear-gradient(100deg, var(--fulcrum-surface) 35%, var(--fulcrum-border) 50%, var(--fulcrum-surface) 65%); background-size: 200% 100%; animation: fulcrum-image-loading 1.5s linear infinite; }
 @keyframes fulcrum-image-loading { to { background-position-x: -200%; } }
-@media (prefers-reduced-motion: reduce) { [data-part="image"][data-state="loading"] [data-part="image-placeholder"] { animation: none; } }
 /* An image that will never load needs no reserved box: one line says why. */
 [data-part="image"][data-state="blocked"] [data-part="image-placeholder"] { width: auto; height: auto; aspect-ratio: auto; justify-content: flex-start; padding: 6px 12px; }
 [data-part="image"][data-state="error"] [data-part="image-placeholder"] { color: var(--fulcrum-danger); }
@@ -1116,12 +1123,11 @@ ul[data-part="md-list"] { list-style: "- "; }
 @keyframes fulcrum-blink { 50% { opacity: 0; } }
 @keyframes fulcrum-pulse { to { opacity: 0.25; } }
 
+/* Every part stays still under reduced motion, inside a Timeline or rendered on its own. */
 @media (prefers-reduced-motion: reduce) {
-  [data-part="timeline"] *,
-  [data-part="timeline"] *::before,
-  [data-part="timeline"] *::after,
-  [data-part="composer"] *,
-  [data-part="composer"] *::before { animation: none !important; transition: none !important; }
+  :where([data-part], [data-part] *),
+  :where([data-part], [data-part] *)::before,
+  :where([data-part], [data-part] *)::after { animation: none !important; transition: none !important; }
 }
 
 /* Forced colors (Windows high contrast): the system palette wins, so state rests on the status words and rails. */
@@ -1135,7 +1141,7 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="reasoning-status"]::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
-  [data-part="message"][data-state="streaming"] > [data-part="message-content"]::after { forced-color-adjust: none; background: CanvasText; }
+  [data-part="message"] { --fulcrum-cursor: CanvasText; }
   [data-part="sub-agent"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }
   :is([data-part="sub-agent-status"], [data-part="run-state"])::before,

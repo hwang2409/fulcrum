@@ -1,30 +1,70 @@
 // Tool cards in the gallery. A capped box (output, arguments, numbered lines) that cuts its text says so: a fade on
 // the cut edge and a control that shows the rest; after that control, nothing is cut. A pending approval is the
-// timeline's first tab stop through a skip link.
-import type { Browser } from "playwright";
+// timeline's first tab stop through a skip link. A streaming message ends its last text line with one terminal cursor,
+// CanvasText under forced colors and still under reduced motion, and no part animates under reduced motion even
+// rendered outside a Timeline.
+import type { Browser, Page } from "playwright";
 
-async function checkSystemModes(page: import("playwright").Page, port: number, failures: string[]) {
-  await page.emulateMedia({ forcedColors: "active", reducedMotion: "reduce" });
-  await page.goto(`http://127.0.0.1:${port}/gallery.html#message-streaming`);
-  await page.locator("#message-streaming").scrollIntoViewIfNeeded();
-  const message = await page.waitForSelector("#message-streaming [data-part=message]", { state: "attached", timeout: 10_000 });
-  const cursorStyle = await message.evaluate((element) => {
-    const content = document.createElement("div");
-    content.dataset.part = "message-content";
-    element.append(content);
-    const style = getComputedStyle(content, "::after");
-    const probe = document.createElement("span");
-    probe.style.color = "CanvasText";
-    document.body.append(probe);
-    const systemColor = getComputedStyle(probe).color;
-    probe.remove();
-    return { background: style.backgroundColor, systemColor, animation: style.animationName, forcedColorAdjust: style.forcedColorAdjust };
-  });
-  if (cursorStyle.background !== cursorStyle.systemColor || cursorStyle.forcedColorAdjust !== "none") {
-    failures.push(`message-streaming: forced cursor is ${cursorStyle.background}/${cursorStyle.forcedColorAdjust}, expected ${cursorStyle.systemColor}/none`);
+// The gallery's streaming messages, paused mid-stream (reduced motion at load): markdown ending in a paragraph, in a
+// code line, after other blocks, and plain text after reasoning.
+const cursorDemos = ["message-streaming", "markdown-streaming", "content-streaming", "message-plain-streaming"];
+
+// Runs in the page. The streaming message's cursors (the ::after that styles.css draws with an empty content), their
+// computed style, and the height the cursor adds to the message (a line of its own makes it taller).
+function readCursor(id: string) {
+  const message = document.querySelector<HTMLElement>(`#${id} [data-part=message][data-state=streaming]`);
+  if (!message) return undefined;
+  const holders = [message, ...message.querySelectorAll<HTMLElement>("*")].filter((element) => getComputedStyle(element, "::after").content === '""');
+  const probe = document.createElement("span");
+  probe.style.color = "CanvasText";
+  document.body.append(probe);
+  const systemColor = getComputedStyle(probe).color;
+  probe.remove();
+  const height = message.getBoundingClientRect().height;
+  const off = document.createElement("style");
+  off.textContent = "[data-part=message] *::after, [data-part=message]::after { content: none !important; }";
+  document.head.append(off);
+  const without = message.getBoundingClientRect().height;
+  off.remove();
+  return {
+    holders: holders.map((holder) => {
+      const style = getComputedStyle(holder, "::after");
+      return { tag: holder.tagName.toLowerCase(), width: parseFloat(style.width), height: parseFloat(style.height), background: style.backgroundColor, adjust: style.forcedColorAdjust, animation: style.animationName, afterBreak: holder.textContent!.endsWith("\n") };
+    }),
+    systemColor,
+    extra: height - without,
+  };
+}
+
+// The terminal cursor on real streaming markup: one per message, drawn at the end of the last text line (it adds no
+// height unless its text ends in a line break), blinking; CanvasText under forced colors; still under reduced motion.
+async function checkStreamingCursor(page: Page, port: number, failures: string[]) {
+  await page.goto(`http://127.0.0.1:${port}/gallery.html`);
+  await page.waitForSelector(`#${cursorDemos[0]} [data-part=message]`, { state: "attached", timeout: 10_000 });
+  await page.evaluate(() => document.fonts.ready);
+  const before = failures.length;
+  for (const [mode, media] of [["normal", { reducedMotion: "no-preference", forcedColors: "none" }], ["forced colors", { reducedMotion: "no-preference", forcedColors: "active" }], ["reduced motion", { reducedMotion: "reduce", forcedColors: "none" }]] as const) {
+    await page.emulateMedia(media);
+    for (const id of cursorDemos) {
+      const at = `${id} (${mode})`;
+      // Off screen, a row skips layout (content-visibility) and reports a placeholder height.
+      await page.locator(`#${id}`).scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {}); // a missing demo fails below
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const cursor = await page.evaluate(readCursor, id);
+      if (!cursor) { failures.push(`${at}: no streaming message`); continue; }
+      if (cursor.holders.length !== 1) { failures.push(`${at}: ${cursor.holders.length} streaming cursors, expected 1`); continue; }
+      const [{ tag, width, height, background, adjust, animation, afterBreak }] = cursor.holders as [typeof cursor.holders[number]];
+      if (!(width > 0 && height > 0)) failures.push(`${at}: the cursor in <${tag}> is ${width}x${height} px`);
+      // Only text that ends in a line break (a code line just finished) puts the cursor at the start of the next line.
+      if (cursor.extra > (afterBreak ? height * 1.5 : 0.5)) failures.push(`${at}: the cursor in <${tag}> adds ${cursor.extra.toFixed(1)} px, a line of its own instead of the end of the last text line`);
+      if (mode === "normal" && animation !== "fulcrum-blink") failures.push(`${at}: the cursor animation is ${animation}, expected fulcrum-blink`);
+      if (mode === "forced colors" && (background !== cursor.systemColor || adjust !== "none")) failures.push(`${at}: the cursor is ${background}/${adjust}, expected CanvasText ${cursor.systemColor}/none`);
+      if (mode === "reduced motion" && animation !== "none") failures.push(`${at}: the cursor still animates (${animation})`);
+    }
   }
-  if (cursorStyle.animation !== "none") failures.push(`message-streaming: reduced motion leaves cursor animation as ${cursorStyle.animation}`);
+  if (failures.length === before) console.log(`ok   streaming cursor: ${cursorDemos.length} streaming messages end their last text line with one cursor, in normal, forced-colors, and reduced-motion modes`);
 
+  await page.emulateMedia({ forcedColors: "active", reducedMotion: "reduce" });
   await page.goto(`http://127.0.0.1:${port}/gallery.html#approval-pending`);
   const approval = await page.waitForSelector("#approval-pending [data-part=approval]");
   const approvalState = await approval.evaluate((element) => ({ borderWidth: getComputedStyle(element).borderLeftWidth, text: element.textContent ?? "" }));
@@ -33,10 +73,45 @@ async function checkSystemModes(page: import("playwright").Page, port: number, f
   await page.emulateMedia({ forcedColors: "none", reducedMotion: "reduce" });
 }
 
+// Every part stays still under reduced motion even outside a Timeline or Composer: the gallery's rows (paused in their
+// in-progress states) and composers, copied into a plain container, animate nowhere once reduced motion is on, and
+// some did with it off, so the check sees real animations.
+async function checkStandaloneMotion(page: Page, port: number, failures: string[]) {
+  await page.goto(`http://127.0.0.1:${port}/gallery.html`);
+  await page.waitForSelector(`#${cursorDemos[0]} [data-part=message]`, { state: "attached", timeout: 10_000 });
+  await page.evaluate(() => {
+    const host = document.createElement("div");
+    host.id = "standalone-parts";
+    for (const timeline of document.querySelectorAll("[data-part=timeline]")) for (const row of timeline.children) host.append(row.cloneNode(true));
+    for (const composer of document.querySelectorAll("[data-part=composer]")) host.append(composer.cloneNode(true));
+    document.body.append(host);
+  });
+  const animated = () => page.evaluate(() => {
+    const found = new Map<string, number>();
+    for (const element of document.querySelectorAll<HTMLElement>("#standalone-parts *")) {
+      for (const pseudo of [null, "::before", "::after"]) {
+        const name = getComputedStyle(element, pseudo).animationName;
+        if (name === "none") continue;
+        const key = `${element.closest<HTMLElement>("[data-part]")?.dataset.part ?? element.tagName.toLowerCase()}${pseudo ?? ""} ${name}`;
+        found.set(key, (found.get(key) ?? 0) + 1);
+      }
+    }
+    return [...found].map(([key, count]) => `${key} x${count}`);
+  });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const moving = await animated();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const still = await animated();
+  if (!moving.length) failures.push("standalone parts: nothing animates even with motion allowed (the check sees no animation)");
+  if (still.length) failures.push(`standalone parts: ${still.length} animation(s) run under reduced motion outside a Timeline: ${still.join("; ")}`);
+  else if (moving.length) console.log(`ok   standalone parts: ${moving.length} animation(s) outside a Timeline all stop under reduced motion (${moving.join("; ")})`);
+}
+
 export async function checkCards(browser: Browser, port: number): Promise<string[]> {
   const failures: string[] = [];
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
-  await checkSystemModes(page, port, failures);
+  await checkStreamingCursor(page, port, failures);
+  await checkStandaloneMotion(page, port, failures);
   await page.goto(`http://127.0.0.1:${port}/gallery.html#tools-done`);
   await page.waitForSelector("#tools-done [data-part=tool-body]");
   await page.waitForTimeout(500);
