@@ -290,6 +290,29 @@ test("run status and the compact end marker expose an unknown outcome accessibly
   expect(q('[data-part="run-status"]').textContent).toBe("idle");
 });
 
+test("run status does not rescan approvals for unrelated streaming updates", () => {
+  const { store, send } = setup([
+    { type: "run_start" },
+    { type: "approval_request", request_id: "p", tool_call: call("t", "bash"), delegated: false },
+  ]);
+  let reads = 0;
+  const originalGetItem = store.getItem;
+  store.getItem = (id) => { reads++; return originalGetItem(id); };
+  mount(<RunProvider store={store}><FulcrumReact.RunStatus /><FulcrumReact.RunEndMarker /></RunProvider>);
+  expect(q('[data-part="run-status"]').dataset.status).toBe("approval");
+  reads = 0;
+
+  for (let index = 0; index < 100; index++)
+    send({ type: "usage", usage: { input_tokens: index + 1 } });
+  expect(reads).toBeLessThan(10);
+
+  send({ type: "approval_end", request_id: "p", decision: "deny" });
+  expect(q('[data-part="run-status"]').dataset.status).toBe("running");
+  send({ type: "run_end", outcome: "completed" } as RunEvent);
+  expect(q('[data-part="run-end-marker"]').textContent).toBe("run completed");
+  expect(q('[data-part="run-status"]').dataset.status).toBe("idle");
+});
+
 test("dispose leaves the last mounted snapshot and stops notifications", () => {
   const { store } = setup([
     { type: "message_delta", message_id: "m", delta: "x" },
