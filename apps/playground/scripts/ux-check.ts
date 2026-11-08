@@ -12,7 +12,9 @@
 //   skip link moves no row (n-2); every status reads mark first, then words (n-3); the realistic run's edit was
 //   approved (n-4); "empty output" and "huge output" open on the state they describe (n-5); at 390 px the theme
 //   select shows its whole value, "5 matches in 3 files" is one line, and sub-agent names keep at least 8 characters
-//   (n-7); the side nav's wrapped labels hold their lines together (n-7); Tab reaches a skip-to-content link first (n-9).
+//   (n-7), and every notification row fits, is labelled "notification", is a disclosure only when it has facts, and
+//   never shows raw data; the side nav's wrapped labels hold their lines together (n-7); Tab reaches a skip-to-content
+//   link first (n-9).
 import type { Browser, Page } from "playwright";
 
 type Sample = { position: string; gap: number; lastBottom: number; lines: number };
@@ -452,7 +454,7 @@ async function checkGallery(browser: Browser, port: number): Promise<string[]> {
       firstHidden,
       steer: look(steer),
       send: look(send),
-      notification: text("#fallback-notification [data-part=item]"),
+      notification: text("#notification-plain [data-part=notification]"),
       genericCut: text("#approval-generic [data-part=tool-gap]"),
       genericViewer: !!document.querySelector("#approval-generic [data-part=text-viewer]"),
       misordered,
@@ -518,12 +520,25 @@ async function checkGallery(browser: Browser, port: number): Promise<string[]> {
       const ch = parseFloat(getComputedStyle(node).fontSize) * 0.6;
       return { name: node.textContent!, shown: Math.floor(node.clientWidth / ch), full: node.scrollWidth <= node.clientWidth + 1 };
     }).filter((entry) => !entry.full && entry.shown < Math.min(8, entry.name.length));
-    return { label, fits: canvas.measureText(label).width <= room, wrappedMeta, names };
+    // Notifications: every row fits the column, says what it is, and only rows with facts are disclosures.
+    const notices = [...document.querySelectorAll<HTMLElement>("[id^=notification-] [data-part=notification]")];
+    const notificationIssues = notices.flatMap((notice) => {
+      const id = notice.closest("[id^=notification-]")!.id;
+      const out: string[] = [];
+      const column = notice.parentElement!.getBoundingClientRect();
+      if (notice.getBoundingClientRect().right > column.right + 1 || notice.scrollWidth > notice.clientWidth + 1) out.push(`${id} overflows`);
+      if (notice.getAttribute("aria-label") !== "notification") out.push(`${id} has no "notification" label`);
+      if ((notice.tagName === "DETAILS") !== (id !== "notification-plain" && id !== "notification-malformed")) out.push(`${id} is ${notice.tagName === "DETAILS" ? "" : "not "}a disclosure`);
+      if (/never shown|nested/.test(notice.textContent ?? "")) out.push(`${id} shows raw data`);
+      return out;
+    });
+    return { label, fits: canvas.measureText(label).width <= room, wrappedMeta, names, notifications: notices.length, notificationIssues };
   });
   if (!narrow.fits) failures.push(`gallery @ 390: the theme select cuts "${narrow.label}"`);
   if (narrow.wrappedMeta.length) failures.push(`gallery @ 390: "${narrow.wrappedMeta[0]}" wraps`);
+  if (narrow.notifications !== 4 || narrow.notificationIssues.length) failures.push(`gallery @ 390: ${narrow.notifications} notification rows (expected 4): ${narrow.notificationIssues.join(", ")}`);
   if (narrow.names.length) failures.push(`gallery @ 390: sub-agent names cut to ${narrow.names.map((entry) => `${entry.name}:${entry.shown}`).join(", ")} characters`);
-  if (!failures.length) console.log("ok   gallery: skip link, every-state rows, disabled steer, notification text, uncut generic approval, overlay skip link, mark order, approved edit, open demos, nav labels, 390 px fits");
+  if (!failures.length) console.log("ok   gallery: skip link, every-state rows, disabled steer, notification text, uncut generic approval, overlay skip link, mark order, approved edit, open demos, nav labels, 390 px fits and notifications");
   await page.close();
   return failures;
 }
