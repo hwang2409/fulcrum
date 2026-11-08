@@ -760,6 +760,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, runKey, rendere
             aria-posinset={row.index + 1}
             tabIndex={row === retainedRow ? -1 : 0}
             onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) return; // arrows typed in a control inside the row belong to it
               const nextIndex = row.index + (event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0);
               if (nextIndex === row.index || nextIndex < 0 || nextIndex >= items.length) return;
               event.preventDefault();

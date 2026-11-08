@@ -1354,8 +1354,9 @@ test("100 host swaps own the exact adapter listeners and release all of them", (
     root = undefined;
     const documentBefore = counts(document);
     const windowBefore = counts(window);
-    const hostOwned = ["keydown", "pointerdown", "scroll", "scrollend", "touchcancel", "touchend", "touchmove", "touchstart", "wheel"];
-    const documentOwned = ["focusin", "keydown", "keyup", "pointercancel", "pointerdown", "pointerup"];
+    const hostOwned = ["scroll", "scrollend", "touchcancel", "touchend", "touchmove", "touchstart", "wheel"];
+    const documentOwned = ["focusin", "keydown", "keyup", "pointercancel", "pointerdown", "pointerup", "visibilitychange"];
+    const windowOwned = ["blur"];
 
     const { view } = hostAttachmentHarness();
     mount(view("inner"));
@@ -1368,7 +1369,7 @@ test("100 host swaps own the exact adapter listeners and release all of them", (
       expect(counts(current)).toEqual(withOwned(new Map(), hostOwned));
       for (const host of hosts) if (host !== current) expect(counts(host), "a prior host kept adapter listeners").toEqual(new Map());
       expect(counts(document)).toEqual(withOwned(documentBefore, documentOwned));
-      expect(counts(window)).toEqual(windowBefore);
+      expect(counts(window)).toEqual(withOwned(windowBefore, windowOwned));
     }
     expect(activeObservers).toBe(2);
     act(() => root!.unmount());

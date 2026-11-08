@@ -20,6 +20,109 @@ import {
 
 const isIOSWebKit = () => navigator.userAgent.includes("iP");
 
+type ScrollLeaseKind = "wheel" | "focus" | "keyboard" | "scrollbar" | "touch";
+type HeldLeaseKind = "keyboard" | "scrollbar" | "touch";
+type ScrollLeases = ReturnType<typeof createScrollLeases>;
+
+/**
+ * The one owner of reader-input leases for one scroll host: which scroll callbacks the reader caused.
+ * Wheel and focus arm a one-shot lease that the next scroll callback consumes (or the next frame expires).
+ * Keyboard and scrollbar are held from press to release; touch is held until native scrollend or two quiet frames.
+ * Every held lease ends on its release, on window blur, when the document is hidden, and on host detach. Plain state only.
+ */
+function createScrollLeases(onTouchSettled: () => void) {
+  const held = new Set<HeldLeaseKind>();
+  let armed = false;
+  let armedFrame: number | null = null;
+  let touching = false;
+  let touchGeneration = 0;
+  let settleFrame: number | null = null;
+  const disarm = () => {
+    armed = false;
+    if (armedFrame != null) cancelAnimationFrame(armedFrame);
+    armedFrame = null;
+  };
+  const arm = () => {
+    disarm();
+    armed = true;
+    armedFrame = requestAnimationFrame(() => {
+      armedFrame = null;
+      armed = false;
+    });
+  };
+  const stopSettling = () => {
+    if (settleFrame != null) cancelAnimationFrame(settleFrame);
+    settleFrame = null;
+  };
+  const settleTouch = () => {
+    let observedGeneration = touchGeneration;
+    let quietFrames = 0;
+    const observe = () => {
+      settleFrame = null;
+      if (touchGeneration === observedGeneration) quietFrames++;
+      else {
+        observedGeneration = touchGeneration;
+        quietFrames = 0;
+      }
+      if (quietFrames < 2) {
+        settleFrame = requestAnimationFrame(observe);
+        return;
+      }
+      held.delete("touch");
+      onTouchSettled();
+    };
+    settleFrame = requestAnimationFrame(observe);
+  };
+  return {
+    start(kind: ScrollLeaseKind) {
+      if (kind === "touch") {
+        stopSettling();
+        touching = true;
+      }
+      if (kind === "keyboard" || kind === "scrollbar" || kind === "touch") held.add(kind);
+      arm();
+    },
+    /** Ends a held lease; an end without its start changes nothing. */
+    end(kind: HeldLeaseKind) {
+      if (!held.has(kind)) return;
+      if (kind === "touch") {
+        touching = false;
+        settleTouch();
+        return;
+      }
+      held.delete(kind);
+      arm(); // the release can still move the host once (key repeat, the last drag frame)
+    },
+    /** Called once per scroll callback: whether the reader caused it. */
+    consume() {
+      const fromReader = armed || held.size > 0;
+      disarm();
+      if (held.has("touch")) touchGeneration++;
+      return fromReader;
+    },
+    held: () => held.size > 0,
+    touching: () => touching,
+    /** The browser reports the scroll gesture finished. */
+    scrollEnd() {
+      disarm();
+      stopSettling();
+      touching = false;
+      held.delete("touch");
+    },
+    /** Window blur, a hidden document, or host detach: no release event will come. */
+    release() {
+      disarm();
+      stopSettling();
+      touching = false;
+      held.clear();
+    },
+  };
+}
+
+// Editable and list widgets handle their own arrow keys; a scroll key typed there never scrolls the timeline.
+const keyOwners = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="listbox"]';
+const scrollKeys = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
   enabled?: boolean;
@@ -65,15 +168,7 @@ export function useVirtualList<Id extends string>(
   const observerRef = useRef<ResizeObserver | null>(null);
   const resizeFrame = useRef<number | null>(null);
   const pendingEntries = useRef(new Map<Id, number>());
-  const touching = useRef(false);
-  const readerInput = useRef(false);
-  const readerInputFrame = useRef<number | null>(null);
-  const keyboardHeld = useRef(false);
-  const scrollbarDragging = useRef(false);
-  const touchMomentum = useRef(false);
-  const touchY = useRef<number | null>(null);
-  const touchGeneration = useRef(0);
-  const touchSettleFrame = useRef<number | null>(null);
+  const leases = useRef<ScrollLeases | null>(null);
   const lastScrollTop = useRef(0);
   const lastDomEnd = useRef(0);
   const pendingScroll = useRef<{ target: "end" | number; value: number; previousEnd: number } | null>(null);
@@ -97,29 +192,13 @@ export function useVirtualList<Id extends string>(
     lastDomEnd.current = domEnd;
   }, [engine]);
 
-  const armReaderInput = () => {
-    readerInput.current = true;
-    if (readerInputFrame.current != null) cancelAnimationFrame(readerInputFrame.current);
-    readerInputFrame.current = requestAnimationFrame(() => {
-      readerInputFrame.current = null;
-      readerInput.current = false;
-    });
-  };
+  const touching = () => leases.current?.touching() ?? false;
 
   const resetHostState = () => {
-    if (readerInputFrame.current != null) cancelAnimationFrame(readerInputFrame.current);
-    if (touchSettleFrame.current != null) cancelAnimationFrame(touchSettleFrame.current);
     if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
-    readerInputFrame.current = null;
-    touchSettleFrame.current = null;
     resizeFrame.current = null;
-    readerInput.current = false;
-    keyboardHeld.current = false;
-    scrollbarDragging.current = false;
-    touching.current = false;
-    touchMomentum.current = false;
-    touchY.current = null;
-    touchGeneration.current = 0;
+    leases.current?.release();
+    leases.current = null;
     pendingScroll.current = null;
     pendingEntries.current.clear();
     lastScrollTop.current = 0;
@@ -142,7 +221,7 @@ export function useVirtualList<Id extends string>(
       engine.setOutline(outline, options.outlineUpdate);
       engine.setLoaded("all");
       if (initial.current) initial.current = false;
-      else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
+      else if (options.enabled !== false && wasEnabled.current) engine.afterMutation(token, { deferCorrection: touching() && isIOSWebKit() });
     }
     wasEnabled.current = options.enabled !== false;
   }, [engine, outline, options.enabled, options.invalidateMeasurements, options.outlineUpdate, options.resetKey, resetPending]);
@@ -181,7 +260,7 @@ export function useVirtualList<Id extends string>(
         const token = engine.beforeMutation();
         for (const [id, size] of pendingEntries.current) engine.measure(id, size);
         pendingEntries.current.clear();
-        engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
+        engine.afterMutation(token, { deferCorrection: touching() && isIOSWebKit() });
         // A late layout pass can leave WebKit a few pixels behind the new end after the measurement correction.
         // Re-apply the existing follow intent only when the DOM has not moved independently since the last scroll.
         const { pinned } = engine.getSnapshot();
@@ -210,37 +289,12 @@ export function useVirtualList<Id extends string>(
         const result = engine.flushPendingCorrection();
         if (Math.abs(result.jump) >= 0.5) writeScroll(result.scrollTop);
       };
-      const startTouchSettlement = () => {
-        if (touchSettleFrame.current != null) cancelAnimationFrame(touchSettleFrame.current);
-        let observedGeneration = touchGeneration.current;
-        let quietFrames = 0;
-        const observe = () => {
-          touchSettleFrame.current = null;
-          if (touching.current) return;
-          if (touchGeneration.current === observedGeneration) quietFrames++;
-          else {
-            observedGeneration = touchGeneration.current;
-            quietFrames = 0;
-          }
-          if (quietFrames >= 2) {
-            touchMomentum.current = false;
-            finishScroll();
-            return;
-          }
-          touchSettleFrame.current = requestAnimationFrame(observe);
-        };
-        touchSettleFrame.current = requestAnimationFrame(observe);
-      };
+      const hostLeases = createScrollLeases(finishScroll);
+      leases.current = hostLeases;
       const onScroll = () => {
         const before = engine.getSnapshot();
         const domEnd = Math.max(0, container.scrollHeight - container.clientHeight);
-        const fromReader = readerInput.current || keyboardHeld.current || touchMomentum.current || scrollbarDragging.current;
-        if (readerInput.current) {
-          readerInput.current = false;
-          if (readerInputFrame.current != null) cancelAnimationFrame(readerInputFrame.current);
-          readerInputFrame.current = null;
-        }
-        if (touchMomentum.current) touchGeneration.current++;
+        const fromReader = hostLeases.consume();
         const pending = pendingScroll.current;
         pendingScroll.current = null; // the first callback consumes our write, whether the browser matched it or not
         const matchesPending = pending !== null && (Math.abs(container.scrollTop - pending.value) < 0.5
@@ -256,88 +310,77 @@ export function useVirtualList<Id extends string>(
         lastScrollTop.current = container.scrollTop;
         lastDomEnd.current = domEnd;
         if (layout && before.pinned && Math.abs(container.scrollTop - domEnd) >= 0.5) writeScroll("end");
+        // Rule (2): a scroll without input away from both ends is reader intent, even inside the engine's bottom threshold.
+        if (!layout && !fromReader && before.pinned) engine.setFollow(false);
         // Every callback reports the real viewport, so the mounted rows always follow the DOM; classification decides only intent.
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: layout ? "observe" : "user" });
       };
-      const scrollKeys = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
       const onWheel = (event: WheelEvent) => {
-        armReaderInput();
+        hostLeases.start("wheel");
         if (event.deltaY < 0 && engine.getSnapshot().pinned) engine.setFollow(false);
       };
+      // A scroll key counts only when the browser would scroll this host with it: focus in this host outside an
+      // editable or list widget, or no focus at all (the page body). Keys in a composer or another timeline do not.
       const onKeyDown = (event: KeyboardEvent) => {
-        if (!scrollKeys.has(event.key)) return;
-        keyboardHeld.current = true;
-        armReaderInput();
+        if (event.defaultPrevented || !scrollKeys.has(event.key)) return;
+        const target = event.target;
+        const pageLevel = target === document || target === document.body || target === document.documentElement;
+        if (!pageLevel && (!(target instanceof Element) || !container.contains(target) || target.closest(keyOwners))) return;
+        hostLeases.start("keyboard");
         if ((event.key.endsWith("Up") || event.key === "Home") && engine.getSnapshot().pinned) engine.setFollow(false);
       };
+      // Any key release ends the held key: a still-held key repeats its keydown, and a lost arrow keyup under Cmd still releases.
+      const onKeyUp = () => hostLeases.end("keyboard");
       const onPointerDown = (event: PointerEvent) => {
         const bounds = container.getBoundingClientRect();
         const vertical = event.clientX >= bounds.left + container.clientWidth && event.clientX <= bounds.right
           && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
         const horizontal = event.clientY >= bounds.top + container.clientHeight && event.clientY <= bounds.bottom
           && event.clientX >= bounds.left && event.clientX <= bounds.right;
-        if (vertical || horizontal) {
-          scrollbarDragging.current = true;
-          armReaderInput();
-        }
+        // Overlay scrollbars take no gutter, so a press on the host itself (not a row) is a scrollbar press too.
+        if (event.target === container || vertical || horizontal) hostLeases.start("scrollbar");
       };
+      const onPointerEnd = () => hostLeases.end("scrollbar");
+      let touchY: number | null = null;
       const onTouchStart = (event: TouchEvent) => {
-        if (touchSettleFrame.current != null) cancelAnimationFrame(touchSettleFrame.current);
-        touchSettleFrame.current = null;
-        touching.current = true;
-        touchMomentum.current = true;
-        armReaderInput();
-        touchY.current = event.touches[0]?.clientY ?? null;
+        hostLeases.start("touch");
+        touchY = event.touches[0]?.clientY ?? null;
       };
       const onTouchMove = (event: TouchEvent) => {
         const next = event.touches[0]?.clientY;
-        if (next !== undefined && touchY.current != null && next > touchY.current && engine.getSnapshot().pinned) engine.setFollow(false);
-        touchY.current = next ?? null;
+        if (next !== undefined && touchY != null && next > touchY && engine.getSnapshot().pinned) engine.setFollow(false);
+        touchY = next ?? null;
       };
       const onTouchEnd = () => {
-        touching.current = false;
-        touchY.current = null;
-        startTouchSettlement();
+        touchY = null;
+        hostLeases.end("touch");
       };
       const onScrollEnd = () => {
-        if (readerInputFrame.current != null) cancelAnimationFrame(readerInputFrame.current);
-        if (touchSettleFrame.current != null) cancelAnimationFrame(touchSettleFrame.current);
-        readerInputFrame.current = null;
-        touchSettleFrame.current = null;
-        readerInput.current = false;
-        touching.current = false;
-        touchMomentum.current = false;
+        hostLeases.scrollEnd();
         finishScroll();
       };
-      const onDocumentKeyDown = onKeyDown;
-      const onDocumentKeyUp = (event: KeyboardEvent) => {
-        if (!scrollKeys.has(event.key)) return;
-        keyboardHeld.current = false;
-        armReaderInput();
-      };
-      const onDocumentPointerEnd = () => {
-        if (!scrollbarDragging.current) return;
-        scrollbarDragging.current = false;
-        armReaderInput();
-      };
       const onFocusIn = (event: FocusEvent) => {
-        if (event.target instanceof Node && container.contains(event.target)) armReaderInput();
+        if (event.target instanceof Node && container.contains(event.target)) hostLeases.start("focus");
+      };
+      const onBlur = () => hostLeases.release();
+      const onVisibilityChange = () => {
+        if (document.visibilityState === "hidden") hostLeases.release();
       };
       container.addEventListener("scroll", onScroll, { passive: true });
       container.addEventListener("scrollend", onScrollEnd, { passive: true });
       container.addEventListener("wheel", onWheel, { passive: true });
-      container.addEventListener("keydown", onKeyDown);
-      container.addEventListener("pointerdown", onPointerDown, { passive: true });
       container.addEventListener("touchstart", onTouchStart, { passive: true });
       container.addEventListener("touchmove", onTouchMove, { passive: true });
       container.addEventListener("touchend", onTouchEnd, { passive: true });
       container.addEventListener("touchcancel", onTouchEnd, { passive: true });
-      document.addEventListener("keydown", onDocumentKeyDown);
-      document.addEventListener("keyup", onDocumentKeyUp);
+      document.addEventListener("keydown", onKeyDown);
+      document.addEventListener("keyup", onKeyUp);
       document.addEventListener("pointerdown", onPointerDown, { passive: true });
-      document.addEventListener("pointerup", onDocumentPointerEnd, { passive: true });
-      document.addEventListener("pointercancel", onDocumentPointerEnd, { passive: true });
+      document.addEventListener("pointerup", onPointerEnd, { passive: true });
+      document.addEventListener("pointercancel", onPointerEnd, { passive: true });
       document.addEventListener("focusin", onFocusIn);
+      document.addEventListener("visibilitychange", onVisibilityChange);
+      window.addEventListener("blur", onBlur);
       // A scroll box that changes size (a banner above it, a composer below it) keeps a pinned reader at the bottom.
       const viewportObserver = new ResizeObserver(() => {
         const pinned = engine.getSnapshot().pinned;
@@ -354,18 +397,18 @@ export function useVirtualList<Id extends string>(
         container.removeEventListener("scroll", onScroll);
         container.removeEventListener("scrollend", onScrollEnd);
         container.removeEventListener("wheel", onWheel);
-        container.removeEventListener("keydown", onKeyDown);
-        container.removeEventListener("pointerdown", onPointerDown);
         container.removeEventListener("touchstart", onTouchStart);
         container.removeEventListener("touchmove", onTouchMove);
         container.removeEventListener("touchend", onTouchEnd);
         container.removeEventListener("touchcancel", onTouchEnd);
-        document.removeEventListener("keydown", onDocumentKeyDown);
-        document.removeEventListener("keyup", onDocumentKeyUp);
+        document.removeEventListener("keydown", onKeyDown);
+        document.removeEventListener("keyup", onKeyUp);
         document.removeEventListener("pointerdown", onPointerDown);
-        document.removeEventListener("pointerup", onDocumentPointerEnd);
-        document.removeEventListener("pointercancel", onDocumentPointerEnd);
+        document.removeEventListener("pointerup", onPointerEnd);
+        document.removeEventListener("pointercancel", onPointerEnd);
         document.removeEventListener("focusin", onFocusIn);
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+        window.removeEventListener("blur", onBlur);
         resetHostState();
         container.style.overflowAnchor = priorOverflowAnchor;
       };
@@ -427,7 +470,7 @@ export function useVirtualList<Id extends string>(
     writeScroll(engine.scrollToEnd());
   }, [engine, writeScroll]);
   const requestFollow = useCallback(() => {
-    if (keyboardHeld.current || touchMomentum.current || scrollbarDragging.current) return;
+    if (leases.current?.held()) return;
     const container = containerRef.current;
     if (!container) return;
     const next = engine.requestFollow();
