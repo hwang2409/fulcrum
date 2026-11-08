@@ -21,6 +21,18 @@ test("timeline scroll writes have one owner", () => {
   expect(writes[0]!.index! > ownerStart && writes[0]!.index! < ownerEnd, "write timeline scroll positions only through writeScroll() in packages/react/src/virtual.tsx").toBeTrue();
 });
 
+test("every timeline scroll callback reports the real viewport", () => {
+  const source = readFileSync(SOURCE, "utf8");
+  const start = source.indexOf("const onScroll = () => {");
+  const end = source.indexOf("\n      };", start);
+  expect(start >= 0 && end > start, "onScroll must stay a `const onScroll = () => {` arrow in useVirtualList").toBeTrue();
+  const body = source.slice(start, end);
+  const reports = [...body.matchAll(/engine\.setViewport\(/g)];
+  const message = "onScroll must report the real viewport on every callback: call engine.setViewport once, before any return; classification only picks source \"user\" or \"observe\"";
+  expect(reports.length, message).toBe(1);
+  expect(/\breturn\b/.test(body.slice(0, reports[0]!.index)), message).toBeFalse();
+});
+
 type Row = { readonly id: string; readonly kind: "row" };
 type Observer = { callback: ResizeObserverCallback; observed: Set<Element> };
 type Scenario = {

@@ -3,7 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { act } from "react";
+import { act, Profiler } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
 import { RunProvider, Timeline } from "../src/index.js";
@@ -74,12 +74,26 @@ function mountTimeline() {
   const follow = () => act(() => { followRequest++; render(); });
   host.scrollTop = host.scrollHeight;
   act(() => host.dispatchEvent(new Event("scroll")));
-  return { append, follow, host, jump, unseen };
+  return { append, follow, host, jump, store, unseen };
 }
 
 function moveReader(host: HTMLElement, top = 3_000) {
   host.scrollTop = top;
   act(() => host.dispatchEvent(new Event("scroll")));
+}
+
+// The mounted rows must cover the DOM viewport: a stale engine position leaves the reader on a blank spacer.
+function viewportCoverage(host: HTMLElement, lastId: string) {
+  const rows = [...container!.querySelectorAll<HTMLElement>("[data-virtual-id]")]
+    .filter((row) => row.style.opacity !== "0")
+    .map((row) => ({ id: row.dataset.virtualId!, start: Number(/translateY\((-?[\d.]+)px\)/.exec(row.style.transform)![1]) }))
+    .sort((a, b) => a.start - b.start);
+  const top = host.scrollTop;
+  const bottom = top + host.clientHeight;
+  const first = rows[0]!;
+  const last = rows.at(-1)!;
+  const covered = first.start <= top && (last.start >= bottom || last.id === lastId);
+  return `${covered ? "covered" : "blank"}: rows ${first.id}@${first.start}..${last.id}@${last.start}, viewport ${top}..${bottom}`;
 }
 
 const settleProgrammaticScroll = () => new Promise((resolve) => setTimeout(resolve, 60));
@@ -391,4 +405,86 @@ describe("timeline scroll provenance", () => {
     } finally { geometry.restore(); }
   });
 
+  type RouteContext = { host: HTMLElement; oldEnd: number };
+  const end = (host: HTMLElement) => host.scrollHeight - host.clientHeight;
+  const hostWrite = (host: HTMLElement, top: number) => {
+    host.scrollTop = top;
+    act(() => host.dispatchEvent(new Event("scroll")));
+  };
+  // Every scroll callback reports the real viewport; the route only decides follow intent (rules 1 and 2, F1).
+  const routes: ReadonlyArray<{ name: string; run(context: RouteContext): void; pinned: boolean | null; unpinned: boolean | null }> = [
+    { name: "own echo", run: ({ host }) => act(() => host.dispatchEvent(new Event("scroll"))), pinned: true, unpinned: false },
+    { name: "end clamp at the old end", run: ({ host, oldEnd }) => hostWrite(host, oldEnd), pinned: true, unpinned: false },
+    { name: "end clamp at the new end", run: ({ host }) => hostWrite(host, host.scrollHeight), pinned: true, unpinned: null },
+    { name: "host write to scrollHeight (F1)", run: ({ host }) => hostWrite(host, host.scrollHeight), pinned: null, unpinned: false },
+    { name: "host write 10 px above a grown end (stale end)", run: ({ host }) => hostWrite(host, end(host) - 10), pinned: null, unpinned: false },
+    { name: "reader lease scroll to the end", run: ({ host }) => {
+      act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 })));
+      hostWrite(host, host.scrollHeight);
+    }, pinned: true, unpinned: true },
+    { name: "unmatched move into content", run: ({ host }) => hostWrite(host, 2_000), pinned: false, unpinned: false },
+  ];
+  test.each(routes.flatMap((route) => (["pinned", "unpinned"] as const)
+    .filter((state) => route[state] !== null)
+    .map((state) => [`${route.name} while ${state}`, route, state] as const)))(
+    "scroll route: %s reports the viewport and keeps the intent table",
+    (_, route, state) => {
+      const geometry = installScrollGeometry();
+      try {
+        const { append, host, jump, store, unseen } = mountTimeline();
+        if (state === "unpinned") {
+          act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+          moveReader(host);
+          act(() => host.dispatchEvent(new Event("scrollend")));
+        }
+        let oldEnd = state === "unpinned" ? end(host) : 0;
+        for (let index = 0; index < 150; index++) {
+          if (state === "pinned") oldEnd = end(host);
+          append();
+        }
+        const lastId = () => store.getOutline().at(-1)!.id;
+        route.run({ host, oldEnd });
+        const pinnedAfter = route[state]!;
+        expect(viewportCoverage(host, lastId()), `${route.name} must leave mounted rows under the viewport`).toStartWith("covered");
+        const unseenBefore = Number(unseen());
+        const top = host.scrollTop;
+        append();
+        expect(viewportCoverage(host, lastId())).toStartWith("covered");
+        if (pinnedAfter) {
+          expect(unseen(), `${route.name} must keep or resume follow`).toBe("0");
+          expect(jump()).toBeNull();
+          expect(host.scrollTop).toBe(end(host));
+        } else {
+          expect(unseen(), `${route.name} must leave follow off`).toBe(String(unseenBefore + 1));
+          expect(jump()).not.toBeNull();
+          expect(host.scrollTop, `${route.name} must not snap back`).toBe(top);
+        }
+        if (state === "unpinned" && !pinnedAfter) expect(unseenBefore, "the reader still has every unseen row").toBe(150);
+      } finally { geometry.restore(); }
+    },
+  );
+
+  test("a pinned stream's scroll echo adds no React commit", () => {
+    const geometry = installScrollGeometry();
+    try {
+      const store = createRunStore((flush) => flush());
+      store.resync(Array.from({ length: 300 }, (_, index) => message(`row-${index}`)));
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      let commits = 0;
+      act(() => root!.render(<Profiler id="timeline" onRender={() => { commits++; }}><RunProvider store={store}><Timeline virtual /></RunProvider></Profiler>));
+      const host = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+      hostWrite(host, host.scrollHeight);
+      let echoCommits = 0;
+      for (let index = 0; index < 200; index++) {
+        act(() => store.dispatch(message(`added-${index}`)));
+        const before = commits;
+        act(() => host.dispatchEvent(new Event("scroll"))); // the browser's echo of our end write
+        echoCommits += commits - before;
+      }
+      expect(echoCommits, "reporting an unchanged viewport must not re-render").toBe(0);
+      expect(host.scrollTop).toBe(end(host));
+    } finally { geometry.restore(); }
+  });
 });
