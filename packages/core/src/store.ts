@@ -231,7 +231,10 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     try {
       listener();
     } catch (error) {
-      failure ??= { error };
+      // The first error is rethrown after delivery; later ones go to the host's error report so none vanish.
+      if (!failure) failure = { error };
+      else if (typeof reportError === "function") reportError(error);
+      else console.error(error);
     }
   };
   // Rethrows the first listener error once delivery is over: never inside a pass (it would cut a listener short) and
@@ -245,7 +248,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   /**
    * The delivery contract, for global, outline, and keyed listeners alike:
    * - A pass delivers a snapshot: every pending flag and set is taken and cleared before any listener runs.
-   * - Every listener in the snapshot runs, even if an earlier one throws; the first error is rethrown after delivery.
+   * - Every listener in the snapshot runs, even if an earlier one throws; the first error is rethrown after delivery,
+ *   later ones go to `reportError` (or `console.error` where there is none).
    * - Whatever a listener starts (a resync, a history page, a dispatch whose scheduler job ran during the pass) is
    *   delivered by the next pass, right after this one, never nested in it and never spun on.
    */
@@ -257,10 +261,14 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     const items = [...changedItems];
     changedItems.clear();
     notifying = true;
-    listeners.forEach(call);
-    if (outline) outlineListeners.forEach(call);
-    for (const id of items) itemListeners.get(id)?.forEach(call);
-    notifying = false;
+    // call() catches listener errors; the finally covers what it cannot, like a stack overflow pushing its frame.
+    try {
+      listeners.forEach(call);
+      if (outline) outlineListeners.forEach(call);
+      for (const id of items) itemListeners.get(id)?.forEach(call);
+    } finally {
+      notifying = false;
+    }
     if (stateChanged || flushDeferred) flushDeferred = false, flush(), flushPrepend(), notify();
   };
 

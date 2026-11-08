@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createRunStore, type OutlineSnapshot, type RunEvent } from "../src/index.js";
 import { seededRandom } from "./fuzz.js";
 
@@ -504,6 +504,41 @@ test.each(["global", "outline", "keyed"] as const)("a throwing %s listener does 
   else expect(job).toThrow(boom);
   expect(calls).toEqual(["global", "outline"]);
   expect(ids(store.getOutline())).toEqual(["message:a", "message:b", "message:c", "message:d"]);
+});
+
+// Only the first listener error can be rethrown; the others still reach the host's error report. With a synchronous
+// scheduler the job runs inside dispatch, so dispatch is the call that rethrows.
+test("later listener errors in a pass go to reportError, and a sync dispatch rethrows the first", () => {
+  const store = createRunStore((job) => job());
+  const reported = spyOn(globalThis, "reportError").mockImplementation(() => {});
+  const calls: string[] = [];
+  for (const name of ["first", "second", "third"]) store.subscribe(() => { calls.push(name); if (name !== "third") throw new Error(name); });
+  try {
+    expect(() => store.dispatch(commit("a"))).toThrow("first");
+    expect(calls).toEqual(["first", "second", "third"]);
+    expect(reported.mock.calls.map(([error]) => (error as Error).message)).toEqual(["second"]);
+  } finally {
+    reported.mockRestore();
+  }
+});
+
+// A throw that no listener wrapper can catch (here a stack overflow on the way into a pass) must not leave the store
+// thinking a pass is still running: that would silence every later notification. Each level of the recursion enters a
+// pass a little closer to the stack limit, so one of them overflows between listeners.
+test("an overflow escaping a pass does not silence later notifications", () => {
+  const store = createRunStore((job) => job());
+  let calls = 0;
+  store.subscribe(() => { calls++; });
+  let n = 0;
+  const edge = (): void => {
+    try { edge(); } catch {}
+    try { store.resync(n++ % 2 ? [] : [commit("a")]); } catch {}
+  };
+  edge();
+  calls = 0;
+  store.resync([commit("final")]);
+  expect(store.getDiagnostics().desynced).toBe(false);
+  expect(calls).toBe(1);
 });
 
 // One rule: a flush asked for during a notification waits for the end of that pass; a scheduler that runs its job at
