@@ -151,3 +151,8 @@ test.each(cases)("%s: final rows, and a replay assigns the same ids", async (_na
   expect(rows(events)).toEqual(expected);
   expect(play(played)).toEqual(events);
 });
+
+// Known gaps of the approval continuation, outside message identity (follow-up: continuation tool and approval state).
+// Repro: the "approval, then a continuation" row above; the continuation's adapter never saw the call or the approval.
+test.todo("approval continuation: the tool row keeps its name and arguments (today core tool_output adopts the placeholder `tool` / {})");
+test.todo("approval continuation: the approval row resolves once the approved tool returns (today no approval_end: the continuation has no approvalId)");
