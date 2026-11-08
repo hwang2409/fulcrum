@@ -21,10 +21,8 @@ jobs:
             packages/highlight/.recipe-entries
             packages/highlight/.recipe-generation-manifest.json
           key: highlight-recipes-${{ runner.os }}-${{ steps.highlight-recipes.outputs.hash }}
-      - run: bunx tsc -b
-      - run: bun run --cwd packages/highlight build # @fulcrum/react imports its built entry
+      - run: bun run typecheck
       - run: git diff --exit-code -- packages/highlight/src/languages.ts
-      - run: bun run --cwd packages/mermaid build # the playground and web apps import its built entry
       - run: bun scripts/highlight-token-parity.ts check
       - run: bun test ./packages/highlight/test/build-race.ts
       - run: bun test
@@ -76,7 +74,7 @@ jobs:
       # 10-12 ms there, both at 4x), so 2x here is about the laptop's 4x.
       - run: bun run --cwd apps/playground large-blocks
         env: { CPU_THROTTLE: 2 }
-      - run: cd apps/web && bunx tsc -p . && bun run gate
+      - run: cd apps/web && bun run gate
       - if: always()
         uses: actions/upload-artifact@v4
         with:
