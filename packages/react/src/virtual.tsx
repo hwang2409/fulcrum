@@ -158,7 +158,7 @@ export function useVirtualList<Id extends string>(
         // Real input clears follow intent before the measurement flush; content and layout changes do not.
         const ownsBottom = engine.getSnapshot().pinned;
         const notify = !ownsBottom || !pinnedMeasurementNotified.current;
-        pinnedMeasurementNotified.current = ownsBottom;
+        if (ownsBottom) pinnedMeasurementNotified.current = true;
         const token = engine.beforeMutation();
         for (const [id, size] of pendingEntries.current) engine.measure(id, size, notify);
         pendingEntries.current.clear();
