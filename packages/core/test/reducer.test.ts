@@ -255,6 +255,17 @@ test.each([
   }
 });
 
+test("spread, JSON, and structuredClone copies of a streaming item carry its text", () => {
+  const store = replay([
+    { type: "message_delta", message_id: "copy", delta: "a" },
+    { type: "message_delta", message_id: "copy", delta: "b" },
+  ]);
+  const item = store.getItem("message:copy")!;
+  expect(itemText({ ...item } as RunItem)).toBe("ab");
+  expect(itemText(JSON.parse(JSON.stringify(item)))).toBe("ab");
+  expect(itemText(structuredClone(item))).toBe("ab");
+});
+
 test("run_end clears active assistant and tool streams", () => {
   const store = replay([
     { type: "message_delta", delta: "old" },
