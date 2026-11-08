@@ -87,7 +87,7 @@ export function useVirtualList<Id extends string>(
   const touchY = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
   const lastDomEnd = useRef(0);
-  const pendingScroll = useRef<{ target: "end" | number; value: number } | null>(null);
+  const pendingScroll = useRef<{ target: "end" | number; value: number; previousEnd: number } | null>(null);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
@@ -103,7 +103,7 @@ export function useVirtualList<Id extends string>(
     if (!container) return;
     const domEnd = Math.max(0, container.scrollHeight - container.clientHeight);
     const value = target === "end" || engine.getSnapshot().pinned ? domEnd : target;
-    pendingScroll.current = { target, value };
+    pendingScroll.current = { target, value, previousEnd: lastDomEnd.current };
     container.scrollTop = value;
     lastScrollTop.current = container.scrollTop;
     lastDomEnd.current = domEnd;
@@ -198,18 +198,18 @@ export function useVirtualList<Id extends string>(
         const domEnd = Math.max(0, container.scrollHeight - container.clientHeight);
         const fromReader = readerInput.current || gestureActive.current || touching.current || scrollbarDragging.current;
         const pending = pendingScroll.current;
-        // The writer owns its pending target. Without one, only a browser move that remains at the old or new DOM end
-        // is layout work; focus, find, host scrollIntoView, and document-level input move into content and are reader intent.
-        const layoutSlack = Math.min(1, Math.abs(domEnd - lastDomEnd.current));
-        const atLayoutEnd = container.scrollTop >= Math.min(lastDomEnd.current, domEnd) - layoutSlack - 0.5;
-        if (!fromReader && (pending !== null || atLayoutEnd)) {
+        pendingScroll.current = null; // the first callback consumes our write, whether the browser matched it or not
+        const matchesPending = pending !== null && (Math.abs(container.scrollTop - pending.value) < 0.5
+          || (typeof pending.target === "number" && Math.abs(container.scrollTop - pending.target) < 0.5));
+        // Without reader input, only our exact write or a browser move that remains at the old/new DOM end is layout work.
+        // Focus, find, host scrollIntoView, and host scroll writes into content are reader intent.
+        const priorDomEnd = pending?.previousEnd ?? lastDomEnd.current;
+        const layoutSlack = Math.min(1, Math.abs(domEnd - priorDomEnd));
+        const atLayoutEnd = container.scrollTop >= Math.min(priorDomEnd, domEnd) - layoutSlack - 0.5;
+        if (!fromReader && (matchesPending || atLayoutEnd)) {
           lastScrollTop.current = container.scrollTop;
           lastDomEnd.current = domEnd;
-          if (pending) {
-            const target = pending.target === "end" ? domEnd : pending.value;
-            if (Math.abs(container.scrollTop - target) < 0.5) pendingScroll.current = null;
-            else writeScroll(pending.target);
-          } else if (before.pinned && Math.abs(container.scrollTop - domEnd) >= 0.5) writeScroll("end");
+          if (before.pinned && Math.abs(container.scrollTop - domEnd) >= 0.5) writeScroll("end");
           return;
         }
         readerInput.current = false;
