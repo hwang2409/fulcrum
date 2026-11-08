@@ -396,7 +396,7 @@ export const demos: Demo[] = [
     id: "markdown-fence-streaming",
     part: "Message",
     title: "code fence, streaming",
-    description: "While the fence is open, the cursor fills the next cell of its newest code line; once the fence closes, it leaves the block for the text after it.",
+    description: "While the fence streams, the cursor fills the next cell of its newest code line; it stays there when the fence closes, so the block never changes height, and moves to the text after it.",
     events: stream("markdown-fence-live", "Run the focused tests first:\n\n```sh\nbun test packages/react\nbun run typecheck\n```\n\nThen push."),
     live: 90,
   },

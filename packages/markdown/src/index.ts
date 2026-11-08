@@ -958,7 +958,8 @@ export function createStreamingDocument(): StreamingDocument {
   let pendingInlineState: PendingInlineState | undefined;
   // A streaming line that starts with a pipe is a table row in waiting: it shows once it is a table, or once the next
   // line proves it is prose. Shown before that, its pipes would vanish into cell borders, or its cells would read as one
-  // word. A row that already showed (as a row of the table above it) stays shown. Decided once per line, by its first
+  // word. A row that already showed (as a row of the table above it) stays shown. A paragraph of only a held row is an
+  // empty line, where the cursor waits for the table. Decided once per line, by its first
   // character after `offset`: indexing the line flattens it, so a check per frame would copy the whole line every frame.
   let pendingRow: { offset: number; held: boolean } | undefined;
   const heldRow = (content: string) => /^[ \t]*\|/.test(content) && pendingRow?.held !== false;
