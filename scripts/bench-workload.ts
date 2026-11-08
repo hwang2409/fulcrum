@@ -1,12 +1,31 @@
 import { pathToFileURL } from "node:url";
+import { median } from "./bench-statistics.js";
 
-export type WorkloadResult = {
-  stream: { small: number; large: number; ratio: number };
-  prepend: { elapsed: number; rows: number };
-  outlineSize: number;
+export type StreamResult = {
+  name: string;
+  flushEvery: number;
+  smallSeedCount: number;
+  largeSeedCount: number;
+  small: number;
+  large: number;
+  ratio: number;
   callbackCount: number;
   receiptSize: number;
 };
+
+export type WorkloadResult = {
+  streams: StreamResult[];
+  timedCpu: number;
+  prepend: { elapsed: number; rows: number };
+  outlineSize: number;
+};
+
+const streamCases = [
+  { name: "800-event flush", flushEvery: 800, smallSeedCount: 500, largeSeedCount: 5_000 },
+  { name: "3-event flush", flushEvery: 3, smallSeedCount: 500, largeSeedCount: 5_000 },
+] as const;
+const runs = 5;
+let burnSink = 0;
 
 const burn = (iterations: number) => {
   let value = 0;
@@ -14,9 +33,19 @@ const burn = (iterations: number) => {
   return value;
 };
 
+const addCpuFraction = (start: ReturnType<typeof process.cpuUsage>, fraction: number) => {
+  const baseline = process.cpuUsage(start);
+  const target = (baseline.user + baseline.system) * fraction;
+  const injectionStart = process.cpuUsage();
+  while (true) {
+    burnSink ^= burn(100);
+    const injected = process.cpuUsage(injectionStart);
+    if (injected.user + injected.system >= target) return;
+  }
+};
+
 export async function runWorkload(root: string, inject = false): Promise<WorkloadResult> {
   const { createRunStore } = await import(pathToFileURL(`${root}/packages/core/src/index.ts`).href);
-  const runs = 5;
   const run = (seedCount: number, flushEvery: number) => {
     let callbackCount = 0;
     const store = createRunStore(() => callbackCount++);
@@ -25,43 +54,52 @@ export async function runWorkload(root: string, inject = false): Promise<Workloa
     }
     store.getState();
     const streamId = `message:assistant-${seedCount + 1}`;
-    const start = performance.now();
+    const start = process.cpuUsage();
     for (let i = 0; i < 50_000; i++) {
       store.dispatch({ type: "message_delta", delta: "x".repeat(100) });
-      if (inject) burn(60);
       if (i % flushEvery === flushEvery - 1) store.getState();
     }
-    const elapsed = performance.now() - start;
+    if (inject) addCpuFraction(start, 0.25);
+    const usage = process.cpuUsage(start);
+    const elapsed = (usage.user + usage.system) / 1_000;
     store.getState();
     const item = store.getItem(streamId);
     if (item?.type !== "message" || item.text?.length !== 5_000_000) throw new Error("invalid stream result");
-    return { elapsed, callbackCount, receiptSize: store.getState().receipts.length };
+    return { elapsed, callbackCount, receiptSize: store.getState().receiptOrder.length };
   };
-  const collect = (flushEvery: number) => {
-    run(200, flushEvery);
-    run(5_000, flushEvery);
-    return Array.from({ length: runs }, () => {
-      const small = run(200, flushEvery);
+
+  let timedCpu = 0;
+  const streams = streamCases.map(({ name, flushEvery, smallSeedCount, largeSeedCount }) => {
+    run(smallSeedCount, flushEvery);
+    run(largeSeedCount, flushEvery);
+    const measurements = Array.from({ length: runs }, () => {
+      const small = run(smallSeedCount, flushEvery);
       if (typeof Bun.gc === "function") Bun.gc(true);
-      const large = run(5_000, flushEvery);
+      const large = run(largeSeedCount, flushEvery);
       if (typeof Bun.gc === "function") Bun.gc(true);
-      return { small: small.elapsed, large: large.elapsed, ratio: large.elapsed / small.elapsed, callbackCount: large.callbackCount, receiptSize: large.receiptSize };
+      return { small, large };
     });
-  };
-  const eightHundred = collect(800);
-  const three = collect(3);
-  const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
-  const stream = {
-    small: median([...eightHundred, ...three].map((x) => x.small)),
-    large: median([...eightHundred, ...three].map((x) => x.large)),
-    ratio: median([...eightHundred, ...three].map((x) => x.ratio)),
-  };
+    timedCpu += measurements.reduce((total, { small, large }) => total + small.elapsed + large.elapsed, 0);
+    return {
+      name,
+      flushEvery,
+      smallSeedCount,
+      largeSeedCount,
+      small: median(measurements.map(({ small }) => small.elapsed)),
+      large: median(measurements.map(({ large }) => large.elapsed)),
+      ratio: median(measurements.map(({ small, large }) => large.elapsed / small.elapsed)),
+      callbackCount: measurements.at(-1)!.large.callbackCount,
+      receiptSize: measurements.at(-1)!.large.receiptSize,
+    };
+  });
+
   const prependStore = createRunStore(() => {});
   prependStore.beginHistory();
   for (let i = 0; i < 100_000; i++) prependStore.dispatch({ type: "message_commit", message_id: `current-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
   prependStore.getState();
-  const prependStart = performance.now();
+  const prependStart = process.cpuUsage();
   for (let page = 0; page < 50; page++) prependStore.prepend(Array.from({ length: 200 }, (_, row) => ({ type: "message_commit" as const, message_id: `older-${page}-${row}`, message: { role: "assistant", content: [{ type: "text", text: "old" }] } })));
-  const prepend = { elapsed: performance.now() - prependStart, rows: prependStore.getOutline().length };
-  return { stream, prepend, outlineSize: prepend.rows, callbackCount: eightHundred.at(-1)!.callbackCount, receiptSize: eightHundred.at(-1)!.receiptSize };
+  const prependUsage = process.cpuUsage(prependStart);
+  const prepend = { elapsed: (prependUsage.user + prependUsage.system) / 1_000, rows: prependStore.getOutline().length };
+  return { streams, timedCpu, prepend, outlineSize: prepend.rows };
 }
