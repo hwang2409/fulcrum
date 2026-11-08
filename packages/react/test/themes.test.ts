@@ -8,8 +8,8 @@ test("themes lists every palette in themes.css, in file order", () => {
   expect([...css.matchAll(/^\[data-fulcrum-theme="([^"]+)"\] \{$/gm)].map((match) => match[1])).toEqual([...themes]);
 });
 
-// UI text and syntax (tok-*) colors must reach 4.5:1 on every background they sit on: bg, surface, and the 8% diff row
-// tints of styles.css. Syntax and terminal (ansi-*: bg, surface, 3:1) colors keep each palette's official hex where it
+// UI text and syntax (tok-*) colors must reach 4.5:1 on every background they sit on: bg, surface, the 8% diff row
+// tints of styles.css, and for status colors their own 8% marker tint. Syntax and terminal (ansi-*: bg, surface, 3:1) colors keep each palette's official hex where it
 // reaches its ratio. Otherwise the value carries an `/* official #rrggbb ... */` note and is the smallest OKLCH lightness
 // change of it, at the same hue, that reaches the ratio.
 const css = readFileSync(new URL("../themes.css", import.meta.url), "utf8");
@@ -58,11 +58,16 @@ function oklch(c: Rgb) {
   return { L: 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, C: Math.hypot(a, bb), h: (Math.atan2(bb, a) * 180) / Math.PI };
 }
 
+// Status markers (run-end-marker) write ok, warn, and danger on an 8% tint of the same color, over bg or surface.
+const STATUS = ["ok", "warn", "danger"];
 function backgrounds(vars: Record<string, string>, key: string): Record<string, Rgb> {
   const bg = color(vars.bg!, vars);
-  const tint = (name: string): Rgb => color(vars[name]!, vars).map((c, i) => Math.round(c * 0.08 + bg[i]! * 0.92)) as Rgb;
-  const base = { bg, surface: color(vars.surface!, vars) };
-  return key.startsWith("ansi-") ? base : { ...base, "inserted row": tint("tok-inserted"), "deleted row": tint("tok-deleted") };
+  const surface = color(vars.surface!, vars);
+  const tint = (name: string, under = bg): Rgb => color(vars[name]!, vars).map((c, i) => Math.round(c * 0.08 + under[i]! * 0.92)) as Rgb;
+  const base = { bg, surface };
+  if (key.startsWith("ansi-")) return base;
+  const rows = { ...base, "inserted row": tint("tok-inserted"), "deleted row": tint("tok-deleted") };
+  return STATUS.includes(key) ? { ...rows, [`${key} tint on bg`]: tint(key), [`${key} tint on surface`]: tint(key, surface) } : rows;
 }
 const worst = (rgb: Rgb, on: Record<string, Rgb>) => Math.min(...Object.values(on).map((bg) => contrast(rgb, bg)));
 
@@ -71,7 +76,7 @@ test("there are 12 named themes and the OS-dark default, and each defines every 
   expect(palettes.flatMap(({ name, vars }) => [...UI, ...ACCENTS, ...TOKENS, ...ANSI].filter((key) => !vars[key]).map((key) => `${name}: --fulcrum-${key}`))).toEqual([]);
 });
 
-test("UI text reaches 4.5:1 on bg, surface, and diff rows in every theme", () => {
+test("UI text reaches 4.5:1 on bg, surface, diff rows, and its own status tint in every theme", () => {
   const problems: string[] = [];
   for (const { name, vars } of palettes) {
     for (const key of UI) {

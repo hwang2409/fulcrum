@@ -168,7 +168,8 @@ function pageProblems(minHeight: number) {
     const key = `${where?.dataset.part}.${node.className || node.tagName.toLowerCase()} ${color}`;
     if (!textProblems.has(key)) textProblems.set(key, `text "${sample.trim().slice(0, 24)}" (${key}) is ${ratio.toFixed(2)}:1, needs ${min}:1`);
   };
-  for (const timeline of document.querySelectorAll<HTMLElement>('[data-part="timeline"], [data-part="run-bar"], [data-part="composer"]')) {
+  // Status parts that sit outside a timeline (the run header status and the run-end marker) are audited too.
+  for (const timeline of document.querySelectorAll<HTMLElement>('[data-part="timeline"], [data-part="run-bar"], [data-part="composer"], [data-part="run-status"], [data-part="run-end-marker"]')) {
     const walker = document.createTreeWalker(timeline, NodeFilter.SHOW_TEXT);
     for (let text = walker.nextNode(); text; text = walker.nextNode()) {
       const node = text.parentElement!;
