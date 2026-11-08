@@ -313,6 +313,35 @@ test("run status does not rescan approvals for unrelated streaming updates", () 
   expect(q('[data-part="run-status"]').dataset.status).toBe("idle");
 });
 
+test("run status clears an approval that ends after the header re-renders", () => {
+  const { store, send } = setup([
+    { type: "run_start" },
+    { type: "approval_request", request_id: "p", tool_call: call("t", "bash"), delegated: false },
+  ]);
+  const view = (n: number) => <RunProvider store={store}><span data-n={n} /><FulcrumReact.RunStatus /></RunProvider>;
+  mount(view(1));
+  expect(q('[data-part="run-status"]').dataset.status).toBe("approval");
+  // A host re-render that leaves toolApprovals unchanged must not strand the status on a stale snapshot.
+  act(() => root!.render(view(2)));
+  // Live order: approval_end arrives before the tool row exists, so toolApprovals does not change.
+  send({ type: "approval_end", request_id: "p", decision: "deny" });
+  expect(q('[data-part="run-status"]').dataset.status).toBe("running");
+});
+
+test("run status clears an approval that ends after its tool starts", () => {
+  const { store, send } = setup([
+    { type: "run_start" },
+    { type: "approval_request", request_id: "p", tool_call: call("t", "bash"), delegated: false },
+  ]);
+  const view = (n: number) => <RunProvider store={store}><span data-n={n} /><FulcrumReact.RunStatus /></RunProvider>;
+  mount(view(1));
+  send({ type: "tool_start", tool_call: call("t", "bash") });
+  expect(q('[data-part="run-status"]').dataset.status).toBe("approval");
+  act(() => root!.render(view(2)));
+  send({ type: "approval_end", request_id: "p", decision: "allow" });
+  expect(q('[data-part="run-status"]').dataset.status).toBe("running");
+});
+
 test("dispose leaves the last mounted snapshot and stops notifications", () => {
   const { store } = setup([
     { type: "message_delta", message_id: "m", delta: "x" },

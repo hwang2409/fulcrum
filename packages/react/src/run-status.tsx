@@ -11,24 +11,16 @@ export function useRunStatus(): RunStatusValue {
     useCallback((state: ReturnType<typeof store.getState>) => [state.agent, state.endOutcome, state.toolApprovals] as const, []),
     (left, right) => left[0] === right[0] && left[1] === right[1] && left[2] === right[2],
   );
-  let cached: boolean | undefined;
+  // getSnapshot runs only when this hook renders or an approval item notifies, so the scan stays off the global publication path.
   const waiting = useSyncExternalStore(
     useCallback((listener) => {
-      const unsubscribe = Object.values(toolApprovals).map((id) => store.subscribe(id, () => {
-        cached = undefined;
-        listener();
-      }));
+      const unsubscribe = Object.values(toolApprovals).map((id) => store.subscribe(id, listener));
       return () => unsubscribe.forEach((remove) => remove());
     }, [store, toolApprovals]),
-    () => {
-      if (cached === undefined) {
-        cached = Object.values(toolApprovals).some((id) => {
-          const item = store.getItem(id);
-          return item?.type === "approval" && !item.ended;
-        });
-      }
-      return cached;
-    },
+    () => Object.values(toolApprovals).some((id) => {
+      const item = store.getItem(id);
+      return item?.type === "approval" && !item.ended;
+    }),
   );
   if (agent !== "running") return endOutcome === "unknown" ? "unknown" : "idle";
   return waiting ? "approval" : "running";
