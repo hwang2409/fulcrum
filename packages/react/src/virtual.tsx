@@ -83,6 +83,7 @@ export function useVirtualList<Id extends string>(
   const touchY = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewportSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ignoreScrollUntil = useRef(0);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
@@ -140,6 +141,13 @@ export function useVirtualList<Id extends string>(
         container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
         lastScrollTop.current = container.scrollTop;
         if (syncViewport) updateViewport("programmatic");
+        else {
+          if (viewportSyncTimer.current != null) clearTimeout(viewportSyncTimer.current);
+          viewportSyncTimer.current = setTimeout(() => {
+            viewportSyncTimer.current = null;
+            if (containerRef.current === container) updateViewport("programmatic");
+          }, 120);
+        }
       };
       scrollToBottomRef.current = scrollToBottom;
       if (prior) {
@@ -153,15 +161,15 @@ export function useVirtualList<Id extends string>(
         resizeFrame.current = null;
         if (pendingEntries.current.size === 0) return;
         // Capture ownership before the engine notifies React: its correction can commit synchronously and move the DOM.
-        // Re-apply the bottom only while the DOM still has the adapter's last position; real input moves it first.
-        const ownsBottom = engine.getSnapshot().pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5;
+        // Real input clears follow intent before the measurement flush; content and layout changes do not.
+        const ownsBottom = engine.getSnapshot().pinned;
         const token = engine.beforeMutation();
         for (const [id, size] of pendingEntries.current) engine.measure(id, size);
         pendingEntries.current.clear();
         engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
         // A late layout pass can leave WebKit a few pixels behind the new end after the measurement correction.
         // Re-apply the existing follow intent only when the DOM had not moved independently before that correction.
-        if (ownsBottom && engine.getSnapshot().pinned) scrollToBottom();
+        if (ownsBottom && engine.getSnapshot().pinned) scrollToBottom(false);
       };
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
@@ -173,8 +181,7 @@ export function useVirtualList<Id extends string>(
         // not a frame later when the engine measures (and then agrees). Moving scroll resizes nothing: no observer loop.
         // The user beats the engine: pointer, wheel, key, and touch input own their scroll frame, while a delayed
         // browser event from content growth does not change follow intent.
-        const { pinned, scrollTop } = engine.getSnapshot();
-        if (pinned && Math.abs(container.scrollTop - scrollTop) < 1) scrollToBottom(false);
+        if (engine.getSnapshot().pinned) scrollToBottom(false);
       });
       observerRef.current = observer;
       for (const row of rows.current.values()) observer.observe(row);
@@ -201,8 +208,9 @@ export function useVirtualList<Id extends string>(
         const clampedToEnd = before.pinned && container.scrollTop >= container.scrollHeight - container.clientHeight - 0.5;
         const userDriven = touching.current || performance.now() < userScrollUntil.current;
         const movedUp = container.scrollTop < lastScrollTop.current;
-        if (before.pinned && !correction && !clampedToEnd && (!userDriven || !movedUp)) {
-          scrollToBottom(false);
+        if (before.viewportSize > 0 && before.pinned && (!userDriven || !movedUp)) {
+          const end = Math.max(0, container.scrollHeight - container.clientHeight);
+          if (Math.abs(container.scrollTop - end) > 0.5) scrollToBottom(false);
           return;
         }
         if (!correction && !clampedToEnd && userDriven && movedUp) engine.setFollow(false);
@@ -226,9 +234,13 @@ export function useVirtualList<Id extends string>(
           userScrollUntil.current = performance.now() + 200;
         if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
       };
-      const onPointerDown = () => {
+      const onPointerDown = (event: PointerEvent) => {
         userIntent();
-        userScrollUntil.current = performance.now() + 200;
+        const right = container.getBoundingClientRect().right;
+        if (event.target === container && event.clientX >= right - 24) {
+          userScrollUntil.current = performance.now() + 200;
+          engine.setFollow(false);
+        }
       };
       const onPointerEnd = () => finishScroll();
       const onTouchStart = (event: TouchEvent) => {
@@ -281,8 +293,10 @@ export function useVirtualList<Id extends string>(
         container.removeEventListener("touchcancel", onTouchEnd);
         if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
+        if (viewportSyncTimer.current != null) clearTimeout(viewportSyncTimer.current);
         resizeFrame.current = null;
         scrollEndTimer.current = null;
+        viewportSyncTimer.current = null;
         settleDetachedViewport(engine, touching, touchY, userScrollUntil, ignoreScrollUntil);
         pendingEntries.current.clear();
         if (scrollToBottomRef.current === scrollToBottom) scrollToBottomRef.current = null;

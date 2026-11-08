@@ -146,7 +146,7 @@ export async function race(input: "none" | "scrollbar" | "wheel" | "key" | "touc
   await new Promise<void>((resolve) => requestAnimationFrame(() => {
     // after this frame's scroll events: the engine sees the move first in the next frame, as with a real drag
     const at = { clientX: 200, clientY: 200 };
-    if (input === "scrollbar") scroller.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, ...at }));
+    if (input === "scrollbar") scroller.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, ...at, clientX: scroller.getBoundingClientRect().right - 1 }));
     if (input === "wheel") scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -300, ...at }));
     if (input === "key") scroller.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "PageUp" }));
     if (input === "touch") {
