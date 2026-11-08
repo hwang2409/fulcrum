@@ -15,7 +15,10 @@ export type { OutlineSplice };
  * keeps every other row; any other view (it missed a snapshot) takes `items` whole.
  */
 export type OutlineChange = { readonly from: readonly OutlineItem[]; readonly splices: readonly OutlineSplice[] };
-/** `change` is null when there is nothing to edit from: the first snapshot and after `dispose`. */
+/**
+ * `change` is null when there is nothing to edit from: the first snapshot, after `resync`, and after `dispose`. A null
+ * change means "take `items` whole"; a resync is a discontinuity, never an edit of what a view held.
+ */
 export type OutlineSnapshot = { readonly items: readonly OutlineItem[]; readonly change: OutlineChange | null };
 
 const defaultScheduler: Scheduler = (callback) =>
@@ -82,6 +85,11 @@ const outlineSuffixLength = (older: readonly OutlineItem[], newer: readonly Outl
   const offset = newer.length - older.length;
   return older.every((item, index) => item.id === newer[offset + index]?.id) ? offset : -1;
 };
+// The one owner of whether a resync notifies outline subscribers: always when a change is pending (a read may have
+// flushed it before its frame ran), else only when the replay's rows differ from the outline subscribers hold. Outline
+// ids carry their kind, so ids decide. What it publishes is a replacement (`change: null`).
+const resyncOutlineChange = (prior: readonly OutlineItem[], pending: boolean, next: readonly OutlineItem[]) =>
+  pending || prior.length !== next.length || prior.some((item, index) => item.id !== next[index]?.id);
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
   let entities = new Map<string, RunItem>();
   let messageAliases = new Map<string, string>();
@@ -211,19 +219,25 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
     return true;
   };
+  // Delivers a snapshot: every pending flag and set is taken and cleared before any listener runs, so whatever a
+  // listener adds (a resync, a history page) lands in the fresh state and is delivered by the next pass.
   const notify = () => {
-    if (!stateChanged || desynced) return;
+    if (!stateChanged || desynced || notifying) return;
     stateChanged = false;
+    const outline = outlineChanged;
+    outlineChanged = false;
+    const items = [...changedItems];
+    changedItems.clear();
     notifying = true;
     try {
       listeners.forEach((listener) => listener());
-      if (outlineChanged) outlineListeners.forEach((listener) => listener());
-      outlineChanged = false;
-      for (const id of changedItems) itemListeners.get(id)?.forEach((listener) => listener());
-      changedItems.clear();
+      if (outline) outlineListeners.forEach((listener) => listener());
+      for (const id of items) itemListeners.get(id)?.forEach((listener) => listener());
     } finally {
       notifying = false;
     }
+    // A listener's resync is delivered here, after this pass, never nested in it.
+    if (stateChanged) flush(), flushPrepend(), notify();
   };
 
   const scheduleFlush = () => {
@@ -292,22 +306,34 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (!desynced || disposed) return;
       setDiagnostics({ ...diagnostics, resyncError: errorMessage(error) });
     },
+    /**
+     * Replaces all state with `events`. Outline subscribers run only if they would miss something (a pending change or
+     * different rows), and then read `change: null`: take `items` whole. Every prior item's keyed listener runs. Called
+     * from a listener, it is delivered right after the running notification, never nested in it.
+     */
     resync(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
+      const prior = current.outline;
+      const pendingOutline = outlineChanged;
+      // Pending keyed notifications stay; every prior row is replaced (or removed), so its listener runs too.
+      entities.forEach((_, id) => changedItems.add(id));
       pending = [];
       pendingOlder = [];
       entities.clear();
       messageAliases.clear();
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
-      changedItems.clear();
       edits = [];
       stateChanged = false;
       outlineChanged = false;
       desynced = false;
       acceptedLog = [];
       pending.push(...events);
-      flush();
+      // Inside a notification the flush waits for notify's next pass, so the rows are not known yet: notify then.
+      const flushed = flush();
+      stateChanged = true;
+      outlineChanged = (!flushed && notifying) || resyncOutlineChange(prior, pendingOutline, current.outline);
+      outlineSnapshot = { items: current.outline, change: null };
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
     },

@@ -338,12 +338,13 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return;
     }
     const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
+    // The newest served turn id is valid metadata even while its event stays quarantined.
+    const turnId = message.params.event === "turn_start" ? (message.params.data as { turn_id?: unknown } | undefined)?.turn_id : undefined;
+    if (session !== undefined && typeof turnId === "string") servedTurns.set(session, turnId);
     if (session !== undefined && quarantined.has(session)) {
       quarantineRevisions.set(session, (quarantineRevisions.get(session) ?? 0) + 1);
       return;
     }
-    const turnId = message.params.event === "turn_start" ? (message.params.data as { turn_id?: unknown } | undefined)?.turn_id : undefined;
-    if (session !== undefined && typeof turnId === "string") servedTurns.set(session, turnId);
     const sessionStore = eventStore(session);
     for (const event of fromZetaEvent(message.params).map((item) => stampIntent(item, session))) sessionStore.dispatch(event);
   };

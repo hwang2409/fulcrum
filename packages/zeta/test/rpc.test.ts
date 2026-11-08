@@ -789,3 +789,24 @@ test("the client remembers each session's last served turn id from live turn_sta
   expect(client.servedTurn("s")).toBe("5ec6b9bb4c8c44d29bfa315da83a4190");
   expect(client.servedTurn("other")).toBeUndefined();
 });
+
+test("a turn_start during a quarantined replay still records the served turn id but is not dispatched", async () => {
+  const fake = fakeTransport();
+  const client = connect(fake.transport, (flush) => flush());
+  const lease = await client.replay("s", async () => [{ type: "run_start" }, { type: "run_end" }], true);
+  const before = lease.store.getState();
+  const turnStart = (session: string, turnId: string) => fake.receive({ jsonrpc: "2.0", method: "event", params: { event: "turn_start", session_id: session, data: { turn: 1, turn_id: turnId } } });
+  turnStart("s", "a1");
+  expect(client.servedTurn("s")).toBe("a1");
+  expect(lease.store.getState()).toBe(before);
+  expect(client.replayRevision("s")).toBe(1);
+  const other = client.forSession("other");
+  const otherBefore = other.store.getState();
+  turnStart("other", "b1");
+  expect(client.servedTurn("other")).toBe("b1");
+  expect(client.replayRevision("other")).toBe(0);
+  expect(other.store.getState()).not.toBe(otherBefore);
+  other.release();
+  lease.release();
+  client.close();
+});

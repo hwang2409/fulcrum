@@ -38,16 +38,35 @@ const seeded = [
 const text = (value: string) => ({ type: "text", text: value });
 const fakeImage = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="), (character) => character.charCodeAt(0));
 const fakeImageHandle = "fake-history-image";
-const toolUse = (id: string, name: string, args: Json = {}) => ({ type: "tool_use", tool_call: { id, name, arguments: args } });
-// History keeps a result's text only; bash's is "stdout:\n" + stdout + "\nstderr:\n" + stderr (zeta src/zeta/tools/bash).
-const result = (id: string, content: string, extra: Json = {}) => ({ tool_call_id: id, content, is_error: false, content_blocks: [], structured_content: null, ...extra });
+// History rows are stored in zeta's `session_history_fidelity` shape (docs/serve-protocol.md:1293-1303): tool_use keeps
+// its arguments and `arguments_truncated`, results keep `structured_content` and `structured_content_truncated`.
+// `legacyHistoryRow` projects them to the pre-fidelity shape for a connection that did not negotiate the feature.
+const toolUse = (id: string, name: string, args: Json) => ({ type: "tool_use", tool_call: { id, name, arguments: args, arguments_truncated: false } });
+const result = (id: string, content: string, extra: Json = {}) => ({ tool_call_id: id, content, is_error: false, content_blocks: [], structured_content: null, structured_content_truncated: null, ...extra });
+// bash's result text is "stdout:\n" + stdout + "\nstderr:\n" + stderr (zeta src/zeta/tools/bash); a nonzero exit sets is_error.
+const bashResult = (id: string, stdout: string, exitCode = 0, stderr = "") => result(id, `stdout:\n${stdout}\nstderr:\n${stderr}`, {
+  is_error: exitCode !== 0,
+  structured_content: { exit_code: exitCode, stdout, stderr, stdout_truncated: false, stderr_truncated: false, cwd_after: "/repo" },
+  structured_content_truncated: false,
+});
+/** Without `session_history_fidelity`, tool_use arguments are the legacy empty object and results drop structured content. */
+export const legacyHistoryRow = (row: Json): Json => {
+  const content = Array.isArray(row.content) ? row.content.map((block: Json) => {
+    if (block.type !== "tool_use") return block;
+    const { arguments_truncated: _, ...call } = block.tool_call as Json;
+    return { ...block, tool_call: { ...call, arguments: {} } };
+  }) : row.content;
+  if (!row.tool_result) return { ...row, content };
+  const { structured_content_truncated: _, ...toolResult } = row.tool_result as Json;
+  return { ...row, content, tool_result: { ...toolResult, structured_content: null } };
+};
 const histories: Record<string, Json[]> = {
   [ACTIVE]: [
     { id: "h1", role: "user", content: [text("the reconnect test in packages/zeta fails about one run in ten. find out why and fix it."), { type: "attachment", name: "reconnect.png", size: fakeImage.byteLength, handle: fakeImageHandle }], tool_result: null },
-    { id: "h2", role: "assistant", content: [{ type: "thinking", text: "start with the test and the client close path." }, text("I will read the test first, then run it in a loop."), toolUse("c1", "read")], tool_result: null },
+    { id: "h2", role: "assistant", content: [{ type: "thinking", text: "start with the test and the client close path." }, text("I will read the test first, then run it in a loop."), toolUse("c1", "read", { path: "packages/zeta/test/rpc.test.ts" })], tool_result: null },
     { id: "h3", role: "tool_result", content: [text("")], tool_result: result("c1", "import { expect, test } from \"bun:test\";\nimport { connect } from \"../src/index.js\";\n\ntest(\"reconnects\", async () => {\n  const client = connect(transport);\n  await client.hello();\n});") },
     { id: "h4", role: "assistant", content: [toolUse("c2", "bash", { command: "bun test packages/zeta/test/rpc.test.ts" })], tool_result: null },
-    { id: "h5", role: "tool_result", content: [text("")], tool_result: result("c2", "stdout:\nbun test v1.3.13\n\n packages/zeta/test/rpc.test.ts:\n(fail) reconnects [5003.12ms]\n  timed out after 5000ms\n\n 4 pass\n 1 fail\n\nstderr:\n", { is_error: true }) },
+    { id: "h5", role: "tool_result", content: [text("")], tool_result: bashResult("c2", "bun test v1.3.13\n\n packages/zeta/test/rpc.test.ts:\n(fail) reconnects [5003.12ms]\n  timed out after 5000ms\n\n 4 pass\n 1 fail\n", 1) },
     {
       id: "h6", role: "assistant", tool_result: null, content: [text(
         "The failure is a race in the close path:\n\n1. `transport.close()` fires `onClose` **before** pending requests reject.\n2. The test awaits `hello()`, which never settles.\n\n```ts\ntransport.onClose?.((code) => {\n  const error = rejectPending(code); // reject first\n  closeListeners.forEach((listener) => listener(error));\n});\n```\n\nI will fix the order and add a test that fails without it.",
@@ -56,11 +75,11 @@ const histories: Record<string, Json[]> = {
   ],
   "s-themes": [
     { id: "t1", role: "user", content: [text("check every theme's muted text against 4.5:1 on the surface color")], tool_result: null },
-    { id: "t1b", role: "assistant", content: [toolUse("t-ls", "bash")], tool_result: null },
-    // As in zeta: tool_use arguments are emptied, but an approved call's approval rows keep them.
+    { id: "t1b", role: "assistant", content: [toolUse("t-ls", "bash", { command: "ls packages/react/src" })], tool_result: null },
+    // An approved call's approval rows also keep its arguments (the only record of them in legacy history).
     { id: "t1b", role: "system", event: "approval_request", request_id: "t-ls", tool_call: { id: "t-ls", name: "bash", arguments: { command: "ls packages/react/src" } }, delegated: false },
     { id: "t1c", role: "system", event: "approval_end", request_id: "t-ls", tool_call: { id: "t-ls", name: "bash", arguments: { command: "ls packages/react/src" } }, data: { decision: "allow" } },
-    { id: "t1d", role: "tool_result", content: [text("stdout:\nthemes.css\nthemes.ts\n\nstderr:\n")], tool_result: result("t-ls", "stdout:\nthemes.css\nthemes.ts\n\nstderr:\n") },
+    { id: "t1d", role: "tool_result", content: [text("stdout:\nthemes.css\nthemes.ts\n\nstderr:\n")], tool_result: bashResult("t-ls", "themes.css\nthemes.ts\n") },
     { id: "t2", role: "assistant", content: [text("All 12 themes pass on `bg`. On `surface`, **solarized-light** is closest at 4.61:1.\n\n| theme | bg | surface |\n| --- | --- | --- |\n| gruvbox-dark | 5.9 | 5.4 |\n| solarized-light | 4.9 | 4.61 |")], tool_result: null },
   ],
   [LONG]: Array.from({ length: 400 }, (_, index) => index % 2 === 0
@@ -82,16 +101,16 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
   }
   e("assistant_message", { message: { role: "assistant", content: [text("Running the test in a loop to confirm the race:\n\n```sh\nfor i in $(seq 20); do bun test test/rpc.test.ts; done\n```\n")] } });
   const loop = { id: "live-1", name: "bash", arguments: { command: "for i in $(seq 20); do bun test test/rpc.test.ts; done" } };
-  row("r1", "assistant", [text("Running the test in a loop to confirm the race:\n\n```sh\nfor i in $(seq 20); do bun test test/rpc.test.ts; done\n```\n"), toolUse("live-1", "bash")]);
+  row("r1", "assistant", [text("Running the test in a loop to confirm the race:\n\n```sh\nfor i in $(seq 20); do bun test test/rpc.test.ts; done\n```\n"), toolUse("live-1", "bash", loop.arguments)]);
   e("tool_start", { tool_call: loop, data: {} });
   for (let run = 1; run <= 3; run++) {
     e("tool_output", { tool_call: loop, output: `run ${run}: 5 pass, 0 fail\n`, data: {} });
     await wait(40);
   }
-  row("r2", "tool_result", [text("")], result("live-1", "run 1: 5 pass, 0 fail\nrun 2: 5 pass, 0 fail\nrun 3: 5 pass, 0 fail\n"));
+  row("r2", "tool_result", [text("")], bashResult("live-1", "run 1: 5 pass, 0 fail\nrun 2: 5 pass, 0 fail\nrun 3: 5 pass, 0 fail\n"));
   e("tool_end", { tool_call: loop, tool_result: result("live-1", "run 1: 5 pass, 0 fail\nrun 2: 5 pass, 0 fail\nrun 3: 5 pass, 0 fail\n", { structured_content: { exit_code: 0, stdout: "run 1: 5 pass, 0 fail\nrun 2: 5 pass, 0 fail\nrun 3: 5 pass, 0 fail\n", stderr: "" } }), data: {} });
   const clean = { id: "live-2", name: "bash", arguments: { command: "rm -rf packages/zeta/dist && bun run build" } };
-  row("r3", "assistant", [toolUse("live-2", "bash")]);
+  row("r3", "assistant", [toolUse("live-2", "bash", clean.arguments)]);
   const approval = ask();
   e("approval_request", { request_id: "approval-1", tool_call: clean, delegated: false });
   if (historyMode === "new") history.push({ id: "approval-request-1", role: "system", event: "approval_request", request_id: "approval-1", tool_call: clean, delegated: false });
@@ -103,7 +122,7 @@ const liveTurn = (send: (event: Json) => void, ask: () => Promise<"approve" | "d
   if (historyMode === "new") history.push({ id: "approval-end-1", role: "system", event: "approval_end", request_id: "approval-1", tool_call: clean, data: wire });
   if (decision === "approve") {
     e("tool_start", { tool_call: clean, data: {} });
-    row("r4", "tool_result", [text("")], result("live-2", "built 9 packages in 2.1s\n"));
+    row("r4", "tool_result", [text("")], bashResult("live-2", "built 9 packages in 2.1s\n"));
     e("tool_end", { tool_call: clean, tool_result: result("live-2", "built 9 packages in 2.1s\n", { structured_content: { exit_code: 0, stdout: "built 9 packages in 2.1s\n", stderr: "" } }), data: {} });
   }
   const summary = decision === "approve" ? "Fixed: **20 of 20** runs pass, and the new test failed before the change." : "Skipped the rebuild. The fix is in place; run `bun run build` when ready.";
@@ -142,11 +161,19 @@ export function composerMethods(
   const statuses = new Map<string, "queued" | "delivered" | "dropped">();
   let aborts = 0;
   let rows = 0; // history row ids stay unique when `clearSent` empties `sent`
-  let chat: { session: string; id: string; steers: string[]; aborted: boolean } | null = null;
+  let chat: { session: string; id: string; steers: Array<{ id: string; text: string }>; aborted: boolean } | null = null;
   type Send = (event: Json) => void;
+  const dropSteers = (turn: NonNullable<typeof chat>, reason: "abort" | "turn_end", send: Send) => {
+    for (const steer of turn.steers) {
+      statuses.set(steer.id, "dropped");
+      const row = { id: `delivery-${steer.id}`, role: "system", event: "delivery_status", delivery_id: steer.id, method: "steer", status: "dropped", reason, content: [text(steer.text)] };
+      histories[turn.session] = [...(histories[turn.session] ?? []), row];
+      send({ ...row, session_id: turn.session });
+    }
+  };
   const chatTurn = async (session: string, send: Send) => {
-    // steers holds delivery ids; the turn id is a lowercase uuid4 hex string, as zeta's
-    const turn = { session, id: crypto.randomUUID().replaceAll("-", ""), steers: [] as string[], aborted: false };
+    // The turn id is a lowercase uuid4 hex string, as zeta's.
+    const turn = { session, id: crypto.randomUUID().replaceAll("-", ""), steers: [] as Array<{ id: string; text: string }>, aborted: false };
     chat = turn;
     running.set(true);
     const e = (event: string, body: Json = {}) => { if (!turn.aborted) send({ event, session_id: session, ...body }); };
@@ -161,12 +188,8 @@ export function composerMethods(
     }
     e("assistant_message", { message: { role: "assistant", content: [text(reply)] } });
     histories[session] = [...(histories[session] ?? []), { id: `reply-${rows}`, role: "assistant", content: [text(reply)], tool_result: null }];
-    // As in zeta: a turn with no tool call reaches no provider boundary, so steering still queued at its end is dropped.
-    for (const id of turn.steers) {
-      statuses.set(id, "dropped");
-      e("delivery_status", { delivery_id: id, method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" });
-      histories[session] = [...(histories[session] ?? []), { id: `delivery-${id}`, role: "system", event: "delivery_status", delivery_id: id, method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" }];
-    }
+    // zeta src/zeta/server/delivery.py:299-318 commits and emits the drop for a completed turn.
+    dropSteers(turn, "turn_end", send);
     e("turn_end", { data: { turn: sent.length } });
     recordEnd(session, turn.id, "completed");
     chat = null;
@@ -185,7 +208,7 @@ export function composerMethods(
     send({ event: "user_message", session_id: active, text: value, mode: method, attachments: [], ...(delivery ? { delivery_id: delivery } : {}) });
     const accepted = method === "send" ? { accepted: true, session_id: active } : { accepted: true };
     if (delivery) { deliveries.set(delivery, accepted); statuses.set(delivery, method === "steer" ? "queued" : "delivered"); }
-    if (method === "steer") { if (delivery) chat?.steers.push(delivery); return { result: accepted }; }
+    if (method === "steer") { if (delivery) chat?.steers.push({ id: delivery, text: value }); return { result: accepted }; }
     histories[active] = [...(histories[active] ?? []), { id: `sent-${++rows}`, role: "user", content: [text(value)], ...(delivery ? { delivery_id: delivery } : {}), tool_result: null }];
     // After the reply, as zeta starts the turn once the send is persisted.
     queueMicrotask(() => void chatTurn(active, send));
@@ -194,7 +217,8 @@ export function composerMethods(
   const abort = (send: Send): Json => {
     if (!chat) return { result: { aborted: false } };
     const turn = chat;
-    for (const id of turn.steers) statuses.set(id, "dropped");
+    // zeta src/zeta/server/delivery.py:299-318 maps a session cancel to an abort drop and emits its row.
+    dropSteers(turn, "abort", send);
     chat = null;
     running.set(false);
     turn.aborted = true;
@@ -488,7 +512,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
             await wait(openDelay);
           }
           const servedEnds = negotiatedFeatures.get(socket as object)?.has("served_turn_end");
-          const rows = (histories[active!] ?? []).filter((row) => (approvalHistoryMode !== "not-advertised-without-rows" || (row.event !== "approval_request" && row.event !== "approval_end")) && (servedEnds || row.event !== "served_turn_end"));
+          const rows = (histories[active!] ?? []).filter((row) => (approvalHistoryMode !== "not-advertised-without-rows" || (row.event !== "approval_request" && row.event !== "approval_end")) && (servedEnds || row.event !== "served_turn_end"))
+            .map((row) => negotiatedFeatures.get(socket as object)?.has("session_history_fidelity") ? row : legacyHistoryRow(row));
           const groups = historyGroups(rows);
           const pageSize = active === LARGE ? 128 : 8;
           if (Object.hasOwn(params, "before")) {
