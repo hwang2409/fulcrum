@@ -382,11 +382,13 @@ test("queued prepends scale with pages rather than queued history", () => {
     return elapsed;
   };
 
-  // On the measured 2026-11-08 macOS runner, 10,000 one-event pages took 265x the
-  // 1,000-page time on the old queue. Keep this bound well above linear noise.
+  // On the measured 2026-11-08 macOS arm64 runner with Bun 1.4.4, the new queue
+  // stayed below 20x for 1,000 vs 20,000 pages in five runs. The old queue is
+  // quadratic: the 10x run was 265x on the same machine, so this bound has room
+  // for linear noise while still failing the old shape.
   const small = measure(1_000);
-  const large = measure(10_000);
-  expect(large / Math.max(small, 0.01)).toBeLessThan(40);
+  const large = measure(20_000);
+  expect(large / Math.max(small, 0.01)).toBeLessThan(35);
 });
 
 test("interleaved prepend and live flushes match chronological reduction", () => {
