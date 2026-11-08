@@ -306,6 +306,27 @@ test("a repeated approval_request updates its one row and keeps a recorded end",
   expect(store.getItem("approval:approval-1")).toMatchObject({ ended: { type: "approval_end" } });
 });
 
+test("tool_start on a known call restarts its row in place and keeps the approval decision", () => {
+  const view = { kind: "read", path: "README.md" } as const;
+  const store = replay([
+    { type: "approval_request", request_id: "approval-1", tool_call: toolCall, delegated: false },
+    { type: "approval_end", request_id: "approval-1", decision: "approve" },
+    { type: "tool_start", tool_call: toolCall, view },
+    { type: "tool_output", tool_call: toolCall, output: "partial" },
+    { type: "tool_end", tool_call: toolCall, tool_result: { tool_call_id: toolCall.id, content: "failed", is_error: true } },
+    { type: "message_commit", message_id: "after", message: message("after") },
+    { type: "tool_start", tool_call: toolCall },
+  ]);
+  const outline = store.getOutline().map(({ id }) => id);
+  expect(outline).toEqual([`tool:${toolCall.id}`, "message:after"]);
+  const item = store.getItem(`tool:${toolCall.id}`);
+  expect(item).toMatchObject({ output: "", active: true, is_error: false, canceled: false, approval: { decision: "approve" } });
+  expect(item?.type === "tool" ? [item.result, item.view] : "missing").toEqual([undefined, undefined]);
+  store.dispatch({ type: "tool_output", tool_call: toolCall, output: "whole" });
+  expect(store.getItem(`tool:${toolCall.id}`)).toMatchObject({ output: "whole" });
+  expect(store.getOutline().map(({ id }) => id)).toEqual(outline);
+});
+
 test("a resolved approval folds into its tool's row, in the same place live and after a reload", () => {
   const request: RunEvent = { type: "approval_request", request_id: "approval-1", tool_call: toolCall, delegated: false };
   const end: RunEvent = { type: "approval_end", request_id: "approval-1", decision: "approve" };

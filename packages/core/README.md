@@ -24,6 +24,10 @@ A `user_message` can carry `intent`, the client id for the user's request. A lat
 
 `run_end.outcome` can be `completed`, `cancelled`, `failed`, `disconnected`, or `unknown`. `unknown` means the host could not observe the result. The store keeps it in `state.endOutcome` until the next `run_start`.
 
+## tools
+
+`tool_start` on a call the run already has restarts its row in place: the output, result, and error state clear, the view becomes the event's `view` (none if the event has none), and an approval decision stays. The row keeps its position. An adapter whose protocol resends the whole output so far (for example the AI SDK's preliminary tool output) sends `tool_start` and then the new output to replace it.
+
 ## tool views
 
 Use `defineToolMap()` to map harness tool arguments to agent-neutral views. See [using another harness](../../docs/other-harnesses.md) for schemas, examples, and approval decisions.
