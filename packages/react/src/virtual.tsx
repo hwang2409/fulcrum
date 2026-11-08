@@ -200,11 +200,12 @@ export function useVirtualList<Id extends string>(
         // move up, so the engine keeps its follow intent.
         const clampedToEnd = before.pinned && container.scrollTop >= container.scrollHeight - container.clientHeight - 0.5;
         const userDriven = touching.current || performance.now() < userScrollUntil.current;
-        if (before.pinned && !userDriven && !correction && !clampedToEnd) {
+        const movedUp = container.scrollTop < lastScrollTop.current;
+        if (before.pinned && !correction && !clampedToEnd && (!userDriven || !movedUp)) {
           scrollToBottom(false);
           return;
         }
-        if (!correction && !clampedToEnd && userDriven && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+        if (!correction && !clampedToEnd && userDriven && movedUp) engine.setFollow(false);
         lastScrollTop.current = container.scrollTop;
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: clampedToEnd ? "programmatic" : "user" });
         if (correction || clampedToEnd) return;
