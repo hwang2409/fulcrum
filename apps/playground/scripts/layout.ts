@@ -415,7 +415,7 @@ async function measureViewerTiming(page: Page, url: string, slowdown = 0): Promi
 async function measureCalibration(page: Page) {
   return page.evaluate(() => {
     const root = document.createElement("div");
-    root.style.cssText = "position:fixed;inset:0;overflow:auto;visibility:hidden;font:13px monospace";
+    root.style.cssText = "position:fixed;top:0;left:0;width:1024px;height:900px;overflow:auto;visibility:hidden;font:13px monospace"; // fixed width: the same line boxes at every viewport
     const started = performance.now();
     for (let i = 0; i < 1_000; i++) {
       const row = document.createElement("div");
@@ -463,6 +463,7 @@ async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.lau
     for (let pair = 0; pair < viewerSamples; pair++) {
       if (pair % 2 === 0) {
         await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read`);
+        await prepareViewerOpen(page); // let page load finish so it does not compete with the fixed work
         calibrationSamples.push(await measureThrottledCalibration(page));
       }
       const firstUrl = pair % 2 ? candidateUrl : baseUrl;
@@ -472,6 +473,7 @@ async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.lau
       pairs.push(pair % 2 ? { candidate: first, base: second } : { base: first, candidate: second });
       if (pair % 2 === 1) {
         await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read`);
+        await prepareViewerOpen(page); // let page load finish so it does not compete with the fixed work
         calibrationSamples.push(await measureThrottledCalibration(page));
       }
     }
