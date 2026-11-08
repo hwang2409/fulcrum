@@ -106,6 +106,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let running = false;
   let flushing = false;
   let notifying = false;
+  let flushDeferred = false;
+  let failure: { error: unknown } | undefined;
   let disposed = false;
   let desynced = false;
   let ignoredEvents = 0;
@@ -219,8 +221,28 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
     return true;
   };
-  // Delivers a snapshot: every pending flag and set is taken and cleared before any listener runs, so whatever a
-  // listener adds (a resync, a history page) lands in the fresh state and is delivered by the next pass.
+  const call = (listener: Listener) => {
+    try {
+      listener();
+    } catch (error) {
+      failure ??= { error };
+    }
+  };
+  // Rethrows the first listener error once delivery is over: never inside a pass (it would cut a listener short) and
+  // never mid-entry (it would skip the entry's own bookkeeping), so every entry calls it last.
+  const report = () => {
+    if (!failure || notifying || running) return;
+    const { error } = failure;
+    failure = undefined;
+    throw error;
+  };
+  /**
+   * The delivery contract, for global, outline, and keyed listeners alike:
+   * - A pass delivers a snapshot: every pending flag and set is taken and cleared before any listener runs.
+   * - Every listener in the snapshot runs, even if an earlier one throws; the first error is rethrown after delivery.
+   * - Whatever a listener starts (a resync, a history page, a dispatch whose scheduler job ran during the pass) is
+   *   delivered by the next pass, right after this one, never nested in it and never spun on.
+   */
   const notify = () => {
     if (!stateChanged || desynced || notifying) return;
     stateChanged = false;
@@ -229,15 +251,11 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     const items = [...changedItems];
     changedItems.clear();
     notifying = true;
-    try {
-      listeners.forEach((listener) => listener());
-      if (outline) outlineListeners.forEach((listener) => listener());
-      for (const id of items) itemListeners.get(id)?.forEach((listener) => listener());
-    } finally {
-      notifying = false;
-    }
-    // A listener's resync is delivered here, after this pass, never nested in it.
-    if (stateChanged) flush(), flushPrepend(), notify();
+    listeners.forEach(call);
+    if (outline) outlineListeners.forEach(call);
+    for (const id of items) itemListeners.get(id)?.forEach(call);
+    notifying = false;
+    if (stateChanged || flushDeferred) flushDeferred = false, flush(), flushPrepend(), notify();
   };
 
   const scheduleFlush = () => {
@@ -246,6 +264,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     scheduler(() => {
       queued = false;
       if (running) return;
+      // A job run during a pass (a synchronous scheduler) cannot flush yet: the pass's tail does it.
+      if (notifying) return void (flushDeferred = true);
       running = true;
       try {
         do {
@@ -256,6 +276,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       } finally {
         running = false;
       }
+      report();
     });
   };
 
@@ -336,6 +357,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       outlineSnapshot = { items: current.outline, change: null };
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
+      report();
     },
     /** Starts retaining accepted events for a backward-history walk. Call before publishing its newest page. */
     beginHistory() {
@@ -346,6 +368,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       notify();
       acceptedLog = [];
       historyOpen = true;
+      report();
     },
     /** Finishes the history walk and releases its accepted-event log. `prepend` is invalid after this call. */
     endHistory() {
@@ -356,6 +379,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       notify();
       acceptedLog = [];
       historyOpen = false;
+      report();
     },
     /**
      * Re-reduces `older` followed by every accepted event since `beginHistory()` from empty, so the result exactly
@@ -371,6 +395,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       notify();
       pendingOlder = [...events, ...pendingOlder];
       scheduleFlush();
+      report();
     },
     subscribe,
     subscribeOutline(listener: Listener) {
