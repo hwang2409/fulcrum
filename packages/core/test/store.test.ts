@@ -513,8 +513,10 @@ const syncDispatch = [
   { entry: "beginHistory", outline: ["message:a", "message:x"] },
   { entry: "prepend", outline: ["message:b", "message:a", "message:x"] },
   { entry: "endHistory", outline: ["message:b", "message:x"] },
+  { entry: "prepend from a listener", outline: ["message:b", "message:a", "message:c", "message:x"] },
+  { entry: "endHistory from a listener", outline: ["message:b", "message:a", "message:c", "message:x"] },
 ];
-test.each(syncDispatch)("a dispatch from a listener during $entry with a synchronous scheduler is delivered after the pass", ({ entry, outline }) => {
+test.each(syncDispatch)("$entry with a synchronous scheduler: a listener's dispatch is delivered after the pass", ({ entry, outline }) => {
   const probe = Bun.spawnSync([process.execPath, new URL("./notify-probe.ts", import.meta.url).pathname, entry], { timeout: 3_000 });
   const result = probe.exitCode === 0 ? JSON.parse(probe.stdout.toString()) : { exitCode: probe.exitCode, signal: probe.signalCode, stderr: probe.stderr.toString() };
   expect(result).toEqual({ seen: outline, outline });

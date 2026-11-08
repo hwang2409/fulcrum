@@ -8,7 +8,7 @@ const commit = (id: string): RunEvent => ({ type: "message_commit", message_id: 
 const ids = (items: readonly { id: string }[]) => items.map(({ id }) => id);
 const entry = process.argv[2];
 const jobs: Array<() => void> = [];
-const store = entry === "resync" ? createRunStore((job) => job()) : createRunStore((job) => jobs.push(job));
+const store = entry === "beginHistory" || entry === "prepend" || entry === "endHistory" ? createRunStore((job) => jobs.push(job)) : createRunStore((job) => job());
 const drain = () => { while (jobs.length > 0) jobs.shift()!(); };
 let armed = false;
 let seen: string[] = [];
@@ -36,6 +36,15 @@ if (entry === "resync") {
   store.prepend([commit("b")]);
   armed = true;
   store.endHistory();
+} else if (entry === "prepend from a listener") {
+  // A history page and a dispatch from one listener in a pass outside the scheduler: both land after the pass.
+  store.beginHistory();
+  const stop = store.subscribe(() => { stop(); store.prepend([commit("b")]); store.dispatch(commit("x")); });
+  store.resync([commit("a"), commit("c")]);
+} else if (entry === "endHistory from a listener") {
+  store.beginHistory();
+  const stop = store.subscribe(() => { stop(); store.prepend([commit("b")]); store.endHistory(); store.dispatch(commit("x")); });
+  store.resync([commit("a"), commit("c")]);
 } else throw new Error(`unknown entry ${entry}`);
 drain();
 console.log(JSON.stringify({ seen, outline: ids(store.getOutline()) }));
