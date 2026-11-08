@@ -292,6 +292,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let approvalAborted = false;
   let running = false;
   let rejectCreate = false;
+  let empty = false;
   let busyOnce = false;
   let delayedOpen = false;
   let catalogBusy = false;
@@ -332,7 +333,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     resolve("abort");
   };
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-  let openDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
+  const initialOpenDelay = Number(process.env.FAKE_ZETA_OPEN_DELAY_MS ?? 0);
+  let openDelay = initialOpenDelay;
   // The frames zeta sends when a connection falls behind (zeta tests/test_server_output.py,
   // test_controller_overflow_does_not_cancel_active_turn): the frame being written, the reserved -32011 error, then a
   // normal close. Past its 1 s overflow deadline zeta aborts the transport instead, with no error or close frame.
@@ -349,11 +351,16 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let servedTurnEndOffered = true;
   let backwardHistoryOffered = true;
   let laterHistoryDelay = 0;
-  let servedTurnEndHistoryReads = 0;
+  let lastTurnEnd: string | undefined;
   const lastTurnEnds = new Map<string, { turn_id: string; reason: TurnEndReason }>();
+  const servedTurnEndReads = new Map<string, number>();
+  const countServedTurnEnds = (rows: Json[]) => {
+    for (const row of rows) if (row.event === "served_turn_end") servedTurnEndReads.set(String(row.data?.turn_id), (servedTurnEndReads.get(String(row.data?.turn_id)) ?? 0) + 1);
+    return rows;
+  };
   const recordTurnEnd = (session: string, turnId: string, reason: TurnEndReason) => {
-    const end = { turn_id: turnId, reason };
-    lastTurnEnds.set(session, end);
+    lastTurnEnd = turnId;
+    lastTurnEnds.set(session, { turn_id: turnId, reason });
     histories[session] = [...(histories[session] ?? []), servedTurnEnd(turnId, reason)];
   };
   const composer = composerMethods(
@@ -529,7 +536,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
             if (params.before !== null && (validator?.end !== snapshotEnd || validator?.entry_id !== endpoint))
               return reply({ error: { code: -32009, message: "history snapshot is stale", data: { code: "stale_history_snapshot" } } });
             const start = Math.max(0, end - pageSize);
-            reply({ result: { messages: groups.slice(start, end).flat(), next_before: start || null, history_validator: { end: snapshotEnd, entry_id: endpoint } } });
+            reply({ result: { messages: countServedTurnEnds(groups.slice(start, end).flat()), next_before: start || null, history_validator: { end: snapshotEnd, entry_id: endpoint } } });
             if (liveEnabled && active === ACTIVE && !turnStarted) {
               turnStarted = true;
               running = true;
@@ -544,10 +551,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           }
           const offset = Number(params.offset ?? 0);
           if (offset > 0 && laterHistoryDelay > 0) await wait(laterHistoryDelay);
-          const pageRows = groups.slice(offset, offset + pageSize).flat();
-          const latestTurnId = lastTurnEnds.get(active!)?.turn_id;
-          if (latestTurnId && pageRows.some((row) => row.event === "served_turn_end" && row.data?.turn_id === latestTurnId)) servedTurnEndHistoryReads++;
-          reply({ result: { messages: pageRows, next_offset: offset + pageSize < groups.length ? offset + pageSize : null } });
+          reply({ result: { messages: countServedTurnEnds(groups.slice(offset, offset + pageSize).flat()), next_offset: offset + pageSize < groups.length ? offset + pageSize : null } });
           // The run starts once, after the first open of the active session finishes its history.
           if (liveEnabled && active === ACTIVE && offset + pageSize >= groups.length && !turnStarted) {
             turnStarted = true;
@@ -624,7 +628,10 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     setServedTurnEnd(next: boolean) { servedTurnEndOffered = next; },
     setBackwardHistory(next: boolean) { backwardHistoryOffered = next; },
     setLaterHistoryDelay(ms: number) { laterHistoryDelay = ms; },
-    get servedTurnEndHistoryReads() { return servedTurnEndHistoryReads; },
+    /** How many served_turn_end rows naming `turnId` history pages have carried, to any client. */
+    servedTurnEndReads(turnId: string) { return servedTurnEndReads.get(turnId) ?? 0; },
+    /** The turn whose end the server recorded last. */
+    get lastTurnEnd() { return lastTurnEnd; },
     /** Whether a turn runs on the server, independent of what any client saw. */
     get running() { return running; },
     setOpenDelay(ms: number) { openDelay = ms; },
@@ -639,7 +646,19 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
       liveEnabled = next;
     },
     /** `true`: a fresh zeta home, with no sessions and no server session. `false`: the seeded sessions again. */
-    setEmpty(empty: boolean) { sessions = empty ? [] : [...seeded]; active = empty ? null : ACTIVE; },
+    setEmpty(next: boolean) { empty = next; sessions = next ? [] : [...seeded]; active = next ? null : ACTIVE; },
+    /** Undoes every fault knob (and the sent log) so one gate case cannot leak into the next; `live` is left as set. */
+    resetFaults() {
+      mode = "ok";
+      busyOnce = false;
+      servedTurnEndOffered = true;
+      backwardHistoryOffered = true;
+      laterHistoryDelay = 0;
+      openDelay = initialOpenDelay;
+      rejectCreate = false;
+      if (empty) this.setEmpty(false);
+      composer.clearSent();
+    },
     async close() { this.drop(); server.stop(true); await rm(home, { recursive: true, force: true }); },
   };
 }
