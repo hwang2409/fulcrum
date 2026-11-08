@@ -176,12 +176,24 @@ export type RunEvent =
   | { type: "message_block"; message_id?: string; block: ContentBlock }
   | { type: "retry" }
   | { type: "message_commit"; message_id?: string; message: Message }
+  /**
+   * Starts a tool row. On a call the run already has, it restarts that row in place: output, result, and error state
+   * clear, `view` becomes this event's view, and an approval decision stays. Adapters use it to replace output.
+   */
   | { type: "tool_start"; tool_call: ToolCall; view?: ToolView; data?: Record<string, unknown> }
   | { type: "tool_input"; tool_call: ToolCall; input: string; view?: ToolView; data?: Record<string, unknown> }
+  /**
+   * Reports tool output. Output events (this and `tool_end`) never change a known call's name, arguments, or meta; send
+   * `tool_start` to redefine it. On an unknown call, the event's call starts the row. Output appends to the row's output,
+   * unless `replace` is true: then it is the whole output so far and replaces the row's output in place, clears the
+   * result and error state, keeps an approval decision, and makes the row live again. A protocol that resends the whole
+   * output (snapshots, preliminary results) sends `replace`.
+   */
   | {
       type: "tool_output";
       tool_call: ToolCall;
       output: string;
+      replace?: boolean;
       view?: ToolView;
       data?: Record<string, unknown>;
     }

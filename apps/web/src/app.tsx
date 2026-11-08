@@ -409,7 +409,7 @@ function RunComposer({ client, store, onUndelivered, onOwnSend, readOnly }: { cl
   const delivery = useMemo(() => createDelivery(undefined, (event) => {
     const deliveryId = event.type === "user_message" && event.delivery_id;
     if (deliveryId && !store.hasMessageDelivery(deliveryId)) store.dispatch(event);
-  }), [store]);
+  }, store), [store]);
   const wasRunning = useRef(running);
   useEffect(() => {
     // shortcut: a resend that fails is not shown; upgrade when the composer can take a host-reported error.

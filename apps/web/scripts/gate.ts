@@ -238,7 +238,7 @@ async function runStoppedSteerFollowScenario(page: Page, clearSent: () => void) 
     await page.locator('[data-kind="user"]', { hasText: "guard queued steer" }).waitFor();
     await page.locator('[data-part="composer-stop"]').click();
     await page.locator('.dock [data-part="composer"][data-state="idle"]').waitFor({ timeout: 5_000 });
-    await page.locator(".undelivered", { hasText: "not delivered" }).last().waitFor({ timeout: 8_000 });
+    await page.locator('[data-kind="user"]', { hasText: "guard queued steer" }).filter({ hasText: "not delivered" }).waitFor({ timeout: 8_000 });
     await sendAndFinish(page, "guard next turn one");
     await sendAndFinish(page, "guard next turn two");
     if (await scrollGap(page) > 4) throw new Error("the stopped-steer sequence lost the bottom before the final send");
@@ -435,6 +435,10 @@ try {
       await page.locator('[data-part="timeline"] [data-part="message"]').first().waitFor();
       if (!(await page.locator('[data-part="timeline"] [data-part="tool"]').count())) throw new Error("no tool card");
       if (await page.locator('[data-part="timeline"] [data-part="tool"][data-state="streaming"]').count() > 1) throw new Error("history tool left running");
+      // session_history_fidelity keeps a failed bash call's structured result: its exit code, which legacy history (is_error only) lacks.
+      const failed = page.locator('[data-part="timeline"] [data-tool-view="shell"]', { hasText: "bun test packages/zeta/test/rpc.test.ts" }).locator('[data-part="tool-exit"]');
+      await failed.waitFor({ timeout: 5000 }).catch(() => { throw new Error("the reopened failed bash call shows no exit code"); });
+      if (await failed.getAttribute("data-exit-code") !== "1") throw new Error(`the reopened failed bash call shows exit ${await failed.getAttribute("data-exit-code")}`);
     });
     await check("shell cards are highlighted: line 1 of the command has token colors", async () => {
       const summary = page.locator('[data-tool-view="shell"] [data-part="tool-summary"]').first();
@@ -661,6 +665,8 @@ try {
       if (!(await page.evaluate(() => location.hash.includes("s-long")))) throw new Error("selection not in the url");
     });
     await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
+      // Earlier checks continue after failure, so isolate this exact-list assertion from their accepted sends.
+      fake.clearSent();
       await page.locator("button.session", { hasText: "check every theme" }).click();
       await page.locator('[data-part="md-table"]').waitFor({ timeout: 5000 });
       const composer = page.locator('.dock [data-part="composer"]');
@@ -724,9 +730,8 @@ try {
       await page.keyboard.press("Enter");
       await composer.and(page.locator('[data-state="idle"]')).waitFor({ timeout: 5000 });
       await settle(page);
-      await page.locator(".undelivered", { hasText: "not delivered" }).waitFor({ timeout: 3000 }).catch(() => { throw new Error("the dropped steer is not marked as not delivered"); });
-      const marked = await page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: "steer: keep it short" }).evaluate((row) => row.nextElementSibling?.classList.contains("undelivered") ?? false);
-      if (!marked) throw new Error("the not-delivered mark is not on the steer's row");
+      const stoppedSteer = page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: "steer: keep it short" });
+      await stoppedSteer.filter({ hasText: "not delivered" }).waitFor({ timeout: 3000 }).catch(() => { throw new Error("the dropped steer is not marked as not delivered"); });
       await Bun.sleep(300);
       if (fake.sent.filter((entry) => entry.text === "steer: keep it short").length !== 1) throw new Error("a steer the user stopped was resent");
       const active = await page.evaluate(() => document.activeElement?.tagName);
@@ -833,10 +838,17 @@ try {
     await check("390: the run fills the width; the session list is a drawer", async () => {
       await mobile.goto(`${origin}/?theme=gruvbox-dark#session=s-themes`);
       await mobile.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 15_000 });
-      // A reopened, approved bash call is the live shell card: its command (from the approval row), its output without
-      // zeta's raw "stdout:"/"stderr:" labels, and exit 0.
+      // A reopened, approved bash call is the live shell card: its command (from the fidelity tool_use), its output
+      // without zeta's raw "stdout:"/"stderr:" labels, and exit 0.
       const reopened = mobile.locator('[data-part="timeline"] [data-tool-view="shell"]', { hasText: "ls packages/react/src" });
-      await reopened.waitFor({ timeout: 5000 }).catch(() => { throw new Error("the reopened bash call is not a shell card with its command"); });
+      // The call is the session's first turn, and the composer checks appended rows below it: the virtual timeline
+      // mounts it only near the viewport, so read from the top while older history pages arrive.
+      const scroller = mobile.locator('[data-part="timeline-scroll"]');
+      for (let attempt = 0; attempt < 50 && !(await reopened.count()); attempt++) {
+        await scroller.evaluate((element) => { element.scrollTop = 0; });
+        await mobile.waitForTimeout(100);
+      }
+      await reopened.waitFor({ timeout: 1000 }).catch(() => { throw new Error("the reopened bash call is not a shell card with its command"); });
       const card = await reopened.innerText();
       if (/\bstdout:|\bstderr:/.test(card) || !card.includes("themes.ts") || !card.includes("exit 0")) throw new Error(`the reopened bash card reads "${card.replace(/\s+/g, " ")}"`);
       if (await mobile.locator("button.session").first().isVisible()) throw new Error("sidebar visible without the drawer");

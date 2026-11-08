@@ -1,5 +1,5 @@
 import { writeFile } from "node:fs/promises";
-import { createUIMessageStream, simulateReadableStream, streamText, type UIMessageChunk } from "ai";
+import { createUIMessageStream, jsonSchema, simulateReadableStream, stepCountIs, streamText, tool, type UIMessageChunk } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 
 const usage = { inputTokens: { total: 12, noCache: 12, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 4, text: 3, reasoning: 1 } };
@@ -95,14 +95,37 @@ add("replay", "replay", await modelParts("stable-message", [{ type: "text-start"
 
 const fixtureUrl = new URL("../test/fixtures/conformance.jsonl", import.meta.url);
 await writeFile(fixtureUrl, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
-const playground = await modelParts("ai-sdk-demo", [
-  { type: "reasoning-start", id: "reasoning-demo" },
-  { type: "reasoning-delta", id: "reasoning-demo", delta: "check the current directory first" },
-  { type: "reasoning-end", id: "reasoning-demo" },
-  { type: "text-start", id: "text-demo" },
-  { type: "text-delta", id: "text-demo", delta: "i'll inspect the project.\n" },
-  { type: "text-end", id: "text-demo" },
-  { type: "tool-call", toolCallId: "call-demo", toolName: "shell", input: "{\"command\":\"ls\"}", providerExecuted: true, dynamic: true },
-  { type: "tool-result", toolCallId: "call-demo", toolName: "shell", result: "README.md\napps\npackages", providerExecuted: true, dynamic: true },
-]);
+// The playground demo is a real two-step run: step 1 reasons, says what it will do, and calls `shell`, whose output
+// streams as preliminary results; step 2 reasons again and answers below the tool row.
+const demoSteps = [
+  [
+    { type: "reasoning-start", id: "reasoning-demo" },
+    { type: "reasoning-delta", id: "reasoning-demo", delta: "check the current directory first" },
+    { type: "reasoning-end", id: "reasoning-demo" },
+    { type: "text-start", id: "text-demo" },
+    { type: "text-delta", id: "text-demo", delta: "i'll inspect the project.\n" },
+    { type: "text-end", id: "text-demo" },
+    { type: "tool-call", toolCallId: "call-demo", toolName: "shell", input: "{\"command\":\"ls\"}" },
+  ],
+  [
+    { type: "reasoning-start", id: "reasoning-demo-2" },
+    { type: "reasoning-delta", id: "reasoning-demo-2", delta: "three entries: a readme and two folders" },
+    { type: "reasoning-end", id: "reasoning-demo-2" },
+    { type: "text-start", id: "text-demo-2" },
+    { type: "text-delta", id: "text-demo-2", delta: "The project has a README " },
+    { type: "text-delta", id: "text-demo-2", delta: "and two folders: `apps` and `packages`.\n" },
+    { type: "text-end", id: "text-demo-2" },
+  ],
+];
+let demoStep = 0;
+const demoModel = new MockLanguageModelV3({
+  doStream: async () => ({ stream: simulateReadableStream({ chunks: [streamStart, ...demoSteps[demoStep++]!, finish] as never[] }) }),
+});
+const shell = tool({
+  inputSchema: jsonSchema<{ command: string }>({ type: "object", properties: { command: { type: "string" } } }),
+  async *execute() { yield "README.md"; yield "README.md\napps"; yield "README.md\napps\npackages"; },
+});
+const playground: UIMessageChunk[] = [];
+for await (const part of streamText({ model: demoModel, prompt: "fixture", tools: { shell }, stopWhen: stepCountIs(2) })
+  .toUIMessageStream({ generateMessageId: () => "ai-sdk-demo" })) playground.push(part);
 await writeFile(new URL("../test/fixtures/playground.jsonl", import.meta.url), `${playground.map((part) => JSON.stringify(part)).join("\n")}\n`);

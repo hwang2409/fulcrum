@@ -66,8 +66,11 @@ const mergeMeta = (prior: Record<string, unknown> | undefined, next: Record<stri
     : {}),
 });
 
-interface ToolState { call: ToolCall; input: string; }
-interface BlockState { kind: "text" | "reasoning"; block: ContentBlock; }
+interface ToolState { call: ToolCall; input: string; preliminary?: boolean; }
+/** One fulcrum message: a run of content between tool rows or stream breaks. */
+interface Segment { id: string; content: ContentBlock[]; }
+/** A text or reasoning part. It joins a segment with its first text, so a part that never streams text adds no row. */
+interface BlockState { kind: "text" | "reasoning"; block: ContentBlock; segment?: Segment; }
 
 export type AiSdkEntityKind = "message" | "tool" | "approval";
 export type AiSdkEntityIdentity =
@@ -112,13 +115,55 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   const streamKey = string(options?.streamKey, "options.streamKey");
   const wireId = (kind: AiSdkEntityKind, id: string) => encodeAiSdkEntityId({ source: "wire", kind, id });
   const syntheticId = (kind: AiSdkEntityKind, counter: number) => encodeAiSdkEntityId({ source: "synthetic", kind, streamKey, counter });
-  let messageId: string | undefined;
   let wireMessageId: string | undefined;
-  let messageNumber = 0;
-  const content: ContentBlock[] = [];
   const blocks = new Map<string, BlockState>();
   const tools = new Map<string, ToolState>();
   const approvalByTool = new Map<string, string>();
+
+  /*
+   * The one owner of "which fulcrum message does the next content go to". A UI message spans every step of a stream
+   * and, after an approval, a continuation stream with the same messageId, so its wire id cannot name a fulcrum
+   * message: every segment gets `s:message:<streamKey>:<n>` and carries the wire id in its metadata. States:
+   * - no segment: the next content opens one;
+   * - open: content streams into the current segment;
+   * - a new tool row after the segment's content seals and commits it, before any later content streams, so the
+   *   reader sees it finished while the tool runs and a stream that drops keeps it. The next content opens the next
+   *   segment; a late delta for a committed segment's part continues as a block of the current one.
+   * finish, abort, and error commit the current segment (`close`). Provider metadata that arrives for a committed
+   * segment re-commits it at the next close: a commit while another segment streams would end that one in the store.
+   */
+  let messageNumber = 0;
+  let segment: Segment | undefined;
+  let pending: BlockState[] = [];
+  const stale = new Set<Segment>();
+  const target = (): Segment => {
+    segment ??= { id: syntheticId("message", ++messageNumber), content: [] };
+    for (const state of pending) { state.segment = segment; segment.content.push(state.block); }
+    pending = [];
+    return segment;
+  };
+  const commit = (done: Segment): RunEvent[] => {
+    const content = done.content.filter((block) => block.text !== "" || block.meta);
+    return content.length ? [{
+      type: "message_commit",
+      message_id: done.id,
+      message: { role: "assistant", content: content.map((block) => ({ ...block })), ...(wireMessageId !== undefined ? { metadata: { wireId: wireMessageId } } : {}) },
+    }] : [];
+  };
+  const toolRow = (id: string): RunEvent[] => {
+    if (tools.has(id) || !segment?.content.length) return [];
+    const done = segment;
+    segment = undefined;
+    return commit(done);
+  };
+  const close = (): RunEvent[] => {
+    // A part that never streamed text opens no row. It shows nothing, so it stays only to keep provider metadata, at
+    // the end of the current segment.
+    if (pending.length && segment) segment.content.push(...pending.map((state) => state.block));
+    const events = [...(segment ? commit(segment) : []), ...[...stale].flatMap(commit)];
+    segment = undefined; pending = []; stale.clear();
+    return events;
+  };
 
   const call = (id: string, name?: string, meta?: Record<string, unknown>): ToolState => {
     const prior = tools.get(id);
@@ -136,34 +181,33 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     approvalByTool.delete(toolCallId);
     return [{ type: "approval_end", request_id: requestId, decision }];
   };
-  const commit = (): RunEvent | undefined => {
-    if (!content.length) return undefined;
-    messageId ??= syntheticId("message", ++messageNumber);
-    return {
-      type: "message_commit",
-      message_id: messageId,
-      message: { role: "assistant", content: content.map((block) => ({ ...block })), ...(wireMessageId !== undefined ? { metadata: { wireId: wireMessageId } } : {}) },
-    };
-  };
-
   const decodeBlock = (part: Row, type: string): RunEvent[] => {
     const kind = type.startsWith("text-") ? "text" : "reasoning";
     const id = wireString(part.id, "part.id");
     if (type.endsWith("-start")) {
-      messageId ??= syntheticId("message", ++messageNumber);
-      const block: ContentBlock = { type: kind, text: "", ...(providerMeta(part) ? { meta: providerMeta(part) } : {}) };
-      blocks.set(id, { kind, block });
-      content.push(block);
+      const state: BlockState = { kind, block: { type: kind, text: "", ...(providerMeta(part) ? { meta: providerMeta(part) } : {}) } };
+      blocks.set(id, state);
+      pending.push(state);
       return [];
     }
     const state = blocks.get(id);
     if (!state || state.kind !== kind) throw new Error(`${type} requires a matching start part`);
-    if (part.providerMetadata !== undefined) state.block.meta = mergeMeta(state.block.meta as Record<string, unknown> | undefined, providerMeta(part)!);
-    if (type.endsWith("-end")) return [];
-    const delta = wireString(part.delta, "part.delta");
-    if (delta === "") return [];
-    state.block.text = String(state.block.text) + delta;
-    return [{ type: "message_delta", message_id: messageId, delta, kind }];
+    const delta = type.endsWith("-end") ? "" : wireString(part.delta, "part.delta");
+    if (delta !== "") {
+      const current = target();
+      // A block whose segment committed continues as a new block of the current one.
+      if (state.segment !== current) {
+        state.block = { type: kind, text: "" };
+        state.segment = current;
+        current.content.push(state.block);
+      }
+      state.block.text = String(state.block.text) + delta;
+    }
+    if (part.providerMetadata !== undefined) {
+      state.block.meta = mergeMeta(state.block.meta as Record<string, unknown> | undefined, providerMeta(part)!);
+      if (state.segment && state.segment !== segment) stale.add(state.segment);
+    }
+    return delta === "" ? [] : [{ type: "message_delta", message_id: state.segment!.id, delta, kind }];
   };
 
   // Sources and files stream in as whole blocks, in their place among the text and reasoning. A file that is an image
@@ -185,14 +229,18 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
         meta,
       };
     }
-    messageId ??= syntheticId("message", ++messageNumber);
-    content.push(block);
-    return [{ type: "message_block", message_id: messageId, block: { ...block } }];
+    const current = target();
+    current.content.push(block);
+    return [{ type: "message_block", message_id: current.id, block: { ...block } }];
   };
 
   const decodeTool = (part: Row, type: string): RunEvent[] => {
     const originalId = wireString(part.toolCallId, "part.toolCallId");
     const id = wireId("tool", originalId);
+    const sealed = toolRow(id);
+    return [...sealed, ...decodeToolPart(part, type, id, originalId)];
+  };
+  const decodeToolPart = (part: Row, type: string, id: string, originalId: string): RunEvent[] => {
     const meta = { ...toolMeta(part), wireId: originalId };
     if (type === "tool-input-start") {
       const state = call(id, wireString(part.toolName, "part.toolName"), meta);
@@ -226,26 +274,31 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
       return [{ type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: "tool execution denied", is_error: true, is_canceled: true } }, ...approvalEnd(id, "deny")];
     const isError = type === "tool-output-error";
     const output = isError ? wireString(part.errorText, "part.errorText") : serialized(part.output);
-    if (!isError && part.preliminary === true) return [{ type: "tool_output", tool_call: state.call, output }];
+    // Each preliminary output is the whole output so far: restart the call's output so the next one replaces it.
+    const restart: RunEvent[] = state.preliminary ? [{ type: "tool_start", tool_call: state.call }] : [];
+    if (!isError && part.preliminary === true) {
+      state.preliminary = true;
+      return [...restart, { type: "tool_output", tool_call: state.call, output }];
+    }
     const result: ToolResult = { tool_call_id: id, content: output, is_error: isError };
-    return [{ type: "tool_output", tool_call: state.call, output }, { type: "tool_end", tool_call: state.call, tool_result: result }, ...approvalEnd(id, "approve")];
+    return [...restart, { type: "tool_output", tool_call: state.call, output }, { type: "tool_end", tool_call: state.call, tool_result: result }, ...approvalEnd(id, "approve")];
   };
 
   const decodeLifecycle = (part: Row, type: string): RunEvent[] => {
     if (type === "start") {
+      const events = close();
       wireMessageId = optionalWireString(part.messageId, "part.messageId");
-      messageId = wireMessageId !== undefined ? wireId("message", wireMessageId) : undefined;
-      content.length = 0; blocks.clear(); tools.clear(); approvalByTool.clear();
-      return [{ type: "run_start", data: defined({ messageId, messageMetadata: part.messageMetadata }) }, { type: "turn_start" }, { type: "message_start", data: messageId ? { messageId } : {} }];
+      const messageId = wireMessageId !== undefined ? wireId("message", wireMessageId) : undefined;
+      blocks.clear(); tools.clear(); approvalByTool.clear();
+      return [...events, { type: "run_start", data: defined({ messageId, messageMetadata: part.messageMetadata }) }, { type: "turn_start" }, { type: "message_start", data: messageId ? { messageId } : {} }];
     }
     if (type === "start-step" || type === "finish-step") return [];
     if (type === "finish") {
       const value = partUsage(part);
-      const event = commit();
-      return [...(event ? [event] : []), ...(value ? [{ type: "usage", usage: value } as RunEvent] : []), { type: "turn_end" }, { type: "run_end", data: defined({ finishReason: optionalString(part.finishReason, "part.finishReason"), messageMetadata: part.messageMetadata }) }];
+      return [...close(), ...(value ? [{ type: "usage", usage: value } as RunEvent] : []), { type: "turn_end" }, { type: "run_end", data: defined({ finishReason: optionalString(part.finishReason, "part.finishReason"), messageMetadata: part.messageMetadata }) }];
     }
-    if (type === "abort") return [{ type: "error", error: { code: "aborted", message: "run aborted" } }];
-    return [{ type: "error", error: { code: "ai_sdk_error", message: wireString(part.errorText, "part.errorText") } }];
+    if (type === "abort") return [...close(), { type: "error", error: { code: "aborted", message: "run aborted" } }];
+    return [...close(), { type: "error", error: { code: "ai_sdk_error", message: wireString(part.errorText, "part.errorText") } }];
   };
 
   const decode = (value: unknown): RunEvent[] => {
