@@ -138,6 +138,7 @@ export function useVirtualList<Id extends string>(
       const scrollToBottom = () => {
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = null;
+        ignoreScrollUntil.current = performance.now() + 50;
         container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
         lastScrollTop.current = container.scrollTop;
         updateViewport("programmatic", false);
