@@ -84,11 +84,11 @@ export const Notification = memo(function Notification({ id, className }: { id: 
   const model = notificationModel(item.event.data);
   const attributes = { className, "aria-label": "notification", "data-part": "notification", "data-kind": "notification", "data-id": id, "data-status": model.status };
   if (!model.text && !model.kind && !model.status && !model.time) {
-    return <div {...attributes} role="group"><span data-part="notification-summary">{model.summary}</span></div>;
+    return <div {...attributes} role="group"><span data-part="notification-summary"><span data-part="notification-line">{model.summary}</span></span></div>;
   }
   return (
     <details {...attributes}>
-      <summary data-part="notification-summary">{model.summary}</summary>
+      <summary data-part="notification-summary"><span data-part="notification-line">{model.summary}</span></summary>
       <div data-part="notification-body">
         {model.kind || model.status || model.time ? (
           <dl data-part="notification-meta">

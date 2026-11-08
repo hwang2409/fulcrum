@@ -601,6 +601,9 @@ summary[data-part="notification-summary"]::before {
 [data-part="notification"][open] > summary[data-part="notification-summary"]::before { transform: translateY(-1px) rotate(90deg); }
 summary[data-part="notification-summary"]:hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
 summary[data-part="notification-summary"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+[data-part="notification-line"] { min-width: 0; }
+/* Open on its full text, the line need not say it twice: it shrinks to one ellipsized line. */
+[data-part="notification"][open]:has(> [data-part="notification-body"] > [data-part="notification-text"]) [data-part="notification-line"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-part="notification-body"] { display: grid; gap: 6px; padding: 2px 12px 8px 25px; }
 [data-part="notification-meta"] { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 12px; margin: 0; }
 [data-part="notification-meta"] > dt { color: var(--fulcrum-muted); }
