@@ -299,18 +299,20 @@ export function useVirtualList<Id extends string>(
         pendingScroll.current = null; // the first callback consumes our write, whether the browser matched it or not
         const matchesPending = pending !== null && (Math.abs(container.scrollTop - pending.value) < 0.5
           || (typeof pending.target === "number" && Math.abs(container.scrollTop - pending.target) < 0.5));
-        // Without reader input, only our exact write or a browser move that stays at the old or new DOM end is layout work.
-        // Focus, find, host scrollIntoView, and host scroll writes anywhere else are reader intent.
+        // Without reader input, a scroll is layout work when it is our exact write, stays at the old or new DOM end, or comes
+        // with a size change since the last write or scroll we saw (content or viewport, e.g. a banner shrinking the box).
+        // Focus, find, host scrollIntoView, and host scroll writes anywhere else, with no size change, are reader intent.
         // A stale old end can at worst misread intent for an unpinned reader (observe never re-pins); a pinned reader's end
         // is refreshed by every end write. Nothing else refreshes it: a scrollHeight read per commit would force a sync layout.
         const priorDomEnd = pending?.previousEnd ?? lastDomEnd.current;
         const layoutSlack = Math.min(1, Math.abs(domEnd - priorDomEnd));
         const nearEnd = (end: number) => Math.abs(container.scrollTop - end) <= layoutSlack + 0.5;
-        const layout = !fromReader && (matchesPending || nearEnd(priorDomEnd) || nearEnd(domEnd));
+        const sizeChanged = Math.abs(domEnd - lastDomEnd.current) >= 0.5 || Math.abs(container.clientHeight - before.viewportSize) >= 0.5;
+        const layout = !fromReader && (matchesPending || sizeChanged || nearEnd(priorDomEnd) || nearEnd(domEnd));
         lastScrollTop.current = container.scrollTop;
         lastDomEnd.current = domEnd;
         if (layout && before.pinned && Math.abs(container.scrollTop - domEnd) >= 0.5) writeScroll("end");
-        // Rule (2): a scroll without input away from both ends is reader intent, even inside the engine's bottom threshold.
+        // A scroll without input and without a size change, away from both ends, is host intent, even inside the engine's bottom threshold.
         if (!layout && !fromReader && before.pinned) engine.setFollow(false);
         // Every callback reports the real viewport, so the mounted rows always follow the DOM; classification decides only intent.
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: layout ? "observe" : "user" });
