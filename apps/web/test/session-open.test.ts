@@ -70,6 +70,22 @@ test("backward history opens newest first and prepends older pages in order", as
   expect(() => opened.lease.store.prepend([])).toThrow("prepend requires an open history window");
 });
 
+test("backward history rejects a mismatched continuation before publishing it", async () => {
+  const fake = await server((method, params) => {
+    if (method === "status") return idleStatus;
+    if (method !== "session_history") throw new Error(method);
+    if (params.before === null) return { messages: [row("new", "assistant", "new")], next_before: 1, history_validator: { end: 2, entry_id: "new" } };
+    return { messages: [row("wrong", "user", "wrong snapshot")], next_before: null, history_validator: { end: 3, entry_id: "other" } };
+  }, backwardFeatures);
+
+  const opened = await openSession(fake.client, "s");
+  expect(texts(opened.lease.store)).toEqual(["new"]);
+  let failure: unknown;
+  try { await opened.complete; } catch (error) { failure = error; }
+  expect(texts(opened.lease.store)).toEqual(["new"]);
+  expect(failure).toEqual(new Error("backward history response has an invalid validator"));
+});
+
 test("a user message sent while older pages load survives every prepend", async () => {
   let releaseFirst!: () => void;
   let releaseSecond!: () => void;
