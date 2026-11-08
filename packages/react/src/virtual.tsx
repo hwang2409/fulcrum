@@ -19,22 +19,6 @@ import {
 
 const isIOSWebKit = () => navigator.userAgent.includes("iP");
 
-const settleDetachedViewport = <Id extends string>(
-  engine: Virtualizer<Id>,
-  touching: RefObject<boolean>,
-  touchY: RefObject<number | null>,
-  readerInput: RefObject<boolean>,
-  gestureActive: RefObject<boolean>,
-  scrollbarDragging: RefObject<boolean>,
-): void => {
-  touching.current = false;
-  touchY.current = null;
-  readerInput.current = false;
-  gestureActive.current = false;
-  scrollbarDragging.current = false;
-  engine.flushPendingCorrection(false, true);
-};
-
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
   enabled?: boolean;
@@ -82,13 +66,16 @@ export function useVirtualList<Id extends string>(
   const pendingEntries = useRef(new Map<Id, number>());
   const touching = useRef(false);
   const readerInput = useRef(false);
-  const gestureActive = useRef(false);
+  const readerInputFrame = useRef<number | null>(null);
+  const keyboardHeld = useRef(false);
   const scrollbarDragging = useRef(false);
+  const touchMomentum = useRef(false);
   const touchY = useRef<number | null>(null);
+  const touchGeneration = useRef(0);
+  const touchSettleFrame = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
   const lastDomEnd = useRef(0);
   const pendingScroll = useRef<{ target: "end" | number; value: number; previousEnd: number } | null>(null);
-  const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
@@ -108,6 +95,36 @@ export function useVirtualList<Id extends string>(
     lastScrollTop.current = container.scrollTop;
     lastDomEnd.current = domEnd;
   }, [engine]);
+
+  const armReaderInput = () => {
+    readerInput.current = true;
+    if (readerInputFrame.current != null) cancelAnimationFrame(readerInputFrame.current);
+    readerInputFrame.current = requestAnimationFrame(() => {
+      readerInputFrame.current = null;
+      readerInput.current = false;
+    });
+  };
+
+  const resetHostState = () => {
+    if (readerInputFrame.current != null) cancelAnimationFrame(readerInputFrame.current);
+    if (touchSettleFrame.current != null) cancelAnimationFrame(touchSettleFrame.current);
+    if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
+    readerInputFrame.current = null;
+    touchSettleFrame.current = null;
+    resizeFrame.current = null;
+    readerInput.current = false;
+    keyboardHeld.current = false;
+    scrollbarDragging.current = false;
+    touching.current = false;
+    touchMomentum.current = false;
+    touchY.current = null;
+    touchGeneration.current = 0;
+    pendingScroll.current = null;
+    pendingEntries.current.clear();
+    lastScrollTop.current = 0;
+    lastDomEnd.current = 0;
+    engine.flushPendingCorrection(false, true);
+  };
 
   useLayoutEffect(() => {
     if (resetPending) {
@@ -189,14 +206,40 @@ export function useVirtualList<Id extends string>(
       for (const row of rows.current.values()) observer.observe(row);
 
       const finishScroll = () => {
-        touching.current = false;
         const result = engine.flushPendingCorrection();
         if (Math.abs(result.jump) >= 0.5) writeScroll(result.scrollTop);
+      };
+      const startTouchSettlement = () => {
+        if (touchSettleFrame.current != null) cancelAnimationFrame(touchSettleFrame.current);
+        let observedGeneration = touchGeneration.current;
+        let quietFrames = 0;
+        const observe = () => {
+          touchSettleFrame.current = null;
+          if (touching.current) return;
+          if (touchGeneration.current === observedGeneration) quietFrames++;
+          else {
+            observedGeneration = touchGeneration.current;
+            quietFrames = 0;
+          }
+          if (quietFrames >= 2) {
+            touchMomentum.current = false;
+            finishScroll();
+            return;
+          }
+          touchSettleFrame.current = requestAnimationFrame(observe);
+        };
+        touchSettleFrame.current = requestAnimationFrame(observe);
       };
       const onScroll = () => {
         const before = engine.getSnapshot();
         const domEnd = Math.max(0, container.scrollHeight - container.clientHeight);
-        const fromReader = readerInput.current || gestureActive.current || touching.current || scrollbarDragging.current;
+        const fromReader = readerInput.current || keyboardHeld.current || touchMomentum.current || scrollbarDragging.current;
+        if (readerInput.current) {
+          readerInput.current = false;
+          if (readerInputFrame.current != null) cancelAnimationFrame(readerInputFrame.current);
+          readerInputFrame.current = null;
+        }
+        if (touchMomentum.current) touchGeneration.current++;
         const pending = pendingScroll.current;
         pendingScroll.current = null; // the first callback consumes our write, whether the browser matched it or not
         const matchesPending = pending !== null && (Math.abs(container.scrollTop - pending.value) < 0.5
@@ -212,24 +255,19 @@ export function useVirtualList<Id extends string>(
           if (before.pinned && Math.abs(container.scrollTop - domEnd) >= 0.5) writeScroll("end");
           return;
         }
-        readerInput.current = false;
-        pendingScroll.current = null;
         lastScrollTop.current = container.scrollTop;
         lastDomEnd.current = domEnd;
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
-        if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
-        scrollEndTimer.current = setTimeout(finishScroll, 150);
       };
       const scrollKeys = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
       const onWheel = (event: WheelEvent) => {
-        readerInput.current = true;
-        gestureActive.current = true;
+        armReaderInput();
         if (event.deltaY < 0 && engine.getSnapshot().pinned) engine.setFollow(false);
       };
       const onKeyDown = (event: KeyboardEvent) => {
         if (!scrollKeys.has(event.key)) return;
-        readerInput.current = true;
-        gestureActive.current = true;
+        keyboardHeld.current = true;
+        armReaderInput();
         if ((event.key.endsWith("Up") || event.key === "Home") && engine.getSnapshot().pinned) engine.setFollow(false);
       };
       const onPointerDown = (event: PointerEvent) => {
@@ -239,14 +277,16 @@ export function useVirtualList<Id extends string>(
         const horizontal = event.clientY >= bounds.top + container.clientHeight && event.clientY <= bounds.bottom
           && event.clientX >= bounds.left && event.clientX <= bounds.right;
         if (vertical || horizontal) {
-          readerInput.current = true;
           scrollbarDragging.current = true;
+          armReaderInput();
         }
       };
       const onTouchStart = (event: TouchEvent) => {
-        readerInput.current = true;
-        gestureActive.current = true;
+        if (touchSettleFrame.current != null) cancelAnimationFrame(touchSettleFrame.current);
+        touchSettleFrame.current = null;
         touching.current = true;
+        touchMomentum.current = true;
+        armReaderInput();
         touchY.current = event.touches[0]?.clientY ?? null;
       };
       const onTouchMove = (event: TouchEvent) => {
@@ -255,27 +295,33 @@ export function useVirtualList<Id extends string>(
         touchY.current = next ?? null;
       };
       const onTouchEnd = () => {
+        touching.current = false;
         touchY.current = null;
-        if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
-        scrollEndTimer.current = setTimeout(finishScroll, 150);
+        startTouchSettlement();
       };
       const onScrollEnd = () => {
+        if (readerInputFrame.current != null) cancelAnimationFrame(readerInputFrame.current);
+        if (touchSettleFrame.current != null) cancelAnimationFrame(touchSettleFrame.current);
+        readerInputFrame.current = null;
+        touchSettleFrame.current = null;
         readerInput.current = false;
-        gestureActive.current = false;
-        scrollbarDragging.current = false;
+        touching.current = false;
+        touchMomentum.current = false;
         finishScroll();
       };
-      const onDocumentKeyDown = (event: KeyboardEvent) => {
-        if (!scrollKeys.has(event.key)) return;
-        readerInput.current = true;
-        gestureActive.current = true;
-      };
+      const onDocumentKeyDown = onKeyDown;
       const onDocumentKeyUp = (event: KeyboardEvent) => {
-        if (scrollKeys.has(event.key)) gestureActive.current = false;
+        if (!scrollKeys.has(event.key)) return;
+        keyboardHeld.current = false;
+        armReaderInput();
       };
-      const onDocumentPointerEnd = () => { scrollbarDragging.current = false; };
+      const onDocumentPointerEnd = () => {
+        if (!scrollbarDragging.current) return;
+        scrollbarDragging.current = false;
+        armReaderInput();
+      };
       const onFocusIn = (event: FocusEvent) => {
-        if (event.target instanceof Node && container.contains(event.target)) readerInput.current = true;
+        if (event.target instanceof Node && container.contains(event.target)) armReaderInput();
       };
       container.addEventListener("scroll", onScroll, { passive: true });
       container.addEventListener("scrollend", onScrollEnd, { passive: true });
@@ -320,12 +366,7 @@ export function useVirtualList<Id extends string>(
         document.removeEventListener("pointerup", onDocumentPointerEnd);
         document.removeEventListener("pointercancel", onDocumentPointerEnd);
         document.removeEventListener("focusin", onFocusIn);
-        if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
-        if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
-        resizeFrame.current = null;
-        scrollEndTimer.current = null;
-        settleDetachedViewport(engine, touching, touchY, readerInput, gestureActive, scrollbarDragging);
-        pendingEntries.current.clear();
+        resetHostState();
         container.style.overflowAnchor = priorOverflowAnchor;
       };
       attachment.current.host = container;
@@ -386,7 +427,7 @@ export function useVirtualList<Id extends string>(
     writeScroll(engine.scrollToEnd());
   }, [engine, writeScroll]);
   const requestFollow = useCallback(() => {
-    if (touching.current || readerInput.current || gestureActive.current || scrollbarDragging.current) return;
+    if (keyboardHeld.current || touchMomentum.current || scrollbarDragging.current) return;
     const container = containerRef.current;
     if (!container) return;
     const next = engine.requestFollow();

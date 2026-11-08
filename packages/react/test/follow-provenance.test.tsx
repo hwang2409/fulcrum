@@ -318,8 +318,8 @@ describe("timeline scroll provenance", () => {
       const row = container!.querySelector<HTMLElement>("[data-virtual-id]")!;
       if (kind === "focus") act(() => row.dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
       else act(() => {
-        document.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true }));
-        document.dispatchEvent(new KeyboardEvent("keyup", { key: "PageUp", bubbles: true }));
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+        document.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowDown", bubbles: true }));
       });
       act(() => { for (const [id, frame] of [...frames]) { frames.delete(id); frame(0); } });
       append();
