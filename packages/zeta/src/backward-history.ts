@@ -96,7 +96,9 @@ export async function openBackwardHistory(
     while (!current.complete) {
       const previous = pages.at(-1)!;
       try {
-        const page = parsePage(await request({ before: previous.nextBefore, historyValidator: pages[0]!.validator }, signal), pages[0]!.validator, previous.nextBefore!);
+        const response = await request({ before: previous.nextBefore, historyValidator: pages[0]!.validator }, signal);
+        signal.throwIfAborted();
+        const page = parsePage(response, pages[0]!.validator, previous.nextBefore!);
         pages.push(page);
         current = publish(page, "older");
       } catch (error) {
