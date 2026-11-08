@@ -83,7 +83,7 @@ export function useVirtualList<Id extends string>(
   const touchY = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const viewportSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pinnedMeasurementNotified = useRef(false);
   const ignoreScrollUntil = useRef(0);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
@@ -105,6 +105,7 @@ export function useVirtualList<Id extends string>(
     }
     if (appliedOutline.current !== outline) {
       appliedOutline.current = outline;
+      pinnedMeasurementNotified.current = false;
       const token = engine.beforeMutation();
       if (options.invalidateMeasurements) engine.invalidateMeasurements(options.invalidateMeasurements);
       engine.setOutline(outline, options.outlineUpdate);
@@ -133,21 +134,14 @@ export function useVirtualList<Id extends string>(
       containerRef.current = container;
       const priorOverflowAnchor = container.style.overflowAnchor;
       container.style.overflowAnchor = "none";
-      const updateViewport = (source: "user" | "programmatic") =>
-        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
-      const scrollToBottom = (syncViewport = true) => {
+      const updateViewport = (source: "user" | "programmatic", notify = true) =>
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source, notify });
+      const scrollToBottom = () => {
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = null;
         container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
         lastScrollTop.current = container.scrollTop;
-        if (syncViewport) updateViewport("programmatic");
-        else {
-          if (viewportSyncTimer.current != null) clearTimeout(viewportSyncTimer.current);
-          viewportSyncTimer.current = setTimeout(() => {
-            viewportSyncTimer.current = null;
-            if (containerRef.current === container) updateViewport("programmatic");
-          }, 1_000);
-        }
+        updateViewport("programmatic", false);
       };
       scrollToBottomRef.current = scrollToBottom;
       if (prior) {
@@ -163,13 +157,15 @@ export function useVirtualList<Id extends string>(
         // Capture ownership before the engine notifies React: its correction can commit synchronously and move the DOM.
         // Real input clears follow intent before the measurement flush; content and layout changes do not.
         const ownsBottom = engine.getSnapshot().pinned;
+        const notify = !ownsBottom || !pinnedMeasurementNotified.current;
+        pinnedMeasurementNotified.current = ownsBottom;
         const token = engine.beforeMutation();
-        for (const [id, size] of pendingEntries.current) engine.measure(id, size);
+        for (const [id, size] of pendingEntries.current) engine.measure(id, size, notify);
         pendingEntries.current.clear();
-        engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
+        engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit(), notify });
         // A late layout pass can leave WebKit a few pixels behind the new end after the measurement correction.
         // Re-apply the existing follow intent only when the DOM had not moved independently before that correction.
-        if (ownsBottom && engine.getSnapshot().pinned) scrollToBottom(false);
+        if (ownsBottom && engine.getSnapshot().pinned) scrollToBottom();
       };
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
@@ -181,7 +177,7 @@ export function useVirtualList<Id extends string>(
         // not a frame later when the engine measures (and then agrees). Moving scroll resizes nothing: no observer loop.
         // The user beats the engine: pointer, wheel, key, and touch input own their scroll frame, while a delayed
         // browser event from content growth does not change follow intent.
-        if (engine.getSnapshot().pinned) scrollToBottom(false);
+        if (engine.getSnapshot().pinned) scrollToBottom();
       });
       observerRef.current = observer;
       for (const row of rows.current.values()) observer.observe(row);
@@ -190,14 +186,14 @@ export function useVirtualList<Id extends string>(
         touching.current = false;
         const result = engine.flushPendingCorrection();
         if (Math.abs(result.jump) >= 0.5) {
-          if (engine.getSnapshot().pinned) scrollToBottom(false);
+          if (engine.getSnapshot().pinned) scrollToBottom();
           else container.scrollTop = result.scrollTop;
         }
       };
       const onScroll = () => {
         const before = engine.getSnapshot();
         if (performance.now() < ignoreScrollUntil.current) {
-          if (before.pinned) scrollToBottom(false);
+          if (before.pinned) scrollToBottom();
           else container.scrollTop = before.scrollTop;
           return;
         }
@@ -210,7 +206,7 @@ export function useVirtualList<Id extends string>(
         const movedUp = container.scrollTop < lastScrollTop.current;
         if (before.viewportSize > 0 && before.pinned && (!userDriven || !movedUp)) {
           const end = Math.max(0, container.scrollHeight - container.clientHeight);
-          if (Math.abs(container.scrollTop - end) > 0.5) scrollToBottom(false);
+          if (Math.abs(container.scrollTop - end) > 0.5) scrollToBottom();
           return;
         }
         if (!correction && !clampedToEnd && userDriven && movedUp) engine.setFollow(false);
@@ -293,10 +289,8 @@ export function useVirtualList<Id extends string>(
         container.removeEventListener("touchcancel", onTouchEnd);
         if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
-        if (viewportSyncTimer.current != null) clearTimeout(viewportSyncTimer.current);
         resizeFrame.current = null;
         scrollEndTimer.current = null;
-        viewportSyncTimer.current = null;
         settleDetachedViewport(engine, touching, touchY, userScrollUntil, ignoreScrollUntil);
         pendingEntries.current.clear();
         if (scrollToBottomRef.current === scrollToBottom) scrollToBottomRef.current = null;

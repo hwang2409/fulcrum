@@ -430,6 +430,19 @@ describe("observable snapshots", () => {
     virtual.setViewport({ scrollTop: 0, size: 100, source: "user" });
     expect(virtual.getSnapshot()).not.toBe(snapshot);
   });
+  test("coalesces silent adapter measurements until the next notified mutation", () => {
+    const virtual = engine([10]);
+    const snapshot = virtual.getSnapshot();
+    let calls = 0;
+    virtual.subscribe(() => calls++);
+    virtual.measure("row-0", 20, false);
+    virtual.setViewport({ scrollTop: 0, size: 100, source: "programmatic", notify: false });
+    expect(calls).toBe(0);
+    expect(virtual.getSnapshot()).toBe(snapshot);
+    virtual.setViewport({ scrollTop: 0, size: 100, source: "programmatic" });
+    expect(calls).toBe(1);
+    expect(virtual.getSnapshot().totalSize).toBe(20);
+  });
 });
 
 describe("structured action log and traces", () => {

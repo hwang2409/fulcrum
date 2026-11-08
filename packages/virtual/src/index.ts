@@ -15,7 +15,7 @@ export type VirtualOptions<Id extends string = string> = {
   onAction?: (action: VirtualAction) => void;
 };
 
-export type Viewport = { scrollTop: number; size: number; source: ScrollSource };
+export type Viewport = { scrollTop: number; size: number; source: ScrollSource; notify?: boolean };
 export type VirtualRange = { start: number; end: number };
 export type VirtualRow<Id extends string = string> = OutlineItem<Id> & {
   index: number;
@@ -84,12 +84,12 @@ export type Virtualizer<Id extends string = string> = {
   reset(): void;
   setOutline(items: readonly OutlineItem<Id>[], update?: OutlineUpdate<Id> | null): void;
   setViewport(viewport: Viewport): void;
-  measure(id: Id, size: number): void;
+  measure(id: Id, size: number, notify?: boolean): void;
   invalidateMeasurements(ids: Iterable<Id>): void;
   setLoaded(ids: Iterable<Id> | "all"): void;
   setFollow(follow: boolean): void;
   beforeMutation(options?: { mode?: "anchor" | "shift" }): MutationToken<Id>;
-  afterMutation(token: MutationToken<Id>, options?: { deferCorrection?: boolean }): MutationResult;
+  afterMutation(token: MutationToken<Id>, options?: { deferCorrection?: boolean; notify?: boolean }): MutationResult;
   flushPendingCorrection(notify?: boolean, releaseOwnership?: boolean): MutationResult;
   scrollToId(id: Id, viewportOffset?: number): number;
   scrollToEnd(): number;
@@ -334,7 +334,8 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     if (actions.length > 2_000) actions.splice(0, actions.length - 2_000);
     options.onAction?.(action);
   };
-  const changed = (): void => {
+  const changed = (notify = true): void => {
+    if (!notify) return;
     snapshot = null;
     listeners.forEach((listener) => listener());
   };
@@ -487,7 +488,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     if (isCorrection) expectedCorrectionScroll = null;
     if (isCorrection) jump = 0;
     log("viewport", { scrollTop, size: viewportSize, programmatic, pinned });
-    changed();
+    changed(viewport.notify);
   };
 
   return {
@@ -579,7 +580,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       changed();
     },
     setViewport,
-    measure(id, size) {
+    measure(id, size, notify = true) {
       const expectedAnchor = captureExpectedAnchor();
       const wasPinned = pinned;
       checkSize(size);
@@ -600,7 +601,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       // A size change is not user input. Keep an already-following viewport following the new bottom.
       if (wasPinned) pinned = true;
       log("measure", { index, size, totalSize: layout.total });
-      changed();
+      changed(notify);
     },
     invalidateMeasurements(ids) {
       let count = 0;
@@ -683,7 +684,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       programmatic = true;
       const appliedCorrection = jump;
       log("correction", { correction, appliedCorrection, pendingJump, followedBottom, scrollTop });
-      changed();
+      changed(mutationOptions?.notify);
       return { scrollTop, correction, appliedCorrection, jump, pendingJump, followedBottom };
     },
     flushPendingCorrection(notify = true, releaseOwnership = false) {
