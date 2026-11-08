@@ -146,24 +146,35 @@ const pagedHistory = (rows: unknown[]): Handler => (params) => {
   return { messages: rows.slice(offset, offset + 1), next_offset: offset + 1 < rows.length ? offset + 1 : null };
 };
 
-async function interruptedReconnect({ phase = "dropped", status, rows = history.b!, features = ["list_sessions_paging", "served_turn_end"], approval = false, waitForComplete = true }: {
+async function interruptedReconnect({ phase = "dropped", status, rows = history.b!, features = ["list_sessions_paging", "served_turn_end"], approval = false, waitForComplete = true, duringReplay, turnId = turn }: {
   phase?: string;
   status: Record<string, unknown>;
   rows?: unknown[];
   features?: string[];
   approval?: boolean;
   waitForComplete?: boolean;
+  /** Runs once while the reopen waits for its second history page, so the session is still replaying. */
+  duringReplay?: (event: (params: Record<string, unknown>) => void) => void;
+  /** The interrupted turn's id; null when the page joined mid-turn and never saw its turn_start. */
+  turnId?: string | null;
 }) {
   const first = await server(handlers("b"), features);
   const connection = source(first.client);
   const view = createSessions(connection);
   await waitFor(() => !!present(view).open?.history.complete, "initial history did not complete");
   first.event({ event: "agent_start", session_id: "b" });
-  first.event({ event: "turn_start", session_id: "b", data: { turn: 1, turn_id: turn } });
+  if (turnId) first.event({ event: "turn_start", session_id: "b", data: { turn: 1, turn_id: turnId } });
   if (approval) first.event({ event: "approval_request", session_id: "b", request_id: "pending", tool_call: { id: "tool", name: "bash", arguments: {} }, delegated: false });
   expect(present(view).open?.lease.store.getState().agent).toBe("running");
   connection.set(null, phase);
-  const second = await server(handlers("b", { status: () => status, session_history: pagedHistory(rows) }), features);
+  let replaying = duringReplay;
+  const second: Awaited<ReturnType<typeof server>> = await server(handlers("b", {
+    status: () => status,
+    session_history: (params) => {
+      if (params.offset === 1 && replaying) { replaying(second.event); replaying = undefined; }
+      return pagedHistory(rows)(params);
+    },
+  }), features);
   connection.set(second.client);
   await waitFor(() => !!present(view).open && !present(view).open!.stale && (waitForComplete ? !!present(view).open!.history.complete : present(view).open!.lease.store.getState().agent === "running"), "reconnected session did not reach its expected state");
   return { view, connection, second };
@@ -253,12 +264,153 @@ test("fresh observer-style attach shows the active session's latest status outco
   view.dispose();
 });
 
-test("a mismatched status turn falls back to the interrupted turn's history", async () => {
-  const result = await interruptedReconnect({
-    status: { session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome: { turn_id: "0000000000000000000000000000beef", reason: "completed" } },
-    rows: [...history.b!, endRow(turn, "error")],
-  });
-  expect(present(result.view).open?.lease.store.getState().endOutcome).toBe("failed");
+const laterTurn = "0000000000000000000000000000beef";
+const idleStatus = (last_turn_outcome: unknown) => ({ session: meta("b", "x"), state: "idle", pending_approvals: [], last_turn_outcome });
+const reopened = async (view: Sessions) => {
+  view.select("a");
+  await waitFor(() => present(view).open?.id === "a" && !!present(view).open?.history.complete, "other session did not open");
+  view.select("b");
+  await waitFor(() => present(view).open?.id === "b" && !!present(view).open?.history.complete, "interrupted session did not reopen");
+  return present(view).open?.lease.store.getState().endOutcome;
+};
+const startLaterTurn = (event: (params: Record<string, unknown>) => void) => {
+  event({ event: "agent_start", session_id: "b" });
+  event({ event: "turn_start", session_id: "b", data: { turn: 2, turn_id: laterTurn } });
+};
+
+// The interrupted-turn marker means "outcome unknown until its next run starts". A later run clears it the same way
+// whether it was seen live or replayed: that open names no outcome for it, and a reopen names it from status. Each row
+// names the fact that decides it.
+test.each([
+  {
+    name: "a live run after the interruption clears the marker",
+    fact: "the live turn_start serves a later turn id; status then names that turn",
+    async run() {
+      const status: Record<string, unknown> = idleStatus(null);
+      const rows = [...history.b!];
+      const { view, second } = await interruptedReconnect({ status, rows });
+      expect(present(view).open?.lease.store.getState().endOutcome).toBe("unknown");
+      startLaterTurn(second.event);
+      await waitFor(() => present(view).open?.lease.store.getState().agent === "running", "the later run did not start live");
+      expect(present(view).open?.lease.store.getState().endOutcome).toBeUndefined();
+      Object.assign(status, idleStatus({ turn_id: laterTurn, reason: "completed" }));
+      rows.push(endRow(laterTurn));
+      second.event({ event: "agent_end", session_id: "b" });
+      return { view, live: undefined, reopened: await reopened(view) };
+    },
+    live: undefined,
+    reopened: "completed",
+  },
+  {
+    name: "a run that starts and ends inside the reopen's replay clears the marker",
+    fact: "the turn_start replayed into servedTurn (#111) and the reconcile's idle status both name a later turn",
+    async run() {
+      const status: Record<string, unknown> = idleStatus({ turn_id: turn, reason: "disconnect" });
+      const rows = [...history.b!, endRow(turn, "disconnect")];
+      const { view } = await interruptedReconnect({
+        status, rows,
+        duringReplay(event) {
+          startLaterTurn(event);
+          rows.push(endRow(laterTurn));
+          Object.assign(status, idleStatus({ turn_id: laterTurn, reason: "completed" }));
+          event({ event: "agent_end", session_id: "b" });
+        },
+      });
+      return { view, live: present(view).open?.lease.store.getState().endOutcome, reopened: await reopened(view) };
+    },
+    live: undefined,
+    reopened: "completed",
+  },
+  {
+    name: "a run replayed while status still names the interrupted turn clears the marker",
+    fact: "the client's servedTurn records the turn_start that arrived during replay (#111); status lags",
+    async run() {
+      const status: Record<string, unknown> = idleStatus({ turn_id: turn, reason: "disconnect" });
+      const rows = [...history.b!, endRow(turn, "disconnect")];
+      const { view } = await interruptedReconnect({
+        status, rows,
+        duringReplay(event) {
+          startLaterTurn(event);
+          event({ event: "agent_end", session_id: "b" });
+        },
+      });
+      const live = present(view).open?.lease.store.getState().endOutcome;
+      rows.push(endRow(laterTurn));
+      Object.assign(status, idleStatus({ turn_id: laterTurn, reason: "completed" }));
+      return { view, live, reopened: await reopened(view) };
+    },
+    live: undefined,
+    reopened: "completed",
+  },
+  {
+    name: "a status naming a later turn clears the marker even when history ends at the interrupted turn",
+    fact: "idle status last_turn_outcome names a later turn; history has not caught up",
+    async run() {
+      const { view } = await interruptedReconnect({ status: idleStatus({ turn_id: laterTurn, reason: "completed" }), rows: [...history.b!, endRow(turn, "error")] });
+      return { view, live: present(view).open?.lease.store.getState().endOutcome, reopened: await reopened(view) };
+    },
+    live: undefined,
+    reopened: "completed",
+  },
+  {
+    name: "an interrupted turn whose id the page never saw takes its outcome from status",
+    fact: "idle status last_turn_outcome; with no interrupted id it may name that very turn, so it is not a later one",
+    async run() {
+      const { view } = await interruptedReconnect({ status: idleStatus({ turn_id: laterTurn, reason: "user_stop" }), turnId: null });
+      return { view, live: present(view).open?.lease.store.getState().endOutcome, reopened: await reopened(view) };
+    },
+    live: "cancelled",
+    reopened: "cancelled",
+  },
+  {
+    name: "an interruption with no later run keeps the marker",
+    fact: "no served turn fact: status names no turn and history has no turn end",
+    async run() {
+      const { view } = await interruptedReconnect({ status: idleStatus(null) });
+      return { view, live: present(view).open?.lease.store.getState().endOutcome, reopened: await reopened(view) };
+    },
+    live: "unknown",
+    reopened: "unknown",
+  },
+  {
+    name: "a run that starts during the replay and ends live clears the marker",
+    fact: "the reconcile's status is running; the live end is then named by status last_turn_outcome",
+    async run() {
+      const status: Record<string, unknown> = idleStatus(null);
+      const rows = [...history.b!];
+      const { view, second } = await interruptedReconnect({
+        status, rows,
+        duringReplay(event) {
+          startLaterTurn(event);
+          Object.assign(status, { state: "running" });
+        },
+      });
+      expect(present(view).open?.lease.store.getState().agent).toBe("running");
+      Object.assign(status, idleStatus({ turn_id: laterTurn, reason: "completed" }));
+      rows.push(endRow(laterTurn));
+      second.event({ event: "agent_end", session_id: "b" });
+      await waitFor(() => present(view).open?.lease.store.getState().agent === "idle", "the later run did not end live");
+      return { view, live: present(view).open?.lease.store.getState().endOutcome, reopened: await reopened(view) };
+    },
+    live: undefined,
+    reopened: "completed",
+  },
+  {
+    name: "a reload with no interruption shows the latest outcome",
+    fact: "idle status last_turn_outcome, with no interrupted turn",
+    async run() {
+      const fake = await server(handlers("b", { status: () => idleStatus({ turn_id: turn, reason: "completed" }) }), ["list_sessions_paging", "served_turn_end"]);
+      const view = createSessions(source(fake.client));
+      await waitFor(() => !!present(view).open?.history.complete, "history did not complete");
+      return { view, live: present(view).open?.lease.store.getState().endOutcome, reopened: await reopened(view) };
+    },
+    live: "completed",
+    reopened: "completed",
+  },
+])("interrupted-turn marker: $name ($fact)", async ({ run, live, reopened: expectedReopen }) => {
+  const result = await run();
+  expect(result.live).toBe(live);
+  expect(result.reopened).toBe(expectedReopen);
   result.view.dispose();
 });
 
