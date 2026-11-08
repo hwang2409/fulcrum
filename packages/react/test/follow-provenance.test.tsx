@@ -209,6 +209,34 @@ describe("timeline scroll provenance", () => {
     }
   });
 
+  test.each(["host scrollTop=0", "scrollIntoView", "find-style scroll"] as const)(
+    "%s is reader intent while a streaming end write is pending",
+    (kind) => {
+      const geometry = installScrollGeometry();
+      try {
+        const { append, host, jump, unseen } = mountTimeline();
+        append(); // streaming writes a new end; its browser scroll callback has not arrived
+        const expectedTop = kind === "host scrollTop=0" ? 0 : 3_000;
+        if (kind === "scrollIntoView") {
+          const row = container!.querySelector<HTMLElement>("[data-virtual-id]")!;
+          row.scrollIntoView = () => moveReader(host, expectedTop);
+          row.scrollIntoView();
+        } else moveReader(host, expectedTop);
+
+        expect(host.scrollTop, `${kind} must consume, not replay, the pending end write`).toBe(expectedTop);
+        append();
+        expect(unseen(), `${kind} must turn follow off`).toBe("1");
+        expect(jump()).not.toBeNull();
+        expect(host.scrollTop, `${kind} must not snap back as a row streams`).toBe(expectedTop);
+        append();
+        expect(unseen(), `${kind} must stay unpinned as another row streams`).toBe("2");
+        expect(host.scrollTop, `${kind} must keep the reader position`).toBe(expectedTop);
+      } finally {
+        geometry.restore();
+      }
+    },
+  );
+
   test.each(["scrollIntoView", "focus", "scrollbar", "page keyboard"] as const)(
     "%s scroll without container input is reader intent",
     async (kind) => {
