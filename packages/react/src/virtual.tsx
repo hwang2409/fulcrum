@@ -139,6 +139,7 @@ export function useVirtualList<Id extends string>(
         scrollEndTimer.current = null;
         container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
         lastScrollTop.current = container.scrollTop;
+        ignoreScrollUntil.current = performance.now() + 50;
         if (syncViewport) updateViewport("programmatic");
       };
       scrollToBottomRef.current = scrollToBottom;
@@ -222,9 +223,9 @@ export function useVirtualList<Id extends string>(
           userScrollUntil.current = performance.now() + 200;
         if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
       };
-      const onPointerDown = () => {
+      const onPointerDown = (event: PointerEvent) => {
         userIntent();
-        touching.current = true;
+        if (event.target === container) touching.current = true;
       };
       const onPointerEnd = () => finishScroll();
       const onTouchStart = (event: TouchEvent) => {
