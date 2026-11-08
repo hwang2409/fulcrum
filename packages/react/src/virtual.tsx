@@ -153,7 +153,8 @@ export function useVirtualList<Id extends string>(
         resizeFrame.current = null;
         if (pendingEntries.current.size === 0) return;
         // Capture ownership before the engine notifies React: its correction can commit synchronously and move the DOM.
-        const ownsBottom = engine.getSnapshot().pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5;
+        // Real user input owns the frame; delayed browser scroll events from our own writes do not change follow intent.
+        const ownsBottom = engine.getSnapshot().pinned && !touching.current && performance.now() >= userScrollUntil.current;
         const token = engine.beforeMutation();
         for (const [id, size] of pendingEntries.current) engine.measure(id, size);
         pendingEntries.current.clear();
@@ -170,10 +171,10 @@ export function useVirtualList<Id extends string>(
         if (resizeFrame.current === null) resizeFrame.current = requestAnimationFrame(flushMeasurements);
         // Rows are in flow, so the DOM already has the new end: a pinned reader sticks to it before this frame paints,
         // not a frame later when the engine measures (and then agrees). Moving scroll resizes nothing: no observer loop.
-        // The user beats the engine: a scroll the engine has not seen yet (a scrollbar drag sends no input event first)
-        // is the reader's move, so the follow waits for its scroll event, which unpins; wheel, keys, and touch unpin earlier.
-        const { pinned, scrollTop } = engine.getSnapshot();
-        if (pinned && Math.abs(container.scrollTop - scrollTop) < 1) scrollToBottom(false);
+        // The user beats the engine: pointer, wheel, key, and touch input own their scroll frame, while a delayed
+        // browser event from content growth does not change follow intent.
+        const { pinned } = engine.getSnapshot();
+        if (pinned && !touching.current && performance.now() >= userScrollUntil.current) scrollToBottom(false);
       });
       observerRef.current = observer;
       for (const row of rows.current.values()) observer.observe(row);
@@ -198,9 +199,11 @@ export function useVirtualList<Id extends string>(
         // to the new end, often before the box's ResizeObserver runs. Landing on the end is following, not the reader's
         // move up, so the engine keeps its follow intent.
         const clampedToEnd = before.pinned && container.scrollTop >= container.scrollHeight - container.clientHeight - 0.5;
-        if (!correction && !clampedToEnd && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+        const userDriven = touching.current || performance.now() < userScrollUntil.current;
+        if (!correction && !clampedToEnd && userDriven && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
         lastScrollTop.current = container.scrollTop;
-        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: clampedToEnd ? "programmatic" : "user" });
+        const source = clampedToEnd || (before.pinned && !userDriven) ? "programmatic" : "user";
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
         if (correction || clampedToEnd) return;
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = setTimeout(finishScroll, 150);
@@ -215,9 +218,15 @@ export function useVirtualList<Id extends string>(
       };
       const onKeyDown = (event: KeyboardEvent) => {
         userIntent();
+        if (["ArrowUp", "PageUp", "Home", "ArrowDown", "PageDown", "End", " "].includes(event.key))
+          userScrollUntil.current = performance.now() + 200;
         if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
       };
-      const onPointerDown = () => userIntent();
+      const onPointerDown = () => {
+        userIntent();
+        touching.current = true;
+      };
+      const onPointerEnd = () => finishScroll();
       const onTouchStart = (event: TouchEvent) => {
         userIntent();
         touching.current = true;
@@ -237,6 +246,8 @@ export function useVirtualList<Id extends string>(
       container.addEventListener("wheel", onWheel, { passive: true });
       container.addEventListener("keydown", onKeyDown);
       container.addEventListener("pointerdown", onPointerDown, { passive: true });
+      container.addEventListener("pointerup", onPointerEnd, { passive: true });
+      container.addEventListener("pointercancel", onPointerEnd, { passive: true });
       container.addEventListener("touchstart", onTouchStart, { passive: true });
       container.addEventListener("touchmove", onTouchMove, { passive: true });
       container.addEventListener("touchend", onTouchEnd, { passive: true });
@@ -258,6 +269,8 @@ export function useVirtualList<Id extends string>(
         container.removeEventListener("wheel", onWheel);
         container.removeEventListener("keydown", onKeyDown);
         container.removeEventListener("pointerdown", onPointerDown);
+        container.removeEventListener("pointerup", onPointerEnd);
+        container.removeEventListener("pointercancel", onPointerEnd);
         container.removeEventListener("touchstart", onTouchStart);
         container.removeEventListener("touchmove", onTouchMove);
         container.removeEventListener("touchend", onTouchEnd);

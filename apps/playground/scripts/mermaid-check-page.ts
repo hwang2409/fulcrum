@@ -75,13 +75,15 @@ export async function swap(virtual: boolean, where: "bottom" | "above" | "below"
   if (where === "bottom") scroller.scrollTop = scroller.scrollHeight;
   for (const line of code.split(/(?<=\n)/)) { run.store.dispatch(delta(id, line)); await afterPaint(); if (where === "bottom") scroller.scrollTop = scroller.scrollHeight; }
   await afterPaint();
+  if (where !== "bottom") scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -1 }));
   // a virtual timeline mounts about a screen around the view: walk down, then up, until the diagram's row is mounted
   for (const step of [1, -1]) for (let i = 0; i < 40 && !box(); i++) { scroller.scrollTop += step * scroller.clientHeight / 2; await afterPaint(); }
   // "above": the diagram's bottom 300 px above the view; "below": its top 300 px under it (both inside the render
   // margin). Measured on screen: offsetTop is a virtual row's, not the scroller's.
   const view = scroller.getBoundingClientRect();
-  if (where === "above") scroller.scrollTop += box()!.getBoundingClientRect().bottom - view.top + 300;
-  if (where === "below") scroller.scrollTop -= view.bottom + 300 - box()!.getBoundingClientRect().top;
+  const move = where === "above" ? box()!.getBoundingClientRect().bottom - view.top + 300
+    : where === "below" ? box()!.getBoundingClientRect().top - view.bottom - 300 : 0;
+  scroller.scrollTop += move;
   await afterPaint();
   await afterPaint();
   const following = virtual && where === "bottom";

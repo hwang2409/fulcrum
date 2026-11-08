@@ -1277,7 +1277,7 @@ test("100 host swaps release every adapter listener and observer", () => {
     const { view } = hostAttachmentHarness();
     mount(view("inner"));
     for (let index = 0; index < 100; index++) act(() => root!.render(view(index % 2 ? "inner" : "outer")));
-    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(8);
+    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(10);
     expect(activeObservers).toBe(2);
     act(() => root!.unmount());
     root = undefined;
