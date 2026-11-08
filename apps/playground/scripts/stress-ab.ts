@@ -2,6 +2,11 @@ import { chromium, type Browser, type Page } from "playwright";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { once } from "node:events";
+import {
+  stressVerdict,
+  type StressRatios,
+  type StressVerdict,
+} from "./stress-ab-verdict";
 
 const baseUrl = process.env.STRESS_BASE_URL;
 const candidateUrl = process.env.STRESS_CANDIDATE_URL;
@@ -23,7 +28,7 @@ const calibrationRuns = 7;
 // `bun run stress` guard the long-term trend; add a pinned-baseline trend
 // check if drift is ever seen.
 const threshold = 1.2;
-const aaWarningThreshold = 1.1;
+const maxExtraRounds = 2;
 const viewport = { width: 1440, height: 900 };
 const artifacts = new URL("../stress-artifacts/", import.meta.url).pathname;
 const browserArgs = ["x", "vite", "preview", "--host", "127.0.0.1"];
@@ -152,78 +157,127 @@ try {
     viewport,
     pairs,
     calibrationRuns,
+    maxExtraRounds,
     cases: [],
   };
   let failed = false;
   for (const messages of cases) {
-    const aa: { firstPaint: number; taskDuration: number }[] = [];
-    const rows: unknown[] = [];
-    for (let i = 0; i < pairs; i++) {
-      const aaA = await sample(browser, baseUrl, messages, "aa-a", i);
-      const aaB = await sample(browser, baseUrl, messages, "aa-b", i);
-      aa.push({
-        firstPaint: ratio(aaB.firstPaint, aaA.firstPaint),
-        taskDuration: ratio(aaB.taskDuration, aaA.taskDuration),
-      });
-      const first = await sample(
-        browser,
-        i % 2 === 0 ? baseUrl : candidateUrl,
-        messages,
-        i % 2 === 0 ? "base" : "candidate",
-        i,
+    const aa: StressRatios[] = [];
+    const rows: {
+      pair: number;
+      base: Awaited<ReturnType<typeof sample>>;
+      candidate: Awaited<ReturnType<typeof sample>>;
+      ratios: StressRatios;
+    }[] = [];
+    const rounds: unknown[] = [];
+    let round = 0;
+    let aaMedians: StressRatios;
+    let aaSpread: StressRatios;
+    let medians: StressRatios;
+    let verdict: StressVerdict;
+
+    do {
+      for (let i = 0; i < pairs; i++) {
+        const index = round * pairs + i;
+        const aaA = await sample(browser, baseUrl, messages, "aa-a", index);
+        const aaB = await sample(browser, baseUrl, messages, "aa-b", index);
+        aa.push({
+          firstPaint: ratio(aaB.firstPaint, aaA.firstPaint),
+          taskDuration: ratio(aaB.taskDuration, aaA.taskDuration),
+        });
+        const first = await sample(
+          browser,
+          index % 2 === 0 ? baseUrl : candidateUrl,
+          messages,
+          index % 2 === 0 ? "base" : "candidate",
+          index,
+        );
+        const second = await sample(
+          browser,
+          index % 2 === 0 ? candidateUrl : baseUrl,
+          messages,
+          index % 2 === 0 ? "candidate" : "base",
+          index,
+        );
+        const base = index % 2 === 0 ? first : second;
+        const candidate = index % 2 === 0 ? second : first;
+        rows.push({
+          pair: index + 1,
+          base,
+          candidate,
+          ratios: {
+            firstPaint: ratio(candidate.firstPaint, base.firstPaint),
+            taskDuration: ratio(candidate.taskDuration, base.taskDuration),
+          },
+        });
+      }
+
+      aaMedians = {
+        firstPaint: median(aa.map((x) => x.firstPaint)),
+        taskDuration: median(aa.map((x) => x.taskDuration)),
+      };
+      aaSpread = {
+        firstPaint:
+          Math.max(...aa.map((x) => x.firstPaint)) -
+          Math.min(...aa.map((x) => x.firstPaint)),
+        taskDuration:
+          Math.max(...aa.map((x) => x.taskDuration)) -
+          Math.min(...aa.map((x) => x.taskDuration)),
+      };
+      medians = {
+        firstPaint: median(rows.map((row) => row.ratios.firstPaint)),
+        taskDuration: median(rows.map((row) => row.ratios.taskDuration)),
+      };
+      verdict = stressVerdict(
+        medians,
+        aaSpread,
+        threshold,
+        maxExtraRounds - round,
       );
-      const second = await sample(
-        browser,
-        i % 2 === 0 ? candidateUrl : baseUrl,
-        messages,
-        i % 2 === 0 ? "candidate" : "base",
-        i,
-      );
-      const base = i % 2 === 0 ? first : second;
-      const candidate = i % 2 === 0 ? second : first;
-      rows.push({
-        pair: i + 1,
-        base,
-        candidate,
-        ratios: {
-          firstPaint: ratio(candidate.firstPaint, base.firstPaint),
-          taskDuration: ratio(candidate.taskDuration, base.taskDuration),
-        },
+      rounds.push({
+        round: round + 1,
+        pooledPairs: rows.length,
+        aaMedians,
+        aaSpread,
+        medians,
+        verdict,
       });
-    }
-    const aaMedians = {
-      firstPaint: median(aa.map((x) => x.firstPaint)),
-      taskDuration: median(aa.map((x) => x.taskDuration)),
-    };
-    const aaSpread = {
-      firstPaint: Math.max(...aa.map((x) => x.firstPaint)) - Math.min(...aa.map((x) => x.firstPaint)),
-      taskDuration: Math.max(...aa.map((x) => x.taskDuration)) - Math.min(...aa.map((x) => x.taskDuration)),
-    };
-    const ratios = rows.map((row) => (row as any).ratios);
-    const medians = {
-      firstPaint: median(ratios.map((x: any) => x.firstPaint)),
-      taskDuration: median(ratios.map((x: any) => x.taskDuration)),
-    };
-    const failures = ["firstPaint", "taskDuration"].filter(
-      (metric) => medians[metric as keyof typeof medians] > threshold,
-    );
-    failed ||= failures.length > 0;
+      console.log(
+        JSON.stringify(
+          {
+            case: messages,
+            round: round + 1,
+            pooledPairs: rows.length,
+            aaMedians,
+            aaSpread,
+            threshold,
+            medians,
+            verdict,
+          },
+          null,
+          2,
+        ),
+      );
+      if (verdict.status === "inconclusive")
+        console.warn(
+          `inconclusive A/B result for ${messages} messages; bounded resample ${round + 1}/${maxExtraRounds}`,
+        );
+      round++;
+    } while (verdict.status === "inconclusive");
+
+    failed ||= verdict.status === "fail";
+    if (verdict.reason) console.error(`${verdict.reason}: ${messages} messages`);
     (report.cases as unknown[]).push({
       case: messages,
       aa,
       aaMedians,
       aaSpread,
-      aaWarning: ["firstPaint", "taskDuration"].filter(
-        (metric) => aaMedians[metric as keyof typeof aaMedians] > aaWarningThreshold,
-      ),
       threshold,
       pairs: rows,
       medians,
-      failures,
+      verdict,
+      rounds,
     });
-    if (Object.keys(aaMedians).some((metric) => aaMedians[metric as keyof typeof aaMedians] > aaWarningThreshold))
-      console.warn(`A/A noise warning for ${messages} messages: ${JSON.stringify(aaMedians)}`);
-    console.log(JSON.stringify({ case: messages, aaMedians, aaSpread, threshold, medians, failures }, null, 2));
   }
   await Bun.write(
     `${artifacts}/stress-ab-report.json`,

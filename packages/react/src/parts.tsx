@@ -516,12 +516,12 @@ function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; ch
 
 // Subscribes to a string key only, so text deltas never re-render the row.
 const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Renderers }) {
-  const kind = useItemSelector(id, (item) => item?.type);
-  const tool = useItemSelector(id, (item) =>
-    item?.type === "tool" ? item.tool_call.name : undefined,
+  const rendererKey = useItemSelector(id, (item) =>
+    item?.type === "tool" ? `tool:${item.tool_call.name}` : item?.type,
   );
+  const kind = rendererKey?.startsWith("tool:") ? "tool" : rendererKey;
   const Part =
-    (tool && renderers?.[`tool:${tool}`]) || (kind && (renderers?.[kind] ?? defaults[kind])) || Fallback;
+    (rendererKey && renderers?.[rendererKey]) || (kind && (renderers?.[kind] ?? defaults[kind])) || Fallback;
   return <Part id={id} />;
 });
 
