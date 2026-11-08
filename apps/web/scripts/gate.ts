@@ -119,6 +119,22 @@ async function auditThemes(page: Page, label: string, minHeight: number) {
 const scrollGap = (page: Page) => page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
 const reconnectBottomRuns = 5;
 const expectReconnectBottomFailure = process.env.WEB_GATE_EXPECT_RECONNECT_FAILURE === "1";
+const reconnectBottomFixtureCss = `
+[data-part="timeline"][data-virtual="true"] {
+  --fulcrum-gap: 12px;
+  box-sizing: content-box !important;
+  padding-block-end: 2px !important;
+}
+[data-part="timeline"][data-virtual="true"] :is([data-part="message"], [data-part="item"]) {
+  line-height: 24px !important;
+}
+[data-part="timeline"][data-virtual="true"] :is([data-part="md-paragraph"], [data-part="md-strong"], [data-part="md-code-inline"]) {
+  line-height: 23px !important;
+  border-block-width: 0 !important;
+}
+[data-part="timeline"][data-virtual="true"] [data-part="md-paragraph"] {
+  min-block-size: 24px;
+}`;
 
 type ReconnectBottomSample = {
   phase: string;
@@ -145,6 +161,7 @@ type ReconnectBottomDiagnostic = {
   viewport: { width: number; height: number } | null;
   deviceScaleFactor: number;
   font: { status: string; ready: boolean; family: string; size: string; lineHeight: string };
+  fixture: { stylePresent: boolean; messageLineHeight: string; boxSizing: string; paddingBottom: string };
   scrollbarWidth: number;
   rows: { first: string | null; last: string | null; heights: Array<{ height: number; count: number }> };
   history: { before: number; after: number; finalPageReceipts: number[] };
@@ -233,6 +250,7 @@ const reconnectBottomContext = (page: Page) => page.evaluate(async () => {
     const height = Number(row.getBoundingClientRect().height.toFixed(3));
     heights.set(height, (heights.get(height) ?? 0) + 1);
   }
+  const message = timeline.querySelector<HTMLElement>('[data-part="message"]');
   return {
     font: {
       status: document.fonts.status,
@@ -240,6 +258,12 @@ const reconnectBottomContext = (page: Page) => page.evaluate(async () => {
       family: style.fontFamily,
       size: style.fontSize,
       lineHeight: style.lineHeight,
+    },
+    fixture: {
+      stylePresent: !!document.querySelector("#timeline-integer-reconnect-fixture"),
+      messageLineHeight: message ? getComputedStyle(message).lineHeight : "missing",
+      boxSizing: style.boxSizing,
+      paddingBottom: style.paddingBottom,
     },
     scrollbarWidth: scroll.offsetWidth - scroll.clientWidth,
     rows: {
@@ -250,6 +274,46 @@ const reconnectBottomContext = (page: Page) => page.evaluate(async () => {
     actions: engine.getActions().slice(-40).map(({ sequence, time, type }) => ({ sequence, time, type })),
   };
 });
+
+const installReconnectBottomFixture = (page: Page) => page.addInitScript((css) => {
+  const style = document.createElement("style");
+  style.id = "timeline-integer-reconnect-fixture";
+  style.textContent = css;
+  const install = () => {
+    if (!style.isConnected && document.documentElement) document.documentElement.append(style);
+  };
+  install();
+  // The HTML parser can replace the early document element after an init script runs.
+  const observer = new MutationObserver(() => {
+    install();
+    if (document.head && style.isConnected) observer.disconnect();
+  });
+  observer.observe(document, { childList: true, subtree: true });
+}, reconnectBottomFixtureCss);
+
+const assertReconnectBottomFixture = (
+  engine: string,
+  run: number,
+  phase: string,
+  sample: ReconnectBottomSample,
+  context: Awaited<ReturnType<typeof reconnectBottomContext>>,
+) => {
+  const heights = context.rows.heights.map(({ height }) => height).sort((a, b) => a - b);
+  const fixture = { ...context.fixture, heights, totalSize: sample.engineTotal, scrollHeight: sample.scrollHeight, delta: sample.domEnd - sample.engineEnd };
+  if (!context.fixture.stylePresent) throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} fixture style marker is missing`);
+  if (context.fixture.messageLineHeight !== "24px" || context.fixture.boxSizing !== "content-box" || context.fixture.paddingBottom !== "2px") {
+    throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} fixture style did not apply (${JSON.stringify(fixture)})`);
+  }
+  if (JSON.stringify(heights) !== JSON.stringify([36, 52])) {
+    throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} row heights are not 36/52 (${JSON.stringify(fixture)})`);
+  }
+  if (!Number.isInteger(sample.engineTotal)) {
+    throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} engine total is not integral (${JSON.stringify(fixture)})`);
+  }
+  if (sample.scrollHeight - sample.engineTotal !== 2 || sample.domEnd - sample.engineEnd !== 2) {
+    throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} fixture did not add exactly 2 px beyond the engine (${JSON.stringify(fixture)})`);
+  }
+};
 
 class ReconnectBottomFailure extends Error {
   constructor(readonly gap: number, readonly engineGap: number) {
@@ -541,31 +605,18 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
     await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
     await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
     await waitAtBottom(page, `${engine} reconnect-bottom run ${run}: the long run did not load pinned at the bottom`);
-    const preStyle = await stableReconnectBottom(page, "pre-style");
-    phases.push(preStyle.at(-1)!);
+    const initial = await stableReconnectBottom(page, "initial", 2);
+    phases.push(initial.at(-1)!);
     const before = phases.at(-1)!;
-    if (!before.pinned) throw new Error(`${engine} reconnect-bottom run ${run}: engine was not pinned before calibration`);
-    if (await page.locator('[data-part="jump-to-latest"]').count()) throw new Error(`${engine} reconnect-bottom run ${run}: jump control was present before calibration`);
+    if (!before.pinned) throw new Error(`${engine} reconnect-bottom run ${run}: engine was not pinned before reconnect`);
+    if (await page.locator('[data-part="jump-to-latest"]').count()) throw new Error(`${engine} reconnect-bottom run ${run}: jump control was present before reconnect`);
     const contextBefore = await reconnectBottomContext(page);
+    assertReconnectBottomFixture(engine, run, "initial", before, contextBefore);
     if (contextBefore.font.status !== "loaded" || !contextBefore.font.ready || !contextBefore.font.family.includes("JetBrains Mono")) {
       throw new Error(`${engine} reconnect-bottom run ${run}: JetBrains Mono was not ready (${JSON.stringify(contextBefore.font)})`);
     }
     if (![before.domEnd, before.engineEnd].every((value) => Number.isFinite(value) && value > 0)) {
       throw new Error(`${engine} reconnect-bottom run ${run}: invalid DOM/engine ends ${before.domEnd}/${before.engineEnd}`);
-    }
-    const border = 2 - (before.domEnd - before.engineEnd);
-    if (!Number.isFinite(border) || border < 0 || border > 4) throw new Error(`${engine} reconnect-bottom run ${run}: calibration border ${border.toFixed(3)} px is outside 0..4 px`);
-    await page.evaluate((width) => {
-      const style = document.createElement("style");
-      style.id = "reconnect-bottom-fixture";
-      style.textContent = `[data-part="timeline"] { box-sizing: content-box !important; border-bottom: ${Math.max(0, width)}px solid transparent !important; }`;
-      document.head.append(style);
-    }, border);
-    const postStyle = await stableReconnectBottom(page, "post-style", 2);
-    phases.push(postStyle.at(-1)!);
-    const calibrated = phases.at(-1)!;
-    if (Math.abs(calibrated.domEnd - calibrated.engineEnd - 2) > 0.01) {
-      throw new Error(`${engine} reconnect-bottom run ${run}: calibration disagreement is ${(calibrated.domEnd - calibrated.engineEnd).toFixed(3)} px`);
     }
 
     phases.push(await reconnectBottomSample(page, "reconnect-start"));
@@ -580,6 +631,7 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
     phases.push(await reconnectBottomSample(page, "final", stable.at(-1)!.frame));
     const final = phases.at(-1)!;
     const contextAfter = await reconnectBottomContext(page);
+    assertReconnectBottomFixture(engine, run, "final", final, contextAfter);
     const historiesAfter = fake.requests.filter(({ method }) => method === "session_history");
     const diagnostic: ReconnectBottomDiagnostic = {
       engine,
@@ -588,6 +640,7 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
       viewport: page.viewportSize(),
       deviceScaleFactor: await page.evaluate(() => devicePixelRatio),
       font: contextAfter.font,
+      fixture: contextAfter.fixture,
       scrollbarWidth: contextAfter.scrollbarWidth,
       rows: contextAfter.rows,
       history: {
@@ -615,7 +668,6 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
     if (assertionReached) await shoot(page, `reconnect-bottom-${engine}-${run}`).catch(() => undefined);
     throw error;
   } finally {
-    await page.evaluate(() => document.getElementById("reconnect-bottom-fixture")?.remove()).catch(() => undefined);
     fake.restoreHistory(LONG, historyBefore);
     await fake.start();
     if (!assertionReached && assertionGap !== null) console.log(`${engine} reconnect-bottom run ${run} stopped at gap ${assertionGap.toFixed(3)} px`);
@@ -623,19 +675,26 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
 }
 
 async function checkReconnectBottom(page: Page, engine: string) {
+  await page.goto("about:blank");
+  const fixturePage = await page.context().newPage();
+  await installReconnectBottomFixture(fixturePage);
   const failures: ReconnectBottomFailure[] = [];
-  for (let run = 1; run <= reconnectBottomRuns; run++) {
-    try {
-      await reconnectBottomIteration(page, engine, run);
-    } catch (error) {
-      if (!expectReconnectBottomFailure || !(error instanceof ReconnectBottomFailure)) throw error;
-      failures.push(error);
-      console.log(`expected reconnect-bottom failure ${engine} ${run}/${reconnectBottomRuns}: ${error.message}`);
+  try {
+    for (let run = 1; run <= reconnectBottomRuns; run++) {
+      try {
+        await reconnectBottomIteration(fixturePage, engine, run);
+      } catch (error) {
+        if (!expectReconnectBottomFailure || !(error instanceof ReconnectBottomFailure)) throw error;
+        failures.push(error);
+        console.log(`expected reconnect-bottom failure ${engine} ${run}/${reconnectBottomRuns}: ${error.message}`);
+      }
     }
-  }
-  if (expectReconnectBottomFailure) {
-    if (failures.length !== reconnectBottomRuns) throw new Error(`${engine}: only ${failures.length}/${reconnectBottomRuns} old-source runs reached the reconnect-bottom failure`);
-    throw new Error(`${engine}: deterministic old-source proof failed ${failures.length}/${reconnectBottomRuns} at ${failures.map(({ gap }) => gap.toFixed(3)).join(",")} px`);
+    if (expectReconnectBottomFailure) {
+      if (failures.length !== reconnectBottomRuns) throw new Error(`${engine}: only ${failures.length}/${reconnectBottomRuns} old-source runs reached the reconnect-bottom failure`);
+      throw new Error(`${engine}: deterministic old-source proof failed ${failures.length}/${reconnectBottomRuns} at ${failures.map(({ gap }) => gap.toFixed(3)).join(",")} px`);
+    }
+  } finally {
+    await fixturePage.close();
   }
 }
 
