@@ -156,6 +156,8 @@
 [data-part="message-content"]:has(> [data-wide]) { max-width: none; }
 [data-part="message"]:has(> [data-wide]) > :not([data-wide]),
 [data-part="message-content"]:has(> [data-wide]) > :not([data-wide]) { max-width: var(--fulcrum-measure); }
+/* A wide block takes the cursor's gutter too: it ends no text line, so nothing hangs there. */
+[data-part="message"] > [data-wide] { margin-inline-end: calc(-1 * var(--cursor-gutter)); }
 [data-part="message"][data-role="user"],
 [data-part="item"][data-kind="user"] {
   max-width: none;
