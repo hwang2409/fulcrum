@@ -347,8 +347,10 @@ test("prepend assigns generated ids as a whole chronological reduction", () => {
 const commit = (id: string): RunEvent => ({ type: "message_commit", message_id: id, message: message(id) });
 const draft: RunEvent = { type: "message_delta", message_id: "s", delta: "draft" };
 const reset: RunEvent = { type: "message_reset" };
-// setup is notified; pending is flushed by a read (as apps/web does before resync) but its frame has not run yet.
-const resyncRows: Array<{ name: string; setup: RunEvent[]; pending?: RunEvent; replay: RunEvent[]; outlineNotes: number; view: string[]; keyed: Record<string, number> }> = [
+// A resync is a discontinuity: subscribers are told only when they would miss something, and then take `items` whole
+// (`change` is null). setup is notified; pending is flushed by a read (as apps/web does before resync) but its frame
+// has not run yet; older is a history page a read flushed (so subscribers hold the `from` of an unnotified change).
+const resyncRows: Array<{ name: string; setup: RunEvent[]; pending?: RunEvent; older?: RunEvent[]; replay: RunEvent[]; outlineNotes: number; view: string[]; keyed: Record<string, number> }> = [
   { name: "empty -> empty", setup: [], replay: [], outlineNotes: 0, view: [], keyed: {} },
   { name: "rows -> empty", setup: [commit("a")], replay: [], outlineNotes: 1, view: [], keyed: { "message:a": 1 } },
   { name: "empty -> rows", setup: [], replay: [commit("a")], outlineNotes: 1, view: ["message:a"], keyed: { "message:a": 1 } },
@@ -357,31 +359,37 @@ const resyncRows: Array<{ name: string; setup: RunEvent[]; pending?: RunEvent; r
   { name: "different ids", setup: [commit("a")], replay: [commit("b")], outlineNotes: 1, view: ["message:b"], keyed: { "message:a": 1, "message:b": 1 } },
   { name: "pending change, empty replacement", setup: [commit("a")], pending: commit("x"), replay: [], outlineNotes: 1, view: [], keyed: { "message:a": 1, "message:x": 1 } },
   { name: "pending keyed removal, replay without it", setup: [commit("a"), draft], pending: reset, replay: [commit("a")], outlineNotes: 1, view: ["message:a"], keyed: { "message:a": 1, "message:s": 1 } },
+  { name: "open history window, flushed page", setup: [commit("a")], older: [commit("b")], replay: [commit("a")], outlineNotes: 1, view: ["message:a"], keyed: { "message:a": 1, "message:b": 1 } },
 ];
 
-test.each(resyncRows)("resync notifies exactly what subscribers miss: $name", ({ setup, pending, replay, outlineNotes, view: expectedView, keyed: expectedKeyed }) => {
+test.each(resyncRows)("resync tells subscribers to take the outline whole: $name", ({ setup, pending, older, replay, outlineNotes, view: expectedView, keyed: expectedKeyed }) => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));
   const drain = () => { while (jobs.length > 0) jobs.shift()!(); };
   setup.forEach((event) => store.dispatch(event));
   drain();
+  if (older) store.beginHistory();
   let held = store.getOutline();
   let notes = 0;
+  let resynced = false;
+  const changes: Array<OutlineSnapshot["change"]> = [];
   store.subscribeOutline(() => {
     notes++;
     const snapshot = store.getOutlineSnapshot();
-    expect(snapshot.change!.from).toBe(held);
-    applyChange(snapshot);
+    if (resynced) changes.push(snapshot.change);
     held = snapshot.items;
   });
   const keyed: Record<string, number> = {};
   for (const id of ["message:a", "message:b", "message:x", "message:s"]) store.subscribe(id, () => { keyed[id] = (keyed[id] ?? 0) + 1; });
 
   if (pending) store.dispatch(pending), store.getState();
+  if (older) store.prepend(older), store.getState();
+  resynced = true;
   store.resync(replay);
   drain();
 
-  expect({ notes, view: ids(held), keyed }).toEqual({ notes: outlineNotes, view: expectedView, keyed: expectedKeyed });
+  expect({ notes, changes, view: ids(held), keyed }).toEqual({ notes: outlineNotes, changes: Array(outlineNotes).fill(null), view: expectedView, keyed: expectedKeyed });
+  expect(store.getOutlineSnapshot().change).toBeNull();
   expect(ids(held)).toEqual(ids(store.getOutline()));
 });
 

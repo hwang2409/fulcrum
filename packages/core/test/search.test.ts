@@ -171,6 +171,24 @@ test("finds a row whose change a read flushed just before a same-rows resync", (
   search.dispose();
 });
 
+test("takes a resync with different rows whole, then edits in place again", () => {
+  const { store, flush } = queuedStore();
+  store.dispatch({ type: "message_commit", message_id: "a", message: message("alpha needle") });
+  flush();
+  const search = createRunSearch(store, { maxItems: 10, maxCharsPerItem: 100 });
+
+  store.resync([{ type: "message_commit", message_id: "b", message: message("bravo needle") }]);
+  flush();
+  expect(store.getOutlineSnapshot().change).toBeNull();
+  expect(search.query("needle").results.map(({ id }) => id)).toEqual(["message:b"]);
+
+  store.dispatch({ type: "message_commit", message_id: "c", message: message("charlie needle") });
+  flush();
+  expect(store.getOutlineSnapshot().change?.splices).toEqual([{ index: 1, deleteCount: 0, items: [{ id: "message:c", kind: "message" }] }]);
+  expect(search.query("needle").results.map(({ id }) => id)).toEqual(["message:b", "message:c"]);
+  search.dispose();
+});
+
 test("requires explicit positive integer bounds", () => {
   const store = new TestStore();
   expect(() => createRunSearch(store, { maxItems: 0, maxCharsPerItem: 1 })).toThrow("maxItems must be a positive integer");
