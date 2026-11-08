@@ -491,7 +491,8 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     return (rows, status) => {
       const ownIdle = status.session?.session_id === id && status.state === "idle";
       const newest = (ownIdle && statusTurnOutcome(status.last_turn_outcome) ? status.last_turn_outcome!.turn_id : undefined) ?? client?.servedTurn(id);
-      if (newest !== undefined && interruptedTurns.has(id) && newest !== interruptedTurns.get(id)!.turn) {
+      const interruptedTurn = interruptedTurns.get(id)?.turn; // unknown when this page joined mid-turn: then status may name that very turn
+      if (newest !== undefined && interruptedTurn !== undefined && newest !== interruptedTurn) {
         interruptedTurns.delete(id);
         servedTurns.set(id, newest);
         later = newest;
