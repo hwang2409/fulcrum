@@ -153,6 +153,44 @@ test("fake abort event marks its queued steer not delivered through the real cli
   lease.release();
 });
 
+test("the store is watched only while a turn end waits for live drops, and the watch is removed after", async () => {
+  jest.useFakeTimers();
+  try {
+    const { client, calls, emit } = await server(() => ok, ["delivery_id", "session_history_fidelity"]);
+    const lease = client.forSession("s");
+    let listeners = 0;
+    let notices = 0;
+    const store = { ...lease.store, subscribe: (listener: () => void) => {
+      listeners++;
+      const stop = lease.store.subscribe(() => { notices++; listener(); });
+      return () => { listeners--; stop(); };
+    } } as typeof lease.store;
+    const delivery = createDelivery(ids(), undefined, store);
+    await delivery.submit(client, "start", false);
+    await delivery.submit(client, "dropped one", true);
+    await delivery.submit(client, "delivered one", true);
+    expect(listeners).toBe(0);
+    calls.length = 0;
+    let result: string[] | undefined;
+    void delivery.turnEnded(client).then((value) => { result = value; });
+    await Promise.resolve();
+    expect(listeners).toBe(1);
+    emit({ event: "delivery_status", session_id: "s", id: "drop-1", role: "system", delivery_id: "id-2", method: "steer", status: "dropped", content: [{ type: "text", text: "dropped one" }] });
+    expect(listeners).toBe(1); // the delivered steer still waits
+    jest.advanceTimersByTime(1_000);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(listeners).toBe(0);
+    expect(result).toEqual([]);
+    expect(calls).toEqual([["send", { text: "dropped one", delivery_id: "id-4" }]]);
+    const seen = notices;
+    emit({ event: "user_message", session_id: "s", text: "later", mode: "send", attachments: [] });
+    expect(notices).toBe(seen);
+    lease.release();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 test("negotiated turn end without a drop event resolves without resending", async () => {
   jest.useFakeTimers();
   try {

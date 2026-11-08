@@ -70,41 +70,37 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
     const intent = newId();
     return { text, intent, id: client.features.includes("delivery_id") ? intent : null };
   };
-  const liveDropped = new Map<string, boolean>();
-  const liveWaiters = new Map<string, Array<(dropped: boolean) => void>>();
-  store?.subscribe(() => {
-    for (const { id } of store.getOutline()) {
-      const item = store.getItem(id);
-      if (!item || !("event" in item)) continue;
-      const { event } = item;
-      const deliveryId = event.type === "delivery_status" ? event.delivery_id : event.type === "user_message" ? event.delivery_id : undefined;
-      const status = event.type === "delivery_status" ? event.status : event.type === "user_message" ? event.delivery_status : undefined;
-      if (!deliveryId || !status) continue;
-      const dropped = status === "dropped";
-      liveDropped.set(deliveryId, dropped);
-      liveWaiters.get(deliveryId)?.forEach((resolve) => resolve(dropped));
-      liveWaiters.delete(deliveryId);
+  /** The live delivery status on the message's row: the row has its intent's id, or its delivery id's when zeta's echo came first. */
+  const liveStatus = (live: SessionStore, { intent, id }: Message) => {
+    for (const itemId of [`user:intent:${intent}`, `user:delivery:${id}`]) {
+      const item = live.getItem(itemId);
+      if (item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === id && item.event.delivery_status) return item.event.delivery_status === "dropped";
     }
-  });
-  const dropped = async (client: ZetaClient, id: string) => {
-    if (client.features.includes("delivery_id") && client.features.includes("session_history_fidelity")) {
-      const known = liveDropped.get(id);
+    return undefined;
+  };
+  // Checks of messages that wait for their live status. The store listener exists only while one waits.
+  const waiting = new Set<() => void>();
+  let unsubscribe: (() => void) | null = null;
+  const dropped = async (client: ZetaClient, message: Message) => {
+    if (store && client.features.includes("delivery_id") && client.features.includes("session_history_fidelity")) {
+      const known = liveStatus(store, message);
       if (known !== undefined) return known;
       return new Promise<boolean>((resolve) => {
-        const waiters = liveWaiters.get(id) ?? [];
-        let timer: ReturnType<typeof setTimeout>;
+        const check = () => { const status = liveStatus(store, message); if (status !== undefined) finish(status); };
         const finish = (value: boolean) => {
           clearTimeout(timer);
-          liveWaiters.set(id, waiters.filter((waiter) => waiter !== finish));
+          waiting.delete(check);
+          if (!waiting.size) { unsubscribe?.(); unsubscribe = null; }
           resolve(value);
         };
-        waiters.push(finish);
-        liveWaiters.set(id, waiters);
-        timer = setTimeout(() => finish(false), LIVE_STATUS_WAIT_MS);
+        // Zeta sends a drop before the turn's end, so a status still missing after this wait means not dropped.
+        const timer = setTimeout(() => finish(false), LIVE_STATUS_WAIT_MS);
+        waiting.add(check);
+        unsubscribe ??= store.subscribe(() => [...waiting].forEach((waiter) => waiter()));
       });
     }
     // fallback for servers without live delivery_status events.
-    const { status, outcome } = (await client.request("delivery_status", { delivery_id: id }, { timeoutMs: 15_000 })) as { status?: string; outcome?: string };
+    const { status, outcome } = (await client.request("delivery_status", { delivery_id: message.id }, { timeoutMs: 15_000 })) as { status?: string; outcome?: string };
     return status === "dropped" || (status === "evicted" && outcome === "dropped");
   };
   return {
@@ -134,7 +130,7 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
       stopping = null;
       const undelivered: string[] = [];
       // A query that fails (a dropped socket) leaves its steer unmarked, the safe side; the others still count.
-      const statuses = await Promise.allSettled(ended.map((message) => dropped(client, message.id!)));
+      const statuses = await Promise.allSettled(ended.map((message) => dropped(client, message)));
       for (const [index, message] of ended.entries()) {
         const status = statuses[index]!;
         if (status.status === "rejected" || !status.value) continue;

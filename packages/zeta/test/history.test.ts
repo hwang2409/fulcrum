@@ -164,6 +164,46 @@ test("fidelity dropped-steer history restores the original text and not-delivere
   expect(status).toEqual({ type: "delivery_status", delivery_id: "dropped-steer", method: "steer", status: "dropped", content: "please stop after this command", reason: "turn_end" });
 });
 
+const dropRow = (deliveryId: string, content: string, reason?: string) => ({ id: `drop-${deliveryId}`, role: "system", event: "delivery_status", delivery_id: deliveryId, method: "steer", status: "dropped", content: [{ type: "text", text: content }], ...(reason === undefined ? {} : { reason }) });
+const userRow = (id: string, content: string, deliveryId?: string) => ({ id, role: "user", content: [{ type: "text", text: content }], tool_result: null, ...(deliveryId === undefined ? {} : { delivery_id: deliveryId }) });
+const historyUsers = (rows: unknown[]) => {
+  const store = createRunStore((flush) => flush());
+  for (const event of fromZetaHistory(rows)) store.dispatch(event);
+  const items = store.getOutline().map(({ id }) => store.getItem(id));
+  return {
+    users: items.flatMap((item) => item?.type === "user" && item.event.type === "user_message" ? [{ text: item.event.text, status: item.event.delivery_status }] : []),
+    notices: items.filter((item) => item?.type === "notification").length,
+  };
+};
+
+test("a turn-end drop whose text the client resent reloads as one delivered row, as it looked live", () => {
+  expect(historyUsers([dropRow("id-2", "also check x", "turn_end"), userRow("u3", "also check x", "id-3")])).toEqual({ users: [{ text: "also check x", status: undefined }], notices: 0 });
+});
+
+test("several turn-end drops fold into their resends in order, across the resent turn's rows", () => {
+  expect(historyUsers([
+    dropRow("id-2", "first", "turn_end"), dropRow("id-3", "second", "turn_end"),
+    userRow("u4", "first", "id-4"),
+    { id: "a4", role: "assistant", content: [{ type: "text", text: "working" }], tool_result: null },
+    userRow("u5", "second", "id-5"),
+  ])).toEqual({ users: [{ text: "first", status: undefined }, { text: "second", status: undefined }], notices: 0 });
+});
+
+test("a turn-end drop that nothing resent stays one not-delivered row, even before a later unrelated message", () => {
+  expect(historyUsers([dropRow("id-2", "also check x", "turn_end")])).toEqual({ users: [{ text: "also check x", status: "dropped" }], notices: 0 });
+  expect(historyUsers([dropRow("id-2", "also check x", "turn_end"), userRow("u3", "something else", "id-3"), userRow("u4", "also check x", "id-4")]).users)
+    .toEqual([{ text: "also check x", status: "dropped" }, { text: "something else", status: undefined }, { text: "also check x", status: undefined }]);
+});
+
+test("a drop the user's stop caused stays not delivered, even when the same text was sent again", () => {
+  expect(historyUsers([dropRow("id-2", "cancel this", "abort"), userRow("u3", "cancel this", "id-3")]).users)
+    .toEqual([{ text: "cancel this", status: "dropped" }, { text: "cancel this", status: undefined }]);
+});
+
+test("a legacy dropped row without a reason keeps its compact status row", () => {
+  expect(historyUsers([dropRow("id-2", "steer dropped")])).toEqual({ users: [], notices: 1 });
+});
+
 test("legacy dropped-steer history keeps its compact status row without inventing text", async () => {
   const fixture = await Bun.file(new URL("./fixtures/history-steer-delivery.json", import.meta.url)).json();
   const store = createRunStore((flush) => flush());

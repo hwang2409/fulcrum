@@ -363,16 +363,40 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
   }
 }
 
-const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
+/**
+ * The client resends a steer that a turn's end dropped as a new message with a new delivery id, and live, that resend
+ * takes over the steer's row (one delivered row). Zeta's history has no link between the two rows, so a `turn_end`
+ * drop folds into the next user row with its text, unless an unrelated user row comes first. Other drops (a stop, a
+ * restart) are never resent, so they always stay "not delivered".
+ * shortcut: within one `fromZetaHistory` call; a drop and its resend split across two pages show the drop as not delivered.
+ */
+const resentDrops = (rows: readonly unknown[]) => {
+  const resent = new Set<unknown>();
+  let pending: Array<{ row: unknown; text: string }> = [];
+  for (const row of rows) {
+    const value = row as { event?: unknown; status?: unknown; reason?: unknown; role?: unknown; content?: unknown; tool_result?: unknown } | null;
+    if (!value || typeof value !== "object" || !Array.isArray(value.content)) continue;
+    if (value.event === "delivery_status" && value.status === "dropped" && value.reason === "turn_end") pending.push({ row, text: text(value.content) });
+    else if (value.event === undefined && value.role === "user" && value.tool_result == null) {
+      const index = pending.findIndex((drop) => drop.text === text(value.content as unknown[]));
+      if (index < 0) pending = [];
+      else resent.add(pending.splice(index, 1)[0]!.row);
+    }
+  }
+  return resent;
+};
+
+const historyRow = (value: unknown, calls: Map<string, ToolCall>, resent: Set<unknown>): RunEvent[] => {
   const row = object(value, "history row");
   if (row.event === "usage") return fromZetaEvent(row);
   if (row.event === "delivery_status") {
+    if (resent.has(value)) return [];
     const events = fromZetaEvent(row);
     // New fidelity rows retain the original steer text. Rebuild its user row so a reload
     // has the same "not delivered" card as the live delivery_status update.
     const content = Array.isArray(row.content) ? text(row.content) : "";
     const deliveryId = typeof row.delivery_id === "string" ? row.delivery_id : undefined;
-    if (deliveryId && row.status === "dropped" && content && !/^steer dropped: /.test(content)) {
+    if (deliveryId && row.status === "dropped" && content && !/^steer dropped(: |$)/.test(content)) {
       return [{ type: "user_message", text: content, mode: "steer", delivery_id: deliveryId, delivery_status: "dropped", ...(typeof row.reason === "string" ? { delivery_reason: row.reason } : {}) }, ...events];
     }
     return events;
@@ -457,9 +481,10 @@ export function servedTurnOutcome(rows: readonly unknown[], turnId: string): Run
  */
 export function fromZetaHistory(rows: readonly unknown[]): RunEvent[] {
   const calls = new Map<string, ToolCall>();
+  const resent = resentDrops(rows);
   return rows.flatMap((row) => {
     try {
-      return historyRow(row, calls);
+      return historyRow(row, calls, resent);
     } catch (error) {
       return invalid(error);
     }
