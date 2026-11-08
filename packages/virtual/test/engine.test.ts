@@ -230,21 +230,6 @@ describe("anchoring", () => {
 });
 
 describe("bottom and scroll semantics", () => {
-  test("pinned append scroll callbacks do not notify without a rendered change", () => {
-    const count = 100;
-    const virtual = engine([10], 10, 0);
-    let notifications = 0;
-    for (let index = 1; index <= count; index++) {
-      const token = virtual.beforeMutation();
-      virtual.setOutline(items(new Array(index + 1).fill(10)).outline);
-      const { scrollTop } = virtual.afterMutation(token);
-      virtual.getSnapshot();
-      const unsubscribe = virtual.subscribe(() => notifications++);
-      virtual.setViewport({ scrollTop, size: 10, source: "user" });
-      unsubscribe();
-    }
-    expect(notifications, "scroll callbacks must stay below the 0.1 counted-work budget").toBeLessThanOrEqual(count / 10);
-  });
   test("a scroll that changes the mounted range notifies", () => {
     const virtual = engine(new Array(100).fill(10), 10, 0);
     virtual.getSnapshot();

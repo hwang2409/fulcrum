@@ -64,14 +64,17 @@ function mountTimeline() {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  act(() => root!.render(<RunProvider store={store}><Timeline virtual /></RunProvider>));
+  let followRequest = 0;
+  const render = () => root!.render(<RunProvider store={store}><Timeline virtual followRequest={followRequest} /></RunProvider>);
+  act(render);
   const host = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
   const append = () => act(() => store.dispatch(message(`added-${store.getOutline().length}`)));
   const jump = () => container!.querySelector<HTMLElement>('[data-part="jump-to-latest"]');
   const unseen = () => container!.querySelector<HTMLElement>('[data-part="timeline"]')!.dataset.unseenCount;
+  const follow = () => act(() => { followRequest++; render(); });
   host.scrollTop = host.scrollHeight;
   act(() => host.dispatchEvent(new Event("scroll")));
-  return { append, host, jump, unseen };
+  return { append, follow, host, jump, unseen };
 }
 
 function moveReader(host: HTMLElement, top = 3_000) {
@@ -270,4 +273,122 @@ describe("timeline scroll provenance", () => {
       }
     },
   );
+
+  test("wheel momentum renews one callback at a time, drops follow toward content, and never snaps back", () => {
+    const geometry = installScrollGeometry();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      for (const top of [5_000, 4_500, 4_000]) {
+        act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+        moveReader(host, top);
+      }
+      append();
+      expect(unseen(), "momentum toward content must drop follow").toBe("1");
+      expect(jump()).not.toBeNull();
+      expect(host.scrollTop, "streaming after momentum must not snap to the end").toBe(4_000);
+      append();
+      expect(host.scrollTop).toBe(4_000);
+    } finally { geometry.restore(); }
+  });
+
+  test("wheel input without scrollend does not block a later explicit follow", () => {
+    const geometry = installScrollGeometry();
+    try {
+      const { append, follow, host, unseen } = mountTimeline();
+      act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+      moveReader(host);
+      append();
+      follow();
+      expect(host.scrollTop, "explicit follow must not wait for scrollend").toBe(host.scrollHeight - host.clientHeight);
+      append();
+      expect(unseen()).toBe("0");
+      expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+    } finally { geometry.restore(); }
+  });
+
+  test.each(["focus", "keyboard keyup"] as const)("%s one-shot expires after the next rendering opportunity", (kind) => {
+    const geometry = installScrollGeometry();
+    const saved = { raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 0;
+    globalThis.requestAnimationFrame = (callback) => { const id = ++nextFrame; frames.set(id, callback); return id; };
+    globalThis.cancelAnimationFrame = (id) => { frames.delete(id); };
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      const row = container!.querySelector<HTMLElement>("[data-virtual-id]")!;
+      if (kind === "focus") act(() => row.dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
+      else act(() => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true }));
+        document.dispatchEvent(new KeyboardEvent("keyup", { key: "PageUp", bubbles: true }));
+      });
+      act(() => { for (const [id, frame] of [...frames]) { frames.delete(id); frame(0); } });
+      append();
+      act(() => host.dispatchEvent(new Event("scroll")));
+      expect(unseen(), `${kind} must not classify a later own write as reader intent`).toBe("0");
+      expect(jump()).toBeNull();
+    } finally {
+      globalThis.requestAnimationFrame = saved.raf;
+      globalThis.cancelAnimationFrame = saved.caf;
+      geometry.restore();
+    }
+  });
+
+  test("touch momentum settles after two quiet animation frames without scrollend", () => {
+    const geometry = installScrollGeometry();
+    const saved = { raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 0;
+    globalThis.requestAnimationFrame = (callback) => { const id = ++nextFrame; frames.set(id, callback); return id; };
+    globalThis.cancelAnimationFrame = (id) => { frames.delete(id); };
+    const runFrame = () => act(() => { const current = [...frames]; frames.clear(); for (const [, frame] of current) frame(0); });
+    try {
+      const { append, follow, host, unseen } = mountTimeline();
+      const touch = new Event("touchstart") as TouchEvent;
+      Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+      act(() => host.dispatchEvent(touch));
+      act(() => host.dispatchEvent(new Event("touchend")));
+      moveReader(host, 4_000);
+      runFrame();
+      moveReader(host, 3_500);
+      runFrame();
+      runFrame();
+      runFrame();
+      append();
+      follow();
+      expect(host.scrollTop, "settled touch must not block explicit follow").toBe(host.scrollHeight - host.clientHeight);
+      append();
+      expect(unseen()).toBe("0");
+    } finally {
+      globalThis.requestAnimationFrame = saved.raf;
+      globalThis.cancelAnimationFrame = saved.caf;
+      geometry.restore();
+    }
+  });
+
+  test.each(["moves into content", "does not move"] as const)("host focus() without keydown %s", async (behavior) => {
+    const geometry = installScrollGeometry();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      await act(settleProgrammaticScroll);
+      const row = container!.querySelector<HTMLElement>("[data-virtual-id]")!;
+      row.focus = () => {
+        act(() => row.dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
+        if (behavior === "moves into content") moveReader(host, 3_000);
+      };
+      row.focus();
+      const readerTop = host.scrollTop;
+      append();
+      if (behavior === "moves into content") {
+        expect(unseen()).toBe("1");
+        expect(jump()).not.toBeNull();
+        expect(host.scrollTop, "focus scrolling into content must not snap back").toBe(readerTop);
+      } else {
+        act(() => host.dispatchEvent(new Event("scroll")));
+        expect(unseen()).toBe("0");
+        expect(jump()).toBeNull();
+        expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+      }
+    } finally { geometry.restore(); }
+  });
+
 });

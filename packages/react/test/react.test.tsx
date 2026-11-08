@@ -1246,11 +1246,34 @@ test.each([
   }
 });
 
-test("100 host swaps release every adapter listener and observer", () => {
+test("100 host swaps own the exact adapter listeners and release all of them", () => {
   const added = new Map<EventTarget, Map<string, Set<EventListenerOrEventListenerObject>>>();
-  const add = HTMLElement.prototype.addEventListener;
-  const remove = HTMLElement.prototype.removeEventListener;
+  const hostAdd = HTMLElement.prototype.addEventListener;
+  const hostRemove = HTMLElement.prototype.removeEventListener;
+  const documentAdd = document.addEventListener;
+  const documentRemove = document.removeEventListener;
+  const windowAdd = window.addEventListener;
+  const windowRemove = window.removeEventListener;
   const OriginalResizeObserver = globalThis.ResizeObserver;
+  const recordAdd = (target: EventTarget, type: string, listener: EventListenerOrEventListenerObject | null) => {
+    if (!listener) return;
+    const byType = added.get(target) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
+    const listeners = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+    listeners.add(listener);
+    byType.set(type, listeners);
+    added.set(target, byType);
+  };
+  const recordRemove = (target: EventTarget, type: string, listener: EventListenerOrEventListenerObject | null) => {
+    if (listener) added.get(target)?.get(type)?.delete(listener);
+  };
+  const counts = (target: EventTarget) => new Map([...(added.get(target) ?? new Map())]
+    .map(([type, listeners]) => [type, listeners.size] as const)
+    .filter(([, count]) => count > 0));
+  const withOwned = (baseline: Map<string, number>, owned: readonly string[]) => {
+    const expected = new Map(baseline);
+    for (const type of owned) expected.set(type, (expected.get(type) ?? 0) + 1);
+    return expected;
+  };
   let activeObservers = 0;
   class CountingResizeObserver implements ResizeObserver {
     constructor(_callback: ResizeObserverCallback) { activeObservers++; }
@@ -1259,33 +1282,66 @@ test("100 host swaps release every adapter listener and observer", () => {
     unobserve() {}
   }
   HTMLElement.prototype.addEventListener = function(type, listener, options) {
-    if (this.dataset.testid && listener) {
-      const byType = added.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
-      const listeners = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
-      listeners.add(listener);
-      byType.set(type, listeners);
-      added.set(this, byType);
-    }
-    add.call(this, type, listener, options);
+    if (this.dataset.testid && listener) recordAdd(this, type, listener);
+    hostAdd.call(this, type, listener, options);
   };
   HTMLElement.prototype.removeEventListener = function(type, listener, options) {
-    if (listener) added.get(this)?.get(type)?.delete(listener);
-    remove.call(this, type, listener, options);
+    recordRemove(this, type, listener);
+    hostRemove.call(this, type, listener, options);
+  };
+  document.addEventListener = function(type, listener, options) {
+    recordAdd(this, type, listener);
+    documentAdd.call(this, type, listener, options);
+  };
+  document.removeEventListener = function(type, listener, options) {
+    recordRemove(this, type, listener);
+    documentRemove.call(this, type, listener, options);
+  };
+  window.addEventListener = function(type, listener, options) {
+    recordAdd(this, type, listener);
+    windowAdd.call(this, type, listener, options);
+  };
+  window.removeEventListener = function(type, listener, options) {
+    recordRemove(this, type, listener);
+    windowRemove.call(this, type, listener, options);
   };
   globalThis.ResizeObserver = CountingResizeObserver;
   try {
+    mount(<div />);
+    act(() => root!.unmount());
+    root = undefined;
+    const documentBefore = counts(document);
+    const windowBefore = counts(window);
+    const hostOwned = ["keydown", "pointerdown", "scroll", "scrollend", "touchcancel", "touchend", "touchmove", "touchstart", "wheel"];
+    const documentOwned = ["focusin", "keydown", "keyup", "pointercancel", "pointerdown", "pointerup"];
+
     const { view } = hostAttachmentHarness();
     mount(view("inner"));
-    for (let index = 0; index < 100; index++) act(() => root!.render(view(index % 2 ? "inner" : "outer")));
-    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(8);
+    const hosts = new Set<HTMLElement>();
+    for (let index = 0; index < 100; index++) {
+      const currentName = index % 2 ? "inner" : "outer";
+      act(() => root!.render(view(currentName)));
+      const current = q<HTMLElement>(`[data-testid="${currentName}"]`);
+      hosts.add(current);
+      expect(counts(current)).toEqual(withOwned(new Map(), hostOwned));
+      for (const host of hosts) if (host !== current) expect(counts(host), "a prior host kept adapter listeners").toEqual(new Map());
+      expect(counts(document)).toEqual(withOwned(documentBefore, documentOwned));
+      expect(counts(window)).toEqual(windowBefore);
+    }
     expect(activeObservers).toBe(2);
     act(() => root!.unmount());
     root = undefined;
-    expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(0);
+    for (const host of hosts) expect(counts(host)).toEqual(new Map());
+    expect(counts(document)).toEqual(documentBefore);
+    expect(counts(window)).toEqual(windowBefore);
     expect(activeObservers).toBe(0);
   } finally {
-    HTMLElement.prototype.addEventListener = add;
-    HTMLElement.prototype.removeEventListener = remove;
+    HTMLElement.prototype.addEventListener = hostAdd;
+    HTMLElement.prototype.removeEventListener = hostRemove;
+    document.addEventListener = documentAdd;
+    document.removeEventListener = documentRemove;
+    window.addEventListener = windowAdd;
+    window.removeEventListener = windowRemove;
     globalThis.ResizeObserver = OriginalResizeObserver;
   }
 });
