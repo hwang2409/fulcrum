@@ -25,6 +25,8 @@ function read(chunk: Chunk): string {
   return values.reverse().join("");
 }
 
+export const hasTextStream = (item: object) => chunks.has(item);
+
 export function appendText<T extends object>(
   item: T,
   previous: object | undefined,
