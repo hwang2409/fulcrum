@@ -84,7 +84,6 @@ export function useVirtualList<Id extends string>(
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ignoreScrollUntil = useRef(0);
-  const ownedScrollTop = useRef<number | null>(null);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
@@ -140,7 +139,6 @@ export function useVirtualList<Id extends string>(
         scrollEndTimer.current = null;
         container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
         lastScrollTop.current = container.scrollTop;
-        ownedScrollTop.current = container.scrollTop;
         if (syncViewport) updateViewport("programmatic");
       };
       scrollToBottomRef.current = scrollToBottom;
@@ -155,8 +153,8 @@ export function useVirtualList<Id extends string>(
         resizeFrame.current = null;
         if (pendingEntries.current.size === 0) return;
         // Capture ownership before the engine notifies React: its correction can commit synchronously and move the DOM.
-        // Real user input owns the frame; delayed browser scroll events from our own writes do not change follow intent.
-        const ownsBottom = engine.getSnapshot().pinned && !touching.current && performance.now() >= userScrollUntil.current;
+        // Re-apply the bottom only while the DOM still has the adapter's last position; real input moves it first.
+        const ownsBottom = engine.getSnapshot().pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5;
         const token = engine.beforeMutation();
         for (const [id, size] of pendingEntries.current) engine.measure(id, size);
         pendingEntries.current.clear();
@@ -175,8 +173,8 @@ export function useVirtualList<Id extends string>(
         // not a frame later when the engine measures (and then agrees). Moving scroll resizes nothing: no observer loop.
         // The user beats the engine: pointer, wheel, key, and touch input own their scroll frame, while a delayed
         // browser event from content growth does not change follow intent.
-        const { pinned } = engine.getSnapshot();
-        if (pinned && !touching.current && performance.now() >= userScrollUntil.current) scrollToBottom(false);
+        const { pinned, scrollTop } = engine.getSnapshot();
+        if (pinned && Math.abs(container.scrollTop - scrollTop) < 1) scrollToBottom(false);
       });
       observerRef.current = observer;
       for (const row of rows.current.values()) observer.observe(row);
@@ -191,7 +189,6 @@ export function useVirtualList<Id extends string>(
       };
       const onScroll = () => {
         const before = engine.getSnapshot();
-        if (ownedScrollTop.current !== null && Math.abs(container.scrollTop - ownedScrollTop.current) < 0.5) return;
         if (performance.now() < ignoreScrollUntil.current) {
           if (before.pinned) scrollToBottom(false);
           else container.scrollTop = before.scrollTop;
@@ -213,10 +210,7 @@ export function useVirtualList<Id extends string>(
       };
       // The stale-scroll guard after a programmatic bottom write only covers scroll events
       // nobody asked for; any real input means the next scroll is the user's and must win.
-      const userIntent = () => {
-        ignoreScrollUntil.current = 0;
-        ownedScrollTop.current = null;
-      };
+      const userIntent = () => { ignoreScrollUntil.current = 0; };
       const onWheel = (event: WheelEvent) => {
         userIntent();
         userScrollUntil.current = performance.now() + 200;
