@@ -64,9 +64,11 @@ const rows: Row[] = [
     name: "reconnect with one missed row (following)", setup: tools("a", 20), replay: [...tools("a", 20), ...tool("new")], reader: "following",
     expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new"), search: [...ids("a", 20), "tool:new"], announce: "tool read finished", virtual: { rows: 21, lastMounted: "tool:new", ...following(1_920) }, plain: { rows: [...ids("a", 20), "tool:new"], announce: "tool read finished" } },
   },
+  // The reader keeps its place across the reconnect (one engine per run id), so the row it missed is unseen: the jump
+  // control offers it, as for a row that streams in while the reader reads.
   {
     name: "reconnect with one missed row (reading older rows)", setup: tools("a", 20), replay: [...tools("a", 20), ...tool("new")], reader: "reading",
-    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new"), search: [...ids("a", 20), "tool:new"], announce: "tool read finished", virtual: { rows: 21, lastMounted: "tool:a16", scrollTop: 800, fromBottom: 1_120, unseen: 0 }, plain: { rows: [...ids("a", 20), "tool:new"], announce: "tool read finished" } },
+    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new"), search: [...ids("a", 20), "tool:new"], announce: "tool read finished", virtual: { rows: 21, lastMounted: "tool:a16", scrollTop: 800, fromBottom: 1_120, unseen: 1 }, plain: { rows: [...ids("a", 20), "tool:new"], announce: "tool read finished" } },
   },
   {
     name: "same ids, pending change", setup: tools("a", 20), pending: tool("x"), replay: [...tools("a", 20), ...tool("x")], reader: "following",
