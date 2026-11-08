@@ -366,7 +366,7 @@ test("prepend rejection keeps the last good state and visibly desyncs", () => {
   expect(errors).toHaveLength(1);
 });
 
-test("queued prepends scale with pages rather than queued history", () => {
+test("queued prepends scale with pages rather than queued history", { timeout: 20_000 }, () => {
   const measure = (pageCount: number) => {
     const pages = Array.from({ length: pageCount }, (_, index) => [{
       type: "message_commit" as const,
@@ -381,14 +381,18 @@ test("queued prepends scale with pages rather than queued history", () => {
     store.dispose();
     return elapsed;
   };
+  const median = (values: number[]) => values.sort((left, right) => left - right)[1]!;
+  const ratio = () => median([1, 2, 3].map(() => {
+    const small = measure(1_000);
+    return measure(20_000) / Math.max(small, 0.01);
+  }));
 
   // On the measured 2026-11-08 macOS arm64 runner with Bun 1.4.4, the new queue
-  // stayed below 20x for 1,000 vs 20,000 pages in five runs. The old queue is
-  // quadratic: the 10x run was 265x on the same machine, so this bound has room
-  // for linear noise while still failing the old shape.
-  const small = measure(1_000);
-  const large = measure(20_000);
-  expect(large / Math.max(small, 0.01)).toBeLessThan(35);
+  // ratios across three repeats were 14.0x, 18.0x, and 20.3x (median 18.0x) for
+  // 1,000 vs 20,000 pages. The old queue is quadratic: its three ratios were
+  // 149x, 307x, and 451x (minimum 149x), so 60 leaves noise headroom while
+  // separating the two shapes.
+  expect(ratio()).toBeLessThan(60);
 });
 
 test("interleaved prepend and live flushes match chronological reduction", () => {
