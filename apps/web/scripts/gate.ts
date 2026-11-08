@@ -1477,13 +1477,21 @@ try {
       // without zeta's raw "stdout:"/"stderr:" labels, and exit 0.
       const reopened = mobile.locator('[data-part="timeline"] [data-tool-view="shell"]', { hasText: "ls packages/react/src" });
       // The call is the session's first turn, and the composer checks appended rows below it: the virtual timeline
-      // mounts it only near the viewport, so read from the top while older history pages arrive.
+      // mounts it only near the viewport. Wait for the whole history, then read from the top until the card is in
+      // view: a card mounted only in the overscan above the view unmounts when measured rows push the scroll down.
+      await mobile.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+      await mobile.locator('.note[data-tone="busy"]', { hasText: "loading session history" }).waitFor({ state: "detached", timeout: 15_000 });
       const scroller = mobile.locator('[data-part="timeline-scroll"]');
-      for (let attempt = 0; attempt < 50 && !(await reopened.count()); attempt++) {
+      const cardInView = () => scroller.evaluate((element) => {
+        const card = [...element.querySelectorAll('[data-tool-view="shell"]')].find((node) => node.textContent?.includes("ls packages/react/src"));
+        const [view, box] = [element.getBoundingClientRect(), card?.getBoundingClientRect()];
+        return Boolean(box && box.height > 0 && box.bottom > view.top && box.top < view.bottom);
+      });
+      for (let attempt = 0; attempt < 50 && !(await cardInView()); attempt++) {
         await scroller.evaluate((element) => { element.scrollTop = 0; });
-        await mobile.waitForTimeout(100);
+        await settle(mobile);
       }
-      await reopened.waitFor({ timeout: 1000 }).catch(() => { throw new Error("the reopened bash call is not a shell card with its command"); });
+      if (!(await cardInView())) throw new Error("the reopened bash call is not a shell card with its command");
       const card = await reopened.innerText();
       if (/\bstdout:|\bstderr:/.test(card) || !card.includes("themes.ts") || !card.includes("exit 0")) throw new Error(`the reopened bash card reads "${card.replace(/\s+/g, " ")}"`);
       if (await mobile.locator("button.session").first().isVisible()) throw new Error("sidebar visible without the drawer");

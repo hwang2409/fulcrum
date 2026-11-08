@@ -1,25 +1,56 @@
 export type ViewerTiming = { openMs: number; appendMs: number; openSamples: number[]; appendSamples: number[] };
 export type ViewerSample = { openMs: number; openTaskMs: number; appendMs: number; appendTaskMs: number };
-export type ViewerCheck = { candidate: ViewerSample | ViewerTiming; baseline: ViewerSample | Pick<ViewerTiming, "openMs" | "appendMs">; pairedRatios?: ViewerSample; budget: number; label: string };
+export type Calibration = { median: number; samples: number[] };
+// pairedRatios is absent only in a local run without a base; then the calibrated ceiling alone decides.
+export type ViewerCheck = { candidate: ViewerSample | ViewerTiming; calibration: Calibration; pairedRatios?: ViewerSample };
+type CalibratedBudget = { openMs: number; appendMs: number };
 
-// Absolute wall ceiling for one viewer open or append median; the paired ratios own head-only regressions.
-// Recorded no-op CI medians: open 23.1-31.7 ms, append 43.6-58.3 ms; false failures of the old 64 ms ceiling
-// (paired 0.97-1.01x) reached 68.5 ms. Ceiling = 68.5 ms x 1.25 = 85.6, rounded to 86: false failures ran up to
-// 1.17x the highest no-op pass (68.5 / 58.3), so 1.25 leaves room for one more slower runner of that size.
-// Stopgap until PR #97 replaces this constant with a same-run calibrated ceiling.
-export const viewerCeilingMs = 86;
+// The paired base/head ratios own head-only regressions. The calibrated ceiling owns slowness that head and base share
+// (paired ratio ~1.0x): candidate median over the median of same-run fixed-DOM work (1,000 rows, 1024 px wide) under the
+// same CPU throttle. It replaces a raw wall ceiling that failed slow runners at paired 0.97-1.01x (64 ms, then #109's
+// 86 ms stopgap). Budget = the highest recorded no-op CI ratio (samples below) x the paired 1.4x margin.
+// Within one runner the ratio moves under 1.1x. Across the three runner classes on record it moves up to 1.6x (4x-throttle
+// open: 0.51x on a ~50 ms-calibration runner to 0.82x on a ~28 ms one). The safe direction: a slower runner lowers the
+// ratio, so it cannot cause a false failure, but there a common open slowdown needs 2.0-2.2x to cross (open budgets
+// 1.11/1.15 over 0.51/0.58x); a faster runner moves open toward its budget.
+export const viewerRatioBudget = 1.4;
+const calibratedMargin = viewerRatioBudget;
+const withMargin = (noOpMax: Record<number, CalibratedBudget>) => Object.fromEntries(Object.entries(noOpMax).map(([width, max]) =>
+  [width, { openMs: max.openMs * calibratedMargin, appendMs: max.appendMs * calibratedMargin }])) as Record<number, CalibratedBudget>;
+// 4x throttle, read fixture, per width and operation. Samples: no-op runs 42492135444 a1-a5, 42492081348, and the head
+// run 42523133025, plus the
+// opens of the append CPU proofs 42513755996 and 42510070983 (they touch only appends). Maxima: open 0.79x @ 390
+// (42510070983, fast runner), 0.82x @ 1440 (42492135444 a5, 42510070983); append 1.35x @ 390, 1.31x @ 1440. A head-only
+// slowdown is owned by the paired ratios (+25 ms candidate: open task 1.70x and up); this ceiling owns common slowdowns
+// (+40 ms on head and base: open 1.70x and up, append 2.24x and up).
+export const pairedCalibratedBudgets = withMargin({ 390: { openMs: 0.79, appendMs: 1.35 }, 1440: { openMs: 0.82, appendMs: 1.31 } });
+// Unthrottled single, lines, and read opens, and single and lines appends. Samples: no-op runs 42492135444 a1-a5 and the
+// head run 42523133025, plus every proof run cell its mutation does not touch (TIMING_GATE_SLOWDOWN_MS adds work only to
+// the read fixture; the +40 ms common proofs slow only the A/B pairs; the append CPU proofs touch only appends):
+// 42507931601 and 42509897759 single/lines, 42507933006 and 42509899837 all, 42513755996 and 42510070983 opens.
+// Maxima: open 1.04x @ 390 (single, 42509897759, fast runner), 0.91x @ 1440 (single, 42509897759 and 42510070983);
+// append 0.73x at both widths (42507931601). Lowest recorded mutations: open 3.76x (read, 42507931601), append 4.31x
+// (lines @ 1440, 42513755996). Read append is not judged here: it is bimodal unthrottled (12-13 ms in the same frame or
+// ~25 ms in the next), and the 4x-throttled read checks above (paired append ratio, calibrated ceiling) measure the same
+// append with 4x the CPU cost.
+const unthrottledCalibratedBudgets = withMargin({ 390: { openMs: 1.04, appendMs: 0.73 }, 1440: { openMs: 0.91, appendMs: 0.73 } });
 
 export const ratio = (candidate: number, baseline: number) => candidate / Math.max(baseline, 0.001);
 
-const checkRatio = (check: ViewerCheck, field: "openMs" | "appendMs") => check.pairedRatios?.[field] ?? ratio(check.candidate[field], check.baseline[field]);
-const checkFails = (check: ViewerCheck, field: "openMs" | "appendMs") => checkRatio(check, field) > check.budget || check.candidate[field] >= viewerCeilingMs;
-const taskCheckFails = (check: ViewerCheck) => "appendTaskMs" in check.candidate && !!check.pairedRatios && check.pairedRatios.appendTaskMs > check.budget;
-const openCheckFails = (check: ViewerCheck) => check.pairedRatios && "openTaskMs" in check.candidate
-  ? check.pairedRatios.openTaskMs > check.budget || check.candidate.openMs >= viewerCeilingMs
-  : checkFails(check, "openMs");
+function recordCalibratedFailure(failures: string[], name: string, candidate: number, calibration: Calibration, budget: number) {
+  const normalized = ratio(candidate, calibration.median);
+  if (normalized > budget) failures.push(`${name}: calibrated ceiling, candidate ${candidate.toFixed(1)} ms / calibration ${calibration.median.toFixed(1)} ms = ${normalized.toFixed(2)}x is over ${budget.toFixed(2)}x`);
+}
+
+export function recordUnthrottledViewerFailures(measured: { fixture: string; width: number; openMs: number; appendMs: number; calibration: Calibration }, failures: string[]) {
+  for (const field of ["openMs", "appendMs"] as const) if (field === "openMs" || measured.fixture !== "read")
+    recordCalibratedFailure(failures, `viewer ${measured.fixture} @ ${measured.width} ${field === "openMs" ? "open" : "append"}`, measured[field], measured.calibration, unthrottledCalibratedBudgets[measured.width]![field]);
+}
 
 export function recordViewerTimingFailures(check: ViewerCheck, width: number, failures: string[]) {
-  if (openCheckFails(check)) failures.push(`viewer read @ ${width}: open task ratio ${check.pairedRatios?.openTaskMs.toFixed(2) ?? checkRatio(check, "openMs").toFixed(2)}x is over ${check.budget}x ${check.label}, or the ${check.candidate.openMs.toFixed(1)} ms wall median reached the ${viewerCeilingMs} ms ceiling`);
-  if (checkFails(check, "appendMs")) failures.push(`viewer read @ ${width}: append ratio ${checkRatio(check, "appendMs").toFixed(2)}x is over ${check.budget}x ${check.label}, or the ${check.candidate.appendMs.toFixed(1)} ms median reached the ${viewerCeilingMs} ms ceiling`);
-  if (taskCheckFails(check)) failures.push(`viewer read @ ${width}: append task ratio ${check.pairedRatios!.appendTaskMs.toFixed(2)}x is over ${check.budget}x ${check.label}`);
+  const paired = check.pairedRatios;
+  if (paired) for (const [field, name] of [["openTaskMs", "open task"], ["appendMs", "append"], ["appendTaskMs", "append task"]] as const)
+    if (paired[field] > viewerRatioBudget) failures.push(`viewer read @ ${width}: ${name} ratio ${paired[field].toFixed(2)}x is over ${viewerRatioBudget}x paired base/head`);
+  for (const field of ["openMs", "appendMs"] as const)
+    recordCalibratedFailure(failures, `viewer read @ ${width} ${field === "openMs" ? "open" : "append"} (4x throttle)`, check.candidate[field], check.calibration, pairedCalibratedBudgets[width]![field]);
 }

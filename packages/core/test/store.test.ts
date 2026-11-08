@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { createRunStore, type OutlineSnapshot, type RunEvent } from "../src/index.js";
 import { seededRandom } from "./fuzz.js";
 
@@ -21,14 +21,16 @@ test("100 dispatches in one burst notify subscribers exactly once", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));
   let calls = 0;
+  let outlineCalls = 0;
   store.subscribe(() => calls++);
+  store.subscribeOutline(() => outlineCalls++);
 
   for (let i = 0; i < 100; i++) store.dispatch({ type: "message_delta", delta: "x" });
 
   expect(calls).toBe(0);
   expect(jobs).toHaveLength(1);
   jobs[0]();
-  expect(calls).toBe(1);
+  expect({ calls, outlineCalls, jobs: jobs.length }).toEqual({ calls: 1, outlineCalls: 1, jobs: 1 });
 });
 
 test("one delta notifies only its keyed subscriber", () => {
@@ -447,15 +449,19 @@ test("resync from a listener is delivered after the running notification, not ne
 });
 
 // notify delivers a snapshot: each pending flag/set is taken and cleared before any listener runs, so whatever a
-// listener adds (here a resync) lands in the next pass, even for a key the running pass already delivered.
-const resyncFrom = ["global", "outline", "keyed"] as const;
-test.each(resyncFrom)("resync from a %s listener: every consumer ends on the replayed state", (from) => {
+// listener adds (here a resync) lands in the next pass, even for a key the running pass already delivered. The rows
+// outside a scheduler job, and the empty replay, have no scheduler loop behind them: only notify's own tail delivers.
+const resyncFrom = (["global", "outline", "keyed"] as const).flatMap((from) => [
+  { from, start: "in a frame", replay: ["c"] },
+  { from, start: "in a frame", replay: [] },
+  { from, start: "in an outer resync", replay: ["c"] },
+]);
+test.each(resyncFrom)("resync from a $from listener ($start, to $replay): every consumer ends on the replayed state", ({ from, start, replay }) => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((job) => jobs.push(job));
-  store.dispatch(commit("a"));
-  store.dispatch(commit("b"));
+  if (start === "in a frame") store.dispatch(commit("a")), store.dispatch(commit("b"));
   let resynced = false;
-  const trigger = () => { if (!resynced) resynced = true, store.resync([commit("c")]); };
+  const trigger = () => { if (!resynced) resynced = true, store.resync(replay.map(commit)); };
   let globalView: string[] = [];
   let outlineView: string[] = [];
   const keyed: Record<string, string | undefined> = {};
@@ -463,13 +469,102 @@ test.each(resyncFrom)("resync from a %s listener: every consumer ends on the rep
   store.subscribeOutline(() => { outlineView = ids(store.getOutlineSnapshot().items); if (from === "outline") trigger(); });
   for (const id of ["message:a", "message:b", "message:c"])
     store.subscribe(id, () => { keyed[id] = store.getItem(id)?.id; if (from === "keyed" && id === "message:b") trigger(); });
+  if (start === "in an outer resync") store.resync([commit("a"), commit("b")]);
   while (jobs.length > 0) jobs.shift()!();
+  const view = replay.map((id) => `message:${id}`);
   expect({ globalView, outlineView, keyed }).toEqual({
-    globalView: ["message:c"],
-    outlineView: ["message:c"],
-    keyed: { "message:a": undefined, "message:b": undefined, "message:c": "message:c" },
+    globalView: view,
+    outlineView: view,
+    keyed: { "message:a": undefined, "message:b": undefined, ...(view.length > 0 && { "message:c": "message:c" }) },
   });
   expect(store.getItem("message:a")).toBeUndefined();
+});
+
+// A throwing listener is a bug in that listener, not in the others: every listener of the pass still runs, the store
+// stays consistent, and the first error is rethrown once the pass is done.
+test.each(["global", "outline", "keyed"] as const)("a throwing %s listener does not stop the others, and its error surfaces", (thrower) => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const calls: string[] = [];
+  const listener = (name: string) => () => {
+    calls.push(name);
+    if (name === thrower || (thrower === "keyed" && name === "message:a")) throw new Error(`boom ${name}`);
+  };
+  store.subscribe(listener("global"));
+  store.subscribeOutline(listener("outline"));
+  for (const id of ["message:a", "message:b"]) store.subscribe(id, listener(id));
+  const boom = `boom ${thrower === "keyed" ? "message:a" : thrower}`;
+  const all = ["global", "outline", "message:a", "message:b"];
+
+  store.dispatch(commit("a"));
+  store.dispatch(commit("b"));
+  expect(jobs.shift()!).toThrow(boom);
+  expect(calls).toEqual(all);
+
+  calls.length = 0;
+  expect(() => store.resync([commit("a"), commit("b"), commit("c")])).toThrow(boom);
+  expect(calls).toEqual(all);
+  expect(ids(store.getOutline())).toEqual(["message:a", "message:b", "message:c"]);
+
+  calls.length = 0;
+  store.dispatch(commit("d"));
+  expect(jobs).toHaveLength(1);
+  const job = jobs.shift()!;
+  if (thrower === "keyed") job(); // message:d's pass has no keyed listener to throw
+  else expect(job).toThrow(boom);
+  expect(calls).toEqual(["global", "outline"]);
+  expect(ids(store.getOutline())).toEqual(["message:a", "message:b", "message:c", "message:d"]);
+});
+
+// Only the first listener error can be rethrown; the others still reach the host's error report. With a synchronous
+// scheduler the job runs inside dispatch, so dispatch is the call that rethrows.
+test("later listener errors in a pass go to reportError, and a sync dispatch rethrows the first", () => {
+  const store = createRunStore((job) => job());
+  const reported = spyOn(globalThis, "reportError").mockImplementation(() => {});
+  const calls: string[] = [];
+  for (const name of ["first", "second", "third"]) store.subscribe(() => { calls.push(name); if (name !== "third") throw new Error(name); });
+  try {
+    expect(() => store.dispatch(commit("a"))).toThrow("first");
+    expect(calls).toEqual(["first", "second", "third"]);
+    expect(reported.mock.calls.map(([error]) => (error as Error).message)).toEqual(["second"]);
+  } finally {
+    reported.mockRestore();
+  }
+});
+
+// A throw that no listener wrapper can catch (here a stack overflow on the way into a pass) must not leave the store
+// thinking a pass is still running: that would silence every later notification. Each level of the recursion enters a
+// pass a little closer to the stack limit, so one of them overflows between listeners.
+test("an overflow escaping a pass does not silence later notifications", () => {
+  const store = createRunStore((job) => job());
+  let calls = 0;
+  store.subscribe(() => { calls++; });
+  let n = 0;
+  const edge = (): void => {
+    try { edge(); } catch {}
+    try { store.resync(n++ % 2 ? [] : [commit("a")]); } catch {}
+  };
+  edge();
+  calls = 0;
+  store.resync([commit("final")]);
+  expect(store.getDiagnostics().desynced).toBe(false);
+  expect(calls).toBe(1);
+});
+
+// One rule: a flush asked for during a notification waits for the end of that pass; a scheduler that runs its job at
+// once must not make the store spin. The probe runs in a child process so a spin fails the row instead of hanging.
+const syncDispatch = [
+  { entry: "resync", outline: ["message:a", "message:x"] },
+  { entry: "beginHistory", outline: ["message:a", "message:x"] },
+  { entry: "prepend", outline: ["message:b", "message:a", "message:x"] },
+  { entry: "endHistory", outline: ["message:b", "message:x"] },
+  { entry: "prepend from a listener", outline: ["message:b", "message:a", "message:c", "message:x"] },
+  { entry: "endHistory from a listener", outline: ["message:b", "message:a", "message:c", "message:x"] },
+];
+test.each(syncDispatch)("$entry with a synchronous scheduler: a listener's dispatch is delivered after the pass", ({ entry, outline }) => {
+  const probe = Bun.spawnSync([process.execPath, new URL("./notify-probe.ts", import.meta.url).pathname, entry], { timeout: 3_000 });
+  const result = probe.exitCode === 0 ? JSON.parse(probe.stdout.toString()) : { exitCode: probe.exitCode, signal: probe.signalCode, stderr: probe.stderr.toString() };
+  expect(result).toEqual({ seen: outline, outline });
 });
 
 test("prepend rejection keeps the last good state and visibly desyncs", () => {
