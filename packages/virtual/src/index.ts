@@ -82,6 +82,8 @@ export const formatVirtualDebug = (snapshot: VirtualSnapshot, actions: readonly 
   JSON.stringify({ range: snapshot.range, visible: snapshot.visible, totalSize: snapshot.totalSize, scrollTop: snapshot.scrollTop, pinned: snapshot.pinned, actions: actions.slice(-8) }, null, 2);
 
 export type Virtualizer<Id extends string = string> = {
+  /** Distance from the end (px) within which a reader scroll keeps follow on. */
+  readonly bottomThreshold: number;
   reset(): void;
   setOutline(items: readonly OutlineItem<Id>[], update?: OutlineUpdate<Id> | null): void;
   setViewport(viewport: Viewport): void;
@@ -495,6 +497,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   };
 
   return {
+    bottomThreshold,
     reset() {
       layout = new Sequence<Id>();
       appliedOutline = null;

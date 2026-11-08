@@ -172,6 +172,7 @@ export function useVirtualList<Id extends string>(
   const leases = useRef<ScrollLeases | null>(null);
   const lastScrollTop = useRef(0);
   const lastDomEnd = useRef(0);
+  const lastScrollHeight = useRef(0);
   const pendingScroll = useRef<{ target: "end" | number; value: number; previousEnd: number } | null>(null);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
@@ -191,6 +192,7 @@ export function useVirtualList<Id extends string>(
     container.scrollTop = value;
     lastScrollTop.current = container.scrollTop;
     lastDomEnd.current = domEnd;
+    lastScrollHeight.current = container.scrollHeight;
   }, [engine]);
 
   const touching = () => leases.current?.touching() ?? false;
@@ -204,6 +206,7 @@ export function useVirtualList<Id extends string>(
     pendingEntries.current.clear();
     lastScrollTop.current = 0;
     lastDomEnd.current = 0;
+    lastScrollHeight.current = 0;
     engine.flushPendingCorrection(false, true);
   };
 
@@ -254,6 +257,7 @@ export function useVirtualList<Id extends string>(
       } else updateViewport("user");
       lastScrollTop.current = container.scrollTop;
       lastDomEnd.current = Math.max(0, container.scrollHeight - container.clientHeight);
+      lastScrollHeight.current = container.scrollHeight;
 
       const flushMeasurements = () => {
         resizeFrame.current = null;
@@ -262,13 +266,6 @@ export function useVirtualList<Id extends string>(
         for (const [id, size] of pendingEntries.current) engine.measure(id, size);
         pendingEntries.current.clear();
         engine.afterMutation(token, { deferCorrection: touching() && isIOSWebKit() });
-        // A late layout pass can leave WebKit a few pixels behind the new end after the measurement correction.
-        // Re-apply the existing follow intent only when the DOM has not moved independently since the last scroll.
-        const { pinned } = engine.getSnapshot();
-        if (pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5) {
-          writeScroll("end");
-          updateViewport("programmatic");
-        }
       };
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
@@ -307,11 +304,15 @@ export function useVirtualList<Id extends string>(
           domEnd,
           lastDomEnd: lastDomEnd.current,
           priorDomEnd: pending?.previousEnd ?? lastDomEnd.current,
+          scrollHeight: container.scrollHeight,
+          lastScrollHeight: lastScrollHeight.current,
           clientHeight: container.clientHeight,
           viewportSize: before.viewportSize,
+          bottomThreshold: engine.bottomThreshold,
         });
         lastScrollTop.current = top;
         lastDomEnd.current = domEnd;
+        lastScrollHeight.current = container.scrollHeight;
         const layout = kind === "own" || kind === "layout";
         if (layout && before.pinned && Math.abs(top - domEnd) >= 0.5) writeScroll("end");
         if (kind === "intent" && before.pinned) engine.setFollow(false);
@@ -330,8 +331,8 @@ export function useVirtualList<Id extends string>(
         const pageLevel = target === document || target === document.body || target === document.documentElement;
         if (!pageLevel && (!(target instanceof Element) || !container.contains(target) || target.closest(keyOwners))) return;
         hostLeases.start("keyboard");
-        // A page-level key scrolls at most one scroller: the lease lets that host's scroll callback decide (an upward
-        // move is intent), so other pinned timelines on the page keep following.
+        // A page-level key scrolls at most one scroller: the lease lets that host's scroll callback decide (a move up
+        // off the end is intent, other moves go to the engine threshold), so other pinned timelines keep following.
         if (!pageLevel && (event.key.endsWith("Up") || event.key === "Home") && engine.getSnapshot().pinned) engine.setFollow(false);
       };
       // Any key release ends the held key: a still-held key repeats its keydown, and a lost arrow keyup under Cmd still releases.
@@ -390,6 +391,7 @@ export function useVirtualList<Id extends string>(
       const viewportObserver = new ResizeObserver(() => {
         const pinned = engine.getSnapshot().pinned;
         updateViewport("observe");
+        lastScrollHeight.current = container.scrollHeight; // the engine has this resize now: it is not a content change
         if (!pinned) return;
         writeScroll("end");
         updateViewport("programmatic");

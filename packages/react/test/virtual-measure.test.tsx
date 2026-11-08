@@ -87,8 +87,10 @@ test("a pinned late row measurement re-applies the bottom after the browser shif
     act(() => root.render(<RunProvider store={store}><Timeline virtual /></RunProvider>));
     const scroll = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
     expect(scroll).not.toBeNull();
-    let scrollTop = 0;
-    // The DOM range is two pixels taller than the virtualizer's measured range, as WebKit can report after reconnect.
+    // The pinned reader sits where the adapter put it, the engine's end; a browser cannot hold another position
+    // without a scroll callback. The DOM range is two pixels taller than the virtualizer's measured range, as WebKit
+    // can report after reconnect, so the row observer must take the reader to the DOM end.
+    let scrollTop = 201 * 72 - 600;
     const scrollHeight = 201 * 72 + 2;
     Object.defineProperty(scroll!, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } });
     Object.defineProperty(scroll!, "scrollHeight", { configurable: true, get: () => scrollHeight });
