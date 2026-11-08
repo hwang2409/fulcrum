@@ -5,7 +5,7 @@ const injection = process.env.BENCH_INJECT === "quadratic";
 const result = await runWorkload(root, injection);
 console.log(JSON.stringify({
   ...result,
-  gates: { scaling: "enforced per named case", absoluteTimings: "report-only" },
+  gates: { perDeltaRatio: "enforced per named case", absoluteTimings: "report-only" },
   injection: injection
     ? { mode: "quadratic", purpose: "manual sensitivity check; adds per-event work proportional to seed size" }
     : null,
@@ -31,8 +31,8 @@ for (const stream of result.streams) {
     console.error(`${stream.name} result correctness failed`);
     process.exit(1);
   }
-  if (stream.ratio > stream.maximumScalingRatio) {
-    console.error(`${stream.name} scaling failed: 10x seed size took ${stream.ratio.toFixed(3)}x (limit ${stream.maximumScalingRatio.toFixed(1)}x)`);
+  if (stream.ratio > stream.maximumRatio) {
+    console.error(`${stream.name} failed: the subject took ${stream.ratio.toFixed(3)}x the reference CPU per delta (limit ${stream.maximumRatio.toFixed(1)}x)`);
     process.exit(1);
   }
 }

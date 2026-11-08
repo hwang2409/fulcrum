@@ -284,6 +284,21 @@ test("replay-transient running state does not erase an interrupted outcome", asy
   result.view.dispose();
 });
 
+test("a session that came back running reopens with its recorded turn outcome when status names none", async () => {
+  const status = { session: meta("b", "x"), state: "running", pending_approvals: [], last_turn_outcome: null };
+  const rows = [...history.b!];
+  const result = await interruptedReconnect({ status, rows, waitForComplete: false });
+  status.state = "idle";
+  rows.push(endRow(turn, "completed"));
+  result.second.event({ event: "agent_end", session_id: "b" });
+  result.view.select("a");
+  await waitFor(() => present(result.view).open?.id === "a", "other session did not open");
+  result.view.select("b");
+  await waitFor(() => present(result.view).open?.id === "b" && !!present(result.view).open?.history.complete, "session did not reopen");
+  expect(present(result.view).open?.lease.store.getState().endOutcome).toBe("completed");
+  result.view.dispose();
+});
+
 test("on connect opens the active session before requesting the catalog", async () => {
   let release!: () => void;
   const catalog = new Promise<{ sessions: SessionMeta[]; next_offset: null }>((resolve) => { release = () => resolve({ sessions, next_offset: null }); });

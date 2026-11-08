@@ -17,6 +17,9 @@ missing, why the app needs it, and the proposed API.
 | `Composer` in `@fulcrum/react` | the app had no input. Send, steer, and stop map to zeta `send`, `steer`, and `abort` in `src/delivery.ts`, with `delivery_id`. | `packages/react/test/composer.test.tsx`, `apps/web/test/delivery.test.ts` |
 | `Code` and `HighlightContext` in `@fulcrum/react` | the app colors text outside a run (the `zeta serve` command in the connection notices). Before this, only parts inside a `RunProvider` could highlight. | web gate ("the command is not highlighted") |
 | core reducer: a repeated `approval_request` updates its row | a status snapshot and the live event can both carry the same approval. Before this, two rows with one id crashed `Timeline` ("outline ids must be unique"). | `packages/core/test/reducer.test.ts` |
+| `session_history_fidelity` tool arguments, structured bash results, and image stubs | history now keeps bounded tool arguments, bash `exit_code`/streams, truncation markers, and image metadata. The adapter uses the same tool cards as live events. | `packages/zeta/test/history.test.ts` |
+| terminal dropped-steer history | retained dropped-steer text is rebuilt as a user row with the same `not delivered` state after reload; legacy generic rows remain compact notices. | `packages/zeta/test/history.test.ts` |
+| `served_turn_end` history outcome | an idle session uses the valid durable served-turn reason, including `user_stop`, and does not invent an outcome when the feature is absent. | `packages/zeta/test/served-turn-end.test.ts` |
 
 ## open gaps
 
@@ -33,16 +36,12 @@ missing, why the app needs it, and the proposed API.
 - **proposed api:** zeta's planned `session_events` feature (change request 04f38a7a; design `~/.zeta/scratch/design-serve-session-events.md`), then `client.replay(session, { cursor })` that dedupes by event cursor.
 
 ### 3. history tool calls have no arguments (zeta)
-- **missing:** `session_history` sends `tool_use` blocks with `arguments: {}`.
-- **why:** reopened sessions show generic `bash` and `read` cards without `$ command` or a path. Live calls show the full cards.
-- **in the mapping now:** an approved call's `approval_request`/`approval_end` history rows keep the arguments, so
-  `fromZetaHistory` gives that call its full card. bash's result text (`"stdout:\n" + stdout + "\nstderr:\n" + stderr`)
-  is split back into stdout and stderr, and a clean result shows `exit 0` (`packages/zeta/test/history.test.ts`, with a
-  real `session_history` fixture). A call that needed no approval still has no arguments and keeps the generic card.
-- **also missing:** history sets `structured_content` to null, so a failed bash call's exit code is lost (zeta keeps
-  only `is_error`); a reopened failure shows "failed" without `exit N`.
-- **proposed api:** zeta keeps bounded arguments and bash's `exit_code` (or the bounded `structured_content`) in history
-  rows, or `session_events` carries them. Sent to the zeta inbox (920a34cf covers arguments).
+- **solved:** when `session_history_fidelity` is negotiated, the adapter uses bounded `tool_call.arguments` and
+  `arguments_truncated`, plus retained `structured_content` and bash `exit_code`, streams, `cwd_after`, and truncation.
+  Tool-result image stubs keep their metadata without inventing bytes or a size. Older servers keep the generic card and
+  the bounded-text parser remains only for that legacy projection.
+- **still open:** a server without `session_history_fidelity` can still return empty arguments, so that generic card is
+  expected until the feature is negotiated.
 
 ### 4. list status for sessions other than the open one (zeta)
 - **missing:** `list_sessions` has no run state. Only `status` reports one session, the server's own.
@@ -84,19 +83,18 @@ missing, why the app needs it, and the proposed API.
   delivery id, so the client stamps the one it gets while the request is pending with the message's `intent`, and the
   resend replaces the steer's row instead of adding one (`test/delivery.test.ts`, web gate, and a live check on real zeta).
 - **after a stop:** the user meant to drop the queued steers, so they are not resent. `turnEnded` still asks
-  `delivery_status` for each and returns the dropped ones; the app marks their rows "not delivered" (struck through,
-  danger rail, a note that the stop ended the turn first), so a steer the agent never read does not look delivered.
-  This is live state only: zeta's history has no row for a dropped steer, so after a reload it is gone.
-- **proposed api:** zeta echoes `delivery_id` in `user_message`, so a client can match the echo without a pending window.
-- **proposed api:** zeta keeps a dropped steer in history with its `dropped` outcome, so a reload can still show it.
+  `delivery_status` for each on older servers; the app marks their rows "not delivered" (struck through, danger rail,
+  and a note that the stop ended the turn first).
+- **solved:** with `delivery_id` and `session_history_fidelity`, zeta emits terminal `delivery_status` rows and retains
+  the steer text. Reload maps a retained dropped row to the same not-delivered user card. Legacy generic rows remain
+  compact status notices.
 - **proposed api:** zeta serve delivers a late steer as the next turn, as the TUI does, so every client gets it.
 
 ### 13. a stop and a dropped steer vanish after a reload (zeta)
-- **seen:** live, the user's stop is a neutral `stopped` row and a steer the stop dropped is marked "not delivered".
-  zeta's history has no row for either, so after a reload both are gone and the reply ends mid-sentence with no marker.
-- **in the app:** nothing is faked on the client: the rows come back when zeta records them.
-- **proposed api:** zeta writes durable rows for a user stop and for a dropped steer with its `dropped` outcome (zeta
-  inbox 920a34cf; see #10).
+- **solved:** a valid `served_turn_end` history row maps `user_stop` to the same neutral `stopped` run outcome used
+  live. No outcome is invented when the feature is absent. Terminal dropped-steer rows are handled by #10.
+- **still open:** zeta does not store a separate user-stop transcript row; the neutral run-end marker is the durable
+  representation.
 
 ## library bugs found
 

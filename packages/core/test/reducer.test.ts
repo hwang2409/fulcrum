@@ -233,6 +233,59 @@ test("published snapshots and entities do not change after a delta", () => {
   expect(snapshot.outline).toEqual([{ id: "message:assistant", kind: "message" }]);
 });
 
+test.each([
+  ["new then old", "+ + + + r3 r0 r2"],
+  ["old then new", "+ + + + r0 r3 r1"],
+  ["middle versions never read", "+ r0 + + + r3 r2 r1"],
+  ["reads between deltas", "+ r0 + r1 + r0 r2 + r3 r1 r3"],
+  ["after commit", "+ + r1 + c r2 r0"],
+])("each stream version keeps its own text across reads: %s", (_, steps) => {
+  const store = createRunStore((flush) => flush());
+  const versions: RunItem[] = [];
+  for (const step of steps.split(" ")) {
+    if (step === "+") {
+      store.dispatch({ type: "message_delta", message_id: "m", delta: String(versions.length) });
+      versions.push(store.getItem("message:m")!);
+    } else if (step === "c") {
+      store.dispatch({ type: "message_commit", message_id: "m", message: message("final") });
+    } else {
+      const index = Number(step.slice(1));
+      expect(itemText(versions[index])).toBe("0123".slice(0, index + 1));
+    }
+  }
+});
+
+test("tool output read through the stream cache every few chunks keeps each version's text", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "tool_start", tool_call: toolCall });
+  const outputOf = (item: RunItem | undefined) => (item?.type === "tool" ? item.output : undefined);
+  const read: { item: RunItem; text: string }[] = [];
+  let expected = "";
+  for (let i = 0; i < 200; i++) {
+    store.dispatch({ type: "tool_output", tool_call: toolCall, output: `${i},` });
+    expected += `${i},`;
+    if (i % 7 === 0) {
+      const item = store.getItem(`tool:${toolCall.id}`)!;
+      expect(outputOf(item)).toBe(expected);
+      read.push({ item, text: expected });
+    }
+  }
+  expect(outputOf(store.getItem(`tool:${toolCall.id}`))).toBe(expected);
+  // Older versions read after newer ones still return their own text.
+  for (const { item, text } of [read[3], read[0], read[read.length - 2]]) expect(outputOf(item)).toBe(text);
+});
+
+test("spread, JSON, and structuredClone copies of a streaming item carry its text", () => {
+  const store = replay([
+    { type: "message_delta", message_id: "copy", delta: "a" },
+    { type: "message_delta", message_id: "copy", delta: "b" },
+  ]);
+  const item = store.getItem("message:copy")!;
+  expect(itemText({ ...item } as RunItem)).toBe("ab");
+  expect(itemText(JSON.parse(JSON.stringify(item)))).toBe("ab");
+  expect(itemText(structuredClone(item))).toBe("ab");
+});
+
 test("run_end clears active assistant and tool streams", () => {
   const store = replay([
     { type: "message_delta", delta: "old" },
