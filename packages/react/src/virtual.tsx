@@ -84,6 +84,7 @@ export function useVirtualList<Id extends string>(
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ignoreScrollUntil = useRef(0);
+  const ownedScrollTop = useRef<number | null>(null);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
@@ -139,7 +140,7 @@ export function useVirtualList<Id extends string>(
         scrollEndTimer.current = null;
         container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
         lastScrollTop.current = container.scrollTop;
-        ignoreScrollUntil.current = performance.now() + 50;
+        ownedScrollTop.current = container.scrollTop;
         if (syncViewport) updateViewport("programmatic");
       };
       scrollToBottomRef.current = scrollToBottom;
@@ -190,6 +191,7 @@ export function useVirtualList<Id extends string>(
       };
       const onScroll = () => {
         const before = engine.getSnapshot();
+        if (ownedScrollTop.current !== null && Math.abs(container.scrollTop - ownedScrollTop.current) < 0.5) return;
         if (performance.now() < ignoreScrollUntil.current) {
           if (before.pinned) scrollToBottom(false);
           else container.scrollTop = before.scrollTop;
@@ -211,7 +213,10 @@ export function useVirtualList<Id extends string>(
       };
       // The stale-scroll guard after a programmatic bottom write only covers scroll events
       // nobody asked for; any real input means the next scroll is the user's and must win.
-      const userIntent = () => { ignoreScrollUntil.current = 0; };
+      const userIntent = () => {
+        ignoreScrollUntil.current = 0;
+        ownedScrollTop.current = null;
+      };
       const onWheel = (event: WheelEvent) => {
         userIntent();
         userScrollUntil.current = performance.now() + 200;
