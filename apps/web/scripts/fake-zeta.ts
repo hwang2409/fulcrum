@@ -142,11 +142,19 @@ export function composerMethods(
   const statuses = new Map<string, "queued" | "delivered" | "dropped">();
   let aborts = 0;
   let rows = 0; // history row ids stay unique when `clearSent` empties `sent`
-  let chat: { session: string; id: string; steers: string[]; aborted: boolean } | null = null;
+  let chat: { session: string; id: string; steers: Array<{ id: string; text: string }>; aborted: boolean } | null = null;
   type Send = (event: Json) => void;
+  const dropSteers = (turn: NonNullable<typeof chat>, reason: "abort" | "turn_end", send: Send) => {
+    for (const steer of turn.steers) {
+      statuses.set(steer.id, "dropped");
+      const row = { id: `delivery-${steer.id}`, role: "system", event: "delivery_status", delivery_id: steer.id, method: "steer", status: "dropped", reason, content: [text(steer.text)] };
+      histories[turn.session] = [...(histories[turn.session] ?? []), row];
+      send({ ...row, session_id: turn.session });
+    }
+  };
   const chatTurn = async (session: string, send: Send) => {
-    // steers holds delivery ids; the turn id is a lowercase uuid4 hex string, as zeta's
-    const turn = { session, id: crypto.randomUUID().replaceAll("-", ""), steers: [] as string[], aborted: false };
+    // The turn id is a lowercase uuid4 hex string, as zeta's.
+    const turn = { session, id: crypto.randomUUID().replaceAll("-", ""), steers: [] as Array<{ id: string; text: string }>, aborted: false };
     chat = turn;
     running.set(true);
     const e = (event: string, body: Json = {}) => { if (!turn.aborted) send({ event, session_id: session, ...body }); };
@@ -161,12 +169,8 @@ export function composerMethods(
     }
     e("assistant_message", { message: { role: "assistant", content: [text(reply)] } });
     histories[session] = [...(histories[session] ?? []), { id: `reply-${rows}`, role: "assistant", content: [text(reply)], tool_result: null }];
-    // As in zeta: a turn with no tool call reaches no provider boundary, so steering still queued at its end is dropped.
-    for (const id of turn.steers) {
-      statuses.set(id, "dropped");
-      e("delivery_status", { delivery_id: id, method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" });
-      histories[session] = [...(histories[session] ?? []), { id: `delivery-${id}`, role: "system", event: "delivery_status", delivery_id: id, method: "steer", status: "dropped", reason: "turn_end", content: "steer dropped: turn_end" }];
-    }
+    // zeta src/zeta/server/delivery.py:299-318 commits and emits the drop for a completed turn.
+    dropSteers(turn, "turn_end", send);
     e("turn_end", { data: { turn: sent.length } });
     recordEnd(session, turn.id, "completed");
     chat = null;
@@ -185,7 +189,7 @@ export function composerMethods(
     send({ event: "user_message", session_id: active, text: value, mode: method, attachments: [], ...(delivery ? { delivery_id: delivery } : {}) });
     const accepted = method === "send" ? { accepted: true, session_id: active } : { accepted: true };
     if (delivery) { deliveries.set(delivery, accepted); statuses.set(delivery, method === "steer" ? "queued" : "delivered"); }
-    if (method === "steer") { if (delivery) chat?.steers.push(delivery); return { result: accepted }; }
+    if (method === "steer") { if (delivery) chat?.steers.push({ id: delivery, text: value }); return { result: accepted }; }
     histories[active] = [...(histories[active] ?? []), { id: `sent-${++rows}`, role: "user", content: [text(value)], ...(delivery ? { delivery_id: delivery } : {}), tool_result: null }];
     // After the reply, as zeta starts the turn once the send is persisted.
     queueMicrotask(() => void chatTurn(active, send));
@@ -194,7 +198,8 @@ export function composerMethods(
   const abort = (send: Send): Json => {
     if (!chat) return { result: { aborted: false } };
     const turn = chat;
-    for (const id of turn.steers) statuses.set(id, "dropped");
+    // zeta src/zeta/server/delivery.py:299-318 maps a session cancel to an abort drop and emits its row.
+    dropSteers(turn, "abort", send);
     chat = null;
     running.set(false);
     turn.aborted = true;

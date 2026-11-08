@@ -5,6 +5,7 @@ import type { SessionStore, ZetaClient } from "@fulcrum/zeta";
 const TURN_RUNNING = -32004;
 const NO_TURN = -32005;
 const DETAILS_EVICTED = -32010;
+const LIVE_STATUS_WAIT_MS = 1_000;
 const code = (error: unknown) => (error as { code?: unknown } | null)?.code;
 
 type Accepted = { accepted?: boolean; status?: string };
@@ -91,8 +92,15 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
       if (known !== undefined) return known;
       return new Promise<boolean>((resolve) => {
         const waiters = liveWaiters.get(id) ?? [];
-        waiters.push(resolve);
+        let timer: ReturnType<typeof setTimeout>;
+        const finish = (value: boolean) => {
+          clearTimeout(timer);
+          liveWaiters.set(id, waiters.filter((waiter) => waiter !== finish));
+          resolve(value);
+        };
+        waiters.push(finish);
         liveWaiters.set(id, waiters);
+        timer = setTimeout(() => finish(false), LIVE_STATUS_WAIT_MS);
       });
     }
     // fallback for servers without live delivery_status events.

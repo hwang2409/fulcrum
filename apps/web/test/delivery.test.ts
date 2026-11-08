@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { createClient, type Transport } from "@fulcrum/zeta";
 import { createDelivery, stopTurn } from "../src/delivery";
 import { composerMethods } from "../scripts/fake-zeta";
@@ -32,15 +32,33 @@ async function server(answer: (method: string, params: Record<string, unknown>) 
 const ids = () => { let n = 0; return () => `id-${++n}`; };
 const ok = { result: { accepted: true } };
 
-test("fake reconnect history does not replay a steer dropped at turn end", async () => {
+test("fake turn end emits and persists zeta's dropped steer shape with its original text", async () => {
   let active = false;
   const fake = composerMethods(async () => {}, { get: () => active, set: (value) => { active = value; } });
   const before = fake.history.length;
-  fake.handle("send", { text: "start", delivery_id: "fake-send" }, "s-reconnect", () => {});
+  const events: Record<string, unknown>[] = [];
+  fake.handle("send", { text: "start", delivery_id: "fake-send" }, "s-reconnect", (event) => events.push(event));
+  await Promise.resolve();
   active = true;
-  fake.handle("steer", { text: "drop me", delivery_id: "fake-steer" }, "s-reconnect", () => {});
-  for (let i = 0; i < 10; i++) await Promise.resolve();
-  expect(fake.history.slice(before).some((row) => JSON.stringify(row).includes("drop me"))).toBe(false);
+  fake.handle("steer", { text: "drop me", delivery_id: "fake-steer" }, "s-reconnect", (event) => events.push(event));
+  for (let i = 0; i < 100; i++) await Promise.resolve();
+  const expected = { role: "system", event: "delivery_status", delivery_id: "fake-steer", method: "steer", status: "dropped", reason: "turn_end", content: [{ type: "text", text: "drop me" }] };
+  expect(events).toContainEqual({ ...expected, session_id: "s-reconnect", id: "delivery-fake-steer" });
+  expect(fake.history.slice(before)).toContainEqual({ ...expected, id: "delivery-fake-steer" });
+});
+
+test("fake abort emits and persists zeta's dropped steer shape with its original text", async () => {
+  let active = false;
+  const fake = composerMethods(async () => {}, { get: () => active, set: (value) => { active = value; } });
+  const before = fake.history.length;
+  const events: Record<string, unknown>[] = [];
+  fake.handle("send", { text: "start", delivery_id: "fake-send" }, "s-reconnect", (event) => events.push(event));
+  await Promise.resolve();
+  fake.handle("steer", { text: "stop this", delivery_id: "fake-steer" }, "s-reconnect", (event) => events.push(event));
+  fake.handle("abort", {}, "s-reconnect", (event) => events.push(event));
+  const expected = { role: "system", event: "delivery_status", delivery_id: "fake-steer", method: "steer", status: "dropped", reason: "abort", content: [{ type: "text", text: "stop this" }] };
+  expect(events).toContainEqual({ ...expected, session_id: "s-reconnect", id: "delivery-fake-steer" });
+  expect(fake.history.slice(before)).toContainEqual({ ...expected, id: "delivery-fake-steer" });
 });
 
 test("send and steer go to their methods with a delivery id when the feature is negotiated", async () => {
@@ -116,6 +134,28 @@ test("live dropped status after stop marks not delivered without polling", async
   expect(await delivery.turnEnded(client)).toEqual(["id-2"]);
   expect(calls).toEqual([]);
   lease.release();
+});
+
+test("negotiated turn end without a drop event resolves without resending", async () => {
+  jest.useFakeTimers();
+  try {
+    const { client, calls } = await server(() => ok, ["delivery_id", "session_history_fidelity"]);
+    const lease = client.forSession("s");
+    const delivery = createDelivery(ids(), undefined, lease.store);
+    await delivery.submit(client, "start", false);
+    await delivery.submit(client, "already delivered", true);
+    calls.length = 0;
+    let result: string[] | undefined;
+    void delivery.turnEnded(client).then((value) => { result = value; });
+    await Promise.resolve();
+    jest.advanceTimersByTime(1_000);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(result).toEqual([]);
+    expect(calls).toEqual([]);
+    lease.release();
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test("a dropped steer is an error and the retry gets a fresh id; an evicted id reports its outcome", async () => {
