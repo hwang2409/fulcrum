@@ -285,6 +285,102 @@ test("a delta re-renders only the streaming item", async () => {
   expect(store.getOutline()).toHaveLength(3);
 });
 
+// The streaming cursor (styles.css) shows only on a message with data-latest: it streams as its Timeline's newest row.
+const latest = () => [...container.querySelectorAll<HTMLElement>('[data-part="message"][data-latest]')].map((node) => node.dataset.id);
+
+test("only the newest row streams the cursor: text that a tool row follows stops, with the default plain renderer", () => {
+  const { store, send: more } = setup([{ type: "message_delta", message_id: "m", delta: "I'll inspect the project." }]);
+  mount(<RunProvider store={store}><Timeline virtual={false} /></RunProvider>);
+  expect(latest()).toEqual(["message:m"]);
+  more({ type: "tool_start", tool_call: call("ls", "shell") });
+  expect(q('[data-part="message"]').dataset.state).toBe("streaming");
+  expect(latest()).toEqual([]);
+  more({ type: "message_delta", message_id: "n", delta: "Two folders." });
+  expect(latest()).toEqual(["message:n"]);
+});
+
+test("a streaming message outside a Timeline is the newest row", () => {
+  const { store } = setup([{ type: "message_delta", message_id: "m", delta: "hello" }]);
+  mount(<RunProvider store={store}><Message id="message:m" /></RunProvider>);
+  expect(latest()).toEqual(["message:m"]);
+});
+
+test("when a row appends, only the old and the new newest rows re-render", () => {
+  const { store, send } = setup([
+    ...Array.from({ length: 50 }, (_, index): RunEvent => ({ type: "message_commit", message_id: `done-${index}`, message: message("one") })),
+    { type: "message_delta", message_id: "s", delta: "x" },
+  ]);
+  const commits: Record<string, number> = {};
+  const Counted = ({ id }: { id: string }) => (
+    <Profiler id={id} onRender={() => (commits[id] = (commits[id] ?? 0) + 1)}>
+      <Message id={id} />
+    </Profiler>
+  );
+  const renderers: Renderers = { message: Counted };
+  mount(<RunProvider store={store}><Timeline virtual={false} renderers={renderers} /></RunProvider>);
+  const rendered = (act: () => void) => {
+    const before = { ...commits };
+    act();
+    return Object.fromEntries(Object.entries(commits).filter(([id, count]) => count !== before[id]).map(([id, count]) => [id, count - (before[id] ?? 0)]));
+  };
+  expect(latest()).toEqual(["message:s"]);
+  // A new streaming row: the old newest row loses the cursor, the new one mounts and takes it. No other row renders.
+  const appended = rendered(() => send({ type: "message_delta", message_id: "t", delta: "y" }));
+  expect(Object.keys(appended).sort()).toEqual(["message:s", "message:t"]);
+  expect(latest()).toEqual(["message:t"]);
+  // A tool row: only the message that loses the cursor renders.
+  expect(rendered(() => send({ type: "tool_start", tool_call: call("ls", "shell") }))).toEqual({ "message:t": 1 });
+  expect(latest()).toEqual([]);
+  // Deltas still re-render only their own row.
+  expect(rendered(() => send({ type: "message_delta", message_id: "t", delta: "z" }))).toEqual({ "message:t": 1 });
+});
+
+test("in virtual mode a row kept mounted for focus never takes the cursor from the newest row", () => {
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const positions = new WeakMap<HTMLElement, number>();
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+  });
+  try {
+    const { store, send } = setup([
+      ...Array.from({ length: 300 }, (_, index): RunEvent => ({ type: "message_commit", message_id: String(index), message: message(String(index)) })),
+      { type: "message_delta", message_id: "live", delta: "streaming" },
+    ]);
+    mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
+    const host = q('[data-part="timeline-scroll"]');
+    const scrollTo = (top: number) => {
+      host.scrollTop = top;
+      act(() => {
+        host.dispatchEvent(new WheelEvent("wheel", { deltaY: top === 0 ? -100 : 100 }));
+        host.dispatchEvent(new Event("scroll"));
+      });
+    };
+    scrollTo(0);
+    // The reader clicks an older message: its row takes focus.
+    const older = q('[data-virtual-id="message:2"]');
+    act(() => older.focus());
+    scrollTo(host.scrollHeight);
+    const rows = [...q('[data-part="timeline"]').querySelectorAll<HTMLElement>(":scope > [data-virtual-id]")];
+    expect(rows.at(-1)?.dataset.virtualId).toBe("message:2");
+    expect(rows.at(-1)?.tabIndex).toBe(-1);
+    expect(rows.some((row) => row.dataset.virtualId === "message:live")).toBe(true);
+    expect(latest()).toEqual(["message:live"]);
+    send({ type: "message_delta", message_id: "live", delta: " more" });
+    expect(latest()).toEqual(["message:live"]);
+  } finally {
+    for (const [name, descriptor] of [["clientHeight", clientHeight], ["scrollHeight", scrollHeight], ["scrollTop", scrollTop]] as const) {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
+    }
+  }
+});
+
 test("useRun applies a changed selector without a store update", () => {
   const { store } = setup([{ type: "run_start" }]);
   let selectTurn!: () => void;

@@ -12,6 +12,7 @@ import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
 import { Message, ToolResultBlocks } from "./content.js";
 import { UserMessageContent } from "./user-message.js";
+import { NewestRowProvider } from "./newest-row.js";
 
 declare global { var __FULCRUM_DEV__: boolean | undefined; }
 
@@ -709,9 +710,11 @@ const TimelineForStore = memo(function TimelineForStore({ store, runKey, rendere
     container.addEventListener("scroll", capture, { passive: true });
     return () => container.removeEventListener("scroll", capture);
   }, [activeScrollRef, enabled, items]);
+  // The newest row comes from the outline, not the DOM: a virtual timeline also mounts a row kept for focus after it.
+  const newest = items.at(-1)?.id;
   if (!enabled) {
     return (
-      <TimelineLayout unseenCount={0} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} ownedScrollRef={ownedScrollRef} hostOwned={scrollRef !== undefined} virtual={false}>
+      <NewestRowProvider id={newest}><TimelineLayout unseenCount={0} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} ownedScrollRef={ownedScrollRef} hostOwned={scrollRef !== undefined} virtual={false}>
         <div ref={plainRef} className={className} data-part="timeline" data-virtual="false" role="log" aria-label={ariaLabel} aria-live="off">
           <ApprovalSkip items={items} reveal={(id) => {
             const card = plainRef.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`) ?? null;
@@ -721,7 +724,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, runKey, rendere
           {items.map(({ id }) => <Row key={id} id={id} renderers={renderers} />)}
         </div>
         <LiveAnnouncer items={items} change={change} />
-      </TimelineLayout>
+      </TimelineLayout></NewestRowProvider>
     );
   }
   const mounted = list.snapshot.rows;
@@ -730,7 +733,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, runKey, rendere
     : -1;
   const retainedRow = retained >= 0 ? { ...items[retained]!, index: retained, start: -10_000, size: 0, loaded: true } : null;
   return (
-    <TimelineLayout unseenCount={list.unseenCount} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} ownedScrollRef={ownedScrollRef} hostOwned={scrollRef !== undefined} virtual>
+    <NewestRowProvider id={newest}><TimelineLayout unseenCount={list.unseenCount} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} ownedScrollRef={ownedScrollRef} hostOwned={scrollRef !== undefined} virtual>
       <div
         ref={list.timelineRef}
         className={className}
@@ -780,6 +783,6 @@ const TimelineForStore = memo(function TimelineForStore({ store, runKey, rendere
           {list.debug}
         </output>
       ) : null}
-    </TimelineLayout>
+    </TimelineLayout></NewestRowProvider>
   );
 });

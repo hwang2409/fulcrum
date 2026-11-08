@@ -1,11 +1,373 @@
 // Tool cards in the gallery. A capped box (output, arguments, numbered lines) that cuts its text says so: a fade on
 // the cut edge and a control that shows the rest; after that control, nothing is cut. A pending approval is the
-// timeline's first tab stop through a skip link.
-import type { Browser } from "playwright";
+// timeline's first tab stop through a skip link. A streaming message ends its last text line with one terminal cursor,
+// CanvasText under forced colors and still under reduced motion, and no fulcrum part animates under reduced motion even
+// rendered outside a Timeline, while a host's own data-part widgets keep their motion.
+import type { Browser, Page } from "playwright";
+
+// The gallery's streaming messages, paused mid-stream (reduced motion at load), and what each must show. `cursors`: how
+// many terminal cursors; `tag`: the element that draws it; `tight`: prose whose last line can be made to fill its
+// width exactly, where the cursor must still not take a line of its own; `viewer`: a fence streaming as the code
+// viewer, whose head carries the running mark instead; `open`: a control to click first.
+type CursorCase = { id: string; cursors: 0 | 1; tag?: string; tight?: boolean; viewer?: boolean; open?: string };
+const cursorCases: CursorCase[] = [
+  { id: "message-streaming", cursors: 1, tight: true },
+  { id: "content-streaming", cursors: 1 },
+  { id: "message-plain-streaming", cursors: 1, tight: true },
+  { id: "markdown-table-streaming", cursors: 1, tag: "td" },
+  // Paused after the fence closed: the cursor ends the text after it (checkCursorSteps sees it inside the open fence).
+  { id: "markdown-fence-streaming", cursors: 1, tag: "p" },
+  // Ends in a closed fence: the block is final, so no cursor in it (it would add a line that the commit takes away).
+  { id: "markdown-streaming", cursors: 0 },
+  { id: "markdown-crossing", cursors: 0, viewer: true },
+  // The text ended and a tool row runs below it: the tool holds the live signal.
+  { id: "ai-sdk-text-then-tool", cursors: 0 },
+  { id: "ai-sdk-plain-text-then-tool", cursors: 0 },
+  // An open reasoning block that streams shows its own state, not a cursor.
+  { id: "reasoning-streaming", cursors: 0, open: "[data-part=reasoning] > summary" },
+];
+type Mode = "normal" | "forced colors" | "reduced motion";
+const modes: [Mode, { reducedMotion: "no-preference" | "reduce"; forcedColors: "none" | "active" }][] = [
+  ["normal", { reducedMotion: "no-preference", forcedColors: "none" }],
+  ["forced colors", { reducedMotion: "no-preference", forcedColors: "active" }],
+  ["reduced motion", { reducedMotion: "reduce", forcedColors: "none" }],
+];
+
+// Runs in the page. The streaming message's cursors (the ::after that styles.css draws with an empty content), their
+// computed style, the height the cursor adds to the message (a line of its own makes it taller; the commit would take
+// it away), and the running mark of a streaming viewer. The ::after shows in the accessibility tree as an unnamed
+// generic node with no text: nothing is announced, and it is not a regression.
+function readCursor(id: string) {
+  const message = document.querySelector<HTMLElement>(`#${id} [data-part=message][data-state=streaming]`);
+  if (!message) return undefined;
+  const holders = [message, ...message.querySelectorAll<HTMLElement>("*")].filter((element) => getComputedStyle(element, "::after").content === '""');
+  const probe = document.createElement("span");
+  probe.style.color = "CanvasText";
+  document.body.append(probe);
+  const systemColor = getComputedStyle(probe).color;
+  probe.remove();
+  const height = message.getBoundingClientRect().height;
+  const off = document.createElement("style");
+  off.textContent = "[data-part=message] *::after, [data-part=message]::after { content: none !important; }";
+  document.head.append(off);
+  const without = message.getBoundingClientRect().height;
+  off.remove();
+  const mark = message.querySelector("[data-part=md-code-block][data-state=streaming] [data-part=text-viewer-status]");
+  const markStyle = mark && getComputedStyle(mark, "::before");
+  const look = (style: CSSStyleDeclaration) => ({ background: style.backgroundColor, adjust: style.forcedColorAdjust, animation: style.animationName });
+  return {
+    holders: holders.map((holder) => {
+      const style = getComputedStyle(holder, "::after");
+      return { tag: holder.tagName.toLowerCase(), width: parseFloat(style.width), height: parseFloat(style.height), marginLeft: style.marginLeft, ...look(style) };
+    }),
+    mark: markStyle && markStyle.content === '""' ? look(markStyle) : undefined,
+    systemColor,
+    extra: height - without,
+  };
+}
+
+// Runs in the page. Narrows the message until its last text line, without the cursor, ends less than one cursor width
+// from the line's edge, then reports how much height the cursor adds there (a cursor wrapped onto its own line) and how
+// much of the cursor shows (nothing may clip it: the message's padding box, the scroller). Then, at the natural width,
+// it fills the last line with exactly as many cells as fit (80 at the full measure) and reports the same.
+function readTightFit(id: string) {
+  const message = document.querySelector<HTMLElement>(`#${id} [data-part=message][data-state=streaming]`)!;
+  const holder = [message, ...message.querySelectorAll<HTMLElement>("*")].find((element) => getComputedStyle(element, "::after").content === '""');
+  if (!holder) return undefined;
+  const block = getComputedStyle(holder).display === "inline" ? message : holder;
+  const advance = parseFloat(getComputedStyle(holder, "::after").width) + 1;
+  const off = document.createElement("style");
+  off.textContent = "[data-part=message] *::after, [data-part=message]::after { content: none !important; }";
+  const lastGlyph = () => {
+    const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+    let last: Text | undefined;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.textContent!.trim()) last = node as Text;
+    const end = last!.textContent!.trimEnd().length;
+    const range = document.createRange();
+    range.setStart(last!, end - 1);
+    range.setEnd(last!, end);
+    return range.getBoundingClientRect().right;
+  };
+  const edge = () => block.getBoundingClientRect().right - parseFloat(getComputedStyle(block).paddingRight) - parseFloat(getComputedStyle(block).borderRightWidth);
+  const cursor = getComputedStyle(holder, "::after");
+  const width = parseFloat(cursor.width);
+  // The cursor starts its gap after the last glyph; every ancestor that clips (overflow, or content-visibility's paint
+  // containment) cuts it at its padding box.
+  const visible = () => {
+    const left = lastGlyph() + parseFloat(cursor.marginLeft);
+    let right = left + width;
+    for (let node: HTMLElement | null = holder; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.overflowX === "visible" && style.contentVisibility !== "auto") continue;
+      right = Math.min(right, node.getBoundingClientRect().left + node.clientLeft + node.clientWidth);
+    }
+    return Math.max(0, right - left);
+  };
+  const measure = (slack: number) => {
+    document.head.append(off);
+    const without = message.getBoundingClientRect().height;
+    off.remove();
+    return { slack, extra: message.getBoundingClientRect().height - without, visible: visible(), width };
+  };
+  const start = message.getBoundingClientRect().width;
+  let tight: ReturnType<typeof measure> | undefined;
+  try {
+    for (let next = Math.floor(start); next > start - 400 && !tight; next--) {
+      message.style.width = `${next}px`;
+      document.head.append(off);
+      const slack = edge() - lastGlyph();
+      off.remove();
+      if (slack >= 0 && slack < advance) tight = measure(slack);
+    }
+  } finally {
+    message.style.width = "";
+  }
+  const saved = [...holder.childNodes];
+  try {
+    const probe = document.createElement("span");
+    probe.style.whiteSpace = "pre";
+    probe.textContent = "x".repeat(100);
+    holder.replaceChildren(probe);
+    const cell = probe.getBoundingClientRect().width / 100;
+    const box = block.getBoundingClientRect();
+    const style = getComputedStyle(block);
+    const cells = Math.floor((box.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth)) / cell + 0.001);
+    holder.replaceChildren(document.createTextNode("x".repeat(cells)));
+    document.head.append(off);
+    const slack = edge() - lastGlyph();
+    off.remove();
+    return { tight, full: { cells, ...measure(slack) } };
+  } finally {
+    off.remove();
+    holder.replaceChildren(...saved);
+  }
+}
+
+// Runs in the page. The streaming viewer's head says "streaming", and taking that word away (the commit) keeps the head
+// one row and moves no other part of it.
+function readViewerCommitShift() {
+  const head = document.querySelector("#markdown-crossing [data-part=md-code-block][data-state=streaming] [data-part=text-viewer-head]");
+  const status = head?.querySelector<HTMLElement>("[data-part=text-viewer-status]");
+  if (!head || status?.textContent !== "streaming") return `markdown-crossing: the streaming viewer's head does not say "streaming" (${status?.textContent ?? "no status"})`;
+  const parts = [head, ...head.querySelectorAll(":scope > :not([data-part=text-viewer-status]), [data-part=text-viewer-wide]")];
+  // The count fills the free space (flex: 1), so only its width may change: its text stays put.
+  const rects = () => parts.map((node) => node.getBoundingClientRect()).map(({ x, y, height }) => [x, y, height]);
+  const before = rects();
+  status.style.display = "none";
+  const after = rects();
+  status.style.display = "";
+  const moved = before.some((rect, i) => rect.some((value, j) => Math.abs(value - after[i]![j]!) > 0.5));
+  return moved ? `markdown-crossing: the viewer head moves when its status word goes at the commit (${JSON.stringify(before)} -> ${JSON.stringify(after)})` : undefined;
+}
+
+// Runs in the page. Plain text that ends in a blank line streams without its last line break (content.test.tsx), so
+// the cursor sits on the blank line that the commit keeps: the same height streaming and committed.
+function readBlankLineCommit() {
+  const message = document.querySelector<HTMLElement>("#message-plain-streaming [data-part=message][data-latest]");
+  const text = message?.lastElementChild?.firstChild;
+  if (!message || !(text instanceof Text)) return "message-plain-streaming: no streaming plain text span";
+  const saved = text.data;
+  try {
+    text.data = "tabbed\tend \n";
+    const streaming = message.getBoundingClientRect().height;
+    text.data = "tabbed\tend \n\n";
+    message.removeAttribute("data-latest");
+    message.dataset.state = "done";
+    const done = message.getBoundingClientRect().height;
+    return Math.abs(done - streaming) > 0.5 ? `message-plain-streaming: text ending in a blank line is ${streaming.toFixed(2)} px streaming and ${done.toFixed(2)} px committed` : undefined;
+  } finally {
+    text.data = saved;
+    message.dataset.state = "streaming";
+    message.setAttribute("data-latest", "");
+  }
+}
+
+const nextFrame = (page: Page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+type Look = { background: string; adjust: string; animation: string };
+// One mode's rules for a live mark (the cursor blinks, the viewer's mark pulses): it moves with motion allowed, is
+// CanvasText under forced colors, and is still under reduced motion.
+function checkLook(at: string, mode: Mode, look: Look, animation: string, systemColor: string): string[] {
+  if (mode === "normal" && look.animation !== animation) return [`${at}: animation is ${look.animation}, expected ${animation}`];
+  if (mode === "forced colors" && (look.background !== systemColor || look.adjust !== "none")) return [`${at}: ${look.background}/${look.adjust}, expected CanvasText ${systemColor}/none`];
+  if (mode === "reduced motion" && look.animation !== "none") return [`${at}: still animates (${look.animation})`];
+  return [];
+}
+
+function checkCursorCase(at: string, mode: Mode, demo: CursorCase, cursor: NonNullable<ReturnType<typeof readCursor>>): string[] {
+  if (cursor.holders.length !== demo.cursors) return [`${at}: ${cursor.holders.length} streaming cursors (${cursor.holders.map(({ tag }) => `<${tag}>`).join(", ")}), expected ${demo.cursors}`];
+  const failures: string[] = [];
+  // Whatever it shows, the commit (which removes the cursor) must not change the message's height.
+  if (cursor.extra > 0.5) failures.push(`${at}: the cursor adds ${cursor.extra.toFixed(1)} px, a line that the commit takes away`);
+  if (demo.viewer) failures.push(...(cursor.mark ? checkLook(`${at}: the viewer's running mark`, mode, cursor.mark, "fulcrum-pulse", cursor.systemColor) : [`${at}: the streaming viewer shows no running mark`]));
+  const [holder] = cursor.holders;
+  if (!holder) return failures;
+  if (!(holder.width > 0 && holder.height > 0)) failures.push(`${at}: the cursor in <${holder.tag}> is ${holder.width}x${holder.height} px`);
+  if (demo.tag && holder.tag !== demo.tag) failures.push(`${at}: the cursor is in <${holder.tag}>, expected <${demo.tag}>`);
+  // A code cursor fills the next monospace cell: no gap off the character grid.
+  if (holder.tag === "code" && holder.marginLeft !== "0px") failures.push(`${at}: the code cursor starts ${holder.marginLeft} off the next cell`);
+  failures.push(...checkLook(`${at}: the cursor`, mode, holder, "fulcrum-blink", cursor.systemColor));
+  return failures;
+}
+
+// The terminal cursor on real streaming markup, in each mode, plus the tight-fit case for prose.
+async function checkStreamingCursor(page: Page, port: number, failures: string[]) {
+  await page.goto(`http://127.0.0.1:${port}/gallery.html`);
+  await page.waitForSelector(`#${cursorCases[0]!.id} [data-part=message]`, { state: "attached", timeout: 10_000 });
+  await page.evaluate(() => document.fonts.ready);
+  for (const demo of cursorCases) if (demo.open) await page.locator(`#${demo.id} ${demo.open}`).first().click({ timeout: 2_000 }).catch(() => failures.push(`${demo.id}: nothing to open at ${demo.open}`));
+  const before = failures.length;
+  for (const [mode, media] of modes) {
+    await page.emulateMedia(media);
+    for (const demo of cursorCases) {
+      const at = `${demo.id} (${mode})`;
+      // Off screen, a row skips layout (content-visibility) and reports a placeholder height.
+      await page.locator(`#${demo.id}`).scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {}); // a missing demo fails below
+      await nextFrame(page);
+      const cursor = await page.evaluate(readCursor, demo.id);
+      failures.push(...(cursor ? checkCursorCase(at, mode, demo, cursor) : [`${at}: no streaming message`]));
+    }
+  }
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const demo of cursorCases.filter(({ tight }) => tight)) {
+      await page.locator(`#${demo.id}`).scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {});
+      await nextFrame(page);
+      const fit = await page.evaluate(readTightFit, demo.id);
+      if (!fit?.tight) failures.push(`${demo.id} @ ${width}: no width where the last line fills its box (the check found no case)`);
+      for (const [name, at] of fit ? [["a tight last line", fit.tight], [`a full ${fit.full.cells}-column line`, fit.full]] as const : []) {
+        if (!at) continue;
+        const where = `${demo.id} @ ${width}: with ${name} (${at.slack.toFixed(2)} px from its edge)`;
+        if (at.extra > 0.5) failures.push(`${where}, the cursor wraps onto its own line (+${at.extra.toFixed(1)} px)`);
+        if (at.visible < at.width - 0.01) failures.push(`${where}, ${at.visible.toFixed(2)} of the cursor's ${at.width.toFixed(2)} px show: it is clipped`);
+      }
+      if (width === 1440 && fit && fit.full.cells !== 80) failures.push(`${demo.id} @ 1440: the measure holds ${fit.full.cells} columns, expected 80`);
+    }
+    for (const [id, read] of [["markdown-crossing", readViewerCommitShift], ["message-plain-streaming", readBlankLineCommit]] as const) {
+      await page.locator(`#${id}`).scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {});
+      await nextFrame(page);
+      const failure = await page.evaluate(read);
+      if (failure) failures.push(`${failure} @ ${width}`);
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  if (failures.length === before) console.log(`ok   streaming cursor: ${cursorCases.length} streaming messages show the expected cursor or running mark in normal, forced-colors, and reduced-motion modes; a line that fills its width (80 columns at full width) keeps the whole cursor on it, unclipped, at 1440 and 390; the commit moves nothing`);
+
+  await page.emulateMedia({ forcedColors: "active", reducedMotion: "reduce" });
+  await page.goto(`http://127.0.0.1:${port}/gallery.html#approval-pending`);
+  const approval = await page.waitForSelector("#approval-pending [data-part=approval]");
+  const approvalState = await approval.evaluate((element) => ({ borderWidth: getComputedStyle(element).borderLeftWidth, text: element.textContent ?? "" }));
+  if (approvalState.borderWidth !== "2px") failures.push(`approval-pending: forced-colors border is ${approvalState.borderWidth}, expected 2px`);
+  if (!approvalState.text.trim()) failures.push("approval-pending: status words are not visible in forced colors");
+  await page.emulateMedia({ forcedColors: "none", reducedMotion: "reduce" });
+}
+
+// Runs in the page. Where each demo's first message draws its cursors right now.
+function readCursorStep(ids: string[]) {
+  return ids.map((id) => {
+    const message = document.querySelector<HTMLElement>(`#${id} [data-part=message]`);
+    const holders = message ? [message, ...message.querySelectorAll<HTMLElement>("*")].filter((element) => getComputedStyle(element, "::after").content === '""') : [];
+    return {
+      id,
+      later: !!message?.closest("[data-part=timeline] > *")?.nextElementSibling,
+      holders: holders.map((holder) => ({
+        tag: holder.tagName.toLowerCase(),
+        fence: holder.closest<HTMLElement>("[data-part=md-code-block]")?.dataset.state ?? null,
+        afterFence: holder.previousElementSibling?.matches("[data-part=md-code-block]") ?? false,
+      })),
+    };
+  });
+}
+
+// The cursor through every step of live streams, one timer tick at a time on a paused clock: never more than one, in
+// the open fence while it streams and on the text after it once it closes, and never on text that a later row (a
+// running tool) follows, with markdown and with plain text.
+async function checkCursorSteps(browser: Browser, port: number, failures: string[]) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "no-preference" });
+  const start = new Date("2026-01-01T00:00:00Z");
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(new Date(start.getTime() + 1));
+  await page.goto(`http://127.0.0.1:${port}/gallery.html`);
+  await page.waitForSelector("#markdown-fence-streaming", { state: "attached", timeout: 10_000 });
+  const ids = ["markdown-fence-streaming", "ai-sdk-text-then-tool", "ai-sdk-plain-text-then-tool"];
+  const seen = new Set<string>();
+  // Each wrong state once, with the first tick and how many ticks showed it.
+  const wrong = new Map<string, { first: number; ticks: number }>();
+  const flag = (what: string, step: number) => { const at = wrong.get(what); if (at) at.ticks++; else wrong.set(what, { first: step, ticks: 1 }); };
+  const before = failures.length;
+  for (let step = 0; step < 200; step++) {
+    await page.clock.runFor(30);
+    for (const { id, later, holders } of await page.evaluate(readCursorStep, ids)) {
+      if (holders.length > 1) flag(`${id}: ${holders.length} cursors`, step);
+      const [holder] = holders;
+      if (later) seen.add(`${id} later`);
+      if (!holder) continue;
+      if (later) flag(`${id}: the cursor stays on text that a later row follows (<${holder.tag}>)`, step);
+      if (holder.fence && holder.fence !== "streaming") flag(`${id}: the cursor is in a closed fence`, step);
+      seen.add(`${id} ${holder.fence ? "fence" : holder.afterFence ? "after fence" : "text"}`);
+    }
+  }
+  await page.close();
+  for (const [what, { first, ticks }] of wrong) failures.push(`${what}, from tick ${first}, in ${ticks} of 200 ticks`);
+  for (const expected of ["markdown-fence-streaming fence", "markdown-fence-streaming after fence", ...ids.slice(1).flatMap((id) => [`${id} text`, `${id} later`])]) {
+    if (!seen.has(expected)) failures.push(`cursor steps: never saw "${expected}" (the demo changed?)`);
+  }
+  if (failures.length === before) console.log(`ok   cursor steps: 200 ticks of ${ids.join(", ")}: one cursor at most, in the open fence then after it, and none on text a running tool follows`);
+}
+
+// Every part stays still under reduced motion even outside a Timeline or Composer: the gallery's rows (paused in their
+// in-progress states) and composers, copied into a plain container, animate nowhere once reduced motion is on, and
+// some did with it off, so the check sees real animations. A host widget that uses data-part for its own anatomy
+// (Ark, Chakra, Zag) outside fulcrum keeps its animation and transition.
+async function checkStandaloneMotion(page: Page, port: number, failures: string[]) {
+  await page.goto(`http://127.0.0.1:${port}/gallery.html`);
+  await page.waitForSelector(`#${cursorCases[0]!.id} [data-part=message]`, { state: "attached", timeout: 10_000 });
+  await page.evaluate(() => {
+    const host = document.createElement("div");
+    host.id = "standalone-parts";
+    for (const timeline of document.querySelectorAll("[data-part=timeline]")) for (const row of timeline.children) host.append(row.cloneNode(true));
+    for (const composer of document.querySelectorAll("[data-part=composer]")) host.append(composer.cloneNode(true));
+    document.body.append(host);
+    const spinner = document.createElement("div");
+    spinner.id = "host-spinner";
+    spinner.dataset.scope = "spinner";
+    spinner.dataset.part = "root";
+    spinner.style.cssText = "animation: host-spin 1s linear infinite; transition: opacity 200ms";
+    document.body.append(spinner);
+  });
+  const animated = () => page.evaluate(() => {
+    const found = new Map<string, number>();
+    for (const element of document.querySelectorAll<HTMLElement>("#standalone-parts *")) {
+      for (const pseudo of [null, "::before", "::after"]) {
+        const name = getComputedStyle(element, pseudo).animationName;
+        if (name === "none") continue;
+        const key = `${element.closest<HTMLElement>("[data-part]")?.dataset.part ?? element.tagName.toLowerCase()}${pseudo ?? ""} ${name}`;
+        found.set(key, (found.get(key) ?? 0) + 1);
+      }
+    }
+    return [...found].map(([key, count]) => `${key} x${count}`);
+  });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const moving = await animated();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const still = await animated();
+  const host = await page.evaluate(() => {
+    const style = getComputedStyle(document.querySelector("#host-spinner")!);
+    return { animation: style.animationName, transition: style.transitionDuration };
+  });
+  if (!moving.length) failures.push("standalone parts: nothing animates even with motion allowed (the check sees no animation)");
+  if (still.length) failures.push(`standalone parts: ${still.length} animation(s) run under reduced motion outside a Timeline: ${still.join("; ")}`);
+  else if (moving.length) console.log(`ok   standalone parts: ${moving.length} animation(s) outside a Timeline all stop under reduced motion (${moving.join("; ")})`);
+  if (host.animation !== "host-spin" || host.transition !== "0.2s") failures.push(`host widget: a host's data-part="root" outside fulcrum lost its motion under reduced motion (animation ${host.animation}, transition ${host.transition})`);
+  else console.log("ok   host widget: a host's own data-part widget outside fulcrum keeps its animation and transition under reduced motion");
+}
 
 export async function checkCards(browser: Browser, port: number): Promise<string[]> {
   const failures: string[] = [];
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  await checkStreamingCursor(page, port, failures);
+  await checkCursorSteps(browser, port, failures);
+  await checkStandaloneMotion(page, port, failures);
   await page.goto(`http://127.0.0.1:${port}/gallery.html#tools-done`);
   await page.waitForSelector("#tools-done [data-part=tool-body]");
   await page.waitForTimeout(500);

@@ -56,3 +56,11 @@ test("a closed fence does not render again while later text streams in", async (
   expect(calls).toHaveLength(1);
   await act(() => root.unmount());
 });
+
+test("a code block says it streams only while its fence is open, so a streaming cursor can leave it once the fence closes", () => {
+  const state = (source: string, streaming: boolean) => /<pre data-part="md-code-block"[^>]*>/.exec(renderToStaticMarkup(<Markdown source={source} streaming={streaming} />))?.[0].match(/data-state="(\w+)"/)?.[1];
+  expect(state("run:\n\n```sh\nbun test\n", true)).toBe("streaming");
+  expect(state("run:\n\n```sh\nbun test\n```", true)).toBeUndefined();
+  expect(state("run:\n\n```sh\nbun test\n```\n\nthen", true)).toBeUndefined();
+  expect(state("run:\n\n```sh\nbun test\n", false)).toBeUndefined();
+});
