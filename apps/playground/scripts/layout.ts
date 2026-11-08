@@ -19,6 +19,8 @@
 // (b) any viewer slowdown of 1.5x or more fails 5/5 through paired wall and task ratios;
 // (c) O(n)-per-append viewer work fails 5/5 when its cost at 128k lines is at least 55 ms per append (about
 // 370% of the correct append cost), measured as head-only append task-time scaling between 16k and 128k lines.
+// (d) a slowdown shared by head and base fails the calibrated ceiling: candidate median / same-run fixed-DOM work, per
+// width and operation (budgets and samples in viewer-verdict.ts).
 // The scaling probe runs several appends under 4x CPU throttling. Array.push and pushed `text-*` segment counts are
 // cheap extra canaries for rebuilding segments or visiting every row; task-time scaling is the proof.
 import { chromium, type Locator, type Page } from "playwright";
@@ -238,12 +240,11 @@ const viewerSamples = 5;
 const viewerScalingBudget = 1.4;
 const viewerScalingTotalBudget = 1.8;
 const viewerScalingTaskBudget = 2.27;
-const fallbackRatioBudget = 2;
 const median = (values: number[]) => [...values].sort((left, right) => left - right)[values.length >> 1]!;
 const ratios = (pairs: ViewerPair[], field: keyof ViewerSample) => pairs.map((pair) => ratio(pair.candidate[field], pair.base[field]));
 // Five alternating base/head pairs use their median ratio, not a ratio of independent medians. The 1.4x A/B ceiling
 // leaves the required margin over observed A/A noise. Scaling compares the same append at 16k and 128k lines; correct
-// virtualized work stays O(visible). A local run without a base keeps the independent fixed-DOM calibration fallback.
+// virtualized work stays O(visible). A local run without a base is judged by the calibrated ceiling alone.
 
 async function measureViewer(page: Page, width: number, fixture: "single" | "lines" | "read"): Promise<ViewerMeasurement> {
   const openSamples: number[] = [];
@@ -451,26 +452,23 @@ async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.lau
       const calibration = await measureCalibrationSet(page);
       const candidate = await measureViewerTiming(page, candidateUrl, slowdown);
       console.log(`viewer calibration @ ${width}: ${calibration.median.toFixed(1)} ms [${calibration.samples.map((value) => value.toFixed(1)).join(", ")}], open/calibration ${ratio(candidate.openMs, calibration.median).toFixed(2)}x, append/calibration ${ratio(candidate.appendMs, calibration.median).toFixed(2)}x`);
-      return { candidate, baseline: { openMs: calibration.median, appendMs: calibration.median }, calibration, budget: fallbackRatioBudget, label: "fixed-DOM calibration" };
+      return { candidate, calibration };
     }
     const pairs: ViewerPair[] = [];
     const calibrationSamples: number[] = [];
+    const calibrate = async () => {
+      await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read`);
+      await prepareViewerOpen(page); // let page load finish so it does not compete with the fixed work
+      calibrationSamples.push(await measureThrottledCalibration(page));
+    };
     for (let pair = 0; pair < viewerSamples; pair++) {
-      if (pair % 2 === 0) {
-        await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read`);
-        await prepareViewerOpen(page); // let page load finish so it does not compete with the fixed work
-        calibrationSamples.push(await measureThrottledCalibration(page));
-      }
+      if (pair % 2 === 0) await calibrate();
       const firstUrl = pair % 2 ? candidateUrl : baseUrl;
       const secondUrl = pair % 2 ? baseUrl : candidateUrl;
       const first = await measureViewerSample(page, firstUrl, firstUrl === candidateUrl ? slowdown : 0, pair);
       const second = await measureViewerSample(page, secondUrl, secondUrl === candidateUrl ? slowdown : 0, pair);
       pairs.push(pair % 2 ? { candidate: first, base: second } : { base: first, candidate: second });
-      if (pair % 2 === 1) {
-        await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read`);
-        await prepareViewerOpen(page); // let page load finish so it does not compete with the fixed work
-        calibrationSamples.push(await measureThrottledCalibration(page));
-      }
+      if (pair % 2 === 1) await calibrate();
     }
     const calibration = { median: median(calibrationSamples), samples: calibrationSamples };
     const candidate = { openMs: median(pairs.map(({ candidate }) => candidate.openMs)), openTaskMs: median(pairs.map(({ candidate }) => candidate.openTaskMs)), appendMs: median(pairs.map(({ candidate }) => candidate.appendMs)), appendTaskMs: median(pairs.map(({ candidate }) => candidate.appendTaskMs)) };
@@ -481,7 +479,7 @@ async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.lau
     const calibrationLog = `${calibration.median.toFixed(1)} ms [${calibration.samples.map((value) => value.toFixed(1)).join(", ")}]`;
     console.log(`viewer A/B @ ${width}: open candidate ${candidate.openMs.toFixed(1)} ms, base ${baseline.openMs.toFixed(1)} ms, calibration ${calibrationLog}, paired ${pairedRatios.openMs.toFixed(2)}x, normalized ${ratio(candidate.openMs, calibration.median).toFixed(2)}x; open task candidate ${candidate.openTaskMs.toFixed(1)} ms, base ${baseline.openTaskMs.toFixed(1)} ms, paired ${pairedRatios.openTaskMs.toFixed(2)}x; append candidate ${candidate.appendMs.toFixed(1)} ms, base ${baseline.appendMs.toFixed(1)} ms, calibration ${calibrationLog}, paired ${pairedRatios.appendMs.toFixed(2)}x, normalized ${ratio(candidate.appendMs, calibration.median).toFixed(2)}x; append task candidate ${candidate.appendTaskMs.toFixed(1)} ms, base ${baseline.appendTaskMs.toFixed(1)} ms, paired ${pairedRatios.appendTaskMs.toFixed(2)}x`);
     console.log(`viewer A/B distributions @ ${width}: open wall [${show(distributions.openMs)}]; open task [${show(distributions.openTaskMs)}]; append wall [${show(distributions.appendMs)}]; append task [${show(distributions.appendTaskMs)}]`);
-    return { candidate, baseline, calibration, pairedRatios, budget: viewerRatioBudget, label: "paired base/head" };
+    return { candidate, calibration, pairedRatios };
   } finally { await page.close(); }
 }
 
