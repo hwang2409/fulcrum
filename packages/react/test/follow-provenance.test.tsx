@@ -91,6 +91,51 @@ function mountTimeline(hosted = false) {
   return { append, detach, follow, get host() { return currentHost(); }, jump, store, unseen };
 }
 
+// A row observer and a frame queue the test drives: rows report measured sizes, and frames run when the test says.
+function installRowObserver() {
+  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
+  const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
+  const frames: FrameRequestCallback[] = [];
+  globalThis.ResizeObserver = class {
+    private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+    constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+    observe(element: Element) { this.entry.observed.add(element); }
+    unobserve(element: Element) { this.entry.observed.delete(element); }
+    disconnect() { this.entry.observed.clear(); }
+  } as unknown as typeof ResizeObserver;
+  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
+  globalThis.cancelAnimationFrame = () => {};
+  return {
+    /** Reports the size `size(id)` gives each observed row (undefined: no report), then runs the browser's next frame. */
+    measure(size: (id: string) => number | undefined) {
+      const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")))!;
+      const entries = [...rows.observed].flatMap((target) => {
+        const blockSize = size(target.getAttribute("data-virtual-id")!);
+        return blockSize === undefined ? [] : [{ target, borderBoxSize: [{ blockSize, inlineSize: 800 }], contentRect: { height: blockSize } }];
+      });
+      act(() => rows.report(entries as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+      act(() => { for (const frame of frames.splice(0)) frame(0); });
+    },
+    restore() {
+      globalThis.ResizeObserver = saved.ResizeObserver;
+      globalThis.requestAnimationFrame = saved.raf;
+      globalThis.cancelAnimationFrame = saved.caf;
+    },
+  };
+}
+
+// A row's top relative to the viewport top (rows are absolutely placed by translateY).
+function rowOffset(host: HTMLElement, id: string) {
+  const row = container!.querySelector<HTMLElement>(`[data-virtual-id="${id}"]`);
+  if (!row) return null;
+  return Number(/translateY\((-?[\d.]+)px\)/.exec(row.style.transform)![1]) - host.scrollTop;
+}
+
+// The browser's scroll callback for a position change since `before`; none when nothing moved.
+function echo(host: HTMLElement, before: number) {
+  if (host.scrollTop !== before) act(() => host.dispatchEvent(new Event("scroll")));
+}
+
 function moveReader(host: HTMLElement, top = 3_000) {
   host.scrollTop = top;
   act(() => host.dispatchEvent(new Event("scroll")));
@@ -894,5 +939,74 @@ describe("timeline scroll provenance", () => {
       timeline.follow();
       expect(timeline.unseen(), "a row click must not hold a scrollbar lease").toBe("0");
     } finally { geometry.restore(); }
+  });
+
+  // A row can change height after our last write (a streaming marker, a font, an image, late highlighting).
+  test.each([["grows", 6.5], ["shrinks", -6.5]] as const)("a row above the anchor that %s after the last write keeps the anchor's offset", (_, delta) => {
+    const geometry = installScrollGeometry();
+    const observer = installRowObserver();
+    try {
+      const { host, unseen } = mountTimeline();
+      observer.measure(() => 72);
+      moveReader(host, 3_000);
+      observer.measure(() => 72);
+      const ids = [...container!.querySelectorAll<HTMLElement>("[data-virtual-id]")].map((row) => row.dataset.virtualId!);
+      const anchorIndex = ids.findIndex((id) => (rowOffset(host, id) ?? -1) >= 0);
+      const anchorId = ids[anchorIndex]!;
+      const above = ids[anchorIndex - 2]!;
+      const before = rowOffset(host, anchorId)!;
+      const top = host.scrollTop;
+      observer.measure((id) => id === above ? 72 + delta : undefined);
+      echo(host, top);
+      expect(Math.abs(rowOffset(host, anchorId)! - before), `${anchorId} must keep its offset when ${above} changes height`).toBeLessThanOrEqual(0.5);
+      expect(unseen()).toBe("0");
+    } finally {
+      observer.restore();
+      geometry.restore();
+    }
+  });
+
+  test("the last row growing after the last write keeps a pinned reader at the bottom", () => {
+    const geometry = installScrollGeometry();
+    const observer = installRowObserver();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      observer.measure(() => 72);
+      const last = [...container!.querySelectorAll<HTMLElement>("[data-virtual-id]")].at(-1)!.dataset.virtualId!;
+      const top = host.scrollTop;
+      observer.measure((id) => id === last ? 102 : undefined);
+      echo(host, top);
+      expect(host.scrollHeight - host.clientHeight - host.scrollTop, "a pinned reader stays at the bottom").toBeLessThanOrEqual(0.5);
+      append();
+      expect(unseen()).toBe("0");
+      expect(jump()).toBeNull();
+    } finally {
+      observer.restore();
+      geometry.restore();
+    }
+  });
+
+  test("a late row resize while the reader's key scroll is in flight: the reader's scroll wins, nothing snaps back", () => {
+    const geometry = installScrollGeometry();
+    const observer = installRowObserver();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      observer.measure(() => 72);
+      const last = [...container!.querySelectorAll<HTMLElement>("[data-virtual-id]")].at(-1)!.dataset.virtualId!;
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true, cancelable: true })));
+      const readerTop = host.scrollTop - 540;
+      host.scrollTop = readerTop; // the browser moved the reader; its scroll callback has not run yet
+      observer.measure((id) => id === last ? 102 : undefined);
+      expect(host.scrollTop, "a late resize must not overwrite the reader's unreported move").toBe(readerTop);
+      act(() => host.dispatchEvent(new Event("scroll")));
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "PageUp", bubbles: true, cancelable: true })));
+      append();
+      expect(host.scrollTop, "the reader's scroll wins").toBe(readerTop);
+      expect(unseen()).toBe("1");
+      expect(jump()).not.toBeNull();
+    } finally {
+      observer.restore();
+      geometry.restore();
+    }
   });
 });

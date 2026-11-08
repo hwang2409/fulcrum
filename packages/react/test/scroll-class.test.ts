@@ -32,6 +32,8 @@ const rows: Row[] = [
   ["no size change, 100 px down", (f) => ({ top: f.top + 100, lastTop: f.top, domEnd: 1_200, lastDomEnd: 1_200, priorDomEnd: 1_200, scrollHeight: 1_800, lastScrollHeight: 1_800 }), "intent", "intent"],
   // F1: a host write that lands exactly at the end is layout: it never resumes follow (only reader input at the end does).
   ["host write down to the end", (f) => ({ top: 1_300, lastTop: f.top - 300, domEnd: 1_300, lastDomEnd: 1_300, priorDomEnd: 1_300, scrollHeight: 1_900, lastScrollHeight: 1_900 }), "layout", "layout"],
+  // WebKit capture (#94's fractional rows): our 4442.625 write was stored as 4442; nothing moved, no input, no size change.
+  ["WebKit truncated write: top 4442, lastTop 4442, domEnd 4444, pending 4442.625 unmatched", () => ({ top: 4_442, lastTop: 4_442, domEnd: 4_444, lastDomEnd: 4_444, priorDomEnd: 4_444, scrollHeight: 5_087, lastScrollHeight: 5_087, clientHeight: 643, viewportSize: 643 }), "layout", "layout"],
   ["no size change, small move (10 up)", (f) => ({ top: f.top - 10 }), "intent", "intent"],
   ["no size change, large move (100 up)", (f) => ({ top: f.top - 100 }), "intent", "intent"],
   ["lease scroll down", (f) => ({ lease: true, top: Math.min(1_000, f.top + 100) }), "reader", "reader"],
