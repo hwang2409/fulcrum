@@ -43,9 +43,10 @@ const streamCases = [
 ] as const;
 const prependCases = [
   // Times only the prepend calls; the old queue copied every queued row on each call.
-  // Linear samples: local [5.80, 9.19, 9.06, 9.33, 7.77, 9.33, 8.56, 9.32].
-  // Quadratic main store samples: local min 58.3 (8 runs). max(4, 1.5 * 9.33) = 14.
-  { name: "queued one-row prepend pages", smallPageCount: 2_000, largePageCount: 20_000, maximumScalingRatio: 14 },
+  // Linear samples: local standalone max 8.76 (11 runs), local paired a/b max 10.50
+  // (7 runs). Quadratic main-store samples: local min 46.0 (11 runs).
+  // max(4, 1.5 * 10.50) = 16.
+  { name: "queued one-row prepend pages", smallPageCount: 2_000, largePageCount: 20_000, maximumScalingRatio: 16 },
 ] as const;
 const runs = 5;
 let burnSink = 0;
@@ -110,6 +111,8 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
     const pages = Array.from({ length: pageCount }, (_, page) => [{ type: "message_commit" as const, message_id: `queued-${page}`, message: { role: "assistant", content: [{ type: "text", text: "old" }] } }]);
     const store = createRunStore(() => {});
     store.beginHistory();
+    // A collection inside a sub-millisecond sample swamped it in paired a/b runs.
+    if (typeof Bun.gc === "function") Bun.gc(true);
     const start = process.cpuUsage();
     for (const page of pages) store.prepend(page);
     const usage = process.cpuUsage(start);
