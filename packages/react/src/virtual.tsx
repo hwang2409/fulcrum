@@ -188,9 +188,10 @@ export function useVirtualList<Id extends string>(
     if (!container) return;
     const domEnd = Math.max(0, container.scrollHeight - container.clientHeight);
     const value = target === "end" || engine.getSnapshot().pinned ? domEnd : target;
-    pendingScroll.current = { target, value, previousEnd: lastDomEnd.current };
     container.scrollTop = value;
+    // The pending value is what the browser stored: WebKit keeps whole pixels (a 4442.625 write reads 4442).
     lastScrollTop.current = container.scrollTop;
+    pendingScroll.current = { target, value: lastScrollTop.current, previousEnd: lastDomEnd.current };
     lastDomEnd.current = domEnd;
     lastScrollHeight.current = container.scrollHeight;
   }, [engine]);
@@ -437,7 +438,9 @@ export function useVirtualList<Id extends string>(
 
   useLayoutEffect(() => {
     const container = containerRef.current;
-    if (container && Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5)
+    // A position nobody has reported yet (the reader's key or drag scroll in flight) wins over a correction.
+    if (container && Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5
+      && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5)
       writeScroll(snapshot.scrollTop);
   }, [snapshot, writeScroll]);
 

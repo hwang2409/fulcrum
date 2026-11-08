@@ -40,7 +40,8 @@ export type ScrollFacts = {
 // - up, in a viewport resize the engine has not seen yet: layout within |resize| + the bottom threshold (WebKit moves a
 //   reader 41 px up for a 3 px shrink), else intent;
 // - up, with a content change (scrollHeight, not the DOM end, which a viewport resize also moves): layout within the
-//   change, else intent; anything else is intent, even within the bottom threshold.
+//   change, else intent; a callback with no move (|up| <= 0.5) is layout; anything else is intent, even within the
+//   bottom threshold.
 // Reader input moving up off the end is the reader leaving; other reader input goes to the engine's threshold.
 export function classifyScroll(facts: ScrollFacts): ScrollClass {
   const { top, lastTop, domEnd, priorDomEnd } = facts;
@@ -55,5 +56,6 @@ export function classifyScroll(facts: ScrollFacts): ScrollClass {
   if (resize >= 0.5) return up <= resize + facts.bottomThreshold ? "layout" : "intent";
   const contentChange = Math.abs(facts.scrollHeight - facts.lastScrollHeight);
   if (contentChange >= 0.5 && up <= contentChange + 1) return "layout";
-  return "intent";
+  // No move and no input: nobody acted (a reader's scroll carries a lease, and no move has no direction).
+  return up <= 0.5 ? "layout" : "intent";
 }
