@@ -727,8 +727,8 @@ async function checkExternalScrollIntent(page: Page, engine: string, kind: "scro
         .filter((row) => row.getBoundingClientRect().bottom < scrollBox.top - 1);
       const target = targets[0];
       if (!target?.dataset.virtualId) throw new Error("no mounted overscan row above the viewport");
-      const targetEnd = target.getBoundingClientRect().bottom - scrollBox.top + scroll.scrollTop;
-      const distanceFromEnd = scroll.scrollHeight - targetEnd;
+      const targetStart = target.getBoundingClientRect().top - scrollBox.top + scroll.scrollTop;
+      const distanceFromEnd = scroll.scrollHeight - targetStart;
       if (distanceFromEnd <= 2 * scroll.clientHeight) {
         throw new Error(`mounted target is only ${distanceFromEnd.toFixed(1)} px from the DOM end; need more than two ${scroll.clientHeight.toFixed(1)} px viewports`);
       }
