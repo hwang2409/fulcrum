@@ -3,7 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { act, useLayoutEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { useVirtualList, type VirtualListState } from "../src/index.js";
@@ -12,13 +12,25 @@ const SOURCE = new URL("../src/virtual.tsx", import.meta.url);
 
 afterAll(() => GlobalRegistrator.unregister());
 
+// Scroll writes outside writeScroll(), by file and the exact statement, each with why it is not a Timeline host write.
+const OTHER_SCROLL_WRITES: Readonly<Record<string, string>> = {
+  // The text viewer's "top" control moves its own virtual list; rule (2) reads that host write as reader intent.
+  "tools/text-viewer.tsx": "node.scrollTop = 0",
+};
+
 test("timeline scroll writes have one owner", () => {
-  const source = readFileSync(SOURCE, "utf8");
-  const writes = [...source.matchAll(/container\.(?:scrollTop\s*=|scrollTo\s*\(|scrollBy\s*\()/g)];
-  expect(writes.length, "write timeline scroll positions only through writeScroll() in packages/react/src/virtual.tsx").toBe(1);
-  const ownerStart = source.indexOf("const writeScroll =");
-  const ownerEnd = source.indexOf("\n  };", ownerStart);
-  expect(writes[0]!.index! > ownerStart && writes[0]!.index! < ownerEnd, "write timeline scroll positions only through writeScroll() in packages/react/src/virtual.tsx").toBeTrue();
+  const message = "write timeline scroll positions only through writeScroll() in packages/react/src/virtual.tsx";
+  const sourceRoot = new URL("../src/", import.meta.url);
+  for (const file of readdirSync(sourceRoot, { recursive: true }).map(String).filter((name) => /\.tsx?$/.test(name))) {
+    const source = readFileSync(new URL(file, sourceRoot), "utf8");
+    const writes = [...source.matchAll(/[\w.\]?)]+\.(?:scrollTop\s*=(?!=)[^;\n]*|scrollTo\s*\(|scrollBy\s*\()/g)];
+    if (file === "virtual.tsx") {
+      expect(writes.map(([write]) => write), message).toEqual(["container.scrollTop = value"]);
+      const ownerStart = source.indexOf("const writeScroll =");
+      const ownerEnd = source.indexOf("\n  };", ownerStart);
+      expect(writes[0]!.index! > ownerStart && writes[0]!.index! < ownerEnd, message).toBeTrue();
+    } else expect(writes.map(([write]) => write), `${file}: ${message}`).toEqual(OTHER_SCROLL_WRITES[file] ? [OTHER_SCROLL_WRITES[file]!] : []);
+  }
 });
 
 test("every timeline scroll callback reports the real viewport", () => {

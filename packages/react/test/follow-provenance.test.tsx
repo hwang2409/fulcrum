@@ -58,23 +58,37 @@ function installScrollGeometry() {
   };
 }
 
-function mountTimeline() {
+// `hosted` puts the scroll on a host element the app owns, so a test can move the Timeline to a second host.
+function mountTimeline(hosted = false) {
   const store = createRunStore((flush) => flush());
   store.resync(Array.from({ length: 300 }, (_, index) => message(`row-${index}`)));
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   let followRequest = 0;
-  const render = () => root!.render(<RunProvider store={store}><Timeline virtual followRequest={followRequest} /></RunProvider>);
+  let target: "a" | "b" = "a";
+  const scrollRef = { current: null as HTMLElement | null };
+  const render = () => root!.render(<RunProvider store={store}>
+    {hosted ? (
+      <div data-host="b" ref={target === "b" ? scrollRef : undefined}>
+        <div data-host="a" ref={target === "a" ? scrollRef : undefined}>
+          <Timeline virtual followRequest={followRequest} scrollRef={scrollRef} renderJumpToLatest={(control) => <aside>{control}</aside>} />
+        </div>
+      </div>
+    ) : <Timeline virtual followRequest={followRequest} />}
+  </RunProvider>);
   act(render);
-  const host = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+  const currentHost = () => hosted ? scrollRef.current! : container!.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
   const append = () => act(() => store.dispatch(message(`added-${store.getOutline().length}`)));
   const jump = () => container!.querySelector<HTMLElement>('[data-part="jump-to-latest"]');
   const unseen = () => container!.querySelector<HTMLElement>('[data-part="timeline"]')!.dataset.unseenCount;
   const follow = () => act(() => { followRequest++; render(); });
-  host.scrollTop = host.scrollHeight;
-  act(() => host.dispatchEvent(new Event("scroll")));
-  return { append, follow, host, jump, store, unseen };
+  // Moves the Timeline to the app's outer scroll host: the inner host is released.
+  const detach = () => act(() => { target = "b"; render(); });
+  const first = currentHost();
+  first.scrollTop = first.scrollHeight;
+  act(() => first.dispatchEvent(new Event("scroll")));
+  return { append, detach, follow, get host() { return currentHost(); }, jump, store, unseen };
 }
 
 function moveReader(host: HTMLElement, top = 3_000) {
@@ -417,7 +431,7 @@ describe("timeline scroll provenance", () => {
     { name: "end clamp at the old end", run: ({ host, oldEnd }) => hostWrite(host, oldEnd), pinned: true, unpinned: false },
     { name: "end clamp at the new end", run: ({ host }) => hostWrite(host, host.scrollHeight), pinned: true, unpinned: null },
     { name: "host write to scrollHeight (F1)", run: ({ host }) => hostWrite(host, host.scrollHeight), pinned: null, unpinned: false },
-    { name: "host write 10 px above a grown end (stale end)", run: ({ host }) => hostWrite(host, end(host) - 10), pinned: null, unpinned: false },
+    { name: "host write 10 px above a grown end (stale end)", run: ({ host }) => hostWrite(host, end(host) - 10), pinned: false, unpinned: false },
     { name: "reader lease scroll to the end", run: ({ host }) => {
       act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 })));
       hostWrite(host, host.scrollHeight);
@@ -485,6 +499,150 @@ describe("timeline scroll provenance", () => {
       }
       expect(echoCommits, "reporting an unchanged viewport must not re-render").toBe(0);
       expect(host.scrollTop).toBe(end(host));
+    } finally { geometry.restore(); }
+  });
+
+  // Every reader-input lease has one start and guaranteed ends. Two public effects show a lease:
+  // a held lease defers the host's follow request, and an armed lease makes the next scroll the reader's
+  // (so a non-input scroll to the end re-pins, which F1 forbids for a host write without input).
+  type LeaseKind = "wheel" | "focus" | "keyboard" | "scrollbar" | "touch";
+  type Transition = "start" | "normal end" | "blur end" | "visibility end" | "detach end" | "end without start" | "duplicate start";
+  type Mounted = ReturnType<typeof mountTimeline>;
+  const firstRow = () => container!.querySelector<HTMLElement>("[data-virtual-id]")!;
+  const startLease = (kind: LeaseKind, { host }: Mounted) => act(() => {
+    if (kind === "wheel") host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 }));
+    else if (kind === "focus") firstRow().dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    else if (kind === "keyboard") firstRow().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    else if (kind === "scrollbar") {
+      host.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 816, bottom: 600, width: 816, height: 600, toJSON: () => ({}) });
+      host.dispatchEvent(new PointerEvent("pointerdown", { clientX: 808, clientY: 300, bubbles: true }));
+    } else {
+      const touch = new Event("touchstart", { bubbles: true }) as TouchEvent;
+      Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+      host.dispatchEvent(touch);
+    }
+  });
+  const endLease = (kind: LeaseKind, { host }: Mounted) => act(() => {
+    if (kind === "keyboard") firstRow().dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowDown", bubbles: true }));
+    else if (kind === "scrollbar") document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    else {
+      if (kind === "touch") host.dispatchEvent(new Event("touchend", { bubbles: true }));
+      host.dispatchEvent(new Event("scrollend"));
+    }
+  });
+  const hideDocument = () => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try { act(() => document.dispatchEvent(new Event("visibilitychange"))); } finally { delete (document as unknown as Record<string, unknown>).visibilityState; }
+  };
+  const runTransition = (kind: LeaseKind, transition: Transition, timeline: Mounted) => {
+    if (transition === "end without start") return endLease(kind, timeline);
+    startLease(kind, timeline);
+    if (transition === "duplicate start") { startLease(kind, timeline); endLease(kind, timeline); }
+    else if (transition === "normal end") endLease(kind, timeline);
+    else if (transition === "blur end") act(() => window.dispatchEvent(new Event("blur")));
+    else if (transition === "visibility end") hideDocument();
+    else if (transition === "detach end") timeline.detach();
+  };
+  // [held: defers follow, armed: the next scroll is the reader's]; "duplicate start" is two starts and one normal end.
+  const heldKind = { held: [true, true], "normal end": [false, true], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, true] } as const;
+  const leaseTable: Record<LeaseKind, Record<Transition, readonly [boolean, boolean]>> = {
+    keyboard: { ...heldKind, start: heldKind.held },
+    scrollbar: { ...heldKind, start: heldKind.held },
+    touch: { start: [true, true], "normal end": [false, false], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, false] },
+    wheel: { start: [false, true], "normal end": [false, false], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, false] },
+    focus: { start: [false, true], "normal end": [false, false], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, false] },
+  };
+  const leaseRows = (Object.keys(leaseTable) as LeaseKind[]).flatMap((kind) =>
+    (Object.keys(leaseTable[kind]) as Transition[]).map((transition) => [kind, transition, ...leaseTable[kind][transition]] as const));
+  const unpinnedWithUnseen = () => {
+    const timeline = mountTimeline(true);
+    act(() => timeline.host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+    moveReader(timeline.host);
+    act(() => timeline.host.dispatchEvent(new Event("scrollend")));
+    timeline.append();
+    expect(timeline.unseen()).toBe("1");
+    return timeline;
+  };
+  test.each(leaseRows)("lease %s %s: held %p, armed %p", (kind, transition, held, armed) => {
+    const geometry = installScrollGeometry();
+    try {
+      let timeline = unpinnedWithUnseen();
+      runTransition(kind, transition, timeline);
+      timeline.follow();
+      expect(timeline.unseen(), held ? "a held lease must defer the follow request" : "no held lease may block the follow request").toBe(held ? "1" : "0");
+      act(() => root!.unmount());
+      root = undefined;
+      container!.remove();
+
+      timeline = unpinnedWithUnseen();
+      runTransition(kind, transition, timeline);
+      hostWrite(timeline.host, timeline.host.scrollHeight);
+      expect(timeline.unseen(), armed ? "an armed lease makes the scroll to the end the reader's" : "without a lease a host write to the end must not resume follow (F1)").toBe(armed ? "0" : "1");
+    } finally { geometry.restore(); }
+  });
+
+  // A scroll key counts only when the browser would scroll this host with it.
+  test.each(["external textarea", "external listbox that prevents default", "editable inside the timeline", "second timeline", "page body"] as const)(
+    "ArrowUp from %s while pinned",
+    (source) => {
+      const geometry = installScrollGeometry();
+      const extra = document.createElement("div");
+      document.body.append(extra);
+      let otherRoot: Root | undefined;
+      try {
+        const { append, host, jump, unseen } = mountTimeline();
+        let target: Element = document.body;
+        if (source === "external textarea") target = extra.appendChild(document.createElement("textarea"));
+        else if (source === "external listbox that prevents default") {
+          target = extra.appendChild(document.createElement("div"));
+          target.setAttribute("role", "listbox");
+          target.addEventListener("keydown", (event) => event.preventDefault());
+        } else if (source === "editable inside the timeline") target = firstRow().appendChild(document.createElement("input"));
+        else if (source === "second timeline") {
+          const store = createRunStore((flush) => flush());
+          store.resync(Array.from({ length: 300 }, (_, index) => message(`other-${index}`)));
+          otherRoot = createRoot(extra);
+          act(() => otherRoot!.render(<RunProvider store={store}><Timeline virtual /></RunProvider>));
+          target = extra.querySelector("[data-virtual-id]")!;
+        }
+        act(() => {
+          target.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+          target.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp", bubbles: true, cancelable: true }));
+        });
+        append();
+        if (source === "page body") {
+          expect(unseen(), "a page-level scroll key is reader intent").toBe("1");
+          expect(jump()).not.toBeNull();
+        } else {
+          expect(unseen(), `ArrowUp from ${source} must not turn follow off`).toBe("0");
+          expect(jump()).toBeNull();
+          expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+        }
+      } finally {
+        act(() => otherRoot?.unmount());
+        extra.remove();
+        geometry.restore();
+      }
+    },
+  );
+
+  test("an overlay scrollbar drag to the end re-pins, and a row click starts no scrollbar lease", () => {
+    const geometry = installScrollGeometry();
+    try {
+      let timeline = unpinnedWithUnseen();
+      // Overlay scrollbars take no gutter: the drag's pointerdown lands on the host itself.
+      act(() => timeline.host.dispatchEvent(new PointerEvent("pointerdown", { clientX: 400, clientY: 300, bubbles: true })));
+      hostWrite(timeline.host, timeline.host.scrollHeight);
+      act(() => document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })));
+      expect(timeline.unseen(), "a scrollbar drag down to the end re-pins").toBe("0");
+      act(() => root!.unmount());
+      root = undefined;
+      container!.remove();
+
+      timeline = unpinnedWithUnseen();
+      act(() => firstRow().dispatchEvent(new PointerEvent("pointerdown", { clientX: 400, clientY: 300, bubbles: true })));
+      timeline.follow();
+      expect(timeline.unseen(), "a row click must not hold a scrollbar lease").toBe("0");
     } finally { geometry.restore(); }
   });
 });
