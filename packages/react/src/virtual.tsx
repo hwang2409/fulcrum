@@ -84,6 +84,7 @@ export function useVirtualList<Id extends string>(
   const lastScrollTop = useRef(0);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pinnedMeasurementNotified = useRef(false);
+  const programmaticScrollTop = useRef<number | null>(null);
   const ignoreScrollUntil = useRef(0);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
@@ -138,8 +139,8 @@ export function useVirtualList<Id extends string>(
       const scrollToBottom = () => {
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = null;
-        ignoreScrollUntil.current = performance.now() + 50;
         container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        programmaticScrollTop.current = container.scrollTop;
         lastScrollTop.current = container.scrollTop;
         updateViewport("programmatic", false);
       };
@@ -191,6 +192,14 @@ export function useVirtualList<Id extends string>(
         }
       };
       const onScroll = () => {
+        const expectedTop = programmaticScrollTop.current;
+        if (expectedTop !== null) {
+          programmaticScrollTop.current = null;
+          if (Math.abs(container.scrollTop - expectedTop) < 0.5) {
+            scrollToBottom();
+            return;
+          }
+        }
         const before = engine.getSnapshot();
         if (performance.now() < ignoreScrollUntil.current) {
           if (before.pinned) scrollToBottom();
@@ -291,6 +300,7 @@ export function useVirtualList<Id extends string>(
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         resizeFrame.current = null;
         scrollEndTimer.current = null;
+        programmaticScrollTop.current = null;
         settleDetachedViewport(engine, touching, touchY, userScrollUntil, ignoreScrollUntil);
         pendingEntries.current.clear();
         if (scrollToBottomRef.current === scrollToBottom) scrollToBottomRef.current = null;
