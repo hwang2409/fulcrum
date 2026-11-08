@@ -90,6 +90,7 @@ export function useVirtualList<Id extends string>(
   const attachment = useRef<{ host: HTMLElement | null; settled: boolean }>({ host: null, settled: false });
   const releaseCurrent = useRef<(() => void) | null>(null);
   const transferCurrent = useRef<((next: HTMLElement | null) => void) | null>(null);
+  const scrollToBottomRef = useRef<((syncViewport?: boolean) => void) | null>(null);
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
 
@@ -134,10 +135,13 @@ export function useVirtualList<Id extends string>(
       const updateViewport = (source: "user" | "programmatic") =>
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
       const scrollToBottom = (syncViewport = true) => {
+        if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
+        scrollEndTimer.current = null;
         container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
         lastScrollTop.current = container.scrollTop;
         if (syncViewport) updateViewport("programmatic");
       };
+      scrollToBottomRef.current = scrollToBottom;
       if (prior) {
         const intent = engine.beforeMutation();
         updateViewport("programmatic");
@@ -148,14 +152,15 @@ export function useVirtualList<Id extends string>(
       const flushMeasurements = () => {
         resizeFrame.current = null;
         if (pendingEntries.current.size === 0) return;
+        // Capture ownership before the engine notifies React: its correction can commit synchronously and move the DOM.
+        const ownsBottom = engine.getSnapshot().pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5;
         const token = engine.beforeMutation();
         for (const [id, size] of pendingEntries.current) engine.measure(id, size);
         pendingEntries.current.clear();
         engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit() });
         // A late layout pass can leave WebKit a few pixels behind the new end after the measurement correction.
-        // Re-apply the existing follow intent only when the DOM has not moved independently since the last scroll.
-        const { pinned } = engine.getSnapshot();
-        if (pinned && Math.abs(container.scrollTop - lastScrollTop.current) < 0.5) scrollToBottom();
+        // Re-apply the existing follow intent only when the DOM had not moved independently before that correction.
+        if (ownsBottom && engine.getSnapshot().pinned) scrollToBottom();
       };
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
@@ -176,7 +181,10 @@ export function useVirtualList<Id extends string>(
       const finishScroll = () => {
         touching.current = false;
         const result = engine.flushPendingCorrection();
-        if (Math.abs(result.jump) >= 0.5) container.scrollTop = result.scrollTop;
+        if (Math.abs(result.jump) >= 0.5) {
+          if (engine.getSnapshot().pinned) scrollToBottom(false);
+          else container.scrollTop = result.scrollTop;
+        }
       };
       const onScroll = () => {
         const before = engine.getSnapshot();
@@ -259,6 +267,7 @@ export function useVirtualList<Id extends string>(
         scrollEndTimer.current = null;
         settleDetachedViewport(engine, touching, touchY, userScrollUntil, ignoreScrollUntil);
         pendingEntries.current.clear();
+        if (scrollToBottomRef.current === scrollToBottom) scrollToBottomRef.current = null;
         container.style.overflowAnchor = priorOverflowAnchor;
       };
       attachment.current.host = container;
@@ -279,7 +288,13 @@ export function useVirtualList<Id extends string>(
 
   useLayoutEffect(() => {
     const container = containerRef.current;
-    if (container && Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5)
+    if (!container) return;
+    const domEnd = Math.max(0, container.scrollHeight - container.clientHeight);
+    if (snapshot.pinned && snapshot.programmatic && Math.abs(container.scrollTop - domEnd) >= 0.5) {
+      scrollToBottomRef.current?.(false);
+      return;
+    }
+    if (Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5)
       container.scrollTop = snapshot.scrollTop;
   }, [snapshot]);
 
@@ -316,7 +331,10 @@ export function useVirtualList<Id extends string>(
   const scrollToEnd = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
-    container.scrollTop = engine.scrollToEnd();
+    const next = engine.scrollToEnd();
+    const applyBottom = scrollToBottomRef.current;
+    if (applyBottom && container.scrollHeight > container.clientHeight) applyBottom();
+    else container.scrollTop = next;
     ignoreScrollUntil.current = performance.now() + 50;
   }, [engine]);
   const requestFollow = useCallback(() => {
@@ -324,7 +342,10 @@ export function useVirtualList<Id extends string>(
     const container = containerRef.current;
     if (!container) return;
     const next = engine.requestFollow();
-    if (next !== null) container.scrollTop = next;
+    if (next === null) return;
+    const applyBottom = scrollToBottomRef.current;
+    if (applyBottom && container.scrollHeight > container.clientHeight) applyBottom();
+    else container.scrollTop = next;
     ignoreScrollUntil.current = performance.now() + 50;
   }, [engine]);
 
