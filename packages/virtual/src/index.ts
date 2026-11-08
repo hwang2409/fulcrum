@@ -88,6 +88,7 @@ export type Virtualizer<Id extends string = string> = {
   invalidateMeasurements(ids: Iterable<Id>): void;
   setLoaded(ids: Iterable<Id> | "all"): void;
   setFollow(follow: boolean): void;
+  isFollowing(): boolean;
   beforeMutation(options?: { mode?: "anchor" | "shift" }): MutationToken<Id>;
   afterMutation(token: MutationToken<Id>, options?: { deferCorrection?: boolean; notify?: boolean }): MutationResult;
   flushPendingCorrection(notify?: boolean, releaseOwnership?: boolean): MutationResult;
@@ -639,6 +640,9 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       if (follow) unseenIds.clear();
       log("viewport", { scrollTop, size: viewportSize, programmatic: false, pinned });
       changed();
+    },
+    isFollowing() {
+      return pinned;
     },
     beforeMutation(mutationOptions) {
       const anchor = captureAnchor();

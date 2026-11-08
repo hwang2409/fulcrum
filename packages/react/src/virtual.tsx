@@ -157,7 +157,7 @@ export function useVirtualList<Id extends string>(
         if (pendingEntries.current.size === 0) return;
         // Capture ownership before the engine notifies React: its correction can commit synchronously and move the DOM.
         // Real input clears follow intent before the measurement flush; content and layout changes do not.
-        const ownsBottom = engine.getSnapshot().pinned;
+        const ownsBottom = engine.isFollowing();
         const notify = !ownsBottom || !pinnedMeasurementNotified.current;
         if (ownsBottom) pinnedMeasurementNotified.current = true;
         const token = engine.beforeMutation();
@@ -166,7 +166,7 @@ export function useVirtualList<Id extends string>(
         engine.afterMutation(token, { deferCorrection: touching.current && isIOSWebKit(), notify });
         // A late layout pass can leave WebKit a few pixels behind the new end after the measurement correction.
         // Re-apply the existing follow intent only when the DOM had not moved independently before that correction.
-        if (ownsBottom && engine.getSnapshot().pinned) scrollToBottom();
+        if (ownsBottom && engine.isFollowing()) scrollToBottom();
       };
       const observer = new ResizeObserver((entries) => {
         for (const entry of entries) {
@@ -178,7 +178,7 @@ export function useVirtualList<Id extends string>(
         // not a frame later when the engine measures (and then agrees). Moving scroll resizes nothing: no observer loop.
         // The user beats the engine: pointer, wheel, key, and touch input own their scroll frame, while a delayed
         // browser event from content growth does not change follow intent.
-        if (engine.getSnapshot().pinned) scrollToBottom();
+        if (engine.isFollowing()) scrollToBottom();
       });
       observerRef.current = observer;
       for (const row of rows.current.values()) observer.observe(row);
@@ -187,7 +187,7 @@ export function useVirtualList<Id extends string>(
         touching.current = false;
         const result = engine.flushPendingCorrection();
         if (Math.abs(result.jump) >= 0.5) {
-          if (engine.getSnapshot().pinned) scrollToBottom();
+          if (engine.isFollowing()) scrollToBottom();
           else container.scrollTop = result.scrollTop;
         }
       };
@@ -275,7 +275,7 @@ export function useVirtualList<Id extends string>(
       container.addEventListener("touchcancel", onTouchEnd, { passive: true });
       // A scroll box that changes size (a banner above it, a composer below it) keeps a pinned reader at the bottom.
       const viewportObserver = new ResizeObserver(() => {
-        const pinned = engine.getSnapshot().pinned;
+        const pinned = engine.isFollowing();
         updateViewport("programmatic");
         if (!pinned) return;
         scrollToBottom();
