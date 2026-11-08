@@ -51,7 +51,16 @@ const basePreview = baseRoot ? startPreview(baseRoot, basePort) : undefined;
 // Runs in the page. Contrast composites an element's background over its ancestors' until one is opaque.
 function pageProblems(minHeight: number) {
   const pixel = new OffscreenCanvas(1, 1).getContext("2d", { willReadFrequently: true })!;
+  // Computed colors are read at full precision, as axe, Lighthouse, and DevTools read them: Chrome keeps color-mix()
+  // results unrounded (color(srgb 0.602902 0.668 0.17)), and 8-bit painted pixels can pass where those fail. The canvas
+  // only resolves other syntaxes (named colors, raw custom property text). test/themes.test.ts checks both models.
   const rgba = (color: string) => {
+    const exact = /^(rgba?|color)\((srgb )?([\d.\s,/]+)\)$/.exec(color.trim());
+    if (exact && (exact[1] !== "color" || exact[2])) {
+      const [r, g, b, a = 1] = exact[3]!.split(/[\s,/]+/).filter(Boolean).map(Number);
+      const scale = exact[1] === "color" ? 255 : 1;
+      return [r! * scale, g! * scale, b! * scale, a];
+    }
     pixel.clearRect(0, 0, 1, 1);
     pixel.fillStyle = color;
     pixel.fillRect(0, 0, 1, 1);

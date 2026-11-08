@@ -27,7 +27,9 @@ const ACCENTS = ["path", "number", "added", "removed", "pattern", "type"].map((n
 const TOKENS = TOKEN_TYPES.map((name) => `tok-${name}`);
 
 type Rgb = [number, number, number];
-// Browsers store a color-mix() result in 8-bit channels, so mixes (the diff row tints too) are rounded as the page renders them.
+// Channels stay unrounded (0-255 floats): browsers keep a color-mix() computed value at full precision (Chrome gives
+// color(srgb 0.602902 0.668 0.17)), and axe, Lighthouse, and DevTools check contrast on that value. contrast() checks it
+// and the 8-bit pixel the page paints, so a color passes only when both reach the ratio.
 function color(value: string, vars: Record<string, string>): Rgb {
   value = value.trim();
   const variable = /^var\(--fulcrum-([\w-]+)\)$/.exec(value);
@@ -41,16 +43,18 @@ function color(value: string, vars: Record<string, string>): Rgb {
   const mix = /^color-mix\(in srgb,\s*(.+?)\s+(\d+(?:\.\d+)?)%,\s*(.+?)(?:\s+\d+%)?\)$/.exec(value);
   if (mix) {
     const [a, b, p] = [color(mix[1]!, vars), color(mix[3]!, vars), Number(mix[2]) / 100];
-    return a.map((c, i) => Math.round(c * p + b[i]! * (1 - p))) as Rgb;
+    return a.map((c, i) => c * p + b[i]! * (1 - p)) as Rgb;
   }
   throw new Error(`cannot read color ${JSON.stringify(value)}`);
 }
 const linear = (v: number) => ((v /= 255) <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
 const luminance = (c: Rgb) => c.map(linear).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i]!, 0);
-const contrast = (a: Rgb, b: Rgb) => {
+const ratio = (a: Rgb, b: Rgb) => {
   const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (light! + 0.05) / (dark! + 0.05);
 };
+const painted = (c: Rgb) => c.map(Math.round) as Rgb;
+const contrast = (a: Rgb, b: Rgb) => Math.min(ratio(a, b), ratio(painted(a), painted(b)));
 function oklch(c: Rgb) {
   const [r, g, b] = c.map(linear) as Rgb;
   const [l, m, s] = [[0.4122214708, 0.5363325363, 0.0514459929], [0.2119034982, 0.6806995451, 0.1073969566], [0.0883024619, 0.2817188376, 0.6299787005]].map(([x, y, z]) => Math.cbrt(x! * r + y! * g + z! * b)) as Rgb;
@@ -63,7 +67,7 @@ const STATUS = ["ok", "warn", "danger"];
 function backgrounds(vars: Record<string, string>, key: string): Record<string, Rgb> {
   const bg = color(vars.bg!, vars);
   const surface = color(vars.surface!, vars);
-  const tint = (name: string, under = bg): Rgb => color(vars[name]!, vars).map((c, i) => Math.round(c * 0.08 + under[i]! * 0.92)) as Rgb;
+  const tint = (name: string, under = bg): Rgb => color(vars[name]!, vars).map((c, i) => c * 0.08 + under[i]! * 0.92) as Rgb;
   const base = { bg, surface };
   if (key.startsWith("ansi-")) return base;
   const rows = { ...base, "inserted row": tint("tok-inserted"), "deleted row": tint("tok-deleted") };
@@ -82,7 +86,7 @@ test("UI text reaches 4.5:1 on bg, surface, diff rows, and its own status tint i
     for (const key of UI) {
       for (const [background, rgb] of Object.entries(backgrounds(vars, key))) {
         const ratio = contrast(color(vars[key]!, vars), rgb);
-        if (ratio < 4.5) problems.push(`${name}: --fulcrum-${key} on ${background} is ${ratio.toFixed(2)}:1`);
+        if (ratio < 4.5) problems.push(`${name}: --fulcrum-${key} on ${background} is ${ratio.toFixed(3)}:1`);
       }
     }
   }
@@ -99,12 +103,12 @@ test("syntax colors reach 4.5:1 and ANSI colors 3:1 where they sit, as the offic
       const on = backgrounds(vars, key);
       const value = color(vars[key]!, vars);
       const ratio = worst(value, on);
-      if (ratio < min) problems.push(`${where} is ${ratio.toFixed(2)}:1, needs ${min}:1`);
+      if (ratio < min) problems.push(`${where} is ${ratio.toFixed(3)}:1, needs ${min}:1`);
       if (!official[key]) continue;
       const before = color(official[key]!, vars);
       if (worst(before, on) >= min) problems.push(`${where}: official ${official[key]} already reaches ${min}:1, use it`);
       // Minimal: just over the ratio (hex rounding allows a little), same hue, no added chroma.
-      if (ratio >= min + 0.1) problems.push(`${where} is ${ratio.toFixed(2)}:1, more change than ${min}:1 needs`);
+      if (ratio >= min + 0.1) problems.push(`${where} is ${ratio.toFixed(3)}:1, more change than ${min}:1 needs`);
       const [a, b] = [oklch(before), oklch(value)];
       const hueShift = Math.abs(((a.h - b.h + 540) % 360) - 180);
       if (a.C > 0.03 && hueShift > 3) problems.push(`${where} moves hue ${hueShift.toFixed(1)} deg from ${official[key]}`);
@@ -125,11 +129,11 @@ test("ui-* accents reach 4.5:1 on bg and surface, as their source tok-* official
       const on = { bg: color(vars.bg!, vars), surface: color(vars.surface!, vars) };
       const value = color(vars[key]!, vars);
       const ratio = worst(value, on);
-      if (ratio < 4.5) problems.push(`${where} is ${ratio.toFixed(2)}:1`);
+      if (ratio < 4.5) problems.push(`${where} is ${ratio.toFixed(3)}:1`);
       if (vars[key] === hex) continue;
       const before = color(hex!, vars);
       if (worst(before, on) >= 4.5) problems.push(`${where}: ${token} ${hex} already reaches 4.5:1, use it`);
-      if (ratio >= 4.6) problems.push(`${where} is ${ratio.toFixed(2)}:1, more change than 4.5:1 needs`);
+      if (ratio >= 4.6) problems.push(`${where} is ${ratio.toFixed(3)}:1, more change than 4.5:1 needs`);
       const [a, b] = [oklch(before), oklch(value)];
       const hueShift = Math.abs(((a.h - b.h + 540) % 360) - 180);
       if (a.C > 0.03 && hueShift > 3) problems.push(`${where} moves hue ${hueShift.toFixed(1)} deg from ${hex}`);
