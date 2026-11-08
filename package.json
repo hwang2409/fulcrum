@@ -5,7 +5,7 @@
   "scripts": {
     "build:packages": "for d in packages/*/; do [ -d \"$d/dist\" ] || rm -f \"$d\"*.tsbuildinfo; done; tsc -b && bun run --cwd packages/highlight build && bun run --cwd packages/mermaid build",
     "test": "bun test",
-    "typecheck": "tsc -b",
+    "typecheck": "bun scripts/typecheck.ts",
     "check:zeta-events": "bun packages/zeta/scripts/check-events.ts",
     "bench:check": "bun scripts/bench-check.ts",
     "bench:markdown": "bun scripts/markdown-bench.ts",
