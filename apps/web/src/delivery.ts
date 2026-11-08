@@ -1,10 +1,11 @@
 import type { RunEvent } from "@fulcrum/core";
-import type { ZetaClient } from "@fulcrum/zeta";
+import type { SessionStore, ZetaClient } from "@fulcrum/zeta";
 
 /** Zeta errors that mean the turn changed state between the click and the server: -32004 running, -32005 not running. */
 const TURN_RUNNING = -32004;
 const NO_TURN = -32005;
 const DETAILS_EVICTED = -32010;
+const LIVE_STATUS_WAIT_MS = 1_000;
 const code = (error: unknown) => (error as { code?: unknown } | null)?.code;
 
 type Accepted = { accepted?: boolean; status?: string };
@@ -32,7 +33,7 @@ const refusal = (result: Accepted) => new Error(result.status === "dropped" ? "t
  * Each message keeps one `intent` across every attempt, and the client stamps it on zeta's `user_message` echo, so the
  * steer's row becomes the resent message's row: the user sees one row per message they wrote.
  */
-export function createDelivery(newId: () => string = () => `web-${crypto.randomUUID()}`, reconcile?: (event: RunEvent) => void) {
+export function createDelivery(newId: () => string = () => `web-${crypto.randomUUID()}`, reconcile?: (event: RunEvent) => void, store?: SessionStore) {
   let unsettled: Message | null = null;
   let steers: Message[] = [];
   // The user's stop of the running turn: resolves to whether it ended the turn (it failed, or found no turn: false).
@@ -69,9 +70,39 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
     const intent = newId();
     return { text, intent, id: client.features.includes("delivery_id") ? intent : null };
   };
-  const dropped = async (client: ZetaClient, id: string) => {
-    const { status, outcome } = (await client.request("delivery_status", { delivery_id: id }, { timeoutMs: 15_000 })) as { status?: string; outcome?: string };
+  /** The live delivery status on the message's row: the row has its intent's id, or its delivery id's when zeta's echo came first. */
+  const liveStatus = (live: SessionStore, { intent, id }: Message) => {
+    for (const itemId of [`user:intent:${intent}`, `user:delivery:${id}`]) {
+      const item = live.getItem(itemId);
+      if (item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === id && item.event.delivery_status) return item.event.delivery_status === "dropped";
+    }
+    return undefined;
+  };
+  // Checks of messages that wait for their live status. The store listener exists only while one waits.
+  const waiting = new Set<() => void>();
+  let unsubscribe: (() => void) | null = null;
+  const waitForLiveStatus = (live: SessionStore, message: Message) => new Promise<boolean | undefined>((resolve) => {
+    const check = () => { const status = liveStatus(live, message); if (status !== undefined) finish(status); };
+    const finish = (value: boolean | undefined) => {
+      clearTimeout(timer);
+      waiting.delete(check);
+      if (!waiting.size) { unsubscribe?.(); unsubscribe = null; }
+      resolve(value);
+    };
+    // Zeta sends a drop before the turn's end, so the status is normally on the row before this wait ends.
+    const timer = setTimeout(() => finish(undefined), LIVE_STATUS_WAIT_MS);
+    waiting.add(check);
+    unsubscribe ??= live.subscribe(() => [...waiting].forEach((waiter) => waiter()));
+  });
+  const queryStatus = async (client: ZetaClient, message: Message) => {
+    const { status, outcome } = (await client.request("delivery_status", { delivery_id: message.id }, { timeoutMs: 15_000 })) as { status?: string; outcome?: string };
     return status === "dropped" || (status === "evicted" && outcome === "dropped");
+  };
+  const dropped = async (client: ZetaClient, message: Message) => {
+    if (!store || !client.features.includes("delivery_id") || !client.features.includes("session_history_fidelity")) return queryStatus(client, message);
+    const live = liveStatus(store, message) ?? await waitForLiveStatus(store, message);
+    // No live status: a restart snapshot may have rebuilt the store and lost the row the drop would mark, so ask zeta.
+    return live ?? queryStatus(client, message);
   };
   return {
     async submit(client: ZetaClient, text: string, steer: boolean) {
@@ -100,7 +131,7 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
       stopping = null;
       const undelivered: string[] = [];
       // A query that fails (a dropped socket) leaves its steer unmarked, the safe side; the others still count.
-      const statuses = await Promise.allSettled(ended.map((message) => dropped(client, message.id!)));
+      const statuses = await Promise.allSettled(ended.map((message) => dropped(client, message)));
       for (const [index, message] of ended.entries()) {
         const status = statuses[index]!;
         if (status.status === "rejected" || !status.value) continue;

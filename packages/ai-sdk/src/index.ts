@@ -66,8 +66,8 @@ const mergeMeta = (prior: Record<string, unknown> | undefined, next: Record<stri
     : {}),
 });
 
-interface ToolState { call: ToolCall; input: string; }
-interface BlockState { kind: "text" | "reasoning"; block: ContentBlock; }
+interface ToolState { call: ToolCall; input: string; preliminary?: boolean; }
+interface BlockState { kind: "text" | "reasoning"; block: ContentBlock; message: string; }
 
 export type AiSdkEntityKind = "message" | "tool" | "approval";
 export type AiSdkEntityIdentity =
@@ -119,6 +119,8 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   const blocks = new Map<string, BlockState>();
   const tools = new Map<string, ToolState>();
   const approvalByTool = new Map<string, string>();
+  // One UI message holds every step; a tool row that appears after the current message's content ends that message.
+  let toolAfterContent = false;
 
   const call = (id: string, name?: string, meta?: Record<string, unknown>): ToolState => {
     const prior = tools.get(id);
@@ -146,24 +148,48 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     };
   };
 
+  /**
+   * The message that new content streams into. Content after a tool row commits the current message and opens the
+   * next one, so the timeline reads text, tool, text in order. The next id is synthetic: a continuation stream of the
+   * same UI message can never reuse it, and a replay of this stream assigns it again.
+   */
+  const openMessage = (): RunEvent[] => {
+    if (!toolAfterContent) {
+      messageId ??= syntheticId("message", ++messageNumber);
+      return [];
+    }
+    const event = commit()!;
+    content.length = 0;
+    toolAfterContent = false;
+    messageId = syntheticId("message", ++messageNumber);
+    return [event];
+  };
+
   const decodeBlock = (part: Row, type: string): RunEvent[] => {
     const kind = type.startsWith("text-") ? "text" : "reasoning";
     const id = wireString(part.id, "part.id");
     if (type.endsWith("-start")) {
-      messageId ??= syntheticId("message", ++messageNumber);
+      const events = openMessage();
       const block: ContentBlock = { type: kind, text: "", ...(providerMeta(part) ? { meta: providerMeta(part) } : {}) };
-      blocks.set(id, { kind, block });
+      blocks.set(id, { kind, block, message: messageId! });
       content.push(block);
-      return [];
+      return events;
     }
     const state = blocks.get(id);
     if (!state || state.kind !== kind) throw new Error(`${type} requires a matching start part`);
+    const delta = type.endsWith("-end") ? "" : wireString(part.delta, "part.delta");
+    const events = delta === "" ? [] : openMessage();
+    // A block that began in a committed message continues as a new block of the current one: a delta to a message
+    // that is no longer streaming would restart it in the store.
+    if (state.message !== messageId && delta !== "") {
+      state.block = { type: kind, text: "" };
+      state.message = messageId!;
+      content.push(state.block);
+    }
     if (part.providerMetadata !== undefined) state.block.meta = mergeMeta(state.block.meta as Record<string, unknown> | undefined, providerMeta(part)!);
-    if (type.endsWith("-end")) return [];
-    const delta = wireString(part.delta, "part.delta");
     if (delta === "") return [];
     state.block.text = String(state.block.text) + delta;
-    return [{ type: "message_delta", message_id: messageId, delta, kind }];
+    return [...events, { type: "message_delta", message_id: messageId, delta, kind }];
   };
 
   // Sources and files stream in as whole blocks, in their place among the text and reasoning. A file that is an image
@@ -185,14 +211,15 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
         meta,
       };
     }
-    messageId ??= syntheticId("message", ++messageNumber);
+    const events = openMessage();
     content.push(block);
-    return [{ type: "message_block", message_id: messageId, block: { ...block } }];
+    return [...events, { type: "message_block", message_id: messageId, block: { ...block } }];
   };
 
   const decodeTool = (part: Row, type: string): RunEvent[] => {
     const originalId = wireString(part.toolCallId, "part.toolCallId");
     const id = wireId("tool", originalId);
+    if (content.length && !tools.has(id)) toolAfterContent = true;
     const meta = { ...toolMeta(part), wireId: originalId };
     if (type === "tool-input-start") {
       const state = call(id, wireString(part.toolName, "part.toolName"), meta);
@@ -226,16 +253,21 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
       return [{ type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: "tool execution denied", is_error: true, is_canceled: true } }, ...approvalEnd(id, "deny")];
     const isError = type === "tool-output-error";
     const output = isError ? wireString(part.errorText, "part.errorText") : serialized(part.output);
-    if (!isError && part.preliminary === true) return [{ type: "tool_output", tool_call: state.call, output }];
+    // Each preliminary output is the whole output so far: restart the call's output so the next one replaces it.
+    const restart: RunEvent[] = state.preliminary ? [{ type: "tool_start", tool_call: state.call }] : [];
+    if (!isError && part.preliminary === true) {
+      state.preliminary = true;
+      return [...restart, { type: "tool_output", tool_call: state.call, output }];
+    }
     const result: ToolResult = { tool_call_id: id, content: output, is_error: isError };
-    return [{ type: "tool_output", tool_call: state.call, output }, { type: "tool_end", tool_call: state.call, tool_result: result }, ...approvalEnd(id, "approve")];
+    return [...restart, { type: "tool_output", tool_call: state.call, output }, { type: "tool_end", tool_call: state.call, tool_result: result }, ...approvalEnd(id, "approve")];
   };
 
   const decodeLifecycle = (part: Row, type: string): RunEvent[] => {
     if (type === "start") {
       wireMessageId = optionalWireString(part.messageId, "part.messageId");
       messageId = wireMessageId !== undefined ? wireId("message", wireMessageId) : undefined;
-      content.length = 0; blocks.clear(); tools.clear(); approvalByTool.clear();
+      content.length = 0; blocks.clear(); tools.clear(); approvalByTool.clear(); toolAfterContent = false;
       return [{ type: "run_start", data: defined({ messageId, messageMetadata: part.messageMetadata }) }, { type: "turn_start" }, { type: "message_start", data: messageId ? { messageId } : {} }];
     }
     if (type === "start-step" || type === "finish-step") return [];
