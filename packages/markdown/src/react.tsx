@@ -137,7 +137,8 @@ const ListView = ({ id, block, highlight, fences }: { id: string; block: ListBlo
 };
 
 const BlockView = memo(function BlockView({ id, block, highlight, fences }: { id: string; block: Block; open: boolean | undefined } & Shared): ReactNode {
-  if (block.type === "paragraph") return block.tight
+  // A paragraph whose only line is a held table row (index.ts) has nothing to show yet.
+  if (block.type === "paragraph") return !block.children.length ? null : block.tight
     ? <InlineView nodes={block.children} />
     : <p data-part="md-paragraph"><InlineView nodes={block.children} /></p>;
   if (block.type === "heading") {

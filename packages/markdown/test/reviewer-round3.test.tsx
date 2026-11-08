@@ -67,7 +67,8 @@ test("preview copy work stays bounded for 10 KB, 100 KB, and 1 MB leaves", () =>
 });
 
 test("a held marker never hides text after the marker settles", () => {
-  const cases = [[">", " hello", "hello"], ["-", " item", "item"], ["1", ". item", "item"], ["#", " heading", "heading"], ["|", " cell |", "cell"], ["[", "label] text", "label text"]] as const;
+  // A pipe row has not settled until its line ends: it may still be a table header (table-row-hold.test.tsx).
+  const cases = [[">", " hello", "hello"], ["-", " item", "item"], ["1", ". item", "item"], ["#", " heading", "heading"], ["|", " cell |", ""], ["[", "label] text", "label text"]] as const;
   for (const [marker, suffix, expected] of cases) {
     const document = createStreamingDocument();
     document.append(marker);

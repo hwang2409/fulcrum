@@ -687,6 +687,15 @@ type TableCellRecord = {
 type ReferenceUser = ParagraphRecord | TableCellRecord;
 type TableRecord = { header: string; delimiter: string; cells: TableCellRecord[] };
 
+// A streaming line that starts with a pipe is a table row in waiting: it shows once it is a table, or once the next line
+// proves it is prose. Shown before that, its pipes would vanish into cell borders, or its cells would read as one word.
+const heldTableRow = (line: string) => /^[ \t]*\|/.test(line);
+/** `source` without its last line when that line is a held table row, else undefined. */
+const withoutHeldTableRow = (source: string) => {
+  const start = source.lastIndexOf("\n") + 1;
+  return heldTableRow(source.slice(start)) ? source.slice(0, Math.max(0, start - 1)) : undefined;
+};
+
 // The open paragraph's last line can still become a table header, which turns its pipes into cell borders.
 function hideTableCandidatePipes(inlines: Inline[]) {
   for (let index = inlines.length - 1; index >= 0; index--) {
@@ -1040,6 +1049,8 @@ export function createStreamingDocument(): StreamingDocument {
       const inspected = inspectReferenceLine(inlineSource);
       if (inspected.metadata && inspected.disposition.kind !== "definition") inlineSource = inlineSource.replace("[", "\\[");
     }
+    const held = streaming ? withoutHeldTableRow(record.source) : undefined;
+    if (held !== undefined) inlineSource = held;
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment())
@@ -1375,7 +1386,7 @@ export function createStreamingDocument(): StreamingDocument {
         const continuesParagraph = Boolean(openParagraph) && resolver.pendingContinuesParagraph(pending);
         const startsBlock = openParagraph ? !continuesParagraph : /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
         if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.offset < pending.length && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment())))
-          appendPendingParagraph(overlay, pendingPreview(classification, continuesParagraph), continuesParagraph);
+          if (classification.kind !== "paragraph" || !heldTableRow(pending.slice(classification.offset))) appendPendingParagraph(overlay, pendingPreview(classification, continuesParagraph), continuesParagraph);
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];
