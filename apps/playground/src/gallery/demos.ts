@@ -1,5 +1,6 @@
 import { resolveToolView, type ContentBlock, type RunEvent, type SubAgentEvent, type ToolCall, type ToolView } from "@fulcrum/core";
 import { zetaTools } from "@fulcrum/zeta";
+import type { RunEndOutcome } from "@fulcrum/core";
 import { CHART_PNG } from "./chart";
 
 /**
@@ -8,7 +9,7 @@ import { CHART_PNG } from "./chart";
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
 /** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; open?: boolean; markdownAll?: boolean; approval?: DemoApproval };
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; sourceFailure?: boolean; open?: boolean; markdownAll?: boolean; approval?: DemoApproval };
 /**
  * How the gallery's fake host answers approvals. `always` lists the request ids that get the third action (the rest
  * keep approve and deny); `reply` holds the decision until the card's "answer" button, or rejects it.
@@ -311,6 +312,7 @@ const unknownEnd: RunEvent[] = [
   ...stream("unknown-m1", "Rebuilding the docs site now; the output is long, so this takes a minute."),
   { type: "run_end", outcome: "unknown" },
 ];
+const runEnd = (outcome: RunEndOutcome): RunEvent[] => [{ type: "run_start" }, { type: "run_end", outcome }];
 
 export const demos: Demo[] = [
   {
@@ -801,6 +803,27 @@ export const demos: Demo[] = [
     runs: stateRuns,
   },
   {
+    id: "run-status-idle",
+    part: "RunStatus",
+    title: "idle",
+    description: "The compact header status before a run starts.",
+    events: [],
+  },
+  {
+    id: "run-status-running",
+    part: "RunStatus",
+    title: "running",
+    description: "The compact header status while the run is active.",
+    events: [{ type: "run_start" }],
+  },
+  {
+    id: "run-status-approval",
+    part: "RunStatus",
+    title: "waiting for approval",
+    description: "The compact header status while an approval is waiting.",
+    events: [{ type: "run_start" }, ask("r-status", run.bash)],
+  },
+  {
     id: "run-status-outcome",
     part: "RunStatus",
     title: "running, then outcome unknown",
@@ -808,12 +831,28 @@ export const demos: Demo[] = [
     live: 300,
     events: unknownEnd,
   },
+  ...(["completed", "cancelled", "failed", "disconnected"] as const).map((outcome) => ({
+    id: `run-end-marker-${outcome}`,
+    part: "RunEndMarker",
+    title: outcome,
+    description: `The run-end marker for a ${outcome} outcome.`,
+    events: runEnd(outcome),
+  })),
   {
     id: "run-end-marker-unknown",
     part: "RunEndMarker",
     title: "outcome unknown",
     description: "The compact marker a host places after the transcript. It renders only for an unknown outcome and has screen-reader text \"run ended while disconnected; outcome unknown\".",
     events: unknownEnd,
+  },
+  {
+    id: "run-navigator-open-failure",
+    part: "RunNavigator",
+    title: "child run open failure",
+    description: "A child row remains readable when its source fails to open.",
+    events: [agent("nav-failing", "error", { name: "failed-child-run-with-a-long-label", task: "open the unavailable child run and preserve the reading context", summary: "child run storage unavailable" })],
+    runs: {},
+    sourceFailure: true,
   },
   {
     id: "run-navigator-nested",

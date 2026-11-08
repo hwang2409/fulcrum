@@ -53,9 +53,12 @@ const fresh = (demo: Demo, paused = false) => {
 const steps = (demo: Demo) => Math.max(demo.events.length, ...Object.values(demo.runs ?? {}).map((events) => events.length));
 
 // The fake harness behind the sub-agent demos: child runs it has open, the rest say why they cannot.
-const sourceFor = (runs: Record<string, ReturnType<typeof createRunStore>>): RunSource => ({
-  open: (runId) => ({ store: runs[runId]!, release() {} }),
-  unavailable: (runId) => (runs[runId] ? undefined : "started before child runs were recorded"),
+const sourceFor = (runs: Record<string, ReturnType<typeof createRunStore>>, sourceFailure = false): RunSource => ({
+  open: (runId) => {
+    if (sourceFailure && runId === "nav-failing") throw new Error("child run storage unavailable");
+    return { store: runs[runId]!, release() {} };
+  },
+  unavailable: (runId) => (sourceFailure && runId === "nav-failing" ? undefined : runs[runId] ? undefined : "started before child runs were recorded"),
 });
 
 // The theme list comes from the shipped themes.css, so the picker never drifts from it.
@@ -83,7 +86,7 @@ function attributes(root: HTMLElement) {
 function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: string) => void; inspect: boolean }) {
   const [stores, setStores] = useState(() => fresh(demo, reducedMotion));
   const { store, runs } = stores;
-  const source = useMemo(() => sourceFor(runs), [runs]);
+  const source = useMemo(() => sourceFor(runs, demo.sourceFailure), [runs, demo.sourceFailure]);
   const [generation, setGeneration] = useState(0);
   const [paused, setPaused] = useState(reducedMotion);
   const [touched, setTouched] = useState(false);
