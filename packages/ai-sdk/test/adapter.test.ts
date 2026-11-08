@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runAdapterConformance, type AdapterFixture } from "@fulcrum/adapter-test";
-import { createRunStore } from "@fulcrum/core";
-import { jsonSchema, simulateReadableStream, stepCountIs, streamText, tool, type UIMessageChunk } from "ai";
+import { createRunStore, type RunEvent, type RunItem } from "@fulcrum/core";
+import { jsonSchema, readUIMessageStream, simulateReadableStream, stepCountIs, streamText, tool, type UIMessage, type UIMessageChunk } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
-import { createAiSdkAdapter, decodeAiSdkEntityId, encodeAiSdkEntityId, type AiSdkEntityIdentity } from "../src/index.js";
+import { createAiSdkAdapter, decodeAiSdkEntityId, decodeAiSdkMessage, encodeAiSdkEntityId, respondToApproval, type AiSdkApprovalResponse, type AiSdkEntityIdentity } from "../src/index.js";
 
 const fixtures = readFileSync(new URL("./fixtures/conformance.jsonl", import.meta.url), "utf8")
   .trim().split("\n").map((line) => JSON.parse(line) as AdapterFixture);
@@ -14,9 +14,19 @@ test("AI SDK UI message stream conforms to generic run events", () => {
     name: "ai-sdk",
     fixtures,
     capabilities: { approval: true, reasoning: true, reset: false, usage: true },
-    create: (streamKey) => {
-      const adapter = createAiSdkAdapter({ streamKey });
-      return { decode: (value) => adapter.decode((value as { part: unknown }).part) };
+    // A session row is a chunk of one of its streams (`stream`, default the session), or an event the host dispatched.
+    create: (sessionId) => {
+      const adapters = new Map<string, ReturnType<typeof createAiSdkAdapter>>();
+      return {
+        decode: (value) => {
+          const row = value as { stream?: string; part?: unknown; event?: RunEvent };
+          if (row.event) return [row.event];
+          const streamKey = row.stream ?? sessionId;
+          const adapter = adapters.get(streamKey) ?? createAiSdkAdapter({ streamKey });
+          adapters.set(streamKey, adapter);
+          return adapter.decode(row.part);
+        },
+      };
     },
   })).toEqual([]);
 });
@@ -196,15 +206,18 @@ test("pinned AI SDK preserves blank text and source part ids", async () => {
   expect(events.some((event) => event.type === "error" && event.error.code === "adapter_invalid_payload")).toBe(false);
 });
 
-test("blank tool and approval ids survive adapter and outbound decoding", () => {
+test("blank tool and approval ids survive adapter and outbound decoding", async () => {
   const adapter = createAiSdkAdapter({ streamKey: "blank-tool" });
   const [tool] = adapter.decode({ type: "tool-input-available", toolCallId: "", toolName: "deploy", input: {} });
   const [approval] = adapter.decode({ type: "tool-approval-request", toolCallId: "", approvalId: "" });
   expect(tool?.type === "tool_start" ? decodeAiSdkEntityId(tool.tool_call.id) : undefined).toEqual({ source: "wire", kind: "tool", id: "" });
   expect(approval?.type === "approval_request" ? decodeAiSdkEntityId(approval.request_id) : undefined).toEqual({ source: "wire", kind: "approval", id: "" });
   expect(approval?.type === "approval_request" ? approval.tool_call.meta : undefined).toMatchObject({ wireId: "", approvalId: "" });
-  const approvalEnd = adapter.decode({ type: "tool-output-denied", toolCallId: "" }).find((event) => event.type === "approval_end");
-  expect(approvalEnd?.type === "approval_end" ? decodeAiSdkEntityId(approvalEnd.request_id) : undefined).toEqual({ source: "wire", kind: "approval", id: "" });
+  const chat = recordingChat();
+  const ended: RunEvent[] = [];
+  await respondToApproval({ chat, dispatch: (event) => ended.push(event) }, { requestId: approval?.type === "approval_request" ? approval.request_id : "", approved: true });
+  expect(chat.responses).toEqual([{ id: "", approved: true }]);
+  expect(ended[0]?.type === "approval_end" ? decodeAiSdkEntityId(ended[0].request_id) : undefined).toEqual({ source: "wire", kind: "approval", id: "" });
 });
 
 test("malformed parts never throw", () => {
@@ -222,11 +235,13 @@ test("text-encoded tool input remains available to generic tool views", () => {
   expect(event?.type === "tool_start" ? event.tool_call.arguments : undefined).toEqual({ input: "console.log(1)" });
 });
 
-test("preliminary tool output keeps the tool active", () => {
+test("preliminary tool output keeps the tool active; every output replaces the last", () => {
   const adapter = createAiSdkAdapter({ streamKey: "test" });
   adapter.decode({ type: "tool-input-available", toolCallId: "tool", toolName: "search", input: {} });
-  expect(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "first", preliminary: true }).map(({ type }) => type)).toEqual(["tool_output"]);
-  expect(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "final" }).map(({ type }) => type)).toEqual(["tool_start", "tool_output", "tool_end"]);
+  const shape = (events: ReturnType<typeof adapter.decode>) => events.map((event) => event.type === "tool_output" ? `tool_output replace:${event.replace}` : event.type);
+  expect(shape(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "first", preliminary: true }))).toEqual(["tool_output replace:true"]);
+  expect(shape(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "second", preliminary: true }))).toEqual(["tool_output replace:true"]);
+  expect(shape(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "final" }))).toEqual(["tool_output replace:true", "tool_end"]);
 });
 
 test("commits source and file parts without losing their typed fields", () => {
@@ -321,15 +336,44 @@ test("tool part titles are validated as wire strings", () => {
   expect(adapter.decode({ type: "tool-input-start", toolCallId: "b", toolName: "x", title: 5 })[0]?.type).toBe("error");
 });
 
-test("an approval ends with fulcrum's decision: denied by tool-output-denied, approved once the tool returns", () => {
-  const ends = (parts: Record<string, unknown>[]) => {
-    const adapter = createAiSdkAdapter({ streamKey: "decisions" });
-    return parts.flatMap((part) => adapter.decode(part)).filter((event) => event.type === "approval_end");
-  };
-  const pinned = fixtures.filter((fixture) => fixture.sessionId === "approval").map((fixture) => fixture.part);
-  expect(ends(pinned)).toMatchObject([{ decision: "deny" }]);
-  const asked = pinned.filter((part) => part.type !== "tool-output-denied");
-  expect(ends([...asked, { type: "tool-output-available", toolCallId: "call-approval", output: { ok: true } }])).toMatchObject([{ decision: "approve" }]);
+// A chat that records what the SDK was told, or refuses.
+const recordingChat = (fail?: Error) => {
+  const responses: AiSdkApprovalResponse[] = [];
+  return { responses, addToolApprovalResponse: async (response: AiSdkApprovalResponse) => { if (fail) throw fail; responses.push(response); } };
+};
+
+test("no chunk ends an approval: the decision is the host's, and respondToApproval ends the request the adapter opened", async () => {
+  const adapter = createAiSdkAdapter({ streamKey: "decisions" });
+  const pinned = fixtures.filter((fixture) => fixture.scenario === "approval" && fixture.part !== undefined).map((fixture) => fixture.part);
+  const continuations = [{ type: "tool-output-available", toolCallId: "call-approval", output: { ok: true } }, { type: "tool-output-denied", toolCallId: "call-approval" }, { type: "tool-output-error", toolCallId: "call-approval", errorText: "x" }];
+  const events = [...pinned, ...continuations].flatMap((part) => adapter.decode(part));
+  expect(events.filter((event) => event.type === "approval_end")).toEqual([]);
+  const request = events.find((event) => event.type === "approval_request");
+  const requestId = request?.type === "approval_request" ? request.request_id : "";
+  const chat = recordingChat();
+  const dispatched: RunEvent[] = [];
+  await respondToApproval({ chat, dispatch: (event) => dispatched.push(event) }, { requestId, approved: false, reason: "not today" });
+  expect(chat.responses).toEqual([{ id: "approval-1", approved: false, reason: "not today" }]);
+  expect(dispatched).toEqual([{ type: "approval_end", request_id: requestId, decision: "deny", data: { reason: "not today" } }]);
+});
+
+test("respondToApproval ends the card only after the SDK records the decision", async () => {
+  const dispatched: RunEvent[] = [];
+  const dispatch = (event: RunEvent) => dispatched.push(event);
+  // The SDK refuses: nothing is dispatched and the promise rejects, so an Approval card offers its buttons again.
+  const refused = new Error("no chat message");
+  await expect(respondToApproval({ chat: recordingChat(refused), dispatch }, { requestId: "w:approval:a", approved: true })).rejects.toBe(refused);
+  // Not an approval id: the SDK is never called.
+  for (const requestId of ["w:tool:a", "s:approval:k:1", "nonsense"]) {
+    const chat = recordingChat();
+    await expect(respondToApproval({ chat, dispatch }, { requestId, approved: true })).rejects.toThrow();
+    expect(chat.responses).toEqual([]);
+  }
+  await expect(respondToApproval({ chat: recordingChat(), dispatch }, { requestId: "w:approval:a", approved: "yes" as never })).rejects.toThrow("approved");
+  expect(dispatched).toEqual([]);
+  // A synchronous chat (the SDK's type allows void) works the same.
+  await respondToApproval({ chat: { addToolApprovalResponse: () => {} }, dispatch }, { requestId: "w:approval:a", approved: true });
+  expect(dispatched).toEqual([{ type: "approval_end", request_id: "w:approval:a", decision: "approve" }]);
 });
 
 // What a reader sees: every row in timeline order, a message as its text and a tool as its name and output.
@@ -419,4 +463,42 @@ test("preliminary tool outputs replace each other, and the final output shows on
     if (part.type === "tool-output-available") outputs.push(rendered(store)[1]!);
   }
   expect(outputs).toEqual(["tool shell: scanning (live)", "tool shell: README.md (live)", "tool shell: README.md\napps (live)", "tool shell: README.md\napps"]);
+});
+
+// A reload rebuilds what the live stream built: the persisted message (ai's own readUIMessageStream) decodes to the
+// same rows as the stream, for text and assets, reasoning, provider tools, and tool errors.
+test.each(["text", "reasoning", "tool", "tool-error"])("decodeAiSdkMessage(%s) rebuilds the live rows", async (sessionId) => {
+  const parts = fixtures.filter((fixture) => fixture.sessionId === sessionId).map((fixture) => fixture.part as UIMessageChunk);
+  let persisted: UIMessage | undefined;
+  for await (const message of readUIMessageStream({ stream: simulateReadableStream({ chunks: parts, chunkDelayInMs: null }) })) persisted = message;
+  const snapshot = (events: RunEvent[]) => {
+    const store = createRunStore((flush) => flush());
+    for (const event of events) store.dispatch(event);
+    return store.getOutline().map(({ id }) => {
+      const { version: _, ...item } = store.getItem(id) as RunItem & { version?: number };
+      return item;
+    });
+  };
+  const adapter = createAiSdkAdapter({ streamKey: sessionId });
+  const live = snapshot(parts.flatMap((part) => adapter.decode(part)));
+  expect(live.length).toBeGreaterThan(0);
+  expect(snapshot(decodeAiSdkMessage({ ...persisted, role: "assistant" }, { streamKey: sessionId }))).toEqual(live);
+});
+
+test("decodeAiSdkMessage keeps input errors, streaming input, data parts, and refuses what is not an assistant message", () => {
+  const decode = (message: unknown) => decodeAiSdkMessage(message, { streamKey: "reload" });
+  const codes = (events: RunEvent[]) => events.filter((event) => event.type === "error").map((event) => event.type === "error" ? event.error.code : "");
+  for (const message of [null, { role: "user", parts: [] }, { role: "assistant" }]) expect(codes(decode(message))).toEqual(["adapter_invalid_payload"]);
+  const events = decode({ id: "m", role: "assistant", parts: [
+    { type: "dynamic-tool", toolName: "shell", toolCallId: "bad", state: "output-error", rawInput: "{oops", errorText: "invalid json" },
+    { type: "tool-search", toolCallId: "typing", state: "input-streaming", input: { q: "fu" } },
+    { type: "tool-search", toolCallId: "odd", state: "teleported", input: {} },
+    7,
+    { type: "data-weather", id: "w1", data: { temperature: 72 } },
+  ] });
+  expect(codes(events)).toEqual(["adapter_invalid_payload", "adapter_invalid_payload"]);
+  expect(events.find((event) => event.type === "tool_end")).toMatchObject({ tool_call: { name: "shell", arguments: { input: "{oops" }, meta: { dynamic: true } }, tool_result: { content: "invalid json", is_error: true } });
+  expect(events.find((event) => event.type === "tool_input")).toMatchObject({ tool_call: { id: "w:tool:typing", name: "search" }, input: "{\"q\":\"fu\"}" });
+  expect(events.find((event) => event.type === "unknown")).toMatchObject({ name: "data-weather", data: { id: "w1", data: { temperature: 72 } } });
+  expect(events.at(-1)?.type).toBe("run_end");
 });

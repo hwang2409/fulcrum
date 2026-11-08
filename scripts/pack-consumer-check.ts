@@ -31,7 +31,7 @@ try {
   run(["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund", "react@19", "react-dom@19", ...tarballs], consumer);
   await writeFile(join(consumer, "consumer.tsx"), `
 import * as adapterTest from "@fulcrum/adapter-test";
-import { createAiSdkAdapter } from "@fulcrum/ai-sdk";
+import { createAiSdkAdapter, decodeAiSdkMessage, respondToApproval } from "@fulcrum/ai-sdk";
 import { createRunStore } from "@fulcrum/core";
 import * as highlight from "@fulcrum/highlight";
 import { MermaidFence } from "@fulcrum/mermaid";
@@ -57,6 +57,10 @@ if (!existsSync(fileURLToPath(worker)) || readdirSync(join(highlightDist, "chunk
 const mermaidDist = dirname(fileURLToPath(import.meta.resolve("@fulcrum/mermaid")));
 if (typeof MermaidFence !== "function" || !existsSync(join(mermaidDist, "render.js")) || readdirSync(join(mermaidDist, "chunks")).length === 0)
   throw new Error("mermaid lazy render module is missing");
+
+const reloaded = decodeAiSdkMessage({ id: "packed", role: "assistant", parts: [{ type: "text", text: "reloaded" }] }, { streamKey: "packed-reload" });
+if (typeof respondToApproval !== "function" || !reloaded.some((event) => event.type === "message_commit"))
+  throw new Error("ai-sdk approval and reload exports are missing");
 
 const store = createRunStore(() => {});
 const adapter = createAiSdkAdapter({ streamKey: "chat-request-123" });

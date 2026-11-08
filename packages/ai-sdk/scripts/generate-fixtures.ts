@@ -1,6 +1,9 @@
 import { writeFile } from "node:fs/promises";
-import { createUIMessageStream, jsonSchema, simulateReadableStream, stepCountIs, streamText, tool, type UIMessageChunk } from "ai";
+import { convertToModelMessages, createUIMessageStream, jsonSchema, simulateReadableStream, stepCountIs, streamText, tool, type ToolSet, type UIMessageChunk } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
+import type { RunEvent } from "@fulcrum/core";
+import { encodeAiSdkEntityId, respondToApproval } from "../src/index.js";
+import { TestChat } from "../test/chat.js";
 
 const usage = { inputTokens: { total: 12, noCache: 12, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 4, text: 3, reasoning: 1 } };
 const finish = { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage };
@@ -22,6 +25,43 @@ async function modelParts(messageId: string, chunks: unknown[], withUsage = fals
   return parts;
 }
 
+type SessionEntry = { stream: string; part: UIMessageChunk } | { event: RunEvent };
+/**
+ * A host session on a real chat: each request runs its model steps through `streamText(...).toUIMessageStream()` as a
+ * server route does, and the host answers each approval with `respondToApproval`, then continues. Returns what the
+ * host fed its store, in order: each stream's chunks under its own stream key, and the event respondToApproval
+ * dispatched between the request and its continuation.
+ */
+async function hostSession(name: string, requests: unknown[][][], tools: ToolSet, response: { approved: boolean; reason?: string }) {
+  const log: SessionEntry[] = [];
+  let request = 0;
+  const chat = new TestChat(async (messages) => {
+    const steps = requests[request]!;
+    let step = 0;
+    const model = new MockLanguageModelV3({
+      doStream: async () => {
+        const chunks = steps[step++]!;
+        const calls = chunks.some((chunk) => (chunk as { type: string }).type === "tool-call");
+        return { stream: simulateReadableStream({ chunks: [streamStart, ...chunks, { ...finish, finishReason: calls ? { unified: "tool-calls", raw: "tool_calls" } : finish.finishReason }] as never[] }) };
+      },
+    });
+    const result = streamText({ model, messages: await convertToModelMessages(messages), tools, stopWhen: stepCountIs(steps.length), _internal: { generateId: () => "approval-1" } } as Parameters<typeof streamText>[0]);
+    const parts: UIMessageChunk[] = [];
+    for await (const part of result.toUIMessageStream({ originalMessages: messages, generateMessageId: () => `${name}-message` })) parts.push(part);
+    const stream = `${name}-request-${++request}`;
+    for (const part of parts) log.push({ stream, part });
+    return parts;
+  });
+  await chat.sendMessage({ text: "go" });
+  while (request < requests.length) {
+    for (const part of chat.messages.at(-1)!.parts)
+      if ("approval" in part && part.state === "approval-requested")
+        await respondToApproval({ chat, dispatch: (event) => log.push({ event }) }, { requestId: encodeAiSdkEntityId({ source: "wire", kind: "approval", id: part.approval.id }), ...response });
+    await chat.sendMessage();
+  }
+  return log;
+}
+
 async function hostParts(parts: UIMessageChunk[]): Promise<UIMessageChunk[]> {
   const stream = createUIMessageStream({ execute: ({ writer }) => { for (const part of parts) writer.write(part); } });
   const output: UIMessageChunk[] = [];
@@ -29,7 +69,7 @@ async function hostParts(parts: UIMessageChunk[]): Promise<UIMessageChunk[]> {
   return output;
 }
 
-const rows: Array<{ scenario: string; sessionId: string; part: unknown }> = [];
+const rows: Array<{ scenario: string; sessionId: string; [key: string]: unknown }> = [];
 const add = (scenario: string, sessionId: string, parts: readonly unknown[]) => {
   for (const part of parts) rows.push({ scenario, sessionId, part });
 };
@@ -64,11 +104,16 @@ add("tool-error", "tool-error", await modelParts("message-tool-error", [
   { type: "tool-call", toolCallId: "call-error", toolName: "shell", input: "{\"command\":\"false\"}", providerExecuted: true, dynamic: true },
   { type: "tool-result", toolCallId: "call-error", toolName: "shell", result: "exit 1", isError: true, providerExecuted: true, dynamic: true },
 ]));
-add("approval", "approval", await hostParts([
-  { type: "tool-input-available", toolCallId: "call-approval", toolName: "deploy", input: { target: "production" }, providerExecuted: true, dynamic: true, title: "Deploy" },
-  { type: "tool-approval-request", toolCallId: "call-approval", approvalId: "approval-1" },
-  { type: "tool-output-denied", toolCallId: "call-approval" },
-]));
+// An approval is two streams: the request ends at the approval; the host answers it (respondToApproval) and the
+// continuation reports the decision's outcome.
+const deploy = tool({ inputSchema: jsonSchema<{ target: string }>({ type: "object", properties: { target: { type: "string" } } }), needsApproval: true, execute: async () => ({ ok: true }) });
+const say = (id: string, delta: string) => [{ type: "text-start", id }, { type: "text-delta", id, delta }, { type: "text-end", id }];
+const deploySteps = [
+  [...say("text-ask", "deploying to production."), { type: "tool-call", toolCallId: "call-approval", toolName: "deploy", input: "{\"target\":\"production\"}" }],
+  say("text-after", "left production alone."),
+];
+for (const entry of await hostSession("approval", [deploySteps, deploySteps.slice(1)], { deploy }, { approved: false, reason: "not on a friday" }))
+  rows.push({ scenario: "approval", sessionId: "approval", ...entry });
 add("reset-retry-abort", "recovery", await hostParts([{ type: "abort" }]));
 add("usage", "usage", await modelParts("message-usage", [], true));
 add("unknown-malformed", "unknown", await hostParts([{ type: "data-weather", data: { temperature: 72, units: "F" }, id: "weather-1" }]));
@@ -95,8 +140,9 @@ add("replay", "replay", await modelParts("stable-message", [{ type: "text-start"
 
 const fixtureUrl = new URL("../test/fixtures/conformance.jsonl", import.meta.url);
 await writeFile(fixtureUrl, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
-// The playground demo is a real two-step run: step 1 reasons, says what it will do, and calls `shell`, whose output
-// streams as preliminary results; step 2 reasons again and answers below the tool row.
+// The playground demo is a real approval session: step 1 reasons, says what it will do, and asks to run `shell`; the
+// host approves; the continuation streams the shell's output as preliminary results, then reasons again and answers
+// below the tool row.
 const demoSteps = [
   [
     { type: "reasoning-start", id: "reasoning-demo" },
@@ -117,15 +163,10 @@ const demoSteps = [
     { type: "text-end", id: "text-demo-2" },
   ],
 ];
-let demoStep = 0;
-const demoModel = new MockLanguageModelV3({
-  doStream: async () => ({ stream: simulateReadableStream({ chunks: [streamStart, ...demoSteps[demoStep++]!, finish] as never[] }) }),
-});
 const shell = tool({
   inputSchema: jsonSchema<{ command: string }>({ type: "object", properties: { command: { type: "string" } } }),
+  needsApproval: true,
   async *execute() { yield "README.md"; yield "README.md\napps"; yield "README.md\napps\npackages"; },
 });
-const playground: UIMessageChunk[] = [];
-for await (const part of streamText({ model: demoModel, prompt: "fixture", tools: { shell }, stopWhen: stepCountIs(2) })
-  .toUIMessageStream({ generateMessageId: () => "ai-sdk-demo" })) playground.push(part);
-await writeFile(new URL("../test/fixtures/playground.jsonl", import.meta.url), `${playground.map((part) => JSON.stringify(part)).join("\n")}\n`);
+const playground = await hostSession("ai-sdk-demo", [demoSteps, demoSteps.slice(1)], { shell }, { approved: true });
+await writeFile(new URL("../test/fixtures/playground.jsonl", import.meta.url), `${playground.map((entry) => JSON.stringify(entry)).join("\n")}\n`);

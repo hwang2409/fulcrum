@@ -1,4 +1,4 @@
-import type { ApprovalDecision, ContentBlock, RunEvent, ToolCall, ToolResult } from "@fulcrum/core";
+import type { ContentBlock, RunEvent, ToolCall, ToolResult } from "@fulcrum/core";
 
 /** The documented UI message stream implemented by this adapter. */
 export const AI_SDK_PROTOCOL = { package: "ai", version: "6.0.0", stream: "v1" } as const;
@@ -66,7 +66,7 @@ const mergeMeta = (prior: Record<string, unknown> | undefined, next: Record<stri
     : {}),
 });
 
-interface ToolState { call: ToolCall; input: string; preliminary?: boolean; }
+interface ToolState { call: ToolCall; input: string; }
 /** One fulcrum message: a run of content between tool rows or stream breaks. */
 interface Segment { id: string; content: ContentBlock[]; }
 /** A text or reasoning part. It joins a segment with its first text, so a part that never streams text adds no row. */
@@ -118,7 +118,6 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   let wireMessageId: string | undefined;
   const blocks = new Map<string, BlockState>();
   const tools = new Map<string, ToolState>();
-  const approvalByTool = new Map<string, string>();
 
   /*
    * The one owner of "which fulcrum message does the next content go to". A UI message spans every step of a stream
@@ -174,12 +173,6 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     const state = { call: { id, name: name ?? "tool", arguments: {}, ...(meta ? { meta } : {}) }, input: "" };
     tools.set(id, state);
     return state;
-  };
-  const approvalEnd = (toolCallId: string, decision: ApprovalDecision): RunEvent[] => {
-    const requestId = approvalByTool.get(toolCallId);
-    if (requestId === undefined) return [];
-    approvalByTool.delete(toolCallId);
-    return [{ type: "approval_end", request_id: requestId, decision }];
   };
   const decodeBlock = (part: Row, type: string): RunEvent[] => {
     const kind = type.startsWith("text-") ? "text" : "reasoning";
@@ -265,23 +258,20 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     }
     if (type === "tool-approval-request") {
       const approvalId = wireString(part.approvalId, "part.approvalId");
-      const requestId = wireId("approval", approvalId);
-      approvalByTool.set(id, requestId);
-      return [{ type: "approval_request", request_id: requestId, tool_call: call(id, undefined, { ...meta, approvalId }).call, delegated: false }];
+      return [{ type: "approval_request", request_id: wireId("approval", approvalId), tool_call: call(id, undefined, { ...meta, approvalId }).call, delegated: false }];
     }
+    // A continuation's adapter has not seen the call: core keeps the known call, and this only names an orphan.
     const state = call(id, undefined, meta);
+    // The decision is not on the wire: the host ends the approval with respondToApproval or decodeAiSdkMessage.
     if (type === "tool-output-denied")
-      return [{ type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: "tool execution denied", is_error: true, is_canceled: true } }, ...approvalEnd(id, "deny")];
+      return [{ type: "tool_end", tool_call: state.call, tool_result: { tool_call_id: id, content: "tool execution denied", is_error: true, is_canceled: true } }];
     const isError = type === "tool-output-error";
     const output = isError ? wireString(part.errorText, "part.errorText") : serialized(part.output);
-    // Each preliminary output is the whole output so far: restart the call's output so the next one replaces it.
-    const restart: RunEvent[] = state.preliminary ? [{ type: "tool_start", tool_call: state.call }] : [];
-    if (!isError && part.preliminary === true) {
-      state.preliminary = true;
-      return [...restart, { type: "tool_output", tool_call: state.call, output }];
-    }
+    // Each output, preliminary or final, is the whole output so far, so it replaces the row's output.
+    const events: RunEvent[] = [{ type: "tool_output", tool_call: state.call, output, replace: true }];
+    if (!isError && part.preliminary === true) return events;
     const result: ToolResult = { tool_call_id: id, content: output, is_error: isError };
-    return [...restart, { type: "tool_output", tool_call: state.call, output }, { type: "tool_end", tool_call: state.call, tool_result: result }, ...approvalEnd(id, "approve")];
+    return [...events, { type: "tool_end", tool_call: state.call, tool_result: result }];
   };
 
   const decodeLifecycle = (part: Row, type: string): RunEvent[] => {
@@ -289,7 +279,7 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
       const events = close();
       wireMessageId = optionalWireString(part.messageId, "part.messageId");
       const messageId = wireMessageId !== undefined ? wireId("message", wireMessageId) : undefined;
-      blocks.clear(); tools.clear(); approvalByTool.clear();
+      blocks.clear(); tools.clear();
       return [...events, { type: "run_start", data: defined({ messageId, messageMetadata: part.messageMetadata }) }, { type: "turn_start" }, { type: "message_start", data: messageId ? { messageId } : {} }];
     }
     if (type === "start-step" || type === "finish-step") return [];
@@ -313,4 +303,110 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     } catch (error) { return invalid(error); }
   };
   return { decode };
+}
+
+/** The AI SDK's approval response: the argument of `addToolApprovalResponse` and the `approval` field it records. */
+export interface AiSdkApprovalResponse { id: string; approved: boolean; reason?: string; }
+
+/** Ends the approval row the adapter opened for `response.id`. */
+function aiSdkApprovalEnd(response: AiSdkApprovalResponse): RunEvent {
+  const id = wireString(response.id, "response.id");
+  if (typeof response.approved !== "boolean") throw new Error("response.approved must be a boolean");
+  const reason = optionalWireString(response.reason, "response.reason");
+  return {
+    type: "approval_end",
+    request_id: encodeAiSdkEntityId({ source: "wire", kind: "approval", id }),
+    decision: response.approved ? "approve" : "deny",
+    ...(reason !== undefined ? { data: { reason } } : {}),
+  };
+}
+
+export interface AiSdkApprovalTarget {
+  /** `useChat()`'s helpers or a `Chat`: the AI SDK records the decision on its tool part. */
+  chat: { addToolApprovalResponse(response: AiSdkApprovalResponse): void | PromiseLike<void> };
+  /** The run store's `dispatch`: fulcrum ends the approval card. */
+  dispatch(event: RunEvent): void;
+}
+
+/**
+ * Answers an AI SDK tool approval: the decision is a client transition (`addToolApprovalResponse`) that no stream
+ * echoes, so the host that makes it also ends fulcrum's card. `requestId` is the approval's fulcrum id, the value an
+ * `Approval` card passes to `onApprove`/`onDeny`. The SDK records first and fulcrum ends the card only after: if the SDK
+ * call rejects, nothing is dispatched and the returned promise rejects, so an `Approval` card shows the error and
+ * offers its buttons again instead of claiming a decision the SDK never made.
+ */
+export async function respondToApproval(
+  { chat, dispatch }: AiSdkApprovalTarget,
+  { requestId, approved, reason }: { requestId: string; approved: boolean; reason?: string },
+): Promise<void> {
+  const identity = decodeAiSdkEntityId(requestId);
+  if (identity.source !== "wire" || identity.kind !== "approval") throw new Error("requestId must be an AI SDK approval request id");
+  const response: AiSdkApprovalResponse = { id: identity.id, approved, ...(reason !== undefined ? { reason } : {}) };
+  const end = aiSdkApprovalEnd(response);
+  await chat.addToolApprovalResponse(response);
+  dispatch(end);
+}
+
+const toolStates = new Set(["input-streaming", "input-available", "approval-requested", "approval-responded", "output-available", "output-error", "output-denied"]);
+
+/**
+ * Decodes one persisted assistant `UIMessage` (what `useChat` keeps and a host stores) into the events its streams
+ * produced, so a reload rebuilds the run with no host step. Each part replays as the chunks that built it, through the
+ * same decoder as a live stream. An approval's decision comes from the tool part's `approval` field, which the SDK
+ * keeps after the continuation: `addToolApprovalResponse` writes `approval: { id, approved, reason }`
+ * (ai 6.0.0 dist/index.mjs:11329-11341), and the continuation's output chunks update the part without touching it
+ * (`updateToolPart`, dist/index.mjs:4508-4540; `tool-output-denied`, dist/index.mjs:4802-4806). One message spans the
+ * request and its continuations, so it uses one `streamKey`; its message ids differ from the live ones.
+ */
+export function decodeAiSdkMessage(message: unknown, options: AiSdkAdapterOptions): RunEvent[] {
+  const adapter = createAiSdkAdapter(options);
+  let row: Row;
+  let parts: unknown[];
+  try {
+    row = object(message, "message");
+    if (row.role !== "assistant") throw new Error("message.role must be \"assistant\"");
+    if (!Array.isArray(row.parts)) throw new Error("message.parts must be an array");
+    parts = row.parts;
+  } catch (error) { return invalid(error); }
+  const events = adapter.decode(defined({ type: "start", messageId: row.id }));
+  const play = (chunk: Row) => { events.push(...adapter.decode(defined(chunk))); };
+  parts.forEach((value, index) => {
+    try {
+      const part = object(value, `message.parts[${index}]`);
+      const type = string(part.type, `message.parts[${index}].type`);
+      if (type === "text" || type === "reasoning") {
+        const id = String(index);
+        play({ type: `${type}-start`, id, providerMetadata: part.providerMetadata });
+        play({ type: `${type}-delta`, id, delta: part.text });
+        play({ type: `${type}-end`, id });
+      } else if (type === "step-start") play({ type: "start-step" });
+      else if (type === "dynamic-tool" || type.startsWith("tool-")) {
+        const state = string(part.state, `message.parts[${index}].state`);
+        if (!toolStates.has(state)) throw new Error(`message.parts[${index}].state is not a tool state`);
+        const toolCallId = part.toolCallId;
+        const call = { toolCallId, toolName: type === "dynamic-tool" ? part.toolName : type.slice(5), title: part.title, providerExecuted: part.providerExecuted, dynamic: type === "dynamic-tool" || undefined };
+        if (state === "input-streaming") {
+          play({ type: "tool-input-start", ...call });
+          if (part.input !== undefined) play({ type: "tool-input-delta", toolCallId, inputTextDelta: JSON.stringify(part.input) });
+          return;
+        }
+        // An input that failed to parse keeps it as rawInput, with no input (the stream's tool-input-error).
+        if (state === "output-error" && part.input === undefined) {
+          play({ type: "tool-input-error", ...call, input: part.rawInput, errorText: part.errorText });
+          return;
+        }
+        play({ type: "tool-input-available", ...call, input: part.input, providerMetadata: part.callProviderMetadata });
+        const approval = part.approval === undefined ? undefined : object(part.approval, `message.parts[${index}].approval`);
+        if (approval) {
+          play({ type: "tool-approval-request", toolCallId, approvalId: approval.id });
+          if (approval.approved !== undefined) events.push(aiSdkApprovalEnd(approval as unknown as AiSdkApprovalResponse));
+        }
+        if (state === "output-available") play({ type: "tool-output-available", toolCallId, output: part.output, preliminary: part.preliminary });
+        else if (state === "output-error") play({ type: "tool-output-error", toolCallId, errorText: part.errorText });
+        else if (state === "output-denied") play({ type: "tool-output-denied", toolCallId });
+      } else play(part); // sources, files, and data parts keep their chunk's shape
+    } catch (error) { events.push(...invalid(error)); }
+  });
+  events.push(...adapter.decode(defined({ type: "finish", messageMetadata: row.metadata })));
+  return events;
 }

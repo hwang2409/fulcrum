@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
 import { convertToModelMessages, jsonSchema, readUIMessageStream, simulateReadableStream, stepCountIs, streamText, tool, type UIMessage, type UIMessageChunk } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
-import { createAiSdkAdapter } from "../src/index.js";
+import { createAiSdkAdapter, decodeAiSdkMessage, respondToApproval } from "../src/index.js";
+import { TestChat } from "./chat.js";
 
 // Which fulcrum message each content part goes to, played from real ai 6.0.0 UI message streams into one store.
 type Chunk = Record<string, unknown>;
@@ -15,6 +16,7 @@ const tools = {
   ls: tool({ inputSchema: schema, execute: async () => "a b" }),
   cat: tool({ inputSchema: schema, execute: async () => "body" }),
   rm: tool({ inputSchema: schema, needsApproval: true, execute: async () => "ok" }),
+  count: tool({ inputSchema: schema, needsApproval: true, async *execute() { yield "1"; yield "1 2"; yield "1 2 3"; } }),
   pick: tool({ inputSchema: schema }), // runs in the client: the host adds its output and continues
 };
 const user: UIMessage = { id: "u", role: "user", parts: [{ type: "text", text: "go" }] };
@@ -78,10 +80,40 @@ const liveAtToolRow = (events: RunEvent[]) => {
   }
   return found;
 };
-const play = (streams: Array<[streamKey: string, parts: readonly Chunk[]]>) => streams.flatMap(([streamKey, parts]) => {
+/** One adapter per stream; a host event (what respondToApproval dispatched, or a reload's events) plays as is. */
+type Entry = readonly [streamKey: string, parts: readonly Chunk[]] | RunEvent;
+const play = (entries: readonly Entry[]) => entries.flatMap((entry) => {
+  if (!Array.isArray(entry)) return [entry as RunEvent];
+  const [streamKey, parts] = entry;
   const adapter = createAiSdkAdapter({ streamKey });
-  return parts.flatMap((part) => adapter.decode(part));
+  return parts.flatMap((part: Chunk) => adapter.decode(part));
 });
+
+/**
+ * A host session on a real ai 6.0.0 chat: request n streams `requests[n]` through `uiStream` with stream key `req<n+1>`,
+ * the host answers each approval with respondToApproval and continues. Returns what the host fed the store, in order,
+ * and the chat's persisted messages.
+ */
+async function session(requests: Chunk[][][], response?: { approved: boolean; reason?: string }) {
+  const log: Entry[] = [];
+  let request = 0;
+  const chat = new TestChat(async (messages) => {
+    const parts = await uiStream(requests[request]!, { messages });
+    log.push([`req${++request}`, parts]);
+    return parts;
+  });
+  await chat.sendMessage({ text: "go" });
+  while (response && request < requests.length) {
+    const asked = (chat.messages.at(-1)!.parts as Chunk[]).filter((part) => part.state === "approval-requested");
+    for (const part of asked) await respondToApproval({ chat, dispatch: (event) => log.push(event) }, { requestId: `w:approval:${(part.approval as { id: string }).id}`, ...response });
+    await chat.sendMessage();
+  }
+  return { log, messages: chat.messages };
+}
+const deleteSteps = [[...text("t1", "i will delete it."), call("c1", "rm"), finish("tool-calls")], [...text("t2", "deleted."), finish("stop")]];
+const denySteps = [[...text("t1", "i will delete it."), call("c1", "rm"), finish("tool-calls")], [...text("t2", "kept it."), finish("stop")]];
+const countSteps = [[...text("t1", "counting."), call("c1", "count"), finish("tool-calls")], [...text("t2", "counted."), finish("stop")]];
+const reload = (messages: UIMessage[]) => decodeAiSdkMessage(messages.at(-1), { streamKey: "reload" });
 
 const lateParts = async () => {
   const parts: Chunk[] = await uiStream([[...reasoning("r", "plan"), ...text("a", "before "), call("c1", "ls"), finish("tool-calls")], [...text("b", "after"), finish("stop")]]);
@@ -98,7 +130,7 @@ const lateParts = async () => {
   return [...parts, { type: "finish", finishReason: "stop" }];
 };
 
-const cases: Array<[name: string, streams: () => Promise<Array<[string, readonly Chunk[]]>>, expected: string[]]> = [
+const cases: Array<[name: string, streams: () => Promise<readonly Entry[]>, expected: string[]]> = [
   ["single step", async () => [["k", await uiStream([[...text("t", "hello ", "world"), finish("stop")]])]], [
     "message:s:message:k:1 text:hello world",
   ]],
@@ -129,10 +161,41 @@ const cases: Array<[name: string, streams: () => Promise<Array<[string, readonly
     expect(second.slice(0, 2)).toEqual([{ type: "start", messageId: "m" }, { type: "tool-output-available", toolCallId: "c1", output: "ok" }]);
     return [["req1", first], ["req2", second]];
   }, [
+    // No host step (the host never told fulcrum): the tool row keeps its call, the approval row waits.
     "message:s:message:req1:1 text:i will delete it.",
     "tool:w:tool:c1 rm{\"path\":\"a\"} -> ok",
     "approval:w:approval:approval-1",
     "message:s:message:req2:1 text:deleted.",
+  ]],
+  ["approved with respondToApproval: the approval folds into the tool row", async () => (await session([deleteSteps, deleteSteps.slice(1)], { approved: true })).log, [
+    "message:s:message:req1:1 text:i will delete it.",
+    "tool:w:tool:c1 rm{\"path\":\"a\"} -> ok (approve)",
+    "message:s:message:req2:1 text:deleted.",
+  ]],
+  ["denied with a reason: the tool row is canceled and keeps its call", async () => (await session([denySteps, denySteps.slice(1)], { approved: false, reason: "keep it" })).log, [
+    "message:s:message:req1:1 text:i will delete it.",
+    "tool:w:tool:c1 rm{\"path\":\"a\"} ->  (deny)",
+    "message:s:message:req2:1 text:kept it.",
+  ]],
+  ["an approved generator tool: preliminary outputs replace each other in one row", async () => (await session([countSteps, countSteps.slice(1)], { approved: true })).log, [
+    "message:s:message:req1:1 text:counting.",
+    "tool:w:tool:c1 count{\"path\":\"a\"} -> 1 2 3 (approve)",
+    "message:s:message:req2:1 text:counted.",
+  ]],
+  ["reload of an approved message", async () => reload((await session([deleteSteps, deleteSteps.slice(1)], { approved: true })).messages), [
+    "message:s:message:reload:1 text:i will delete it.",
+    "tool:w:tool:c1 rm{\"path\":\"a\"} -> ok (approve)",
+    "message:s:message:reload:2 text:deleted.",
+  ]],
+  ["reload of a denied message", async () => reload((await session([denySteps, denySteps.slice(1)], { approved: false, reason: "keep it" })).messages), [
+    "message:s:message:reload:1 text:i will delete it.",
+    "tool:w:tool:c1 rm{\"path\":\"a\"} ->  (deny)",
+    "message:s:message:reload:2 text:kept it.",
+  ]],
+  ["reload before the decision: the approval waits", async () => reload((await session([deleteSteps])).messages), [
+    "message:s:message:reload:1 text:i will delete it.",
+    "tool:w:tool:c1 rm{\"path\":\"a\"} -> ",
+    "approval:w:approval:approval-1",
   ]],
   ["a continuation that starts with text", async () => {
     const first = await uiStream([[...text("t1", "which one?"), call("c1", "pick"), finish("tool-calls")]]);
@@ -176,6 +239,40 @@ test.each(cases)("%s: final rows, and a replay assigns the same ids", async (_na
   expect(play(played)).toEqual(events);
 });
 
-// Known gap of the approval continuation, outside message identity (follow-up: continuation tool and approval state).
-// Repro: the "approval, then a continuation" row above; the continuation's adapter never saw the approval.
-test.todo("approval continuation: the approval row resolves once the approved tool returns (today no approval_end: the continuation has no approvalId)");
+
+// The store a host builds from a session: the tool row keeps the call the request stream defined, through the
+// continuation's outputs, and the approval ends at the click with the SDK's decision.
+test.each([
+  ["approve", "rm", deleteSteps, { approved: true }, { decision: "approve" }],
+  ["deny with a reason", "rm", denySteps, { approved: false, reason: "keep it" }, { decision: "deny", data: { reason: "keep it" } }],
+  ["approve a generator tool", "count", countSteps, { approved: true }, { decision: "approve" }],
+] as const)("%s: the tool row keeps its call and the approval card ends", async (_name, name, steps, response, ended) => {
+  const { log, messages } = await session([steps, steps.slice(1)], response);
+  const build = (events: RunEvent[]) => {
+    const store = createRunStore((flush) => flush());
+    for (const event of events) store.dispatch(event);
+    return store;
+  };
+  const requested = build(play(log.slice(0, 1))).getItem("tool:w:tool:c1");
+  const live = build(play(log));
+  const reloaded = build(reload(messages));
+  for (const store of [live, reloaded]) {
+    const item = store.getItem("tool:w:tool:c1");
+    expect(item?.type === "tool" ? item.tool_call : undefined).toEqual(requested?.type === "tool" ? requested.tool_call : undefined);
+    expect(item?.type === "tool" ? item.tool_call : undefined).toMatchObject({ name, arguments: { path: "a" }, meta: { wireId: "c1" } });
+    expect(item?.type === "tool" ? item.approval : undefined).toEqual({ type: "approval_end", request_id: "w:approval:approval-1", ...ended });
+    expect(store.getOutline().filter(({ id }) => id.startsWith("tool:")).length).toBe(1);
+    expect(store.getItem("approval:w:approval:approval-1")).toMatchObject({ type: "approval", ended: { request_id: "w:approval:approval-1", ...ended } });
+  }
+  // The card ends when the host answers, before the continuation streams.
+  const answered = build(play(log.slice(0, 2)));
+  expect(answered.getItem("approval:w:approval:approval-1")).toMatchObject({ ended: { ...ended } });
+});
+
+// A finished multi-step stream persists as one message; a reload of it reads as the live rows did.
+test.each(cases.slice(0, 5))("reload of %s reads as the live stream", async (_name, streams, expected) => {
+  const [[streamKey, parts]] = await streams() as [[string, Chunk[]]];
+  let persisted: UIMessage | undefined;
+  for await (const next of readUIMessageStream({ stream: simulateReadableStream({ chunks: parts as UIMessageChunk[], chunkDelayInMs: null }) })) persisted = next;
+  expect(rows(decodeAiSdkMessage(persisted, { streamKey }))).toEqual(expected);
+});
