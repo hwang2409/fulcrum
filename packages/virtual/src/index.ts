@@ -1,5 +1,6 @@
 export type OutlineItem<Id extends string = string> = { readonly id: Id; readonly kind: string };
-export type ScrollSource = "user" | "programmatic";
+/** "user" is reader intent, "programmatic" is the host's own scroll write, and "observe" is a position nobody intends (layout). */
+export type ScrollSource = "user" | "programmatic" | "observe";
 
 export type VirtualCache<Id extends string = string> = {
   sizes: readonly (readonly [Id, number])[];
@@ -466,6 +467,9 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     checkSize(viewport.scrollTop);
     checkSize(viewport.size);
     const writesScroll = Math.abs(viewport.scrollTop - scrollTop) >= 0.5;
+    // The range depends on scrollTop, viewportSize, and the layout; layout edits notify on their own, so an observation
+    // whose clamped position and size are unchanged changes nothing.
+    if (viewport.source === "observe" && Math.abs(clampScroll(viewport.scrollTop) - scrollTop) < 0.5 && viewport.size === viewportSize) return;
     const expectedAnchor = captureExpectedAnchor();
     viewportSize = viewport.size;
     calibrateKindEstimates();

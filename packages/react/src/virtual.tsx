@@ -11,6 +11,7 @@ import {
   formatVirtualDebug,
   type OutlineItem,
   type OutlineUpdate,
+  type ScrollSource,
   type VirtualOptions,
   type VirtualCache,
   type VirtualSnapshot,
@@ -164,7 +165,7 @@ export function useVirtualList<Id extends string>(
       containerRef.current = container;
       const priorOverflowAnchor = container.style.overflowAnchor;
       container.style.overflowAnchor = "none";
-      const updateViewport = (source: "user" | "programmatic") =>
+      const updateViewport = (source: ScrollSource) =>
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source });
       if (prior) {
         const intent = engine.beforeMutation();
@@ -244,20 +245,19 @@ export function useVirtualList<Id extends string>(
         pendingScroll.current = null; // the first callback consumes our write, whether the browser matched it or not
         const matchesPending = pending !== null && (Math.abs(container.scrollTop - pending.value) < 0.5
           || (typeof pending.target === "number" && Math.abs(container.scrollTop - pending.target) < 0.5));
-        // Without reader input, only our exact write or a browser move that remains at the old/new DOM end is layout work.
-        // Focus, find, host scrollIntoView, and host scroll writes into content are reader intent.
+        // Without reader input, only our exact write or a browser move that stays at the old or new DOM end is layout work.
+        // Focus, find, host scrollIntoView, and host scroll writes anywhere else are reader intent.
+        // A stale old end can at worst misread intent for an unpinned reader (observe never re-pins); a pinned reader's end
+        // is refreshed by every end write. Nothing else refreshes it: a scrollHeight read per commit would force a sync layout.
         const priorDomEnd = pending?.previousEnd ?? lastDomEnd.current;
         const layoutSlack = Math.min(1, Math.abs(domEnd - priorDomEnd));
-        const atLayoutEnd = container.scrollTop >= Math.min(priorDomEnd, domEnd) - layoutSlack - 0.5;
-        if (!fromReader && (matchesPending || atLayoutEnd)) {
-          lastScrollTop.current = container.scrollTop;
-          lastDomEnd.current = domEnd;
-          if (before.pinned && Math.abs(container.scrollTop - domEnd) >= 0.5) writeScroll("end");
-          return;
-        }
+        const nearEnd = (end: number) => Math.abs(container.scrollTop - end) <= layoutSlack + 0.5;
+        const layout = !fromReader && (matchesPending || nearEnd(priorDomEnd) || nearEnd(domEnd));
         lastScrollTop.current = container.scrollTop;
         lastDomEnd.current = domEnd;
-        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
+        if (layout && before.pinned && Math.abs(container.scrollTop - domEnd) >= 0.5) writeScroll("end");
+        // Every callback reports the real viewport, so the mounted rows always follow the DOM; classification decides only intent.
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: layout ? "observe" : "user" });
       };
       const scrollKeys = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
       const onWheel = (event: WheelEvent) => {
@@ -341,7 +341,7 @@ export function useVirtualList<Id extends string>(
       // A scroll box that changes size (a banner above it, a composer below it) keeps a pinned reader at the bottom.
       const viewportObserver = new ResizeObserver(() => {
         const pinned = engine.getSnapshot().pinned;
-        updateViewport("programmatic");
+        updateViewport("observe");
         if (!pinned) return;
         writeScroll("end");
         updateViewport("programmatic");
