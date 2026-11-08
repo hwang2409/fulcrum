@@ -22,8 +22,7 @@ const catalog = {
 test("parses every slash result kind and both model-input shapes", () => {
   expect(parseSlashList(catalog)).toEqual({ commands: [validCommand, { ...validCommand, name: "build", kind: "skill", source: "project" }], notices: ["skill catalog refreshed"] });
   expect(parseSlashRun({ kind: "output", text: "done", extra: true })).toEqual({ kind: "output", text: "done" });
-  // Legacy released zeta shape from src/zeta/server/slash_commands.py:413-425 at 5feea2fc; the protocol doc omits this kind.
-  expect(parseSlashRun({ kind: "text", text: "mcp status" })).toEqual({ kind: "output", text: "mcp status" });
+  expect(parseSlashRun({ kind: "text", text: "mcp status" })).toEqual({ kind: "malformed" });
   expect(parseSlashRun({ kind: "model_input", text: "expanded", display_text: "/skill x", origin: "skill" })).toEqual({ kind: "model_input", text: "expanded", display_text: "/skill x", origin: "skill" });
   expect(parseSlashRun({ kind: "model_input", input_id: "opaque-1", text: "legacy", display_text: "/skill x", extra: true })).toEqual({ kind: "model_input", input_id: "opaque-1", display_text: "/skill x" });
   expect(parseSlashRun({ kind: "client_only", name: "keys" })).toEqual({ kind: "client_only", name: "keys" });
