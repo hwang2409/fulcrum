@@ -232,9 +232,10 @@ async function checkControls(page: Page): Promise<string[]> {
 
 type ViewerTiming = { openMs: number; appendMs: number; openSamples: number[]; appendSamples: number[] };
 type ViewerSample = { openMs: number; openTaskMs: number; appendMs: number; appendTaskMs: number };
-type ViewerMeasurement = ViewerTiming & { fixture: string; width: number; bottomGap: number; appendGap: number; middleMoved: boolean; outerMiddleDelta: number; outerBoundaryDelta: number; longTasks: number[]; tokens: number; scroll: { median: number; p95: number; over33: number } };
+type Calibration = { median: number; samples: number[] };
+type ViewerMeasurement = ViewerTiming & { fixture: string; width: number; calibration: Calibration; bottomGap: number; appendGap: number; middleMoved: boolean; outerMiddleDelta: number; outerBoundaryDelta: number; longTasks: number[]; tokens: number; scroll: { median: number; p95: number; over33: number } };
 type ViewerPair = { base: ViewerSample; candidate: ViewerSample };
-type ViewerCheck = { candidate: ViewerSample | ViewerTiming; baseline: ViewerSample | Pick<ViewerTiming, "openMs" | "appendMs">; pairedRatios?: ViewerSample; budget: number; label: string };
+type ViewerCheck = { candidate: ViewerSample | ViewerTiming; baseline: ViewerSample | Pick<ViewerTiming, "openMs" | "appendMs">; calibration: Calibration; pairedRatios?: ViewerSample; budget: number; label: string };
 
 const viewerSamples = 5;
 const viewerRatioBudget = 1.4;
@@ -288,8 +289,9 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
   await page.waitForTimeout(500);
   const appendGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
   const scroll = await measureViewerScroll(page, viewer);
+  const calibration = await measureCalibrationSet(page);
 
-  return { fixture, width, openMs, appendMs, openSamples, appendSamples, bottomGap, appendGap, middleMoved: middleAfter > middleBefore, outerMiddleDelta, outerBoundaryDelta, longTasks, tokens, scroll };
+  return { fixture, width, openMs, appendMs, openSamples, appendSamples, calibration, bottomGap, appendGap, middleMoved: middleAfter > middleBefore, outerMiddleDelta, outerBoundaryDelta, longTasks, tokens, scroll };
 }
 
 async function measureViewerScroll(page: Page, viewer: Locator) {
@@ -411,7 +413,7 @@ async function measureViewerTiming(page: Page, url: string, slowdown = 0): Promi
 }
 
 async function measureCalibration(page: Page) {
-  const samples = await page.evaluate((runs) => Array.from({ length: runs }, () => {
+  return page.evaluate(() => {
     const root = document.createElement("div");
     root.style.cssText = "position:fixed;inset:0;overflow:auto;visibility:hidden;font:13px monospace";
     const started = performance.now();
@@ -425,7 +427,23 @@ async function measureCalibration(page: Page) {
     const elapsed = performance.now() - started;
     root.remove();
     return elapsed;
-  }), viewerSamples);
+  });
+}
+
+async function measureThrottledCalibration(page: Page) {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+    return await measureCalibration(page);
+  } finally {
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    await cdp.detach();
+  }
+}
+
+async function measureCalibrationSet(page: Page): Promise<Calibration> {
+  const samples: number[] = [];
+  for (let sample = 0; sample < viewerSamples; sample++) samples.push(await measureThrottledCalibration(page));
   return { median: median(samples), samples };
 }
 
@@ -435,26 +453,38 @@ async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.lau
   try {
     if (!baseUrl) {
       await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read`);
-      const calibration = await measureCalibration(page);
+      const calibration = await measureCalibrationSet(page);
       const candidate = await measureViewerTiming(page, candidateUrl, slowdown);
       console.log(`viewer calibration @ ${width}: ${calibration.median.toFixed(1)} ms [${calibration.samples.map((value) => value.toFixed(1)).join(", ")}], open/calibration ${ratio(candidate.openMs, calibration.median).toFixed(2)}x, append/calibration ${ratio(candidate.appendMs, calibration.median).toFixed(2)}x`);
-      return { candidate, baseline: { openMs: calibration.median, appendMs: calibration.median }, budget: fallbackRatioBudget, label: "fixed-DOM calibration" };
+      return { candidate, baseline: { openMs: calibration.median, appendMs: calibration.median }, calibration, budget: fallbackRatioBudget, label: "fixed-DOM calibration" };
     }
     const pairs: ViewerPair[] = [];
+    const calibrationSamples: number[] = [];
     for (let pair = 0; pair < viewerSamples; pair++) {
+      if (pair % 2 === 0) {
+        await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read`);
+        calibrationSamples.push(await measureThrottledCalibration(page));
+      }
       const firstUrl = pair % 2 ? candidateUrl : baseUrl;
       const secondUrl = pair % 2 ? baseUrl : candidateUrl;
       const first = await measureViewerSample(page, firstUrl, firstUrl === candidateUrl ? slowdown : 0, pair);
       const second = await measureViewerSample(page, secondUrl, secondUrl === candidateUrl ? slowdown : 0, pair);
       pairs.push(pair % 2 ? { candidate: first, base: second } : { base: first, candidate: second });
+      if (pair % 2 === 1) {
+        await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read`);
+        calibrationSamples.push(await measureThrottledCalibration(page));
+      }
     }
+    const calibration = { median: median(calibrationSamples), samples: calibrationSamples };
     const candidate = { openMs: median(pairs.map(({ candidate }) => candidate.openMs)), openTaskMs: median(pairs.map(({ candidate }) => candidate.openTaskMs)), appendMs: median(pairs.map(({ candidate }) => candidate.appendMs)), appendTaskMs: median(pairs.map(({ candidate }) => candidate.appendTaskMs)) };
     const baseline = { openMs: median(pairs.map(({ base }) => base.openMs)), openTaskMs: median(pairs.map(({ base }) => base.openTaskMs)), appendMs: median(pairs.map(({ base }) => base.appendMs)), appendTaskMs: median(pairs.map(({ base }) => base.appendTaskMs)) };
     const distributions = { openMs: ratios(pairs, "openMs"), openTaskMs: ratios(pairs, "openTaskMs"), appendMs: ratios(pairs, "appendMs"), appendTaskMs: ratios(pairs, "appendTaskMs") };
     const pairedRatios = { openMs: median(distributions.openMs), openTaskMs: median(distributions.openTaskMs), appendMs: median(distributions.appendMs), appendTaskMs: median(distributions.appendTaskMs) };
     const show = (values: number[]) => values.map((value) => value.toFixed(2)).join(", ");
-    console.log(`viewer A/B @ ${width}: paired open wall [${show(distributions.openMs)}] median ${pairedRatios.openMs.toFixed(2)}x; open task [${show(distributions.openTaskMs)}] median ${pairedRatios.openTaskMs.toFixed(2)}x; append [${show(distributions.appendMs)}] median ${pairedRatios.appendMs.toFixed(2)}x; append task [${show(distributions.appendTaskMs)}] median ${pairedRatios.appendTaskMs.toFixed(2)}x`);
-    return { candidate, baseline, pairedRatios, budget: viewerRatioBudget, label: "paired base/head" };
+    const calibrationLog = `${calibration.median.toFixed(1)} ms [${calibration.samples.map((value) => value.toFixed(1)).join(", ")}]`;
+    console.log(`viewer A/B @ ${width}: open candidate ${candidate.openMs.toFixed(1)} ms, base ${baseline.openMs.toFixed(1)} ms, calibration ${calibrationLog}, paired ${pairedRatios.openMs.toFixed(2)}x, normalized ${ratio(candidate.openMs, calibration.median).toFixed(2)}x; open task candidate ${candidate.openTaskMs.toFixed(1)} ms, base ${baseline.openTaskMs.toFixed(1)} ms, paired ${pairedRatios.openTaskMs.toFixed(2)}x; append candidate ${candidate.appendMs.toFixed(1)} ms, base ${baseline.appendMs.toFixed(1)} ms, calibration ${calibrationLog}, paired ${pairedRatios.appendMs.toFixed(2)}x, normalized ${ratio(candidate.appendMs, calibration.median).toFixed(2)}x; append task candidate ${candidate.appendTaskMs.toFixed(1)} ms, base ${baseline.appendTaskMs.toFixed(1)} ms, paired ${pairedRatios.appendTaskMs.toFixed(2)}x`);
+    console.log(`viewer A/B distributions @ ${width}: open wall [${show(distributions.openMs)}]; open task [${show(distributions.openTaskMs)}]; append wall [${show(distributions.appendMs)}]; append task [${show(distributions.appendTaskMs)}]`);
+    return { candidate, baseline, calibration, pairedRatios, budget: viewerRatioBudget, label: "paired base/head" };
   } finally { await page.close(); }
 }
 
@@ -709,7 +739,7 @@ try {
     for (const fixture of ["single", "lines", "read"] as const) {
       const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
       const measured = await measureViewer(page, width, fixture);
-      console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms [${measured.openSamples.map((value) => value.toFixed(1)).join(", ")}], append ${measured.appendMs.toFixed(1)} ms [${measured.appendSamples.map((value) => value.toFixed(1)).join(", ")}], gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px, long tasks [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}], ${measured.tokens} token spans, 4x-throttled scroll frames median ${measured.scroll.median.toFixed(1)} ms / p95 ${measured.scroll.p95.toFixed(1)} ms / ${measured.scroll.over33} over 33 ms`);
+      console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms [${measured.openSamples.map((value) => value.toFixed(1)).join(", ")}], append ${measured.appendMs.toFixed(1)} ms [${measured.appendSamples.map((value) => value.toFixed(1)).join(", ")}], calibration ${measured.calibration.median.toFixed(1)} ms [${measured.calibration.samples.map((value) => value.toFixed(1)).join(", ")}], normalized ${ratio(measured.openMs, measured.calibration.median).toFixed(2)}x/${ratio(measured.appendMs, measured.calibration.median).toFixed(2)}x, gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px, long tasks [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}], ${measured.tokens} token spans, 4x-throttled scroll frames median ${measured.scroll.median.toFixed(1)} ms / p95 ${measured.scroll.p95.toFixed(1)} ms / ${measured.scroll.over33} over 33 ms`);
       if (fixture === "read" && measured.longTasks.length) failures.push(`viewer read @ ${width}: long tasks while opening and highlighting [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}] ms`);
       if (fixture === "read" && !measured.tokens) failures.push(`viewer read @ ${width}: the mounted rows of a .ts file were not highlighted`);
       if (measured.openMs >= 64) failures.push(`viewer ${fixture} @ ${width}: pathological median open took ${measured.openMs.toFixed(1)} ms (64 ms ceiling)`);
