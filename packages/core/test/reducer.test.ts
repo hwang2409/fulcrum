@@ -187,16 +187,78 @@ test("tool output changes only the streamed tool identity", () => {
   expect(store.getOutline()).toBe(outline);
 });
 
-test("tool output adopts a new arguments value without replacing an unchanged one", () => {
-  const store = replay([{ type: "tool_start", tool_call: toolCall }]);
-  store.dispatch({ type: "tool_output", tool_call: { ...toolCall }, output: "a" });
-  const unchanged = store.getItem(`tool:${toolCall.id}`);
-  expect(unchanged?.type === "tool" ? unchanged.tool_call.arguments : undefined).toBe(toolCall.arguments);
+test("output events keep a known call; an unknown call takes the event's call", () => {
+  const known = { ...toolCall, meta: { wireId: "w1", title: "Read README" } };
+  const store = replay([{ type: "tool_start", tool_call: known }]);
+  const other = { id: toolCall.id, name: "tool", arguments: {}, meta: { wireId: "w1" } };
+  store.dispatch({ type: "tool_output", tool_call: other, output: "a" });
+  const afterOutput = store.getItem(`tool:${toolCall.id}`);
+  expect(afterOutput?.type === "tool" ? afterOutput.tool_call : undefined).toBe(known);
+  store.dispatch({ type: "tool_output", tool_call: other, output: "b", replace: true });
+  store.dispatch({ type: "tool_end", tool_call: other, tool_result: { tool_call_id: toolCall.id, content: "b", is_error: false } });
+  const ended = store.getItem(`tool:${toolCall.id}`);
+  expect(ended?.type === "tool" ? ended.tool_call : undefined).toBe(known);
 
-  const arguments_ = { command: "updated" };
-  store.dispatch({ type: "tool_output", tool_call: { ...toolCall, arguments: arguments_ }, output: "b" });
-  const updated = store.getItem(`tool:${toolCall.id}`);
-  expect(updated?.type === "tool" ? updated.tool_call.arguments : undefined).toBe(arguments_);
+  const orphan = { id: "tool-2", name: "bash", arguments: { command: "ls" } };
+  store.dispatch({ type: "tool_output", tool_call: orphan, output: "x" });
+  const created = store.getItem("tool:tool-2");
+  expect(created?.type === "tool" ? [created.tool_call, created.output, created.active] : undefined).toEqual([orphan, "x", true]);
+  expect(created?.type === "tool" ? created.tool_call : undefined).toBe(orphan);
+});
+
+test("tool_output with replace replaces the output in place and keeps the approval", () => {
+  const request: RunEvent = { type: "approval_request", request_id: "approval-1", tool_call: toolCall, delegated: false };
+  const approve: RunEvent = { type: "approval_end", request_id: "approval-1", decision: "approve" };
+  const after: RunEvent = { type: "message_commit", message_id: "after", message: message("after") };
+  const replace = (output: string): RunEvent => ({ type: "tool_output", tool_call: toolCall, output, replace: true });
+  const toolOf = (store: ReturnType<typeof replay>) => {
+    const item = store.getItem(`tool:${toolCall.id}`);
+    if (item?.type !== "tool") throw new Error("no tool row");
+    return item;
+  };
+  const ids = (store: ReturnType<typeof replay>) => store.getOutline().map(({ id }) => id);
+
+  // After streamed outputs: the whole output so far replaces what the row has.
+  const streamed = replay([
+    { type: "tool_start", tool_call: toolCall },
+    { type: "tool_output", tool_call: toolCall, output: "1 " },
+    { type: "tool_output", tool_call: toolCall, output: "2 " },
+    after,
+  ]);
+  const streamedIds = ids(streamed);
+  streamed.dispatch(replace("1 2 3"));
+  expect(toolOf(streamed).output).toBe("1 2 3");
+  expect(toolOf(streamed).active).toBe(true);
+  streamed.dispatch(replace("1 2 3 4"));
+  expect(toolOf(streamed).output).toBe("1 2 3 4");
+  streamed.dispatch({ type: "tool_output", tool_call: toolCall, output: " 5" });
+  expect(toolOf(streamed).output).toBe("1 2 3 4 5");
+  expect(ids(streamed)).toEqual(streamedIds);
+
+  // After an approval folds into the row: the decision stays.
+  const approved = replay([request, approve, { type: "tool_start", tool_call: toolCall }, replace("1"), after]);
+  const approvedIds = ids(approved);
+  approved.dispatch(replace("1 2"));
+  expect(toolOf(approved)).toMatchObject({ output: "1 2", active: true, approval: { decision: "approve" } });
+  expect(ids(approved)).toEqual(approvedIds);
+  expect(approvedIds.filter((id) => id.startsWith("approval:"))).toEqual([]);
+
+  // After tool_end: the result and error state clear, and the row is live again in its place.
+  const ended = replay([
+    request,
+    approve,
+    { type: "tool_start", tool_call: toolCall },
+    { type: "tool_output", tool_call: toolCall, output: "partial" },
+    { type: "tool_end", tool_call: toolCall, tool_result: { tool_call_id: toolCall.id, content: "failed", is_error: true, is_canceled: true } },
+    after,
+  ]);
+  const endedIds = ids(ended);
+  ended.dispatch(replace("whole"));
+  const row = toolOf(ended);
+  expect(row).toMatchObject({ output: "whole", active: true, is_error: false, canceled: false, approval: { decision: "approve" } });
+  expect(row.result).toBeUndefined();
+  expect(ids(ended)).toEqual(endedIds);
+  expect(ended.getState().activeToolIds[toolCall.id]).toBe(true);
 });
 
 test("commit replaces streamed text with the final message", () => {
@@ -231,6 +293,59 @@ test("published snapshots and entities do not change after a delta", () => {
   expect(itemText(item)).toBe("before");
   expect(store.getState()).not.toBe(snapshot);
   expect(snapshot.outline).toEqual([{ id: "message:assistant", kind: "message" }]);
+});
+
+test.each([
+  ["new then old", "+ + + + r3 r0 r2"],
+  ["old then new", "+ + + + r0 r3 r1"],
+  ["middle versions never read", "+ r0 + + + r3 r2 r1"],
+  ["reads between deltas", "+ r0 + r1 + r0 r2 + r3 r1 r3"],
+  ["after commit", "+ + r1 + c r2 r0"],
+])("each stream version keeps its own text across reads: %s", (_, steps) => {
+  const store = createRunStore((flush) => flush());
+  const versions: RunItem[] = [];
+  for (const step of steps.split(" ")) {
+    if (step === "+") {
+      store.dispatch({ type: "message_delta", message_id: "m", delta: String(versions.length) });
+      versions.push(store.getItem("message:m")!);
+    } else if (step === "c") {
+      store.dispatch({ type: "message_commit", message_id: "m", message: message("final") });
+    } else {
+      const index = Number(step.slice(1));
+      expect(itemText(versions[index])).toBe("0123".slice(0, index + 1));
+    }
+  }
+});
+
+test("tool output read through the stream cache every few chunks keeps each version's text", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "tool_start", tool_call: toolCall });
+  const outputOf = (item: RunItem | undefined) => (item?.type === "tool" ? item.output : undefined);
+  const read: { item: RunItem; text: string }[] = [];
+  let expected = "";
+  for (let i = 0; i < 200; i++) {
+    store.dispatch({ type: "tool_output", tool_call: toolCall, output: `${i},` });
+    expected += `${i},`;
+    if (i % 7 === 0) {
+      const item = store.getItem(`tool:${toolCall.id}`)!;
+      expect(outputOf(item)).toBe(expected);
+      read.push({ item, text: expected });
+    }
+  }
+  expect(outputOf(store.getItem(`tool:${toolCall.id}`))).toBe(expected);
+  // Older versions read after newer ones still return their own text.
+  for (const { item, text } of [read[3], read[0], read[read.length - 2]]) expect(outputOf(item)).toBe(text);
+});
+
+test("spread, JSON, and structuredClone copies of a streaming item carry its text", () => {
+  const store = replay([
+    { type: "message_delta", message_id: "copy", delta: "a" },
+    { type: "message_delta", message_id: "copy", delta: "b" },
+  ]);
+  const item = store.getItem("message:copy")!;
+  expect(itemText({ ...item } as RunItem)).toBe("ab");
+  expect(itemText(JSON.parse(JSON.stringify(item)))).toBe("ab");
+  expect(itemText(structuredClone(item))).toBe("ab");
 });
 
 test("run_end clears active assistant and tool streams", () => {

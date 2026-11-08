@@ -18,7 +18,8 @@ on:
 jobs:
   stress:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    # 10, not 8: a core PR's a/b runs the slow base core (PR #99 took 5m54s, 25% margin at 8).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -49,7 +50,7 @@ jobs:
       - name: counted-work gate
         if: ${{ github.event_name == 'pull_request' && inputs.inject == '' }}
         run: bun run --cwd apps/playground stress
-      - name: calibrated core a/b gate
+      - name: calibrated core a/b report
         env:
           BENCH_BASE_ROOT: ${{ github.workspace }}/../fulcrum-stress-base
           BENCH_CANDIDATE_ROOT: ${{ github.workspace }}
