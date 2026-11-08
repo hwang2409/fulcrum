@@ -55,6 +55,25 @@ test("rejects collisions between wire-looking and synthetic-looking ids", () => 
   expect(failures).toContain("adversarial-ids: content marker synthetic-a was lost");
 });
 
+test("false capabilities reject feature events from any scenario", () => {
+  const configured = options((value) => {
+    if ((value as AdapterFixture).scenario !== "text") return [];
+    return [
+      { type: "message_delta", message_id: "reasoning", delta: "thinking", kind: "reasoning" },
+      { type: "approval_request", request_id: "approval", tool_call: { id: "tool", name: "deploy", arguments: {} }, delegated: false },
+      { type: "message_reset" },
+      { type: "usage", usage: { inputTokens: 1 } },
+      { type: "message_delta", message_id: "text", delta: "hello", kind: "assistant" },
+      { type: "message_commit", message_id: "text", message: { role: "assistant", content: [{ type: "text", text: "hello" }] } },
+    ] satisfies RunEvent[];
+  });
+  const failures = runAdapterConformance(configured);
+  expect(failures).toContain("reasoning: emitted while capability is false");
+  expect(failures).toContain("approval: emitted while capability is false");
+  expect(failures).toContain("reset: emitted while capability is false");
+  expect(failures).toContain("usage: emitted while capability is false");
+});
+
 test("usage capability rejects an empty usage object", () => {
   const configured = options((value) => (value as AdapterFixture).scenario === "usage"
     ? [{ type: "usage", usage: {} }]

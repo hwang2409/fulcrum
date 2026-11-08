@@ -43,6 +43,16 @@ const messageText = (item: RunItem) => item.type === "message"
   ? item.message.content.filter((part) => part.type === "text").map((part) => String(part.text ?? "")).join("") || item.text || ""
   : "";
 const has = (events: readonly RunEvent[], type: RunEvent["type"]) => events.some((event) => event.type === type);
+const capabilityEvents = [
+  { capability: "approval", matches: (event: RunEvent) => event.type === "approval_request" || event.type === "approval_end" },
+  {
+    capability: "reasoning",
+    matches: (event: RunEvent) => (event.type === "message_delta" && (event.kind === "reasoning" || event.kind === "thinking"))
+      || (event.type === "message_commit" && event.message.content.some((part) => part.type === "reasoning" || part.type === "thinking")),
+  },
+  { capability: "reset", matches: (event: RunEvent) => event.type === "message_reset" || event.type === "retry" },
+  { capability: "usage", matches: (event: RunEvent) => event.type === "usage" },
+] as const;
 const scenarioEnabled = (scenario: AdapterScenario, capabilities: AdapterCapabilities) => {
   if (scenario === "approval") return capabilities.approval;
   if (scenario === "reasoning") return capabilities.reasoning;
@@ -70,7 +80,12 @@ export function runAdapterConformance(options: AdapterConformanceOptions): strin
       const store = stores.get(fixture.sessionId) ?? createRunStore(() => {});
       stores.set(fixture.sessionId, store);
       try {
-        for (const event of adapter.decode(fixture)) { events.push(event); store.dispatch(event); }
+        for (const event of adapter.decode(fixture)) {
+          events.push(event);
+          for (const { capability, matches } of capabilityEvents)
+            if (!options.capabilities[capability] && matches(event)) failures.push(`${capability}: emitted while capability is false`);
+          store.dispatch(event);
+        }
       } catch (error) {
         failures.push(`${fixture.scenario}: decode threw ${error instanceof Error ? error.message : String(error)}`);
       }
