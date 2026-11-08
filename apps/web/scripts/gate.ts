@@ -675,8 +675,12 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
 }
 
 async function checkReconnectBottom(page: Page, engine: string) {
+  const browser = page.context().browser();
+  if (!browser) throw new Error(`${engine}: reconnect fixture browser is unavailable`);
+  const viewport = page.viewportSize() ?? { width: 1440, height: 900 };
   await page.goto("about:blank");
-  const fixturePage = await page.context().newPage();
+  const fixtureContext = await browser.newContext({ viewport });
+  const fixturePage = await fixtureContext.newPage();
   await installReconnectBottomFixture(fixturePage);
   const failures: ReconnectBottomFailure[] = [];
   try {
@@ -694,7 +698,7 @@ async function checkReconnectBottom(page: Page, engine: string) {
       throw new Error(`${engine}: deterministic old-source proof failed ${failures.length}/${reconnectBottomRuns} at ${failures.map(({ gap }) => gap.toFixed(3)).join(",")} px`);
     }
   } finally {
-    await fixturePage.close();
+    await fixtureContext.close();
   }
 }
 
