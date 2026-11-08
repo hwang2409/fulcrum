@@ -660,6 +660,55 @@ test("a throwing onError never escapes a read: the store still desyncs, and the 
   expect(jobs.shift()!).toThrow("onError boom");
 });
 
+test("a throwing onError on a rejected prepend page never escapes a read: the store desyncs, and the scheduler job rethrows it", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job), { onError() { throw new Error("onError boom"); } });
+  store.beginHistory();
+  store.prepend([new Proxy({ type: "retry" }, { get(target, key, receiver) { if (key === "type") throw new Error("reduce"); return Reflect.get(target, key, receiver); } }) as RunEvent]);
+  expect(() => store.getState()).not.toThrow();
+  expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "reduce" });
+  expect(jobs.shift()!).toThrow("onError boom");
+});
+
+// The host's error sink (reportError, or console.error where it does not exist) is host code too. A sink that throws,
+// like a fail-on-console test setup, must not cut a pass short, replace the first error, or leave it for a later job.
+const throwingSinks = [
+  { sink: "reportError", install: () => spyOn(globalThis, "reportError").mockImplementation(() => { throw new Error("sink"); }), restore: () => {} },
+  {
+    sink: "console.error",
+    install: () => {
+      const saved = Object.getOwnPropertyDescriptor(globalThis, "reportError")!;
+      delete (globalThis as { reportError?: unknown }).reportError;
+      const spy = spyOn(console, "error").mockImplementation(() => { throw new Error("sink"); });
+      return { mockRestore: () => { spy.mockRestore(); Object.defineProperty(globalThis, "reportError", saved); } };
+    },
+  },
+];
+test.each(throwingSinks)("a throwing $sink: every listener runs, the job rethrows the first error, and reads never throw", ({ install }) => {
+  const sinkSpy = install();
+  try {
+    const jobs: Array<() => void> = [];
+    const store = createRunStore((job) => jobs.push(job));
+    const calls: string[] = [];
+    let throwing = true;
+    for (const name of ["a", "b", "c"]) store.subscribe(() => { calls.push(name); if (throwing && name !== "c") throw new Error(name); });
+    for (const name of ["d1", "d2"]) store.subscribeDiagnostics(() => { if (throwing) throw new Error(name); });
+    store.dispatch(commit("a"));
+    expect(jobs.shift()!).toThrow("a");
+    expect(calls).toEqual(["a", "b", "c"]);
+    store.dispatch(malformed);
+    expect(() => store.getState()).not.toThrow();
+    expect(jobs.shift()!).toThrow("d1");
+    throwing = false;
+    calls.length = 0;
+    store.dispatch(commit("b"));
+    expect(jobs.shift()!).not.toThrow();
+    expect(calls).toEqual(["a", "b", "c"]);
+  } finally {
+    sinkSpy.mockRestore();
+  }
+});
+
 // A throw escaping the host's scheduler reaches the caller, but must not leave a job marked as queued: that would
 // silence every later dispatch, like a pass flag left set.
 test("a throwing scheduler does not stop later dispatches from scheduling", () => {
@@ -694,6 +743,48 @@ test("dispose publishes an empty outline, notifies no one after, and every later
   expect(() => store.prepend([commit("c")])).toThrow("store is disposed");
   expect(() => { store.endHistory(); store.dispose(); }).not.toThrow();
   expect(calls).toBe(0);
+});
+
+// dispose from a listener stops the rest of the running pass: no global, outline, keyed, or diagnostics listener runs
+// after it.
+test("dispose from a listener stops the rest of the pass: global, outline, keyed", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const calls: string[] = [];
+  store.subscribe(() => { calls.push("first"); store.dispose(); });
+  store.subscribe(() => calls.push("second"));
+  store.subscribeOutline(() => calls.push("outline"));
+  store.subscribe("message:a", () => calls.push("keyed"));
+  store.dispatch(commit("a"));
+  jobs.shift()!();
+  expect(calls).toEqual(["first"]);
+});
+
+test("dispose from a diagnostics listener stops the rest of the pass: diagnostics", () => {
+  const store = createRunStore((job) => job());
+  const calls: string[] = [];
+  store.subscribeDiagnostics(() => { calls.push("first"); store.dispose(); });
+  store.subscribeDiagnostics(() => calls.push("second"));
+  store.dispatch(malformed);
+  expect(calls).toEqual(["first"]);
+});
+
+// A listener error that a read flushed belongs to the job the dispatch queued; dispose drops that job's work, so the
+// error goes to the host's error report instead of surfacing from a job after dispose.
+test("dispose hands an undelivered listener error to reportError, and no job rethrows it after dispose", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.subscribeDiagnostics(() => { throw new Error("diag boom"); });
+  store.dispatch(malformed);
+  store.getState();
+  const reported = spyOn(globalThis, "reportError").mockImplementation(() => {});
+  try {
+    store.dispose();
+    expect(jobs.shift()!).not.toThrow();
+    expect(reported.mock.calls.map(([error]) => (error as Error).message)).toEqual(["diag boom"]);
+  } finally {
+    reported.mockRestore();
+  }
 });
 
 test("prepend rejection keeps the last good state and visibly desyncs", () => {

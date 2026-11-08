@@ -122,16 +122,23 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
   let edits: OutlineSplice[] = [];
+  // The host's error report. A sink that throws (a fail-on-console test setup, a mocked reportError) is host code too:
+  // its own throw is dropped, since there is nowhere left to report it, so it cannot cut delivery short.
+  const sink = (error: unknown) => {
+    try {
+      if (typeof reportError === "function") reportError(error);
+      else console.error(error);
+    } catch {}
+  };
   // The one delivery owner for every listener and host callback: the rules live in packages/core/README.md, section
   // "Notification contract"; keep them in sync.
   const call = (listener: Listener) => {
     try {
       listener();
     } catch (error) {
-      // The first error is rethrown after delivery; later ones go to the host's error report so none vanish.
+      // The first error is rethrown after delivery; later ones go to the sink so none vanish.
       if (!failure) failure = { error };
-      else if (typeof reportError === "function") reportError(error);
-      else console.error(error);
+      else sink(error);
     }
   };
   // Rethrows the first listener error once delivery is over: never inside a pass (it would cut a listener short) and
@@ -441,6 +448,9 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       diagnosticsListeners.clear();
       changedItems.clear();
       edits = [];
+      // An error no entry is delivering (a read flushed it) goes to the sink: nothing may rethrow after dispose. Inside
+      // a pass or job, the running entry still rethrows it.
+      if (failure && !notifying && !running) sink(failure.error), failure = undefined;
       desynced = false;
       diagnostics = { ignoredEvents, sanitizedFields, desynced: false };
       stateChanged = false;
