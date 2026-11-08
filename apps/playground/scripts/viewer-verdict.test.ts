@@ -65,9 +65,11 @@ describe("recordUnthrottledViewerFailures", () => {
   test("the highest recorded no-op values pass", () => {
     expect(judge("single", 5.8, 3.2, 5.6)).toEqual([]); // 42509897759: open 1.04x on a fast runner (its slowdown touches only read)
     expect(judge("lines", 3.4, 5.4, 7.4)).toEqual([]); // 42507931601: append 0.73x
+    expect(judge("single", 5.8, 3.3, 6.4, 1440)).toEqual([]); // 42509897759: open 0.91x @ 1440, the 1440 open maximum
   });
   test("the lowest recorded mutations fail", () => {
     expect(judge("read", 31.6, 36.4, 8.4)).toEqual(["viewer read @ 390 open: calibrated ceiling, candidate 31.6 ms / calibration 8.4 ms = 3.76x is over 1.46x"]); // 42507931601, +25 ms
+    expect(judge("read", 32.0, 36.7, 8.5, 1440)).toEqual(["viewer read @ 1440 open: calibrated ceiling, candidate 32.0 ms / calibration 8.5 ms = 3.76x is over 1.27x"]); // 42507931601, +25 ms
     expect(judge("lines", 4.0, 43.5, 10.1, 1440)).toEqual(["viewer lines @ 1440 append: calibrated ceiling, candidate 43.5 ms / calibration 10.1 ms = 4.31x is over 1.02x"]); // 42513755996, append CPU work
   });
   test("a 2x common regression fails on a mid runner", () => {
