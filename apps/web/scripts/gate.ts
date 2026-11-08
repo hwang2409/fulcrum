@@ -604,7 +604,14 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
     await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
     await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
     await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
-    await waitAtBottom(page, `${engine} reconnect-bottom run ${run}: the long run did not load pinned at the bottom`);
+    try {
+      await waitAtBottom(page, `${engine} reconnect-bottom run ${run}: the long run did not load pinned at the bottom`);
+    } catch (error) {
+      const load = await reconnectBottomSample(page, "load-bottom");
+      console.log(`reconnect-bottom-load ${JSON.stringify({ engine, run, ...load })}`);
+      if (load.pinned && Math.abs(load.gap) > 0.5) throw new ReconnectBottomFailure(load.gap, load.scrollTop - load.engineEnd);
+      throw error;
+    }
     const initial = await stableReconnectBottom(page, "initial", 2);
     phases.push(initial.at(-1)!);
     const before = phases.at(-1)!;
