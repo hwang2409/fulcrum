@@ -276,6 +276,7 @@ type ViewerProps = { text: string; label: string; follow: boolean; metrics: Text
 type Place = "top" | "middle" | "bottom";
 const placeWords: Record<Place, string> = { top: "at top", middle: "scrolled", bottom: "at bottom" };
 
+const MUTATION_WORK = 7;
 function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy, seed, caption, focus, live }: ViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(follow);
@@ -283,6 +284,8 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
   const [place, setPlace] = useState<Place>(follow ? "bottom" : "top");
   const [newOutput, setNewOutput] = useState(false);
   const seenLength = useRef(text.length);
+  // tmp mutation: O(lines) work per append, sized to the layout.ts contract (c) (about +55 ms per append at 128k, 4x throttle).
+  useMemo(() => { let acc = 0; for (let i = 0, end = metrics.lines * MUTATION_WORK; i < end; i++) acc = (acc * 31 + i) | 0; (globalThis as { __mutationSink?: number }).__mutationSink = acc; }, [text]);
   // useSegments either extends its array (old segments are the same objects) or builds a new one: an extension is an
   // append from the prior segments.
   const prior = useRef<TextSegment[]>([]);
