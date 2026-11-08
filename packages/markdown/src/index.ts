@@ -673,6 +673,8 @@ type ParagraphRecord = {
   labels: Set<string>;
   /** The last line has pipes that stay hidden only while it is the last line. */
   lastLinePipes?: boolean;
+  /** The last line is a table row that has not shown yet: it stays hidden while it is the last line (heldRow). */
+  heldRow?: boolean;
 };
 
 type TableBlock = Extract<Block, { type: "table" }>;
@@ -687,14 +689,7 @@ type TableCellRecord = {
 type ReferenceUser = ParagraphRecord | TableCellRecord;
 type TableRecord = { header: string; delimiter: string; cells: TableCellRecord[] };
 
-// A streaming line that starts with a pipe is a table row in waiting: it shows once it is a table, or once the next line
-// proves it is prose. Shown before that, its pipes would vanish into cell borders, or its cells would read as one word.
-const heldTableRow = (line: string) => /^[ \t]*\|/.test(line);
-/** `source` without its last line when that line is a held table row, else undefined. */
-const withoutHeldTableRow = (source: string) => {
-  const start = source.lastIndexOf("\n") + 1;
-  return heldTableRow(source.slice(start)) ? source.slice(0, Math.max(0, start - 1)) : undefined;
-};
+const withoutLastLine = (source: string) => source.slice(0, Math.max(0, source.lastIndexOf("\n")));
 
 // The open paragraph's last line can still become a table header, which turns its pipes into cell borders.
 function hideTableCandidatePipes(inlines: Inline[]) {
@@ -961,6 +956,20 @@ export function createStreamingDocument(): StreamingDocument {
   // The growing line's inline nodes and the identity used to reuse them.
   let pendingInline: PendingInline | undefined;
   let pendingInlineState: PendingInlineState | undefined;
+  // A streaming line that starts with a pipe is a table row in waiting: it shows once it is a table, or once the next
+  // line proves it is prose. Shown before that, its pipes would vanish into cell borders, or its cells would read as one
+  // word. A row that already showed (as a row of the table above it) stays shown. Decided once per line, by its first
+  // character after `offset`: indexing the line flattens it, so a check per frame would copy the whole line every frame.
+  let pendingRow: { offset: number; held: boolean } | undefined;
+  const heldRow = (content: string) => /^[ \t]*\|/.test(content) && pendingRow?.held !== false;
+  const pendingHeld = (line: string, offset: number) => {
+    if (pendingRow?.offset === offset) return pendingRow.held;
+    let start = offset;
+    while (line[start] === " " || line[start] === "\t") start++;
+    if (start >= line.length) return false;
+    pendingRow = { offset, held: line[start] === "|" };
+    return pendingRow.held;
+  };
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
 
@@ -1049,8 +1058,7 @@ export function createStreamingDocument(): StreamingDocument {
       const inspected = inspectReferenceLine(inlineSource);
       if (inspected.metadata && inspected.disposition.kind !== "definition") inlineSource = inlineSource.replace("[", "\\[");
     }
-    const held = streaming ? withoutHeldTableRow(record.source) : undefined;
-    if (held !== undefined) inlineSource = held;
+    if (streaming && record.heldRow) inlineSource = withoutLastLine(record.source);
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment())
@@ -1078,7 +1086,7 @@ export function createStreamingDocument(): StreamingDocument {
       item.checked = task[1]!.toLowerCase() === "x";
       content = content.slice(task[0].length);
     }
-    const record: ParagraphRecord = { block, source: content, labels: new Set(), lastLinePipes: content.includes("|") };
+    const record: ParagraphRecord = { block, source: content, labels: new Set(), lastLinePipes: content.includes("|"), heldRow: heldRow(content) };
     // The growing line already holds stable nodes for this text; only its unresolved tail is parsed again.
     updateParagraph(record, true, true, pendingInline?.commit(content));
     paragraphRecords.set(block, record);
@@ -1090,6 +1098,7 @@ export function createStreamingDocument(): StreamingDocument {
   const appendParagraphLine = (record: ParagraphRecord, content: string) => {
     const addition = `\n${content}`;
     record.source += addition;
+    record.heldRow = heldRow(content);
     const child = record.block.children.length === 1 ? record.block.children[0] : undefined;
     if (child?.type === "text" && !record.lastLinePipes && !/[\\&<>*_~`\[\]|]/.test(content)) child.value += addition;
     else updateParagraph(record, true);
@@ -1289,6 +1298,7 @@ export function createStreamingDocument(): StreamingDocument {
       if (piece.endsWith("\n")) {
         pendingInline = undefined;
         pendingInlineState = undefined;
+        pendingRow = undefined;
       }
     }
   };
@@ -1385,8 +1395,9 @@ export function createStreamingDocument(): StreamingDocument {
       } else {
         const continuesParagraph = Boolean(openParagraph) && resolver.pendingContinuesParagraph(pending);
         const startsBlock = openParagraph ? !continuesParagraph : /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
-        if (!(openTable && !startsBlock && classification.kind === "paragraph" && classification.offset < pending.length && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment())))
-          if (classification.kind !== "paragraph" || !heldTableRow(pending.slice(classification.offset))) appendPendingParagraph(overlay, pendingPreview(classification, continuesParagraph), continuesParagraph);
+        if (openTable && !startsBlock && classification.kind === "paragraph" && classification.offset < pending.length && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment()))
+          pendingRow = { offset: classification.offset, held: false };
+        else if (classification.kind !== "paragraph" || !pendingHeld(pending, classification.offset)) appendPendingParagraph(overlay, pendingPreview(classification, continuesParagraph), continuesParagraph);
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];
