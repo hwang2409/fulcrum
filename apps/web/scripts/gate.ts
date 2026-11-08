@@ -661,6 +661,8 @@ try {
       if (!(await page.evaluate(() => location.hash.includes("s-long")))) throw new Error("selection not in the url");
     });
     await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
+      // Earlier checks continue after failure, so isolate this exact-list assertion from their accepted sends.
+      fake.clearSent();
       await page.locator("button.session", { hasText: "check every theme" }).click();
       await page.locator('[data-part="md-table"]').waitFor({ timeout: 5000 });
       const composer = page.locator('.dock [data-part="composer"]');
