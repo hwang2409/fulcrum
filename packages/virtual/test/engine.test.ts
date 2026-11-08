@@ -292,7 +292,7 @@ describe("bottom and scroll semantics", () => {
     expect(notifications, "an observation that changes no range input must not re-render").toBe(0);
     expect(virtual.getSnapshot()).toBe(snapshot);
   });
-  test("an observation at the same position notifies when a range input changed", () => {
+  test("an observation at the same position notifies when a range input changed, and content growth is current without it", () => {
     const resized = engine(new Array(100).fill(10), 10, 500);
     const before = resized.getSnapshot().range;
     let notifications = 0;
@@ -312,15 +312,20 @@ describe("bottom and scroll semantics", () => {
     expect(shrunk.getSnapshot()).toMatchObject({ scrollTop: 490, visible: { start: 49, end: 50 } });
     expect(shrunk.getSnapshot().range).not.toEqual(stale.range);
 
-    // Content that grows at the same position already re-rendered through its own mutation.
+    // Content that grows at the same position notifies through measure(), so the snapshot is current before the
+    // observation; the observation then adds no second notification.
     const grown = engine(new Array(100).fill(10), 10, 500);
-    grown.measure("row-50", 40);
-    const measured = grown.getSnapshot();
     notifications = 0;
     grown.subscribe(() => notifications++);
+    grown.measure("row-50", 40);
+    expect(notifications, "the growth itself notifies").toBe(1);
+    const sizes = new Array(100).fill(10);
+    sizes[50] = 40;
+    const fresh = engine(sizes, 10, 500).getSnapshot();
+    expect(grown.getSnapshot()).toMatchObject({ totalSize: 1030, range: fresh.range, visible: fresh.visible, bottomSpacer: fresh.bottomSpacer });
     grown.setViewport({ scrollTop: 500, size: 10, source: "observe" });
-    expect(notifications).toBe(0);
-    expect(grown.getSnapshot().range).toEqual(measured.range);
+    expect(notifications, "an observation after the growth adds no second notification").toBe(1);
+    expect(grown.getSnapshot()).toMatchObject({ totalSize: 1030, range: fresh.range, visible: fresh.visible });
   });
   test("pinned append follows the new bottom", () => {
     const virtual = engine([10, 10], 10, 10);
