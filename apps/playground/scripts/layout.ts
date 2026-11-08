@@ -372,9 +372,11 @@ async function appendViewer(page: Page, slowdown: number, offset: number, count 
   return { appendMs: median(samples), appendTaskMs: median(taskSamples), appendPushes: median(measured.map(({ pushes }) => pushes)), segmentPushes: median(measured.map(({ segmentPushes }) => segmentPushes)), samples, taskSamples };
 }
 
-async function measureViewerSample(page: Page, url: string, slowdown: number, sample: number, lines?: number, delta?: string) {
+// `scalingLines`: one side of an append scaling pair, the first append after open to a viewer of that many lines. Later
+// appends at 128k lines are bimodal on CI runners (about 30 or 60 ms, 4x throttle); the first is not.
+async function measureViewerSample(page: Page, url: string, slowdown: number, sample: number, scalingLines?: number) {
   const query = new URLSearchParams({ viewerFixture: "read" });
-  if (lines) query.set("viewerLines", String(lines));
+  if (scalingLines) query.set("viewerLines", String(scalingLines));
   await page.goto(`${url}/gallery.html?${query}`);
   await prepareViewerOpen(page);
   const cdp = await page.context().newCDPSession(page);
@@ -389,7 +391,7 @@ async function measureViewerSample(page: Page, url: string, slowdown: number, sa
   await viewer.locator("[class^=tok-]").first().waitFor();
   await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await page.waitForTimeout(100); // keep asynchronous range coloring outside the scoped append task
-  const appended = await appendViewer(page, slowdown, sample * viewerSamples, viewerSamples, delta);
+  const appended = await appendViewer(page, slowdown, sample * viewerSamples, scalingLines ? 1 : viewerSamples, scalingLines ? scalingDelta : undefined);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
   await cdp.detach();
   return { openMs, openTaskMs, ...appended };
@@ -488,8 +490,8 @@ async function checkViewerScaling(browser: Awaited<ReturnType<typeof chromium.la
     const pairs: ScalingPair[] = [];
     for (let pair = 0; pair < viewerScalingPairs; pair++) {
       // Each pair measures 16k and 128k back to back, in alternating order, so runner drift cancels inside the pair.
-      const first = await measureViewerSample(page, candidateUrl, 0, pair, pair % 2 ? 128_000 : 16_000, scalingDelta);
-      const second = await measureViewerSample(page, candidateUrl, 0, pair, pair % 2 ? 16_000 : 128_000, scalingDelta);
+      const first = await measureViewerSample(page, candidateUrl, 0, pair, pair % 2 ? 128_000 : 16_000);
+      const second = await measureViewerSample(page, candidateUrl, 0, pair, pair % 2 ? 16_000 : 128_000);
       pairs.push(pair % 2 ? { small: second, large: first } : { small: first, large: second });
       console.log(`raw pair ${pair}: first ${pair % 2 ? "128k" : "16k"} [${first.taskSamples.map((v) => v.toFixed(1)).join(", ")}] second [${second.taskSamples.map((v) => v.toFixed(1)).join(", ")}]`);
     }
