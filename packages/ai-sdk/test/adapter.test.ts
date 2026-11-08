@@ -68,7 +68,7 @@ test("scopes part, tool, and approval ids to their stream", () => {
     const message = adapter.decode({ type: "text-delta", id: "same", delta: "x" });
     const tool = adapter.decode({ type: "tool-input-available", toolCallId: "same", toolName: "deploy", input: {} });
     const approval = adapter.decode({ type: "tool-approval-request", toolCallId: "same", approvalId: "same" });
-    return [message[0], tool[0], approval[0]].map((event) => event?.type === "message_delta" ? event.message_id
+    return [message[0], tool.at(-1), approval[0]].map((event) => event?.type === "message_delta" ? event.message_id
       : event?.type === "tool_start" ? event.tool_call.id
       : event?.type === "approval_request" ? event.request_id : undefined);
   };
@@ -276,9 +276,9 @@ test("preserves block and tool protocol metadata in generic meta bags", () => {
   adapter.decode({ type: "start", messageId: "meta" });
   adapter.decode({ type: "text-start", id: "text", providerMetadata: { mock: { trace: "t" } } });
   adapter.decode({ type: "text-delta", id: "text", delta: "hello", providerMetadata: { mock: { trace: "delta" } } });
-  const [tool] = adapter.decode({ type: "tool-input-available", toolCallId: "call", toolName: "search", input: {}, providerExecuted: true, dynamic: true, title: "Search", providerMetadata: { mock: { trace: "tool" } } });
+  // The tool row seals the text before it, so its commit comes first.
+  const [commit, tool] = adapter.decode({ type: "tool-input-available", toolCallId: "call", toolName: "search", input: {}, providerExecuted: true, dynamic: true, title: "Search", providerMetadata: { mock: { trace: "tool" } } });
   expect(tool?.type === "tool_start" ? tool.tool_call.meta : undefined).toEqual({ providerExecuted: true, dynamic: true, title: "Search", providerMetadata: [{ mock: { trace: "tool" } }], wireId: "call" });
-  const commit = adapter.decode({ type: "finish" }).find((event) => event.type === "message_commit");
   expect(commit?.type === "message_commit" ? commit.message.content[0]?.meta : undefined).toEqual({ providerMetadata: [{ mock: { trace: "t" } }, { mock: { trace: "delta" } }] });
 });
 

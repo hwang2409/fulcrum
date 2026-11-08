@@ -125,40 +125,43 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
    * and, after an approval, a continuation stream with the same messageId, so its wire id cannot name a fulcrum
    * message: every segment gets `s:message:<streamKey>:<n>` and carries the wire id in its metadata. States:
    * - no segment: the next content opens one;
-   * - open: content streams into the last segment;
-   * - sealed: a new tool row came after the segment's content, so the next content opens the next segment.
-   * Segments commit together at finish, abort, or error (`close`): a commit of an earlier segment while a later one
-   * streams would end the later one in the store. Content after a break opens a new segment, because the store
-   * restarts a message that is no longer streaming.
+   * - open: content streams into the current segment;
+   * - a new tool row after the segment's content seals and commits it, before any later content streams, so the
+   *   reader sees it finished while the tool runs and a stream that drops keeps it. The next content opens the next
+   *   segment; a late delta for a committed segment's part continues as a block of the current one.
+   * finish, abort, and error commit the current segment (`close`). Provider metadata that arrives for a committed
+   * segment re-commits it at the next close: a commit while another segment streams would end that one in the store.
    */
   let messageNumber = 0;
-  let segments: Segment[] = [];
-  let sealed = false;
+  let segment: Segment | undefined;
   let pending: BlockState[] = [];
+  const stale = new Set<Segment>();
   const target = (): Segment => {
-    if (sealed || !segments.length) segments.push({ id: syntheticId("message", ++messageNumber), content: [] });
-    sealed = false;
-    const segment = segments.at(-1)!;
+    segment ??= { id: syntheticId("message", ++messageNumber), content: [] };
     for (const state of pending) { state.segment = segment; segment.content.push(state.block); }
     pending = [];
     return segment;
   };
-  const toolRow = (id: string) => {
-    if (!tools.has(id) && segments.at(-1)?.content.length) sealed = true;
+  const commit = (done: Segment): RunEvent[] => {
+    const content = done.content.filter((block) => block.text !== "" || block.meta);
+    return content.length ? [{
+      type: "message_commit",
+      message_id: done.id,
+      message: { role: "assistant", content: content.map((block) => ({ ...block })), ...(wireMessageId !== undefined ? { metadata: { wireId: wireMessageId } } : {}) },
+    }] : [];
+  };
+  const toolRow = (id: string): RunEvent[] => {
+    if (tools.has(id) || !segment?.content.length) return [];
+    const done = segment;
+    segment = undefined;
+    return commit(done);
   };
   const close = (): RunEvent[] => {
     // A part that never streamed text opens no row. It shows nothing, so it stays only to keep provider metadata, at
-    // the end of the last segment.
-    if (pending.length && segments.length) segments.at(-1)!.content.push(...pending.map((state) => state.block));
-    const events = segments.flatMap((segment): RunEvent[] => {
-      const content = segment.content.filter((block) => block.text !== "" || block.meta);
-      return content.length ? [{
-        type: "message_commit",
-        message_id: segment.id,
-        message: { role: "assistant", content: content.map((block) => ({ ...block })), ...(wireMessageId !== undefined ? { metadata: { wireId: wireMessageId } } : {}) },
-      }] : [];
-    });
-    segments = []; pending = []; sealed = false;
+    // the end of the current segment.
+    if (pending.length && segment) segment.content.push(...pending.map((state) => state.block));
+    const events = [...(segment ? commit(segment) : []), ...[...stale].flatMap(commit)];
+    segment = undefined; pending = []; stale.clear();
     return events;
   };
 
@@ -191,18 +194,19 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
     if (!state || state.kind !== kind) throw new Error(`${type} requires a matching start part`);
     const delta = type.endsWith("-end") ? "" : wireString(part.delta, "part.delta");
     if (delta !== "") {
-      const segment = target();
-      // A block whose segment is done (sealed, committed) continues as a new block of the current one.
-      if (state.segment !== segment) {
+      const current = target();
+      // A block whose segment committed continues as a new block of the current one.
+      if (state.segment !== current) {
         state.block = { type: kind, text: "" };
-        state.segment = segment;
-        segment.content.push(state.block);
+        state.segment = current;
+        current.content.push(state.block);
       }
       state.block.text = String(state.block.text) + delta;
     }
-    // shortcut: metadata on a part whose segment already committed (after abort, error, or finish) is dropped; a
-    // second commit would end whatever streams now.
-    if (part.providerMetadata !== undefined) state.block.meta = mergeMeta(state.block.meta as Record<string, unknown> | undefined, providerMeta(part)!);
+    if (part.providerMetadata !== undefined) {
+      state.block.meta = mergeMeta(state.block.meta as Record<string, unknown> | undefined, providerMeta(part)!);
+      if (state.segment && state.segment !== segment) stale.add(state.segment);
+    }
     return delta === "" ? [] : [{ type: "message_delta", message_id: state.segment!.id, delta, kind }];
   };
 
@@ -225,15 +229,18 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
         meta,
       };
     }
-    const segment = target();
-    segment.content.push(block);
-    return [{ type: "message_block", message_id: segment.id, block: { ...block } }];
+    const current = target();
+    current.content.push(block);
+    return [{ type: "message_block", message_id: current.id, block: { ...block } }];
   };
 
   const decodeTool = (part: Row, type: string): RunEvent[] => {
     const originalId = wireString(part.toolCallId, "part.toolCallId");
     const id = wireId("tool", originalId);
-    toolRow(id);
+    const sealed = toolRow(id);
+    return [...sealed, ...decodeToolPart(part, type, id, originalId)];
+  };
+  const decodeToolPart = (part: Row, type: string, id: string, originalId: string): RunEvent[] => {
     const meta = { ...toolMeta(part), wireId: originalId };
     if (type === "tool-input-start") {
       const state = call(id, wireString(part.toolName, "part.toolName"), meta);

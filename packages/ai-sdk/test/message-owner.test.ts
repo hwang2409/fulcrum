@@ -56,12 +56,27 @@ const rows = (events: RunEvent[]) => {
     const item = store.getItem(id)!;
     if (item.type === "message") {
       const blocks = item.message.content.map((block) => `${block.type}:${String(block.text ?? "")}${block.meta ? JSON.stringify(block.meta) : ""}`);
-      return `${id} ${item.active ? "live " : ""}${[...blocks, ...(item.text ? [`text:${item.text}`] : [])].join("|")}`;
+      return `${id} ${item.active ? "live " : ""}${[...blocks, ...(item.text ? [`streaming:${item.text}`] : [])].join("|")}`;
     }
-    if (item.type === "tool") return `${id} ${item.output}${item.approval ? ` (${item.approval.decision})` : ""}`;
+    if (item.type === "tool") return `${id} ${item.tool_call.name}${JSON.stringify(item.tool_call.arguments)} -> ${item.output}${item.approval ? ` (${item.approval.decision})` : ""}`;
     if (item.type === "error") return `error ${item.event.type === "error" ? item.event.error.code : ""}`;
     return id;
   });
+};
+// Message ids that still look live, or are not committed with their UI message id, when a new tool row starts.
+const liveAtToolRow = (events: RunEvent[]) => {
+  const store = createRunStore((flush) => flush());
+  const found: string[] = [];
+  for (const event of events) {
+    if (event.type === "tool_start" && !store.getItem(`tool:${event.tool_call.id}`)) {
+      for (const { id } of store.getOutline()) {
+        const item = store.getItem(id)!;
+        if (item.type === "message" && (item.active || item.message.metadata?.wireId === undefined)) found.push(id);
+      }
+    }
+    store.dispatch(event);
+  }
+  return found;
 };
 const play = (streams: Array<[streamKey: string, parts: readonly Chunk[]]>) => streams.flatMap(([streamKey, parts]) => {
   const adapter = createAiSdkAdapter({ streamKey });
@@ -89,23 +104,23 @@ const cases: Array<[name: string, streams: () => Promise<Array<[string, readonly
   ]],
   ["multi-step text, tool, text", async () => [["k", await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...text("t2", "found a."), finish("stop")]])]], [
     "message:s:message:k:1 text:looking.",
-    "tool:w:tool:c1 a b",
+    "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
     "message:s:message:k:2 text:found a.",
   ]],
   ["reasoning per step", async () => [["k", await uiStream([[...reasoning("r1", "plan"), ...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...reasoning("r2", "done"), ...text("t2", "found a."), finish("stop")]])]], [
     "message:s:message:k:1 reasoning:plan|text:looking.",
-    "tool:w:tool:c1 a b",
+    "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
     "message:s:message:k:2 reasoning:done|text:found a.",
   ]],
   ["a step with only tools", async () => [["k", await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [call("c2", "cat"), finish("tool-calls")], [...text("t3", "read it."), finish("stop")]])]], [
     "message:s:message:k:1 text:looking.",
-    "tool:w:tool:c1 a b",
-    "tool:w:tool:c2 body",
+    "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
+    "tool:w:tool:c2 cat{\"path\":\"a\"} -> body",
     "message:s:message:k:2 text:read it.",
   ]],
   ["a text part with no text after a tool", async () => [["k", await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...text("t2"), finish("stop")]])]], [
     "message:s:message:k:1 text:looking.",
-    "tool:w:tool:c1 a b",
+    "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
   ]],
   ["approval, then a continuation that starts with the tool output", async () => {
     const steps = [[...text("t1", "i will delete it."), call("c1", "rm"), finish("tool-calls")], [...text("t2", "deleted."), finish("stop")]];
@@ -115,7 +130,7 @@ const cases: Array<[name: string, streams: () => Promise<Array<[string, readonly
     return [["req1", first], ["req2", second]];
   }, [
     "message:s:message:req1:1 text:i will delete it.",
-    "tool:w:tool:c1 ok",
+    "tool:w:tool:c1 rm{\"path\":\"a\"} -> ok",
     "approval:w:approval:approval-1",
     "message:s:message:req2:1 text:deleted.",
   ]],
@@ -126,8 +141,16 @@ const cases: Array<[name: string, streams: () => Promise<Array<[string, readonly
     return [["req1", first], ["req2", second]];
   }, [
     "message:s:message:req1:1 text:which one?",
-    "tool:w:tool:c1 ",
+    "tool:w:tool:c1 pick{\"path\":\"a\"} -> ",
     "message:s:message:req2:1 text:you picked b.",
+  ]],
+  ["a stream that drops before finish", async () => {
+    const parts = await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...text("t2", "found a."), finish("stop")]]);
+    return [["k", parts.slice(0, parts.findIndex((part) => part.type === "text-end" && part.id === "t2"))]];
+  }, [
+    "message:s:message:k:1 text:looking.",
+    "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
+    "message:s:message:k:2 live streaming:found a.",
   ]],
   ["abort mid-step", async () => [["k", await uiStream([[...text("t", "half ", "rest"), finish("stop")]], { abortAfterDelta: "half " })]], [
     "message:s:message:k:1 text:half ",
@@ -140,7 +163,7 @@ const cases: Array<[name: string, streams: () => Promise<Array<[string, readonly
   ]],
   ["duplicate and late parts", async () => [["k", await lateParts()]], [
     "message:s:message:k:1 reasoning:plan{\"providerMetadata\":[{\"mock\":{\"late\":true}}]}|text:before ",
-    "tool:w:tool:c1 a b",
+    "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
     "message:s:message:k:2 text:after|text:tail",
   ]],
 ];
@@ -149,10 +172,10 @@ test.each(cases)("%s: final rows, and a replay assigns the same ids", async (_na
   const played = await streams();
   const events = play(played);
   expect(rows(events)).toEqual(expected);
+  expect(liveAtToolRow(events)).toEqual([]);
   expect(play(played)).toEqual(events);
 });
 
-// Known gaps of the approval continuation, outside message identity (follow-up: continuation tool and approval state).
-// Repro: the "approval, then a continuation" row above; the continuation's adapter never saw the call or the approval.
-test.todo("approval continuation: the tool row keeps its name and arguments (today core tool_output adopts the placeholder `tool` / {})");
+// Known gap of the approval continuation, outside message identity (follow-up: continuation tool and approval state).
+// Repro: the "approval, then a continuation" row above; the continuation's adapter never saw the approval.
 test.todo("approval continuation: the approval row resolves once the approved tool returns (today no approval_end: the continuation has no approvalId)");
