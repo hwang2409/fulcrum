@@ -23,13 +23,15 @@ const settleDetachedViewport = <Id extends string>(
   engine: Virtualizer<Id>,
   touching: RefObject<boolean>,
   touchY: RefObject<number | null>,
-  userScrollUntil: RefObject<number>,
-  ignoreScrollUntil: RefObject<number>,
+  readerInput: RefObject<boolean>,
+  gestureActive: RefObject<boolean>,
+  scrollbarDragging: RefObject<boolean>,
 ): void => {
   touching.current = false;
   touchY.current = null;
-  userScrollUntil.current = 0;
-  ignoreScrollUntil.current = 0;
+  readerInput.current = false;
+  gestureActive.current = false;
+  scrollbarDragging.current = false;
   engine.flushPendingCorrection(false, true);
 };
 
@@ -79,11 +81,14 @@ export function useVirtualList<Id extends string>(
   const resizeFrame = useRef<number | null>(null);
   const pendingEntries = useRef(new Map<Id, number>());
   const touching = useRef(false);
-  const userScrollUntil = useRef(0);
+  const readerInput = useRef(false);
+  const gestureActive = useRef(false);
+  const scrollbarDragging = useRef(false);
   const touchY = useRef<number | null>(null);
   const lastScrollTop = useRef(0);
+  const lastDomEnd = useRef(0);
+  const pendingScroll = useRef<{ target: "end" | number; value: number } | null>(null);
   const scrollEndTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ignoreScrollUntil = useRef(0);
   const initial = useRef(true);
   const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
@@ -96,10 +101,12 @@ export function useVirtualList<Id extends string>(
   const writeScroll = useCallback((target: "end" | number) => {
     const container = containerRef.current;
     if (!container) return;
-    container.scrollTop = target === "end" || engine.getSnapshot().pinned
-      ? Math.max(0, container.scrollHeight - container.clientHeight)
-      : target;
+    const domEnd = Math.max(0, container.scrollHeight - container.clientHeight);
+    const value = target === "end" || engine.getSnapshot().pinned ? domEnd : target;
+    pendingScroll.current = { target, value };
+    container.scrollTop = value;
     lastScrollTop.current = container.scrollTop;
+    lastDomEnd.current = domEnd;
   }, [engine]);
 
   useLayoutEffect(() => {
@@ -148,6 +155,7 @@ export function useVirtualList<Id extends string>(
         engine.afterMutation(intent);
       } else updateViewport("user");
       lastScrollTop.current = container.scrollTop;
+      lastDomEnd.current = Math.max(0, container.scrollHeight - container.clientHeight);
 
       const flushMeasurements = () => {
         resizeFrame.current = null;
@@ -187,43 +195,63 @@ export function useVirtualList<Id extends string>(
       };
       const onScroll = () => {
         const before = engine.getSnapshot();
-        if (performance.now() < ignoreScrollUntil.current) {
-          writeScroll(before.scrollTop);
+        const domEnd = Math.max(0, container.scrollHeight - container.clientHeight);
+        const fromReader = readerInput.current || gestureActive.current || touching.current || scrollbarDragging.current;
+        const pending = pendingScroll.current;
+        // The writer owns its pending target. Without one, only a browser move that remains at the old or new DOM end
+        // is layout work; focus, find, host scrollIntoView, and document-level input move into content and are reader intent.
+        const layoutSlack = Math.min(1, Math.abs(domEnd - lastDomEnd.current));
+        const atLayoutEnd = container.scrollTop >= Math.min(lastDomEnd.current, domEnd) - layoutSlack - 0.5;
+        if (!fromReader && (pending !== null || atLayoutEnd)) {
+          lastScrollTop.current = container.scrollTop;
+          lastDomEnd.current = domEnd;
+          if (pending) {
+            const target = pending.target === "end" ? domEnd : pending.value;
+            if (Math.abs(container.scrollTop - target) < 0.5) pendingScroll.current = null;
+            else writeScroll(pending.target);
+          } else if (before.pinned && Math.abs(container.scrollTop - domEnd) >= 0.5) writeScroll("end");
           return;
         }
-        const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
-        // A shorter outline or a taller box (a reconnect banner leaving) makes the browser clamp a pinned reader's scroll
-        // to the new end, often before the box's ResizeObserver runs. Landing on the end is following, not the reader's
-        // move up, so the engine keeps its follow intent.
-        const clampedToEnd = before.pinned && container.scrollTop >= container.scrollHeight - container.clientHeight - 0.5;
-        if (!correction && !clampedToEnd && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
+        readerInput.current = false;
+        pendingScroll.current = null;
         lastScrollTop.current = container.scrollTop;
-        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: clampedToEnd ? "programmatic" : "user" });
-        if (correction || clampedToEnd) return;
+        lastDomEnd.current = domEnd;
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = setTimeout(finishScroll, 150);
       };
-      // The stale-scroll guard after a programmatic bottom write only covers scroll events
-      // nobody asked for; any real input means the next scroll is the user's and must win.
-      const userIntent = () => { ignoreScrollUntil.current = 0; };
+      const scrollKeys = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
       const onWheel = (event: WheelEvent) => {
-        userIntent();
-        userScrollUntil.current = performance.now() + 200;
-        if (event.deltaY < 0) engine.setFollow(false);
+        readerInput.current = true;
+        gestureActive.current = true;
+        if (event.deltaY < 0 && engine.getSnapshot().pinned) engine.setFollow(false);
       };
       const onKeyDown = (event: KeyboardEvent) => {
-        userIntent();
-        if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
+        if (!scrollKeys.has(event.key)) return;
+        readerInput.current = true;
+        gestureActive.current = true;
+        if ((event.key.endsWith("Up") || event.key === "Home") && engine.getSnapshot().pinned) engine.setFollow(false);
       };
-      const onPointerDown = () => userIntent();
+      const onPointerDown = (event: PointerEvent) => {
+        const bounds = container.getBoundingClientRect();
+        const vertical = event.clientX >= bounds.left + container.clientWidth && event.clientX <= bounds.right
+          && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+        const horizontal = event.clientY >= bounds.top + container.clientHeight && event.clientY <= bounds.bottom
+          && event.clientX >= bounds.left && event.clientX <= bounds.right;
+        if (vertical || horizontal) {
+          readerInput.current = true;
+          scrollbarDragging.current = true;
+        }
+      };
       const onTouchStart = (event: TouchEvent) => {
-        userIntent();
+        readerInput.current = true;
+        gestureActive.current = true;
         touching.current = true;
         touchY.current = event.touches[0]?.clientY ?? null;
       };
       const onTouchMove = (event: TouchEvent) => {
         const next = event.touches[0]?.clientY;
-        if (next !== undefined && touchY.current != null && next > touchY.current) engine.setFollow(false);
+        if (next !== undefined && touchY.current != null && next > touchY.current && engine.getSnapshot().pinned) engine.setFollow(false);
         touchY.current = next ?? null;
       };
       const onTouchEnd = () => {
@@ -231,7 +259,26 @@ export function useVirtualList<Id extends string>(
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         scrollEndTimer.current = setTimeout(finishScroll, 150);
       };
+      const onScrollEnd = () => {
+        readerInput.current = false;
+        gestureActive.current = false;
+        scrollbarDragging.current = false;
+        finishScroll();
+      };
+      const onDocumentKeyDown = (event: KeyboardEvent) => {
+        if (!scrollKeys.has(event.key)) return;
+        readerInput.current = true;
+        gestureActive.current = true;
+      };
+      const onDocumentKeyUp = (event: KeyboardEvent) => {
+        if (scrollKeys.has(event.key)) gestureActive.current = false;
+      };
+      const onDocumentPointerEnd = () => { scrollbarDragging.current = false; };
+      const onFocusIn = (event: FocusEvent) => {
+        if (event.target instanceof Node && container.contains(event.target)) readerInput.current = true;
+      };
       container.addEventListener("scroll", onScroll, { passive: true });
+      container.addEventListener("scrollend", onScrollEnd, { passive: true });
       container.addEventListener("wheel", onWheel, { passive: true });
       container.addEventListener("keydown", onKeyDown);
       container.addEventListener("pointerdown", onPointerDown, { passive: true });
@@ -239,6 +286,12 @@ export function useVirtualList<Id extends string>(
       container.addEventListener("touchmove", onTouchMove, { passive: true });
       container.addEventListener("touchend", onTouchEnd, { passive: true });
       container.addEventListener("touchcancel", onTouchEnd, { passive: true });
+      document.addEventListener("keydown", onDocumentKeyDown);
+      document.addEventListener("keyup", onDocumentKeyUp);
+      document.addEventListener("pointerdown", onPointerDown, { passive: true });
+      document.addEventListener("pointerup", onDocumentPointerEnd, { passive: true });
+      document.addEventListener("pointercancel", onDocumentPointerEnd, { passive: true });
+      document.addEventListener("focusin", onFocusIn);
       // A scroll box that changes size (a banner above it, a composer below it) keeps a pinned reader at the bottom.
       const viewportObserver = new ResizeObserver(() => {
         const pinned = engine.getSnapshot().pinned;
@@ -246,7 +299,6 @@ export function useVirtualList<Id extends string>(
         if (!pinned) return;
         writeScroll("end");
         updateViewport("programmatic");
-        ignoreScrollUntil.current = performance.now() + 50;
       });
       viewportObserver.observe(container);
       const release = () => {
@@ -254,6 +306,7 @@ export function useVirtualList<Id extends string>(
         viewportObserver.disconnect();
         observerRef.current = null;
         container.removeEventListener("scroll", onScroll);
+        container.removeEventListener("scrollend", onScrollEnd);
         container.removeEventListener("wheel", onWheel);
         container.removeEventListener("keydown", onKeyDown);
         container.removeEventListener("pointerdown", onPointerDown);
@@ -261,11 +314,17 @@ export function useVirtualList<Id extends string>(
         container.removeEventListener("touchmove", onTouchMove);
         container.removeEventListener("touchend", onTouchEnd);
         container.removeEventListener("touchcancel", onTouchEnd);
+        document.removeEventListener("keydown", onDocumentKeyDown);
+        document.removeEventListener("keyup", onDocumentKeyUp);
+        document.removeEventListener("pointerdown", onPointerDown);
+        document.removeEventListener("pointerup", onDocumentPointerEnd);
+        document.removeEventListener("pointercancel", onDocumentPointerEnd);
+        document.removeEventListener("focusin", onFocusIn);
         if (resizeFrame.current != null) cancelAnimationFrame(resizeFrame.current);
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
         resizeFrame.current = null;
         scrollEndTimer.current = null;
-        settleDetachedViewport(engine, touching, touchY, userScrollUntil, ignoreScrollUntil);
+        settleDetachedViewport(engine, touching, touchY, readerInput, gestureActive, scrollbarDragging);
         pendingEntries.current.clear();
         container.style.overflowAnchor = priorOverflowAnchor;
       };
@@ -325,15 +384,13 @@ export function useVirtualList<Id extends string>(
     const container = containerRef.current;
     if (!container) return;
     writeScroll(engine.scrollToEnd());
-    ignoreScrollUntil.current = performance.now() + 50;
   }, [engine, writeScroll]);
   const requestFollow = useCallback(() => {
-    if (touching.current || performance.now() < userScrollUntil.current) return;
+    if (touching.current || readerInput.current || gestureActive.current || scrollbarDragging.current) return;
     const container = containerRef.current;
     if (!container) return;
     const next = engine.requestFollow();
     if (next !== null) writeScroll(next);
-    ignoreScrollUntil.current = performance.now() + 50;
   }, [engine, writeScroll]);
 
   const visibleSnapshot = resetPending

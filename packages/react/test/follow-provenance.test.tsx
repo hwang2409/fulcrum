@@ -88,6 +88,7 @@ describe("timeline scroll provenance", () => {
       const { append, host, jump, unseen } = mountTimeline();
       act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
       moveReader(host);
+      act(() => host.dispatchEvent(new Event("scrollend")));
       append();
       expect(unseen()).toBe("1");
 
@@ -221,7 +222,10 @@ describe("timeline scroll provenance", () => {
           row.scrollIntoView();
         } else {
           if (kind === "focus") act(() => row.dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
-          else if (kind === "scrollbar") act(() => document.dispatchEvent(new PointerEvent("pointerdown", { clientX: 801, bubbles: true })));
+          else if (kind === "scrollbar") {
+            host.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 816, bottom: 600, width: 816, height: 600, toJSON: () => ({}) });
+            act(() => document.dispatchEvent(new PointerEvent("pointerdown", { clientX: 808, clientY: 300, bubbles: true })));
+          }
           else act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true })));
           moveReader(host);
         }
@@ -230,6 +234,9 @@ describe("timeline scroll provenance", () => {
         expect(unseen(), `${kind} must turn follow off`).toBe("1");
         expect(jump()).not.toBeNull();
         expect(host.scrollTop, `${kind} must not snap back to the bottom`).toBe(readerTop);
+        append();
+        expect(unseen(), `${kind} must stay unpinned as another row streams`).toBe("2");
+        expect(host.scrollTop, `${kind} must keep the reader position as another row streams`).toBe(readerTop);
       } finally {
         geometry.restore();
       }
