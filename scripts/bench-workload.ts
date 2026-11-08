@@ -42,15 +42,15 @@ const streamCases: readonly StreamCase[] = [
   // 3-event samples: local [1.175, 1.176, 1.358], check CI max 1.479,
   // paired CI max 1.279. max(4, 1.5 * 1.479) = 4.
   { name: "3-event flush", deltaSize: 100, flushEvery: 3, readText: false, reference: { kind: "text", seeds: 500, deltas: 50_000 }, subject: { kind: "text", seeds: 5_000, deltas: 50_000 }, maximumRatio: 4 },
-  // Text stream vs plain-string reasoning stream, same 20,000 one-character deltas, whole text read every 3 events.
-  // Samples (bun 1.4.4, darwin arm64): local [1.230, 1.147, 1.283, 1.165, 1.213]; main 8349b96, which rejoins every
-  // chunk on each read, [32.9, 41.0, 45.8]. max(4, 1.5 * 1.283) = 4.
-  { name: "text read every 3 events", deltaSize: 1, flushEvery: 3, readText: true, reference: { kind: "reasoning", seeds: 500, deltas: 20_000 }, subject: { kind: "text", seeds: 500, deltas: 20_000 }, maximumRatio: 4 },
+  // Text stream vs plain-string reasoning stream, same 8,000 one-character deltas, whole text read every 3 events.
+  // Samples (bun 1.4.4, darwin arm64): local [1.058, 1.268, 1.200, 1.052, 1.171]; main 8349b96, which rejoins every
+  // chunk on each read, [22.9, 26.6, 38.7]. max(4, 1.5 * 1.268) = 4. Sizes keep the stress job's a/b step in budget.
+  { name: "text read every 3 events", deltaSize: 1, flushEvery: 3, readText: true, reference: { kind: "reasoning", seeds: 500, deltas: 8_000 }, subject: { kind: "text", seeds: 500, deltas: 8_000 }, maximumRatio: 4 },
   // Reasoning guard: 10x the deltas, flushed and read after every one. Reading a growing string flattens it, so this
-  // shape is quadratic in characters on every engine; the guard catches a stream path that makes it worse (pr #99's
-  // first head rejoined every chunk per read: 11.6x to 13.2x per delta at 5,000 vs 50,000). Samples: local
-  // [4.739, 5.100, 2.243, 1.651, 2.317]; main 8349b96 [4.150, 4.957, 2.255]. max(4, 1.5 * 5.100) = 7.65, so 8.
-  { name: "reasoning read every event", deltaSize: 1, flushEvery: 1, readText: true, reference: { kind: "reasoning", seeds: 500, deltas: 10_000 }, subject: { kind: "reasoning", seeds: 500, deltas: 100_000 }, maximumRatio: 8 },
+  // shape is quadratic in characters on every engine; the guard catches a stream path that makes it worse. Samples:
+  // local [2.115, 2.289, 2.667, 3.359, 3.530]; main 8349b96 [2.184, 2.496, 3.387]; pr #99's first head 6e47491, which
+  // rejoined every chunk per read, 9.393. max(4, 1.5 * 3.530) = 5.3, so 6.
+  { name: "reasoning read every event", deltaSize: 1, flushEvery: 1, readText: true, reference: { kind: "reasoning", seeds: 500, deltas: 3_000 }, subject: { kind: "reasoning", seeds: 500, deltas: 30_000 }, maximumRatio: 6 },
 ];
 const runs = 5;
 let burnSink = 0;
