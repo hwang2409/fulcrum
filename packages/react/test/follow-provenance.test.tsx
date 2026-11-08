@@ -626,6 +626,30 @@ describe("timeline scroll provenance", () => {
     },
   );
 
+  test("arrow keys on a focused row move between rows; arrow keys in a control inside a row stay with the control", async () => {
+    const geometry = installScrollGeometry();
+    try {
+      mountTimeline();
+      const rows = [...container!.querySelectorAll<HTMLElement>("[data-virtual-id]")];
+      const row = rows[rows.length - 2]!;
+      const index = Number(row.dataset.virtualIndex);
+      act(() => row.focus());
+      const onRow = new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true });
+      act(() => { row.dispatchEvent(onRow); });
+      expect(onRow.defaultPrevented, "ArrowUp on a focused row navigates").toBeTrue();
+      await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+      expect((document.activeElement as HTMLElement | null)?.dataset.virtualIndex, "focus moves to the previous row").toBe(String(index - 1));
+
+      const input = rows[rows.length - 1]!.appendChild(document.createElement("input"));
+      act(() => input.focus());
+      const inControl = new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true });
+      act(() => { input.dispatchEvent(inControl); });
+      expect(inControl.defaultPrevented, "ArrowUp in a control inside a row belongs to the control").toBeFalse();
+      await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+      expect(document.activeElement).toBe(input);
+    } finally { geometry.restore(); }
+  });
+
   test("an overlay scrollbar drag to the end re-pins, and a row click starts no scrollbar lease", () => {
     const geometry = installScrollGeometry();
     try {
