@@ -1,5 +1,6 @@
 import { resolveToolView, type ContentBlock, type RunEvent, type SubAgentEvent, type ToolCall, type ToolView } from "@fulcrum/core";
 import { zetaTools } from "@fulcrum/zeta";
+import { createAiSdkAdapter } from "@fulcrum/ai-sdk";
 import type { RunEndOutcome } from "@fulcrum/core";
 import type { DemoSourceFailure } from "./source";
 import { CHART_PNG } from "./chart";
@@ -9,8 +10,8 @@ import { CHART_PNG } from "./chart";
  * `runs` are child runs by id, shown in a RunNavigator: a sub-agent row whose run is missing here is unavailable. A
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
-/** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; sourceFailure?: DemoSourceFailure; open?: boolean; markdownAll?: boolean; approval?: DemoApproval };
+/** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. `plain`: no markdown at all. */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; sourceFailure?: DemoSourceFailure; open?: boolean; markdownAll?: boolean; plain?: boolean; approval?: DemoApproval };
 /**
  * How the gallery's fake host answers approvals. `always` lists the request ids that get the third action (the rest
  * keep approve and deny); `reply` holds the decision until the card's "answer" button, or rejects it.
@@ -23,6 +24,21 @@ const stream = (id: string, value: string): RunEvent[] => [
   ...value.match(/\S+\s*/g)!.map((delta): RunEvent => ({ type: "message_delta", message_id: id, delta })),
   { type: "message_commit", message_id: id, message: text("assistant", value) },
 ];
+
+// An AI SDK UI message stream through the real adapter: a text part ends, then a tool runs, reports a preliminary
+// output, and never ends. The stream never reaches `finish`; the adapter commits the message when the tool row seals it.
+function aiSdkTextThenTool(key: string): RunEvent[] {
+  const { decode } = createAiSdkAdapter({ streamKey: key });
+  return [
+    { type: "start", messageId: key },
+    { type: "start-step" },
+    { type: "text-start", id: "text" },
+    ...words("I'll inspect the project before changing anything.").map((delta) => ({ type: "text-delta", id: "text", delta })),
+    { type: "text-end", id: "text" },
+    { type: "tool-input-available", toolCallId: "call-ls", toolName: "shell", input: { command: "ls" } },
+    { type: "tool-output-available", toolCallId: "call-ls", output: "README.md\napps\npackages", preliminary: true },
+  ].flatMap(decode);
+}
 
 const answer =
   "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. " +
@@ -358,6 +374,48 @@ export const demos: Demo[] = [
     description: "Text arrives one word at a time with data-state=\"streaming\" until the commit.",
     events: stream("m-live", answer),
     live: 70,
+  },
+  {
+    id: "message-plain-streaming",
+    part: "Message",
+    title: "plain text after reasoning, streaming",
+    description: "markdown={false}: text streams after a reasoning block, and the terminal cursor ends its last line.",
+    events: blockStream("m-plain-live", [thinking, answer]),
+    live: 70,
+    plain: true,
+  },
+  {
+    id: "markdown-table-streaming",
+    part: "Message",
+    title: "markdown table, streaming",
+    description: "Rows stream into a table; the cursor ends the newest cell, and the table never widens for it.",
+    events: stream("markdown-table-live", "Every check passed:\n\n| check | result |\n| --- | --- |\n| typecheck | pass |\n| unit tests | 412 pass |"),
+    live: 90,
+  },
+  {
+    id: "markdown-fence-streaming",
+    part: "Message",
+    title: "code fence, streaming",
+    description: "While the fence is open, the cursor fills the next cell of its newest code line; once the fence closes, it leaves the block for the text after it.",
+    events: stream("markdown-fence-live", "Run the focused tests first:\n\n```sh\nbun test packages/react\nbun run typecheck\n```\n\nThen push."),
+    live: 90,
+  },
+  {
+    id: "ai-sdk-text-then-tool",
+    part: "Message",
+    title: "AI SDK text, then a running tool",
+    description: "Through @fulcrum/ai-sdk, the text streams with the terminal cursor; when a tool row starts, the adapter commits the message, and the running tool carries the live signal.",
+    events: aiSdkTextThenTool("gallery-ai-sdk"),
+    live: 300,
+  },
+  {
+    id: "ai-sdk-plain-text-then-tool",
+    part: "Message",
+    title: "plain text, then a running tool",
+    description: "markdown={false}: the same stream with plain text. The cursor belongs to the newest row only, whatever renders the text.",
+    events: aiSdkTextThenTool("gallery-ai-sdk-plain"),
+    live: 300,
+    plain: true,
   },
   {
     id: "message-done",

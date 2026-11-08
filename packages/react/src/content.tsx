@@ -5,6 +5,7 @@ import type { ItemProps } from "./parts.js";
 import { boundText, bytes, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { CopyButton, TextViewer, type TextFormat } from "./tools/text-viewer.js";
 import { UserMessageContent } from "./user-message.js";
+import { useNewestRow } from "./newest-row.js";
 
 export type MarkdownContentProps = { id: string; source: string; streaming: boolean };
 /** What every block renderer gets, the default ones and a host's own. */
@@ -63,6 +64,8 @@ function messageParts(item: MessageItem): Part[] {
 
 export const Message = memo(function Message({ id, className, markdown: Markdown, markdownFor = "assistant", blocks, onOpen }: MessageProps) {
   const item = useItem(id);
+  // Only a streaming message asks: the cursor shows while it streams as the newest row (styles.css).
+  const latest = useNewestRow(id, item?.type === "message" && item.active);
   if (item?.type !== "message") return null;
   const Rich = Markdown && (markdownFor === "all" || item.message.role === "assistant") ? Markdown : undefined;
   const parts = messageParts(item);
@@ -74,10 +77,15 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
     const Block = own(blocks, block.type) ?? own(defaultBlocks, block.type);
     if (Block) return <Block key={index} block={block} id={blockId} streaming={streaming} markdown={Rich} onOpen={onOpen} />;
     if (block.type !== "text") return <UnknownBlock key={index} block={block} id={blockId} streaming={streaming} />;
-    const text = String(block.text);
+    const source = String(block.text);
+    if (!source) return null;
+    if (Rich) return <Rich key={index} id={blockId} source={source} streaming={streaming} />;
+    // While it streams, plain text hides its trailing spaces and its last line break, so the cursor hugs the last word
+    // and takes the line the commit shows: a trailing blank line ("end\n\n") keeps its line, the cursor on it.
+    const text = streaming ? source.replace(/[ \t]*(?:\r?\n[ \t]*)?$/, "") : source;
     if (!text) return null;
-    if (Rich) return <Rich key={index} id={blockId} source={text} streaming={streaming} />;
-    return user ? <span key={index}>{text}</span> : <Fragment key={index}>{text}</Fragment>;
+    // Beside blocks, text needs its own element: the streaming cursor (styles.css) ends the last text span.
+    return user || parts.length > 1 ? <span key={index}>{text}</span> : <Fragment key={index}>{text}</Fragment>;
   });
   return (
     <div
@@ -88,6 +96,7 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
       data-id={id}
       data-role={item.message.role}
       data-state={item.active ? "streaming" : "done"}
+      data-latest={latest ? "" : undefined}
       data-format={Rich ? "markdown" : "text"}
     >
       {user ? <UserMessageContent style={Rich ? undefined : pre}>{content}</UserMessageContent> : content}

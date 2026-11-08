@@ -176,6 +176,10 @@ export type RunEvent =
   | { type: "message_block"; message_id?: string; block: ContentBlock }
   | { type: "retry" }
   | { type: "message_commit"; message_id?: string; message: Message }
+  /**
+   * Starts a tool row. On a call the run already has, it restarts that row in place: output, result, and error state
+   * clear, `view` becomes this event's view, and an approval decision stays. Adapters use it to replace output.
+   */
   | { type: "tool_start"; tool_call: ToolCall; view?: ToolView; data?: Record<string, unknown> }
   | { type: "tool_input"; tool_call: ToolCall; input: string; view?: ToolView; data?: Record<string, unknown> }
   /**
