@@ -639,6 +639,23 @@ describe("timeline scroll provenance", () => {
     },
   );
 
+  // Known limit of the cause rule: a host move that coincides with a content-size change our write has not seen yet
+  // (same frame, before the scroll callback) is read as layout, so a pinned reader snaps back to the end.
+  test("known limit: a far host move in the same frame as unseen content growth is layout while pinned", () => {
+    const geometry = installScrollGeometry();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      geometry.addDomExtra(30);
+      const row = container!.querySelector<HTMLElement>("[data-virtual-id]")!;
+      row.scrollIntoView = () => moveReader(host, host.scrollHeight - host.clientHeight - 3_000);
+      row.scrollIntoView();
+      expect(host.scrollTop, "the move is read as layout and the pinned reader is written back to the end").toBe(host.scrollHeight - host.clientHeight);
+      append();
+      expect(unseen()).toBe("0");
+      expect(jump()).toBeNull();
+    } finally { geometry.restore(); }
+  });
+
   test("arrow keys on a focused row move between rows; arrow keys in a control inside a row stay with the control", async () => {
     const geometry = installScrollGeometry();
     try {
