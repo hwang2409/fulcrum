@@ -30,6 +30,8 @@ A `user_message` can carry `intent`, the client id for the user's request. A lat
 
 `tool_output` appends to the row's output. A protocol that resends the whole output so far (snapshots, or the AI SDK's preliminary tool output) sends `tool_output` with `replace: true`: the row keeps its position and approval decision, its output becomes the event's output, its result and error state clear, and it is live again.
 
+`tool_start` on a known call restarts its row in place: output, result, and error clear, the view becomes the event's `view`, an approval decision stays, the row keeps its position.
+
 ## tool views
 
 Use `defineToolMap()` to map harness tool arguments to agent-neutral views. See [using another harness](../../docs/other-harnesses.md) for schemas, examples, and approval decisions.
