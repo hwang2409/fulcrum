@@ -206,6 +206,48 @@ test("Message can opt user messages into markdown", () => {
   expect(q('[data-part="md-strong"]').textContent).toBe("strong");
 });
 
+test("a timeline row uses one keyed subscription and ignores output deltas", () => {
+  const { store, send } = setup(Array.from({ length: 200 }, (_, index) => ({
+    type: "message_commit" as const,
+    message_id: `row-${index}`,
+    message: message("one"),
+  })));
+  const subscriptions = new Map<string, number>();
+  const instrumented: RunStore = {
+    getState: store.getState,
+    getItem: store.getItem,
+    getOutline: store.getOutline,
+    getOutlineSnapshot: store.getOutlineSnapshot,
+    subscribe(first: string | (() => void), second?: () => void) {
+      if (typeof first === "string") subscriptions.set(first, (subscriptions.get(first) ?? 0) + 1);
+      return store.subscribe(first as string & (() => void), second);
+    },
+    subscribeOutline: store.subscribeOutline,
+  };
+  let renders = 0;
+  const Renderer = () => { renders++; return <span data-part="row-renderer" />; };
+  mount(<RunProvider store={instrumented}><Timeline virtual={false} renderers={{ message: Renderer }} /></RunProvider>);
+  expect(subscriptions.size).toBe(200);
+  expect([...subscriptions.values()].every((count) => count === 1)).toBe(true);
+  const before = renders;
+  for (let i = 0; i < 100; i++) send({ type: "message_delta", message_id: "row-0", delta: "x" });
+  expect(renders).toBe(before);
+});
+
+test("a row switches its renderer when the tool name changes", () => {
+  const { store, send } = setup([
+    { type: "tool_start", tool_call: { id: "row", name: "bash", arguments: {} } },
+  ]);
+  const names: string[] = [];
+  const renderers: Renderers = {
+    "tool:bash": () => { names.push("bash"); return <span />; },
+    "tool:cat": () => { names.push("cat"); return <span />; },
+  };
+  mount(<RunProvider store={store}><Timeline virtual={false} renderers={renderers} /></RunProvider>);
+  send({ type: "tool_start", tool_call: { id: "row", name: "cat", arguments: {} } });
+  expect(names).toEqual(["bash", "cat"]);
+});
+
 test("a delta re-renders only the streaming item", async () => {
   const { store, send } = setup([
     { type: "message_commit", message_id: "a", message: message("one") },
@@ -288,6 +330,58 @@ test("run status and the compact end marker expose an unknown outcome accessibly
   expect(q('[data-part="run-end-marker"]').textContent).toBe("run stopped");
   expect(q('[data-part="run-end-marker"]').dataset.outcome).toBe("cancelled");
   expect(q('[data-part="run-status"]').textContent).toBe("idle");
+});
+
+test("run status does not rescan approvals for unrelated streaming updates", () => {
+  const { store, send } = setup([
+    { type: "run_start" },
+    { type: "approval_request", request_id: "p", tool_call: call("t", "bash"), delegated: false },
+  ]);
+  let reads = 0;
+  const originalGetItem = store.getItem;
+  store.getItem = (id) => { reads++; return originalGetItem(id); };
+  mount(<RunProvider store={store}><FulcrumReact.RunStatus /><FulcrumReact.RunEndMarker /></RunProvider>);
+  expect(q('[data-part="run-status"]').dataset.status).toBe("approval");
+  reads = 0;
+
+  for (let index = 0; index < 100; index++)
+    send({ type: "usage", usage: { input_tokens: index + 1 } });
+  expect(reads).toBeLessThan(10);
+
+  send({ type: "approval_end", request_id: "p", decision: "deny" });
+  expect(q('[data-part="run-status"]').dataset.status).toBe("running");
+  send({ type: "run_end", outcome: "completed" } as RunEvent);
+  expect(q('[data-part="run-end-marker"]').textContent).toBe("run completed");
+  expect(q('[data-part="run-status"]').dataset.status).toBe("idle");
+});
+
+test("run status clears an approval that ends after the header re-renders", () => {
+  const { store, send } = setup([
+    { type: "run_start" },
+    { type: "approval_request", request_id: "p", tool_call: call("t", "bash"), delegated: false },
+  ]);
+  const view = (n: number) => <RunProvider store={store}><span data-n={n} /><FulcrumReact.RunStatus /></RunProvider>;
+  mount(view(1));
+  expect(q('[data-part="run-status"]').dataset.status).toBe("approval");
+  // A host re-render that leaves toolApprovals unchanged must not strand the status on a stale snapshot.
+  act(() => root!.render(view(2)));
+  // Live order: approval_end arrives before the tool row exists, so toolApprovals does not change.
+  send({ type: "approval_end", request_id: "p", decision: "deny" });
+  expect(q('[data-part="run-status"]').dataset.status).toBe("running");
+});
+
+test("run status clears an approval that ends after its tool starts", () => {
+  const { store, send } = setup([
+    { type: "run_start" },
+    { type: "approval_request", request_id: "p", tool_call: call("t", "bash"), delegated: false },
+  ]);
+  const view = (n: number) => <RunProvider store={store}><span data-n={n} /><FulcrumReact.RunStatus /></RunProvider>;
+  mount(view(1));
+  send({ type: "tool_start", tool_call: call("t", "bash") });
+  expect(q('[data-part="run-status"]').dataset.status).toBe("approval");
+  act(() => root!.render(view(2)));
+  send({ type: "approval_end", request_id: "p", decision: "allow" });
+  expect(q('[data-part="run-status"]').dataset.status).toBe("running");
 });
 
 test("dispose leaves the last mounted snapshot and stops notifications", () => {
