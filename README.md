@@ -73,8 +73,10 @@ Open <http://localhost:5180>. For another harness, map its events to `@fulcrum/c
 
 ```sh
 bun install --frozen-lockfile
-bunx tsc -b
+bun run typecheck
 bun test
 ```
+
+`bun run typecheck` is the same command CI runs.
 
 contributors need Bun 1.4.4 or newer.
