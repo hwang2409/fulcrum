@@ -425,26 +425,47 @@ describe("timeline scroll provenance", () => {
     host.scrollTop = top;
     act(() => host.dispatchEvent(new Event("scroll")));
   };
+  const settle = (host: HTMLElement) => act(() => host.dispatchEvent(new Event("scroll")));
   // Every scroll callback reports the real viewport; the route only decides follow intent (rules 1 and 2, F1).
   const routes: ReadonlyArray<{ name: string; run(context: RouteContext): void; pinned: boolean | null; unpinned: boolean | null }> = [
     { name: "own echo", run: ({ host }) => act(() => host.dispatchEvent(new Event("scroll"))), pinned: true, unpinned: false },
     { name: "end clamp at the old end", run: ({ host, oldEnd }) => hostWrite(host, oldEnd), pinned: true, unpinned: false },
     { name: "end clamp at the new end", run: ({ host }) => hostWrite(host, host.scrollHeight), pinned: true, unpinned: null },
     { name: "host write to scrollHeight (F1)", run: ({ host }) => hostWrite(host, host.scrollHeight), pinned: null, unpinned: false },
-    // Cause, not distance: with no size change since our last write, a host move is intent even inside the engine's 48 px
-    // bottom threshold (the pinned stale-end cell below is that 10 px case: a pinned reader's end is never stale);
-    // with a content or viewport size change since then, it is layout and a pinned reader keeps follow.
+    // Non-input moves are judged by cause (classifyScroll): an end clamp, a viewport resize the engine has not seen, or a
+    // content change no smaller than the move is layout; anything else is host intent, even within the 48 px threshold.
+    // `settle` first reports the current position, so "no size change" means none since the last callback.
     { name: "host write 10 px above a grown end (stale end)", run: ({ host }) => hostWrite(host, end(host) - 10), pinned: false, unpinned: false },
-    { name: "host move 100 px up, no size change", run: ({ host }) => hostWrite(host, end(host) - 100), pinned: false, unpinned: null },
-    { name: "host write 10 px above the end after content grew", run: ({ host, geometry }) => {
+    { name: "small host move (10 px up), no size change", run: ({ host }) => {
+      settle(host);
+      hostWrite(host, host.scrollTop - 10);
+    }, pinned: false, unpinned: false },
+    { name: "large host move (100 px up), no size change", run: ({ host }) => {
+      settle(host);
+      hostWrite(host, host.scrollTop - 100);
+    }, pinned: false, unpinned: false },
+    { name: "content grew 30 px and the move is within it (20 px)", run: ({ host, geometry }) => {
+      settle(host);
       geometry.addDomExtra(30);
-      hostWrite(host, end(host) - 10);
-    }, pinned: true, unpinned: null },
+      hostWrite(host, host.scrollTop + 20);
+    }, pinned: true, unpinned: false },
+    { name: "content grew 30 px and the move is beyond it (2,000 px up)", run: ({ host, geometry }) => {
+      settle(host);
+      geometry.addDomExtra(30);
+      hostWrite(host, host.scrollTop - 2_000);
+    }, pinned: false, unpinned: false },
     // The captured WebKit reconnect route: a banner shrinks the box 3 px and the browser moves the reader 41 px up.
     { name: "viewport shrink moves the reader 41 px up before the resize callback", run: ({ host, geometry }) => {
+      settle(host);
       geometry.resizeBy(-3);
-      hostWrite(host, end(host) - 44);
-    }, pinned: true, unpinned: null },
+      hostWrite(host, host.scrollTop - 41);
+    }, pinned: true, unpinned: false },
+    // Frame-bounded known limit: a host move in the same callback as an unreported viewport resize is layout at any size.
+    { name: "viewport shrink with a 500 px move before the resize callback", run: ({ host, geometry }) => {
+      settle(host);
+      geometry.resizeBy(-3);
+      hostWrite(host, host.scrollTop - 500);
+    }, pinned: true, unpinned: false },
     { name: "reader lease scroll to the end", run: ({ host }) => {
       act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 })));
       hostWrite(host, host.scrollHeight);
@@ -624,8 +645,8 @@ describe("timeline scroll provenance", () => {
         });
         append();
         if (source === "page body") {
-          expect(unseen(), "a page-level scroll key is reader intent").toBe("1");
-          expect(jump()).not.toBeNull();
+          expect(unseen(), "a page-level key alone moves no scroller").toBe("0");
+          expect(jump()).toBeNull();
         } else {
           expect(unseen(), `ArrowUp from ${source} must not turn follow off`).toBe("0");
           expect(jump()).toBeNull();
@@ -639,20 +660,51 @@ describe("timeline scroll provenance", () => {
     },
   );
 
-  // Known limit of the cause rule: a host move that coincides with a content-size change our write has not seen yet
-  // (same frame, before the scroll callback) is read as layout, so a pinned reader snaps back to the end.
-  test("known limit: a far host move in the same frame as unseen content growth is layout while pinned", () => {
+  test("a page-level ArrowUp drops follow only on the timeline the browser scrolled", () => {
+    const geometry = installScrollGeometry();
+    const extra = document.createElement("div");
+    document.body.append(extra);
+    let otherRoot: Root | undefined;
+    try {
+      const { append, host, unseen } = mountTimeline();
+      const other = createRunStore((flush) => flush());
+      other.resync(Array.from({ length: 300 }, (_, index) => message(`other-${index}`)));
+      otherRoot = createRoot(extra);
+      act(() => otherRoot!.render(<RunProvider store={other}><Timeline virtual /></RunProvider>));
+      const otherHost = extra.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+      otherHost.scrollTop = otherHost.scrollHeight;
+      act(() => otherHost.dispatchEvent(new Event("scroll")));
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true })));
+      // The browser scrolls one scroller for a page-level key: here the first timeline, 40 px up.
+      hostWrite(host, host.scrollTop - 40);
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp", bubbles: true, cancelable: true })));
+      append();
+      act(() => other.dispatch(message("other-added")));
+      expect(unseen(), "the timeline the key scrolled stops following").toBe("1");
+      expect(extra.querySelector<HTMLElement>('[data-part="timeline"]')!.dataset.unseenCount, "a timeline the key did not scroll keeps following").toBe("0");
+      expect(otherHost.scrollTop).toBe(otherHost.scrollHeight - otherHost.clientHeight);
+    } finally {
+      act(() => otherRoot?.unmount());
+      extra.remove();
+      geometry.restore();
+    }
+  });
+
+  // Content outside the rows (a host's artifact list inside the scroll host) can change the DOM end while a pinned reader
+  // is idle; a later host move (find, scrollIntoView) far from the end is still the host's intent.
+  test.each([false, true])("idle content growth outside the rows, then a far host move, drops follow without a snap (hosted %p)", async (hosted) => {
     const geometry = installScrollGeometry();
     try {
-      const { append, host, jump, unseen } = mountTimeline();
-      geometry.addDomExtra(30);
-      const row = container!.querySelector<HTMLElement>("[data-virtual-id]")!;
-      row.scrollIntoView = () => moveReader(host, host.scrollHeight - host.clientHeight - 3_000);
-      row.scrollIntoView();
-      expect(host.scrollTop, "the move is read as layout and the pinned reader is written back to the end").toBe(host.scrollHeight - host.clientHeight);
+      const { append, host, jump, unseen } = mountTimeline(hosted);
+      geometry.addDomExtra(200);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const target = host.scrollHeight - host.clientHeight - 3_000;
+      hostWrite(host, target);
+      expect(host.scrollTop, "the host's far move is kept, not written back to the end").toBe(target);
       append();
-      expect(unseen()).toBe("0");
-      expect(jump()).toBeNull();
+      expect(unseen()).toBe("1");
+      expect(jump()).not.toBeNull();
+      expect(host.scrollTop).toBe(target);
     } finally { geometry.restore(); }
   });
 
