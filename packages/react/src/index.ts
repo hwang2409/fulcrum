@@ -2,6 +2,7 @@ export { Composer, type ComposerIntent, type ComposerProps, type ComposerState }
 export * from "./content.js";
 export * from "./hooks.js";
 export { Code, HighlightContext } from "./code.js";
+export { Notification, notificationModel, type NotificationModel } from "./notification.js";
 export * from "./parts.js";
 export * from "./run-navigation.js";
 export { useHistoryRunPath } from "./run-history.js";

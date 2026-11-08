@@ -6,6 +6,7 @@ import { HighlightContext, Tokens, useTokens } from "./highlight.js";
 import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
 import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
+import { Notification, notificationText } from "./notification.js";
 import { SubAgent, subAgentLabel, subAgentStatusText } from "./sub-agent.js";
 import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
@@ -353,13 +354,6 @@ const itemLabel = (item: RunItem) => {
   if (item.type === "notification" && item.event.type === "notification") return notificationText(item.event.data) ?? item.type;
   return item.type;
 };
-// A notification's data has no fixed shape: its first text field (in this order) is what it says.
-const notificationText = (data: Record<string, unknown> | undefined) => {
-  for (const key of ["text", "message", "summary", "title", "preview", "description", "content"]) {
-    const value = data?.[key];
-    if (typeof value === "string" && value.trim()) return value;
-  }
-};
 
 const fallbackDisplay = (item: RunItem) => {
   const user = item.type === "user" && item.event.type === "user_message" ? item.event : undefined;
@@ -374,7 +368,7 @@ const fallbackDisplay = (item: RunItem) => {
   };
 };
 
-/** Generic part for kinds without a renderer (user, error, notification, unknown, ...). */
+/** Generic part for kinds without a renderer (user, error, unknown, ...). */
 export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
   const item = useItem(id);
   if (!item) return null;
@@ -388,7 +382,7 @@ export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
   );
 });
 
-const defaults: Renderers = { message: Message, tool: ToolCall, approval: Approval, sub_agent: SubAgent };
+const defaults: Renderers = { message: Message, tool: ToolCall, approval: Approval, sub_agent: SubAgent, notification: Notification };
 
 export const announcementForItem = (item: RunItem): string | null => {
   switch (item.type) {
@@ -522,12 +516,12 @@ function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; ch
 
 // Subscribes to a string key only, so text deltas never re-render the row.
 const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Renderers }) {
-  const kind = useItemSelector(id, (item) => item?.type);
-  const tool = useItemSelector(id, (item) =>
-    item?.type === "tool" ? item.tool_call.name : undefined,
+  const rendererKey = useItemSelector(id, (item) =>
+    item?.type === "tool" ? `tool:${item.tool_call.name}` : item?.type,
   );
+  const kind = rendererKey?.startsWith("tool:") ? "tool" : rendererKey;
   const Part =
-    (tool && renderers?.[`tool:${tool}`]) || (kind && (renderers?.[kind] ?? defaults[kind])) || Fallback;
+    (rendererKey && renderers?.[rendererKey]) || (kind && (renderers?.[kind] ?? defaults[kind])) || Fallback;
   return <Part id={id} />;
 });
 
