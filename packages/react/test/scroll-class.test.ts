@@ -19,7 +19,9 @@ const rows: Row[] = [
   ["no size change, small move (10 up)", (f) => ({ top: f.top - 10 }), "intent", "intent"],
   ["no size change, large move (100 up)", (f) => ({ top: f.top - 100 }), "intent", "intent"],
   ["lease scroll down", (f) => ({ lease: true, top: Math.min(1_000, f.top + 100) }), "reader", "reader"],
-  ["lease scroll up", (f) => ({ lease: true, top: f.top - 40 }), "intent", "intent"],
+  ["lease scroll up (the engine threshold decides)", (f) => ({ lease: true, top: f.top - 40 }), "reader", "reader"],
+  // Gamma's approval click: a focus lease covers the browser's clamp to the new end after the card shrinks 161 px.
+  ["focus lease over an end clamp after a shrink", (f) => ({ lease: true, top: Math.min(f.top, 839), domEnd: 839, priorDomEnd: 1_000 }), "reader", "reader"],
 ];
 test.each(rows.flatMap(([name, change, pinned, unpinned]) => [
   [`${name} while pinned`, change, true, pinned] as const,

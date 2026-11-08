@@ -660,7 +660,7 @@ describe("timeline scroll provenance", () => {
     },
   );
 
-  test("a page-level ArrowUp drops follow only on the timeline the browser scrolled", () => {
+  test("a page-level PageUp drops follow only on the timeline the browser scrolled", () => {
     const geometry = installScrollGeometry();
     const extra = document.createElement("div");
     document.body.append(extra);
@@ -674,10 +674,10 @@ describe("timeline scroll provenance", () => {
       const otherHost = extra.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
       otherHost.scrollTop = otherHost.scrollHeight;
       act(() => otherHost.dispatchEvent(new Event("scroll")));
-      act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true })));
-      // The browser scrolls one scroller for a page-level key: here the first timeline, 40 px up.
-      hostWrite(host, host.scrollTop - 40);
-      act(() => document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp", bubbles: true, cancelable: true })));
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true, cancelable: true })));
+      // The browser scrolls one scroller for a page-level key: here the first timeline, one page up.
+      hostWrite(host, host.scrollTop - 540);
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "PageUp", bubbles: true, cancelable: true })));
       append();
       act(() => other.dispatch(message("other-added")));
       expect(unseen(), "the timeline the key scrolled stops following").toBe("1");
@@ -688,6 +688,38 @@ describe("timeline scroll provenance", () => {
       extra.remove();
       geometry.restore();
     }
+  });
+
+  // Page-level keys carry a reader lease and the engine's 48 px bottom threshold decides, as before this change.
+  test("a page-level 40 px ArrowUp on a pinned timeline stays pinned (engine threshold)", () => {
+    const geometry = installScrollGeometry();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true })));
+      hostWrite(host, host.scrollTop - 40);
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp", bubbles: true, cancelable: true })));
+      append();
+      expect(unseen()).toBe("0");
+      expect(jump()).toBeNull();
+      expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+    } finally { geometry.restore(); }
+  });
+
+  // Gamma's approval click: focus lands on the approve button, the card shrinks, and the browser clamps to the new end.
+  test("a focus click that shrinks its card keeps a pinned stream following", () => {
+    const geometry = installScrollGeometry();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      geometry.addDomExtra(161);
+      append();
+      act(() => firstRow().dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
+      geometry.addDomExtra(-161);
+      settle(host);
+      append();
+      expect(unseen(), "the end clamp under a focus lease is not intent").toBe("0");
+      expect(jump()).toBeNull();
+      expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+    } finally { geometry.restore(); }
   });
 
   // Content outside the rows (a host's artifact list inside the scroll host) can change the DOM end while a pinned reader
