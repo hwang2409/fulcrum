@@ -1,8 +1,9 @@
 /* @fulcrum/react themes. Load after styles.css and keep the themes you use.
    Set data-fulcrum-theme="<name>" on <html> or on any subtree. With no attribute, github-light or github-dark follows the OS.
    Each palette uses its official colors; the source is above each block. UI text (fg, muted, accent, ok, warn, danger)
-   reaches 4.5:1 on bg, surface, and the diff row tints; where an official color misses that, it is mixed with the least
-   black (light themes) or white (dark themes) that reaches it, and muted mixes fg into bg where a palette has no secondary
+   reaches 4.5:1 on bg, surface, and the diff row tints, and ok, warn, and danger also on their own 8% status-marker
+   tint; where an official color misses that, it is mixed with the least black (light themes) or white (dark themes)
+   that reaches it, and muted mixes fg into bg where a palette has no secondary
    text color. Syntax colors (tok-*, code only) keep the official hex where it reaches 4.5:1 on bg, surface, and the diff
    rows, and the 16 ansi-* terminal colors where it reaches 3:1 on bg and surface. Where it does not, the comment names the
    official value, and the color takes the smallest OKLCH lightness change at the same hue and chroma that reaches the
@@ -20,7 +21,7 @@
   --fulcrum-surface: #32302f;
   --fulcrum-border: #504945;
   --fulcrum-accent: #83a598;
-  --fulcrum-danger: color-mix(in srgb, #fb4934 79%, white);
+  --fulcrum-danger: color-mix(in srgb, #fb4934 72%, white);
   --fulcrum-ok: #b8bb26;
   --fulcrum-warn: #fabd2f;
   --fulcrum-tok-keyword: #ff6c57; /* official #fb4934 is 3.66:1 on inserted row; OKLCH L +0.050 */
@@ -73,8 +74,8 @@
   --fulcrum-border: #d5c4a1;
   --fulcrum-accent: #076678;
   --fulcrum-danger: #9d0006;
-  --fulcrum-ok: color-mix(in srgb, #79740e 88%, black);
-  --fulcrum-warn: color-mix(in srgb, #b57614 75%, black);
+  --fulcrum-ok: color-mix(in srgb, #79740e 84%, black);
+  --fulcrum-warn: color-mix(in srgb, #b57614 73%, black);
   --fulcrum-tok-keyword: #9d0006;
   --fulcrum-tok-string: #6b6600; /* official #79740e is 3.69:1 on deleted row; OKLCH L -0.046 */
   --fulcrum-tok-number: #8f3f71;
@@ -174,8 +175,8 @@
   --fulcrum-surface: #3b4252;
   --fulcrum-border: #434c5e;
   --fulcrum-accent: #88c0d0;
-  --fulcrum-danger: color-mix(in srgb, #bf616a 60%, white);
-  --fulcrum-ok: #a3be8c;
+  --fulcrum-danger: color-mix(in srgb, #bf616a 50%, white);
+  --fulcrum-ok: color-mix(in srgb, #a3be8c 93%, white);
   --fulcrum-warn: #ebcb8b;
   --fulcrum-tok-keyword: #90b1d1; /* official #81a1c1 is 3.74:1 on surface; OKLCH L +0.050 */
   --fulcrum-tok-string: #a3be8c;
@@ -327,9 +328,9 @@
   --fulcrum-surface: #e6e9ef;
   --fulcrum-border: #ccd0da;
   --fulcrum-accent: color-mix(in srgb, #1e66f5 89%, black);
-  --fulcrum-danger: color-mix(in srgb, #d20f39 95%, black);
-  --fulcrum-ok: color-mix(in srgb, #40a02b 72%, black);
-  --fulcrum-warn: color-mix(in srgb, #df8e1d 63%, black);
+  --fulcrum-danger: color-mix(in srgb, #d20f39 91%, black);
+  --fulcrum-ok: color-mix(in srgb, #40a02b 69%, black);
+  --fulcrum-warn: color-mix(in srgb, #df8e1d 61%, black);
   --fulcrum-tok-keyword: #8331e9; /* official #8839ef is 4.17:1 on deleted row; OKLCH L -0.018 */
   --fulcrum-tok-string: #1d7400; /* official #40a02b is 2.57:1 on deleted row; OKLCH L -0.135 */
   --fulcrum-tok-number: #af4100; /* official #fe640b is 2.29:1 on deleted row; OKLCH L -0.170 */
@@ -378,9 +379,9 @@
   --fulcrum-surface: #073642;
   --fulcrum-border: #586e75;
   --fulcrum-accent: color-mix(in srgb, #268bd2 82%, white);
-  --fulcrum-danger: color-mix(in srgb, #dc322f 66%, white);
-  --fulcrum-ok: color-mix(in srgb, #859900 92%, white);
-  --fulcrum-warn: color-mix(in srgb, #b58900 91%, white);
+  --fulcrum-danger: color-mix(in srgb, #dc322f 60%, white);
+  --fulcrum-ok: color-mix(in srgb, #859900 83%, white);
+  --fulcrum-warn: color-mix(in srgb, #b58900 83%, white);
   --fulcrum-tok-keyword: #8da218; /* official #859900 is 4.06:1 on surface; OKLCH L +0.028 */
   --fulcrum-tok-string: #35a99f; /* official #2aa198 is 4.12:1 on surface; OKLCH L +0.024 */
   --fulcrum-tok-number: #35a99f; /* official #2aa198 is 4.12:1 on surface; OKLCH L +0.024 */
@@ -429,9 +430,9 @@
   --fulcrum-surface: #eee8d5;
   --fulcrum-border: #93a1a1;
   --fulcrum-accent: color-mix(in srgb, #268bd2 78%, black);
-  --fulcrum-danger: color-mix(in srgb, #dc322f 89%, black);
-  --fulcrum-ok: color-mix(in srgb, #859900 72%, black);
-  --fulcrum-warn: color-mix(in srgb, #b58900 73%, black);
+  --fulcrum-danger: color-mix(in srgb, #dc322f 83%, black);
+  --fulcrum-ok: color-mix(in srgb, #859900 68%, black);
+  --fulcrum-warn: color-mix(in srgb, #b58900 68%, black);
   --fulcrum-tok-keyword: #606f00; /* official #859900 is 2.62:1 on surface; OKLCH L -0.132 */
   --fulcrum-tok-string: #00756e; /* official #2aa198 is 2.58:1 on surface; OKLCH L -0.136 */
   --fulcrum-tok-number: #00756e; /* official #2aa198 is 2.58:1 on surface; OKLCH L -0.136 */
@@ -532,9 +533,9 @@
   --fulcrum-surface: #f6f8fa;
   --fulcrum-border: #d1d9e0;
   --fulcrum-accent: color-mix(in srgb, #0969da 99%, black);
-  --fulcrum-danger: color-mix(in srgb, #d1242f 99%, black);
+  --fulcrum-danger: color-mix(in srgb, #d1242f 97%, black);
   --fulcrum-ok: color-mix(in srgb, #1a7f37 97%, black);
-  --fulcrum-warn: color-mix(in srgb, #9a6700 95%, black);
+  --fulcrum-warn: color-mix(in srgb, #9a6700 94%, black);
   --fulcrum-tok-keyword: #cf222e;
   --fulcrum-tok-string: #0a3069;
   --fulcrum-tok-number: #0550ae;
