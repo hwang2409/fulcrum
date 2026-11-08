@@ -6,7 +6,7 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
-import { RunProvider, Timeline } from "../src/index.js";
+import { notificationModel, RunProvider, Timeline } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
@@ -62,8 +62,11 @@ test("recognized scalar metadata opens behind a keyboard disclosure; everything 
   const summary = card.querySelector("summary")!;
   expect(summary.dataset.part).toBe("notification-summary");
   expect(summary.textContent).toBe("worker finished");
-  expect(facts(1)).toEqual(["kind=agent_completion", "status=completed", `time=${new Date("2026-11-08T10:15:00Z").toLocaleString()}`]);
+  // The row shows the clock time only; the full instant is the datetime and the title.
+  expect(facts(1)).toEqual(["kind=agent_completion", "status=completed", `time=${new Date("2026-11-08T10:15:00Z").toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`]);
   expect(card.querySelector("time")!.getAttribute("datetime")).toBe("2026-11-08T10:15:00.000Z");
+  expect(card.querySelector("time")!.getAttribute("title")).toBe("2026-11-08T10:15:00.000Z");
+  expect([...card.querySelectorAll("dd")].map((value) => value.dataset.fact)).toEqual(["kind", "status", "time"]);
   expect(card.textContent).not.toContain("SECRET");
   expect(card.textContent).not.toContain("{");
   // Seconds and milliseconds since the epoch name the same moment.
@@ -96,4 +99,13 @@ test("cyclic, nested, malformed, and throwing data neither throws nor appears", 
   expect(row(3).textContent).toBe("notification");
   expect(row(4).textContent).toBe("far");
   expect(container.textContent).not.toContain("SECRET");
+});
+
+test("a numeric time is seconds below 1e11 and milliseconds from 1e11; earlier millisecond dates need an ISO string", () => {
+  const iso = (time: unknown) => notificationModel({ time }).time?.iso;
+  expect(iso(99_999_999_999)).toBe(new Date(99_999_999_999_000).toISOString()); // seconds: the year 5138
+  expect(iso(100_000_000_000)).toBe("1973-03-03T09:46:40.000Z"); // milliseconds from here on
+  // The documented limit: one day in milliseconds reads as seconds (1972), so a 1970 instant goes through a string.
+  expect(iso(86_400_000)).toBe("1972-09-27T00:00:00.000Z");
+  expect(iso("1970-01-02T00:00:00Z")).toBe("1970-01-02T00:00:00.000Z");
 });

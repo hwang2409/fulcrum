@@ -602,12 +602,18 @@ summary[data-part="notification-summary"]::before {
 summary[data-part="notification-summary"]:hover { color: var(--fulcrum-fg); background: var(--fulcrum-surface); }
 summary[data-part="notification-summary"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 [data-part="notification-line"] { min-width: 0; }
+/* Closed, the line is a preview: at most two lines. The opened body holds the full text. */
+[data-part="notification"]:not([open]) > summary > [data-part="notification-line"] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 /* Open on its full text, the line need not say it twice: it shrinks to one ellipsized line. */
 [data-part="notification"][open]:has(> [data-part="notification-body"] > [data-part="notification-text"]) [data-part="notification-line"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-part="notification-body"] { display: grid; gap: 6px; padding: 2px 12px 8px 25px; }
-[data-part="notification-meta"] { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 12px; margin: 0; }
+/* One label column for every row: 6ch is the longest label ("status"), so values line up across notifications. */
+[data-part="notification-meta"] { display: grid; grid-template-columns: 6ch minmax(0, 1fr); column-gap: 12px; margin: 0; }
 [data-part="notification-meta"] > dt { color: var(--fulcrum-muted); }
 [data-part="notification-meta"] > dd { margin: 0; min-width: 0; color: var(--fulcrum-fg); overflow-wrap: anywhere; }
+/* A kind is an identifier (agent_completion), not prose; the time is a clock that should not jitter. */
+[data-part="notification-meta"] > dd[data-fact="kind"] { color: var(--fulcrum-muted); }
+[data-part="notification-meta"] > dd[data-fact="time"] { font-variant-numeric: tabular-nums; }
 [data-part="notification-text"] { color: var(--fulcrum-fg); white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { summary[data-part="notification-summary"]::before { transition: none; } }
 @media (forced-colors: active) {
