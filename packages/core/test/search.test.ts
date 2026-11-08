@@ -139,6 +139,38 @@ test("one appended row visits constant outline data regardless of retained size"
   expect(search.query("seed 0").results).toEqual([]);
 });
 
+test("search created before any row finds rows committed later", () => {
+  const { store, flush } = queuedStore();
+  const fresh = createRunSearch(store, { maxItems: 10, maxCharsPerItem: 100 });
+  store.dispatch({ type: "run_start" });
+  flush();
+  const started = createRunSearch(store, { maxItems: 10, maxCharsPerItem: 100 });
+
+  store.dispatch({ type: "message_commit", message_id: "a", message: message("alpha") });
+  flush();
+
+  expect(fresh.query("alpha").results.map(({ id }) => id)).toEqual(["message:a"]);
+  expect(started.query("alpha").results.map(({ id }) => id)).toEqual(["message:a"]);
+  fresh.dispose();
+  started.dispose();
+});
+
+test("finds a row whose change a read flushed just before a same-rows resync", () => {
+  const { store, flush } = queuedStore();
+  store.dispatch({ type: "message_commit", message_id: "a", message: message("alpha") });
+  flush();
+  const search = createRunSearch(store, { maxItems: 10, maxCharsPerItem: 100 });
+  const commitX = { type: "message_commit", message_id: "x", message: message("xray") } as const;
+
+  store.dispatch(commitX);
+  store.getOutline();
+  store.resync([{ type: "message_commit", message_id: "a", message: message("alpha") }, commitX]);
+  flush();
+
+  expect(search.query("xray").results.map(({ id }) => id)).toEqual(["message:x"]);
+  search.dispose();
+});
+
 test("requires explicit positive integer bounds", () => {
   const store = new TestStore();
   expect(() => createRunSearch(store, { maxItems: 0, maxCharsPerItem: 1 })).toThrow("maxItems must be a positive integer");

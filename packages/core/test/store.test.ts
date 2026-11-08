@@ -344,26 +344,45 @@ test("prepend assigns generated ids as a whole chronological reduction", () => {
   }]);
 });
 
-test("resync to empty publishes outline and keyed removals", () => {
-  const store = createRunStore((flush) => flush());
-  store.dispatch({ type: "message_commit", message_id: "old", message: message("old") });
-  let stateChanges = 0;
-  let outlineChanges = 0;
-  let itemChanges = 0;
-  store.subscribe(() => stateChanges++);
-  store.subscribeOutline(() => outlineChanges++);
-  store.subscribe("message:old", () => itemChanges++);
+const commit = (id: string): RunEvent => ({ type: "message_commit", message_id: id, message: message(id) });
+const draft: RunEvent = { type: "message_delta", message_id: "s", delta: "draft" };
+const reset: RunEvent = { type: "message_reset" };
+// setup is notified; pending is flushed by a read (as apps/web does before resync) but its frame has not run yet.
+const resyncRows: Array<{ name: string; setup: RunEvent[]; pending?: RunEvent; replay: RunEvent[]; outlineNotes: number; view: string[]; keyed: Record<string, number> }> = [
+  { name: "empty -> empty", setup: [], replay: [], outlineNotes: 0, view: [], keyed: {} },
+  { name: "rows -> empty", setup: [commit("a")], replay: [], outlineNotes: 1, view: [], keyed: { "message:a": 1 } },
+  { name: "empty -> rows", setup: [], replay: [commit("a")], outlineNotes: 1, view: ["message:a"], keyed: { "message:a": 1 } },
+  { name: "same ids, pending change", setup: [commit("a")], pending: commit("x"), replay: [commit("a"), commit("x")], outlineNotes: 1, view: ["message:a", "message:x"], keyed: { "message:a": 1, "message:x": 1 } },
+  { name: "same ids, nothing pending", setup: [commit("a")], replay: [commit("a")], outlineNotes: 0, view: ["message:a"], keyed: { "message:a": 1 } },
+  { name: "different ids", setup: [commit("a")], replay: [commit("b")], outlineNotes: 1, view: ["message:b"], keyed: { "message:a": 1, "message:b": 1 } },
+  { name: "pending change, empty replacement", setup: [commit("a")], pending: commit("x"), replay: [], outlineNotes: 1, view: [], keyed: { "message:a": 1, "message:x": 1 } },
+  { name: "pending keyed removal, replay without it", setup: [commit("a"), draft], pending: reset, replay: [commit("a")], outlineNotes: 1, view: ["message:a"], keyed: { "message:a": 1, "message:s": 1 } },
+];
 
-  store.resync([]);
+test.each(resyncRows)("resync notifies exactly what subscribers miss: $name", ({ setup, pending, replay, outlineNotes, view: expectedView, keyed: expectedKeyed }) => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const drain = () => { while (jobs.length > 0) jobs.shift()!(); };
+  setup.forEach((event) => store.dispatch(event));
+  drain();
+  let held = store.getOutline();
+  let notes = 0;
+  store.subscribeOutline(() => {
+    notes++;
+    const snapshot = store.getOutlineSnapshot();
+    expect(snapshot.change!.from).toBe(held);
+    applyChange(snapshot);
+    held = snapshot.items;
+  });
+  const keyed: Record<string, number> = {};
+  for (const id of ["message:a", "message:b", "message:x", "message:s"]) store.subscribe(id, () => { keyed[id] = (keyed[id] ?? 0) + 1; });
 
-  expect(store.getOutline()).toEqual([]);
-  expect(store.getItem("message:old")).toBeUndefined();
-  expect({ stateChanges, outlineChanges, itemChanges }).toEqual({ stateChanges: 1, outlineChanges: 1, itemChanges: 1 });
-  expect(store.getOutlineSnapshot().change?.splices).toEqual([{
-    index: 0,
-    deleteCount: 1,
-    items: [],
-  }]);
+  if (pending) store.dispatch(pending), store.getState();
+  store.resync(replay);
+  drain();
+
+  expect({ notes, view: ids(held), keyed }).toEqual({ notes: outlineNotes, view: expectedView, keyed: expectedKeyed });
+  expect(ids(held)).toEqual(ids(store.getOutline()));
 });
 
 test("prepend rejection keeps the last good state and visibly desyncs", () => {

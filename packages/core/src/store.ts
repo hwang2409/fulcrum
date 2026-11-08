@@ -82,6 +82,13 @@ const outlineSuffixLength = (older: readonly OutlineItem[], newer: readonly Outl
   const offset = newer.length - older.length;
   return older.every((item, index) => item.id === newer[offset + index]?.id) ? offset : -1;
 };
+// The one owner of what a resync publishes. Subscribers hold `held`: the `from` of a change not yet notified, else the
+// current outline. A pending change is always delivered (a read may have flushed it before its frame ran); otherwise
+// only a replay with different rows notifies. Either way the change is a full replacement of `held`.
+const resyncOutlineChange = (held: readonly OutlineItem[], pending: boolean, next: readonly OutlineItem[]): OutlineChange | null =>
+  pending || held.length !== next.length || held.some((item, index) => item.id !== next[index]?.id || item.kind !== next[index]?.kind)
+    ? { from: held, splices: [{ index: 0, deleteCount: held.length, items: next }] }
+    : null;
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
   let entities = new Map<string, RunItem>();
   let messageAliases = new Map<string, string>();
@@ -294,16 +301,16 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     },
     resync(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
-      const previousOutline = current.outline;
-      const previousIds = [...entities.keys()];
+      const held = outlineChanged && outlineSnapshot.change ? outlineSnapshot.change.from : current.outline;
+      const pendingOutline = outlineChanged;
+      // Pending keyed notifications stay; every prior row is replaced (or removed), so its listener runs too.
+      entities.forEach((_, id) => changedItems.add(id));
       pending = [];
       pendingOlder = [];
       entities.clear();
       messageAliases.clear();
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
-      changedItems.clear();
-      previousIds.forEach((id) => changedItems.add(id));
       edits = [];
       stateChanged = false;
       outlineChanged = false;
@@ -312,12 +319,9 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       pending.push(...events);
       flush();
       stateChanged = true;
-      outlineChanged = previousOutline.length !== current.outline.length
-        || previousOutline.some((item, index) => item.id !== current.outline[index]?.id || item.kind !== current.outline[index]?.kind);
-      outlineSnapshot = {
-        items: current.outline,
-        change: { from: previousOutline, splices: outlineChanged ? [{ index: 0, deleteCount: previousOutline.length, items: current.outline }] : [] },
-      };
+      const change = resyncOutlineChange(held, pendingOutline, current.outline);
+      outlineChanged = change !== null;
+      outlineSnapshot = { items: current.outline, change: change ?? { from: held, splices: [] } };
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
     },

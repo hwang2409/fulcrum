@@ -1,5 +1,5 @@
 import type { RunItem, ToolView } from "./events.js";
-import type { OutlineSnapshot } from "./store.js";
+import type { OutlineChange, OutlineSnapshot } from "./store.js";
 
 export interface RunSearchStore {
   getItem(id: string): RunItem | undefined;
@@ -222,13 +222,13 @@ export function createRunSearch(store: RunSearchStore, options: RunSearchOptions
     prefixLength = snapshot.items.length - order.length;
     return changed;
   };
-  const applySplices = (snapshot: OutlineSnapshot) => {
+  const applySplices = (change: OutlineChange, items: OutlineSnapshot["items"]) => {
     const added = new Set<string>();
     const removed = new Set<string>();
     const add = (id: string) => removed.delete(id) || added.add(id);
     const remove = (id: string) => added.delete(id) || removed.add(id);
     let changed = false;
-    for (const splice of snapshot.change!.splices) {
+    for (const splice of change.splices) {
       const end = splice.index + splice.deleteCount;
       if (end <= prefixLength) {
         prefixLength += splice.items.length - splice.deleteCount;
@@ -251,12 +251,21 @@ export function createRunSearch(store: RunSearchStore, options: RunSearchOptions
     }
     const missing = Math.min(options.maxItems - order.length, prefixLength);
     if (missing > 0) {
-      const restored = snapshot.items.slice(prefixLength - missing, prefixLength).map(({ id }) => id);
+      const restored = items.slice(prefixLength - missing, prefixLength).map(({ id }) => id);
       restored.forEach(add);
       order.unshift(...restored);
       prefixLength -= missing;
     }
-    return { added, changed, removed };
+    removed.forEach((id) => { if (unwatch(id)) changed = true; });
+    added.forEach((id) => { if (!watched.has(id)) watch(id); });
+    return changed;
+  };
+  const rescan = (snapshot: OutlineSnapshot) => {
+    let changed = replaceOrder(snapshot);
+    const nextIds = new Set(order);
+    for (const id of watched.keys()) if (!nextIds.has(id) && unwatch(id)) changed = true;
+    for (const id of order) if (!watched.has(id)) watch(id);
+    return changed;
   };
   const unwatch = (id: string) => {
     watched.get(id)?.unsubscribe();
@@ -268,18 +277,10 @@ export function createRunSearch(store: RunSearchStore, options: RunSearchOptions
     reconciling = true;
     dirty = false;
     const snapshot = store.getOutlineSnapshot();
-    let changed = false;
-    if (snapshot.change?.from === outlineItems) {
-      const applied = applySplices(snapshot);
-      changed = applied.changed;
-      applied.removed.forEach((id) => { if (unwatch(id)) changed = true; });
-      applied.added.forEach((id) => { if (!watched.has(id)) watch(id); });
-    } else {
-      changed = replaceOrder(snapshot);
-      const nextIds = new Set(order);
-      for (const id of watched.keys()) if (!nextIds.has(id) && unwatch(id)) changed = true;
-      for (const id of order) if (!watched.has(id)) watch(id);
-    }
+    // Edit in place only when the change starts from the rows this index holds; a fresh store has no change yet.
+    let changed = snapshot.change && snapshot.change.from === outlineItems
+      ? applySplices(snapshot.change, snapshot.items)
+      : rescan(snapshot);
     outlineItems = snapshot.items;
     const nextItemsTruncated = snapshot.items.length > options.maxItems;
     changed ||= nextItemsTruncated !== itemsTruncated;
