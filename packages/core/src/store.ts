@@ -122,10 +122,30 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
   let edits: OutlineSplice[] = [];
+  // The one delivery owner for every listener and host callback: the rules live in packages/core/README.md, section
+  // "Notification contract"; keep them in sync.
+  const call = (listener: Listener) => {
+    try {
+      listener();
+    } catch (error) {
+      // The first error is rethrown after delivery; later ones go to the host's error report so none vanish.
+      if (!failure) failure = { error };
+      else if (typeof reportError === "function") reportError(error);
+      else console.error(error);
+    }
+  };
+  // Rethrows the first listener error once delivery is over: never inside a pass (it would cut a listener short) and
+  // never mid-entry (it would skip the entry's own bookkeeping), so every entry calls it last. Reads never call it.
+  const report = () => {
+    if (!failure || notifying || running) return;
+    const { error } = failure;
+    failure = undefined;
+    throw error;
+  };
   const setDiagnostics = (next: StoreDiagnostics) => {
     if (diagnostics.ignoredEvents === next.ignoredEvents && diagnostics.sanitizedFields === next.sanitizedFields && diagnostics.desynced === next.desynced && diagnostics.reason === next.reason && diagnostics.resyncError === next.resyncError) return;
     diagnostics = next;
-    diagnosticsListeners.forEach((listener) => listener());
+    diagnosticsListeners.forEach(call);
   };
   const refuseDesynced = () => { if (desynced) throw new Error("store is desynced"); };
 
@@ -153,7 +173,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       changedItems.clear();
       flushing = false;
       setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
-      options.onError?.(error);
+      if (options.onError) call(() => options.onError!(error));
       return false;
     }
     if (disposed) {
@@ -201,7 +221,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     } catch (error) {
       desynced = true;
       setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
-      options.onError?.(error);
+      if (options.onError) call(() => options.onError!(error));
       return false;
     }
     for (const [id, item] of nextEntities) {
@@ -227,32 +247,6 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
     return true;
   };
-  const call = (listener: Listener) => {
-    try {
-      listener();
-    } catch (error) {
-      // The first error is rethrown after delivery; later ones go to the host's error report so none vanish.
-      if (!failure) failure = { error };
-      else if (typeof reportError === "function") reportError(error);
-      else console.error(error);
-    }
-  };
-  // Rethrows the first listener error once delivery is over: never inside a pass (it would cut a listener short) and
-  // never mid-entry (it would skip the entry's own bookkeeping), so every entry calls it last.
-  const report = () => {
-    if (!failure || notifying || running) return;
-    const { error } = failure;
-    failure = undefined;
-    throw error;
-  };
-  /**
-   * The delivery contract, for global, outline, and keyed listeners alike:
-   * - A pass delivers a snapshot: every pending flag and set is taken and cleared before any listener runs.
-   * - Every listener in the snapshot runs, even if an earlier one throws; the first error is rethrown after delivery,
- *   later ones go to `reportError` (or `console.error` where there is none).
-   * - Whatever a listener starts (a resync, a history page, a dispatch whose scheduler job ran during the pass) is
-   *   delivered by the next pass, right after this one, never nested in it and never spun on.
-   */
   const notify = () => {
     if (!stateChanged || desynced || notifying) return;
     stateChanged = false;
@@ -272,26 +266,33 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     if (stateChanged || flushDeferred) flushDeferred = false, flush(), flushPrepend(), notify();
   };
 
+  const job = () => {
+    queued = false;
+    if (running) return;
+    // A job run during a pass (a synchronous scheduler) cannot flush yet: the pass's tail does it.
+    if (notifying) return void (flushDeferred = true);
+    running = true;
+    try {
+      do {
+        flush();
+        flushPrepend();
+        notify();
+      } while ((pending.length > 0 || pendingOlderPages.length > 0) && !disposed && !desynced);
+    } finally {
+      running = false;
+    }
+    report();
+  };
   const scheduleFlush = () => {
     if (queued) return;
     queued = true;
-    scheduler(() => {
+    try {
+      scheduler(job);
+    } catch (error) {
+      // The host refused the job: nothing is queued, so the next dispatch must schedule again.
       queued = false;
-      if (running) return;
-      // A job run during a pass (a synchronous scheduler) cannot flush yet: the pass's tail does it.
-      if (notifying) return void (flushDeferred = true);
-      running = true;
-      try {
-        do {
-          flush();
-          flushPrepend();
-          notify();
-        } while ((pending.length > 0 || pendingOlderPages.length > 0) && !disposed && !desynced);
-      } finally {
-        running = false;
-      }
-      report();
-    });
+      throw error;
+    }
   };
 
   function subscribe(listener: Listener): () => void;
@@ -340,6 +341,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     resyncFailed(error: unknown) {
       if (!desynced || disposed) return;
       setDiagnostics({ ...diagnostics, resyncError: errorMessage(error) });
+      report();
     },
     /**
      * Replaces all state with `events`. Outline subscribers run only if they would miss something (a pending change or

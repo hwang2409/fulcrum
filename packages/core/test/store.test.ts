@@ -557,6 +557,145 @@ test.each(syncDispatch)("$entry with a synchronous scheduler: a listener's dispa
   expect(result).toEqual({ seen: outline, outline });
 });
 
+// Regression locks for the README notification contract: the history entries deliver their own pass and rethrow like
+// the scheduler job and resync do, reads never surface a listener error, and the console fallback catches later errors.
+test.each(["beginHistory", "prepend", "endHistory"] as const)("%s delivers every listener, rethrows the first error, and reports the rest", (entry) => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  if (entry !== "beginHistory") store.beginHistory();
+  const calls: string[] = [];
+  for (const name of ["first", "second", "third"]) store.subscribe(() => { calls.push(name); if (name !== "third") throw new Error(name); });
+  store.dispatch(commit("a"));
+  store.getState(); // reduced, not yet delivered: the entry's own pass delivers it
+  const reported = spyOn(globalThis, "reportError").mockImplementation(() => {});
+  try {
+    expect(() => entry === "prepend" ? store.prepend([commit("b")]) : store[entry]()).toThrow("first");
+    expect(calls).toEqual(["first", "second", "third"]);
+    expect(reported.mock.calls.map(([error]) => (error as Error).message)).toEqual(["second"]);
+  } finally {
+    reported.mockRestore();
+  }
+});
+
+test("read methods never throw a listener error, inside or after a failing pass", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const readAll = () => {
+    store.getState(); store.getItem("message:a"); store.getOutline(); store.getOutlineSnapshot();
+    store.hasMessageDelivery("a"); store.getDiagnostics();
+  };
+  let readThrew = false;
+  store.subscribe(() => { throw new Error("boom"); });
+  store.subscribe(() => { try { readAll(); } catch { readThrew = true; } });
+  store.dispatch(commit("a"));
+  expect(jobs.shift()!).toThrow("boom");
+  store.dispatch(commit("b"));
+  expect(readAll).not.toThrow();
+  expect(readThrew).toBe(false);
+  expect(jobs.shift()!).toThrow("boom");
+});
+
+test("later listener errors go to console.error where reportError does not exist", () => {
+  const store = createRunStore((job) => job());
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "reportError");
+  const logged = spyOn(console, "error").mockImplementation(() => {});
+  delete (globalThis as { reportError?: unknown }).reportError;
+  try {
+    for (const name of ["first", "second"]) store.subscribe(() => { throw new Error(name); });
+    expect(() => store.dispatch(commit("a"))).toThrow("first");
+    expect(logged.mock.calls.map(([error]) => (error as Error).message)).toEqual(["second"]);
+  } finally {
+    if (saved) Object.defineProperty(globalThis, "reportError", saved);
+    logged.mockRestore();
+  }
+});
+
+// Diagnostics listeners and onError go through the same delivery owner as every other listener. A malformed event
+// changes diagnostics during whichever call flushes it: a read must not throw, the other listeners still run, and the
+// entry that delivers (the dispatch's scheduler job, or dispatch itself under a sync scheduler) rethrows the first error.
+const malformed = { type: "message_commit" } as unknown as RunEvent;
+test("a throwing diagnostics listener: reads never throw, the others still run, and the scheduler job rethrows", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const calls: string[] = [];
+  for (const name of ["first", "second"]) store.subscribeDiagnostics(() => { calls.push(name); if (name === "first") throw new Error("diag boom"); });
+  store.dispatch(malformed);
+  expect(() => store.getState()).not.toThrow();
+  expect(calls).toEqual(["first", "second"]);
+  expect(store.getDiagnostics().ignoredEvents).toBe(1);
+  expect(jobs.shift()!).toThrow("diag boom");
+  expect(() => store.getState()).not.toThrow();
+});
+
+test("a throwing diagnostics listener under a sync scheduler: dispatch rethrows after every listener ran", () => {
+  const store = createRunStore((job) => job());
+  const calls: string[] = [];
+  for (const name of ["first", "second"]) store.subscribeDiagnostics(() => { calls.push(name); if (name === "first") throw new Error("diag boom"); });
+  expect(() => store.dispatch(malformed)).toThrow("diag boom");
+  expect(calls).toEqual(["first", "second"]);
+  expect(store.getDiagnostics().ignoredEvents).toBe(1);
+});
+
+test("resyncFailed delivers every diagnostics listener, then rethrows the first error", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job), { onError() {} });
+  store.dispatch(new Proxy({ type: "retry" }, { get(target, key, receiver) { if (key === "type") throw new Error("reduce"); return Reflect.get(target, key, receiver); } }) as RunEvent);
+  jobs.shift()!();
+  expect(store.getDiagnostics().desynced).toBe(true);
+  const calls: string[] = [];
+  for (const name of ["first", "second"]) store.subscribeDiagnostics(() => { calls.push(name); if (name === "first") throw new Error("diag boom"); });
+  expect(() => store.resyncFailed(new Error("reload failed"))).toThrow("diag boom");
+  expect(calls).toEqual(["first", "second"]);
+  expect(store.getDiagnostics().resyncError).toBe("reload failed");
+});
+
+test("a throwing onError never escapes a read: the store still desyncs, and the scheduler job rethrows it", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job), { onError() { throw new Error("onError boom"); } });
+  let diagnosticsCalls = 0;
+  store.subscribeDiagnostics(() => diagnosticsCalls++);
+  store.dispatch(new Proxy({ type: "retry" }, { get(target, key, receiver) { if (key === "type") throw new Error("reduce"); return Reflect.get(target, key, receiver); } }) as RunEvent);
+  expect(() => store.getState()).not.toThrow();
+  expect({ diagnosticsCalls, desynced: store.getDiagnostics().desynced }).toEqual({ diagnosticsCalls: 1, desynced: true });
+  expect(jobs.shift()!).toThrow("onError boom");
+});
+
+// A throw escaping the host's scheduler reaches the caller, but must not leave a job marked as queued: that would
+// silence every later dispatch, like a pass flag left set.
+test("a throwing scheduler does not stop later dispatches from scheduling", () => {
+  const jobs: Array<() => void> = [];
+  let refuse = true;
+  const store = createRunStore((job) => { if (refuse) throw new Error("scheduler boom"); jobs.push(job); });
+  expect(() => store.dispatch(commit("a"))).toThrow("scheduler boom");
+  refuse = false;
+  store.dispatch(commit("b"));
+  expect(jobs).toHaveLength(1);
+  jobs.shift()!();
+  expect(ids(store.getOutline())).toEqual(["message:a", "message:b"]);
+});
+
+test("dispose publishes an empty outline, notifies no one after, and every later entry throws or does nothing", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.dispatch(commit("a"));
+  jobs.shift()!();
+  store.beginHistory();
+  let calls = 0;
+  store.subscribe(() => calls++);
+  store.subscribeOutline(() => calls++);
+  store.subscribe("message:a", () => calls++);
+  store.prepend([commit("b")]);
+  store.dispose();
+  while (jobs.length > 0) jobs.shift()!();
+  expect({ calls, snapshot: store.getOutlineSnapshot() }).toEqual({ calls: 0, snapshot: { items: [], change: null } });
+  expect(() => store.dispatch(commit("c"))).toThrow("store is disposed");
+  expect(() => store.resync([commit("c")])).toThrow("store is disposed");
+  expect(() => store.beginHistory()).toThrow("store is disposed");
+  expect(() => store.prepend([commit("c")])).toThrow("store is disposed");
+  expect(() => { store.endHistory(); store.dispose(); }).not.toThrow();
+  expect(calls).toBe(0);
+});
+
 test("prepend rejection keeps the last good state and visibly desyncs", () => {
   const errors: unknown[] = [];
   const store = createRunStore((flush) => flush(), { onError: (error) => errors.push(error) });
