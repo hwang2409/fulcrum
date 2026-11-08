@@ -1,3 +1,4 @@
+import type { OutlineItem } from "@fulcrum/core";
 import { createContext, useCallback, useContext, useLayoutEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 
 /**
@@ -8,11 +9,11 @@ import { createContext, useCallback, useContext, useLayoutEffect, useState, useS
 type NewestRow = { subscribe(id: string, listener: () => void): () => void; is(id: string): boolean };
 
 // Rows that report on the run instead of continuing the turn: a message above one still streams, so it keeps the cursor.
-const PASSIVE_KINDS = new Set(["notification", "unknown"]);
+const PASSIVE_KINDS: ReadonlySet<OutlineItem["kind"]> = new Set<OutlineItem["kind"]>(["notification", "unknown"]);
 
 /** The id of the last row a reader sees the agent act in: passive rows (a background notification) are skipped. */
-export function newestStreamableRow(items: readonly { id: string; kind?: string }[]): string | undefined {
-  for (let index = items.length - 1; index >= 0; index--) if (!PASSIVE_KINDS.has(items[index]!.kind ?? "")) return items[index]!.id;
+export function newestStreamableRow(items: readonly OutlineItem[]): string | undefined {
+  for (let index = items.length - 1; index >= 0; index--) if (!PASSIVE_KINDS.has(items[index]!.kind)) return items[index]!.id;
   return undefined;
 }
 

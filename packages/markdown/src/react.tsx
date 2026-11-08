@@ -122,13 +122,11 @@ function CodeBlock({ id, block, highlight, streaming }: { id: string; block: Ext
   const latest = keepColors(tokens, immediate, block.value) ?? tokens;
   const shown = covering(latest, block.value);
   if (large || (shown && shown.length > INLINE_SPANS)) return <LargeCodeBlock id={id} block={block} highlight={highlight} seed={latest} />;
-  const open = block.open ? "streaming" : undefined;
-  if (!streaming) return <pre data-part="md-code-block" data-language={block.language} data-state={open}><code>{shown ? <Tokens tokens={shown} /> : block.value}</code></pre>;
   // While the document streams, the final line break renders after md-code-end, which anchors the cursor (styles.css):
   // a trailing break draws no line of its own, so the cursor ends the last code line, open or closed, and nothing moves.
-  const end = block.value.endsWith("\n") ? "\n" : "";
+  const end = streaming && block.value.endsWith("\n") ? "\n" : "";
   const body = shown ? <Tokens tokens={end ? withoutFinalBreak(shown) : shown} /> : end ? block.value.slice(0, -1) : block.value;
-  return <pre data-part="md-code-block" data-language={block.language} data-state={open}><code>{body}<span data-part="md-code-end">{end}</span></code></pre>;
+  return <pre data-part="md-code-block" data-language={block.language} data-state={block.open ? "streaming" : undefined}><code>{body}{streaming && <span data-part="md-code-end">{end}</span>}</code></pre>;
 }
 
 const withoutFinalBreak = (tokens: Token[]) => {

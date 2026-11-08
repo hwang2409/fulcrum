@@ -12,7 +12,7 @@ function visible(blocks: readonly Block[], includeProvisional = true): string {
   return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? inlineVisible(block.children, includeProvisional)
     : block.type === "code" ? block.value : block.type === "blockquote" ? visible(block.children, includeProvisional)
     : block.type === "list" ? block.items.map((item) => visible(item.children, includeProvisional)).join("")
-    : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => inlineVisible(cell, includeProvisional)).join("") : "").join("").replace(/\s/g, "");
+    : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => inlineVisible(cell, includeProvisional)).join("") : "").join("").replace(/[\s|]/g, "");
 }
 function provisionalCharacters(blocks: readonly Block[]): number {
   const inline = (nodes: readonly Inline[]): number => nodes.reduce((count, node) => count

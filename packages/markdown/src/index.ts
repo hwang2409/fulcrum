@@ -4,7 +4,7 @@ import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
 import { normalizeReferenceLabel, normalizeReferenceLeafLine, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
 import { PendingInline } from "./pending-inline.js";
-import { MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
+import { isPipeRow, MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
 type MarkdownToken = {
   type: string;
@@ -52,6 +52,7 @@ type PendingInlineState = {
   continues: boolean;
   tableCandidate: boolean;
   referenceCount: number;
+  raw: boolean;
 };
 
 const pendingTableCandidate = (line: string, offset: number, continues: boolean, settled: boolean) => {
@@ -60,8 +61,8 @@ const pendingTableCandidate = (line: string, offset: number, continues: boolean,
   return line[offset] === "|";
 };
 
-const pendingInlineMatches = (state: PendingInlineState | undefined, offset: number, continues: boolean, tableCandidate: boolean, referenceCount: number) =>
-  state?.offset === offset && state.continues === continues && state.tableCandidate === tableCandidate && state.referenceCount === referenceCount;
+const pendingInlineMatches = (state: PendingInlineState | undefined, offset: number, continues: boolean, tableCandidate: boolean, referenceCount: number, raw: boolean) =>
+  state?.offset === offset && state.continues === continues && state.tableCandidate === tableCandidate && state.referenceCount === referenceCount && state.raw === raw;
 
 const markdown = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
 const block = (markdown as any).block;
@@ -673,8 +674,8 @@ type ParagraphRecord = {
   labels: Set<string>;
   /** The last line has pipes that stay hidden only while it is the last line. */
   lastLinePipes?: boolean;
-  /** The last line is a table row that has not shown yet: it stays hidden while it is the last line (heldRow). */
-  heldRow?: boolean;
+  /** The last line is a pipe row (isPipeRow): it shows as sent, pipes kept, until it is a table. */
+  pipeRow?: boolean;
 };
 
 type TableBlock = Extract<Block, { type: "table" }>;
@@ -688,8 +689,6 @@ type TableCellRecord = {
 };
 type ReferenceUser = ParagraphRecord | TableCellRecord;
 type TableRecord = { header: string; delimiter: string; cells: TableCellRecord[] };
-
-const withoutLastLine = (source: string) => source.slice(0, Math.max(0, source.lastIndexOf("\n")));
 
 // The open paragraph's last line can still become a table header, which turns its pipes into cell borders.
 function hideTableCandidatePipes(inlines: Inline[]) {
@@ -956,20 +955,24 @@ export function createStreamingDocument(): StreamingDocument {
   // The growing line's inline nodes and the identity used to reuse them.
   let pendingInline: PendingInline | undefined;
   let pendingInlineState: PendingInlineState | undefined;
-  // A streaming line that starts with a pipe is a table row in waiting: it shows once it is a table, or once the next
-  // line proves it is prose. Shown before that, its pipes would vanish into cell borders, or its cells would read as one
-  // word. A row that already showed (as a row of the table above it) stays shown. A paragraph of only a held row is an
-  // empty line, where the cursor waits for the table. Decided once per line, by its first
-  // character after `offset`: indexing the line flattens it, so a check per frame would copy the whole line every frame.
-  let pendingRow: { offset: number; held: boolean } | undefined;
-  const heldRow = (content: string) => /^[ \t]*\|/.test(content) && pendingRow?.held !== false;
-  const pendingHeld = (line: string, offset: number) => {
-    if (pendingRow?.offset === offset) return pendingRow.held;
-    let start = offset;
-    while (line[start] === " " || line[start] === "\t") start++;
-    if (start >= line.length) return false;
-    pendingRow = { offset, held: line[start] === "|" };
-    return pendingRow.held;
+  // A streaming pipe row (isPipeRow) may be a table header: it shows as sent, pipes kept, and becomes the table when its
+  // delimiter row ends, or stays as it is when a later line proves it prose. Never held back (a model may stall on it, or
+  // end there), and never stripped of its pipes (its cells would read as one word). Other lines that may be a header
+  // still hide their pipes (hideTableCandidatePipes). Settled once per line, by its first characters after `offset`:
+  // indexing the line flattens it, so a check per frame would copy the whole line every frame.
+  let pendingRow: { offset: number; scanned: number; pipe: boolean; raw: boolean; settled: boolean } | undefined;
+  const settlePendingRow = (line: string, offset: number) => {
+    if (pendingRow?.offset !== offset) pendingRow = { offset, scanned: offset, pipe: false, raw: false, settled: false };
+    const row = pendingRow;
+    for (; !row.settled && row.scanned < line.length; row.scanned++) {
+      const character = line[row.scanned];
+      if (character === " " || character === "\t") continue;
+      if (character === "|") row.pipe = true;
+      else {
+        row.raw = row.pipe;
+        row.settled = true;
+      }
+    }
   };
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
@@ -1059,13 +1062,12 @@ export function createStreamingDocument(): StreamingDocument {
       const inspected = inspectReferenceLine(inlineSource);
       if (inspected.metadata && inspected.disposition.kind !== "definition") inlineSource = inlineSource.replace("[", "\\[");
     }
-    if (streaming && record.heldRow) inlineSource = withoutLastLine(record.source);
     if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment())
       : [{ type: "text", value: inlineSource }];
     if (pendingReferences) markPendingReferences(record.block.children, bracketLabels(inlineSource));
-    if (streaming) hideTableCandidatePipes(record.block.children);
+    if (streaming && !record.pipeRow) hideTableCandidatePipes(record.block.children);
     registerReferences(record);
     tailParses++;
   };
@@ -1087,7 +1089,7 @@ export function createStreamingDocument(): StreamingDocument {
       item.checked = task[1]!.toLowerCase() === "x";
       content = content.slice(task[0].length);
     }
-    const record: ParagraphRecord = { block, source: content, labels: new Set(), lastLinePipes: content.includes("|"), heldRow: heldRow(content) };
+    const record: ParagraphRecord = { block, source: content, labels: new Set(), lastLinePipes: content.includes("|"), pipeRow: isPipeRow(content) };
     // The growing line already holds stable nodes for this text; only its unresolved tail is parsed again.
     updateParagraph(record, true, true, pendingInline?.commit(content));
     paragraphRecords.set(block, record);
@@ -1099,7 +1101,7 @@ export function createStreamingDocument(): StreamingDocument {
   const appendParagraphLine = (record: ParagraphRecord, content: string) => {
     const addition = `\n${content}`;
     record.source += addition;
-    record.heldRow = heldRow(content);
+    record.pipeRow = isPipeRow(content);
     const child = record.block.children.length === 1 ? record.block.children[0] : undefined;
     if (child?.type === "text" && !record.lastLinePipes && !/[\\&<>*_~`\[\]|]/.test(content)) child.value += addition;
     else updateParagraph(record, true);
@@ -1307,7 +1309,7 @@ export function createStreamingDocument(): StreamingDocument {
   const parsePending = (source: string, streaming: boolean) => {
     const nodes = parseInline(source, streaming, environment());
     markPendingReferences(nodes, bracketLabels(source));
-    hideTableCandidatePipes(nodes);
+    if (!pendingRow?.raw) hideTableCandidatePipes(nodes);
     return nodes.filter((node) => node.type !== "text" || node.value);
   };
 
@@ -1315,7 +1317,8 @@ export function createStreamingDocument(): StreamingDocument {
     const line = resolver.pending.content;
     if (classification.kind !== "paragraph") return [];
     const tableCandidate = pendingTableCandidate(line, classification.offset, continues, resolver.pendingStartsWithSettledProse);
-    const startsInline = !pendingInline || !pendingInlineMatches(pendingInlineState, classification.offset, continues, tableCandidate, resolver.references.size);
+    const raw = pendingRow?.raw === true;
+    const startsInline = !pendingInline || !pendingInlineMatches(pendingInlineState, classification.offset, continues, tableCandidate, resolver.references.size, raw);
     if (startsInline) {
       // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
       const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
@@ -1334,6 +1337,7 @@ export function createStreamingDocument(): StreamingDocument {
         continues,
         tableCandidate,
         referenceCount: resolver.references.size,
+        raw,
       };
     }
     const inline = pendingInline!;
@@ -1397,8 +1401,11 @@ export function createStreamingDocument(): StreamingDocument {
         const continuesParagraph = Boolean(openParagraph) && resolver.pendingContinuesParagraph(pending);
         const startsBlock = openParagraph ? !continuesParagraph : /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
         if (openTable && !startsBlock && classification.kind === "paragraph" && classification.offset < pending.length && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment()))
-          pendingRow = { offset: classification.offset, held: false };
-        else if (classification.kind !== "paragraph" || !pendingHeld(pending, classification.offset)) appendPendingParagraph(overlay, pendingPreview(classification, continuesParagraph), continuesParagraph);
+          pendingRow = { offset: classification.offset, scanned: 0, pipe: false, raw: false, settled: true };
+        else {
+          if (classification.kind === "paragraph") settlePendingRow(pending, classification.offset);
+          appendPendingParagraph(overlay, pendingPreview(classification, continuesParagraph), continuesParagraph);
+        }
       }
       previewSource = source;
       previewBlocks = [...Array.from(blocks.values()).slice(0, blocks.frozen), ...overlay];

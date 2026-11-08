@@ -158,8 +158,8 @@
 [data-part="message-content"]:has(> [data-wide]) > :not([data-wide]) { max-width: var(--fulcrum-measure); }
 /* Only a text line hangs the cursor in the gutter. A block that never does (a diagram, a code block or table, whose
    cursor stays inside its box, a content row, a rule) takes the gutter back, so its edge lines up with the column's
-   other boxes, a tool card, at every width. */
-[data-part="message"] > :is([data-wide], [data-part="md-code-block"], [data-part="md-table"], [data-part="md-rule"], [data-part="reasoning"], [data-part="source"], [data-part="file"], [data-part="image"], [data-part="block-unknown"]) {
+   other boxes, a tool card, at every width. The :has() form outranks the measure rule above in a message with a diagram. */
+:is([data-part="message"], [data-part="message"]:has(> [data-wide])) > :is([data-wide], [data-part="md-code-block"], [data-part="md-table"], [data-part="md-rule"], [data-part="reasoning"], [data-part="source"], [data-part="file"], [data-part="image"], [data-part="block-unknown"]) {
   max-width: none;
   margin-inline-end: calc(-1 * var(--cursor-gutter));
 }
@@ -214,8 +214,10 @@
   forced-color-adjust: none;
 }
 /* A last block with no text line to end (a diagram, a finished large code block, a file, an image, a source, an
-   unknown block; reasoning there is still streaming and says "thinking") says the message is still live as a running tool does: a 2 px accent rail on its left edge, pulsing (still
-   under reduced motion). It is drawn over the block and takes no space, so nothing moves when it goes. */
+   unknown block; reasoning there is still streaming and says "thinking") says the message is still live in a running
+   tool's words: a static 2 px rail in the running tool's accent on its left edge. It is opaque, so the block's own
+   border never shows through, and it takes no space, so nothing moves when it goes. Under forced colors it is
+   Highlight, so it differs from a finished block's CanvasText border. */
 [data-part="message"] :is([data-part="mermaid"], [data-part="md-code-block"][data-size="large"], [data-part="source"], [data-part="file"], [data-part="image"], [data-part="block-unknown"]) { position: relative; }
 /* The rail covers the block's own left border (--live-x wide, --live-y tall at each end), as a tool's rail is its border. */
 [data-part="message"] [data-part="md-code-block"][data-size="large"] { --live-x: 1px; --live-y: 1px; }
@@ -228,7 +230,6 @@
   inset-inline-start: calc(-1 * var(--live-x, 0px));
   width: 2px;
   background: var(--fulcrum-live, var(--fulcrum-accent));
-  animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate;
   forced-color-adjust: none;
   pointer-events: none;
 }
@@ -492,11 +493,19 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="tool-body"] > [data-part="text-viewer-head"] { border-bottom: 1px solid var(--fulcrum-border); }
 [data-part="tool-body"] > [data-part="text-viewer-head"] + [data-part="text-viewer"] { border-top: 0; }
 [data-part="text-viewer-language"] { color: var(--fulcrum-ui-type); font-weight: 700; }
-[data-part="text-viewer-count"] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The count is never cut: when a head cannot hold a row, it wraps (styles below keep the usual states on one row). */
+[data-part="text-viewer-count"] { flex: 1 0 auto; white-space: nowrap; }
 /* A narrow head keeps one row: "400 lines", the position, "bottom", "copy". The buttons keep their full aria-label. A
-   streaming fence keeps its "■ streaming" word, as a running tool keeps "■ running": the count gives up the room. */
+   streaming fence keeps its "■ streaming" word, as a running tool keeps "■ running". While it streams and follows,
+   "at bottom" says what "streaming" and the "top" control already say, so it gives up the room (screen readers keep
+   it). Narrower still, the count says "ln" for "lines" (screen readers keep "lines"). */
 @container text-viewer-head (max-width: 560px) {
   [data-part="text-viewer-wide"] { display: none; }
+  [data-part="text-viewer-head"]:has(> [data-part="text-viewer-status"]) > [data-part="text-viewer-position"][data-position="at-bottom"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+}
+@container text-viewer-head (max-width: 300px) {
+  [data-part="text-viewer-unit"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  [data-part="text-viewer-count"]::after { content: " ln"; content: " ln" / ""; }
 }
 [data-part="text-viewer-position"] { white-space: nowrap; }
 /* A streaming fence's viewer says so in its accent, its mark pulsing like a running tool's. */
@@ -1237,7 +1246,7 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="reasoning-status"]::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
-  [data-part="message"] { --fulcrum-cursor: CanvasText; --fulcrum-live: CanvasText; }
+  [data-part="message"] { --fulcrum-cursor: CanvasText; --fulcrum-live: Highlight; }
   [data-part="sub-agent"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }
   :is([data-part="sub-agent-status"], [data-part="run-state"])::before,

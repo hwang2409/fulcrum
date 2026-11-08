@@ -6,7 +6,8 @@ const splits = [1, 2, 3, 7, 20, 1000];
 const json = (x: readonly Block[]) => JSON.stringify(x, (k, v) => k === "open" ? undefined : v);
 const inline = (xs: readonly Inline[]): string => xs.map((x) => x.type === "text" || x.type === "pending-reference" || x.type === "code" ? x.value : x.type === "image" ? x.alt : x.type === "break" ? "\n" : inline(x.children)).join("");
 const visible = (bs: readonly Block[]): string => bs.map((b) => b.type === "paragraph" || b.type === "heading" ? inline(b.children) : b.type === "code" ? b.value : b.type === "blockquote" ? visible(b.children) : b.type === "list" ? b.items.map((i) => visible(i.children)).join("") : b.type === "table" ? [...b.header, ...b.rows.flat()].map(inline).join("") : "").join("");
-const compact = (s: string) => s.replace(/\s/g, "");
+// A pipe is table syntax: a streaming row shows its pipes until a delimiter row turns them into cell borders.
+const compact = (s: string) => s.replace(/[\s|]/g, "");
 const subsequence = (needle: string, haystack: string) => { let i = 0; for (const c of haystack) if (c === needle[i]) i++; return i === needle.length; };
 const wrap = (source: string, depth: number) => {
   for (let level = 0; level < depth; level++) {

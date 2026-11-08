@@ -339,7 +339,7 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
       <div data-part="text-viewer-head">
         {caption ? <span data-part="text-viewer-language">{caption}</span> : null}
         {/* Narrow heads drop the character count and the buttons' verbs (styles.css): the head stays one row. */}
-        <span data-part="text-viewer-count">{count(metrics.lines)} {metrics.lines === 1 ? "line" : "lines"}<span data-part="text-viewer-wide"> · {count(metrics.characters)} characters</span></span>
+        <span data-part="text-viewer-count">{count(metrics.lines)}<span data-part="text-viewer-unit"> {metrics.lines === 1 ? "line" : "lines"}</span><span data-part="text-viewer-wide"> · {count(metrics.characters)} characters</span></span>
         {/* A streaming fence has no cursor in its lazily mounted rows: the head says it streams, as a running tool does. */}
         {live ? <span data-part="text-viewer-status"><span>streaming</span></span> : null}
         <span data-part="text-viewer-position" data-position={position.replace(" ", "-")} aria-live="polite">{position}</span>

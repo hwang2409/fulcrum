@@ -75,9 +75,10 @@ function inlineVisible(nodes: readonly Inline[], includeProvisional = true): str
     : inlineVisible(node.children, includeProvisional)).join("");
 }
 
-// Line-edge spaces select block indentation or a break style; they are syntax, not rendered characters.
+// Line-edge spaces select block indentation or a break style; they are syntax, not rendered characters. A pipe is
+// table syntax: a streaming row shows its pipes until a delimiter row turns them into cell borders.
 const paragraphVisible = (nodes: readonly Inline[], includeProvisional: boolean) =>
-  inlineVisible(nodes, includeProvisional).replace(/(^|\n)[ \t]+/g, "$1").replace(/[ \t]+(?=\n|$)/g, "");
+  inlineVisible(nodes, includeProvisional).replace(/[ \t]*\|[ \t]*/g, "").replace(/(^|\n)[ \t]+/g, "$1").replace(/[ \t]+(?=\n|$)/g, "");
 
 // Table layout owns cell-edge spacing, so only table-cell whitespace is normalized.
 const tableCellVisible = (nodes: readonly Inline[], includeProvisional: boolean) =>

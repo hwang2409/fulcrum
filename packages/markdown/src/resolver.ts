@@ -220,6 +220,10 @@ function stripPendingContainers(line: string) {
   }
 }
 
+/** A line that starts with a pipe and has a cell word: it shows as sent, pipes kept, until a delimiter row makes it a
+ * table header. A line of only pipes is markup, like a lone `>`, and stays hidden while it may become a header. */
+export const isPipeRow = (content: string) => /^[ \t]*\|/.test(content) && /[^ \t|]/.test(content);
+
 function classifyLeaf(line: string, growing: boolean): PendingClassification {
   let content = stripPendingContainers(line);
   if (!content.trim()) return EMPTY;
@@ -242,7 +246,8 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   // An open `[` may still close on a later line.
   const openBracket = content.lastIndexOf("[");
   if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
-  const visibleContent = content.includes("|")
+  // A pipe row shows as sent until it is a table (isPipeRow); other header candidates hide their pipes.
+  const visibleContent = content.includes("|") && !isPipeRow(content)
     ? content.split("|").map((cell) => cell.trim()).join("")
     : content;
   return { content: visibleContent, kind: "paragraph", offset: 0 };

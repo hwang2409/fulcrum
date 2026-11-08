@@ -69,7 +69,16 @@ function readCursor({ id, sealed }: { id: string; sealed?: true }) {
   probe.style.color = "CanvasText";
   document.body.append(probe);
   const systemColor = getComputedStyle(probe).color;
+  probe.style.color = "Highlight";
+  const highlightColor = getComputedStyle(probe).color;
   probe.remove();
+  // The running tool's rail color: the live rail must speak in the same token.
+  const toolRail = document.createElement("div");
+  toolRail.dataset.part = "tool";
+  toolRail.dataset.state = "streaming";
+  message.append(toolRail);
+  const runningRail = getComputedStyle(toolRail).borderLeftColor;
+  toolRail.remove();
   const height = message.getBoundingClientRect().height;
   const off = document.createElement("style");
   off.textContent = "[data-part=message] *::after, [data-part=message]::after, [data-part=md-code-end]::before { content: none !important; }";
@@ -89,10 +98,12 @@ function readCursor({ id, sealed }: { id: string; sealed?: true }) {
       const style = getComputedStyle(rail, "::after");
       const block = rail.getBoundingClientRect();
       // Its size against its block's, and whether it sits inside the message.
-      return { part: rail.dataset.part!, width: parseFloat(style.width), height: parseFloat(style.height), blockHeight: block.height, inside: block.left >= box.left - 0.5, ...look(style) };
+      return { part: rail.dataset.part!, width: parseFloat(style.width), height: parseFloat(style.height), blockHeight: block.height, inside: block.left >= box.left - 0.5, border: getComputedStyle(rail).borderLeftColor, ...look(style) };
     }),
     mark: markStyle && markStyle.content === '""' ? look(markStyle) : undefined,
     systemColor,
+    highlightColor,
+    runningRail,
     extra: height - without,
     toolAfter: tool?.dataset.state,
   };
@@ -192,18 +203,26 @@ function readViewerCommitShift() {
   return moved ? `markdown-crossing: the viewer head moves when its status word goes at the commit (${JSON.stringify(before)} -> ${JSON.stringify(after)})` : undefined;
 }
 
-// Runs in the page. A streaming viewer keeps its "streaming" word at every width, as a running tool keeps "running".
+// Runs in the page. A streaming viewer keeps its "streaming" word and its count at every width, as a running tool keeps
+// "running".
 function readViewerWord() {
   const word = document.querySelector<HTMLElement>("#markdown-crossing [data-part=md-code-block][data-state=streaming] [data-part=text-viewer-status] > span");
   if (!word) return "markdown-crossing: no streaming viewer status word";
   const { width } = word.getBoundingClientRect();
-  return width < 20 || getComputedStyle(word).clipPath !== "none" ? `markdown-crossing: the viewer's "streaming" word is hidden (${width.toFixed(1)} px wide)` : undefined;
+  if (width < 20 || getComputedStyle(word).clipPath !== "none") return `markdown-crossing: the viewer's "streaming" word is hidden (${width.toFixed(1)} px wide)`;
+  // Neither the state nor the count is cut, and the head keeps one row.
+  const head = word.closest<HTMLElement>("[data-part=text-viewer-head]")!;
+  const count = head.querySelector<HTMLElement>("[data-part=text-viewer-count]")!;
+  if (count.scrollWidth > count.clientWidth + 0.5) return `markdown-crossing: the viewer's count is cut (${count.clientWidth} of ${count.scrollWidth} px)`;
+  // Items centered in one row overlap vertically; a wrapped item starts below another's bottom.
+  const boxes = [...head.children].map((child) => child.getBoundingClientRect()).filter((box) => box.width > 1);
+  return Math.max(...boxes.map((box) => box.top)) >= Math.min(...boxes.map((box) => box.bottom)) ? "markdown-crossing: the viewer head wraps onto a second row" : undefined;
 }
 
 // Runs in the page. Only a text line keeps the cursor's end gutter: a block that never hangs the cursor (code, a table,
 // a content row, a rule) reaches the message's edge, where a tool card ends, while paragraphs stop short of it.
 function readBlockEdges(id: string) {
-  const blocks = "[data-part=md-code-block], [data-part=md-table], [data-part=md-rule], [data-part=reasoning], [data-part=source], [data-part=file], [data-part=image], [data-part=block-unknown]";
+  const blocks = "[data-wide], [data-part=md-code-block], [data-part=md-table], [data-part=md-rule], [data-part=reasoning], [data-part=source], [data-part=file], [data-part=image], [data-part=block-unknown]";
   const message = document.querySelector<HTMLElement>(`#${id} [data-part=message]`);
   if (!message) return `${id}: no message`;
   const edge = message.getBoundingClientRect().right;
@@ -258,7 +277,12 @@ function checkCursorCase(at: string, mode: Mode, demo: CursorCase, cursor: NonNu
   if (rails.join() !== (demo.rail ?? "")) failures.push(`${at}: running rails on [${rails.join(", ")}], expected [${demo.rail ?? ""}]`);
   for (const rail of cursor.rails) {
     if (rail.width !== 2 || Math.abs(rail.height - rail.blockHeight) > 2.5 || !rail.inside) failures.push(`${at}: the ${rail.part} rail is ${rail.width}x${rail.height} px on a ${rail.blockHeight.toFixed(1)} px block${rail.inside ? "" : ", outside the message"}`);
-    failures.push(...checkLook(`${at}: the ${rail.part} rail`, mode, rail, "fulcrum-pulse", cursor.systemColor));
+    // Static and opaque, as a running tool's rail: a pulse would let the block's own border show through it.
+    if (rail.animation !== "none") failures.push(`${at}: the ${rail.part} rail animates (${rail.animation}); a running tool's rail is static`);
+    if (mode === "forced colors") {
+      if (rail.background !== cursor.highlightColor || rail.adjust !== "none") failures.push(`${at}: the ${rail.part} rail is ${rail.background}/${rail.adjust}, expected Highlight ${cursor.highlightColor}/none`);
+      if (rail.background === rail.border) failures.push(`${at}: the ${rail.part} rail is the color of its own border (${rail.border}): live looks finished`);
+    } else if (rail.background !== cursor.runningRail) failures.push(`${at}: the ${rail.part} rail is ${rail.background}, a running tool's rail is ${cursor.runningRail}`);
   }
   if (demo.sealed && cursor.toolAfter !== "streaming") failures.push(`${at}: the row after the committed message is ${cursor.toolAfter ? `a ${cursor.toolAfter} tool` : "not a tool"}, expected a running tool`);
   // Whatever it shows, the commit (which removes the cursor) must not change the message's height.
@@ -310,13 +334,18 @@ async function checkStreamingCursor(page: Page, port: number, failures: string[]
       }
       if (width === 1440 && fit && fit.full.cells !== 80) failures.push(`${demo.id} @ 1440: the measure holds ${fit.full.cells} columns, expected 80`);
     }
-    for (const [id, read] of [["markdown-crossing", readViewerCommitShift], ["markdown-crossing", readViewerWord], ["message-plain-streaming", readBlankLineCommit], ["content-done", readBlockEdges], ["markdown-done", readBlockEdges]] as const) {
+    for (const [id, read] of [["markdown-crossing", readViewerCommitShift], ["markdown-crossing", readViewerWord], ["message-plain-streaming", readBlankLineCommit], ["content-done", readBlockEdges], ["markdown-done", readBlockEdges], ["mermaid-mixed", readBlockEdges]] as const) {
       await page.locator(`#${id}`).scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {});
       await nextFrame(page);
       const failure = await page.evaluate(read, id);
       if (failure) failures.push(`${failure} @ ${width}`);
     }
   }
+  // The narrowest phone: the viewer head still keeps its state word and its whole count on one row.
+  await page.setViewportSize({ width: 320, height: 900 });
+  await nextFrame(page);
+  const narrow = await page.evaluate(readViewerWord);
+  if (narrow) failures.push(`${narrow} @ 320`);
   await page.setViewportSize({ width: 1440, height: 900 });
   if (failures.length === before) console.log(`ok   streaming cursor: ${cursorCases.length} messages show the expected cursor or running mark in normal, forced-colors, and reduced-motion modes; a line that fills its width (80 columns at full width) keeps the whole cursor on it, unclipped, at 1440 and 390; the commit moves nothing`);
 

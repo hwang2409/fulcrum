@@ -17,7 +17,7 @@ function visible(blocks: readonly Block[], includeProvisional = true): string {
     : block.type === "blockquote" ? visible(block.children, includeProvisional)
     : block.type === "list" ? block.items.map((item) => visible(item.children, includeProvisional)).join("")
     : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => inlineVisible(cell, includeProvisional)).join("")
-    : "").join("").replace(/\s/g, "");
+    : "").join("").replace(/[\s|]/g, "");
 }
 
 function isSubsequence(needle: string, haystack: string) {

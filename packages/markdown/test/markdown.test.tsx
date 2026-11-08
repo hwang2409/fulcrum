@@ -20,10 +20,12 @@ const visibleText = (source: string, streaming = false, includeProvisional = tru
   if (!includeProvisional) element.querySelectorAll('[data-part="md-reference-pending"]').forEach((node) => node.remove());
   return element.textContent;
 };
+// A pipe is table syntax: a streaming row shows its pipes until a delimiter row turns them into cell borders.
+const withoutPipes = (text: string) => text.replace(/[ \t]*\|[ \t]*/g, "");
 const isSubsequence = (value: string, expected: string) => {
-  const wanted = [...value];
+  const wanted = [...withoutPipes(value)];
   let index = 0;
-  for (const character of expected) if (character === wanted[index]) index++;
+  for (const character of withoutPipes(expected)) if (character === wanted[index]) index++;
   return index === wanted.length;
 };
 
