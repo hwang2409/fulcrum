@@ -3,10 +3,10 @@ on: [push]
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix: { shard: [1, 2, 3, 4, 5, 6] }
+      matrix: { shard: [1, 2, 3, 4, 5, 6], delta: [long, short] }
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -16,4 +16,4 @@ jobs:
       - run: bun run --cwd apps/playground build
       - run: lscpu | grep -E "Model name|^CPU\(s\)"
       - run: bun run --cwd apps/playground layout
-        env: { SCALING_ONLY: "1" }
+        env: { SCALING_ONLY: "1", SCALING_DELTA: "${{ matrix.delta }}" }

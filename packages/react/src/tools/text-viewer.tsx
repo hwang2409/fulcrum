@@ -284,7 +284,8 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
   const [newOutput, setNewOutput] = useState(false);
   const seenLength = useRef(text.length);
   // tmp mutation: O(lines) work per append at the layout.ts contract (c) size: 55 ms per append at 128k lines.
-  useMemo(() => { const until = performance.now() + 55 * metrics.lines / 128_000; while (performance.now() < until) { /* O(n) proof */ } }, [text]);
+  // tmp: +5 ms per append for the unthrottled single/lines fixtures (no viewerLines), O(n) for the scaling pages.
+  useMemo(() => { const params = new URLSearchParams(location.search); const ms = params.has("viewerLines") ? 55 * metrics.lines / 128_000 : params.get("viewerFixture") === "read" ? 0 : 5; const until = performance.now() + ms; while (performance.now() < until) { /* proof */ } }, [text]);
   // useSegments either extends its array (old segments are the same objects) or builds a new one: an extension is an
   // append from the prior segments.
   const prior = useRef<TextSegment[]>([]);

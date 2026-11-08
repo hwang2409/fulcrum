@@ -237,8 +237,8 @@ type ViewerMeasurement = ViewerTiming & { fixture: string; width: number; calibr
 type ViewerPair = { base: ViewerSample; candidate: ViewerSample };
 
 const viewerSamples = 5;
-const viewerScalingPairs = 11;
-const scalingDelta = `\n${"x".repeat(65_535)}`; // one long line per append: a rebuilt segment shows in the canaries
+const viewerScalingPairs = 21;
+const scalingDelta = process.env.SCALING_DELTA === "short" ? "\nscaling tail" : `\n${"x".repeat(65_535)}`; // one long line per append: a rebuilt segment shows in the canaries
 const ratios = (pairs: ViewerPair[], field: keyof ViewerSample) => pairs.map((pair) => ratio(pair.candidate[field], pair.base[field]));
 // Five alternating base/head pairs use their median ratio, not a ratio of independent medians. The 1.4x A/B ceiling
 // leaves the required margin over observed A/A noise. Scaling compares the same append at 16k and 128k lines; correct
@@ -279,6 +279,7 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
   await page.waitForTimeout(100);
   const appended = await appendViewer(page, fixture === "read" ? Number(process.env.TIMING_GATE_SLOWDOWN_MS ?? 0) : 0, 0);
   const { appendMs, samples: appendSamples } = appended;
+  if (process.env.SCALING_ONLY) { const paired: string[] = []; for (let i = 0; i < 7; i++) { const one = await appendViewer(page, 0, 100 + i, 1); const cal = await measureCalibration(page); paired.push(`${one.samples[0]!.toFixed(2)}/${one.taskSamples[0]!.toFixed(2)}/${cal.toFixed(2)}`); } console.log(`unthrottled pairs ${fixture} @ ${width}: wall/task/calibration [${paired.join(", ")}]`); const calibration = await measureCalibrationSet(page, measureCalibration); const f = (v: number[]) => v.map((x) => x.toFixed(2)).join(", "); console.log(`unthrottled ${fixture} @ ${width}: wall [${f(appendSamples)}] task [${f(appended.taskSamples)}] sync [${f(appended.syncSamples)}] calibration [${f(calibration.samples)}]`); return undefined as never; }
   await page.waitForTimeout(500);
   const appendGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
   const scroll = await measureViewerScroll(page, viewer);
@@ -338,10 +339,10 @@ async function openViewer(page: Page, slowdown = 0, observeLongTasks = false) {
 async function appendViewer(page: Page, slowdown: number, offset: number, count = viewerSamples, delta?: string) {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Performance.enable");
-  const measured: { wall: number; task: number; pushes: number; segmentPushes: number }[] = [];
+  const measured: { wall: number; sync: number; task: number; pushes: number; segmentPushes: number }[] = [];
   for (let sample = 0; sample < count; sample++) {
     const before = (await cdp.send("Performance.getMetrics")).metrics.find((metric) => metric.name === "TaskDuration")?.value ?? 0;
-    const result = await page.evaluate(({ delay, index, tail }) => new Promise<{ wall: number; pushes: number; segmentPushes: number }>((resolve) => requestAnimationFrame(() => {
+    const result = await page.evaluate(({ delay, index, tail }) => new Promise<{ wall: number; sync: number; pushes: number; segmentPushes: number }>((resolve) => requestAnimationFrame(() => {
     const target = window as typeof window & { __appendViewerFixture: (delta: string) => void };
     const root = document.querySelector('[data-part="tool-body"]')!;
     const originalPush = Array.prototype.push;
@@ -355,9 +356,11 @@ async function appendViewer(page: Page, slowdown: number, offset: number, count 
     const observer = new MutationObserver(() => {
       observer.disconnect();
       Array.prototype.push = originalPush;
-      resolve({ wall: performance.now() - started, pushes, segmentPushes });
+      resolve({ wall: performance.now() - started, sync: performance.now() - syncStart, pushes, segmentPushes });
     });
     observer.observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
+    let syncStart = NaN;
+    requestAnimationFrame(() => { syncStart = performance.now(); }); // runs in the next frame just before the store's flush
     const started = performance.now();
     if (delay) { const until = performance.now() + delay; while (performance.now() < until) { /* deliberate proof slowdown */ } }
     target.__appendViewerFixture(tail ?? `\npaired tail ${index}`);
@@ -368,7 +371,8 @@ async function appendViewer(page: Page, slowdown: number, offset: number, count 
   await cdp.detach();
   const samples = measured.map(({ wall }) => wall);
   const taskSamples = measured.map(({ task }) => task);
-  return { appendMs: median(samples), appendTaskMs: median(taskSamples), appendPushes: median(measured.map(({ pushes }) => pushes)), segmentPushes: median(measured.map(({ segmentPushes }) => segmentPushes)), samples, taskSamples };
+  const syncSamples = measured.map(({ sync }) => sync);
+  return { syncSamples, appendMs: median(samples), appendTaskMs: median(taskSamples), appendPushes: median(measured.map(({ pushes }) => pushes)), segmentPushes: median(measured.map(({ segmentPushes }) => segmentPushes)), samples, taskSamples };
 }
 
 // `scalingLines`: one side of an append scaling pair, the first append after open to a viewer of that many lines. Later
@@ -492,7 +496,7 @@ async function checkViewerScaling(browser: Awaited<ReturnType<typeof chromium.la
       const first = await measureViewerSample(page, candidateUrl, 0, pair, pair % 2 ? 128_000 : 16_000);
       const second = await measureViewerSample(page, candidateUrl, 0, pair, pair % 2 ? 16_000 : 128_000);
       pairs.push(pair % 2 ? { small: second, large: first } : { small: first, large: second });
-      console.log(`raw pair ${pair}: first ${pair % 2 ? "128k" : "16k"} [${first.taskSamples.map((v) => v.toFixed(1)).join(", ")}] second [${second.taskSamples.map((v) => v.toFixed(1)).join(", ")}]`);
+      console.log(`raw pair ${pair}: first ${pair % 2 ? "128k" : "16k"} [${first.taskSamples.map((v) => v.toFixed(1)).join(", ")}] second [${second.taskSamples.map((v) => v.toFixed(1)).join(", ")}] sync ${first.syncSamples[0]!.toFixed(2)} ${second.syncSamples[0]!.toFixed(2)}`);
     }
     await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read&viewerLines=1000000`);
     await openViewer(page);
@@ -544,6 +548,7 @@ try {
   }
   browser = await chromium.launch();
   if (process.env.VIEWER_TIMING_ONLY || process.env.SCALING_ONLY) {
+    if (process.env.SCALING_ONLY) { const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" }); for (const width of [390, 1440]) for (const fixture of ["single", "lines"] as const) { await page.setViewportSize({ width, height: 900 }); await measureViewer(page, width, fixture); } await page.close(); }
     if (!process.env.SCALING_ONLY) for (const width of [390, 1440]) recordViewerTimingFailures(await checkViewerTiming(browser, width), width, failures);
     recordViewerScaling(await checkViewerScaling(browser), failures);
     await browser.close();
