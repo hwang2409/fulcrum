@@ -17,6 +17,7 @@ import {
   type VirtualSnapshot,
   type Virtualizer,
 } from "@fulcrum/virtual";
+import { classifyScroll } from "./scroll-class.js";
 
 const isIOSWebKit = () => navigator.userAgent.includes("iP");
 
@@ -294,26 +295,26 @@ export function useVirtualList<Id extends string>(
       const onScroll = () => {
         const before = engine.getSnapshot();
         const domEnd = Math.max(0, container.scrollHeight - container.clientHeight);
-        const fromReader = hostLeases.consume();
         const pending = pendingScroll.current;
         pendingScroll.current = null; // the first callback consumes our write, whether the browser matched it or not
-        const matchesPending = pending !== null && (Math.abs(container.scrollTop - pending.value) < 0.5
-          || (typeof pending.target === "number" && Math.abs(container.scrollTop - pending.target) < 0.5));
-        // Without reader input, a scroll is layout work when it is our exact write, stays at the old or new DOM end, or comes
-        // with a size change since the last write or scroll we saw (content or viewport, e.g. a banner shrinking the box).
-        // Focus, find, host scrollIntoView, and host scroll writes anywhere else, with no size change, are reader intent.
-        // A stale old end can at worst misread intent for an unpinned reader (observe never re-pins); a pinned reader's end
-        // is refreshed by every end write. Nothing else refreshes it: a scrollHeight read per commit would force a sync layout.
-        const priorDomEnd = pending?.previousEnd ?? lastDomEnd.current;
-        const layoutSlack = Math.min(1, Math.abs(domEnd - priorDomEnd));
-        const nearEnd = (end: number) => Math.abs(container.scrollTop - end) <= layoutSlack + 0.5;
-        const sizeChanged = Math.abs(domEnd - lastDomEnd.current) >= 0.5 || Math.abs(container.clientHeight - before.viewportSize) >= 0.5;
-        const layout = !fromReader && (matchesPending || sizeChanged || nearEnd(priorDomEnd) || nearEnd(domEnd));
-        lastScrollTop.current = container.scrollTop;
+        const top = container.scrollTop;
+        const kind = classifyScroll({
+          lease: hostLeases.consume(),
+          pendingMatch: pending !== null && (Math.abs(top - pending.value) < 0.5
+            || (typeof pending.target === "number" && Math.abs(top - pending.target) < 0.5)),
+          top,
+          lastTop: lastScrollTop.current,
+          domEnd,
+          lastDomEnd: lastDomEnd.current,
+          priorDomEnd: pending?.previousEnd ?? lastDomEnd.current,
+          clientHeight: container.clientHeight,
+          viewportSize: before.viewportSize,
+        });
+        lastScrollTop.current = top;
         lastDomEnd.current = domEnd;
-        if (layout && before.pinned && Math.abs(container.scrollTop - domEnd) >= 0.5) writeScroll("end");
-        // A scroll without input and without a size change, away from both ends, is host intent, even inside the engine's bottom threshold.
-        if (!layout && !fromReader && before.pinned) engine.setFollow(false);
+        const layout = kind === "own" || kind === "layout";
+        if (layout && before.pinned && Math.abs(top - domEnd) >= 0.5) writeScroll("end");
+        if (kind === "intent" && before.pinned) engine.setFollow(false);
         // Every callback reports the real viewport, so the mounted rows always follow the DOM; classification decides only intent.
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: layout ? "observe" : "user" });
       };
@@ -329,7 +330,9 @@ export function useVirtualList<Id extends string>(
         const pageLevel = target === document || target === document.body || target === document.documentElement;
         if (!pageLevel && (!(target instanceof Element) || !container.contains(target) || target.closest(keyOwners))) return;
         hostLeases.start("keyboard");
-        if ((event.key.endsWith("Up") || event.key === "Home") && engine.getSnapshot().pinned) engine.setFollow(false);
+        // A page-level key scrolls at most one scroller: the lease lets that host's scroll callback decide (an upward
+        // move is intent), so other pinned timelines on the page keep following.
+        if (!pageLevel && (event.key.endsWith("Up") || event.key === "Home") && engine.getSnapshot().pinned) engine.setFollow(false);
       };
       // Any key release ends the held key: a still-held key repeats its keydown, and a lost arrow keyup under Cmd still releases.
       const onKeyUp = () => hostLeases.end("keyboard");
