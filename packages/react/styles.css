@@ -73,21 +73,24 @@
   overflow: auto;
 }
 
-/* How the run ended, when the host reports it; warn (the base) for disconnected and unknown. */
+/* How the run ended, when the host reports it; warn (the base) for disconnected and unknown. The chip is a 6% tint over bg
+   with a 55% border: light enough that ok, warn, and danger need no lighter (dark themes) or darker (light themes) value
+   than bg, surface, and the diff rows already ask of them, so the decoration never sets the palette. The border is not
+   text and needs no 4.5:1. test/themes.test.ts models this tint; change both together. */
 [data-part="run-status"][data-status="unknown"] { color: var(--fulcrum-warn); font-weight: 700; }
 [data-part="run-end-marker"] {
   width: fit-content;
   margin: 8px 12px;
   padding: 3px 8px;
   border: 1px solid color-mix(in srgb, var(--fulcrum-warn) 55%, var(--fulcrum-border));
-  background: color-mix(in srgb, var(--fulcrum-warn) 8%, var(--fulcrum-surface));
+  background: color-mix(in srgb, var(--fulcrum-warn) 6%, var(--fulcrum-bg));
   color: var(--fulcrum-warn);
   font-size: 11px;
   line-height: 1.4;
 }
-[data-part="run-end-marker"][data-outcome="completed"] { border-color: color-mix(in srgb, var(--fulcrum-ok) 55%, var(--fulcrum-border)); background: color-mix(in srgb, var(--fulcrum-ok) 8%, var(--fulcrum-surface)); color: var(--fulcrum-ok); }
-[data-part="run-end-marker"][data-outcome="cancelled"] { border-color: var(--fulcrum-border); background: var(--fulcrum-surface); color: var(--fulcrum-muted); }
-[data-part="run-end-marker"][data-outcome="failed"] { border-color: color-mix(in srgb, var(--fulcrum-danger) 55%, var(--fulcrum-border)); background: color-mix(in srgb, var(--fulcrum-danger) 8%, var(--fulcrum-surface)); color: var(--fulcrum-danger); }
+[data-part="run-end-marker"][data-outcome="completed"] { border-color: color-mix(in srgb, var(--fulcrum-ok) 55%, var(--fulcrum-border)); background: color-mix(in srgb, var(--fulcrum-ok) 6%, var(--fulcrum-bg)); color: var(--fulcrum-ok); }
+[data-part="run-end-marker"][data-outcome="cancelled"] { border-color: var(--fulcrum-border); background: var(--fulcrum-bg); color: var(--fulcrum-muted); }
+[data-part="run-end-marker"][data-outcome="failed"] { border-color: color-mix(in srgb, var(--fulcrum-danger) 55%, var(--fulcrum-border)); background: color-mix(in srgb, var(--fulcrum-danger) 6%, var(--fulcrum-bg)); color: var(--fulcrum-danger); }
 
 /* Skip layout and paint for off-screen items in long timelines. */
 [data-part="timeline"][data-virtual="false"] > * {

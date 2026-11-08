@@ -62,16 +62,36 @@ function oklch(c: Rgb) {
   return { L: 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, C: Math.hypot(a, bb), h: (Math.atan2(bb, a) * 180) / Math.PI };
 }
 
-// Status markers (run-end-marker) write ok, warn, and danger on an 8% tint of the same color, over bg or surface.
+const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const rules = [...styles.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector!.trim().replace(/\s+/g, " "), body: body! }));
+// The run-end marker writes ok, warn, and danger on a tint of the same color. The tint is read from styles.css, so the
+// model is the real marker background (its 55% border is not text, so it has no contrast rule).
 const STATUS = ["ok", "warn", "danger"];
+const markerTints = new Set(rules.filter(({ selector }) => selector.startsWith('[data-part="run-end-marker"]')).flatMap(({ body }) =>
+  [...body.matchAll(/background: color-mix\(in srgb, var\(--fulcrum-(?:ok|warn|danger)\) (\d+)%, var\(--fulcrum-(bg|surface)\)\)/g)].map(([, share, under]) => `${share} ${under}`)));
+const [markerShare, markerUnder] = [...markerTints][0]!.split(" ") as [string, "bg" | "surface"];
 function backgrounds(vars: Record<string, string>, key: string): Record<string, Rgb> {
   const bg = color(vars.bg!, vars);
   const surface = color(vars.surface!, vars);
-  const tint = (name: string, under = bg): Rgb => color(vars[name]!, vars).map((c, i) => c * 0.08 + under[i]! * 0.92) as Rgb;
+  const tint = (name: string, under = bg, share = 0.08): Rgb => color(vars[name]!, vars).map((c, i) => c * share + under[i]! * (1 - share)) as Rgb;
   const base = { bg, surface };
   if (key.startsWith("ansi-")) return base;
   const rows = { ...base, "inserted row": tint("tok-inserted"), "deleted row": tint("tok-deleted") };
-  return STATUS.includes(key) ? { ...rows, [`${key} tint on bg`]: tint(key), [`${key} tint on surface`]: tint(key, surface) } : rows;
+  if (!STATUS.includes(key)) return rows;
+  return { ...rows, [`${key} end-marker tint`]: tint(key, { bg, surface }[markerUnder], Number(markerShare) / 100) };
+}
+// A changed color is the official hex's smallest OKLCH lightness change: just over the ratio (hex rounding allows a
+// little), same hue, no added chroma, so it stays in its palette's family.
+function familyProblems(where: string, value: Rgb, official: string, on: Record<string, Rgb>, min: number): string[] {
+  const problems: string[] = [];
+  if (worst(color(official, {}), on) >= min) problems.push(`${where}: official ${official} already reaches ${min}:1, use it`);
+  const ratio = worst(value, on);
+  if (ratio >= min + 0.1) problems.push(`${where} is ${ratio.toFixed(3)}:1, more change than ${min}:1 needs`);
+  const [a, b] = [oklch(color(official, {})), oklch(value)];
+  const hueShift = Math.abs(((a.h - b.h + 540) % 360) - 180);
+  if (a.C > 0.03 && hueShift > 3) problems.push(`${where} moves hue ${hueShift.toFixed(1)} deg from ${official}`);
+  if (b.C > a.C + 0.005) problems.push(`${where} adds chroma to ${official}`);
+  return problems;
 }
 const worst = (rgb: Rgb, on: Record<string, Rgb>) => Math.min(...Object.values(on).map((bg) => contrast(rgb, bg)));
 
@@ -80,7 +100,11 @@ test("there are 12 named themes and the OS-dark default, and each defines every 
   expect(palettes.flatMap(({ name, vars }) => [...UI, ...ACCENTS, ...TOKENS, ...ANSI].filter((key) => !vars[key]).map((key) => `${name}: --fulcrum-${key}`))).toEqual([]);
 });
 
-test("UI text reaches 4.5:1 on bg, surface, diff rows, and its own status tint in every theme", () => {
+test("the run-end marker uses one tint for ok, warn, and danger", () => {
+  expect([...markerTints]).toHaveLength(1);
+});
+
+test("UI text reaches 4.5:1 on bg, surface, diff rows, and its own end-marker tint in every theme", () => {
   const problems: string[] = [];
   for (const { name, vars } of palettes) {
     for (const key of UI) {
@@ -88,6 +112,31 @@ test("UI text reaches 4.5:1 on bg, surface, diff rows, and its own status tint i
         const ratio = contrast(color(vars[key]!, vars), rgb);
         if (ratio < 4.5) problems.push(`${name}: --fulcrum-${key} on ${background} is ${ratio.toFixed(3)}:1`);
       }
+    }
+  }
+  expect(problems).toEqual([]);
+});
+
+test("ok, warn, and danger are the official hex or its smallest OKLCH lightness change", () => {
+  const problems: string[] = [];
+  for (const { name, vars, official } of palettes) {
+    for (const key of STATUS) {
+      const where = `${name}: --fulcrum-${key} ${vars[key]}`;
+      if (!/^#[0-9a-f]{6}$/i.test(vars[key]!)) { problems.push(`${where} is not a palette hex`); continue; }
+      if (official[key]) problems.push(...familyProblems(where, color(vars[key]!, vars), official[key]!, backgrounds(vars, key), 4.5));
+    }
+  }
+  expect(problems).toEqual([]);
+});
+
+// Apps put fg text on a status or accent tint (apps/web badges use 12% over bg, highlighted session rows 8-10%).
+test("fg reaches 4.5:1 on a 12% ok, warn, danger, accent, or muted tint over bg", () => {
+  const problems: string[] = [];
+  for (const { name, vars } of palettes) {
+    const [fg, bg] = [color(vars.fg!, vars), color(vars.bg!, vars)];
+    for (const key of [...STATUS, "accent", "muted"]) {
+      const ratio = contrast(fg, color(vars[key]!, vars).map((c, i) => c * 0.12 + bg[i]! * 0.88) as Rgb);
+      if (ratio < 4.5) problems.push(`${name}: fg on a 12% --fulcrum-${key} tint is ${ratio.toFixed(3)}:1`);
     }
   }
   expect(problems).toEqual([]);
@@ -104,15 +153,7 @@ test("syntax colors reach 4.5:1 and ANSI colors 3:1 where they sit, as the offic
       const value = color(vars[key]!, vars);
       const ratio = worst(value, on);
       if (ratio < min) problems.push(`${where} is ${ratio.toFixed(3)}:1, needs ${min}:1`);
-      if (!official[key]) continue;
-      const before = color(official[key]!, vars);
-      if (worst(before, on) >= min) problems.push(`${where}: official ${official[key]} already reaches ${min}:1, use it`);
-      // Minimal: just over the ratio (hex rounding allows a little), same hue, no added chroma.
-      if (ratio >= min + 0.1) problems.push(`${where} is ${ratio.toFixed(3)}:1, more change than ${min}:1 needs`);
-      const [a, b] = [oklch(before), oklch(value)];
-      const hueShift = Math.abs(((a.h - b.h + 540) % 360) - 180);
-      if (a.C > 0.03 && hueShift > 3) problems.push(`${where} moves hue ${hueShift.toFixed(1)} deg from ${official[key]}`);
-      if (b.C > a.C + 0.005) problems.push(`${where} adds chroma to ${official[key]}`);
+      if (official[key]) problems.push(...familyProblems(where, value, official[key]!, on, min));
     }
   }
   expect(problems).toEqual([]);
@@ -130,22 +171,13 @@ test("ui-* accents reach 4.5:1 on bg and surface, as their source tok-* official
       const value = color(vars[key]!, vars);
       const ratio = worst(value, on);
       if (ratio < 4.5) problems.push(`${where} is ${ratio.toFixed(3)}:1`);
-      if (vars[key] === hex) continue;
-      const before = color(hex!, vars);
-      if (worst(before, on) >= 4.5) problems.push(`${where}: ${token} ${hex} already reaches 4.5:1, use it`);
-      if (ratio >= 4.6) problems.push(`${where} is ${ratio.toFixed(3)}:1, more change than 4.5:1 needs`);
-      const [a, b] = [oklch(before), oklch(value)];
-      const hueShift = Math.abs(((a.h - b.h + 540) % 360) - 180);
-      if (a.C > 0.03 && hueShift > 3) problems.push(`${where} moves hue ${hueShift.toFixed(1)} deg from ${hex}`);
-      if (b.C > a.C + 0.005) problems.push(`${where} adds chroma to ${hex}`);
+      if (vars[key] !== hex) problems.push(...familyProblems(where, value, hex!, on, 4.5));
     }
   }
   expect(problems).toEqual([]);
 });
 
 // tok-* colors are code colors, so only code may use them: the token spans and the diff rows' tint and changed-word line.
-const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-const rules = [...styles.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector!.trim().replace(/\s+/g, " "), body: body! }));
 const CODE = /^(\.tok-[\w-]+|\[data-part="diff-line"\]\[data-change="(insert|delete)"\]|\[data-change="(insert|delete)"\] \[data-part="diff-word"\])$/;
 const TOOL_FACTS = ["summary-path", "summary-pattern", "diff-stat", "tool-duration", "tool-cwd", "tool-path", "tool-size", "search-path", "search-count", "search-total", "fetch-type", "fetch-url"];
 
