@@ -3,6 +3,11 @@ import { openBackwardHistory, type BackwardHistoryCursor } from "../src/index.js
 
 const validator = { end: 3, entry_id: "new" } as const;
 const page = (messages: string[], next_before: number | null, history_validator = validator) => ({ messages, next_before, history_validator });
+const becomesTrueWithin = async (condition: () => boolean, timeoutMs = 10_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) await Bun.sleep(1);
+  return condition();
+};
 
 test("publishes newest first and complete history oldest first", async () => {
   const requests: BackwardHistoryCursor[] = [];
@@ -77,9 +82,22 @@ test("uses one abort signal for every request", async () => {
     });
   }, { signal: controller.signal });
 
-  while (signals.length < 2) await Bun.sleep(0);
-  controller.abort();
+  try {
+    expect(await becomesTrueWithin(() => signals.length === 2)).toBe(true);
+  } finally {
+    controller.abort();
+    await opened.complete.catch(() => undefined);
+  }
   await expect(opened.complete).rejects.toMatchObject({ name: "AbortError" });
   expect(signals).toEqual([controller.signal, controller.signal]);
   expect(rejectOlder).toBeFunction();
+}, 15_000);
+
+test("rejects when aborted after a final first page", async () => {
+  const controller = new AbortController();
+  const opened = await openBackwardHistory(async () => page(["only"], null), { signal: controller.signal });
+
+  controller.abort();
+
+  await expect(opened.complete).rejects.toMatchObject({ name: "AbortError" });
 });

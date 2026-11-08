@@ -76,14 +76,22 @@ export async function openBackwardHistory(
     return snapshot;
   };
   const newest = async (cause: "newest" | "restart") => {
-    const page = parsePage(await request({ before: null }, signal));
+    signal.throwIfAborted();
+    const response = await request({ before: null }, signal);
+    signal.throwIfAborted();
+    const page = parsePage(response);
     pages = [page];
     return publish(page, cause);
   };
 
   const snapshot = await newest("newest");
   const complete = (async () => {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason);
+      const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+      const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, 0);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
     let current = snapshot;
     while (!current.complete) {
       const previous = pages.at(-1)!;
