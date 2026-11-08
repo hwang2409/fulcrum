@@ -237,7 +237,7 @@ type ViewerMeasurement = ViewerTiming & { fixture: string; width: number; calibr
 type ViewerPair = { base: ViewerSample; candidate: ViewerSample };
 
 const viewerSamples = 5;
-const viewerScalingPairs = 11;
+const viewerScalingPairs = 21;
 const scalingDelta = `\n${"x".repeat(65_535)}`; // one long line per append: a rebuilt segment shows in the canaries
 const ratios = (pairs: ViewerPair[], field: keyof ViewerSample) => pairs.map((pair) => ratio(pair.candidate[field], pair.base[field]));
 // Five alternating base/head pairs use their median ratio, not a ratio of independent medians. The 1.4x A/B ceiling
