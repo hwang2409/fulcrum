@@ -24,6 +24,14 @@ A `user_message` can carry `intent`, the client id for the user's request. A lat
 
 `run_end.outcome` can be `completed`, `cancelled`, `failed`, `disconnected`, or `unknown`. `unknown` means the host could not observe the result. The store keeps it in `state.endOutcome` until the next `run_start`.
 
+## within-run search
+
+`createRunSearch(store, { maxItems, maxCharsPerItem })` creates an opt-in, bounded index for one run. Both limits are required positive integers. The index retains only the newest `maxItems` outline rows and at most `maxCharsPerItem` UTF-16 code units across each retained row. `query(text)` returns stable item ids, matching field paths, UTF-16 start/end offsets into the original field string, and separate item/character truncation flags. `subscribe(listener)` reports index changes; `dispose()` removes all store subscriptions and retained text.
+
+The index searches committed message text and non-redacted reasoning, completed tool names and agent-neutral view summaries or paths, approval tool names and view summaries or paths, user text, and error messages. It never reads tool arguments, tool output, message metadata, redacted reasoning, notification data, unknown-event data, or other opaque fields. Message and tool rows do not become searchable while active. Live-row search and cross-run search are deliberately excluded.
+
+Index updates are incremental through outline and keyed row subscriptions. A message or tool is extracted once when it becomes inactive; streaming deltas do not extract or index its growing text. A query reads only retained index text, without re-extracting store rows, and costs O(retained UTF-16 code units + matches). Import from `@fulcrum/core/search` when only the search interface is needed; the root export remains tree-shakeable for existing store-only apps.
+
 ## tool views
 
 Use `defineToolMap()` to map harness tool arguments to agent-neutral views. See [using another harness](../../docs/other-harnesses.md) for schemas, examples, and approval decisions.

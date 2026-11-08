@@ -8,4 +8,5 @@ export {
   type RunState,
 } from "./reducer.js";
 export * from "./store.js";
+export * from "./search.js";
 export type { RunLease, RunOpenOptions, RunSource } from "./run-source.js";
