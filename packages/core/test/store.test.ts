@@ -366,6 +366,47 @@ test("prepend rejection keeps the last good state and visibly desyncs", () => {
   expect(errors).toHaveLength(1);
 });
 
+test("queued prepends scale with pages rather than queued history", () => {
+  const measure = (pageCount: number) => {
+    const pages = Array.from({ length: pageCount }, (_, index) => [{
+      type: "message_commit" as const,
+      message_id: `queued-${index}`,
+      message: message("queued"),
+    }]);
+    const store = createRunStore(() => {});
+    store.beginHistory();
+    const started = performance.now();
+    for (const page of pages) store.prepend(page);
+    const elapsed = performance.now() - started;
+    store.dispose();
+    return elapsed;
+  };
+
+  // On the measured 2026-11-08 macOS runner, 10,000 one-event pages took 265x the
+  // 1,000-page time on the old queue. Keep this bound well above linear noise.
+  const small = measure(1_000);
+  const large = measure(10_000);
+  expect(large / Math.max(small, 0.01)).toBeLessThan(40);
+});
+
+test("interleaved prepend and live flushes match chronological reduction", () => {
+  const jobs: Array<() => void> = [];
+  const actual = createRunStore((job) => jobs.push(job));
+  actual.beginHistory();
+  actual.prepend([{ type: "message_commit", message_id: "middle", message: message("middle") }]);
+  actual.dispatch({ type: "message_commit", message_id: "new", message: message("new") });
+  jobs.shift()!();
+  actual.prepend([{ type: "message_commit", message_id: "old", message: message("old") }]);
+
+  const expected = createRunStore((flush) => flush());
+  expected.resync([
+    { type: "message_commit", message_id: "old", message: message("old") },
+    { type: "message_commit", message_id: "middle", message: message("middle") },
+    { type: "message_commit", message_id: "new", message: message("new") },
+  ]);
+  expect(prependView(actual)).toEqual(prependView(expected));
+});
+
 test("prepend coalesces pages queued in one frame", () => {
   const jobs: Array<() => void> = [];
   const store = createRunStore((flush) => jobs.push(flush));

@@ -89,7 +89,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let pending: RunEvent[] = [];
   let acceptedLog: RunEvent[] = [];
   let historyOpen = false;
-  let pendingOlder: RunEvent[] = [];
+  let pendingOlderPages: RunEvent[][] = [];
   const listeners = new Set<Listener>();
   const outlineListeners = new Set<Listener>();
   const itemListeners = new Map<string, Set<Listener>>();
@@ -165,9 +165,11 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     return true;
   };
   const flushPrepend = () => {
-    if (pendingOlder.length === 0 || disposed || desynced) return false;
-    const older = pendingOlder;
-    pendingOlder = [];
+    if (pendingOlderPages.length === 0 || disposed || desynced) return false;
+    const pages = pendingOlderPages;
+    pendingOlderPages = [];
+    const older: RunEvent[] = [];
+    for (let index = pages.length - 1; index >= 0; index--) older.push(...pages[index]!);
     const beforeOutline = current.outline;
     const nextEntities = new Map<string, RunItem>();
     const nextAliases = new Map<string, string>();
@@ -238,7 +240,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
           flush();
           flushPrepend();
           notify();
-        } while ((pending.length > 0 || pendingOlder.length > 0) && !disposed && !desynced);
+        } while ((pending.length > 0 || pendingOlderPages.length > 0) && !disposed && !desynced);
       } finally {
         running = false;
       }
@@ -295,7 +297,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     resync(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
       pending = [];
-      pendingOlder = [];
+      pendingOlderPages = [];
       entities.clear();
       messageAliases.clear();
       current = structuredClone(initialState);
@@ -343,7 +345,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (!historyOpen) throw new Error("prepend requires an open history window");
       flush();
       notify();
-      pendingOlder = [...events, ...pendingOlder];
+      pendingOlderPages.push([...events]);
       scheduleFlush();
     },
     subscribe,
@@ -361,7 +363,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (disposed) return;
       disposed = true;
       pending = [];
-      pendingOlder = [];
+      pendingOlderPages = [];
       acceptedLog = [];
       historyOpen = false;
       current = structuredClone(initialState);
