@@ -483,7 +483,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     const interrupted = interruptedTurns.get(id);
     const statusOutcome = status.session?.session_id === id && status.state === "idle" ? statusTurnOutcome(status.last_turn_outcome, interrupted?.turn) : undefined;
     if (statusOutcome) return statusOutcome;
-    if (!interrupted) return undefined;
+    if (!interrupted) return servedTurnOutcome(rows);
     return interrupted.turn ? servedTurnOutcome(rows, interrupted.turn) ?? "unknown" : "unknown";
   };
   let openGeneration = 0;

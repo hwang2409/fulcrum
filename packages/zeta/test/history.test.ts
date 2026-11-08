@@ -142,7 +142,16 @@ test("a real live dropped steer keeps its text and terminal reason", async () =>
   expect(store.getOutline().filter((item) => item.kind === "notification")).toHaveLength(0);
 });
 
-test("real dropped-steer history becomes one compact status row without inventing the missing text", async () => {
+test("fidelity dropped-steer history restores the original text and not-delivered state", () => {
+  const [user, status] = fromZetaHistory([{
+    id: "drop-1", role: "system", event: "delivery_status", delivery_id: "dropped-steer", method: "steer", status: "dropped",
+    content: [{ type: "text", text: "please stop after this command" }], reason: "turn_end",
+  }]);
+  expect(user).toEqual({ type: "user_message", text: "please stop after this command", mode: "steer", delivery_id: "dropped-steer", delivery_status: "dropped", delivery_reason: "turn_end" });
+  expect(status).toEqual({ type: "delivery_status", delivery_id: "dropped-steer", method: "steer", status: "dropped", content: "please stop after this command", reason: "turn_end" });
+});
+
+test("legacy dropped-steer history keeps its compact status row without inventing text", async () => {
   const fixture = await Bun.file(new URL("./fixtures/history-steer-delivery.json", import.meta.url)).json();
   const store = createRunStore((flush) => flush());
   for (const event of fromZetaHistory(fixture.dropped.historyRows)) store.dispatch(event);

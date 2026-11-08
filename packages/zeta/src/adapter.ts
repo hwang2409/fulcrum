@@ -366,7 +366,17 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
 const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] => {
   const row = object(value, "history row");
   if (row.event === "usage") return fromZetaEvent(row);
-  if (row.event === "delivery_status") return fromZetaEvent(row);
+  if (row.event === "delivery_status") {
+    const events = fromZetaEvent(row);
+    // New fidelity rows retain the original steer text. Rebuild its user row so a reload
+    // has the same "not delivered" card as the live delivery_status update.
+    const content = Array.isArray(row.content) ? text(row.content) : "";
+    const deliveryId = typeof row.delivery_id === "string" ? row.delivery_id : undefined;
+    if (deliveryId && row.status === "dropped" && content && !/^steer dropped: /.test(content)) {
+      return [{ type: "user_message", text: content, mode: "steer", delivery_id: deliveryId, delivery_status: "dropped", ...(typeof row.reason === "string" ? { delivery_reason: row.reason } : {}) }, ...events];
+    }
+    return events;
+  }
   if (row.event === "served_turn_end") return []; // a turn-end fact for `servedTurnOutcome`, not a transcript row
   if (row.event === "history_group_truncated") return [{ type: "history_truncated", text: "[history group too large; truncated]" }];
   if (Array.isArray(row.content) && text(row.content) === "[history group too large; truncated]") return [{ type: "history_truncated", text: "[history group too large; truncated]" }];
