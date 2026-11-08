@@ -233,6 +233,28 @@ test("published snapshots and entities do not change after a delta", () => {
   expect(snapshot.outline).toEqual([{ id: "message:assistant", kind: "message" }]);
 });
 
+test.each([
+  ["new then old", "+ + + + r3 r0 r2"],
+  ["old then new", "+ + + + r0 r3 r1"],
+  ["middle versions never read", "+ r0 + + + r3 r2 r1"],
+  ["reads between deltas", "+ r0 + r1 + r0 r2 + r3 r1 r3"],
+  ["after commit", "+ + r1 + c r2 r0"],
+])("each stream version keeps its own text across reads: %s", (_, steps) => {
+  const store = createRunStore((flush) => flush());
+  const versions: RunItem[] = [];
+  for (const step of steps.split(" ")) {
+    if (step === "+") {
+      store.dispatch({ type: "message_delta", message_id: "m", delta: String(versions.length) });
+      versions.push(store.getItem("message:m")!);
+    } else if (step === "c") {
+      store.dispatch({ type: "message_commit", message_id: "m", message: message("final") });
+    } else {
+      const index = Number(step.slice(1));
+      expect(itemText(versions[index])).toBe("0123".slice(0, index + 1));
+    }
+  }
+});
+
 test("run_end clears active assistant and tool streams", () => {
   const store = replay([
     { type: "message_delta", delta: "old" },

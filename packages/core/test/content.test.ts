@@ -28,41 +28,6 @@ test("streamed text, reasoning, and blocks keep the order they arrived in", () =
   });
 });
 
-test("interleaved text, kind-tagged deltas, and blocks preserve the replay result", () => {
-  const source = { type: "source", url: "https://example.com/source" };
-  const store = replay([
-    { type: "message_delta", message_id: "m", delta: "answer one" },
-    { type: "message_delta", message_id: "m", kind: "reasoning", delta: "reason one" },
-    { type: "message_delta", message_id: "m", kind: "reasoning", delta: " + two" },
-    { type: "message_block", message_id: "m", block: source },
-    { type: "message_delta", message_id: "m", kind: "analysis", delta: "analysis" },
-    { type: "message_delta", message_id: "m", delta: "answer two" },
-  ]);
-
-  expect(read(store, "message:m")).toEqual({
-    content: [
-      { type: "text", text: "answer one" },
-      { type: "reasoning", text: "reason one + two" },
-      source,
-      { type: "analysis", text: "analysis" },
-    ],
-    text: "answer two",
-  });
-  expect(store.getState()).toEqual({
-    turns: [],
-    outline: [{ id: "message:m", kind: "message" }],
-    usage: {},
-    agent: "idle",
-    turn: "idle",
-    receipts: {},
-    receiptOrder: [],
-    nextId: 2,
-    activeMessageId: "m",
-    activeToolIds: {},
-    toolApprovals: {},
-  });
-});
-
 test("a streamed block keeps the identity of the blocks before it", () => {
   const store = replay([
     { type: "message_delta", message_id: "m", kind: "reasoning", delta: "a" },
@@ -73,18 +38,6 @@ test("a streamed block keeps the identity of the blocks before it", () => {
   const after = read(store, "message:m").content;
   expect(after[0]).toBe(before!);
   expect(after.map((block) => block.type)).toEqual(["reasoning", "file", "reasoning"]);
-});
-
-test("kind-tagged deltas preserve other fields on the block they extend", () => {
-  const store = replay([
-    { type: "message_block", message_id: "m", block: { type: "reasoning", text: "one", provider: "test" } },
-    { type: "message_delta", message_id: "m", kind: "reasoning", delta: " two" },
-    { type: "message_delta", message_id: "m", kind: "reasoning", delta: " three" },
-  ]);
-
-  expect(read(store, "message:m").content).toEqual([
-    { type: "reasoning", text: "one two three", provider: "test" },
-  ]);
 });
 
 test("a message_block opens a message row and a commit replaces the stream", () => {

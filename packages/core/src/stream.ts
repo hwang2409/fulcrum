@@ -1,31 +1,44 @@
+/** The newest full text read on one stream. One per chain, so held older versions never each pin a full copy. */
+type Cache = { chunk?: Chunk; text: string };
+
 type Chunk = {
   readonly previous?: Chunk;
   readonly value: string;
   readonly length: number;
+  readonly cache: Cache;
 };
 
 const chunks = new WeakMap<object, Chunk>();
 
-const chunkFor = (item: object, value: () => string) => {
+const chunkFor = (item: object, value: () => string): Chunk | undefined => {
   const chunk = chunks.get(item);
   if (chunk) return chunk;
   const materialized = value();
   return materialized
-    ? { value: materialized, length: materialized.length }
+    ? { value: materialized, length: materialized.length, cache: { chunk: undefined, text: "" } }
     : undefined;
 };
 
+/**
+ * A frame read joins only the chunks after the stream's last read, so reading every frame costs the new text, not the
+ * whole chain. The cache moves to the longest version read; reading an older version joins its chain and leaves it.
+ */
 function read(chunk: Chunk): string {
+  const { cache } = chunk;
+  if (cache.chunk === chunk) return cache.text;
   const values: string[] = [];
   let cursor: Chunk | undefined = chunk;
-  while (cursor) {
+  while (cursor && cursor !== cache.chunk) {
     values.push(cursor.value);
     cursor = cursor.previous;
   }
-  return values.reverse().join("");
+  const text = (cursor ? cache.text : "") + values.reverse().join("");
+  if (chunk.length >= (cache.chunk?.length ?? 0)) {
+    cache.chunk = chunk;
+    cache.text = text;
+  }
+  return text;
 }
-
-export const hasTextStream = (item: object) => chunks.has(item);
 
 export function appendText<T extends object>(
   item: T,
@@ -39,14 +52,11 @@ export function appendText<T extends object>(
     previous: base,
     value: delta,
     length: (base?.length ?? 0) + delta.length,
+    cache: base?.cache ?? { chunk: undefined, text: "" },
   };
-  let materialized: string | undefined;
   Object.defineProperty(item, field, {
     enumerable: true,
-    get() {
-      materialized ??= read(chunk);
-      return materialized;
-    },
+    get: () => read(chunk),
   });
   chunks.set(item, chunk);
   return item;

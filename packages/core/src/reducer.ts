@@ -1,5 +1,5 @@
-import type { ContentBlock, RunEndOutcome, RunEvent, RunItem, SubAgentEvent } from "./events.js";
-import { appendText, hasTextStream } from "./stream.js";
+import type { RunEndOutcome, RunEvent, RunItem, SubAgentEvent } from "./events.js";
+import { appendText } from "./stream.js";
 import { messageAlias } from "./message-identity.js";
 
 /** Maximum durable notification ids retained for replay dedupe. */
@@ -252,16 +252,6 @@ const reduceUserMessage = (
   if (deliveryId) entities.setMessageAlias(deliveryId, id);
   if (intentId) entities.setMessageAlias(intentId, id);
 };
-const copyBlockWithoutText = (block: ContentBlock) => {
-  const keys = Reflect.ownKeys(block);
-  if (keys.length === 2 && keys.includes("type") && keys.includes("text")) return { type: block.type };
-  const copy = {} as ContentBlock;
-  for (const key of keys) {
-    if (key !== "text" && Object.prototype.propertyIsEnumerable.call(block, key))
-      (copy as unknown as Record<PropertyKey, unknown>)[key] = (block as unknown as Record<PropertyKey, unknown>)[key];
-  }
-  return copy;
-};
 /**
  * A streaming message reads as its content blocks, then its text tail. A block that is not text first moves the tail
  * into the content as a text block, so text, reasoning, and sources keep the order they arrived in. Only the last
@@ -272,11 +262,8 @@ const appendBlock = (prior: MessageItem | undefined, itemId: string, event: Mess
   const content = message.content.slice();
   if (prior?.text) content.push({ type: "text", text: prior.text });
   const last = content.at(-1);
-  const streamed = last ? hasTextStream(last) : false;
-  const lastText = last && !streamed ? last.text : undefined;
   if (event.type === "message_block") content.push(event.block);
-  else if (last && last.type === event.kind && (streamed || typeof lastText === "string") && !prior?.text)
-    content[content.length - 1] = appendText(copyBlockWithoutText(last), last, "text", () => lastText as string, event.delta);
+  else if (last && last.type === event.kind && typeof last.text === "string" && !prior?.text) content[content.length - 1] = { ...last, text: last.text + event.delta };
   else content.push({ type: event.kind!, text: event.delta });
   return { id: itemId, type: "message", message: { ...message, content }, version, active: true };
 };
