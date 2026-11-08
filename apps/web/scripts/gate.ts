@@ -805,6 +805,38 @@ async function externalScrollIntentRow(page: Page, engine: string, kind: Externa
   if (kind === "host-write-after-growth") await hostWriteAfterGrowth(page, engine, row);
 }
 
+// A scroll key typed in the composer edits the draft; it must not turn off a pinned timeline's follow.
+async function checkComposerKeyKeepsFollow(page: Page, engine: string) {
+  const history = fake.historyOf(LONG);
+  try {
+    await withRowPage(page, engine, async (rowPage) => {
+      const row = `${engine} composer-key row`;
+      await rowPage.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
+      await waitNamed(rowPage.locator('[data-run-ready="true"]'), `${row}: the long run was not ready`, 15_000);
+      await waitNamed(rowPage.getByText(/loading session history/), `${row}: history paging did not finish`, 15_000, "detached");
+      await waitNamed(rowPage.locator('[data-virtual-id="message:l999"]'), `${row}: the last history row message:l999 did not mount`, 15_000);
+      await waitAtBottom(rowPage, `${row}: the long run did not load pinned at the bottom`);
+      const composer = rowPage.locator(".dock textarea");
+      await composer.fill("line one\nline two");
+      await composer.focus();
+      for (const key of ["ArrowUp", "PageUp", "Home"]) await rowPage.keyboard.press(key);
+      const text = `composer key ${engine} append`;
+      fake.emit({ event: "user_message", session_id: LONG, text, mode: "send", attachments: [], delivery_id: `composer-key-${engine}` });
+      await waitNamed(rowPage.locator('[data-part="timeline"] [data-kind="user"]', { hasText: text }), `${row}: the appended row did not mount at the bottom`, 5_000);
+      const after = await rowPage.evaluate(() => {
+        const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+        const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+        return { gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop, following: engine?.getSnapshot().pinned ?? null, jump: !!document.querySelector('[data-part="jump-to-latest"]') };
+      });
+      if (after.following !== true || after.jump || after.gap > 1) {
+        throw new Error(`${row}: composer keys changed follow (follow ${after.following}, jump control ${after.jump ? "shown" : "hidden"}, gap ${after.gap.toFixed(3)} px)`);
+      }
+    });
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
+}
+
 // Host writes (as gamma's jump and focus code does), not reader input: after the run grows past the mounted window
 // below an unpinned reader, a host move near or to the new end must mount rows under the viewport. Reaching the end
 // this way does not resume follow (RCA F1), so the jump control stays.
@@ -1235,6 +1267,7 @@ try {
     await check("chromium: scrollIntoView into content keeps the reader position", () => checkExternalScrollIntent(page, "chromium", "scrollIntoView"));
     await check("chromium: Tab focus into content keeps the reader position", () => checkExternalScrollIntent(page, "chromium", "tab-focus"));
     await check("chromium: host writes after growth mount rows under the viewport and keep follow off", () => checkExternalScrollIntent(page, "chromium", "host-write-after-growth"));
+    await check("chromium: scroll keys in the composer keep a pinned timeline following", () => checkComposerKeyKeepsFollow(page, "chromium"));
     await check("chromium: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(page, "chromium"));
     // Here, not with the later WebKit lane check: the mobile checks re-arm the fake's live turn, and a running turn
     // keeps zeta from opening another session. The Chromium page leaves meanwhile, so WebKit gets the one controller.
@@ -1246,6 +1279,7 @@ try {
       await check("webkit: scrollIntoView into content keeps the reader position", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "scrollIntoView"));
       await check("webkit: Tab focus into content keeps the reader position", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "tab-focus"));
       await check("webkit: host writes after growth mount rows under the viewport and keep follow off", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "host-write-after-growth"));
+      await check("webkit: scroll keys in the composer keep a pinned timeline following", () => checkComposerKeyKeepsFollow(reconnectWebkitPage, "webkit"));
       await check("webkit: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(reconnectWebkitPage, "webkit"));
     } finally {
       await reconnectWebkit.close();
