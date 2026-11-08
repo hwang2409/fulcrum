@@ -64,11 +64,19 @@ const rows: Row[] = [
     name: "reconnect with one missed row (following)", setup: tools("a", 20), replay: [...tools("a", 20), ...tool("new")], reader: "following",
     expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new"), search: [...ids("a", 20), "tool:new"], announce: "tool read finished", virtual: { rows: 21, lastMounted: "tool:new", ...following(1_920) }, plain: { rows: [...ids("a", 20), "tool:new"], announce: "tool read finished" } },
   },
-  // The reader keeps its place across the reconnect (one engine per run id), so the row it missed is unseen: the jump
-  // control offers it, as for a row that streams in while the reader reads.
+  // Backlog rule (review of #100, m4): rows after the last surviving id are unseen when the reader is not pinned, the
+  // same rows the announcer calls new. The reader keeps its place across the reconnect (one engine per run id).
   {
     name: "reconnect with one missed row (reading older rows)", setup: tools("a", 20), replay: [...tools("a", 20), ...tool("new")], reader: "reading",
     expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new"), search: [...ids("a", 20), "tool:new"], announce: "tool read finished", virtual: { rows: 21, lastMounted: "tool:a16", scrollTop: 800, fromBottom: 1_120, unseen: 1 }, plain: { rows: [...ids("a", 20), "tool:new"], announce: "tool read finished" } },
+  },
+  {
+    name: "reconnect with two missed rows (reading older rows)", setup: tools("a", 20), replay: [...tools("a", 20), ...tool("new"), ...tool("x")], reader: "reading",
+    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new", "tool:x"), search: [...ids("a", 20), "tool:new", "tool:x"], announce: "2 new items", virtual: { rows: 22, lastMounted: "tool:a16", scrollTop: 800, fromBottom: 1_240, unseen: 2 }, plain: { rows: [...ids("a", 20), "tool:new", "tool:x"], announce: "2 new items" } },
+  },
+  {
+    name: "reconnect with two missed rows (following)", setup: tools("a", 20), replay: [...tools("a", 20), ...tool("new"), ...tool("x")], reader: "following",
+    expected: { store: { notes: 1, change: "null" }, keyed: keyedFor("tool:a0", "tool:a19", "tool:new", "tool:x"), search: [...ids("a", 20), "tool:new", "tool:x"], announce: "2 new items", virtual: { rows: 22, lastMounted: "tool:x", ...following(2_040) }, plain: { rows: [...ids("a", 20), "tool:new", "tool:x"], announce: "2 new items" } },
   },
   {
     name: "same ids, pending change", setup: tools("a", 20), pending: tool("x"), replay: [...tools("a", 20), ...tool("x")], reader: "following",
@@ -174,6 +182,9 @@ test.each(rows)("resync reaches every outline consumer whole: $name", async ({ s
   };
   search.dispose();
   expect(observed).toEqual(expected);
+  // The jump control and the announcer name the same new rows for a reader who is not pinned.
+  const announced = observed.announce === "" ? 0 : Number(/^(\d+) new items$/.exec(observed.announce)?.[1] ?? 1);
+  if (reader === "reading") expect(observed.virtual.unseen, "unseen rows match the announcer's new rows").toBe(announced);
 });
 
 // notify delivers a snapshot: a resync called from inside a store listener reaches every consumer on the next pass.
