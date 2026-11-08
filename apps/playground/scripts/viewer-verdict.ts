@@ -36,6 +36,7 @@ export const pairedCalibratedBudgets = withMargin({ 390: { openMs: 0.79, appendM
 const unthrottledCalibratedBudgets = withMargin({ 390: { openMs: 1.04, appendMs: 0.73 }, 1440: { openMs: 0.91, appendMs: 0.73 } });
 
 export const ratio = (candidate: number, baseline: number) => candidate / Math.max(baseline, 0.001);
+export const median = (values: number[]) => [...values].sort((left, right) => left - right)[values.length >> 1]!;
 
 function recordCalibratedFailure(failures: string[], name: string, candidate: number, calibration: Calibration, budget: number) {
   const normalized = ratio(candidate, calibration.median);
@@ -53,4 +54,31 @@ export function recordViewerTimingFailures(check: ViewerCheck, width: number, fa
     if (paired[field] > viewerRatioBudget) failures.push(`viewer read @ ${width}: ${name} ratio ${paired[field].toFixed(2)}x is over ${viewerRatioBudget}x paired base/head`);
   for (const field of ["openMs", "appendMs"] as const)
     recordCalibratedFailure(failures, `viewer read @ ${width} ${field === "openMs" ? "open" : "append"} (4x throttle)`, check.candidate[field], check.calibration, pairedCalibratedBudgets[width]![field]);
+}
+
+// One side of an append scaling pair: the median of several appends to the same open viewer, 4x throttled.
+export type ScalingSide = { appendTaskMs: number; appendPushes: number; segmentPushes: number };
+// The same append measured at 16k and at 128k lines, back to back.
+export type ScalingPair = { small: ScalingSide; large: ScalingSide };
+export type ScalingCheck = { pairs: ScalingPair[]; mountedRows: number };
+
+// Append scaling owns O(n)-per-append viewer work (layout.ts contract (c)). Correct virtualized work is O(visible), so
+// the 128k/16k append task ratio stays near 1x; each pair's ratio cancels the runner drift that two medians taken
+// apart do not. Budget: TODO from paired no-op samples.
+export const viewerScalingTaskBudget = 2.27;
+// Canaries: Array.push and pushed `text-*` segments per append. Rebuilding segments or visiting every row raises them.
+const segmentPushBudget = 1.4;
+const pushBudget = 1.8;
+const mountedRowsBudget = 200;
+
+export function recordViewerScalingFailures({ pairs, mountedRows }: ScalingCheck, failures: string[]) {
+  const pairRatios = (field: (side: ScalingSide) => number) => pairs.map(({ small, large }) => ratio(field(large), field(small)));
+  const taskRatios = pairRatios((side) => side.appendTaskMs);
+  const summary = { taskRatio: median(taskRatios), taskRatios, segmentPushRatio: median(pairRatios((side) => side.segmentPushes + 1)), pushRatio: median(pairRatios((side) => side.appendPushes)) };
+  const name = "viewer append scaling";
+  if (summary.taskRatio > viewerScalingTaskBudget) failures.push(`${name}: median paired 128k/16k task ratio ${summary.taskRatio.toFixed(3)}x is over ${viewerScalingTaskBudget.toFixed(3)}x (pairs ${taskRatios.map((value) => value.toFixed(3)).join(", ")})`);
+  if (summary.segmentPushRatio > segmentPushBudget) failures.push(`${name}: canary 128k/16k segment-push ratio ${summary.segmentPushRatio.toFixed(3)}x is over ${segmentPushBudget.toFixed(3)}x`);
+  if (summary.pushRatio > pushBudget) failures.push(`${name}: canary 128k/16k all-push ratio ${summary.pushRatio.toFixed(3)}x is over ${pushBudget.toFixed(3)}x`);
+  if (mountedRows > mountedRowsBudget) failures.push(`${name}: 1m mounted rows ${mountedRows} is over ${mountedRowsBudget}`);
+  return summary;
 }
