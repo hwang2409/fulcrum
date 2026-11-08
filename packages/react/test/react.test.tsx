@@ -298,6 +298,24 @@ test("only the newest row streams the cursor: text that a tool row follows stops
   expect(latest()).toEqual(["message:n"]);
 });
 
+test("a notification or an unknown event that lands mid-stream never takes the cursor from the streaming message", () => {
+  const { store, send: more } = setup([{ type: "message_delta", message_id: "m", delta: "Reading the files now" }]);
+  const commits: Record<string, number> = {};
+  const renderers: Renderers = { message: ({ id }) => <Profiler id={id} onRender={() => (commits[id] = (commits[id] ?? 0) + 1)}><Message id={id} /></Profiler> };
+  mount(<RunProvider store={store}><Timeline virtual={false} renderers={renderers} /></RunProvider>);
+  const before = commits["message:m"];
+  more({ type: "notification", notification_id: "bg-1", data: { message: "background task finished" } });
+  more({ type: "unknown", name: "some_future_event", data: {} });
+  expect(latest()).toEqual(["message:m"]);
+  // Neither passive row is the newest streamable row, so the message is not even told about them.
+  expect(commits["message:m"]).toBe(before);
+  more({ type: "message_delta", message_id: "m", delta: " and summarising" });
+  expect(latest()).toEqual(["message:m"]);
+  // The next thing the agent does (a tool) still takes it.
+  more({ type: "tool_start", tool_call: call("ls", "shell") });
+  expect(latest()).toEqual([]);
+});
+
 test("a streaming message outside a Timeline is the newest row", () => {
   const { store } = setup([{ type: "message_delta", message_id: "m", delta: "hello" }]);
   mount(<RunProvider store={store}><Message id="message:m" /></RunProvider>);

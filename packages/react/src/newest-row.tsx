@@ -1,11 +1,20 @@
 import { createContext, useCallback, useContext, useLayoutEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 
 /**
- * The id of a Timeline's newest row (the last outline item), read per id: when it changes, only the row that loses it
+ * The id of a Timeline's newest row (the last outline item that can follow text in a turn), read per id: when it changes, only the row that loses it
  * and the row that gains it are told, never every row. The streaming cursor shows only on the newest row, so text that
  * a later row (a running tool) follows stops blinking, in plain and virtual mode and with a row kept mounted for focus.
  */
 type NewestRow = { subscribe(id: string, listener: () => void): () => void; is(id: string): boolean };
+
+// Rows that report on the run instead of continuing the turn: a message above one still streams, so it keeps the cursor.
+const PASSIVE_KINDS = new Set(["notification", "unknown"]);
+
+/** The id of the last row a reader sees the agent act in: passive rows (a background notification) are skipped. */
+export function newestStreamableRow(items: readonly { id: string; kind?: string }[]): string | undefined {
+  for (let index = items.length - 1; index >= 0; index--) if (!PASSIVE_KINDS.has(items[index]!.kind ?? "")) return items[index]!.id;
+  return undefined;
+}
 
 const NewestRowContext = createContext<NewestRow | null>(null);
 

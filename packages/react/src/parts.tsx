@@ -12,7 +12,7 @@ import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
 import { Message, ToolResultBlocks } from "./content.js";
 import { UserMessageContent } from "./user-message.js";
-import { NewestRowProvider } from "./newest-row.js";
+import { NewestRowProvider, newestStreamableRow } from "./newest-row.js";
 
 declare global { var __FULCRUM_DEV__: boolean | undefined; }
 
@@ -686,7 +686,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
     return () => container.removeEventListener("scroll", capture);
   }, [activeScrollRef, enabled, items]);
   // The newest row comes from the outline, not the DOM: a virtual timeline also mounts a row kept for focus after it.
-  const newest = items.at(-1)?.id;
+  const newest = newestStreamableRow(items);
   if (!enabled) {
     return (
       <NewestRowProvider id={newest}><TimelineLayout unseenCount={0} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} ownedScrollRef={ownedScrollRef} hostOwned={scrollRef !== undefined} virtual={false}>
