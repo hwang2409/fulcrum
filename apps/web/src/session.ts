@@ -477,9 +477,20 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   // The last served turn id seen per session. A client that connected mid-turn never saw that turn's turn_start, so a
   // repeat overflow keeps the id an earlier client saw.
   const servedTurns = new Map<string, string>();
-  const endOutcome = (id: string): EndOutcome => (rows, status) => {
+  // An interrupted turn stays "outcome unknown" until the session serves a later turn: the newest served turn id (an idle
+  // status' last_turn_outcome, else this client's last turn_start) names one when it is not the interrupted turn. Every
+  // snapshot passes here, so a run that started and ended while a reopen replayed clears the marker like a live one.
+  const servedTurn = (id: string, turn: string | undefined) => {
     const interrupted = interruptedTurns.get(id);
-    const statusOutcome = status.session?.session_id === id && status.state === "idle" ? statusTurnOutcome(status.last_turn_outcome, interrupted?.turn) : undefined;
+    if (!interrupted || turn === undefined || turn === interrupted.turn) return;
+    interruptedTurns.delete(id);
+    servedTurns.set(id, turn);
+  };
+  const endOutcome = (id: string): EndOutcome => (rows, status) => {
+    const ownIdle = status.session?.session_id === id && status.state === "idle";
+    servedTurn(id, (ownIdle && statusTurnOutcome(status.last_turn_outcome) ? status.last_turn_outcome!.turn_id : undefined) ?? client?.servedTurn(id));
+    const interrupted = interruptedTurns.get(id);
+    const statusOutcome = ownIdle ? statusTurnOutcome(status.last_turn_outcome, interrupted?.turn) : undefined;
     if (statusOutcome) return statusOutcome;
     if (!interrupted) {
       const turn = servedTurns.get(id);
@@ -535,6 +546,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const watchOutcome = (id: string, lease: OpenResult["lease"]) => {
     if (!interruptedTurns.has(id)) return;
     const started = () => {
+      if (!interruptedTurns.has(id)) return true; // a snapshot already saw the later turn
       if (lease.store.getState().agent === "idle") return false;
       interruptedTurns.delete(id);
       lease.store.dispatch({ type: "run_start" });
