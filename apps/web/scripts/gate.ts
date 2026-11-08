@@ -722,7 +722,9 @@ const waitNamed = (locator: Locator, failure: string, timeout: number, state: "a
   locator.waitFor({ state, timeout }).catch(() => { throw new Error(`${failure} within ${timeout / 1000} s`); });
 
 // Restores LONG's history (the row appends to it) even when the row fails; the row runs in its own context.
-async function checkExternalScrollIntent(page: Page, engine: string, kind: "scrollIntoView" | "tab-focus") {
+type ExternalScrollKind = "scrollIntoView" | "tab-focus" | "host-write-after-growth";
+
+async function checkExternalScrollIntent(page: Page, engine: string, kind: ExternalScrollKind) {
   const history = fake.historyOf(LONG);
   try {
     await withRowPage(page, engine, (rowPage) => externalScrollIntentRow(rowPage, engine, kind));
@@ -731,7 +733,7 @@ async function checkExternalScrollIntent(page: Page, engine: string, kind: "scro
   }
 }
 
-async function externalScrollIntentRow(page: Page, engine: string, kind: "scrollIntoView" | "tab-focus") {
+async function externalScrollIntentRow(page: Page, engine: string, kind: ExternalScrollKind) {
   const row = `${engine} ${kind} row`;
   await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
   await waitNamed(page.locator('[data-run-ready="true"]'), `${row}: the long run was not ready`, 15_000);
@@ -760,7 +762,7 @@ async function externalScrollIntentRow(page: Page, engine: string, kind: "scroll
     return { gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop, viewport: scroll.clientHeight, following: engine?.getSnapshot().pinned ?? null };
   });
   let moved;
-  if (kind === "scrollIntoView") {
+  if (kind !== "tab-focus") {
     moved = await target.evaluate((element) => {
       element.scrollIntoView({ block: "center" });
       const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
@@ -800,6 +802,41 @@ async function externalScrollIntentRow(page: Page, engine: string, kind: "scroll
     throw new Error(`${engine} ${kind}: no-snap check failed (moved gap ${moved.gap.toFixed(3)} px, after gap ${after.gap.toFixed(3)} px, follow ${after.following}, jump control ${signal ? "missing" : "shown"})`);
   }
   if (signal) throw signal;
+  if (kind === "host-write-after-growth") await hostWriteAfterGrowth(page, engine, row);
+}
+
+// Host writes (as gamma's jump and focus code does), not reader input: after the run grows past the mounted window
+// below an unpinned reader, a host move near or to the new end must mount rows under the viewport. Reaching the end
+// this way does not resume follow (RCA F1), so the jump control stays.
+async function hostWriteAfterGrowth(page: Page, engine: string, row: string) {
+  const appends = 80;
+  for (let index = 0; index < appends; index++) {
+    fake.emit({ event: "user_message", session_id: LONG, text: `host write growth ${engine} ${index}`, mode: "send", attachments: [], delivery_id: `host-write-${engine}-${index}` });
+  }
+  await waitNamed(page.locator(`[data-part="jump-to-latest"][data-unseen-count="${appends + 1}"]`), `${row}: jump control with unseen=${appends + 1} did not appear after the growth`, 10_000);
+  for (const [label, offset] of [["host write 10 px above the end", 10], ["host write to scrollHeight (F1)", null]] as const) {
+    const result = await page.evaluate(async (offset) => {
+      const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+      scroll.scrollTop = offset === null ? scroll.scrollHeight : scroll.scrollHeight - scroll.clientHeight - offset;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const box = scroll.getBoundingClientRect();
+      const covering = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")].filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.height > 0 && rect.bottom > box.top + 1 && rect.top < box.bottom - 1 && getComputedStyle(element).opacity !== "0";
+      });
+      const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+      return {
+        rows: covering.length,
+        gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop,
+        following: engine?.getSnapshot().pinned ?? null,
+        unseen: document.querySelector<HTMLElement>('[data-part="jump-to-latest"]')?.dataset.unseenCount ?? null,
+      };
+    }, offset);
+    if (result.rows === 0) throw new Error(`${row}: ${label} left the viewport blank (gap ${result.gap.toFixed(3)} px, follow ${result.following})`);
+    if (result.following !== false || result.unseen !== String(appends + 1)) {
+      throw new Error(`${row}: ${label} changed follow intent (follow ${result.following}, jump control unseen ${result.unseen}, expected ${appends + 1})`);
+    }
+  }
 }
 
 async function reconnectAnchorScenario(page: Page, engine: string) {
@@ -1197,6 +1234,7 @@ try {
     await check("chromium: reconnect keeps a pinned 1,000-row run at the DOM end 5/5", () => checkReconnectBottom(page, "chromium"));
     await check("chromium: scrollIntoView into content keeps the reader position", () => checkExternalScrollIntent(page, "chromium", "scrollIntoView"));
     await check("chromium: Tab focus into content keeps the reader position", () => checkExternalScrollIntent(page, "chromium", "tab-focus"));
+    await check("chromium: host writes after growth mount rows under the viewport and keep follow off", () => checkExternalScrollIntent(page, "chromium", "host-write-after-growth"));
     await check("chromium: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(page, "chromium"));
     // Here, not with the later WebKit lane check: the mobile checks re-arm the fake's live turn, and a running turn
     // keeps zeta from opening another session. The Chromium page leaves meanwhile, so WebKit gets the one controller.
@@ -1207,6 +1245,7 @@ try {
       await check("webkit: reconnect keeps a pinned 1,000-row run at the DOM end 5/5", () => checkReconnectBottom(reconnectWebkitPage, "webkit"));
       await check("webkit: scrollIntoView into content keeps the reader position", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "scrollIntoView"));
       await check("webkit: Tab focus into content keeps the reader position", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "tab-focus"));
+      await check("webkit: host writes after growth mount rows under the viewport and keep follow off", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "host-write-after-growth"));
       await check("webkit: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(reconnectWebkitPage, "webkit"));
     } finally {
       await reconnectWebkit.close();
