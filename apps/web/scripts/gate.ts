@@ -712,56 +712,68 @@ async function checkReconnectBottom(page: Page, engine: string) {
 }
 
 async function checkExternalScrollIntent(page: Page, engine: string, kind: "scrollIntoView" | "tab-focus") {
-  await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
-  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
-  await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
-  await waitAtBottom(page, `${engine} ${kind}: the long run did not load pinned at the bottom`);
-  const targetId = await page.evaluate(() => {
-    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
-    if (!scroll) throw new Error("timeline scroll host is missing");
-    const top = scroll.getBoundingClientRect().top;
-    const target = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")]
-      .find((row) => row.getBoundingClientRect().bottom < top - 1);
-    if (!target?.dataset.virtualId) throw new Error("no mounted overscan row above the viewport");
-    return target.dataset.virtualId;
-  });
-  const target = page.locator(`[data-virtual-id="${targetId}"]`);
-  const before = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollTop);
-  if (kind === "scrollIntoView") {
-    await target.evaluate((element) => element.scrollIntoView({ block: "center" }));
-  } else {
-    await page.evaluate((id) => {
-      const target = document.querySelector<HTMLElement>(`[data-virtual-id="${id}"]`)!;
-      target.tabIndex = 2;
-      const sentinel = document.createElement("button");
-      sentinel.dataset.gateFocusSentinel = "true";
-      sentinel.tabIndex = 1;
-      sentinel.style.position = "fixed";
-      sentinel.style.inset = "0 auto auto 0";
-      sentinel.textContent = "focus start";
-      document.body.prepend(sentinel);
-      sentinel.focus();
-    }, targetId);
-    await page.keyboard.press("Tab");
-    if (!await target.evaluate((element) => document.activeElement === element)) {
-      throw new Error(`${engine} tab-focus: Tab did not focus ${targetId}`);
+  const history = fake.historyOf(LONG);
+  try {
+    await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+    await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+    await page.getByText(/loading session history/).waitFor({ state: "detached", timeout: 15_000 });
+    await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
+    await waitAtBottom(page, `${engine} ${kind}: the long run did not load pinned at the bottom`);
+    const targetId = await page.evaluate(() => {
+      const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+      if (!scroll) throw new Error("timeline scroll host is missing");
+      const scrollBox = scroll.getBoundingClientRect();
+      const targets = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")]
+        .filter((row) => row.getBoundingClientRect().bottom < scrollBox.top - 1);
+      const target = targets[0];
+      if (!target?.dataset.virtualId) throw new Error("no mounted overscan row above the viewport");
+      const targetEnd = target.getBoundingClientRect().bottom - scrollBox.top + scroll.scrollTop;
+      const distanceFromEnd = scroll.scrollHeight - targetEnd;
+      if (distanceFromEnd <= 2 * scroll.clientHeight) {
+        throw new Error(`mounted target is only ${distanceFromEnd.toFixed(1)} px from the DOM end; need more than two ${scroll.clientHeight.toFixed(1)} px viewports`);
+      }
+      return target.dataset.virtualId;
+    });
+    const scroll = page.locator('[data-part="timeline-scroll"]');
+    const target = page.locator(`[data-virtual-id="${targetId}"]`);
+    const beforeGap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+    if (kind === "scrollIntoView") {
+      await target.evaluate((element) => element.scrollIntoView({ block: "center" }));
+    } else {
+      await page.evaluate((id) => {
+        const target = document.querySelector<HTMLElement>(`[data-virtual-id="${id}"]`)!;
+        target.tabIndex = 2;
+        const sentinel = document.createElement("button");
+        sentinel.dataset.gateFocusSentinel = "true";
+        sentinel.tabIndex = 1;
+        sentinel.style.position = "fixed";
+        sentinel.style.inset = "auto 0 0 auto";
+        sentinel.textContent = "focus start";
+        document.body.append(sentinel);
+        sentinel.focus();
+      }, targetId);
+      await page.keyboard.press("Tab");
+      if (!await target.evaluate((element) => document.activeElement === element)) {
+        throw new Error(`${engine} tab-focus: Tab did not focus ${targetId}`);
+      }
     }
+    await page.waitForFunction(({ beforeGap }) => {
+      const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+      return scroll !== null && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > beforeGap + 1;
+    }, { beforeGap }, { timeout: 5_000 });
+    await settle(page);
+    const readerGap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+    fake.emit({ event: "user_message", session_id: LONG, text: `${kind} ${engine} append`, mode: "send", attachments: [], delivery_id: `${kind}-${engine}-append` });
+    await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
+    await settle(page);
+    const afterGap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+    if (afterGap < readerGap - 1) {
+      throw new Error(`${engine} ${kind}: reader gap shrank from ${readerGap.toFixed(3)} to ${afterGap.toFixed(3)} px after append`);
+    }
+    if (afterGap <= 0.5) throw new Error(`${engine} ${kind}: reader snapped back to the bottom`);
+  } finally {
+    fake.restoreHistory(LONG, history);
   }
-  await page.waitForFunction(({ before }) => {
-    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
-    return scroll !== null && scroll.scrollTop < before - 1;
-  }, { before }, { timeout: 5_000 });
-  await settle(page);
-  const readerTop = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollTop);
-  fake.emit({ event: "user_message", session_id: LONG, text: `${kind} ${engine} append`, mode: "send", attachments: [], delivery_id: `${kind}-${engine}-append` });
-  await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
-  await settle(page);
-  const after = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => ({
-    top: element.scrollTop,
-    gap: element.scrollHeight - element.clientHeight - element.scrollTop,
-  }));
-  if (Math.abs(after.top - readerTop) > 1) throw new Error(`${engine} ${kind}: reader moved ${(after.top - readerTop).toFixed(3)} px after append`);
-  if (after.gap <= 0.5) throw new Error(`${engine} ${kind}: reader snapped back to the bottom`);
 }
 
 async function reconnectAnchorScenario(page: Page, engine: string) {
