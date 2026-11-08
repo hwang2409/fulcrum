@@ -16,6 +16,16 @@ if (result.prepend.rows !== 110_000 || result.outlineSize !== 110_000) {
   console.error("prepend result correctness failed");
   process.exit(1);
 }
+for (const queued of result.queuedPrepends) {
+  if (queued.rows !== queued.largePageCount) {
+    console.error(`${queued.name} result correctness failed`);
+    process.exit(1);
+  }
+  if (queued.ratio > queued.maximumScalingRatio) {
+    console.error(`${queued.name} scaling failed: 10x pages took ${queued.ratio.toFixed(3)}x (limit ${queued.maximumScalingRatio.toFixed(1)}x)`);
+    process.exit(1);
+  }
+}
 for (const stream of result.streams) {
   if (stream.callbackCount !== 1 || stream.receiptSize !== 0) {
     console.error(`${stream.name} result correctness failed`);

@@ -14,8 +14,20 @@ export type StreamResult = {
   receiptSize: number;
 };
 
+export type PrependScalingResult = {
+  name: string;
+  smallPageCount: number;
+  largePageCount: number;
+  maximumScalingRatio: number;
+  small: number;
+  large: number;
+  ratio: number;
+  rows: number;
+};
+
 export type WorkloadResult = {
   streams: StreamResult[];
+  queuedPrepends: PrependScalingResult[];
   timedCpu: number;
   prepend: { elapsed: number; rows: number };
   outlineSize: number;
@@ -28,6 +40,12 @@ const streamCases = [
   // 3-event samples: local [1.175, 1.176, 1.358], check CI max 1.479,
   // paired CI max 1.279. max(4, 1.5 * 1.479) = 4.
   { name: "3-event flush", flushEvery: 3, smallSeedCount: 500, largeSeedCount: 5_000, maximumScalingRatio: 4 },
+] as const;
+const prependCases = [
+  // Times only the prepend calls; the old queue copied every queued row on each call.
+  // Linear samples: local [5.80, 9.19, 9.06, 9.33, 7.77, 9.33, 8.56, 9.32].
+  // Quadratic main store samples: local min 58.3 (8 runs). max(4, 1.5 * 9.33) = 14.
+  { name: "queued one-row prepend pages", smallPageCount: 2_000, largePageCount: 20_000, maximumScalingRatio: 14 },
 ] as const;
 const runs = 5;
 let burnSink = 0;
@@ -88,6 +106,41 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
     };
   });
 
+  const runPrepend = (pageCount: number) => {
+    const pages = Array.from({ length: pageCount }, (_, page) => [{ type: "message_commit" as const, message_id: `queued-${page}`, message: { role: "assistant", content: [{ type: "text", text: "old" }] } }]);
+    const store = createRunStore(() => {});
+    store.beginHistory();
+    const start = process.cpuUsage();
+    for (const page of pages) store.prepend(page);
+    const usage = process.cpuUsage(start);
+    const rows = store.getOutline().length;
+    if (rows !== pageCount) throw new Error("invalid queued prepend result");
+    store.dispose();
+    return { elapsed: (usage.user + usage.system) / 1_000, rows };
+  };
+  const queuedPrepends = prependCases.map(({ name, smallPageCount, largePageCount, maximumScalingRatio }) => {
+    runPrepend(smallPageCount);
+    runPrepend(largePageCount);
+    const measurements = Array.from({ length: runs }, () => {
+      const small = runPrepend(smallPageCount);
+      if (typeof Bun.gc === "function") Bun.gc(true);
+      const large = runPrepend(largePageCount);
+      if (typeof Bun.gc === "function") Bun.gc(true);
+      return { small, large };
+    });
+    timedCpu += measurements.reduce((total, { small, large }) => total + small.elapsed + large.elapsed, 0);
+    return {
+      name,
+      smallPageCount,
+      largePageCount,
+      maximumScalingRatio,
+      small: median(measurements.map(({ small }) => small.elapsed)),
+      large: median(measurements.map(({ large }) => large.elapsed)),
+      ratio: median(measurements.map(({ small, large }) => large.elapsed / Math.max(small.elapsed, 0.001))),
+      rows: measurements.at(-1)!.large.rows,
+    };
+  });
+
   const prependStore = createRunStore(() => {});
   prependStore.beginHistory();
   for (let i = 0; i < 100_000; i++) prependStore.dispatch({ type: "message_commit", message_id: `current-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
@@ -96,5 +149,5 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
   for (let page = 0; page < 50; page++) prependStore.prepend(Array.from({ length: 200 }, (_, row) => ({ type: "message_commit" as const, message_id: `older-${page}-${row}`, message: { role: "assistant", content: [{ type: "text", text: "old" }] } })));
   const prependUsage = process.cpuUsage(prependStart);
   const prepend = { elapsed: (prependUsage.user + prependUsage.system) / 1_000, rows: prependStore.getOutline().length };
-  return { streams, timedCpu, prepend, outlineSize: prepend.rows };
+  return { streams, queuedPrepends, timedCpu, prepend, outlineSize: prepend.rows };
 }

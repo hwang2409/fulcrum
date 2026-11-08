@@ -49,7 +49,7 @@ jobs:
       - name: counted-work gate
         if: ${{ github.event_name == 'pull_request' && inputs.inject == '' }}
         run: bun run --cwd apps/playground stress
-      - name: calibrated core a/b gate
+      - name: calibrated core a/b report
         env:
           BENCH_BASE_ROOT: ${{ github.workspace }}/../fulcrum-stress-base
           BENCH_CANDIDATE_ROOT: ${{ github.workspace }}
