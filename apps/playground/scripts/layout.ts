@@ -31,7 +31,7 @@ import { checkUx } from "./ux-check.js";
 import { checkSubAgents } from "./subagent-check.js";
 import { checkWarmBodies } from "./warm-check.js";
 import { checkLineTokens } from "./token-check.js";
-import { ratio, recordViewerTimingFailures, viewerCeilingMs, type ViewerCheck, type ViewerSample, type ViewerTiming } from "./viewer-verdict.js";
+import { ratio, recordCalibratedFailure, recordViewerTimingFailures, unthrottledCalibratedBudgets, viewerRatioBudget, type Calibration, type ViewerCheck, type ViewerSample, type ViewerTiming } from "./viewer-verdict.js";
 
 const widths = [390, 768, 1024, 1440];
 const touchWidth = 860; // the gallery's touch breakpoint
@@ -231,12 +231,10 @@ async function checkControls(page: Page): Promise<string[]> {
   return problems;
 }
 
-type Calibration = { median: number; samples: number[] };
 type ViewerMeasurement = ViewerTiming & { fixture: string; width: number; calibration: Calibration; bottomGap: number; appendGap: number; middleMoved: boolean; outerMiddleDelta: number; outerBoundaryDelta: number; longTasks: number[]; tokens: number; scroll: { median: number; p95: number; over33: number } };
 type ViewerPair = { base: ViewerSample; candidate: ViewerSample };
 
 const viewerSamples = 5;
-const viewerRatioBudget = 1.4;
 const viewerScalingBudget = 1.4;
 const viewerScalingTotalBudget = 1.8;
 const viewerScalingTaskBudget = 2.27;
@@ -246,7 +244,6 @@ const ratios = (pairs: ViewerPair[], field: keyof ViewerSample) => pairs.map((pa
 // Five alternating base/head pairs use their median ratio, not a ratio of independent medians. The 1.4x A/B ceiling
 // leaves the required margin over observed A/A noise. Scaling compares the same append at 16k and 128k lines; correct
 // virtualized work stays O(visible). A local run without a base keeps the independent fixed-DOM calibration fallback.
-const viewerTimingFails = (candidate: number, baseline: number, budget = viewerRatioBudget) => ratio(candidate, baseline) > budget || candidate >= viewerCeilingMs;
 
 async function measureViewer(page: Page, width: number, fixture: "single" | "lines" | "read"): Promise<ViewerMeasurement> {
   const openSamples: number[] = [];
@@ -444,12 +441,13 @@ async function measureCalibrationSet(page: Page, measure = measureThrottledCalib
   return { median: median(samples), samples };
 }
 
-async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.launch>>, width: number): Promise<ViewerCheck & { calibration: Calibration }> {
+async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.launch>>, width: number): Promise<ViewerCheck> {
   const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
   const slowdown = Number(process.env.TIMING_GATE_SLOWDOWN_MS ?? 0);
   try {
     if (!baseUrl) {
       await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read`);
+      await prepareViewerOpen(page);
       const calibration = await measureCalibrationSet(page);
       const candidate = await measureViewerTiming(page, candidateUrl, slowdown);
       console.log(`viewer calibration @ ${width}: ${calibration.median.toFixed(1)} ms [${calibration.samples.map((value) => value.toFixed(1)).join(", ")}], open/calibration ${ratio(candidate.openMs, calibration.median).toFixed(2)}x, append/calibration ${ratio(candidate.appendMs, calibration.median).toFixed(2)}x`);
@@ -548,7 +546,7 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const failures: string[] = [];
 try {
   const pairedProof = [ratio(6, 4), ratio(12, 8), ratio(18, 12), ratio(24, 16), ratio(30, 20)];
-  if (median(pairedProof) <= viewerRatioBudget || median([1.1, 1.15, 1.2, 1.25, 1.3]) > viewerRatioBudget || !viewerTimingFails(7, 4) || viewerTimingFails(5, 4) || ratio(23, 10) <= viewerScalingTaskBudget || ratio(22, 10) > viewerScalingTaskBudget)
+  if (median(pairedProof) <= viewerRatioBudget || median([1.1, 1.15, 1.2, 1.25, 1.3]) > viewerRatioBudget || ratio(23, 10) <= viewerScalingTaskBudget || ratio(22, 10) > viewerScalingTaskBudget)
     throw new Error("viewer timing regression sensitivity self-check failed");
   console.log("ok   viewer timing sensitivity: paired ratios reject a 1.5x regression without rejecting A/A noise");
   const servers = [[candidateUrl, preview], ...(baseUrl && basePreview ? [[baseUrl, basePreview] as const] : [])] as const;
@@ -728,8 +726,8 @@ try {
       console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms [${measured.openSamples.map((value) => value.toFixed(1)).join(", ")}], append ${measured.appendMs.toFixed(1)} ms [${measured.appendSamples.map((value) => value.toFixed(1)).join(", ")}], calibration ${measured.calibration.median.toFixed(1)} ms [${measured.calibration.samples.map((value) => value.toFixed(1)).join(", ")}], normalized ${ratio(measured.openMs, measured.calibration.median).toFixed(2)}x/${ratio(measured.appendMs, measured.calibration.median).toFixed(2)}x, gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px, long tasks [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}], ${measured.tokens} token spans, 4x-throttled scroll frames median ${measured.scroll.median.toFixed(1)} ms / p95 ${measured.scroll.p95.toFixed(1)} ms / ${measured.scroll.over33} over 33 ms`);
       if (fixture === "read" && measured.longTasks.length) failures.push(`viewer read @ ${width}: long tasks while opening and highlighting [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}] ms`);
       if (fixture === "read" && !measured.tokens) failures.push(`viewer read @ ${width}: the mounted rows of a .ts file were not highlighted`);
-      if (measured.openMs >= viewerCeilingMs) failures.push(`viewer ${fixture} @ ${width}: pathological median open took ${measured.openMs.toFixed(1)} ms (${viewerCeilingMs} ms ceiling)`);
-      if (measured.appendMs >= viewerCeilingMs) failures.push(`viewer ${fixture} @ ${width}: pathological median append took ${measured.appendMs.toFixed(1)} ms (${viewerCeilingMs} ms ceiling)`);
+      for (const field of ["openMs", "appendMs"] as const)
+        recordCalibratedFailure(failures, `viewer ${fixture} @ ${width} ${field === "openMs" ? "open" : "append"}`, measured[field], measured.calibration, unthrottledCalibratedBudgets[width]![field]);
       if (Math.abs(measured.bottomGap) > 1) failures.push(`viewer ${fixture} @ ${width}: initial ${fixture === "read" ? "top" : "bottom"} gap ${measured.bottomGap.toFixed(1)} px, needs <=1 px`);
       if (Math.abs(measured.appendGap) > 1 && fixture !== "read") failures.push(`viewer ${fixture} @ ${width}: append bottom gap ${measured.appendGap.toFixed(1)} px, needs <=1 px`);
       if (!measured.middleMoved || measured.outerMiddleDelta !== 0) failures.push(`viewer ${fixture} @ ${width}: middle wheel did not stay inside viewer`);
