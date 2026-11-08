@@ -6,7 +6,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      matrix: { shard: [1, 2, 3, 4, 5, 6, 7, 8] }
+      matrix: { shard: [1, 2, 3, 4, 5, 6], idle: ['', '1'] }
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -16,4 +16,4 @@ jobs:
       - run: bun run --cwd apps/playground build
       - run: lscpu | grep -E "Model name|^CPU\(s\)"
       - run: bun run --cwd apps/playground layout
-        env: { SCALING_ONLY: "1" }
+        env: { SCALING_ONLY: "1", SCALING_IDLE: "${{ matrix.idle }}" }
