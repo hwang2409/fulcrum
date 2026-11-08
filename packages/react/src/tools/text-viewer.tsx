@@ -272,11 +272,11 @@ export const Styled = memo(function Styled({ text, start = 0, end = text.length,
 const counts = new Intl.NumberFormat("en-US");
 const count = (value: number) => counts.format(value);
 
-type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean; seed?: Token[] | null; caption?: string; focus?: boolean };
+type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean; seed?: Token[] | null; caption?: string; focus?: boolean; live?: boolean };
 type Place = "top" | "middle" | "bottom";
 const placeWords: Record<Place, string> = { top: "at top", middle: "scrolled", bottom: "at bottom" };
 
-function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy, seed, caption, focus }: ViewerProps) {
+function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy, seed, caption, focus, live }: ViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(follow);
   const lastTop = useRef(0);
@@ -340,6 +340,8 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
         {caption ? <span data-part="text-viewer-language">{caption}</span> : null}
         {/* Narrow heads drop the character count and the buttons' verbs (styles.css): the head stays one row. */}
         <span data-part="text-viewer-count">{count(metrics.lines)} {metrics.lines === 1 ? "line" : "lines"}<span data-part="text-viewer-wide"> · {count(metrics.characters)} characters</span></span>
+        {/* A streaming fence has no cursor in its lazily mounted rows: the head says it streams, as a running tool does. */}
+        {live ? <span data-part="text-viewer-status"><span>streaming</span></span> : null}
         <span data-part="text-viewer-position" data-position={position.replace(" ", "-")} aria-live="polite">{position}</span>
         <button type="button" data-action={`jump-${target}`} aria-label={`jump to ${target}`} onClick={() => jump(!atBottom)}>
           <span data-part="text-viewer-wide">jump to </span>{target}
@@ -502,7 +504,7 @@ export function CodeViewer({ text, language, id, done = true, label = "code", se
   const segments = useSegments(text, !done, segmentLines(text, metrics, size), size);
   const format = useMemo(() => language ? { language } : undefined, [language]);
   // A block still streaming in follows its newest line, as the timeline follows the run; a finished one starts at its top.
-  return <VirtualText text={text} label={label} follow={!done} metrics={metrics} segments={segments} format={format} id={id} done={done} copy seed={seed} caption={language} />;
+  return <VirtualText text={text} label={label} follow={!done} metrics={metrics} segments={segments} format={format} id={id} done={done} copy seed={seed} caption={language} live={!done} />;
 }
 
 /**
