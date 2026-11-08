@@ -5,6 +5,7 @@ import type { RunStatusValue } from "@fulcrum/react";
 import { codeDemos } from "../src/gallery/code-demos";
 import { composerDemos } from "../src/gallery/composer-demos";
 import { demos } from "../src/gallery/demos";
+import { sourceFor } from "../src/gallery/source";
 
 test("every exported part of @fulcrum/react has a gallery demo", () => {
   // Components are the capitalized value exports; the providers (RunProvider, HighlightContext) wrap demos, so they need
@@ -24,48 +25,41 @@ test("every exported part of @fulcrum/react has a gallery demo", () => {
   expect(bodies.filter((name) => !kinds.has(name.slice(0, -"Body".length).toLowerCase()))).toEqual([]);
 });
 
-const stateFixtures = {
-  RunStatus: {
-    idle: ["run-status-idle"],
-    running: ["run-status-running"],
-    approval: ["run-status-approval"],
-    unknown: ["run-status-outcome"],
-  } satisfies Record<RunStatusValue, string[]>,
-  RunEndMarker: {
-    completed: ["run-end-marker-completed"],
-    cancelled: ["run-end-marker-cancelled"],
-    failed: ["run-end-marker-failed"],
-    disconnected: ["run-end-marker-disconnected"],
-    unknown: ["run-end-marker-unknown"],
-  } satisfies Record<RunEndOutcome, string[]>,
-  RunNavigator: ["run-navigator-open-failure"],
+const expectedStates = {
+  RunStatus: { idle: true, running: true, approval: true, unknown: true } satisfies Record<RunStatusValue, true>,
+  RunEndMarker: { completed: true, cancelled: true, failed: true, disconnected: true, unknown: true } satisfies Record<RunEndOutcome, true>,
 } as const;
 
-const fixtureById = new Map(demos.map((demo) => [demo.id, demo]));
-const reduced = (id: string) => {
-  const demo = fixtureById.get(id);
-  if (!demo) throw new Error(`missing gallery fixture: ${id}`);
+const demosFor = (part: string) => demos.filter((demo) => demo.part === part);
+const reduced = (demo: (typeof demos)[number]) => {
   const store = createRunStore((flush) => flush());
   demo.events.forEach(store.dispatch);
   return { demo, state: store.getState(), store };
 };
 
-function statusOf(id: string): RunStatusValue {
-  const { state, store } = reduced(id);
+function statusOf(demo: (typeof demos)[number]): RunStatusValue {
+  const { state, store } = reduced(demo);
   if (state.agent !== "running") return state.endOutcome === "unknown" ? "unknown" : "idle";
   if (Object.values(state.toolApprovals).some((approvalId) => store.getItem(approvalId)?.type === "approval" && !store.getItem(approvalId)?.ended)) return "approval";
   return "running";
 }
 
 test("gallery fixtures cover every public run state", () => {
-  for (const [status, ids] of Object.entries(stateFixtures.RunStatus)) expect(ids.some((id) => statusOf(id) === status), `${status} state is not rendered by its fixture`).toBe(true);
-  for (const [outcome, ids] of Object.entries(stateFixtures.RunEndMarker)) {
-    expect(ids.some((id) => reduced(id).state.endOutcome === outcome), `${outcome} outcome is not rendered by its fixture`).toBe(true);
+  const observed = {
+    RunStatus: new Set(demosFor("RunStatus").map(statusOf)),
+    RunEndMarker: new Set(demosFor("RunEndMarker").map((demo) => reduced(demo).state.endOutcome).filter(Boolean)),
+  };
+  for (const [part, expected] of Object.entries(expectedStates)) {
+    const missing = Object.keys(expected).filter((state) => !observed[part as keyof typeof observed].has(state));
+    expect(missing, `${part} is missing gallery states: ${missing.join(", ")}`).toEqual([]);
   }
-  for (const id of stateFixtures.RunNavigator) {
-    const { demo } = reduced(id);
-    expect(demo.runs).toBeDefined();
-    expect(demo.events.some((event) => event.type === "sub_agent")).toBe(true);
-    expect(demo.sourceFailure).toBe(true);
-  }
+});
+
+test("gallery navigator failure fixture opens through its configured source error", () => {
+  const demo = demosFor("RunNavigator").find((candidate) => candidate.sourceFailure);
+  expect(demo).toBeDefined();
+  const failure = demo!.sourceFailure!;
+  expect(demo!.events.some((event) => event.type === "sub_agent" && event.childRunId === failure.runId)).toBe(true);
+  const source = sourceFor({}, failure);
+  expect(() => source.open(failure.runId)).toThrow(failure.error);
 });

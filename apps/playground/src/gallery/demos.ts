@@ -1,6 +1,7 @@
 import { resolveToolView, type ContentBlock, type RunEvent, type SubAgentEvent, type ToolCall, type ToolView } from "@fulcrum/core";
 import { zetaTools } from "@fulcrum/zeta";
 import type { RunEndOutcome } from "@fulcrum/core";
+import type { DemoSourceFailure } from "./source";
 import { CHART_PNG } from "./chart";
 
 /**
@@ -9,7 +10,7 @@ import { CHART_PNG } from "./chart";
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
 /** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; sourceFailure?: boolean; open?: boolean; markdownAll?: boolean; approval?: DemoApproval };
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; sourceFailure?: DemoSourceFailure; open?: boolean; markdownAll?: boolean; approval?: DemoApproval };
 /**
  * How the gallery's fake host answers approvals. `always` lists the request ids that get the third action (the rest
  * keep approve and deny); `reply` holds the decision until the card's "answer" button, or rejects it.
@@ -852,7 +853,7 @@ export const demos: Demo[] = [
     description: "A child row remains readable when its source fails to open.",
     events: [agent("nav-failing", "error", { name: "failed-child-run-with-a-long-label", task: "open the unavailable child run and preserve the reading context", summary: "child run storage unavailable" })],
     runs: {},
-    sourceFailure: true,
+    sourceFailure: { runId: "nav-failing", error: "child run storage unavailable" },
   },
   {
     id: "run-navigator-nested",

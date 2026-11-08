@@ -7,7 +7,7 @@ import themeSource from "@fulcrum/react/themes.css?raw";
 import "./gallery.css";
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createRunStore, type RunSource } from "@fulcrum/core";
+import { createRunStore } from "@fulcrum/core";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
 import { MermaidFence } from "@fulcrum/mermaid";
@@ -15,6 +15,7 @@ import { Approval, Message, RunEndMarker, RunNavigator, RunProvider, RunStatus, 
 import { CodeCard, codeDemos } from "./code-demos";
 import { ComposerCard, composerDemos } from "./composer-demos";
 import { demos, type Demo, type DemoApproval } from "./demos";
+import { sourceFor } from "./source";
 import { mermaidDemos } from "./mermaid-demos";
 
 const highlight = createHighlighter();
@@ -51,15 +52,6 @@ const fresh = (demo: Demo, paused = false) => {
   return { store, runs };
 };
 const steps = (demo: Demo) => Math.max(demo.events.length, ...Object.values(demo.runs ?? {}).map((events) => events.length));
-
-// The fake harness behind the sub-agent demos: child runs it has open, the rest say why they cannot.
-const sourceFor = (runs: Record<string, ReturnType<typeof createRunStore>>, sourceFailure = false): RunSource => ({
-  open: (runId) => {
-    if (sourceFailure && runId === "nav-failing") throw new Error("child run storage unavailable");
-    return { store: runs[runId]!, release() {} };
-  },
-  unavailable: (runId) => (sourceFailure && runId === "nav-failing" ? undefined : runs[runId] ? undefined : "started before child runs were recorded"),
-});
 
 // The theme list comes from the shipped themes.css, so the picker never drifts from it.
 const themeNames = [...themeSource.matchAll(/^\[data-fulcrum-theme="([^"]+)"\] \{$/gm)].map((match) => match[1]);
