@@ -117,6 +117,145 @@ async function auditThemes(page: Page, label: string, minHeight: number) {
 }
 
 const scrollGap = (page: Page) => page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+const reconnectBottomRuns = 5;
+const expectReconnectBottomFailure = process.env.WEB_GATE_EXPECT_RECONNECT_FAILURE === "1";
+
+type ReconnectBottomSample = {
+  phase: string;
+  frame: number;
+  time: number;
+  clientHeight: number;
+  clientWidth: number;
+  offsetWidth: number;
+  scrollHeight: number;
+  scrollTop: number;
+  domEnd: number;
+  engineTotal: number;
+  engineEnd: number;
+  engineTop: number;
+  pinned: boolean;
+  gap: number;
+  mounted: number;
+};
+
+type ReconnectBottomDiagnostic = {
+  engine: string;
+  run: number;
+  browser: string;
+  viewport: { width: number; height: number } | null;
+  deviceScaleFactor: number;
+  font: { status: string; ready: boolean; family: string; size: string; lineHeight: string };
+  scrollbarWidth: number;
+  rows: { first: string | null; last: string | null; heights: Array<{ height: number; count: number }> };
+  history: { before: number; after: number; finalPageReceipts: number[] };
+  phases: ReconnectBottomSample[];
+  actions: Array<{ sequence: number; time: number; type: string }>;
+  ordering: string[];
+  assertionReached: boolean;
+  assertionGap: number | null;
+};
+
+type VirtualDebug = {
+  getSnapshot(): { totalSize: number; viewportSize: number; scrollTop: number; pinned: boolean };
+  getActions(): Array<{ sequence: number; time: number; type: string }>;
+};
+
+const reconnectBottomSample = (page: Page, phase: string, frame = 0) => page.evaluate(({ phase, frame }) => {
+  const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+  const engine = (window as typeof window & { __fulcrumVirtual?: VirtualDebug }).__fulcrumVirtual;
+  if (!scroll || !engine) throw new Error("reconnect fixture is missing the virtual viewport or debug engine");
+  const snapshot = engine.getSnapshot();
+  const domEnd = scroll.scrollHeight - scroll.clientHeight;
+  return {
+    phase,
+    frame,
+    time: performance.now(),
+    clientHeight: scroll.clientHeight,
+    clientWidth: scroll.clientWidth,
+    offsetWidth: scroll.offsetWidth,
+    scrollHeight: scroll.scrollHeight,
+    scrollTop: scroll.scrollTop,
+    domEnd,
+    engineTotal: snapshot.totalSize,
+    engineEnd: Math.max(0, snapshot.totalSize - snapshot.viewportSize),
+    engineTop: snapshot.scrollTop,
+    pinned: snapshot.pinned,
+    gap: domEnd - scroll.scrollTop,
+    mounted: document.querySelectorAll('[data-part="timeline"] [data-virtual-id]').length,
+  };
+}, { phase, frame });
+
+const stableReconnectBottom = (page: Page, phase: string, targetDelta?: number) => page.evaluate(async ({ phase, targetDelta }) => {
+  const samples: ReconnectBottomSample[] = [];
+  let stableFrames = 0;
+  for (let frame = 1; frame <= 240; frame++) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    const engine = (window as typeof window & { __fulcrumVirtual?: VirtualDebug }).__fulcrumVirtual;
+    if (!scroll || !engine || !document.querySelector('[data-virtual-id="message:l999"]')) continue;
+    const snapshot = engine.getSnapshot();
+    const sample: ReconnectBottomSample = {
+      phase,
+      frame,
+      time: performance.now(),
+      clientHeight: scroll.clientHeight,
+      clientWidth: scroll.clientWidth,
+      offsetWidth: scroll.offsetWidth,
+      scrollHeight: scroll.scrollHeight,
+      scrollTop: scroll.scrollTop,
+      domEnd: scroll.scrollHeight - scroll.clientHeight,
+      engineTotal: snapshot.totalSize,
+      engineEnd: Math.max(0, snapshot.totalSize - snapshot.viewportSize),
+      engineTop: snapshot.scrollTop,
+      pinned: snapshot.pinned,
+      gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop,
+      mounted: document.querySelectorAll('[data-part="timeline"] [data-virtual-id]').length,
+    };
+    const prior = samples.at(-1);
+    const targetReached = targetDelta === undefined || Math.abs(sample.domEnd - sample.engineEnd - targetDelta) <= 0.01;
+    stableFrames = prior && prior.mounted === sample.mounted && Math.abs(prior.domEnd - sample.domEnd) < 0.01 && Math.abs(prior.engineEnd - sample.engineEnd) < 0.01 && targetReached ? stableFrames + 1 : 0;
+    samples.push(sample);
+    if (stableFrames >= 3) return samples;
+  }
+  throw new Error(`${phase} did not become stable${targetDelta === undefined ? "" : ` at a ${targetDelta.toFixed(3)} px DOM/engine delta`}`);
+}, { phase, targetDelta });
+
+const reconnectBottomContext = (page: Page) => page.evaluate(async () => {
+  await document.fonts.ready;
+  const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+  const timeline = document.querySelector<HTMLElement>('[data-part="timeline"]');
+  const engine = (window as typeof window & { __fulcrumVirtual?: VirtualDebug }).__fulcrumVirtual;
+  if (!scroll || !timeline || !engine) throw new Error("reconnect fixture context is incomplete");
+  const style = getComputedStyle(timeline);
+  const rows = [...timeline.querySelectorAll<HTMLElement>('[data-virtual-id]')];
+  const heights = new Map<number, number>();
+  for (const row of rows) {
+    const height = Number(row.getBoundingClientRect().height.toFixed(3));
+    heights.set(height, (heights.get(height) ?? 0) + 1);
+  }
+  return {
+    font: {
+      status: document.fonts.status,
+      ready: document.fonts.check('14px "JetBrains Mono"'),
+      family: style.fontFamily,
+      size: style.fontSize,
+      lineHeight: style.lineHeight,
+    },
+    scrollbarWidth: scroll.offsetWidth - scroll.clientWidth,
+    rows: {
+      first: rows[0]?.dataset.virtualId ?? null,
+      last: rows.at(-1)?.dataset.virtualId ?? null,
+      heights: [...heights].map(([height, count]) => ({ height, count })),
+    },
+    actions: engine.getActions().slice(-40).map(({ sequence, time, type }) => ({ sequence, time, type })),
+  };
+});
+
+class ReconnectBottomFailure extends Error {
+  constructor(readonly gap: number, readonly engineGap: number) {
+    super(`a pinned reader is ${gap.toFixed(3)} px from the DOM bottom after reconnect (engine gap ${engineGap.toFixed(3)} px)`);
+  }
+}
 
 async function reconnectApprovalScenario(page: Page, fake: Awaited<ReturnType<typeof startFakeZeta>>) {
   await page.locator('[data-tool-view="shell"]').first().waitFor({ timeout: 5000 });
@@ -389,6 +528,116 @@ const waitAtBottom = (page: Page, failure: string) => page.waitForFunction((sele
   const range = element.scrollHeight - element.clientHeight;
   return range > 0 && Math.abs(element.scrollTop - range) <= 1;
 }, '[data-part="timeline-scroll"]', { timeout: 15_000 }).catch(() => { throw new Error(failure); });
+
+async function reconnectBottomIteration(page: Page, engine: string, run: number) {
+  const historyBefore = fake.historyOf(LONG);
+  const historiesBefore = fake.requests.filter(({ method }) => method === "session_history").length;
+  const phases: ReconnectBottomSample[] = [];
+  let assertionReached = false;
+  let assertionGap: number | null = null;
+  try {
+    await page.goto("about:blank");
+    await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
+    await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+    await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
+    await waitAtBottom(page, `${engine} reconnect-bottom run ${run}: the long run did not load pinned at the bottom`);
+    const preStyle = await stableReconnectBottom(page, "pre-style");
+    phases.push(preStyle.at(-1)!);
+    const before = phases.at(-1)!;
+    if (!before.pinned) throw new Error(`${engine} reconnect-bottom run ${run}: engine was not pinned before calibration`);
+    if (await page.locator('[data-part="jump-to-latest"]').count()) throw new Error(`${engine} reconnect-bottom run ${run}: jump control was present before calibration`);
+    const contextBefore = await reconnectBottomContext(page);
+    if (contextBefore.font.status !== "loaded" || !contextBefore.font.ready || !contextBefore.font.family.includes("JetBrains Mono")) {
+      throw new Error(`${engine} reconnect-bottom run ${run}: JetBrains Mono was not ready (${JSON.stringify(contextBefore.font)})`);
+    }
+    if (![before.domEnd, before.engineEnd].every((value) => Number.isFinite(value) && value > 0)) {
+      throw new Error(`${engine} reconnect-bottom run ${run}: invalid DOM/engine ends ${before.domEnd}/${before.engineEnd}`);
+    }
+    const border = 2 - (before.domEnd - before.engineEnd);
+    if (!Number.isFinite(border) || border < 0 || border > 4) throw new Error(`${engine} reconnect-bottom run ${run}: calibration border ${border.toFixed(3)} px is outside 0..4 px`);
+    await page.evaluate((width) => {
+      const style = document.createElement("style");
+      style.id = "reconnect-bottom-fixture";
+      style.textContent = `[data-part="timeline"] { box-sizing: content-box !important; border-bottom: ${Math.max(0, width)}px solid transparent !important; }`;
+      document.head.append(style);
+    }, border);
+    const postStyle = await stableReconnectBottom(page, "post-style", 2);
+    phases.push(postStyle.at(-1)!);
+    const calibrated = phases.at(-1)!;
+    if (Math.abs(calibrated.domEnd - calibrated.engineEnd - 2) > 0.01) {
+      throw new Error(`${engine} reconnect-bottom run ${run}: calibration disagreement is ${(calibrated.domEnd - calibrated.engineEnd).toFixed(3)} px`);
+    }
+
+    phases.push(await reconnectBottomSample(page, "reconnect-start"));
+    await reconnectFake(page, engine);
+    phases.push(await reconnectBottomSample(page, "connected"));
+    await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+    await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
+    phases.push(await reconnectBottomSample(page, "final-append"));
+
+    const stable = await stableReconnectBottom(page, "measurement-raf");
+    phases.push(...stable.slice(0, 1), ...stable.slice(-2, -1));
+    phases.push(await reconnectBottomSample(page, "final", stable.at(-1)!.frame));
+    const final = phases.at(-1)!;
+    const contextAfter = await reconnectBottomContext(page);
+    const historiesAfter = fake.requests.filter(({ method }) => method === "session_history");
+    const diagnostic: ReconnectBottomDiagnostic = {
+      engine,
+      run,
+      browser: await page.context().browser()!.version(),
+      viewport: page.viewportSize(),
+      deviceScaleFactor: await page.evaluate(() => devicePixelRatio),
+      font: contextAfter.font,
+      scrollbarWidth: contextAfter.scrollbarWidth,
+      rows: contextAfter.rows,
+      history: {
+        before: historiesBefore,
+        after: historiesAfter.length,
+        finalPageReceipts: historiesAfter.slice(historiesBefore).map(({ replied }) => replied ?? -1),
+      },
+      phases,
+      actions: contextAfter.actions,
+      ordering: ["reconnect-start", "connected", "final-append", "resize-callback", "measurement-raf", "final"],
+      assertionReached: true,
+      assertionGap: final.gap,
+    };
+    assertionReached = true;
+    assertionGap = final.gap;
+    console.log(`reconnect-bottom ${JSON.stringify(diagnostic)}`);
+    if (Math.abs(final.domEnd - final.engineEnd - 2) > 0.01) {
+      throw new Error(`${engine} reconnect-bottom run ${run}: final DOM/engine disagreement is ${(final.domEnd - final.engineEnd).toFixed(3)} px`);
+    }
+    if (!final.pinned || await page.locator('[data-part="jump-to-latest"]').count()) {
+      throw new Error(`${engine} reconnect-bottom run ${run}: follow intent was not preserved`);
+    }
+    if (Math.abs(final.gap) > 0.5) throw new ReconnectBottomFailure(final.gap, final.scrollTop - final.engineEnd);
+  } catch (error) {
+    if (assertionReached) await shoot(page, `reconnect-bottom-${engine}-${run}`).catch(() => undefined);
+    throw error;
+  } finally {
+    await page.evaluate(() => document.getElementById("reconnect-bottom-fixture")?.remove()).catch(() => undefined);
+    fake.restoreHistory(LONG, historyBefore);
+    await fake.start();
+    if (!assertionReached && assertionGap !== null) console.log(`${engine} reconnect-bottom run ${run} stopped at gap ${assertionGap.toFixed(3)} px`);
+  }
+}
+
+async function checkReconnectBottom(page: Page, engine: string) {
+  const failures: ReconnectBottomFailure[] = [];
+  for (let run = 1; run <= reconnectBottomRuns; run++) {
+    try {
+      await reconnectBottomIteration(page, engine, run);
+    } catch (error) {
+      if (!expectReconnectBottomFailure || !(error instanceof ReconnectBottomFailure)) throw error;
+      failures.push(error);
+      console.log(`expected reconnect-bottom failure ${engine} ${run}/${reconnectBottomRuns}: ${error.message}`);
+    }
+  }
+  if (expectReconnectBottomFailure) {
+    if (failures.length !== reconnectBottomRuns) throw new Error(`${engine}: only ${failures.length}/${reconnectBottomRuns} old-source runs reached the reconnect-bottom failure`);
+    throw new Error(`${engine}: deterministic old-source proof failed ${failures.length}/${reconnectBottomRuns} at ${failures.map(({ gap }) => gap.toFixed(3)).join(",")} px`);
+  }
+}
 
 async function reconnectAnchorScenario(page: Page, engine: string) {
   // The app reads the session hash only at load, and a hash-only goto keeps the document, so reload to open LONG.
@@ -782,20 +1031,21 @@ try {
       await page.getByText("frame 999 took").waitFor({ timeout: 5000 });
       if (!(await page.evaluate(() => location.hash.includes("s-long")))) throw new Error("selection not in the url");
     });
+    await check("chromium: reconnect keeps a pinned 1,000-row run at the DOM end 5/5", () => checkReconnectBottom(page, "chromium"));
     await check("chromium: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(page, "chromium"));
     // Here, not with the later WebKit lane check: the mobile checks re-arm the fake's live turn, and a running turn
     // keeps zeta from opening another session. The Chromium page leaves meanwhile, so WebKit gets the one controller.
-    await check("webkit: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", async () => {
-      await page.goto("about:blank");
-      const webkitBrowser = await webkit.launch();
-      try {
-        await checkReconnectAnchor(await webkitBrowser.newPage({ viewport: { width: 1440, height: 900 } }), "webkit");
-      } finally {
-        await webkitBrowser.close();
-        await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
-        await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
-      }
-    });
+    await page.goto("about:blank");
+    const reconnectWebkit = await webkit.launch();
+    try {
+      const reconnectWebkitPage = await reconnectWebkit.newPage({ viewport: { width: 1440, height: 900 } });
+      await check("webkit: reconnect keeps a pinned 1,000-row run at the DOM end 5/5", () => checkReconnectBottom(reconnectWebkitPage, "webkit"));
+      await check("webkit: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(reconnectWebkitPage, "webkit"));
+    } finally {
+      await reconnectWebkit.close();
+      await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+      await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+    }
     await check("composer: Enter sends, steer while running, a steer the turn dropped is resent, stop ends it, all with delivery ids", async () => {
       await page.locator("button.session", { hasText: "check every theme" }).click();
       await page.locator('[data-part="md-table"]').waitFor({ timeout: 5000 });
