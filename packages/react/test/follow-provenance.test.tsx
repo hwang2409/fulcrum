@@ -432,9 +432,11 @@ describe("timeline scroll provenance", () => {
     { name: "end clamp at the old end", run: ({ host, oldEnd }) => hostWrite(host, oldEnd), pinned: true, unpinned: false },
     { name: "end clamp at the new end", run: ({ host }) => hostWrite(host, host.scrollHeight), pinned: true, unpinned: null },
     { name: "host write to scrollHeight (F1)", run: ({ host }) => hostWrite(host, host.scrollHeight), pinned: null, unpinned: false },
-    // Non-input moves are judged by cause (classifyScroll): an end clamp, a viewport resize the engine has not seen, or a
-    // content change no smaller than the move is layout; anything else is host intent, even within the 48 px threshold.
-    // `settle` first reports the current position, so "no size change" means none since the last callback.
+    // Non-input moves are judged by direction and cause (classifyScroll). Premise: the adapter sets overflow-anchor none,
+    // so without input a browser moves scrollTop only up (a clamp). A move down off the end is the host's intent; a move
+    // up is layout only within an unseen viewport resize (|resize| + 48) or a content change (scrollHeight); anything else
+    // is intent, even within the 48 px threshold. `settle` first reports the current position, so "no size change" means
+    // none since the last callback.
     { name: "host write 10 px above a grown end (stale end)", run: ({ host }) => hostWrite(host, end(host) - 10), pinned: false, unpinned: false },
     { name: "small host move (10 px up), no size change", run: ({ host }) => {
       settle(host);
@@ -444,11 +446,16 @@ describe("timeline scroll provenance", () => {
       settle(host);
       hostWrite(host, host.scrollTop - 100);
     }, pinned: false, unpinned: false },
-    { name: "content grew 30 px and the move is within it (20 px)", run: ({ host, geometry }) => {
+    { name: "content grew 30 px and the move is within it (20 px up)", run: ({ host, geometry }) => {
+      settle(host);
+      geometry.addDomExtra(30);
+      hostWrite(host, host.scrollTop - 20);
+    }, pinned: true, unpinned: false },
+    { name: "content grew 30 px and a host moves 20 px down, short of the end", run: ({ host, geometry }) => {
       settle(host);
       geometry.addDomExtra(30);
       hostWrite(host, host.scrollTop + 20);
-    }, pinned: true, unpinned: false },
+    }, pinned: false, unpinned: false },
     { name: "content grew 30 px and the move is beyond it (2,000 px up)", run: ({ host, geometry }) => {
       settle(host);
       geometry.addDomExtra(30);
@@ -460,11 +467,47 @@ describe("timeline scroll provenance", () => {
       geometry.resizeBy(-3);
       hostWrite(host, host.scrollTop - 41);
     }, pinned: true, unpinned: false },
-    // Frame-bounded known limit: a host move in the same callback as an unreported viewport resize is layout at any size.
+    { name: "viewport shrink 3 px with a 52 px move up (beyond |resize| + 48) before the resize callback", run: ({ host, geometry }) => {
+      settle(host);
+      geometry.resizeBy(-3);
+      hostWrite(host, host.scrollTop - 52);
+    }, pinned: false, unpinned: false },
     { name: "viewport shrink with a 500 px move before the resize callback", run: ({ host, geometry }) => {
       settle(host);
       geometry.resizeBy(-3);
       hostWrite(host, host.scrollTop - 500);
+    }, pinned: false, unpinned: false },
+    // The sub-agent clock (subagent-check.ts): the host shrinks the box and scrolls down in the same task.
+    { name: "sub-agent clock: viewport shrinks 360 px and the host moves 345 px down before the resize callback", run: ({ host, geometry }) => {
+      settle(host);
+      geometry.resizeBy(-360);
+      hostWrite(host, host.scrollTop + 345);
+    }, pinned: false, unpinned: false },
+    { name: "sub-agent clock: viewport shrinks 360 px and the host moves 143 px down before the resize callback", run: ({ host, geometry }) => {
+      settle(host);
+      geometry.resizeBy(-360);
+      hostWrite(host, host.scrollTop + 143);
+    }, pinned: false, unpinned: false },
+    // Review-3 M1: reader input that moves up off the end is the reader leaving; reader input at the end stays the reader's.
+    { name: "page-level PageUp lease moves 40 px up off the end", run: ({ host }) => {
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true, cancelable: true })));
+      hostWrite(host, host.scrollTop - 40);
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "PageUp", bubbles: true, cancelable: true })));
+    }, pinned: false, unpinned: false },
+    { name: "scrollbar lease drags 20 px up off the end", run: ({ host }) => {
+      host.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 816, bottom: 600, width: 816, height: 600, toJSON: () => ({}) });
+      act(() => document.dispatchEvent(new PointerEvent("pointerdown", { clientX: 808, clientY: 300, bubbles: true })));
+      hostWrite(host, host.scrollTop - 20);
+      act(() => document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })));
+    }, pinned: false, unpinned: false },
+    // Gamma's approval click: a card 161 px tall below the rows, focus lands on it, it shrinks, the browser clamps up to the end.
+    { name: "focus lease over an end clamp after a 161 px shrink", run: ({ host, geometry }) => {
+      geometry.addDomExtra(161);
+      settle(host); // the old end: layout, a pinned reader is written to the new end
+      settle(host); // our write's echo
+      act(() => firstRow().dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
+      geometry.addDomExtra(-161);
+      settle(host);
     }, pinned: true, unpinned: false },
     { name: "reader lease scroll to the end", run: ({ host }) => {
       act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 })));
@@ -690,18 +733,87 @@ describe("timeline scroll provenance", () => {
     }
   });
 
-  // Page-level keys carry a reader lease and the engine's 48 px bottom threshold decides, as before this change.
-  test("a page-level 40 px ArrowUp on a pinned timeline stays pinned (engine threshold)", () => {
+  // Review-3 M1: a page-level key move up off the end is the reader leaving, as on main when idle.
+  test("a page-level 40 px ArrowUp off the end of a pinned timeline drops follow", () => {
     const geometry = installScrollGeometry();
     try {
       const { append, host, jump, unseen } = mountTimeline();
       act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true })));
       hostWrite(host, host.scrollTop - 40);
       act(() => document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp", bubbles: true, cancelable: true })));
+      const readerTop = host.scrollTop;
       append();
-      expect(unseen()).toBe("0");
+      expect(unseen(), "a page-level key move up off the end must drop follow").toBe("1");
+      expect(jump()).not.toBeNull();
+      expect(host.scrollTop, "the reader's 40 px move must not snap back").toBe(readerTop);
+    } finally { geometry.restore(); }
+  });
+
+  // Review-3 M1: a held page key or a slow scrollbar drag up escapes a streaming run: 6 x 20 px up, one append after each.
+  test.each(["held page-level ArrowUp", "slow scrollbar drag"] as const)("%s escapes while the run streams", (input) => {
+    const geometry = installScrollGeometry();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      if (input === "held page-level ArrowUp") act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true })));
+      else {
+        host.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 816, bottom: 600, width: 816, height: 600, toJSON: () => ({}) });
+        act(() => document.dispatchEvent(new PointerEvent("pointerdown", { clientX: 808, clientY: 300, bubbles: true })));
+      }
+      const distances: number[] = [];
+      for (let step = 0; step < 6; step++) {
+        if (input === "held page-level ArrowUp") act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true, repeat: true })));
+        hostWrite(host, host.scrollTop - 20);
+        append();
+        distances.push(end(host) - host.scrollTop);
+      }
+      if (input === "held page-level ArrowUp") act(() => document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp", bubbles: true, cancelable: true })));
+      else act(() => document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })));
+      expect(distances.every((distance, index) => index === 0 ? distance > 0 : distance > distances[index - 1]!), `the distance from the end must grow at every step: ${distances.join(",")}`).toBe(true);
+      expect(unseen(), "every append after the reader left is unseen").toBe("6");
+      expect(jump()).not.toBeNull();
+    } finally { geometry.restore(); }
+  });
+
+  // F1: a host write that lands exactly at the end while unpinned does not resume follow; reader input at the end does.
+  test.each(["host scrollTop", "scrollIntoView", "find-style scroll"] as const)("F1: %s landing at the end while unpinned keeps follow off until reader input", (kind) => {
+    const geometry = installScrollGeometry();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+      moveReader(host);
+      act(() => host.dispatchEvent(new Event("scrollend")));
+      append();
+      expect(unseen()).toBe("1");
+      if (kind === "scrollIntoView") {
+        const row = container!.querySelector<HTMLElement>("[data-virtual-id]")!;
+        row.scrollIntoView = () => moveReader(host, end(host));
+        row.scrollIntoView();
+      } else moveReader(host, kind === "host scrollTop" ? host.scrollHeight : end(host));
+      expect(host.scrollTop, `${kind} lands exactly at the end`).toBe(end(host));
+      append();
+      expect(unseen(), `${kind} at the end must not resume follow (F1)`).toBe("2");
+      expect(jump()).not.toBeNull();
+      act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 })));
+      moveReader(host, host.scrollHeight);
+      append();
+      expect(unseen(), "reader input at the end re-pins").toBe("0");
       expect(jump()).toBeNull();
-      expect(host.scrollTop).toBe(host.scrollHeight - host.clientHeight);
+      expect(host.scrollTop).toBe(end(host));
+    } finally { geometry.restore(); }
+  });
+
+  // Premise of classifyScroll: the element that really scrolls has overflow-anchor none while attached (no browser
+  // anchoring, so non-input moves are only upward clamps), and gets its own value back on detach. A DOM shim cannot
+  // run anchoring; the browser probe covers that (scratch premise-probe.log).
+  test.each([false, true])("premise: the scroll element has overflow-anchor none while attached (hosted %p)", (hosted) => {
+    const geometry = installScrollGeometry();
+    try {
+      const { host } = mountTimeline(hosted);
+      expect(host.style.overflowAnchor, "the element that scrolls must not anchor").toBe("none");
+      expect(container!.querySelector<HTMLElement>('[data-part="timeline"]')!.style.overflowAnchor, "rows are never anchor candidates").toBe("none");
+      act(() => root!.unmount());
+      root = undefined;
+      expect(host.style.overflowAnchor, "detach restores the element's own value").toBe("");
     } finally { geometry.restore(); }
   });
 
