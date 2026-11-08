@@ -289,7 +289,7 @@ async function measureViewer(page: Page, width: number, fixture: "single" | "lin
   await page.waitForTimeout(500);
   const appendGap = await viewer.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight);
   const scroll = await measureViewerScroll(page, viewer);
-  const calibration = await measureCalibrationSet(page);
+  const calibration = await measureCalibrationSet(page, measureCalibration); // this page measures unthrottled
 
   return { fixture, width, openMs, appendMs, openSamples, appendSamples, calibration, bottomGap, appendGap, middleMoved: middleAfter > middleBefore, outerMiddleDelta, outerBoundaryDelta, longTasks, tokens, scroll };
 }
@@ -441,9 +441,9 @@ async function measureThrottledCalibration(page: Page) {
   }
 }
 
-async function measureCalibrationSet(page: Page): Promise<Calibration> {
+async function measureCalibrationSet(page: Page, measure = measureThrottledCalibration): Promise<Calibration> {
   const samples: number[] = [];
-  for (let sample = 0; sample < viewerSamples; sample++) samples.push(await measureThrottledCalibration(page));
+  for (let sample = 0; sample < viewerSamples; sample++) samples.push(await measure(page));
   return { median: median(samples), samples };
 }
 
