@@ -1,5 +1,5 @@
 import type { RunEndOutcome } from "@fulcrum/core";
-import { useCallback } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { useRun, useRunStore } from "./hooks.js";
 
 export type RunStatusValue = "idle" | "running" | "approval" | "unknown";
@@ -7,14 +7,23 @@ export type RunStatusValue = "idle" | "running" | "approval" | "unknown";
 /** The run's status: a run blocked on an approval waits for the user; an ended run whose end was not seen is `unknown`. */
 export function useRunStatus(): RunStatusValue {
   const store = useRunStore();
-  return useRun(useCallback((state: ReturnType<typeof store.getState>) => {
-    if (state.agent !== "running") return state.endOutcome === "unknown" ? "unknown" : "idle";
-    const waiting = Object.values(state.toolApprovals).some((id) => {
+  const [agent, endOutcome, toolApprovals] = useRun(
+    useCallback((state: ReturnType<typeof store.getState>) => [state.agent, state.endOutcome, state.toolApprovals] as const, []),
+    (left, right) => left[0] === right[0] && left[1] === right[1] && left[2] === right[2],
+  );
+  // getSnapshot runs only when this hook renders or an approval item notifies, so the scan stays off the global publication path.
+  const waiting = useSyncExternalStore(
+    useCallback((listener) => {
+      const unsubscribe = Object.values(toolApprovals).map((id) => store.subscribe(id, listener));
+      return () => unsubscribe.forEach((remove) => remove());
+    }, [store, toolApprovals]),
+    () => Object.values(toolApprovals).some((id) => {
       const item = store.getItem(id);
       return item?.type === "approval" && !item.ended;
-    });
-    return waiting ? "approval" : "running";
-  }, [store]));
+    }),
+  );
+  if (agent !== "running") return endOutcome === "unknown" ? "unknown" : "idle";
+  return waiting ? "approval" : "running";
 }
 
 /** A compact run header status derived from generic run state. */
