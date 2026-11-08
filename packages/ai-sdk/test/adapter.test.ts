@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runAdapterConformance, type AdapterFixture } from "@fulcrum/adapter-test";
 import { createRunStore } from "@fulcrum/core";
-import { simulateReadableStream, streamText, type UIMessageChunk } from "ai";
+import { jsonSchema, simulateReadableStream, stepCountIs, streamText, tool, type UIMessageChunk } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { createAiSdkAdapter, decodeAiSdkEntityId, encodeAiSdkEntityId, type AiSdkEntityIdentity } from "../src/index.js";
 
@@ -226,7 +226,7 @@ test("preliminary tool output keeps the tool active", () => {
   const adapter = createAiSdkAdapter({ streamKey: "test" });
   adapter.decode({ type: "tool-input-available", toolCallId: "tool", toolName: "search", input: {} });
   expect(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "first", preliminary: true }).map(({ type }) => type)).toEqual(["tool_output"]);
-  expect(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "final" }).map(({ type }) => type)).toEqual(["tool_output", "tool_end"]);
+  expect(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "final" }).map(({ type }) => type)).toEqual(["tool_start", "tool_output", "tool_end"]);
 });
 
 test("commits source and file parts without losing their typed fields", () => {
@@ -330,4 +330,93 @@ test("an approval ends with fulcrum's decision: denied by tool-output-denied, ap
   expect(ends(pinned)).toMatchObject([{ decision: "deny" }]);
   const asked = pinned.filter((part) => part.type !== "tool-output-denied");
   expect(ends([...asked, { type: "tool-output-available", toolCallId: "call-approval", output: { ok: true } }])).toMatchObject([{ decision: "approve" }]);
+});
+
+// What a reader sees: every row in timeline order, a message as its text and a tool as its name and output.
+const rendered = (store: ReturnType<typeof createRunStore>) => store.getOutline().map(({ id }) => {
+  const item = store.getItem(id);
+  if (item?.type === "message") return `${item.active ? "live " : ""}${item.message.content.map((block) => `${block.type}:${String(block.text ?? "")}`).join("|")}${item.text ? `|text:${item.text}` : ""}`.replace(/^\|/, "");
+  if (item?.type === "tool") return `tool ${item.tool_call.name}: ${item.output}${item.active ? " (live)" : ""}`;
+  return item?.type ?? "missing";
+});
+const finishChunk = { type: "finish", finishReason: { unified: "tool-calls", raw: "tool_calls" }, usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } } };
+// A real two-step AI SDK run: step 1 reasons, says it will look, and calls `shell`; step 2 reasons again and answers.
+async function multiStepParts(execute: (input: { command: string }) => unknown) {
+  const steps = [
+    [
+      { type: "reasoning-start", id: "r1" }, { type: "reasoning-delta", id: "r1", delta: "look first" }, { type: "reasoning-end", id: "r1" },
+      { type: "text-start", id: "t1" }, { type: "text-delta", id: "t1", delta: "i'll inspect the project." }, { type: "text-end", id: "t1" },
+      { type: "tool-call", toolCallId: "call-ls", toolName: "shell", input: "{\"command\":\"ls\"}" },
+      finishChunk,
+    ],
+    [
+      { type: "reasoning-start", id: "r2" }, { type: "reasoning-delta", id: "r2", delta: "two folders" }, { type: "reasoning-end", id: "r2" },
+      { type: "text-start", id: "t2" }, { type: "text-delta", id: "t2", delta: "The project has " }, { type: "text-delta", id: "t2", delta: "two folders." }, { type: "text-end", id: "t2" },
+      { ...finishChunk, finishReason: { unified: "stop", raw: "stop" } },
+    ],
+  ];
+  let step = 0;
+  const model = new MockLanguageModelV3({ doStream: async () => ({ stream: simulateReadableStream({ chunks: steps[step++] as never[] }) }) });
+  const shell = tool({ inputSchema: jsonSchema<{ command: string }>({ type: "object", properties: { command: { type: "string" } } }), execute: execute as never });
+  const parts: UIMessageChunk[] = [];
+  for await (const part of streamText({ model, prompt: "fixture", tools: { shell }, stopWhen: stepCountIs(2) }).toUIMessageStream({ generateMessageId: () => "multi" })) parts.push(part);
+  return parts;
+}
+
+test("a multi-step run reads text, tool, text in order: each step's text after a tool is its own message", async () => {
+  const parts = await multiStepParts(() => "README.md\napps");
+  expect(parts.map(({ type }) => type)).toContain("start-step");
+  const play = () => {
+    const adapter = createAiSdkAdapter({ streamKey: "multi" });
+    const store = createRunStore((flush) => flush());
+    const events = [];
+    for (const part of parts) for (const event of adapter.decode(part)) { events.push(event); store.dispatch(event); }
+    return { store, events };
+  };
+  const midway = createAiSdkAdapter({ streamKey: "multi" });
+  const live = createRunStore((flush) => flush());
+  for (const part of parts.slice(0, parts.findIndex((part) => part.type === "text-delta" && part.delta === "The project has ") + 1)) midway.decode(part).forEach(live.dispatch);
+  // While step 2 streams, its text is the last row and the only live one; step 1's message is done above the tool.
+  expect(rendered(live)).toEqual([
+    "reasoning:look first|text:i'll inspect the project.",
+    "tool shell: README.md\napps",
+    "live reasoning:two folders|text:The project has ",
+  ]);
+  const { store, events } = play();
+  expect(rendered(store)).toEqual([
+    "reasoning:look first|text:i'll inspect the project.",
+    "tool shell: README.md\napps",
+    "reasoning:two folders|text:The project has two folders.",
+  ]);
+  const ids = events.filter((event) => event.type === "message_commit").map((event) => event.message_id);
+  expect(ids).toEqual(["w:message:multi", "s:message:multi:1"]);
+  expect(play().events).toEqual(events);
+});
+
+test("a late delta for a block that began before a tool streams into the current message, never restarting the done one", () => {
+  const adapter = createAiSdkAdapter({ streamKey: "late" });
+  const store = createRunStore((flush) => flush());
+  for (const part of [
+    { type: "start", messageId: "late" },
+    { type: "text-start", id: "a" }, { type: "text-delta", id: "a", delta: "before " },
+    { type: "tool-input-available", toolCallId: "call", toolName: "shell", input: {} },
+    { type: "tool-output-available", toolCallId: "call", output: "ok" },
+    { type: "text-start", id: "b" }, { type: "text-delta", id: "b", delta: "after" },
+    { type: "text-delta", id: "a", delta: "tail" },
+    { type: "finish" },
+  ]) adapter.decode(part).forEach(store.dispatch);
+  expect(rendered(store)).toEqual(["text:before ", "tool shell: ok", "text:after|text:tail"]);
+});
+
+test("preliminary tool outputs replace each other, and the final output shows once", async () => {
+  const parts = await multiStepParts(async function* () { yield "scanning"; yield "README.md"; yield "README.md\napps"; });
+  expect(parts.filter((part) => part.type === "tool-output-available").map((part) => "preliminary" in part && part.preliminary)).toEqual([true, true, true, false]);
+  const adapter = createAiSdkAdapter({ streamKey: "preliminary" });
+  const store = createRunStore((flush) => flush());
+  const outputs: string[] = [];
+  for (const part of parts) {
+    adapter.decode(part).forEach(store.dispatch);
+    if (part.type === "tool-output-available") outputs.push(rendered(store)[1]!);
+  }
+  expect(outputs).toEqual(["tool shell: scanning (live)", "tool shell: README.md (live)", "tool shell: README.md\napps (live)", "tool shell: README.md\napps"]);
 });
