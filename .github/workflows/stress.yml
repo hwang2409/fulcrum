@@ -18,7 +18,8 @@ on:
 jobs:
   stress:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    # 10, not 8: a core PR's a/b runs the slow base core (PR #99 took 5m54s, 25% margin at 8).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }

@@ -255,6 +255,26 @@ test.each([
   }
 });
 
+test("tool output read through the stream cache every few chunks keeps each version's text", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "tool_start", tool_call: toolCall });
+  const outputOf = (item: RunItem | undefined) => (item?.type === "tool" ? item.output : undefined);
+  const read: { item: RunItem; text: string }[] = [];
+  let expected = "";
+  for (let i = 0; i < 200; i++) {
+    store.dispatch({ type: "tool_output", tool_call: toolCall, output: `${i},` });
+    expected += `${i},`;
+    if (i % 7 === 0) {
+      const item = store.getItem(`tool:${toolCall.id}`)!;
+      expect(outputOf(item)).toBe(expected);
+      read.push({ item, text: expected });
+    }
+  }
+  expect(outputOf(store.getItem(`tool:${toolCall.id}`))).toBe(expected);
+  // Older versions read after newer ones still return their own text.
+  for (const { item, text } of [read[3], read[0], read[read.length - 2]]) expect(outputOf(item)).toBe(text);
+});
+
 test("spread, JSON, and structuredClone copies of a streaming item carry its text", () => {
   const store = replay([
     { type: "message_delta", message_id: "copy", delta: "a" },

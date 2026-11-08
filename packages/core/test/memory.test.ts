@@ -68,14 +68,15 @@ test("held stream versions that were each read do not each pin a full string", (
   const baseline = heapStats().heapSize;
   const store = createRunStore(() => {});
   // A renderer that keeps every snapshot it drew. A per-version text cache would retain about 1,667 strings averaging
-  // 250 KB here (over 400 MB); one cache per stream retains the newest string only.
+  // 250 KB here (over 400 MB); one cache per stream retains the newest string only. Each read is flattened (`at(-1)`)
+  // as drawing does: an unflattened rope shares the chain's storage and hides a per-version cache.
   const held: unknown[] = [];
 
   for (let i = 0; i < deltas; i++) {
     store.dispatch({ type: "message_delta", message_id: "held", delta: DELTA });
     if ((i + 1) % 3 === 0) {
       const item = store.getItem("message:held");
-      if (item?.type !== "message" || item.text?.length !== (i + 1) * DELTA.length)
+      if (item?.type !== "message" || item.text?.length !== (i + 1) * DELTA.length || item.text.at(-1) !== "x")
         throw new Error("stream read did not include every delta");
       held.push(item);
     }
