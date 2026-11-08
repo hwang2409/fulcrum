@@ -15,9 +15,15 @@ export async function withDeadline<T>(name: string, ms: number, operation: Promi
   finally { clearTimeout(timer); }
 }
 
+// A pid of 0 or below makes kill() signal a whole process group, so only a positive integer pid is ever signalled.
+const validPid = (pid: number | undefined): pid is number => Number.isInteger(pid) && pid! > 0;
+
 /** Runs `close` (pages, contexts, then the browser) within `ms`; on timeout, SIGKILLs the browser process `pid`. */
 export function closeBrowser(name: string, close: () => Promise<unknown>, pid: number | undefined, ms = 10_000, kill: (pid: number, signal: NodeJS.Signals) => unknown = process.kill) {
-  return withDeadline(name, ms, close(), () => { if (pid !== undefined) kill(pid, "SIGKILL"); });
+  return withDeadline(name, ms, close(), () => {
+    if (!validPid(pid)) throw new Error(`no valid browser pid (${pid}), nothing killed`);
+    kill(pid, "SIGKILL");
+  });
 }
 
 type Child = { pid?: number; exitCode: number | null; signalCode: NodeJS.Signals | null; kill(signal: NodeJS.Signals): unknown; once(event: "exit", listener: () => void): unknown };
@@ -25,6 +31,7 @@ type Child = { pid?: number; exitCode: number | null; signalCode: NodeJS.Signals
 /** Stops a spawned child: SIGTERM, then SIGKILL after `graceMs`, then rejects if it is still alive after `graceMs` more. */
 export async function stopChild(name: string, child: Child, graceMs = 5_000) {
   if (child.exitCode !== null || child.signalCode !== null) return;
+  if (!validPid(child.pid)) throw new Error(`${name}: no valid pid (${child.pid}), nothing signalled`);
   const exited = new Promise<void>((resolve) => child.once("exit", resolve)); // listen before the first signal
   child.kill("SIGTERM");
   try { await withDeadline(`${name} SIGTERM`, graceMs, exited); return; } catch {}

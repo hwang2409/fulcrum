@@ -53,6 +53,26 @@ describe("lifecycle", () => {
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
   });
 
+  for (const pid of [0, -1, 1.5]) {
+    test(`a browser close that times out with pid ${pid} kills nothing and says no valid pid was available`, async () => {
+      const killed: number[] = [];
+      const error = await closeBrowser("browser.close", never, pid, 20, (target) => killed.push(target)).catch((caught: Error) => caught);
+      expect(killed).toEqual([]);
+      expect(String(error)).toContain("browser.close timed out after 0.02 s");
+      expect(String(error)).toContain("no valid browser pid");
+    });
+  }
+
+  for (const pid of [0, -1, undefined]) {
+    test(`a child with pid ${pid} gets no signal and rejects by name`, async () => {
+      const { child, signals } = fakeChild([]);
+      Object.assign(child, { pid });
+      const error = await stopChild("vite", child, 30).catch((caught: Error) => caught);
+      expect(signals).toEqual([]);
+      expect(String(error)).toContain(`vite: no valid pid (${pid}), nothing signalled`);
+    });
+  }
+
   test("a child that already exited gets no signal", async () => {
     const { child, signals } = fakeChild([]);
     child.exitCode = 0;
