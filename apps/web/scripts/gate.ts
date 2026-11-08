@@ -711,6 +711,59 @@ async function checkReconnectBottom(page: Page, engine: string) {
   }
 }
 
+async function checkExternalScrollIntent(page: Page, engine: string, kind: "scrollIntoView" | "tab-focus") {
+  await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+  await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
+  await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
+  await waitAtBottom(page, `${engine} ${kind}: the long run did not load pinned at the bottom`);
+  const targetId = await page.evaluate(() => {
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    if (!scroll) throw new Error("timeline scroll host is missing");
+    const top = scroll.getBoundingClientRect().top;
+    const target = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")]
+      .find((row) => row.getBoundingClientRect().bottom < top - 1);
+    if (!target?.dataset.virtualId) throw new Error("no mounted overscan row above the viewport");
+    return target.dataset.virtualId;
+  });
+  const target = page.locator(`[data-virtual-id="${targetId}"]`);
+  const before = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollTop);
+  if (kind === "scrollIntoView") {
+    await target.evaluate((element) => element.scrollIntoView({ block: "center" }));
+  } else {
+    await page.evaluate((id) => {
+      const target = document.querySelector<HTMLElement>(`[data-virtual-id="${id}"]`)!;
+      target.tabIndex = 2;
+      const sentinel = document.createElement("button");
+      sentinel.dataset.gateFocusSentinel = "true";
+      sentinel.tabIndex = 1;
+      sentinel.style.position = "fixed";
+      sentinel.style.inset = "0 auto auto 0";
+      sentinel.textContent = "focus start";
+      document.body.prepend(sentinel);
+      sentinel.focus();
+    }, targetId);
+    await page.keyboard.press("Tab");
+    if (!await target.evaluate((element) => document.activeElement === element)) {
+      throw new Error(`${engine} tab-focus: Tab did not focus ${targetId}`);
+    }
+  }
+  await page.waitForFunction(({ before }) => {
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    return scroll !== null && scroll.scrollTop < before - 1;
+  }, { before }, { timeout: 5_000 });
+  await settle(page);
+  const readerTop = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => element.scrollTop);
+  fake.emit({ event: "user_message", session_id: LONG, text: `${kind} ${engine} append`, mode: "send", attachments: [], delivery_id: `${kind}-${engine}-append` });
+  await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
+  await settle(page);
+  const after = await page.locator('[data-part="timeline-scroll"]').evaluate((element) => ({
+    top: element.scrollTop,
+    gap: element.scrollHeight - element.clientHeight - element.scrollTop,
+  }));
+  if (Math.abs(after.top - readerTop) > 1) throw new Error(`${engine} ${kind}: reader moved ${(after.top - readerTop).toFixed(3)} px after append`);
+  if (after.gap <= 0.5) throw new Error(`${engine} ${kind}: reader snapped back to the bottom`);
+}
+
 async function reconnectAnchorScenario(page: Page, engine: string) {
   // The app reads the session hash only at load, and a hash-only goto keeps the document, so reload to open LONG.
   await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
@@ -1104,6 +1157,8 @@ try {
       if (!(await page.evaluate(() => location.hash.includes("s-long")))) throw new Error("selection not in the url");
     });
     await check("chromium: reconnect keeps a pinned 1,000-row run at the DOM end 5/5", () => checkReconnectBottom(page, "chromium"));
+    await check("chromium: scrollIntoView into content keeps the reader position", () => checkExternalScrollIntent(page, "chromium", "scrollIntoView"));
+    await check("chromium: Tab focus into content keeps the reader position", () => checkExternalScrollIntent(page, "chromium", "tab-focus"));
     await check("chromium: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(page, "chromium"));
     // Here, not with the later WebKit lane check: the mobile checks re-arm the fake's live turn, and a running turn
     // keeps zeta from opening another session. The Chromium page leaves meanwhile, so WebKit gets the one controller.
@@ -1112,6 +1167,8 @@ try {
     try {
       const reconnectWebkitPage = await reconnectWebkit.newPage({ viewport: { width: 1440, height: 900 } });
       await check("webkit: reconnect keeps a pinned 1,000-row run at the DOM end 5/5", () => checkReconnectBottom(reconnectWebkitPage, "webkit"));
+      await check("webkit: scrollIntoView into content keeps the reader position", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "scrollIntoView"));
+      await check("webkit: Tab focus into content keeps the reader position", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "tab-focus"));
       await check("webkit: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(reconnectWebkitPage, "webkit"));
     } finally {
       await reconnectWebkit.close();
