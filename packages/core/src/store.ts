@@ -85,6 +85,10 @@ const outlineSuffixLength = (older: readonly OutlineItem[], newer: readonly Outl
   const offset = newer.length - older.length;
   return older.every((item, index) => item.id === newer[offset + index]?.id) ? offset : -1;
 };
+// push(...source) passes every element as a call argument and throws RangeError for large arrays.
+const append = <T>(target: T[], source: readonly T[]) => {
+  for (const item of source) target.push(item);
+};
 // The one owner of whether a resync notifies outline subscribers: always when a change is pending (a read may have
 // flushed it before its frame ran), else only when the replay's rows differ from the outline subscribers hold. Outline
 // ids carry their kind, so ids decide. What it publishes is a replacement (`change: null`).
@@ -97,7 +101,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let pending: RunEvent[] = [];
   let acceptedLog: RunEvent[] = [];
   let historyOpen = false;
-  let pendingOlder: RunEvent[] = [];
+  let pendingOlderPages: RunEvent[][] = [];
   const listeners = new Set<Listener>();
   const outlineListeners = new Set<Listener>();
   const itemListeners = new Map<string, Set<Listener>>();
@@ -161,7 +165,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       return false;
     }
     current = next;
-    if (accepted) acceptedLog.push(...accepted);
+    if (accepted) append(acceptedLog, accepted);
     stateChanged = true;
     if (current.outline !== beforeOutline) {
       // One change per notification: flushes before it (a read forces one) extend it, so subscribers see one edit list.
@@ -175,9 +179,11 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     return true;
   };
   const flushPrepend = () => {
-    if (pendingOlder.length === 0 || disposed || desynced) return false;
-    const older = pendingOlder;
-    pendingOlder = [];
+    if (pendingOlderPages.length === 0 || disposed || desynced) return false;
+    const pages = pendingOlderPages;
+    pendingOlderPages = [];
+    const older: RunEvent[] = [];
+    for (let index = pages.length - 1; index >= 0; index--) append(older, pages[index]!);
     const beforeOutline = current.outline;
     const nextEntities = new Map<string, RunItem>();
     const nextAliases = new Map<string, string>();
@@ -272,7 +278,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
           flush();
           flushPrepend();
           notify();
-        } while ((pending.length > 0 || pendingOlder.length > 0) && !disposed && !desynced);
+        } while ((pending.length > 0 || pendingOlderPages.length > 0) && !disposed && !desynced);
       } finally {
         running = false;
       }
@@ -339,7 +345,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       // Pending keyed notifications stay; every prior row is replaced (or removed), so its listener runs too.
       entities.forEach((_, id) => changedItems.add(id));
       pending = [];
-      pendingOlder = [];
+      pendingOlderPages = [];
       entities.clear();
       messageAliases.clear();
       current = structuredClone(initialState);
@@ -349,7 +355,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       outlineChanged = false;
       desynced = false;
       acceptedLog = [];
-      pending.push(...events);
+      append(pending, events);
       // Inside a notification the flush waits for notify's next pass, so the rows are not known yet: notify then.
       const flushed = flush();
       stateChanged = true;
@@ -393,7 +399,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (!historyOpen) throw new Error("prepend requires an open history window");
       flush();
       notify();
-      pendingOlder = [...events, ...pendingOlder];
+      pendingOlderPages.push([...events]);
       scheduleFlush();
       report();
     },
@@ -412,7 +418,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (disposed) return;
       disposed = true;
       pending = [];
-      pendingOlder = [];
+      pendingOlderPages = [];
       acceptedLog = [];
       historyOpen = false;
       current = structuredClone(initialState);

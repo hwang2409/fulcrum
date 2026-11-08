@@ -28,8 +28,20 @@ export type StreamResult = StreamCase & {
   receiptSize: number;
 };
 
+export type PrependScalingResult = {
+  name: string;
+  smallPageCount: number;
+  largePageCount: number;
+  maximumRatio: number;
+  small: number;
+  large: number;
+  ratio: number;
+  rows: number;
+};
+
 export type WorkloadResult = {
   streams: StreamResult[];
+  queuedPrepends: PrependScalingResult[];
   timedCpu: number;
   prepend: { elapsed: number; rows: number };
   outlineSize: number;
@@ -52,6 +64,13 @@ const streamCases: readonly StreamCase[] = [
   // rejoined every chunk per read, 9.393. max(4, 1.5 * 3.530) = 5.3, so 6.
   { name: "reasoning read every event", deltaSize: 1, flushEvery: 1, readText: true, reference: { kind: "reasoning", seeds: 500, deltas: 3_000 }, subject: { kind: "reasoning", seeds: 500, deltas: 30_000 }, maximumRatio: 6 },
 ];
+const prependCases = [
+  // Times only the prepend calls; the old queue copied every queued row on each call.
+  // Linear samples: local standalone max 8.76 (11 runs), local paired a/b max 10.50
+  // (7 runs). Quadratic main-store samples: local min 46.0 (11 runs).
+  // max(4, 1.5 * 10.50) = 16.
+  { name: "queued one-row prepend pages", smallPageCount: 2_000, largePageCount: 20_000, maximumRatio: 16 },
+] as const;
 const runs = 5;
 let burnSink = 0;
 
@@ -114,6 +133,43 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
     };
   });
 
+  const runPrepend = (pageCount: number) => {
+    const pages = Array.from({ length: pageCount }, (_, page) => [{ type: "message_commit" as const, message_id: `queued-${page}`, message: { role: "assistant", content: [{ type: "text", text: "old" }] } }]);
+    const store = createRunStore(() => {});
+    store.beginHistory();
+    // A collection inside a sub-millisecond sample swamped it in paired a/b runs.
+    if (typeof Bun.gc === "function") Bun.gc(true);
+    const start = process.cpuUsage();
+    for (const page of pages) store.prepend(page);
+    const usage = process.cpuUsage(start);
+    const rows = store.getOutline().length;
+    if (rows !== pageCount) throw new Error("invalid queued prepend result");
+    store.dispose();
+    return { elapsed: (usage.user + usage.system) / 1_000, rows };
+  };
+  const queuedPrepends = prependCases.map(({ name, smallPageCount, largePageCount, maximumRatio }) => {
+    runPrepend(smallPageCount);
+    runPrepend(largePageCount);
+    const measurements = Array.from({ length: runs }, () => {
+      const small = runPrepend(smallPageCount);
+      if (typeof Bun.gc === "function") Bun.gc(true);
+      const large = runPrepend(largePageCount);
+      if (typeof Bun.gc === "function") Bun.gc(true);
+      return { small, large };
+    });
+    timedCpu += measurements.reduce((total, { small, large }) => total + small.elapsed + large.elapsed, 0);
+    return {
+      name,
+      smallPageCount,
+      largePageCount,
+      maximumRatio,
+      small: median(measurements.map(({ small }) => small.elapsed)),
+      large: median(measurements.map(({ large }) => large.elapsed)),
+      ratio: median(measurements.map(({ small, large }) => large.elapsed / Math.max(small.elapsed, 0.001))),
+      rows: measurements.at(-1)!.large.rows,
+    };
+  });
+
   const prependStore = createRunStore(() => {});
   prependStore.beginHistory();
   for (let i = 0; i < 100_000; i++) prependStore.dispatch({ type: "message_commit", message_id: `current-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
@@ -122,5 +178,5 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
   for (let page = 0; page < 50; page++) prependStore.prepend(Array.from({ length: 200 }, (_, row) => ({ type: "message_commit" as const, message_id: `older-${page}-${row}`, message: { role: "assistant", content: [{ type: "text", text: "old" }] } })));
   const prependUsage = process.cpuUsage(prependStart);
   const prepend = { elapsed: (prependUsage.user + prependUsage.system) / 1_000, rows: prependStore.getOutline().length };
-  return { streams, timedCpu, prepend, outlineSize: prepend.rows };
+  return { streams, queuedPrepends, timedCpu, prepend, outlineSize: prepend.rows };
 }
