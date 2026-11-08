@@ -73,9 +73,11 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
   const liveWaiters = new Map<string, Array<(dropped: boolean) => void>>();
   store?.subscribe(() => {
     for (const { id } of store.getOutline()) {
-      const event = store.getItem(id)?.event;
-      const deliveryId = event?.type === "delivery_status" ? event.delivery_id : event?.type === "user_message" ? event.delivery_id : undefined;
-      const status = event?.type === "delivery_status" ? event.status : event?.type === "user_message" ? event.delivery_status : undefined;
+      const item = store.getItem(id);
+      if (!item || !("event" in item)) continue;
+      const { event } = item;
+      const deliveryId = event.type === "delivery_status" ? event.delivery_id : event.type === "user_message" ? event.delivery_id : undefined;
+      const status = event.type === "delivery_status" ? event.status : event.type === "user_message" ? event.delivery_status : undefined;
       if (!deliveryId || !status) continue;
       const dropped = status === "dropped";
       liveDropped.set(deliveryId, dropped);
