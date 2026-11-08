@@ -28,7 +28,7 @@ const stream = (id: string, value: string): RunEvent[] => [
 // An AI SDK UI message stream through the real adapter: a text part ends, then a tool runs, reports a preliminary
 // output, and never ends. The stream never reaches `finish`, so the message stays open while the tool below runs.
 function aiSdkTextThenTool(key: string): RunEvent[] {
-  const { decode } = createAiSdkAdapter({ streamKey: key });
+  const { decode } = createAiSdkAdapter({ streamKey: key, originalMessages: [] });
   return [
     { type: "start", messageId: key },
     { type: "start-step" },

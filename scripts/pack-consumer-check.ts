@@ -62,7 +62,7 @@ if (typeof respondToApproval !== "function" || typeof decodeAiSdkMessage !== "fu
   throw new Error("ai-sdk approval and reload exports are missing");
 
 const store = createRunStore(() => {});
-const adapter = createAiSdkAdapter({ streamKey: "chat-request-123" });
+const adapter = createAiSdkAdapter({ streamKey: "chat-request-123", originalMessages: [] });
 export function onAiSdkPart(part: unknown) {
   for (const event of adapter.decode(part)) store.dispatch(event);
 }

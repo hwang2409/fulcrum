@@ -137,32 +137,39 @@ export interface AiSdkAdapterOptions {
   /** Stable key for this stream, unique within its run. It names messages only when `start` carries no message id. */
   streamKey: string;
   /**
-   * The messages this stream's request sent: the server's `toUIMessageStream({ originalMessages })`. A continuation
-   * (the last one is the assistant message it continues) numbers its messages after the ones that message already has.
+   * The messages this stream's request sent (`sendMessages({ messages })` in a transport; the server's
+   * `originalMessages`). Required: a continuation (the last one is the assistant message it continues) numbers its
+   * messages after the ones that message already has, and without them it would overwrite the text before the tool.
    */
-  originalMessages?: readonly unknown[];
+  originalMessages: readonly unknown[];
 }
+
+const serverFix = "On the server, pass both `originalMessages` and `generateMessageId` to `toUIMessageStreamResponse` (or `toUIMessageStream`). See https://github.com/hwang2409/fulcrum/blob/main/packages/ai-sdk/README.md#server-message-ids";
 
 export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   const streamKey = string(options?.streamKey, "options.streamKey");
   const original = options.originalMessages;
-  if (original !== undefined && !Array.isArray(original)) throw new Error("options.originalMessages must be an array");
-  const last = original?.at(-1) as Row | undefined;
-  const continued = (messageId: string) => last?.role === "assistant" && last.id === messageId ? replayMessage(last).count : 0;
+  if (!Array.isArray(original)) throw new Error("options.originalMessages must be an array");
+  const last = original.at(-1) as Row | undefined;
+  const continues = last?.role === "assistant" && typeof last.id === "string" ? last.id : undefined;
+  const continued = (messageId: string) => messageId === continues ? replayMessage(last!).count : 0;
+  // Development only: a server setup whose message ids a reload cannot match. Once per adapter.
   let warned = false;
-  const anonymousStart = development ? () => {
-    if (warned) return;
+  const checkStart = development ? (messageId: string | undefined) => {
+    if (warned || (messageId !== undefined && (continues === undefined || messageId === continues))) return;
     warned = true;
-    console.warn("@fulcrum/ai-sdk: this stream's `start` part has no messageId, so its rows are named by streamKey and a reload or re-sync from persisted messages adds them again instead of replacing them. On the server, pass `generateMessageId` (and `originalMessages`, so a continuation keeps its message id) to `toUIMessageStreamResponse`. See https://github.com/hwang2409/fulcrum/blob/main/packages/ai-sdk/README.md#streams-without-a-message-id");
+    console.warn(messageId === undefined
+      ? `@fulcrum/ai-sdk: this stream's \`start\` part has no messageId, so its rows are named by streamKey and a re-sync from persisted messages adds them a second time. ${serverFix}`
+      : `@fulcrum/ai-sdk: this stream continues assistant message "${continues}", but its \`start\` part names a new message "${messageId}", so a reload renames the message and a re-sync adds its earlier text a second time. ${serverFix}`);
   } : undefined;
-  return { decode: messageDecoder(streamKey, continued, anonymousStart).decode };
+  return { decode: messageDecoder(streamKey, continued, checkStart).decode };
 }
 
 /**
  * The stream decoder. `continued(messageId)` is how many fulcrum messages that UI message already has, so a
  * continuation numbers its messages after them. `streamKey` names the messages of a stream with no message id.
  */
-function messageDecoder(streamKey: string | undefined, continued: (messageId: string) => number, anonymousStart?: () => void) {
+function messageDecoder(streamKey: string | undefined, continued: (messageId: string) => number, checkStart?: (messageId: string | undefined) => void) {
   const wireId = (kind: AiSdkEntityKind, id: string) => encodeAiSdkEntityId({ source: "wire", kind, id });
   let wireMessageId: string | undefined;
   /** Fulcrum messages so far per UI message id (`undefined`: the stream's messages without one). */
@@ -337,7 +344,7 @@ function messageDecoder(streamKey: string | undefined, continued: (messageId: st
     if (type === "start") {
       const events = close();
       wireMessageId = optionalWireString(part.messageId, "part.messageId");
-      if (wireMessageId === undefined) anonymousStart?.();
+      checkStart?.(wireMessageId);
       if (wireMessageId !== undefined && !counters.has(wireMessageId)) counters.set(wireMessageId, continued(wireMessageId));
       const messageId = wireMessageId !== undefined ? wireId("message", wireMessageId) : undefined;
       blocks.clear(); tools.clear();
@@ -409,6 +416,8 @@ const pendingApproval = (messages: AiSdkApprovalTarget["chat"]["messages"], id: 
  * left behind by a new prompt, a second answer, an unknown id). The SDK records first and fulcrum ends the card only
  * after: if the SDK call rejects, nothing is dispatched. Either way a rejected promise makes an `Approval` card show
  * the error and offer its buttons again, instead of claiming a decision the SDK never made.
+ * Limit: `useChat()`'s `messages` is the last render's snapshot, so two calls for one approval before a re-render both
+ * pass the check. An `Approval` card cannot do this (it sends one decision at a time); a host calling it directly must.
  */
 export async function respondToApproval(
   { chat, dispatch }: AiSdkApprovalTarget,
@@ -418,9 +427,13 @@ export async function respondToApproval(
   if (identity.source !== "wire" || identity.kind !== "approval") throw new Error("requestId must be an AI SDK approval request id");
   const response: AiSdkApprovalResponse = { id: identity.id, approved, ...(reason !== undefined ? { reason } : {}) };
   const end = aiSdkApprovalEnd(response);
-  // An Approval card shows this message to the user.
+  // An Approval card shows these messages to the user; the SDK's own error stays as the cause.
   if (!pendingApproval(chat.messages, identity.id)) throw new Error("this approval is no longer waiting for a decision");
-  await chat.addToolApprovalResponse(response);
+  try {
+    await chat.addToolApprovalResponse(response);
+  } catch (error) {
+    throw new Error("the decision could not be saved, try again", { cause: error });
+  }
   dispatch(end);
 }
 
@@ -431,6 +444,15 @@ const replayBlock = (play: Play, part: Row, type: "text" | "reasoning", id: stri
   play({ type: `${type}-start`, id, providerMetadata: part.providerMetadata });
   play({ type: `${type}-delta`, id, delta: part.text });
   play({ type: `${type}-end`, id });
+};
+
+/** An approval replays as its request, then the decision if the user made one. */
+const replayApproval = (play: Play, events: RunEvent[], toolCallId: unknown, approval: Row, at: string) => {
+  play({ type: "tool-approval-request", toolCallId, approvalId: approval.id });
+  if (approval.approved === undefined) return;
+  // A malformed decision is one error; the tool's outcome still plays, so the row does not stay live.
+  try { events.push(aiSdkApprovalEnd(approval as unknown as AiSdkApprovalResponse, `${at}.approval`)); }
+  catch (error) { events.push(...invalid(error)); }
 };
 
 /** A tool part replays as its input, its approval request, the decision, then its outcome. */
@@ -451,14 +473,7 @@ const replayTool = (play: Play, events: RunEvent[], part: Row, type: string, at:
     return;
   }
   play({ type: "tool-input-available", ...call, input: part.input, providerMetadata: part.callProviderMetadata });
-  if (approval) {
-    play({ type: "tool-approval-request", toolCallId, approvalId: approval.id });
-    // A malformed decision is one error; the outcome below still plays, so the row does not stay live.
-    if (approval.approved !== undefined) {
-      try { events.push(aiSdkApprovalEnd(approval as unknown as AiSdkApprovalResponse, `${at}.approval`)); }
-      catch (error) { events.push(...invalid(error)); }
-    }
-  }
+  if (approval) replayApproval(play, events, toolCallId, approval, at);
   if (state === "output-available") play({ type: "tool-output-available", toolCallId, output: part.output, preliminary: part.preliminary });
   else if (state === "output-error") play({ type: "tool-output-error", toolCallId, errorText: part.errorText });
   else if (state === "output-denied") play({ type: "tool-output-denied", toolCallId });

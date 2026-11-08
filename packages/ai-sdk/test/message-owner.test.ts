@@ -84,7 +84,7 @@ const liveAtToolRow = (events: RunEvent[]) => {
  * One adapter per stream, given the messages its request sent; a host event (what respondToApproval dispatched, or a
  * reload's events) plays as is.
  */
-type Entry = readonly [streamKey: string, parts: readonly Chunk[], originalMessages?: readonly UIMessage[]] | RunEvent;
+type Entry = readonly [streamKey: string, parts: readonly Chunk[], originalMessages: readonly UIMessage[]] | RunEvent;
 const play = (entries: readonly Entry[]) => entries.flatMap((entry) => {
   if (!Array.isArray(entry)) return [entry as RunEvent];
   const [streamKey, parts, originalMessages] = entry;
@@ -136,26 +136,26 @@ const lateParts = async () => {
 };
 
 const cases: Array<[name: string, streams: () => Promise<readonly Entry[]>, expected: string[]]> = [
-  ["single step", async () => [["k", await uiStream([[...text("t", "hello ", "world"), finish("stop")]])]], [
+  ["single step", async () => [["k", await uiStream([[...text("t", "hello ", "world"), finish("stop")]]), [user]]], [
     "message:m:message:m:1 text:hello world",
   ]],
-  ["multi-step text, tool, text", async () => [["k", await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...text("t2", "found a."), finish("stop")]])]], [
+  ["multi-step text, tool, text", async () => [["k", await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...text("t2", "found a."), finish("stop")]]), [user]]], [
     "message:m:message:m:1 text:looking.",
     "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
     "message:m:message:m:2 text:found a.",
   ]],
-  ["reasoning per step", async () => [["k", await uiStream([[...reasoning("r1", "plan"), ...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...reasoning("r2", "done"), ...text("t2", "found a."), finish("stop")]])]], [
+  ["reasoning per step", async () => [["k", await uiStream([[...reasoning("r1", "plan"), ...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...reasoning("r2", "done"), ...text("t2", "found a."), finish("stop")]]), [user]]], [
     "message:m:message:m:1 reasoning:plan|text:looking.",
     "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
     "message:m:message:m:2 reasoning:done|text:found a.",
   ]],
-  ["a step with only tools", async () => [["k", await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [call("c2", "cat"), finish("tool-calls")], [...text("t3", "read it."), finish("stop")]])]], [
+  ["a step with only tools", async () => [["k", await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [call("c2", "cat"), finish("tool-calls")], [...text("t3", "read it."), finish("stop")]]), [user]]], [
     "message:m:message:m:1 text:looking.",
     "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
     "tool:w:tool:c2 cat{\"path\":\"a\"} -> body",
     "message:m:message:m:2 text:read it.",
   ]],
-  ["a text part with no text after a tool", async () => [["k", await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...text("t2"), finish("stop")]])]], [
+  ["a text part with no text after a tool", async () => [["k", await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...text("t2"), finish("stop")]]), [user]]], [
     "message:m:message:m:1 text:looking.",
     "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
   ]],
@@ -216,22 +216,22 @@ const cases: Array<[name: string, streams: () => Promise<readonly Entry[]>, expe
   ]],
   ["a stream that drops before finish", async () => {
     const parts = await uiStream([[...text("t1", "looking."), call("c1", "ls"), finish("tool-calls")], [...text("t2", "found a."), finish("stop")]]);
-    return [["k", parts.slice(0, parts.findIndex((part) => part.type === "text-end" && part.id === "t2"))]];
+    return [["k", parts.slice(0, parts.findIndex((part) => part.type === "text-end" && part.id === "t2")), [user]]];
   }, [
     "message:m:message:m:1 text:looking.",
     "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
     "message:m:message:m:2 live streaming:found a.",
   ]],
-  ["abort mid-step", async () => [["k", await uiStream([[...text("t", "half ", "rest"), finish("stop")]], { abortAfterDelta: "half " })]], [
+  ["abort mid-step", async () => [["k", await uiStream([[...text("t", "half ", "rest"), finish("stop")]], { abortAfterDelta: "half " }), [user]]], [
     "message:m:message:m:1 text:half ",
     "error aborted",
   ]],
-  ["error mid-step, then the step goes on", async () => [["k", await uiStream([[{ type: "text-start", id: "t" }, { type: "text-delta", id: "t", delta: "half " }, { type: "error", error: "overloaded" }, { type: "text-delta", id: "t", delta: "more" }, { type: "text-end", id: "t" }, finish("stop")]])]], [
+  ["error mid-step, then the step goes on", async () => [["k", await uiStream([[{ type: "text-start", id: "t" }, { type: "text-delta", id: "t", delta: "half " }, { type: "error", error: "overloaded" }, { type: "text-delta", id: "t", delta: "more" }, { type: "text-end", id: "t" }, finish("stop")]]), [user]]], [
     "message:m:message:m:1 text:half ",
     "error ai_sdk_error",
     "message:m:message:m:2 text:more",
   ]],
-  ["duplicate and late parts", async () => [["k", await lateParts()]], [
+  ["duplicate and late parts", async () => [["k", await lateParts(), [user]]], [
     "message:m:message:m:1 reasoning:plan{\"providerMetadata\":[{\"mock\":{\"late\":true}}]}|text:before ",
     "tool:w:tool:c1 ls{\"path\":\"a\"} -> a b",
     "message:m:message:m:2 text:after|text:tail",

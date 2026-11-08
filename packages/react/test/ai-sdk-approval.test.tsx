@@ -63,16 +63,16 @@ test("an approval left behind by a new prompt: respondToApproval rejects, and th
   }
 });
 
-test("the SDK refuses the decision: the card shows the SDK's error, offers its buttons again, and a retry ends it", async () => {
+test("the SDK refuses the decision: the card shows that the decision was not saved, offers its buttons again, and a retry ends it", async () => {
   const chat = new TestChat(async () => [], [asking]);
   let refuse = true;
   const flaky = {
     get messages() { return chat.messages; },
-    addToolApprovalResponse: (response: AiSdkApprovalResponse) => refuse ? Promise.reject(new Error("could not save the decision")) : chat.addToolApprovalResponse(response),
+    addToolApprovalResponse: (response: AiSdkApprovalResponse) => refuse ? Promise.reject(new TypeError("Cannot read properties of undefined (reading 'parts')")) : chat.addToolApprovalResponse(response),
   };
   const { card, click, enabled, alert } = host(flaky);
   await click("approve");
-  expect(alert()).toBe("could not save the decision");
+  expect(alert()).toBe("the decision could not be saved, try again");
   expect(card.getAttribute("data-state")).toBe("pending");
   expect(enabled()).toEqual([true, true]);
   refuse = false;

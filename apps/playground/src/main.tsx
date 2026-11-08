@@ -39,7 +39,7 @@ const aiSdkFixtures = Object.fromEntries(
     const adapters = new Map<string, ReturnType<typeof createAiSdkAdapter>>();
     const decode = ({ stream, originalMessages, part, event }: { stream?: string; originalMessages?: unknown[]; part?: unknown; event?: RunEvent }) => {
       if (event) return [event];
-      const adapter = adapters.get(stream!) ?? createAiSdkAdapter({ streamKey: stream!, originalMessages });
+      const adapter = adapters.get(stream!) ?? createAiSdkAdapter({ streamKey: stream!, originalMessages: originalMessages! });
       adapters.set(stream!, adapter);
       return adapter.decode(part);
     };
