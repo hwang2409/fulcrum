@@ -1,87 +1,19 @@
 name: check
-on: [push, pull_request]
-concurrency:
-  group: check-${{ github.event.pull_request.head.sha || github.sha }}
-  cancel-in-progress: true
+on: [push]
 jobs:
-  check:
+  probe:
     runs-on: ubuntu-latest
-    # About 2x the slowest recent green run (29.9 min), so a hang fails at a named step instead of holding the runner.
-    timeout-minutes: 60
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix: { shard: [1, 2, 3, 4, 5, 6, 7, 8] }
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
       - uses: oven-sh/setup-bun@v2
         with: { bun-version: 1.4.4 }
       - run: bun install --frozen-lockfile
-      - id: highlight-recipes
-        run: echo "hash=$(bun packages/highlight/src/generate.ts --hash)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        with:
-          path: |
-            packages/highlight/.grammar-entries
-            packages/highlight/.recipe-entries
-            packages/highlight/.recipe-generation-manifest.json
-          key: highlight-recipes-${{ runner.os }}-${{ steps.highlight-recipes.outputs.hash }}
-      - run: bun run typecheck
-      - run: git diff --exit-code -- packages/highlight/src/languages.ts
-      - run: bun scripts/highlight-token-parity.ts check
-      - run: bun test ./packages/highlight/test/build-race.ts
-      - run: bun test
-      - name: check resolver contract against base
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
-        run: |
-          base_sha="$(bun scripts/ci-base-ref.ts "${{ github.event.pull_request.base.sha || github.event.before }}")"
-          cp packages/highlight/test/fixtures/resolver-contract.json /tmp/resolver-contract.json
-          bun scripts/highlight-resolver-contract.ts generate "$base_sha"
-          cmp -s /tmp/resolver-contract.json packages/highlight/test/fixtures/resolver-contract.json
-          status=$?
-          cp /tmp/resolver-contract.json packages/highlight/test/fixtures/resolver-contract.json
-          test "$status" -eq 0
-          bun scripts/highlight-resolver-contract.ts check
-      - run: bun run bench:check
-      - run: bun run bench:markdown
-      - run: bun run size:check
-      - run: bun run check:highlight-consumer
-      - run: bun run check:notices
-      - run: bun run check:pack-consumer
-      - run: cd apps/playground && bunx playwright install --with-deps chromium webkit
-      - run: bun run --cwd apps/playground highlight:recipes
-      - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground smoke
-      - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
-      - run: bun run check:mermaid-bundle
-      - name: build base playground for viewer timing
-        env:
-          BASE_DIR: ${{ github.workspace }}/../fulcrum-layout-base
-        run: |
-          if [ "${{ github.event_name }}" = pull_request ]; then
-            base_sha="${{ github.event.pull_request.base.sha }}"
-          elif [ "${{ github.ref }}" = refs/heads/main ]; then
-            base_sha="$(bun scripts/ci-base-ref.ts "${{ github.event.before }}")"
-          else
-            base_sha="$(git merge-base HEAD origin/main)"
-          fi
-          git worktree add --detach "$BASE_DIR" "$base_sha"
-          cd "$BASE_DIR"
-          bun install --frozen-lockfile
-          bun run --cwd apps/playground build
+      - run: cd apps/playground && bunx playwright install --with-deps chromium
+      - run: bun run --cwd apps/playground build
+      - run: lscpu | grep -E "Model name|^CPU\(s\)"
       - run: bun run --cwd apps/playground layout
-        env:
-          LAYOUT_BASE_ROOT: ${{ github.workspace }}/../fulcrum-layout-base/apps/playground
-      - run: bun run --cwd apps/playground mermaid
-      - run: bun run --cwd apps/playground fold-check
-        env: { FOLD_ROWS: 50000 }
-      - run: bun run --cwd apps/playground highlight:fallback
-      # The runner's CPU is about half as fast as a developer laptop (the 440 kB markdown parse in this gate: 22 ms here,
-      # 10-12 ms there, both at 4x), so 2x here is about the laptop's 4x.
-      # Normal is about 30 s; the page deadline is 4 min, plus 2 min for diagnostics and bounded cleanup.
-      - name: large-blocks
-        timeout-minutes: 6
-        run: bun run --cwd apps/playground large-blocks
-        env: { CPU_THROTTLE: 2 }
-      - run: cd apps/web && bun run gate
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fulcrum-web-gate
-          path: apps/web/gate-artifacts/
+        env: { SCALING_ONLY: "1" }

@@ -540,8 +540,8 @@ try {
     }
   }
   browser = await chromium.launch();
-  if (process.env.VIEWER_TIMING_ONLY) {
-    for (const width of [390, 1440]) recordViewerTimingFailures(await checkViewerTiming(browser, width), width, failures);
+  if (process.env.VIEWER_TIMING_ONLY || process.env.SCALING_ONLY) {
+    if (!process.env.SCALING_ONLY) for (const width of [390, 1440]) recordViewerTimingFailures(await checkViewerTiming(browser, width), width, failures);
     recordViewerScaling(await checkViewerScaling(browser), failures);
     await browser.close();
     browser = undefined;
