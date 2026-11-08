@@ -1,4 +1,4 @@
-import { fromZetaEvent, fromZetaHistory, servedTurnOutcome, statusTurnOutcome, type ServedTurnEnd, type SessionLease, type ZetaClient } from "@fulcrum/zeta";
+import { fromZetaEvent, fromZetaHistory, openBackwardHistory, servedTurnOutcome, statusTurnOutcome, type BackwardHistoryCursor, type BackwardHistorySnapshot, type HistoryValidator, type ServedTurnEnd, type SessionLease, type ZetaClient } from "@fulcrum/zeta";
 import type { RunEndOutcome, RunEvent } from "@fulcrum/core";
 
 /** The `SessionMetadata` fields this app reads from `list_sessions` (zeta docs/serve-protocol.md). */
@@ -57,7 +57,6 @@ export type OpenProgress = (messages: number, complete: boolean) => void;
 export type OpenResult = { lease: SessionLease; syncing: boolean; complete: Promise<{ lease?: SessionLease; syncing: boolean; incomplete?: boolean }> };
 
 type HistoryPage = { messages?: unknown[]; next_offset?: number | null };
-type HistoryValidator = { end: number; entry_id: string | null };
 type BackwardHistoryPage = { messages?: unknown[]; next_before?: number | null; history_validator?: HistoryValidator };
 const isApprovalEvent = (event: RunEvent) => event.type === "approval_request" || event.type === "approval_end";
 /** The outcome for an idle snapshot's `run_end`, given every history row the open has loaded so far. */
@@ -111,7 +110,8 @@ async function openBackwardSession(
   endOutcome: EndOutcome = () => undefined,
 ): Promise<OpenResult> {
   const approvalReconnect = client.features.includes("approval_reconnect");
-  let pages: BackwardHistoryPage[] = [];
+  let historyRows: readonly unknown[] = [];
+  let newestRows = 0;
   let tail: unknown[] = [];
   let newestBoundary = 0;
   let newestReplaced = false;
@@ -120,19 +120,10 @@ async function openBackwardSession(
   let activeSignal!: AbortSignal;
   let lease!: SessionLease;
   let initialEvents: RunEvent[] = [];
+  let backwardComplete!: Promise<BackwardHistorySnapshot>;
   const combinedSignal = (replaySignal: AbortSignal) => signal ? AbortSignal.any([signal, replaySignal]) : replaySignal;
-  const rows = () => [...pages].reverse().flatMap((page) => page.messages ?? []).concat(tail);
+  const rows = () => [...historyRows, ...tail];
   const outcome: EndOutcome = (_loadedRows, status) => endOutcome(rows(), status);
-  const requestNewest = async () => {
-    const page = await client.request("session_history", { session_id: id, before: null }, { timeoutMs: 15_000, signal: activeSignal }) as BackwardHistoryPage;
-    if (!page.history_validator || !Number.isInteger(page.history_validator.end)) throw new Error("backward history response has no validator");
-    validator = page.history_validator;
-    newestBoundary = page.next_before ?? 0;
-    newestReplaced = false;
-    pages = [page];
-    tail = [];
-    return page;
-  };
   const pendingSends = () => lease.store.getOutline().flatMap(({ id: itemId }) => {
     const item = lease.store.getItem(itemId);
     return item?.type === "user" && item.event.type === "user_message" && item.event.intent && item.event.delivery_id ? [item.event] : [];
@@ -142,22 +133,35 @@ async function openBackwardSession(
   const publishStatus = (status: ServerStatus) => {
     for (const event of snapshotEvents(id, [], status, true, approvalReconnect, outcome)) lease.store.dispatch(event);
   };
-  const loadOlder = async (publishPages = true) => {
-    while (pages.at(-1)?.next_before != null) {
-      const before = pages.at(-1)!.next_before!;
-      try {
-        const page = await client.request("session_history", { session_id: id, before, history_validator: validator }, { timeoutMs: 15_000, signal: activeSignal }) as BackwardHistoryPage;
-        pages.push(page);
-        if (publishPages) lease.store.prepend(fromZetaHistory(page.messages ?? []));
-        progress?.(rows().length, page.next_before == null);
-      } catch (error) {
-        if (!staleHistorySnapshot(error)) throw error;
-        const pending = publishPages ? pendingSends() : [];
-        const page = await requestNewest();
-        if (publishPages) publishSnapshot(initialStatus, pending);
-        progress?.(rows().length, page.next_before == null);
-      }
+  const requestHistory = async (cursor: BackwardHistoryCursor, requestSignal: AbortSignal) => {
+    const page = await client.request("session_history", {
+      session_id: id,
+      before: cursor.before,
+      ...(cursor.historyValidator ? { history_validator: cursor.historyValidator } : {}),
+    }, { timeoutMs: 15_000, signal: requestSignal }) as BackwardHistoryPage;
+    if (cursor.before === null) {
+      newestBoundary = page.next_before ?? 0;
+      newestRows = Array.isArray(page.messages) ? page.messages.length : 0;
+      if (page.history_validator) validator = page.history_validator;
+      newestReplaced = false;
+      tail = [];
     }
+    return page;
+  };
+  const startBackwardHistory = async (publishPages: boolean, replaceNewest = false) => {
+    const replacementPending = publishPages && replaceNewest ? pendingSends() : [];
+    const opened = await openBackwardHistory(requestHistory, {
+      signal: activeSignal,
+      onSnapshot(snapshot) {
+        historyRows = snapshot.rows;
+        if (publishPages && snapshot.cause === "older") lease.store.prepend(fromZetaHistory(snapshot.pageRows));
+        else if (publishPages && (snapshot.cause === "restart" || (replaceNewest && snapshot.cause === "newest")))
+          publishSnapshot(initialStatus, snapshot.cause === "restart" ? pendingSends() : replacementPending);
+        if (publishPages) progress?.(snapshot.rows.length, snapshot.complete);
+      },
+    });
+    backwardComplete = opened.complete;
+    return opened;
   };
   const loadTail = async () => {
     if (validator.end > 0) await client.request("session_history", { session_id: id, before: validator.end, history_validator: validator }, { timeoutMs: 15_000, signal: activeSignal });
@@ -171,7 +175,7 @@ async function openBackwardSession(
       offset = next;
     }
     if (!newestReplaced) {
-      pages = pages.slice(1);
+      if (newestRows > 0) historyRows = historyRows.slice(0, -newestRows);
       newestReplaced = true;
     }
     tail = loaded;
@@ -193,8 +197,7 @@ async function openBackwardSession(
   lease = await client.replay(id, async (replaySignal) => {
     activeSignal = combinedSignal(replaySignal);
     if (!firstLoad) {
-      await requestNewest();
-      await loadOlder(false);
+      await (await startBackwardHistory(false)).complete;
       return snapshotEvents(id, rows(), await getStatus(client, activeSignal), true, approvalReconnect, outcome);
     }
     firstLoad = false;
@@ -204,17 +207,15 @@ async function openBackwardSession(
       const resumed = await client.request("resume", { session_id: id }, { timeoutMs: 30_000, signal: activeSignal }) as { session?: SessionMeta };
       initialStatus = { session: resumed.session ?? null, state: "idle", pending_approvals: [] };
     }
-    const page = await requestNewest();
-    progress?.(rows().length, page.next_before == null);
-    initialEvents = snapshotEvents(id, rows(), initialStatus, page.next_before == null, approvalReconnect, outcome);
+    const { snapshot } = await startBackwardHistory(true);
+    initialEvents = snapshotEvents(id, rows(), initialStatus, snapshot.complete, approvalReconnect, outcome);
     return initialEvents;
   }, true);
   lease.store.beginHistory();
   lease.store.resync(initialEvents);
 
   const complete = (async () => {
-    await wait(0, activeSignal);
-    await loadOlder();
+    await backwardComplete;
     let status = await waitUntilIdle();
     if (client.replayRevision(id) === 0 && client.finishReplay(id, 0)) {
       publishStatus(status);
@@ -227,10 +228,7 @@ async function openBackwardSession(
           await loadTail();
         } catch (error) {
           if (!staleHistorySnapshot(error)) throw error;
-          const pending = pendingSends();
-          await requestNewest();
-          publishSnapshot(initialStatus, pending);
-          await loadOlder();
+          await (await startBackwardHistory(true, true)).complete;
         }
         status = await getStatus(client, activeSignal);
         publishStatus(status);

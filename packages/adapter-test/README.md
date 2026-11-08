@@ -18,6 +18,6 @@ const failures = runAdapterConformance({
 if (failures.length) throw new Error(failures.join("\n"));
 ```
 
-The canonical scenarios check text stream and commit; streamed or complete tool arguments; tool output, end, and error; aborts; unknown and malformed input; session isolation; adversarial wire and synthetic ids; replay-stable ids across independent streams; and stable ids after reconnect replay. Reasoning, approval, reset/retry, and usage apply only when declared in `capabilities`. `@fulcrum/zeta` and `@fulcrum/ai-sdk` use the same kit.
+The canonical scenarios check text stream and commit; streamed or complete tool arguments; tool output, end, and error; aborts; unknown and malformed input; session isolation; adversarial wire and synthetic ids; replay-stable ids across independent streams; and stable ids after reconnect replay. A capability set to `true` requires its feature fixtures and events; a capability set to `false` promises that the adapter will not emit that feature's events. `@fulcrum/zeta` and `@fulcrum/ai-sdk` use the same kit.
 
 AI SDK fixtures come from `ai@6.0.0` and its token-free `MockLanguageModelV3`. Regenerate them with `bun run --cwd packages/ai-sdk fixtures`.
