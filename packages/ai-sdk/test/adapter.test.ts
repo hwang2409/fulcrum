@@ -68,7 +68,7 @@ test("scopes part, tool, and approval ids to their stream", () => {
     const message = adapter.decode({ type: "text-delta", id: "same", delta: "x" });
     const tool = adapter.decode({ type: "tool-input-available", toolCallId: "same", toolName: "deploy", input: {} });
     const approval = adapter.decode({ type: "tool-approval-request", toolCallId: "same", approvalId: "same" });
-    return [message[0], tool[0], approval[0]].map((event) => event?.type === "message_delta" ? event.message_id
+    return [message[0], tool.at(-1), approval[0]].map((event) => event?.type === "message_delta" ? event.message_id
       : event?.type === "tool_start" ? event.tool_call.id
       : event?.type === "approval_request" ? event.request_id : undefined);
   };
@@ -152,7 +152,8 @@ test("pinned AI SDK writer ids round trip to their original wire ids", () => {
   const message = decodeFixture("text").find((event) => event.type === "message_commit");
   const tool = decodeFixture("tool").find((event) => event.type === "tool_start");
   const approval = decodeFixture("approval").find((event) => event.type === "approval_request");
-  expect(message?.type === "message_commit" ? decodeAiSdkEntityId(message.message_id!) : undefined).toEqual({ source: "wire", kind: "message", id: "message-1" });
+  // A UI message spans steps and approval continuations, so its fulcrum messages are stream-keyed; each keeps the wire id.
+  expect(message?.type === "message_commit" ? decodeAiSdkEntityId(message.message_id!) : undefined).toEqual({ source: "synthetic", kind: "message", streamKey: "text", counter: 1 });
   expect(message?.type === "message_commit" ? message.message.metadata : undefined).toEqual({ wireId: "message-1" });
   expect(tool?.type === "tool_start" ? decodeAiSdkEntityId(tool.tool_call.id) : undefined).toEqual({ source: "wire", kind: "tool", id: "call-1" });
   expect(tool?.type === "tool_start" ? tool.tool_call.meta : undefined).toMatchObject({ wireId: "call-1" });
@@ -175,7 +176,6 @@ test("pinned AI SDK emits blank message ids without losing identity", async () =
     for await (const part of result.toUIMessageStream({ generateMessageId: () => messageId })) parts.push(part);
     const adapter = createAiSdkAdapter({ streamKey: "blank-message" });
     const commit = parts.flatMap((part) => adapter.decode(part)).find((event) => event.type === "message_commit");
-    expect(commit?.type === "message_commit" ? decodeAiSdkEntityId(commit.message_id!) : undefined).toEqual({ source: "wire", kind: "message", id: messageId });
     expect(commit?.type === "message_commit" ? commit.message.metadata : undefined).toEqual({ wireId: messageId });
   }
 });
@@ -276,9 +276,9 @@ test("preserves block and tool protocol metadata in generic meta bags", () => {
   adapter.decode({ type: "start", messageId: "meta" });
   adapter.decode({ type: "text-start", id: "text", providerMetadata: { mock: { trace: "t" } } });
   adapter.decode({ type: "text-delta", id: "text", delta: "hello", providerMetadata: { mock: { trace: "delta" } } });
-  const [tool] = adapter.decode({ type: "tool-input-available", toolCallId: "call", toolName: "search", input: {}, providerExecuted: true, dynamic: true, title: "Search", providerMetadata: { mock: { trace: "tool" } } });
+  // The tool row seals the text before it, so its commit comes first.
+  const [commit, tool] = adapter.decode({ type: "tool-input-available", toolCallId: "call", toolName: "search", input: {}, providerExecuted: true, dynamic: true, title: "Search", providerMetadata: { mock: { trace: "tool" } } });
   expect(tool?.type === "tool_start" ? tool.tool_call.meta : undefined).toEqual({ providerExecuted: true, dynamic: true, title: "Search", providerMetadata: [{ mock: { trace: "tool" } }], wireId: "call" });
-  const commit = adapter.decode({ type: "finish" }).find((event) => event.type === "message_commit");
   expect(commit?.type === "message_commit" ? commit.message.content[0]?.meta : undefined).toEqual({ providerMetadata: [{ mock: { trace: "t" } }, { mock: { trace: "delta" } }] });
 });
 
@@ -389,7 +389,7 @@ test("a multi-step run reads text, tool, text in order: each step's text after a
     "reasoning:two folders|text:The project has two folders.",
   ]);
   const ids = events.filter((event) => event.type === "message_commit").map((event) => event.message_id);
-  expect(ids).toEqual(["w:message:multi", "s:message:multi:1"]);
+  expect(ids).toEqual(["s:message:multi:1", "s:message:multi:2"]);
   expect(play().events).toEqual(events);
 });
 
