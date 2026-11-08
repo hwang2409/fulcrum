@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createRunStore, type OutlineSnapshot } from "../src/index.js";
+import { createRunStore, type OutlineSnapshot, type RunEvent } from "../src/index.js";
 import { seededRandom } from "./fuzz.js";
 
 const message = (text: string) => ({
@@ -605,4 +605,42 @@ test("delivery-id reconciliation reads a constant number of entities in a 100k-r
     setMessageAlias() {},
   });
   expect(reads).toBeLessThan(10);
+});
+
+test("prepend copies its input so later caller mutation cannot change queued history", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((flush) => jobs.push(flush));
+  store.beginHistory();
+  const page: RunEvent[] = [{ type: "message_commit", message_id: "old", message: message("old") }];
+  store.prepend(page);
+  page.push({ type: "message_commit", message_id: "injected", message: message("injected") });
+  jobs.shift()!();
+  expect(store.getOutline().map(({ id }) => id)).toEqual(["message:old"]);
+});
+
+test("resync drops prepend pages still queued for the next frame", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((flush) => jobs.push(flush));
+  store.beginHistory();
+  store.prepend([{ type: "message_commit", message_id: "stale", message: message("stale") }]);
+  store.resync([{ type: "message_commit", message_id: "fresh", message: message("fresh") }]);
+  for (const job of jobs.splice(0)) job();
+  expect(store.getOutline().map(({ id }) => id)).toEqual(["message:fresh"]);
+});
+
+// Spreading a page into push() passes every event as a call argument; Bun 1.4.4 throws RangeError near 700k.
+const hugePage = (): RunEvent[] => new Array(1_000_000).fill({ type: "message_delta", message_id: "huge", delta: "x" });
+
+test("a 1,000,000-event history page prepends without exceeding the call argument limit", () => {
+  const store = createRunStore((flush) => flush());
+  store.beginHistory();
+  store.prepend(hugePage());
+  expect((store.getItem("message:huge") as { text: string }).text).toHaveLength(1_000_000);
+});
+
+test("a 1,000,000-event resync inside a history window applies without exceeding the call argument limit", () => {
+  const store = createRunStore((flush) => flush());
+  store.beginHistory();
+  store.resync(hugePage());
+  expect((store.getItem("message:huge") as { text: string }).text).toHaveLength(1_000_000);
 });

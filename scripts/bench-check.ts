@@ -21,8 +21,8 @@ for (const queued of result.queuedPrepends) {
     console.error(`${queued.name} result correctness failed`);
     process.exit(1);
   }
-  if (queued.ratio > queued.maximumScalingRatio) {
-    console.error(`${queued.name} scaling failed: 10x pages took ${queued.ratio.toFixed(3)}x (limit ${queued.maximumScalingRatio.toFixed(1)}x)`);
+  if (queued.ratio > queued.maximumRatio) {
+    console.error(`${queued.name} scaling failed: 10x pages took ${queued.ratio.toFixed(3)}x (limit ${queued.maximumRatio.toFixed(1)}x)`);
     process.exit(1);
   }
 }

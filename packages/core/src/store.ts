@@ -82,6 +82,10 @@ const outlineSuffixLength = (older: readonly OutlineItem[], newer: readonly Outl
   const offset = newer.length - older.length;
   return older.every((item, index) => item.id === newer[offset + index]?.id) ? offset : -1;
 };
+// push(...source) passes every element as a call argument and throws RangeError for large arrays.
+const append = <T>(target: T[], source: readonly T[]) => {
+  for (const item of source) target.push(item);
+};
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
   let entities = new Map<string, RunItem>();
   let messageAliases = new Map<string, string>();
@@ -151,7 +155,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       return false;
     }
     current = next;
-    if (accepted) acceptedLog.push(...accepted);
+    if (accepted) append(acceptedLog, accepted);
     stateChanged = true;
     if (current.outline !== beforeOutline) {
       // One change per notification: flushes before it (a read forces one) extend it, so subscribers see one edit list.
@@ -169,7 +173,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     const pages = pendingOlderPages;
     pendingOlderPages = [];
     const older: RunEvent[] = [];
-    for (let index = pages.length - 1; index >= 0; index--) older.push(...pages[index]!);
+    for (let index = pages.length - 1; index >= 0; index--) append(older, pages[index]!);
     const beforeOutline = current.outline;
     const nextEntities = new Map<string, RunItem>();
     const nextAliases = new Map<string, string>();
@@ -308,7 +312,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       outlineChanged = false;
       desynced = false;
       acceptedLog = [];
-      pending.push(...events);
+      append(pending, events);
       flush();
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
