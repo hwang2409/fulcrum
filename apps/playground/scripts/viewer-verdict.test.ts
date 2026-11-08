@@ -20,6 +20,7 @@ describe("recordViewerTimingFailures", () => {
     { name: "42472956579 @ 1440 false failure passes", ...slowRunner(68.5 / noOp.appendMs), ratios: paired(1.01, 1.06, 1.01, 1.07), fails: [] },
     { name: "42494975568 a1 @ 1440 false failure passes", ...slowRunner(65.7 / noOp.appendMs), ratios: paired(1.04, 1.02, 1.00, 1.01), fails: [] },
     { name: "a runner 1.6x slower passes", ...slowRunner(1.6), ratios: even, fails: [] },
+    { name: "a fast runner's no-op run passes (42492135444 a5 @ 1440)", candidate: sample(22.8, 31.3), calibration: 27.9, ratios: paired(1.03, 1.06, 1.00, 1.00), fails: [] },
     { name: "settled no-op run passes", candidate: sample(noOp.openMs, noOp.appendMs), calibration: noOp.calibration, ratios: paired(1.00, 0.98, 0.97, 0.97), fails: [] },
     // Head-only regressions belong to the paired ratios, not to the calibrated ceiling.
     { name: "head-only regression fails the paired ratio only", candidate: sample(noOp.openMs, 60), calibration: noOp.calibration, ratios: paired(1, 1, 1.6, 1.6), fails: [/append ratio 1\.60x is over 1\.4x/, /append task ratio 1\.60x is over 1\.4x/] },
@@ -29,7 +30,8 @@ describe("recordViewerTimingFailures", () => {
       fails: [/open task ratio 1\.72x/, /append ratio 1\.45x/, /open \(4x throttle\): calibrated ceiling/, /append \(4x throttle\): calibrated ceiling/] },
     // Common regressions: head and base are equally slow (paired 1.0x) on a normal runner. Only the calibrated ceiling sees them.
     { name: "common append regression of 1.5x fails the calibrated ceiling", candidate: sample(noOp.openMs, noOp.appendMs * 1.5), calibration: noOp.calibration, ratios: even, fails: [/append \(4x throttle\): calibrated ceiling, candidate 83\.7 ms \/ calibration 42\.9 ms = 1\.95x is over 1\.83x/] },
-    { name: "common open regression of 1.5x fails the calibrated ceiling", candidate: sample(noOp.openMs * 1.5, noOp.appendMs), calibration: noOp.calibration, ratios: even, fails: [/open \(4x throttle\): calibrated ceiling, candidate 40\.2 ms \/ calibration 42\.9 ms = 0\.94x is over 0\.91x/] },
+    // This runner's open ratio (0.62x) sits below the highest no-op open ratio (0.82x), so its open needs 2x to cross.
+    { name: "common open regression of 2x fails the calibrated ceiling", candidate: sample(noOp.openMs * 2, noOp.appendMs), calibration: noOp.calibration, ratios: even, fails: [/open \(4x throttle\): calibrated ceiling, candidate 53\.6 ms \/ calibration 42\.9 ms = 1\.25x is over 1\.15x/] },
   ];
   for (const { name, candidate, calibration, ratios, fails } of cases) {
     test(name, () => {

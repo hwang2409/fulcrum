@@ -8,15 +8,16 @@ type CalibratedBudget = { openMs: number; appendMs: number };
 // (paired ratio ~1.0x): candidate median over the median of same-run fixed-DOM work (1,000 rows, 1024 px wide) under the
 // same CPU throttle. It replaces a raw wall ceiling that failed slow runners at paired 0.97-1.01x (64 ms, then #109's
 // 86 ms stopgap). Budget = the highest settled no-op CI ratio (PR #97, runs listed there) x the paired 1.4x margin.
+// Within one runner the ratio moves under 1.1x; across runner classes it moved up to 1.32x (open @ 1440: 0.62-0.82x).
 export const viewerRatioBudget = 1.4;
 const calibratedMargin = viewerRatioBudget;
 const withMargin = (noOpMax: Record<number, CalibratedBudget>) => Object.fromEntries(Object.entries(noOpMax).map(([width, max]) =>
   [width, { openMs: max.openMs * calibratedMargin, appendMs: max.appendMs * calibratedMargin }])) as Record<number, CalibratedBudget>;
 // 4x throttle, read fixture, per width and operation.
-export const pairedCalibratedBudgets = withMargin({ 390: { openMs: 0.65, appendMs: 1.27 }, 1440: { openMs: 0.65, appendMs: 1.31 } });
+export const pairedCalibratedBudgets = withMargin({ 390: { openMs: 0.71, appendMs: 1.35 }, 1440: { openMs: 0.82, appendMs: 1.31 } });
 // Unthrottled single, lines, and read fixtures. Read append is bimodal (it lands in the same or the next frame:
 // 1.26x or up to 2.96x), at any width, so append shares one budget across widths.
-export const unthrottledCalibratedBudgets = withMargin({ 390: { openMs: 0.89, appendMs: 2.96 }, 1440: { openMs: 0.86, appendMs: 2.96 } });
+export const unthrottledCalibratedBudgets = withMargin({ 390: { openMs: 0.92, appendMs: 2.96 }, 1440: { openMs: 0.86, appendMs: 2.96 } });
 
 export const ratio = (candidate: number, baseline: number) => candidate / Math.max(baseline, 0.001);
 
