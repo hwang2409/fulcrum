@@ -146,7 +146,7 @@ export function useVirtualList<Id extends string>(
           viewportSyncTimer.current = setTimeout(() => {
             viewportSyncTimer.current = null;
             if (containerRef.current === container) updateViewport("programmatic");
-          }, 120);
+          }, 1_000);
         }
       };
       scrollToBottomRef.current = scrollToBottom;
