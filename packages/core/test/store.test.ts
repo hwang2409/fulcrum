@@ -344,6 +344,124 @@ test("prepend assigns generated ids as a whole chronological reduction", () => {
   }]);
 });
 
+const commit = (id: string): RunEvent => ({ type: "message_commit", message_id: id, message: message(id) });
+const draft: RunEvent = { type: "message_delta", message_id: "s", delta: "draft" };
+const reset: RunEvent = { type: "message_reset" };
+// A resync is a discontinuity: subscribers are told only when they would miss something, and then take `items` whole
+// (`change` is null). setup is notified; pending is flushed by a read (as apps/web does before resync) but its frame
+// has not run yet; older is a history page a read flushed (so subscribers hold the `from` of an unnotified change).
+const resyncRows: Array<{ name: string; setup: RunEvent[]; pending?: RunEvent; older?: RunEvent[]; replay: RunEvent[]; outlineNotes: number; view: string[]; keyed: Record<string, number> }> = [
+  { name: "empty -> empty", setup: [], replay: [], outlineNotes: 0, view: [], keyed: {} },
+  { name: "rows -> empty", setup: [commit("a")], replay: [], outlineNotes: 1, view: [], keyed: { "message:a": 1 } },
+  { name: "empty -> rows", setup: [], replay: [commit("a")], outlineNotes: 1, view: ["message:a"], keyed: { "message:a": 1 } },
+  { name: "same ids, pending change", setup: [commit("a")], pending: commit("x"), replay: [commit("a"), commit("x")], outlineNotes: 1, view: ["message:a", "message:x"], keyed: { "message:a": 1, "message:x": 1 } },
+  { name: "same ids, nothing pending", setup: [commit("a")], replay: [commit("a")], outlineNotes: 0, view: ["message:a"], keyed: { "message:a": 1 } },
+  { name: "different ids", setup: [commit("a")], replay: [commit("b")], outlineNotes: 1, view: ["message:b"], keyed: { "message:a": 1, "message:b": 1 } },
+  { name: "pending change, empty replacement", setup: [commit("a")], pending: commit("x"), replay: [], outlineNotes: 1, view: [], keyed: { "message:a": 1, "message:x": 1 } },
+  { name: "pending keyed removal, replay without it", setup: [commit("a"), draft], pending: reset, replay: [commit("a")], outlineNotes: 1, view: ["message:a"], keyed: { "message:a": 1, "message:s": 1 } },
+  { name: "open history window, flushed page", setup: [commit("a")], older: [commit("b")], replay: [commit("a")], outlineNotes: 1, view: ["message:a"], keyed: { "message:a": 1, "message:b": 1 } },
+];
+
+test.each(resyncRows)("resync tells subscribers to take the outline whole: $name", ({ setup, pending, older, replay, outlineNotes, view: expectedView, keyed: expectedKeyed }) => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const drain = () => { while (jobs.length > 0) jobs.shift()!(); };
+  setup.forEach((event) => store.dispatch(event));
+  drain();
+  if (older) store.beginHistory();
+  let held = store.getOutline();
+  let notes = 0;
+  let resynced = false;
+  const changes: Array<OutlineSnapshot["change"]> = [];
+  store.subscribeOutline(() => {
+    notes++;
+    const snapshot = store.getOutlineSnapshot();
+    if (resynced) changes.push(snapshot.change);
+    held = snapshot.items;
+  });
+  const keyed: Record<string, number> = {};
+  for (const id of ["message:a", "message:b", "message:x", "message:s"]) store.subscribe(id, () => { keyed[id] = (keyed[id] ?? 0) + 1; });
+
+  if (pending) store.dispatch(pending), store.getState();
+  if (older) store.prepend(older), store.getState();
+  resynced = true;
+  store.resync(replay);
+  drain();
+
+  expect({ notes, changes, view: ids(held), keyed }).toEqual({ notes: outlineNotes, changes: Array(outlineNotes).fill(null), view: expectedView, keyed: expectedKeyed });
+  expect(store.getOutlineSnapshot().change).toBeNull();
+  expect(ids(held)).toEqual(ids(store.getOutline()));
+});
+
+test("two resyncs before a frame: each notifies only when its rows differ, and the last replay wins", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.dispatch(commit("a"));
+  jobs.shift()!();
+  const changes: Array<OutlineSnapshot["change"]> = [];
+  store.subscribeOutline(() => changes.push(store.getOutlineSnapshot().change));
+  store.resync([commit("b")]);
+  store.resync([commit("b")]);
+  store.resync([commit("c")]);
+  while (jobs.length > 0) jobs.shift()!();
+  expect({ changes, view: ids(store.getOutline()) }).toEqual({ changes: [null, null], view: ["message:c"] });
+});
+
+// A resync from inside a listener is not notified inside that notification (no nested pass with half-reset state);
+// it is delivered right after it, once, as a whole replacement.
+test("resync from a listener is delivered after the running notification, not nested in it", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.dispatch(commit("a"));
+  let depth = 0;
+  let nested = 0;
+  const seen: Array<{ change: OutlineSnapshot["change"]; view: string[] }> = [];
+  let resynced = false;
+  store.subscribe(() => {
+    if (depth > 0) nested++;
+    depth++;
+    if (!resynced) resynced = true, store.resync([commit("b"), commit("c")]);
+    depth--;
+  });
+  store.subscribeOutline(() => {
+    if (depth > 0) nested++;
+    const snapshot = store.getOutlineSnapshot();
+    seen.push({ change: snapshot.change, view: ids(snapshot.items) });
+  });
+  while (jobs.length > 0) jobs.shift()!();
+  expect({ nested, last: seen.at(-1), view: ids(store.getOutline()) }).toEqual({
+    nested: 0,
+    last: { change: null, view: ["message:b", "message:c"] },
+    view: ["message:b", "message:c"],
+  });
+});
+
+// notify delivers a snapshot: each pending flag/set is taken and cleared before any listener runs, so whatever a
+// listener adds (here a resync) lands in the next pass, even for a key the running pass already delivered.
+const resyncFrom = ["global", "outline", "keyed"] as const;
+test.each(resyncFrom)("resync from a %s listener: every consumer ends on the replayed state", (from) => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.dispatch(commit("a"));
+  store.dispatch(commit("b"));
+  let resynced = false;
+  const trigger = () => { if (!resynced) resynced = true, store.resync([commit("c")]); };
+  let globalView: string[] = [];
+  let outlineView: string[] = [];
+  const keyed: Record<string, string | undefined> = {};
+  store.subscribe(() => { globalView = ids(store.getState().outline); if (from === "global") trigger(); });
+  store.subscribeOutline(() => { outlineView = ids(store.getOutlineSnapshot().items); if (from === "outline") trigger(); });
+  for (const id of ["message:a", "message:b", "message:c"])
+    store.subscribe(id, () => { keyed[id] = store.getItem(id)?.id; if (from === "keyed" && id === "message:b") trigger(); });
+  while (jobs.length > 0) jobs.shift()!();
+  expect({ globalView, outlineView, keyed }).toEqual({
+    globalView: ["message:c"],
+    outlineView: ["message:c"],
+    keyed: { "message:a": undefined, "message:b": undefined, "message:c": "message:c" },
+  });
+  expect(store.getItem("message:a")).toBeUndefined();
+});
+
 test("prepend rejection keeps the last good state and visibly desyncs", () => {
   const errors: unknown[] = [];
   const store = createRunStore((flush) => flush(), { onError: (error) => errors.push(error) });

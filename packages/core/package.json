@@ -1,1 +1,1 @@
-{"name":"@fulcrum/core","type":"module","exports":{".":{"types":"./dist/index.d.ts","bun":"./src/index.ts","import":"./dist/index.js"}},"scripts":{"build":"tsc -p ."},"version":"0.0.0"}
+{"name":"@fulcrum/core","type":"module","exports":{".":{"types":"./dist/index.d.ts","bun":"./src/index.ts","import":"./dist/index.js"},"./search":{"types":"./dist/search.d.ts","bun":"./src/search.ts","import":"./dist/search.js"}},"scripts":{"build":"tsc -p ."},"version":"0.0.0"}

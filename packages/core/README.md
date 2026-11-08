@@ -6,7 +6,7 @@
 
 `createRunStore()` owns one run. Dispatch generic `RunEvent` values, read ordered `{ id, kind }` entries with `getOutline()`, and read an entity with `getItem(id)`. The scheduler batches reduction and subscriber notification. Synchronous reads flush pending events. Use keyed subscriptions for entity rows and `subscribeOutline()` for the ordered timeline.
 
-`getOutlineSnapshot()` returns `{ items, change }`. A change is `{ from, splices }`, where each ordered splice is `{ index, deleteCount, items }`. Applying the splices to `from` produces `items`. Changes from one notification are merged. `change` is `null` for the first snapshot and after disposal. An approval that folds into its tool row produces one splice, not a new row.
+`getOutlineSnapshot()` returns `{ items, change }`. A change is `{ from, splices }`, where each ordered splice is `{ index, deleteCount, items }`. Applying the splices to `from` produces `items`. Changes from one notification are merged. `change` is `null` for the first snapshot, after `resync`, and after disposal; `null` means "take `items` whole". An approval that folds into its tool row produces one splice, not a new row.
 
 Malformed known events with an invalid required field are counted by `getDiagnostics()` and ignored. An invalid optional field is omitted, counted in `sanitizedFields`, and the sanitized event is applied. Valid events keep their identity and do not allocate a validation copy. An arbitrary event kind becomes an `unknown` row; the built-in React `Fallback` shows only its kind, not its data.
 
@@ -23,6 +23,12 @@ A rejected page is atomic: it publishes nothing and enters the same visible desy
 A `user_message` can carry `intent`, the client id for the user's request. A later message with the same intent replaces that row, so a dropped and resent message appears once. `delivery_id` is its durable identity: an echo with the same id joins the existing row. `hasMessageDelivery(deliveryId)` reports whether that durable row exists.
 
 `run_end.outcome` can be `completed`, `cancelled`, `failed`, `disconnected`, or `unknown`. `unknown` means the host could not observe the result. The store keeps it in `state.endOutcome` until the next `run_start`.
+
+## tools
+
+`tool_start`, `tool_input`, and `approval_request` define a call. `tool_output` and `tool_end` report its output and result; they never change a known call's name, arguments, or meta, and the row keeps the call object it has. Send `tool_start` to redefine a call. An output event for an unknown call starts its row with the event's call.
+
+`tool_output` appends to the row's output. A protocol that resends the whole output so far (snapshots, or the AI SDK's preliminary tool output) sends `tool_output` with `replace: true`: the row keeps its position and approval decision, its output becomes the event's output, its result and error state clear, and it is live again.
 
 ## tool views
 

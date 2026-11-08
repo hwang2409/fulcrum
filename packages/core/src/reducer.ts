@@ -127,7 +127,7 @@ export const eventSchemas = {
   message_commit: { message_id: optional(string), message: required(message, messageFields) },
   tool_start: { tool_call: required(toolCall, toolCallFields), view: optional(object), data: optional(object) },
   tool_input: { tool_call: required(toolCall, toolCallFields), input: required(string), view: optional(object), data: optional(object) },
-  tool_output: { tool_call: required(toolCall, toolCallFields), output: required(string), view: optional(object), data: optional(object) },
+  tool_output: { tool_call: required(toolCall, toolCallFields), output: required(string), replace: optional(boolean), view: optional(object), data: optional(object) },
   tool_end: { tool_call: required(toolCall, toolCallFields), tool_result: optional(object, toolResultFields, true), view: optional(object), data: optional(object) },
   approval_request: { request_id: required(string), tool_call: required(toolCall, toolCallFields), view: optional(object), delegated: required(boolean), state: optional(oneOf("reconnecting", "resolving")), status: optional(string), disabled_reason: optional(string) },
   approval_end: { request_id: required(string), decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
@@ -516,19 +516,21 @@ export function reduceAllWithEntities(
         const itemId = toolItemId(id);
         const old = getItem(itemId);
         const prior = old?.type === "tool" ? old : undefined;
-        const continuing = Boolean(next.activeToolIds[id]);
+        // Output events report output; only tool_start, tool_input, and approval_request define the call.
+        const replace = event.replace === true;
+        const continuing = !replace && Boolean(next.activeToolIds[id]);
         const item = appendText<RunItem>(
           {
             id: itemId,
             type: "tool",
-            tool_call: prior?.tool_call.arguments === event.tool_call.arguments ? prior.tool_call : event.tool_call,
+            tool_call: prior?.tool_call ?? event.tool_call,
             view: event.view ?? prior?.view,
             output: "",
             version: (prior?.version ?? 0) + 1,
             active: true,
-            result: prior?.result,
-            is_error: prior?.is_error ?? false,
-            canceled: prior?.canceled ?? false,
+            result: replace ? undefined : prior?.result,
+            is_error: replace ? false : prior?.is_error ?? false,
+            canceled: replace ? false : prior?.canceled ?? false,
             ...(prior?.approval ? { approval: prior.approval } : {}),
           },
           continuing ? prior : undefined,

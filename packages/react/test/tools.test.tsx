@@ -354,7 +354,7 @@ test("open arguments serialize once across 1,000 output tokens and once per argu
     for (let index = 0; index < 1_000; index++) act(() => store.dispatch({ type: "tool_output", tool_call, output: "x" }));
     expect(serializations).toBe(1);
     const nextArguments = { ...arguments_, value: "updated" };
-    act(() => store.dispatch({ type: "tool_output", tool_call: { ...tool_call, arguments: nextArguments }, output: "x" }));
+    act(() => store.dispatch({ type: "tool_input", tool_call: { ...tool_call, arguments: nextArguments }, input: "" }));
     expect(serializations).toBe(2);
     expect(q('[data-part="tool-args"]').textContent).toContain("updated");
   } finally {
