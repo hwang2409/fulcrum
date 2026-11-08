@@ -25,18 +25,18 @@ const stream = (id: string, value: string): RunEvent[] => [
   { type: "message_commit", message_id: id, message: text("assistant", value) },
 ];
 
-// An AI SDK UI message stream through the real adapter: a text part ends, then a tool runs and reports its output. Paused,
-// the demo drops the tool's end. The stream never reaches `finish`, so the message stays open while the tool below runs.
-function aiSdkTextThenTool(): RunEvent[] {
-  const { decode } = createAiSdkAdapter({ streamKey: "gallery-ai-sdk" });
+// An AI SDK UI message stream through the real adapter: a text part ends, then a tool runs and streams preliminary
+// output, and never ends. The stream never reaches `finish`, so the message stays open while the tool below runs.
+function aiSdkTextThenTool(key: string): RunEvent[] {
+  const { decode } = createAiSdkAdapter({ streamKey: key });
   return [
-    { type: "start", messageId: "gallery-ai-sdk" },
+    { type: "start", messageId: key },
     { type: "start-step" },
     { type: "text-start", id: "text" },
     ...words("I'll inspect the project before changing anything.").map((delta) => ({ type: "text-delta", id: "text", delta })),
     { type: "text-end", id: "text" },
     { type: "tool-input-available", toolCallId: "call-ls", toolName: "shell", input: { command: "ls" } },
-    { type: "tool-output-available", toolCallId: "call-ls", output: "README.md\napps\npackages" },
+    ...["README.md", "README.md\napps", "README.md\napps\npackages"].map((output) => ({ type: "tool-output-available", toolCallId: "call-ls", output, preliminary: true })),
   ].flatMap(decode);
 }
 
@@ -396,8 +396,8 @@ export const demos: Demo[] = [
     id: "markdown-fence-streaming",
     part: "Message",
     title: "code fence, streaming",
-    description: "While the fence is open, the cursor fills the next cell of its newest code line; once the fence closes, it leaves the block.",
-    events: stream("markdown-fence-live", "Run the focused tests first:\n\n```sh\nbun test packages/react\nbun run typecheck"),
+    description: "While the fence is open, the cursor fills the next cell of its newest code line; once the fence closes, it leaves the block for the text after it.",
+    events: stream("markdown-fence-live", "Run the focused tests first:\n\n```sh\nbun test packages/react\nbun run typecheck\n```\n\nThen push."),
     live: 90,
   },
   {
@@ -405,8 +405,17 @@ export const demos: Demo[] = [
     part: "Message",
     title: "AI SDK text, then a running tool",
     description: "Through @fulcrum/ai-sdk, the message stays open until the stream finishes; once a tool row follows it, the running tool carries the live signal and the finished text shows no cursor.",
-    events: aiSdkTextThenTool(),
+    events: aiSdkTextThenTool("gallery-ai-sdk"),
     live: 300,
+  },
+  {
+    id: "ai-sdk-plain-text-then-tool",
+    part: "Message",
+    title: "plain text, then a running tool",
+    description: "markdown={false}: the same stream with plain text. The cursor belongs to the newest row only, whatever renders the text.",
+    events: aiSdkTextThenTool("gallery-ai-sdk-plain"),
+    live: 300,
+    plain: true,
   },
   {
     id: "message-done",

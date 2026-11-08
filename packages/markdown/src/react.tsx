@@ -152,7 +152,7 @@ const BlockView = memo(function BlockView({ id, block, highlight, fences }: { id
   if (block.type === "list") return <ListView id={id} block={block} highlight={highlight} fences={fences} />;
   if (block.type === "blockquote") return <blockquote data-part="md-blockquote">{block.children.map((child, index) => <BlockView key={index} id={`${id}:${index}`} block={child} open={isOpen(child)} highlight={highlight} fences={fences} />)}</blockquote>;
   if (block.type === "rule") return <hr data-part="md-rule" />;
-  return <table data-part="md-table"><thead><tr>{block.header.map((cell, index) => <th key={index} align={block.align[index]}><InlineView nodes={cell} /></th>)}</tr></thead><tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} align={block.align[cellIndex]}><InlineView nodes={cell} /></td>)}</tr>)}</tbody></table>;
+  return <table data-part="md-table"><thead><tr>{block.header.map((cell, index) => <th key={index} align={block.align[index]}><InlineView nodes={cell} /></th>)}</tr></thead>{block.rows.length ? <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} align={block.align[cellIndex]}><InlineView nodes={cell} /></td>)}</tr>)}</tbody> : null}</table>;
 // An open block can be the same object, grown in place (a fence after a whole-line delta) and then closed in place: it
 // re-renders while open and once more when `open` (a prop of its own, read before the object changed) turns false.
 }, (prior, next) => prior.block === next.block && !(next.block.type === "code" && next.block.open) && prior.open === next.open && prior.id === next.id && prior.highlight === next.highlight && prior.fences === next.fences);

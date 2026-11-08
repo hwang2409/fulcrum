@@ -72,6 +72,10 @@ test("renders gfm blocks, nested and task lists, and fenced code language", () =
   expect(html).toContain('<pre data-part="md-code-block" data-language="ts"><code>const n = 1;\n</code></pre>');
 });
 
+test("a table with only its header has no empty body, so its header row ends it (and takes the streaming cursor)", () => {
+  expect(renderToStaticMarkup(<Markdown source={"| check | result |\n| --- | --- |\n"} streaming />)).toBe('<table data-part="md-table"><thead><tr><th>check</th><th>result</th></tr></thead></table>');
+});
+
 test("covers gfm references, literal autolinks, images, escaped tables, and indented code", () => {
   const source = [
     "[docs]: https://example.com/docs",

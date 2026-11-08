@@ -83,6 +83,16 @@ test("streaming plain text hides its trailing whitespace like markdown, so the c
   expect(q('[data-part="message"]').textContent).toBe("the answer is\n");
 });
 
+test("streaming plain text that ends in a blank line keeps the line the commit shows, without trailing tabs or spaces", () => {
+  const { send } = render([{ type: "message_delta", message_id: "m", delta: "tabbed\t" }], { markdown: false });
+  expect(q('[data-part="message"]').textContent).toBe("tabbed");
+  send({ type: "message_delta", message_id: "m", delta: "end \n\n" });
+  // One line break less: the cursor (styles.css) sits on the blank line, where it takes the commit's height.
+  expect(q('[data-part="message"]').textContent).toBe("tabbed\tend \n");
+  send(commit([{ type: "text", text: "tabbed\tend \n\n" }]));
+  expect(q('[data-part="message"]').textContent).toBe("tabbed\tend \n\n");
+});
+
 test("empty text does not precede the first rendered content block", () => {
   render([commit([{ type: "text", text: "" }, { type: "file", kind: "file", filename: "a.png" }], "user")]);
   expect(q('[data-part="message-content"]').firstElementChild?.getAttribute("data-part")).toBe("file");

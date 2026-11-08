@@ -15,12 +15,14 @@ const cursorCases: CursorCase[] = [
   { id: "content-streaming", cursors: 1 },
   { id: "message-plain-streaming", cursors: 1, tight: true },
   { id: "markdown-table-streaming", cursors: 1, tag: "td" },
-  { id: "markdown-fence-streaming", cursors: 1, tag: "code" },
+  // Paused after the fence closed: the cursor ends the text after it (checkCursorSteps sees it inside the open fence).
+  { id: "markdown-fence-streaming", cursors: 1, tag: "p" },
   // Ends in a closed fence: the block is final, so no cursor in it (it would add a line that the commit takes away).
   { id: "markdown-streaming", cursors: 0 },
   { id: "markdown-crossing", cursors: 0, viewer: true },
   // The text ended and a tool row runs below it: the tool holds the live signal.
   { id: "ai-sdk-text-then-tool", cursors: 0 },
+  { id: "ai-sdk-plain-text-then-tool", cursors: 0 },
   // An open reasoning block that streams shows its own state, not a cursor.
   { id: "reasoning-streaming", cursors: 0, open: "[data-part=reasoning] > summary" },
 ];
@@ -50,7 +52,7 @@ function readCursor(id: string) {
   document.head.append(off);
   const without = message.getBoundingClientRect().height;
   off.remove();
-  const mark = message.querySelector("[data-part=md-code-block][data-state=streaming] [data-part=text-viewer-count]");
+  const mark = message.querySelector("[data-part=md-code-block][data-state=streaming] [data-part=text-viewer-status]");
   const markStyle = mark && getComputedStyle(mark, "::before");
   const look = (style: CSSStyleDeclaration) => ({ background: style.backgroundColor, adjust: style.forcedColorAdjust, animation: style.animationName });
   return {
@@ -65,7 +67,9 @@ function readCursor(id: string) {
 }
 
 // Runs in the page. Narrows the message until its last text line, without the cursor, ends less than one cursor width
-// from the line's edge, then reports how much height the cursor adds there (a cursor wrapped onto its own line).
+// from the line's edge, then reports how much height the cursor adds there (a cursor wrapped onto its own line) and how
+// much of the cursor shows (nothing may clip it: the message's padding box, the scroller). Then, at the natural width,
+// it fills the last line with exactly as many cells as fit (80 at the full measure) and reports the same.
 function readTightFit(id: string) {
   const message = document.querySelector<HTMLElement>(`#${id} [data-part=message][data-state=streaming]`)!;
   const holder = [message, ...message.querySelectorAll<HTMLElement>("*")].find((element) => getComputedStyle(element, "::after").content === '""');
@@ -85,20 +89,96 @@ function readTightFit(id: string) {
     return range.getBoundingClientRect().right;
   };
   const edge = () => block.getBoundingClientRect().right - parseFloat(getComputedStyle(block).paddingRight) - parseFloat(getComputedStyle(block).borderRightWidth);
+  const cursor = getComputedStyle(holder, "::after");
+  const width = parseFloat(cursor.width);
+  // The cursor starts its gap after the last glyph; every ancestor that clips (overflow, or content-visibility's paint
+  // containment) cuts it at its padding box.
+  const visible = () => {
+    const left = lastGlyph() + parseFloat(cursor.marginLeft);
+    let right = left + width;
+    for (let node: HTMLElement | null = holder; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.overflowX === "visible" && style.contentVisibility !== "auto") continue;
+      right = Math.min(right, node.getBoundingClientRect().left + node.clientLeft + node.clientWidth);
+    }
+    return Math.max(0, right - left);
+  };
+  const measure = (slack: number) => {
+    document.head.append(off);
+    const without = message.getBoundingClientRect().height;
+    off.remove();
+    return { slack, extra: message.getBoundingClientRect().height - without, visible: visible(), width };
+  };
   const start = message.getBoundingClientRect().width;
+  let tight: ReturnType<typeof measure> | undefined;
   try {
-    for (let width = Math.floor(start); width > start - 400; width--) {
-      message.style.width = `${width}px`;
+    for (let next = Math.floor(start); next > start - 400 && !tight; next--) {
+      message.style.width = `${next}px`;
       document.head.append(off);
       const slack = edge() - lastGlyph();
-      const without = message.getBoundingClientRect().height;
       off.remove();
-      if (slack >= 0 && slack < advance) return { slack, extra: message.getBoundingClientRect().height - without };
+      if (slack >= 0 && slack < advance) tight = measure(slack);
     }
-    return undefined;
+  } finally {
+    message.style.width = "";
+  }
+  const saved = [...holder.childNodes];
+  try {
+    const probe = document.createElement("span");
+    probe.style.whiteSpace = "pre";
+    probe.textContent = "x".repeat(100);
+    holder.replaceChildren(probe);
+    const cell = probe.getBoundingClientRect().width / 100;
+    const box = block.getBoundingClientRect();
+    const style = getComputedStyle(block);
+    const cells = Math.floor((box.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth)) / cell + 0.001);
+    holder.replaceChildren(document.createTextNode("x".repeat(cells)));
+    document.head.append(off);
+    const slack = edge() - lastGlyph();
+    off.remove();
+    return { tight, full: { cells, ...measure(slack) } };
   } finally {
     off.remove();
-    message.style.width = "";
+    holder.replaceChildren(...saved);
+  }
+}
+
+// Runs in the page. The streaming viewer's head says "streaming", and taking that word away (the commit) keeps the head
+// one row and moves no other part of it.
+function readViewerCommitShift() {
+  const head = document.querySelector("#markdown-crossing [data-part=md-code-block][data-state=streaming] [data-part=text-viewer-head]");
+  const status = head?.querySelector<HTMLElement>("[data-part=text-viewer-status]");
+  if (!head || status?.textContent !== "streaming") return `markdown-crossing: the streaming viewer's head does not say "streaming" (${status?.textContent ?? "no status"})`;
+  const parts = [head, ...head.querySelectorAll(":scope > :not([data-part=text-viewer-status]), [data-part=text-viewer-wide]")];
+  // The count fills the free space (flex: 1), so only its width may change: its text stays put.
+  const rects = () => parts.map((node) => node.getBoundingClientRect()).map(({ x, y, height }) => [x, y, height]);
+  const before = rects();
+  status.style.display = "none";
+  const after = rects();
+  status.style.display = "";
+  const moved = before.some((rect, i) => rect.some((value, j) => Math.abs(value - after[i]![j]!) > 0.5));
+  return moved ? `markdown-crossing: the viewer head moves when its status word goes at the commit (${JSON.stringify(before)} -> ${JSON.stringify(after)})` : undefined;
+}
+
+// Runs in the page. Plain text that ends in a blank line streams without its last line break (content.test.tsx), so
+// the cursor sits on the blank line that the commit keeps: the same height streaming and committed.
+function readBlankLineCommit() {
+  const message = document.querySelector<HTMLElement>("#message-plain-streaming [data-part=message][data-latest]");
+  const text = message?.lastElementChild?.firstChild;
+  if (!message || !(text instanceof Text)) return "message-plain-streaming: no streaming plain text span";
+  const saved = text.data;
+  try {
+    text.data = "tabbed\tend \n";
+    const streaming = message.getBoundingClientRect().height;
+    text.data = "tabbed\tend \n\n";
+    message.removeAttribute("data-latest");
+    message.dataset.state = "done";
+    const done = message.getBoundingClientRect().height;
+    return Math.abs(done - streaming) > 0.5 ? `message-plain-streaming: text ending in a blank line is ${streaming.toFixed(2)} px streaming and ${done.toFixed(2)} px committed` : undefined;
+  } finally {
+    text.data = saved;
+    message.dataset.state = "streaming";
+    message.setAttribute("data-latest", "");
   }
 }
 
@@ -154,12 +234,24 @@ async function checkStreamingCursor(page: Page, port: number, failures: string[]
       await page.locator(`#${demo.id}`).scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {});
       await nextFrame(page);
       const fit = await page.evaluate(readTightFit, demo.id);
-      if (!fit) failures.push(`${demo.id} @ ${width}: no width where the last line fills its box (the check found no case)`);
-      else if (fit.extra > 0.5) failures.push(`${demo.id} @ ${width}: with the last line ${fit.slack.toFixed(1)} px from its edge, the cursor wraps onto its own line (+${fit.extra.toFixed(1)} px)`);
+      if (!fit?.tight) failures.push(`${demo.id} @ ${width}: no width where the last line fills its box (the check found no case)`);
+      for (const [name, at] of fit ? [["a tight last line", fit.tight], [`a full ${fit.full.cells}-column line`, fit.full]] as const : []) {
+        if (!at) continue;
+        const where = `${demo.id} @ ${width}: with ${name} (${at.slack.toFixed(2)} px from its edge)`;
+        if (at.extra > 0.5) failures.push(`${where}, the cursor wraps onto its own line (+${at.extra.toFixed(1)} px)`);
+        if (at.visible < at.width - 0.01) failures.push(`${where}, ${at.visible.toFixed(2)} of the cursor's ${at.width.toFixed(2)} px show: it is clipped`);
+      }
+      if (width === 1440 && fit && fit.full.cells !== 80) failures.push(`${demo.id} @ 1440: the measure holds ${fit.full.cells} columns, expected 80`);
+    }
+    for (const [id, read] of [["markdown-crossing", readViewerCommitShift], ["message-plain-streaming", readBlankLineCommit]] as const) {
+      await page.locator(`#${id}`).scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {});
+      await nextFrame(page);
+      const failure = await page.evaluate(read);
+      if (failure) failures.push(`${failure} @ ${width}`);
     }
   }
   await page.setViewportSize({ width: 1440, height: 900 });
-  if (failures.length === before) console.log(`ok   streaming cursor: ${cursorCases.length} streaming messages show the expected cursor or running mark in normal, forced-colors, and reduced-motion modes, and a line that fills its width keeps the cursor on it`);
+  if (failures.length === before) console.log(`ok   streaming cursor: ${cursorCases.length} streaming messages show the expected cursor or running mark in normal, forced-colors, and reduced-motion modes; a line that fills its width (80 columns at full width) keeps the whole cursor on it, unclipped, at 1440 and 390; the commit moves nothing`);
 
   await page.emulateMedia({ forcedColors: "active", reducedMotion: "reduce" });
   await page.goto(`http://127.0.0.1:${port}/gallery.html#approval-pending`);
@@ -168,6 +260,56 @@ async function checkStreamingCursor(page: Page, port: number, failures: string[]
   if (approvalState.borderWidth !== "2px") failures.push(`approval-pending: forced-colors border is ${approvalState.borderWidth}, expected 2px`);
   if (!approvalState.text.trim()) failures.push("approval-pending: status words are not visible in forced colors");
   await page.emulateMedia({ forcedColors: "none", reducedMotion: "reduce" });
+}
+
+// Runs in the page. Where each demo's first message draws its cursors right now.
+function readCursorStep(ids: string[]) {
+  return ids.map((id) => {
+    const message = document.querySelector<HTMLElement>(`#${id} [data-part=message]`);
+    const holders = message ? [message, ...message.querySelectorAll<HTMLElement>("*")].filter((element) => getComputedStyle(element, "::after").content === '""') : [];
+    return {
+      id,
+      later: !!message?.closest("[data-part=timeline] > *")?.nextElementSibling,
+      holders: holders.map((holder) => ({
+        tag: holder.tagName.toLowerCase(),
+        fence: holder.closest<HTMLElement>("[data-part=md-code-block]")?.dataset.state ?? null,
+        afterFence: holder.previousElementSibling?.matches("[data-part=md-code-block]") ?? false,
+      })),
+    };
+  });
+}
+
+// The cursor through every step of live streams, one timer tick at a time on a paused clock: never more than one, in
+// the open fence while it streams and on the text after it once it closes, and never on text that a later row (a
+// running tool) follows, with markdown and with plain text.
+async function checkCursorSteps(browser: Browser, port: number, failures: string[]) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "no-preference" });
+  const start = new Date("2026-01-01T00:00:00Z");
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(new Date(start.getTime() + 1));
+  await page.goto(`http://127.0.0.1:${port}/gallery.html`);
+  await page.waitForSelector("#markdown-fence-streaming", { state: "attached", timeout: 10_000 });
+  const ids = ["markdown-fence-streaming", "ai-sdk-text-then-tool", "ai-sdk-plain-text-then-tool"];
+  const seen = new Set<string>();
+  const before = failures.length;
+  for (let step = 0; step < 200; step++) {
+    await page.clock.runFor(30);
+    for (const { id, later, holders } of await page.evaluate(readCursorStep, ids)) {
+      const at = `${id} step ${step}`;
+      if (holders.length > 1) failures.push(`${at}: ${holders.length} cursors`);
+      const [holder] = holders;
+      if (later) seen.add(`${id} later`);
+      if (!holder) continue;
+      if (later) failures.push(`${at}: the cursor stays on text that a later row follows (<${holder.tag}>)`);
+      if (holder.fence && holder.fence !== "streaming") failures.push(`${at}: the cursor is in a closed fence`);
+      seen.add(`${id} ${holder.fence ? "fence" : holder.afterFence ? "after fence" : "text"}`);
+    }
+  }
+  await page.close();
+  for (const expected of ["markdown-fence-streaming fence", "markdown-fence-streaming after fence", ...ids.slice(1).flatMap((id) => [`${id} text`, `${id} later`])]) {
+    if (!seen.has(expected)) failures.push(`cursor steps: never saw "${expected}" (the demo changed?)`);
+  }
+  if (failures.length === before) console.log(`ok   cursor steps: 200 ticks of ${ids.join(", ")}: one cursor at most, in the open fence then after it, and none on text a running tool follows`);
 }
 
 // Every part stays still under reduced motion even outside a Timeline or Composer: the gallery's rows (paused in their
@@ -221,6 +363,7 @@ export async function checkCards(browser: Browser, port: number): Promise<string
   const failures: string[] = [];
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await checkStreamingCursor(page, port, failures);
+  await checkCursorSteps(browser, port, failures);
   await checkStandaloneMotion(page, port, failures);
   await page.goto(`http://127.0.0.1:${port}/gallery.html#tools-done`);
   await page.waitForSelector("#tools-done [data-part=tool-body]");

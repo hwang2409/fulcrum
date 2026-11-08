@@ -149,7 +149,9 @@
 /* Text keeps an 80ch measure; a data-wide child (a diagram) takes the full width. A registered length resolves 80ch
    where the message sets it, so a heading's larger font does not widen its measure. */
 @property --fulcrum-measure { syntax: "<length>"; inherits: true; initial-value: 0px; }
-[data-part="message"] { --fulcrum-measure: 80ch; max-width: var(--fulcrum-measure); text-wrap: pretty; }
+/* The end gutter holds the hanging streaming cursor (as wide as the widest: an 18px h1 cell), in every state, so the
+   wrap width never changes at commit and nothing clips the cursor; the text keeps its 80 columns beside it. */
+[data-part="message"] { --fulcrum-measure: 80ch; --gutter: max(calc(0.6em + 1px), 11.8px); max-width: calc(var(--fulcrum-measure) + var(--gutter)); padding-inline-end: var(--gutter); text-wrap: pretty; }
 [data-part="message"]:has(> [data-wide]),
 [data-part="message-content"]:has(> [data-wide]) { max-width: none; }
 [data-part="message"]:has(> [data-wide]) > :not([data-wide]),
@@ -177,24 +179,25 @@
 [data-part="message-content"] > [data-part="md-table"]:first-child { display: table; }
 /* An image has no text baseline, so its decorative prompt belongs at the frame's top edge. */
 [data-part="message"][data-role="user"]:has(> [data-part="message-content"] > [data-part="image"]:first-child) [data-part="message-prompt"] { align-self: start; }
-/* A terminal block cursor that ends the last streaming text line, drawn in the element holding that line: the text
+/* A terminal block cursor that ends the last streaming text line of the newest row (Message sets data-latest while it
+   streams as its Timeline's newest row, or streams outside one), drawn in the element holding that line: the text
    container (the message, or a user's message-content) while it has no child elements, else its last text span or,
    for markdown, the last paragraph, heading, text-ending list item, table cell, or line of a still-open fence, through
    last children only. None when the newest part is another block (reasoning, a file, a closed fence: it shows its own
-   state), inside reasoning, or once a later timeline row follows the message (a running tool holds the live signal). */
+   state) or inside reasoning. */
 :is(
-  :is([data-part="message"][data-state="streaming"]:not([data-role="user"]), [data-part="message"][data-state="streaming"] > [data-part="message-content"]):not(:has(> *)),
-  :is([data-part="message"][data-state="streaming"]:not([data-role="user"]), [data-part="message"][data-state="streaming"] > [data-part="message-content"]) > span:not([data-part]):last-child,
-  :is([data-part="message"][data-state="streaming"]:not([data-role="user"]), [data-part="message"][data-state="streaming"] > [data-part="message-content"])
-    :is([data-part="md-paragraph"], [data-part="md-heading"], [data-part="md-table"] td, [data-part="md-code-block"][data-state="streaming"] > code,
+  :is([data-part="message"][data-latest]:not([data-role="user"]), [data-part="message"][data-latest] > [data-part="message-content"]):not(:has(> *)),
+  :is([data-part="message"][data-latest]:not([data-role="user"]), [data-part="message"][data-latest] > [data-part="message-content"]) > span:not([data-part]):last-child,
+  :is([data-part="message"][data-latest]:not([data-role="user"]), [data-part="message"][data-latest] > [data-part="message-content"])
+    :is([data-part="md-paragraph"], [data-part="md-heading"], [data-part="md-table"] :is(th, td), [data-part="md-code-block"][data-state="streaming"] > code,
       [data-part="md-list-item"]:not(:has(> :is([data-part="md-paragraph"], [data-part="md-heading"], [data-part="md-code-block"], [data-part="md-list"], [data-part="md-blockquote"], [data-part="md-table"], [data-part="md-rule"], div):last-child))):last-child:not([data-part="message"] :not(:last-child) *)
-):not([data-part="timeline"] > :not(:last-child) *, [data-part="reasoning"] *)::after {
+):not([data-part="reasoning"] *)::after {
   content: "";
   display: inline-block;
   width: 0.6em;
   height: 1.15em;
-  /* In prose the cursor takes no line width (it hangs into the padding), so text that fills a line never pushes it
-     onto a line of its own; a code line fills the next monospace cell instead (--cursor-gap/--cursor-hang: 0). */
+  /* In prose the cursor takes no line width (it hangs into the message's end gutter), so text that fills a line never
+     pushes it onto a line of its own; a code line fills the next monospace cell instead (--cursor-gap/--cursor-hang: 0). */
   margin: 0 var(--cursor-hang, calc(-0.6em - 1px)) 0 var(--cursor-gap, 1px);
   vertical-align: text-bottom;
   background: var(--fulcrum-cursor, var(--fulcrum-fg));
@@ -255,9 +258,9 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="shell-prompt"] { color: var(--fulcrum-ok); font-weight: 700; user-select: none; }
 [data-part="diff-stat"][data-change="insert"] { color: var(--fulcrum-ui-added); }
 [data-part="diff-stat"][data-change="delete"] { color: var(--fulcrum-ui-removed); }
-[data-part="tool-status"] { display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-muted); white-space: nowrap; }
+:is([data-part="tool-status"], [data-part="text-viewer-status"]) { display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-muted); white-space: nowrap; }
 /* The state mark: a square in the state color next to the word. */
-[data-part="tool-status"]::before {
+:is([data-part="tool-status"], [data-part="text-viewer-status"])::before {
   content: "";
   flex: none;
   width: 7px;
@@ -462,9 +465,16 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="tool-body"] > [data-part="text-viewer-head"] + [data-part="text-viewer"] { border-top: 0; }
 [data-part="text-viewer-language"] { color: var(--fulcrum-ui-type); font-weight: 700; }
 [data-part="text-viewer-count"] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* A narrow head keeps one row: "400 lines", the position, "bottom", "copy". The buttons keep their full aria-label. */
-@container text-viewer-head (max-width: 560px) { [data-part="text-viewer-wide"] { display: none; } }
+/* A narrow head keeps one row: "400 lines", the position, "bottom", "copy". The buttons keep their full aria-label, and
+   a streaming fence's status keeps its mark (its word stays for screen readers). */
+@container text-viewer-head (max-width: 560px) {
+  [data-part="text-viewer-wide"] { display: none; }
+  [data-part="text-viewer-status"] > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
 [data-part="text-viewer-position"] { white-space: nowrap; }
+/* A streaming fence's viewer says so in its accent, its mark pulsing like a running tool's. */
+[data-part="text-viewer-status"] { color: var(--fulcrum-accent); }
+[data-part="text-viewer-status"]::before { animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
 [data-part="text-viewer-position"][data-position="at-bottom"] { color: var(--fulcrum-ok); }
 [data-part="text-viewer-position"][data-position="new-output"] { color: var(--fulcrum-warn); font-weight: 700; }
 [data-part="text-viewer"] {
@@ -950,18 +960,6 @@ ul[data-part="md-list"] { list-style: "- "; }
 }
 /* A large block's viewer head names the language in its own row: no caption band above it. */
 [data-part="md-code-block"][data-size="large"]::before { display: none; }
-/* A fence still streaming as the viewer has no cursor in its rows (they scroll and mount lazily): its head carries the
-   running mark that tools use instead. */
-[data-part="md-code-block"][data-state="streaming"] [data-part="text-viewer-count"]::before {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-right: 8px;
-  vertical-align: 1px;
-  background: var(--fulcrum-accent);
-  animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate;
-}
 /* Wide tables scroll inside their own box instead of widening the timeline. */
 [data-part="md-table"] {
   display: block;
@@ -1207,13 +1205,12 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="approval"],
   [data-part="item"][data-kind="error"] { --rail: CanvasText; --mark: CanvasText; border-color: CanvasText; }
   [data-part="approval"][data-state="pending"] { border-width: 2px; }
-  [data-part="tool-status"]::before { forced-color-adjust: none; background: CanvasText; }
+  :is([data-part="tool-status"], [data-part="text-viewer-status"])::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="reasoning"] { --rail: CanvasText; --mark: CanvasText; }
   [data-part="reasoning-status"]::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
   [data-part="message"] { --fulcrum-cursor: CanvasText; }
-  [data-part="md-code-block"][data-state="streaming"] [data-part="text-viewer-count"]::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="sub-agent"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }
   :is([data-part="sub-agent-status"], [data-part="run-state"])::before,
