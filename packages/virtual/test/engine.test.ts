@@ -22,6 +22,8 @@ function mutate(virtual: ReturnType<typeof engine>, change: (token: MutationToke
   return virtual.afterMutation(token);
 }
 
+const currentSnapshot = (virtual: ReturnType<typeof engine>) => ({ ...virtual.getSnapshot(), ...virtual.getScrollState() });
+
 describe("prefix and range math", () => {
   test("empty outline", () => {
     const snapshot = engine([]).getSnapshot();
@@ -329,20 +331,20 @@ describe("bottom and scroll semantics", () => {
     const virtual = engine([10, 10, 10], 10, 12);
     const result = mutate(virtual, () => virtual.measure("row-0", 20));
     virtual.setViewport({ scrollTop: result.scrollTop, size: 10, source: "user" });
-    expect(virtual.getSnapshot()).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
+    expect(currentSnapshot(virtual)).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
   });
   test("a correction rounded to a device pixel is not user intent", () => {
     const virtual = engine([10, 10, 10], 10, 12);
     const result = mutate(virtual, () => virtual.measure("row-0", 20.5));
     virtual.setViewport({ scrollTop: Math.round(result.scrollTop), size: 10, source: "user" });
-    expect(virtual.getSnapshot()).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
+    expect(currentSnapshot(virtual)).toMatchObject({ programmatic: true, correctionEvent: true, pinned: false });
   });
   test("a later user scroll changes state normally", () => {
     const virtual = engine([10, 10, 10], 10, 12);
     const result = mutate(virtual, () => virtual.measure("row-0", 20));
     virtual.setViewport({ scrollTop: result.scrollTop, size: 10, source: "user" });
     virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
-    expect(virtual.getSnapshot()).toMatchObject({ programmatic: false, correctionEvent: false, pinned: true });
+    expect(currentSnapshot(virtual)).toMatchObject({ programmatic: false, correctionEvent: false, pinned: true });
   });
   test("a newer programmatic scroll supersedes an expected correction", () => {
     const virtual = engine([30, 30], 10, 0);
@@ -352,7 +354,7 @@ describe("bottom and scroll semantics", () => {
     expect(virtual.afterMutation(token)).toMatchObject({ scrollTop: 30, jump: -20 });
     virtual.scrollToId("row-0");
     virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
-    expect(virtual.getSnapshot()).toMatchObject({ pinned: true, programmatic: false, correctionEvent: false });
+    expect(currentSnapshot(virtual)).toMatchObject({ pinned: true, programmatic: false, correctionEvent: false });
     const append = virtual.beforeMutation();
     virtual.setOutline([...items([10, 30]).outline, { id: "row-2", kind: "10:2" }]);
     expect(virtual.afterMutation(append)).toMatchObject({ followedBottom: true, scrollTop: 40 });
@@ -370,7 +372,7 @@ describe("bottom and scroll semantics", () => {
       expect(virtual.afterMutation(correction)).toMatchObject({ scrollTop: 30, jump: -20 });
       overlap(virtual);
       virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
-      expect(virtual.getSnapshot()).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
+      expect(currentSnapshot(virtual)).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
       const append = virtual.beforeMutation();
       virtual.setOutline([...items([10, 30]).outline, { id: "row-2", kind: "10:2" }]);
       expect(virtual.afterMutation(append)).toMatchObject({ followedBottom: false, scrollTop: 30 });
@@ -381,12 +383,12 @@ describe("bottom and scroll semantics", () => {
     virtual.setViewport({ scrollTop: 50, size: 10, source: "programmatic" });
     virtual.measure("row-0", 40);
     virtual.setViewport({ scrollTop: 60, size: 10, source: "user" });
-    expect(virtual.getSnapshot()).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
+    expect(currentSnapshot(virtual)).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
 
     virtual.setViewport({ scrollTop: 150, size: 10, source: "programmatic" });
     virtual.setOutline([{ id: "next-0", kind: "20" }, { id: "next-1", kind: "20" }]);
     virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
-    expect(virtual.getSnapshot()).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
+    expect(currentSnapshot(virtual)).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
   });
   test("biased scroll ownership interleavings preserve user intent", () => {
     for (let seed = 1; seed <= 100; seed++) {
@@ -415,24 +417,24 @@ describe("bottom and scroll semantics", () => {
         let lastUserPinned = false;
         if (event === 0) {
           virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });
-          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: true, programmatic: true, pinned: false });
+          expect(currentSnapshot(virtual)).toMatchObject({ correctionEvent: true, programmatic: true, pinned: false });
         } else if (event === 1) {
           virtual.flushPendingCorrection();
           virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });
-          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: false, programmatic: false, pinned: true });
+          expect(currentSnapshot(virtual)).toMatchObject({ correctionEvent: false, programmatic: false, pinned: true });
           lastUserPinned = true;
         } else if (event === 2) {
           virtual.setViewport({ scrollTop: 0, size: virtual.getSnapshot().viewportSize, source: "programmatic" });
           virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });
-          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: false, programmatic: false, pinned: true });
+          expect(currentSnapshot(virtual)).toMatchObject({ correctionEvent: false, programmatic: false, pinned: true });
           lastUserPinned = true;
           virtual.setViewport({ scrollTop: 0, size: virtual.getSnapshot().viewportSize, source: "user" });
-          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: true, programmatic: true, pinned: true });
+          expect(currentSnapshot(virtual)).toMatchObject({ correctionEvent: true, programmatic: true, pinned: true });
         } else {
           virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });
-          expect(virtual.getSnapshot().correctionEvent).toBe(true);
+          expect(currentSnapshot(virtual).correctionEvent).toBe(true);
           virtual.setViewport({ scrollTop: 0, size: virtual.getSnapshot().viewportSize, source: "user" });
-          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: false, programmatic: false, pinned: false });
+          expect(currentSnapshot(virtual)).toMatchObject({ correctionEvent: false, programmatic: false, pinned: false });
         }
 
         const append = virtual.beforeMutation();
@@ -458,11 +460,12 @@ describe("observable snapshots", () => {
     expect(virtual.getSnapshot()).not.toBe(snapshot);
     expect(virtual.getSnapshot()).toBe(virtual.getSnapshot());
   });
-  test("replaces the snapshot for a notified mutation even when values match", () => {
-    const virtual = engine([10]);
+  test("stores a scroll-only viewport change without replacing the rendered snapshot", () => {
+    const virtual = engine([100], 10, 0);
     const snapshot = virtual.getSnapshot();
-    virtual.setViewport({ scrollTop: 0, size: 100, source: "user" });
-    expect(virtual.getSnapshot()).not.toBe(snapshot);
+    virtual.setViewport({ scrollTop: 1, size: 10, source: "user" });
+    expect(virtual.getSnapshot()).toBe(snapshot);
+    expect(virtual.getScrollState().scrollTop).toBe(1);
   });
 });
 
@@ -568,13 +571,17 @@ describe("incremental outline updates", () => {
         incremental.measure(id, size);
         rebuilt.measure(id, size);
       }
-      const max = Math.max(0, rebuilt.getSnapshot().totalSize - 80);
+      const incrementalBeforeScroll = incremental.getSnapshot();
+      const rebuiltBeforeScroll = rebuilt.getSnapshot();
+      expect(incrementalBeforeScroll.totalSize).toBe(rebuiltBeforeScroll.totalSize);
+      const max = Math.max(0, rebuiltBeforeScroll.totalSize - 80);
       const top = random() * max;
       incremental.setViewport({ scrollTop: top, size: 80, source: "user" });
       rebuilt.setViewport({ scrollTop: top, size: 80, source: "user" });
       const { unseenCount, ...incrementalLayout } = incremental.getSnapshot();
       const { unseenCount: _rebuiltUnseen, ...rebuiltLayout } = rebuilt.getSnapshot();
       expect(incrementalLayout).toEqual(rebuiltLayout);
+      expect(incremental.getScrollState().scrollTop).toBe(rebuilt.getScrollState().scrollTop);
       if (incremental.getSnapshot().pinned) expectedUnseen.clear();
       expect(unseenCount).toBe(expectedUnseen.size);
     }

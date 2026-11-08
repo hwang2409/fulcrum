@@ -182,8 +182,8 @@ export function useVirtualList<Id extends string>(
         // not a frame later when the engine measures (and then agrees). Moving scroll resizes nothing: no observer loop.
         // The user beats the engine: a scroll the engine has not seen yet (a scrollbar drag sends no input event first)
         // is the reader's move, so the follow waits for its scroll event, which unpins; wheel, keys, and touch unpin earlier.
-        const { pinned, scrollTop } = engine.getSnapshot();
-        if (pinned && Math.abs(container.scrollTop - scrollTop) < 1) writeScroll("end");
+        const { pinned } = engine.getSnapshot();
+        if (pinned && Math.abs(container.scrollTop - engine.getScrollState().scrollTop) < 1) writeScroll("end");
       });
       observerRef.current = observer;
       for (const row of rows.current.values()) observer.observe(row);
