@@ -1,5 +1,18 @@
 import type { ContentBlock, RunEvent, ToolCall, ToolResult } from "@fulcrum/core";
 
+declare global { var __FULCRUM_DEV__: boolean | undefined; }
+/*
+ * The development rule of @fulcrum/react (packages/react/src/parts.tsx, the source of truth), copied: a bundler's
+ * define (`globalThis.__FULCRUM_DEV__`, Vite's `import.meta.env.DEV`) folds it to a constant in this module, so the
+ * warning below is dead code in production. An import from another package would rely on cross-module constant
+ * propagation, which not every minifier does.
+ */
+const viteDevelopment = typeof (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env === "object"
+  ? (import.meta as ImportMeta & { env: { DEV?: boolean } }).env.DEV
+  : undefined;
+const configuredDevelopment = globalThis.__FULCRUM_DEV__;
+const development = configuredDevelopment === undefined ? viteDevelopment !== false : configuredDevelopment;
+
 /** The documented UI message stream implemented by this adapter. */
 export const AI_SDK_PROTOCOL = { package: "ai", version: "6.0.0", stream: "v1" } as const;
 
@@ -136,14 +149,20 @@ export function createAiSdkAdapter(options: AiSdkAdapterOptions) {
   if (original !== undefined && !Array.isArray(original)) throw new Error("options.originalMessages must be an array");
   const last = original?.at(-1) as Row | undefined;
   const continued = (messageId: string) => last?.role === "assistant" && last.id === messageId ? replayMessage(last).count : 0;
-  return { decode: messageDecoder(streamKey, continued).decode };
+  let warned = false;
+  const anonymousStart = development ? () => {
+    if (warned) return;
+    warned = true;
+    console.warn("@fulcrum/ai-sdk: this stream's `start` part has no messageId, so its rows are named by streamKey and a reload or re-sync from persisted messages adds them again instead of replacing them. On the server, pass `generateMessageId` (and `originalMessages`, so a continuation keeps its message id) to `toUIMessageStreamResponse`. See https://github.com/hwang2409/fulcrum/blob/main/packages/ai-sdk/README.md#streams-without-a-message-id");
+  } : undefined;
+  return { decode: messageDecoder(streamKey, continued, anonymousStart).decode };
 }
 
 /**
  * The stream decoder. `continued(messageId)` is how many fulcrum messages that UI message already has, so a
  * continuation numbers its messages after them. `streamKey` names the messages of a stream with no message id.
  */
-function messageDecoder(streamKey: string | undefined, continued: (messageId: string) => number) {
+function messageDecoder(streamKey: string | undefined, continued: (messageId: string) => number, anonymousStart?: () => void) {
   const wireId = (kind: AiSdkEntityKind, id: string) => encodeAiSdkEntityId({ source: "wire", kind, id });
   let wireMessageId: string | undefined;
   /** Fulcrum messages so far per UI message id (`undefined`: the stream's messages without one). */
@@ -318,6 +337,7 @@ function messageDecoder(streamKey: string | undefined, continued: (messageId: st
     if (type === "start") {
       const events = close();
       wireMessageId = optionalWireString(part.messageId, "part.messageId");
+      if (wireMessageId === undefined) anonymousStart?.();
       if (wireMessageId !== undefined && !counters.has(wireMessageId)) counters.set(wireMessageId, continued(wireMessageId));
       const messageId = wireMessageId !== undefined ? wireId("message", wireMessageId) : undefined;
       blocks.clear(); tools.clear();
@@ -398,7 +418,8 @@ export async function respondToApproval(
   if (identity.source !== "wire" || identity.kind !== "approval") throw new Error("requestId must be an AI SDK approval request id");
   const response: AiSdkApprovalResponse = { id: identity.id, approved, ...(reason !== undefined ? { reason } : {}) };
   const end = aiSdkApprovalEnd(response);
-  if (!pendingApproval(chat.messages, identity.id)) throw new Error(`approval ${identity.id} is not pending in the chat's last message`);
+  // An Approval card shows this message to the user.
+  if (!pendingApproval(chat.messages, identity.id)) throw new Error("this approval is no longer waiting for a decision");
   await chat.addToolApprovalResponse(response);
   dispatch(end);
 }

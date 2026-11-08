@@ -394,14 +394,14 @@ test("respondToApproval refuses an approval the SDK would not record", async () 
   // A stale card: the user sent a new prompt instead of answering, then clicks approve.
   const stale = await pendingChat();
   await stale.sendMessage({ text: "never mind" });
-  await expect(respondToApproval({ chat: stale, dispatch }, { requestId, approved: true })).rejects.toThrow("not pending");
+  await expect(respondToApproval({ chat: stale, dispatch }, { requestId, approved: true })).rejects.toThrow("this approval is no longer waiting for a decision");
   // A second, opposite answer after the first one landed.
   const twice = await pendingChat();
   await respondToApproval({ chat: twice, dispatch }, { requestId, approved: true });
-  await expect(respondToApproval({ chat: twice, dispatch }, { requestId, approved: false })).rejects.toThrow("not pending");
+  await expect(respondToApproval({ chat: twice, dispatch }, { requestId, approved: false })).rejects.toThrow("this approval is no longer waiting for a decision");
   expect((twice.messages.at(-1)!.parts as Chunk[]).find((part) => part.type === "tool-rm")).toMatchObject({ approval: { approved: true } });
   // An id the chat never asked about.
-  await expect(respondToApproval({ chat: await pendingChat(), dispatch }, { requestId: "w:approval:nope", approved: true })).rejects.toThrow("not pending");
+  await expect(respondToApproval({ chat: await pendingChat(), dispatch }, { requestId: "w:approval:nope", approved: true })).rejects.toThrow("this approval is no longer waiting for a decision");
   expect(dispatched).toEqual([{ type: "approval_end", request_id: requestId, decision: "approve" }]);
 });
 
