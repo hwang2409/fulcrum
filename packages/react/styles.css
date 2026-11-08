@@ -156,8 +156,13 @@
 [data-part="message-content"]:has(> [data-wide]) { max-width: none; }
 [data-part="message"]:has(> [data-wide]) > :not([data-wide]),
 [data-part="message-content"]:has(> [data-wide]) > :not([data-wide]) { max-width: var(--fulcrum-measure); }
-/* A wide block takes the cursor's gutter too: it ends no text line, so nothing hangs there. */
-[data-part="message"] > [data-wide] { margin-inline-end: calc(-1 * var(--cursor-gutter)); }
+/* Only a text line hangs the cursor in the gutter. A block that never does (a diagram, a code block or table, whose
+   cursor stays inside its box, a content row, a rule) takes the gutter back, so its edge lines up with the column's
+   other boxes, a tool card, at every width. */
+[data-part="message"] > :is([data-wide], [data-part="md-code-block"], [data-part="md-table"], [data-part="md-rule"], [data-part="reasoning"], [data-part="source"], [data-part="file"], [data-part="image"], [data-part="block-unknown"]) {
+  max-width: none;
+  margin-inline-end: calc(-1 * var(--cursor-gutter));
+}
 [data-part="message"][data-role="user"],
 [data-part="item"][data-kind="user"] {
   max-width: none;
@@ -181,19 +186,21 @@
 [data-part="message-content"] > [data-part="md-table"]:first-child { display: table; }
 /* An image has no text baseline, so its decorative prompt belongs at the frame's top edge. */
 [data-part="message"][data-role="user"]:has(> [data-part="message-content"] > [data-part="image"]:first-child) [data-part="message-prompt"] { align-self: start; }
-/* A terminal block cursor that ends the last streaming text line of the newest row (Message sets data-latest while it
-   streams as its Timeline's newest row, or streams outside one), drawn in the element holding that line: the text
-   container (the message, or a user's message-content) while it has no child elements, else its last text span or,
-   for markdown, the last paragraph, heading, text-ending list item, table cell, or line of a still-open fence, through
-   last children only. None when the newest part is another block (reasoning, a file, a closed fence: it shows its own
-   state) or inside reasoning. */
+/* The newest row's live signal (Message sets data-latest while it streams as its Timeline's newest row, or streams
+   outside one). Where its last block ends in text, a terminal block cursor ends that text: drawn in the element holding
+   the last line (the text container while it has no child elements, else its last text span or, for markdown, the last
+   paragraph, heading, text-ending list item, or table cell), through last children only, or before md-code-end, which
+   ends a code block's last line whether its fence is open or closed. Where its last block has no text line (below), the
+   block carries a running rail. Never inside reasoning, which shows its own state while it streams. */
 :is(
   :is([data-part="message"][data-latest]:not([data-role="user"]), [data-part="message"][data-latest] > [data-part="message-content"]):not(:has(> *)),
   :is([data-part="message"][data-latest]:not([data-role="user"]), [data-part="message"][data-latest] > [data-part="message-content"]) > span:not([data-part]):last-child,
   :is([data-part="message"][data-latest]:not([data-role="user"]), [data-part="message"][data-latest] > [data-part="message-content"])
-    :is([data-part="md-paragraph"], [data-part="md-heading"], [data-part="md-table"] :is(th, td), [data-part="md-code-block"][data-state="streaming"] > code,
+    :is([data-part="md-paragraph"], [data-part="md-heading"], [data-part="md-table"] :is(th, td),
       [data-part="md-list-item"]:not(:has(> :is([data-part="md-paragraph"], [data-part="md-heading"], [data-part="md-code-block"], [data-part="md-list"], [data-part="md-blockquote"], [data-part="md-table"], [data-part="md-rule"], div):last-child))):last-child:not([data-part="message"] :not(:last-child) *)
-):not([data-part="reasoning"] *)::after {
+):not([data-part="reasoning"] *)::after,
+:is([data-part="message"][data-latest]:not([data-role="user"]), [data-part="message"][data-latest] > [data-part="message-content"])
+  [data-part="md-code-end"]:not([data-part="message"] :not(:last-child) *, [data-part="reasoning"] *)::before {
   content: "";
   display: inline-block;
   width: 0.6em;
@@ -205,6 +212,25 @@
   background: var(--fulcrum-cursor, var(--fulcrum-fg));
   animation: fulcrum-blink 1s steps(1) infinite;
   forced-color-adjust: none;
+}
+/* A last block with no text line to end (a diagram, a finished large code block, a file, an image, a source, an
+   unknown block; reasoning there is still streaming and says "thinking") says the message is still live as a running tool does: a 2 px accent rail on its left edge, pulsing (still
+   under reduced motion). It is drawn over the block and takes no space, so nothing moves when it goes. */
+[data-part="message"] :is([data-part="mermaid"], [data-part="md-code-block"][data-size="large"], [data-part="source"], [data-part="file"], [data-part="image"], [data-part="block-unknown"]) { position: relative; }
+/* The rail covers the block's own left border (--live-x wide, --live-y tall at each end), as a tool's rail is its border. */
+[data-part="message"] [data-part="md-code-block"][data-size="large"] { --live-x: 1px; --live-y: 1px; }
+[data-part="message"] :is([data-part="source"], [data-part="file"], [data-part="block-unknown"]) { --live-x: 2px; --live-y: 1px; }
+:is([data-part="message"][data-latest]:not([data-role="user"]), [data-part="message"][data-latest] > [data-part="message-content"])
+  :is([data-part="mermaid"]:is([data-state="diagram"], [data-state="error"]), [data-part="md-code-block"][data-size="large"]:not([data-state="streaming"]), [data-part="source"], [data-part="file"], [data-part="image"], [data-part="block-unknown"]):last-child:not([data-part="message"] :not(:last-child) *)::after {
+  content: "";
+  position: absolute;
+  inset-block: calc(-1 * var(--live-y, 0px));
+  inset-inline-start: calc(-1 * var(--live-x, 0px));
+  width: 2px;
+  background: var(--fulcrum-live, var(--fulcrum-accent));
+  animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate;
+  forced-color-adjust: none;
+  pointer-events: none;
 }
 
 /* Tools and approvals: a hairline box, one header row (name, summary, status), the rest below it.
@@ -467,11 +493,10 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="tool-body"] > [data-part="text-viewer-head"] + [data-part="text-viewer"] { border-top: 0; }
 [data-part="text-viewer-language"] { color: var(--fulcrum-ui-type); font-weight: 700; }
 [data-part="text-viewer-count"] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* A narrow head keeps one row: "400 lines", the position, "bottom", "copy". The buttons keep their full aria-label, and
-   a streaming fence's status keeps its mark (its word stays for screen readers). */
+/* A narrow head keeps one row: "400 lines", the position, "bottom", "copy". The buttons keep their full aria-label. A
+   streaming fence keeps its "■ streaming" word, as a running tool keeps "■ running": the count gives up the room. */
 @container text-viewer-head (max-width: 560px) {
   [data-part="text-viewer-wide"] { display: none; }
-  [data-part="text-viewer-status"] > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
 [data-part="text-viewer-position"] { white-space: nowrap; }
 /* A streaming fence's viewer says so in its accent, its mark pulsing like a running tool's. */
@@ -1212,7 +1237,7 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="reasoning-status"]::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
-  [data-part="message"] { --fulcrum-cursor: CanvasText; }
+  [data-part="message"] { --fulcrum-cursor: CanvasText; --fulcrum-live: CanvasText; }
   [data-part="sub-agent"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }
   :is([data-part="sub-agent-status"], [data-part="run-state"])::before,

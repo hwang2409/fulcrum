@@ -8,8 +8,9 @@ import type { Browser, Page } from "playwright";
 // The gallery's streaming messages, paused mid-stream (reduced motion at load), and what each must show. `cursors`: how
 // many terminal cursors; `tag`: the element that draws it; `tight`: prose whose last line can be made to fill its
 // width exactly, where the cursor must still not take a line of its own; `viewer`: a fence streaming as the code
-// viewer, whose head carries the running mark instead; `open`: a control to click first.
-type CursorCase = { id: string; cursors: 0 | 1; tag?: string; tight?: boolean; viewer?: boolean; open?: string };
+// viewer, whose head carries the running mark instead; `rail`: the part whose running rail is the live signal, when the
+// last block has no text line to end; `open`: a control to click first.
+type CursorCase = { id: string; cursors: 0 | 1; tag?: string; tight?: boolean; viewer?: boolean; rail?: string; open?: string };
 const cursorCases: CursorCase[] = [
   { id: "message-streaming", cursors: 1, tight: true },
   { id: "content-streaming", cursors: 1 },
@@ -17,8 +18,14 @@ const cursorCases: CursorCase[] = [
   { id: "markdown-table-streaming", cursors: 1, tag: "td" },
   // Paused after the fence closed: the cursor ends the text after it (checkCursorSteps sees it inside the open fence).
   { id: "markdown-fence-streaming", cursors: 1, tag: "p" },
-  // Ends in a closed fence: the block is final, so no cursor in it (it would add a line that the commit takes away).
-  { id: "markdown-streaming", cursors: 0 },
+  // Ends in a closed fence: the cursor stays after its last glyph (md-code-end), on no line of its own.
+  { id: "markdown-streaming", cursors: 1, tag: "span" },
+  // A notification and an unknown event below the streaming message report on the run: the message keeps the cursor.
+  { id: "message-notification-midstream", cursors: 1 },
+  // The last block has no text line: it carries the running rail instead.
+  { id: "message-block-tail", cursors: 0, rail: "file" },
+  { id: "markdown-large-tail", cursors: 0, rail: "md-code-block" },
+  { id: "mermaid-tail", cursors: 0, rail: "mermaid" },
   { id: "markdown-crossing", cursors: 0, viewer: true },
   // The text ended and a tool row runs below it: the tool holds the live signal.
   { id: "ai-sdk-text-then-tool", cursors: 0 },
@@ -33,6 +40,19 @@ const modes: [Mode, { reducedMotion: "no-preference" | "reduce"; forcedColors: "
   ["reduced motion", { reducedMotion: "reduce", forcedColors: "none" }],
 ];
 
+// Runs in the page, installed as window.liveSignals (installLiveSignals). A message's live signals: its terminal cursors
+// (an empty ::after in the flow, or md-code-end's ::before; hidden ones do not count) and its running rails (an empty,
+// absolutely placed ::after on a block with no text line to end).
+function liveSignals(message: HTMLElement): [HTMLElement[], HTMLElement[]] {
+  const empty = (element: HTMLElement, pseudo: string) => getComputedStyle(element, pseudo).content === '""' && element.checkVisibility();
+  const all = [message, ...message.querySelectorAll<HTMLElement>("*")];
+  const cursors = all.filter((element) => element.dataset.part === "md-code-end" ? empty(element, "::before") : empty(element, "::after") && getComputedStyle(element, "::after").position !== "absolute");
+  const rails = all.filter((element) => element.matches("[data-part=mermaid], [data-part=md-code-block], [data-part=source], [data-part=file], [data-part=image], [data-part=block-unknown]") && empty(element, "::after") && getComputedStyle(element, "::after").position === "absolute");
+  return [cursors, rails];
+}
+declare global { interface Window { liveSignals: typeof liveSignals } }
+const installLiveSignals = (page: Page) => page.addInitScript(`window.liveSignals = ${liveSignals}`);
+
 // Runs in the page. The streaming message's cursors (the ::after that styles.css draws with an empty content), their
 // computed style, the height the cursor adds to the message (a line of its own makes it taller; the commit would take
 // it away), and the running mark of a streaming viewer. The ::after shows in the accessibility tree as an unnamed
@@ -40,7 +60,7 @@ const modes: [Mode, { reducedMotion: "no-preference" | "reduce"; forcedColors: "
 function readCursor(id: string) {
   const message = document.querySelector<HTMLElement>(`#${id} [data-part=message][data-state=streaming]`);
   if (!message) return undefined;
-  const holders = [message, ...message.querySelectorAll<HTMLElement>("*")].filter((element) => getComputedStyle(element, "::after").content === '""');
+  const [holders, rails] = window.liveSignals(message);
   const probe = document.createElement("span");
   probe.style.color = "CanvasText";
   document.body.append(probe);
@@ -48,17 +68,24 @@ function readCursor(id: string) {
   probe.remove();
   const height = message.getBoundingClientRect().height;
   const off = document.createElement("style");
-  off.textContent = "[data-part=message] *::after, [data-part=message]::after { content: none !important; }";
+  off.textContent = "[data-part=message] *::after, [data-part=message]::after, [data-part=md-code-end]::before { content: none !important; }";
   document.head.append(off);
   const without = message.getBoundingClientRect().height;
   off.remove();
   const mark = message.querySelector("[data-part=md-code-block][data-state=streaming] [data-part=text-viewer-status]");
   const markStyle = mark && getComputedStyle(mark, "::before");
   const look = (style: CSSStyleDeclaration) => ({ background: style.backgroundColor, adjust: style.forcedColorAdjust, animation: style.animationName });
+  const box = message.getBoundingClientRect();
   return {
     holders: holders.map((holder) => {
-      const style = getComputedStyle(holder, "::after");
+      const style = getComputedStyle(holder, holder.dataset.part === "md-code-end" ? "::before" : "::after");
       return { tag: holder.tagName.toLowerCase(), width: parseFloat(style.width), height: parseFloat(style.height), marginLeft: style.marginLeft, ...look(style) };
+    }),
+    rails: rails.map((rail) => {
+      const style = getComputedStyle(rail, "::after");
+      const block = rail.getBoundingClientRect();
+      // Its size against its block's, and whether it sits inside the message.
+      return { part: rail.dataset.part!, width: parseFloat(style.width), height: parseFloat(style.height), blockHeight: block.height, inside: block.left >= box.left - 0.5, ...look(style) };
     }),
     mark: markStyle && markStyle.content === '""' ? look(markStyle) : undefined,
     systemColor,
@@ -160,6 +187,30 @@ function readViewerCommitShift() {
   return moved ? `markdown-crossing: the viewer head moves when its status word goes at the commit (${JSON.stringify(before)} -> ${JSON.stringify(after)})` : undefined;
 }
 
+// Runs in the page. A streaming viewer keeps its "streaming" word at every width, as a running tool keeps "running".
+function readViewerWord() {
+  const word = document.querySelector<HTMLElement>("#markdown-crossing [data-part=md-code-block][data-state=streaming] [data-part=text-viewer-status] > span");
+  if (!word) return "markdown-crossing: no streaming viewer status word";
+  const { width } = word.getBoundingClientRect();
+  return width < 20 || getComputedStyle(word).clipPath !== "none" ? `markdown-crossing: the viewer's "streaming" word is hidden (${width.toFixed(1)} px wide)` : undefined;
+}
+
+// Runs in the page. Only a text line keeps the cursor's end gutter: a block that never hangs the cursor (code, a table,
+// a content row, a rule) reaches the message's edge, where a tool card ends, while paragraphs stop short of it.
+function readBlockEdges(id: string) {
+  const blocks = "[data-part=md-code-block], [data-part=md-table], [data-part=md-rule], [data-part=reasoning], [data-part=source], [data-part=file], [data-part=image], [data-part=block-unknown]";
+  const message = document.querySelector<HTMLElement>(`#${id} [data-part=message]`);
+  if (!message) return `${id}: no message`;
+  const edge = message.getBoundingClientRect().right;
+  const children = [...message.querySelectorAll<HTMLElement>(":scope > *")];
+  const wrong = children.flatMap((child) => {
+    const gap = edge - child.getBoundingClientRect().right;
+    return (child.matches(blocks) ? Math.abs(gap) > 0.5 : gap < 1) ? [`${child.dataset.part ?? child.tagName} ${gap.toFixed(1)} px from the message's edge`] : [];
+  });
+  if (!children.some((child) => child.matches(blocks))) return `${id}: no block to check (the fixture changed?)`;
+  return wrong.length ? `${id} block edges: ${wrong.join("; ")}` : undefined;
+}
+
 // Runs in the page. Plain text that ends in a blank line streams without its last line break (content.test.tsx), so
 // the cursor sits on the blank line that the commit keeps: the same height streaming and committed.
 function readBlankLineCommit() {
@@ -197,6 +248,13 @@ function checkLook(at: string, mode: Mode, look: Look, animation: string, system
 function checkCursorCase(at: string, mode: Mode, demo: CursorCase, cursor: NonNullable<ReturnType<typeof readCursor>>): string[] {
   if (cursor.holders.length !== demo.cursors) return [`${at}: ${cursor.holders.length} streaming cursors (${cursor.holders.map(({ tag }) => `<${tag}>`).join(", ")}), expected ${demo.cursors}`];
   const failures: string[] = [];
+  // One live signal: a cursor, or else the rail of the last block.
+  const rails = cursor.rails.map(({ part }) => part);
+  if (rails.join() !== (demo.rail ?? "")) failures.push(`${at}: running rails on [${rails.join(", ")}], expected [${demo.rail ?? ""}]`);
+  for (const rail of cursor.rails) {
+    if (rail.width !== 2 || Math.abs(rail.height - rail.blockHeight) > 2.5 || !rail.inside) failures.push(`${at}: the ${rail.part} rail is ${rail.width}x${rail.height} px on a ${rail.blockHeight.toFixed(1)} px block${rail.inside ? "" : ", outside the message"}`);
+    failures.push(...checkLook(`${at}: the ${rail.part} rail`, mode, rail, "fulcrum-pulse", cursor.systemColor));
+  }
   // Whatever it shows, the commit (which removes the cursor) must not change the message's height.
   if (cursor.extra > 0.5) failures.push(`${at}: the cursor adds ${cursor.extra.toFixed(1)} px, a line that the commit takes away`);
   if (demo.viewer) failures.push(...(cursor.mark ? checkLook(`${at}: the viewer's running mark`, mode, cursor.mark, "fulcrum-pulse", cursor.systemColor) : [`${at}: the streaming viewer shows no running mark`]));
@@ -212,6 +270,7 @@ function checkCursorCase(at: string, mode: Mode, demo: CursorCase, cursor: NonNu
 
 // The terminal cursor on real streaming markup, in each mode, plus the tight-fit case for prose.
 async function checkStreamingCursor(page: Page, port: number, failures: string[]) {
+  await installLiveSignals(page);
   await page.goto(`http://127.0.0.1:${port}/gallery.html`);
   await page.waitForSelector(`#${cursorCases[0]!.id} [data-part=message]`, { state: "attached", timeout: 10_000 });
   await page.evaluate(() => document.fonts.ready);
@@ -243,10 +302,10 @@ async function checkStreamingCursor(page: Page, port: number, failures: string[]
       }
       if (width === 1440 && fit && fit.full.cells !== 80) failures.push(`${demo.id} @ 1440: the measure holds ${fit.full.cells} columns, expected 80`);
     }
-    for (const [id, read] of [["markdown-crossing", readViewerCommitShift], ["message-plain-streaming", readBlankLineCommit]] as const) {
+    for (const [id, read] of [["markdown-crossing", readViewerCommitShift], ["markdown-crossing", readViewerWord], ["message-plain-streaming", readBlankLineCommit], ["content-done", readBlockEdges], ["markdown-done", readBlockEdges]] as const) {
       await page.locator(`#${id}`).scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {});
       await nextFrame(page);
-      const failure = await page.evaluate(read);
+      const failure = await page.evaluate(read, id);
       if (failure) failures.push(`${failure} @ ${width}`);
     }
   }
@@ -262,31 +321,35 @@ async function checkStreamingCursor(page: Page, port: number, failures: string[]
   await page.emulateMedia({ forcedColors: "none", reducedMotion: "reduce" });
 }
 
-// Runs in the page. Where each demo's first message draws its cursors right now.
+// Runs in the page. Where each demo's first message draws its cursors right now, and how tall its first fence is.
 function readCursorStep(ids: string[]) {
   return ids.map((id) => {
     const message = document.querySelector<HTMLElement>(`#${id} [data-part=message]`);
-    const holders = message ? [message, ...message.querySelectorAll<HTMLElement>("*")].filter((element) => getComputedStyle(element, "::after").content === '""') : [];
+    const holders = message ? window.liveSignals(message)[0] : [];
+    const fence = message?.dataset.state === "streaming" ? message.querySelector("pre[data-part=md-code-block]") : null;
     return {
       id,
+      fenceHeight: fence ? fence.getBoundingClientRect().height : undefined,
       later: !!message?.closest("[data-part=timeline] > *")?.nextElementSibling,
       holders: holders.map((holder) => ({
         tag: holder.tagName.toLowerCase(),
-        fence: holder.closest<HTMLElement>("[data-part=md-code-block]")?.dataset.state ?? null,
+        fence: (() => { const block = holder.closest<HTMLElement>("[data-part=md-code-block]"); return block ? block.dataset.state ?? "done" : null; })(),
         afterFence: holder.previousElementSibling?.matches("[data-part=md-code-block]") ?? false,
       })),
     };
   });
 }
 
-// The cursor through every step of live streams, one timer tick at a time on a paused clock: never more than one, in
-// the open fence while it streams and on the text after it once it closes, and never on text that a later row (a
-// running tool) follows, with markdown and with plain text.
+// The cursor through every step of live streams, one timer tick at a time on a paused clock: never more than one, after
+// the last glyph of the fence while it streams, still there once it closes, then on the text after it, and never on
+// text that a later row (a running tool) follows, with markdown and with plain text. A streaming fence never gets
+// shorter: the cursor never takes a line of its own that its closing would take away.
 async function checkCursorSteps(browser: Browser, port: number, failures: string[]) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "no-preference" });
   const start = new Date("2026-01-01T00:00:00Z");
   await page.clock.install({ time: start });
   await page.clock.pauseAt(new Date(start.getTime() + 1));
+  await installLiveSignals(page);
   await page.goto(`http://127.0.0.1:${port}/gallery.html`);
   await page.waitForSelector("#markdown-fence-streaming", { state: "attached", timeout: 10_000 });
   const ids = ["markdown-fence-streaming", "ai-sdk-text-then-tool", "ai-sdk-plain-text-then-tool"];
@@ -295,24 +358,28 @@ async function checkCursorSteps(browser: Browser, port: number, failures: string
   const wrong = new Map<string, { first: number; ticks: number }>();
   const flag = (what: string, step: number) => { const at = wrong.get(what); if (at) at.ticks++; else wrong.set(what, { first: step, ticks: 1 }); };
   const before = failures.length;
+  const fenceHeights = new Map<string, number>();
   for (let step = 0; step < 200; step++) {
     await page.clock.runFor(30);
-    for (const { id, later, holders } of await page.evaluate(readCursorStep, ids)) {
+    for (const { id, later, holders, fenceHeight } of await page.evaluate(readCursorStep, ids)) {
+      const prior = fenceHeights.get(id);
+      if (prior !== undefined && fenceHeight !== undefined && fenceHeight < prior - 0.5) flag(`${id}: the streaming fence shrinks ${(prior - fenceHeight).toFixed(1)} px`, step);
+      if (fenceHeight === undefined) fenceHeights.delete(id);
+      else fenceHeights.set(id, fenceHeight);
       if (holders.length > 1) flag(`${id}: ${holders.length} cursors`, step);
       const [holder] = holders;
       if (later) seen.add(`${id} later`);
       if (!holder) continue;
       if (later) flag(`${id}: the cursor stays on text that a later row follows (<${holder.tag}>)`, step);
-      if (holder.fence && holder.fence !== "streaming") flag(`${id}: the cursor is in a closed fence`, step);
-      seen.add(`${id} ${holder.fence ? "fence" : holder.afterFence ? "after fence" : "text"}`);
+      seen.add(`${id} ${holder.fence === "streaming" ? "fence" : holder.fence === null ? holder.afterFence ? "after fence" : "text" : "closed fence"}`);
     }
   }
   await page.close();
   for (const [what, { first, ticks }] of wrong) failures.push(`${what}, from tick ${first}, in ${ticks} of 200 ticks`);
-  for (const expected of ["markdown-fence-streaming fence", "markdown-fence-streaming after fence", ...ids.slice(1).flatMap((id) => [`${id} text`, `${id} later`])]) {
+  for (const expected of ["markdown-fence-streaming fence", "markdown-fence-streaming closed fence", "markdown-fence-streaming after fence", ...ids.slice(1).flatMap((id) => [`${id} text`, `${id} later`])]) {
     if (!seen.has(expected)) failures.push(`cursor steps: never saw "${expected}" (the demo changed?)`);
   }
-  if (failures.length === before) console.log(`ok   cursor steps: 200 ticks of ${ids.join(", ")}: one cursor at most, in the open fence then after it, and none on text a running tool follows`);
+  if (failures.length === before) console.log(`ok   cursor steps: 200 ticks of ${ids.join(", ")}: one cursor at most, in the open fence, in it once closed, then after it, none on text a running tool follows, and the fence never shrinks`);
 }
 
 // Every part stays still under reduced motion even outside a Timeline or Composer: the gallery's rows (paused in their

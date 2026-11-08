@@ -122,6 +122,13 @@ export const mermaidDemos: Demo[] = [
     ];
   }),
   {
+    id: "mermaid-tail",
+    part: "Mermaid",
+    title: "drawn, message still streaming",
+    description: "The fence closed and the diagram drew, but the message has not said more yet: the diagram carries the running rail until the next text.",
+    events: lines("mermaid-tail", fence(diagrams[0]![2], diagrams[0]![3])),
+  },
+  {
     id: "mermaid-live",
     part: "Mermaid",
     title: "live",
