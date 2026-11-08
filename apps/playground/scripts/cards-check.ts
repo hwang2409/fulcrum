@@ -282,6 +282,8 @@ async function checkStreamingCursor(page: Page, port: number, failures: string[]
       const at = `${demo.id} (${mode})`;
       // Off screen, a row skips layout (content-visibility) and reports a placeholder height.
       await page.locator(`#${demo.id}`).scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {}); // a missing demo fails below
+      // A diagram draws at idle time near the viewport.
+      if (demo.rail === "mermaid") await page.waitForSelector(`#${demo.id} [data-part=mermaid][data-state=diagram]`, { timeout: 15_000 }).catch(() => failures.push(`${demo.id}: the diagram never drew`));
       await nextFrame(page);
       const cursor = await page.evaluate(readCursor, demo.id);
       failures.push(...(cursor ? checkCursorCase(at, mode, demo, cursor) : [`${at}: no streaming message`]));
