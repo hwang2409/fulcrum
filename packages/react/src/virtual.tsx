@@ -345,6 +345,8 @@ export function useVirtualList<Id extends string>(
   const scrollToEnd = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
+    touching.current = false;
+    userScrollUntil.current = 0;
     const next = engine.scrollToEnd();
     const applyBottom = scrollToBottomRef.current;
     if (applyBottom && container.scrollHeight > container.clientHeight) applyBottom();
@@ -352,9 +354,10 @@ export function useVirtualList<Id extends string>(
     ignoreScrollUntil.current = performance.now() + 50;
   }, [engine]);
   const requestFollow = useCallback(() => {
-    if (touching.current || performance.now() < userScrollUntil.current) return;
     const container = containerRef.current;
     if (!container) return;
+    touching.current = false;
+    userScrollUntil.current = 0;
     const next = engine.requestFollow();
     if (next === null) return;
     const applyBottom = scrollToBottomRef.current;

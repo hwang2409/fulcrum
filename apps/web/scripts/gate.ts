@@ -574,7 +574,12 @@ try {
     await check("a measured row growing by wrapped lines keeps a pinned reader at the bottom", () => growPinnedRow(page));
     await check("a user scroll stays put and counts unseen content", async () => {
       const scroll = page.locator('[data-part="timeline-scroll"]');
-      await scroll.evaluate((element) => { element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 120); });
+      const box = await scroll.boundingBox();
+      if (!box) throw new Error("no scroll viewport");
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      const bottom = await scroll.evaluate((element) => element.scrollTop);
+      await page.mouse.wheel(0, -120);
+      await page.waitForFunction((bottom) => document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop < bottom, bottom, { timeout: 5000 });
       await settle(page);
       const before = await scroll.evaluate((element) => element.scrollTop);
       fake.emit({ event: "user_message", session_id: ACTIVE, text: "remote content while reading", mode: "send", attachments: [] });
@@ -587,7 +592,12 @@ try {
     });
     await check("an accepted own send follows an unpinned reader to the bottom", async () => {
       const scroll = page.locator('[data-part="timeline-scroll"]');
-      await scroll.evaluate((element) => { element.scrollTop = 0; });
+      const box = await scroll.boundingBox();
+      if (!box) throw new Error("no scroll viewport");
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      const before = await scroll.evaluate((element) => element.scrollTop);
+      await page.mouse.wheel(0, -10_000);
+      await page.waitForFunction((before) => document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop < before, before, { timeout: 5000 });
       const composer = page.locator(".dock textarea");
       await composer.fill("follow my accepted message");
       await composer.press("Enter");
