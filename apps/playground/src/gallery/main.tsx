@@ -7,7 +7,7 @@ import themeSource from "@fulcrum/react/themes.css?raw";
 import "./gallery.css";
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createRunStore, type RunSource } from "@fulcrum/core";
+import { createRunStore } from "@fulcrum/core";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
 import { MermaidFence } from "@fulcrum/mermaid";
@@ -15,6 +15,7 @@ import { Approval, Message, RunEndMarker, RunNavigator, RunProvider, RunStatus, 
 import { CodeCard, codeDemos } from "./code-demos";
 import { ComposerCard, composerDemos } from "./composer-demos";
 import { demos, type Demo, type DemoApproval } from "./demos";
+import { sourceFor } from "./source";
 import { mermaidDemos } from "./mermaid-demos";
 
 const highlight = createHighlighter();
@@ -53,12 +54,6 @@ const fresh = (demo: Demo, paused = false) => {
 };
 const steps = (demo: Demo) => Math.max(demo.events.length, ...Object.values(demo.runs ?? {}).map((events) => events.length));
 
-// The fake harness behind the sub-agent demos: child runs it has open, the rest say why they cannot.
-const sourceFor = (runs: Record<string, ReturnType<typeof createRunStore>>): RunSource => ({
-  open: (runId) => ({ store: runs[runId]!, release() {} }),
-  unavailable: (runId) => (runs[runId] ? undefined : "started before child runs were recorded"),
-});
-
 // The theme list comes from the shipped themes.css, so the picker never drifts from it.
 const themeNames = [...themeSource.matchAll(/^\[data-fulcrum-theme="([^"]+)"\] \{$/gm)].map((match) => match[1]);
 const AUTO = "auto";
@@ -84,7 +79,7 @@ function attributes(root: HTMLElement) {
 function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: string) => void; inspect: boolean }) {
   const [stores, setStores] = useState(() => fresh(demo, reducedMotion));
   const { store, runs } = stores;
-  const source = useMemo(() => sourceFor(runs), [runs]);
+  const source = useMemo(() => sourceFor(runs, demo.sourceFailure), [runs, demo.sourceFailure]);
   const [generation, setGeneration] = useState(0);
   const [paused, setPaused] = useState(reducedMotion);
   const [touched, setTouched] = useState(false);
