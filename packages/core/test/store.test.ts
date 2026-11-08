@@ -393,6 +393,49 @@ test.each(resyncRows)("resync tells subscribers to take the outline whole: $name
   expect(ids(held)).toEqual(ids(store.getOutline()));
 });
 
+test("two resyncs before a frame: each notifies only when its rows differ, and the last replay wins", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.dispatch(commit("a"));
+  jobs.shift()!();
+  const changes: Array<OutlineSnapshot["change"]> = [];
+  store.subscribeOutline(() => changes.push(store.getOutlineSnapshot().change));
+  store.resync([commit("b")]);
+  store.resync([commit("b")]);
+  store.resync([commit("c")]);
+  while (jobs.length > 0) jobs.shift()!();
+  expect({ changes, view: ids(store.getOutline()) }).toEqual({ changes: [null, null], view: ["message:c"] });
+});
+
+// A resync from inside a listener is not notified inside that notification (no nested pass with half-reset state);
+// it is delivered right after it, once, as a whole replacement.
+test("resync from a listener is delivered after the running notification, not nested in it", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.dispatch(commit("a"));
+  let depth = 0;
+  let nested = 0;
+  const seen: Array<{ change: OutlineSnapshot["change"]; view: string[] }> = [];
+  let resynced = false;
+  store.subscribe(() => {
+    if (depth > 0) nested++;
+    depth++;
+    if (!resynced) resynced = true, store.resync([commit("b"), commit("c")]);
+    depth--;
+  });
+  store.subscribeOutline(() => {
+    if (depth > 0) nested++;
+    const snapshot = store.getOutlineSnapshot();
+    seen.push({ change: snapshot.change, view: ids(snapshot.items) });
+  });
+  while (jobs.length > 0) jobs.shift()!();
+  expect({ nested, last: seen.at(-1), view: ids(store.getOutline()) }).toEqual({
+    nested: 0,
+    last: { change: null, view: ["message:b", "message:c"] },
+    view: ["message:b", "message:c"],
+  });
+});
+
 test("prepend rejection keeps the last good state and visibly desyncs", () => {
   const errors: unknown[] = [];
   const store = createRunStore((flush) => flush(), { onError: (error) => errors.push(error) });
