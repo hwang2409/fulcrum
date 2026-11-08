@@ -303,7 +303,7 @@ test.each([
   },
   {
     name: "a run that starts and ends inside the reopen's replay clears the marker",
-    fact: "the reconcile's idle status last_turn_outcome names a later turn than the interrupted one",
+    fact: "the turn_start replayed into servedTurn (#111) and the reconcile's idle status both name a later turn",
     async run() {
       const status: Record<string, unknown> = idleStatus({ turn_id: turn, reason: "disconnect" });
       const rows = [...history.b!, endRow(turn, "disconnect")];
@@ -317,6 +317,27 @@ test.each([
         },
       });
       return { view, live: present(view).open?.lease.store.getState().endOutcome, reopened: await reopened(view) };
+    },
+    live: undefined,
+    reopened: "completed",
+  },
+  {
+    name: "a run replayed while status still names the interrupted turn clears the marker",
+    fact: "the client's servedTurn records the turn_start that arrived during replay (#111); status lags",
+    async run() {
+      const status: Record<string, unknown> = idleStatus({ turn_id: turn, reason: "disconnect" });
+      const rows = [...history.b!, endRow(turn, "disconnect")];
+      const { view } = await interruptedReconnect({
+        status, rows,
+        duringReplay(event) {
+          startLaterTurn(event);
+          event({ event: "agent_end", session_id: "b" });
+        },
+      });
+      const live = present(view).open?.lease.store.getState().endOutcome;
+      rows.push(endRow(laterTurn));
+      Object.assign(status, idleStatus({ turn_id: laterTurn, reason: "completed" }));
+      return { view, live, reopened: await reopened(view) };
     },
     live: undefined,
     reopened: "completed",

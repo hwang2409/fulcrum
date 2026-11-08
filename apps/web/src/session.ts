@@ -482,15 +482,15 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   // The last served turn id seen per session. A client that connected mid-turn never saw that turn's turn_start, so a
   // repeat overflow keeps the id an earlier client saw.
   const servedTurns = new Map<string, string>();
-  // An interrupted turn stays "outcome unknown" until the session serves a later turn: the newest served turn id (an idle
-  // status' last_turn_outcome, else this client's last turn_start) names one when it is not the interrupted turn. Every
-  // snapshot of an open reads this, so a run that started and ended while a reopen replayed clears the marker and, like a
-  // run seen live, names no outcome in that open.
+  // An interrupted turn stays "outcome unknown" until the session serves a later turn: the newest served turn id (this
+  // client's last turn_start, live or during replay, else an idle status' last_turn_outcome) names one when it is not the
+  // interrupted turn. Every snapshot of an open reads this, so a run that started and ended while a reopen replayed
+  // clears the marker and, like a run seen live, names no outcome in that open.
   const endOutcome = (id: string): EndOutcome => {
     let later: string | undefined;
     return (rows, status) => {
       const ownIdle = status.session?.session_id === id && status.state === "idle";
-      const newest = (ownIdle && statusTurnOutcome(status.last_turn_outcome) ? status.last_turn_outcome!.turn_id : undefined) ?? client?.servedTurn(id);
+      const newest = client?.servedTurn(id) ?? (ownIdle && statusTurnOutcome(status.last_turn_outcome) ? status.last_turn_outcome!.turn_id : undefined);
       const interruptedTurn = interruptedTurns.get(id)?.turn; // unknown when this page joined mid-turn: then status may name that very turn
       if (newest !== undefined && interruptedTurn !== undefined && newest !== interruptedTurn) {
         interruptedTurns.delete(id);
