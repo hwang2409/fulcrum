@@ -381,10 +381,12 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>): RunEvent[] =>
   if (row.event === "history_group_truncated") return [{ type: "history_truncated", text: "[history group too large; truncated]" }];
   if (Array.isArray(row.content) && text(row.content) === "[history group too large; truncated]") return [{ type: "history_truncated", text: "[history group too large; truncated]" }];
   if (row.event === "approval_request" || row.event === "approval_end") {
-    // History empties tool_use arguments, but an approval row keeps them: the call's result row then gets its full view.
+    // Older servers (no `session_history_fidelity`) empty tool_use arguments, but an approval row keeps them; with the
+    // feature, the tool_use block itself is the record and wins.
     let call: ToolCall | undefined;
     try { call = tool(row.tool_call); } catch { /* no usable call: the row still maps */ }
-    if (call && calls.has(call.id) && Object.keys(call.arguments).length) calls.set(call.id, call);
+    const known = call && calls.get(call.id);
+    if (call && known && !Object.keys(known.arguments).length && Object.keys(call.arguments).length) calls.set(call.id, call);
     return fromZetaEvent(row);
   }
   const id = string(row.id, "history row id");

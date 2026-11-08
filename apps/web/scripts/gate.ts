@@ -435,6 +435,10 @@ try {
       await page.locator('[data-part="timeline"] [data-part="message"]').first().waitFor();
       if (!(await page.locator('[data-part="timeline"] [data-part="tool"]').count())) throw new Error("no tool card");
       if (await page.locator('[data-part="timeline"] [data-part="tool"][data-state="streaming"]').count() > 1) throw new Error("history tool left running");
+      // session_history_fidelity keeps a failed bash call's structured result: its exit code, which legacy history (is_error only) lacks.
+      const failed = page.locator('[data-part="timeline"] [data-tool-view="shell"]', { hasText: "bun test packages/zeta/test/rpc.test.ts" }).locator('[data-part="tool-exit"]');
+      await failed.waitFor({ timeout: 5000 }).catch(() => { throw new Error("the reopened failed bash call shows no exit code"); });
+      if (await failed.getAttribute("data-exit-code") !== "1") throw new Error(`the reopened failed bash call shows exit ${await failed.getAttribute("data-exit-code")}`);
     });
     await check("shell cards are highlighted: line 1 of the command has token colors", async () => {
       const summary = page.locator('[data-tool-view="shell"] [data-part="tool-summary"]').first();
@@ -834,10 +838,17 @@ try {
     await check("390: the run fills the width; the session list is a drawer", async () => {
       await mobile.goto(`${origin}/?theme=gruvbox-dark#session=s-themes`);
       await mobile.locator('[data-part="timeline"] [data-kind="user"]').first().waitFor({ timeout: 15_000 });
-      // A reopened, approved bash call is the live shell card: its command (from the approval row), its output without
-      // zeta's raw "stdout:"/"stderr:" labels, and exit 0.
+      // A reopened, approved bash call is the live shell card: its command (from the fidelity tool_use), its output
+      // without zeta's raw "stdout:"/"stderr:" labels, and exit 0.
       const reopened = mobile.locator('[data-part="timeline"] [data-tool-view="shell"]', { hasText: "ls packages/react/src" });
-      await reopened.waitFor({ timeout: 5000 }).catch(() => { throw new Error("the reopened bash call is not a shell card with its command"); });
+      // The call is the session's first turn, and the composer checks appended rows below it: the virtual timeline
+      // mounts it only near the viewport, so read from the top while older history pages arrive.
+      const scroller = mobile.locator('[data-part="timeline-scroll"]');
+      for (let attempt = 0; attempt < 50 && !(await reopened.count()); attempt++) {
+        await scroller.evaluate((element) => { element.scrollTop = 0; });
+        await mobile.waitForTimeout(100);
+      }
+      await reopened.waitFor({ timeout: 1000 }).catch(() => { throw new Error("the reopened bash call is not a shell card with its command"); });
       const card = await reopened.innerText();
       if (/\bstdout:|\bstderr:/.test(card) || !card.includes("themes.ts") || !card.includes("exit 0")) throw new Error(`the reopened bash card reads "${card.replace(/\s+/g, " ")}"`);
       if (await mobile.locator("button.session").first().isVisible()) throw new Error("sidebar visible without the drawer");

@@ -133,6 +133,19 @@ test("history fidelity preserves arguments, structured bash results, and truncat
   expect(events[1]).toMatchObject({ type: "tool_end", view: { kind: "shell", command: "false", exitCode: 2, stdout: "", stderr: "failed\\n", cwd: "/tmp" }, tool_result: { truncated: true } });
 });
 
+test("with fidelity, the tool_use call is the record: an approval row's call does not replace it", () => {
+  // zeta docs/serve-protocol.md:1296-1297: fidelity history keeps the stored, bounded arguments and arguments_truncated.
+  const stored = { id: "t1", name: "bash", arguments: { command: "cat big.txt" }, arguments_truncated: true };
+  const approved = { id: "t1", name: "bash", arguments: { command: "cat big.txt", note: "from the approval" } };
+  const events = fromZetaHistory([
+    { id: "a", role: "assistant", content: [{ type: "tool_use", tool_call: stored }], tool_result: null },
+    { id: "q", role: "system", event: "approval_request", request_id: "t1", tool_call: approved, delegated: false },
+    { id: "r", role: "tool_result", content: [], tool_result: { tool_call_id: "t1", content: "stdout:\nok\nstderr:\n", is_error: false, content_blocks: [], structured_content: null } },
+  ]);
+  expect(events.at(-1)).toMatchObject({ type: "tool_end", tool_call: { arguments: { command: "cat big.txt" }, meta: { argumentsTruncated: true } } });
+  expect((events.at(-1) as { tool_call: { arguments: object } }).tool_call.arguments).not.toHaveProperty("note");
+});
+
 test("a real live dropped steer keeps its text and terminal reason", async () => {
   const fixture = await Bun.file(new URL("./fixtures/history-steer-delivery.json", import.meta.url)).json();
   const store = createRunStore((flush) => flush());
