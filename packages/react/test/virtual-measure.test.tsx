@@ -98,6 +98,9 @@ test("a pinned late row measurement re-applies the bottom after the browser shif
     act(() => rows!.report([{ target, borderBoxSize: [{ blockSize: 72, inlineSize: 800 }], contentRect: { height: 72 } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
     act(() => { for (const frame of frames.splice(0)) frame(0); });
     expect(scrollHeight - 600 - scrollTop).toBeLessThanOrEqual(0.5);
+    scrollTop -= 2;
+    act(() => container.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.dispatchEvent(new Event("scroll")));
+    expect(scrollHeight - 600 - scrollTop).toBeLessThanOrEqual(0.5);
   } finally {
     act(() => root.unmount());
     container.remove();

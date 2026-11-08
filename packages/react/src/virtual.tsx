@@ -189,7 +189,8 @@ export function useVirtualList<Id extends string>(
       const onScroll = () => {
         const before = engine.getSnapshot();
         if (performance.now() < ignoreScrollUntil.current) {
-          container.scrollTop = before.scrollTop;
+          if (before.pinned) scrollToBottom(false);
+          else container.scrollTop = before.scrollTop;
           return;
         }
         const correction = before.programmatic && Math.abs(container.scrollTop - before.scrollTop) < 0.5;
