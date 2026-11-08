@@ -6,7 +6,7 @@ export type ScrollClass =
   | "layout"
   /** the reader or the host moved the view away: follow drops, nothing snaps back */
   | "intent"
-  /** reader input that does not move up: the engine decides follow by distance */
+  /** reader input: the engine decides follow by distance (its bottom threshold) */
   | "reader";
 
 export type ScrollFacts = {
@@ -34,7 +34,9 @@ export type ScrollFacts = {
 // change alone is not a cause.
 export function classifyScroll(facts: ScrollFacts): ScrollClass {
   const { top, lastTop, domEnd, lastDomEnd, priorDomEnd } = facts;
-  if (facts.lease) return top < lastTop - 0.5 ? "intent" : "reader";
+  // Reader input: the engine decides follow by distance. A focus lease (a click on a card) can cover the browser's end
+  // clamp after the card shrinks, and a page-level key scrolls at most one host, so an upward move alone is not intent.
+  if (facts.lease) return "reader";
   if (facts.pendingMatch) return "own";
   const slack = Math.min(1, Math.abs(domEnd - priorDomEnd));
   if (Math.abs(top - priorDomEnd) <= slack + 0.5 || Math.abs(top - domEnd) <= slack + 0.5) return "layout";
