@@ -340,7 +340,6 @@ async function appendViewer(page: Page, slowdown: number, offset: number, count 
   await cdp.send("Performance.enable");
   const measured: { wall: number; task: number; pushes: number; segmentPushes: number }[] = [];
   for (let sample = 0; sample < count; sample++) {
-    if (process.env.SCALING_IDLE && delta) await page.waitForTimeout(150);
     const before = (await cdp.send("Performance.getMetrics")).metrics.find((metric) => metric.name === "TaskDuration")?.value ?? 0;
     const result = await page.evaluate(({ delay, index, tail }) => new Promise<{ wall: number; pushes: number; segmentPushes: number }>((resolve) => requestAnimationFrame(() => {
     const target = window as typeof window & { __appendViewerFixture: (delta: string) => void };
