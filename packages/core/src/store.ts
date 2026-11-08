@@ -294,6 +294,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     },
     resync(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
+      const previousOutline = current.outline;
+      const previousIds = [...entities.keys()];
       pending = [];
       pendingOlder = [];
       entities.clear();
@@ -301,6 +303,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
       changedItems.clear();
+      previousIds.forEach((id) => changedItems.add(id));
       edits = [];
       stateChanged = false;
       outlineChanged = false;
@@ -308,6 +311,13 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       acceptedLog = [];
       pending.push(...events);
       flush();
+      stateChanged = true;
+      outlineChanged = previousOutline.length !== current.outline.length
+        || previousOutline.some((item, index) => item.id !== current.outline[index]?.id || item.kind !== current.outline[index]?.kind);
+      outlineSnapshot = {
+        items: current.outline,
+        change: { from: previousOutline, splices: outlineChanged ? [{ index: 0, deleteCount: previousOutline.length, items: current.outline }] : [] },
+      };
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
     },

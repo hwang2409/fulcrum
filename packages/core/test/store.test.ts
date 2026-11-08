@@ -344,6 +344,28 @@ test("prepend assigns generated ids as a whole chronological reduction", () => {
   }]);
 });
 
+test("resync to empty publishes outline and keyed removals", () => {
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "message_commit", message_id: "old", message: message("old") });
+  let stateChanges = 0;
+  let outlineChanges = 0;
+  let itemChanges = 0;
+  store.subscribe(() => stateChanges++);
+  store.subscribeOutline(() => outlineChanges++);
+  store.subscribe("message:old", () => itemChanges++);
+
+  store.resync([]);
+
+  expect(store.getOutline()).toEqual([]);
+  expect(store.getItem("message:old")).toBeUndefined();
+  expect({ stateChanges, outlineChanges, itemChanges }).toEqual({ stateChanges: 1, outlineChanges: 1, itemChanges: 1 });
+  expect(store.getOutlineSnapshot().change?.splices).toEqual([{
+    index: 0,
+    deleteCount: 1,
+    items: [],
+  }]);
+});
+
 test("prepend rejection keeps the last good state and visibly desyncs", () => {
   const errors: unknown[] = [];
   const store = createRunStore((flush) => flush(), { onError: (error) => errors.push(error) });

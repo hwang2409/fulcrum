@@ -1,9 +1,9 @@
 import type { RunItem, ToolView } from "./events.js";
-import type { OutlineItem } from "./reducer.js";
+import type { OutlineSnapshot } from "./store.js";
 
 export interface RunSearchStore {
   getItem(id: string): RunItem | undefined;
-  getOutline(): readonly OutlineItem[];
+  getOutlineSnapshot(): OutlineSnapshot;
   subscribe(id: string, listener: () => void): () => void;
   subscribeOutline(listener: () => void): () => void;
 }
@@ -123,10 +123,7 @@ const sliceAtCodePoint = (value: string, limit: number) => {
   return value.slice(0, limit);
 };
 
-const entryFor = (item: RunItem, maxChars: number): SearchEntry | undefined => {
-  if ((item.type === "message" || item.type === "tool") && item.active) return undefined;
-  const source = displayFields(item);
-  if (source.length === 0) return undefined;
+const collectFields = (source: Array<[string, string | undefined]>, maxChars: number) => {
   let remaining = maxChars;
   let truncated = false;
   const fields: SearchField[] = [];
@@ -137,12 +134,40 @@ const entryFor = (item: RunItem, maxChars: number): SearchEntry | undefined => {
     if (value.length < original.length) truncated = true;
     if (value.length > 0) fields.push({ field, value, ...fold(value) });
     remaining -= value.length;
-    if (remaining === 0) {
-      if (source.slice(index + 1).some(([, next]) => next?.length)) truncated = true;
-      break;
+    if (remaining > 0) continue;
+    truncated ||= source.slice(index + 1).some(([, next]) => Boolean(next?.length));
+    break;
+  }
+  return { fields, truncated };
+};
+
+const entryFor = (item: RunItem, maxChars: number): SearchEntry | undefined => {
+  if ((item.type === "message" || item.type === "tool") && item.active) return undefined;
+  const source = displayFields(item);
+  if (source.length === 0) return undefined;
+  const collected = collectFields(source, maxChars);
+  return collected.fields.length > 0 || collected.truncated ? { id: item.id, ...collected } : undefined;
+};
+
+const sameEntry = (left: SearchEntry | undefined, right: SearchEntry | undefined) => {
+  if (!left || !right) return left === right;
+  return left.truncated === right.truncated
+    && left.fields.length === right.fields.length
+    && left.fields.every((field, index) => field.field === right.fields[index]?.field && field.value === right.fields[index]?.value);
+};
+
+const matchesFor = (entry: SearchEntry, needle: string) => {
+  const matches: RunSearchMatch[] = [];
+  for (const field of entry.fields) {
+    let from = 0;
+    while (from <= field.folded.length - needle.length) {
+      const index = field.folded.indexOf(needle, from);
+      if (index < 0) break;
+      matches.push({ field: field.field, start: field.starts[index]!, end: field.ends[index + needle.length - 1]! });
+      from = index + Math.max(needle.length, 1);
     }
   }
-  return fields.length > 0 || truncated ? { id: item.id, fields, truncated } : undefined;
+  return matches;
 };
 
 const validBound = (name: string, value: number) => {
@@ -156,6 +181,8 @@ export function createRunSearch(store: RunSearchStore, options: RunSearchOptions
 
   let disposed = false;
   let order: string[] = [];
+  let outlineItems: OutlineSnapshot["items"] | undefined;
+  let prefixLength = 0;
   let itemsTruncated = false;
   const entries = new Map<string, SearchEntry>();
   const watched = new Map<string, Watched>();
@@ -173,7 +200,7 @@ export function createRunSearch(store: RunSearchStore, options: RunSearchOptions
     const next = item ? entryFor(item, options.maxCharsPerItem) : undefined;
     if (next) entries.set(id, next);
     else entries.delete(id);
-    if (previous !== next) publish();
+    if (!sameEntry(previous, next)) publish();
   };
   const watch = (id: string) => {
     const initial = store.getItem(id);
@@ -188,24 +215,75 @@ export function createRunSearch(store: RunSearchStore, options: RunSearchOptions
     watched.set(id, watchedItem);
     update(id, initial);
   };
+  const replaceOrder = (snapshot: OutlineSnapshot) => {
+    const next = snapshot.items.slice(-options.maxItems).map(({ id }) => id);
+    const changed = next.length !== order.length || next.some((id, index) => id !== order[index]);
+    order = next;
+    prefixLength = snapshot.items.length - order.length;
+    return changed;
+  };
+  const applySplices = (snapshot: OutlineSnapshot) => {
+    const added = new Set<string>();
+    const removed = new Set<string>();
+    const add = (id: string) => removed.delete(id) || added.add(id);
+    const remove = (id: string) => added.delete(id) || removed.add(id);
+    let changed = false;
+    for (const splice of snapshot.change!.splices) {
+      const end = splice.index + splice.deleteCount;
+      if (end <= prefixLength) {
+        prefixLength += splice.items.length - splice.deleteCount;
+        continue;
+      }
+      changed = true;
+      const localIndex = Math.max(0, splice.index - prefixLength);
+      const deletedFromPrefix = Math.max(0, prefixLength - splice.index);
+      prefixLength -= deletedFromPrefix;
+      const inserted = splice.items.map(({ id }) => id);
+      order.slice(localIndex, localIndex + splice.deleteCount - deletedFromPrefix).forEach(remove);
+      inserted.forEach(add);
+      order.splice(localIndex, splice.deleteCount - deletedFromPrefix, ...inserted);
+    }
+    const excess = Math.max(0, order.length - options.maxItems);
+    if (excess > 0) {
+      order.slice(0, excess).forEach(remove);
+      order.splice(0, excess);
+      prefixLength += excess;
+    }
+    const missing = Math.min(options.maxItems - order.length, prefixLength);
+    if (missing > 0) {
+      const restored = snapshot.items.slice(prefixLength - missing, prefixLength).map(({ id }) => id);
+      restored.forEach(add);
+      order.unshift(...restored);
+      prefixLength -= missing;
+    }
+    return { added, changed, removed };
+  };
+  const unwatch = (id: string) => {
+    watched.get(id)?.unsubscribe();
+    watched.delete(id);
+    return entries.delete(id);
+  };
   const reconcile = () => {
     if (disposed) return;
     reconciling = true;
     dirty = false;
-    const outline = store.getOutline();
-    const nextItemsTruncated = outline.length > options.maxItems;
-    const nextOrder = outline.slice(-options.maxItems).map(({ id }) => id);
-    const nextIds = new Set(nextOrder);
-    let changed = nextItemsTruncated !== itemsTruncated || nextOrder.length !== order.length || nextOrder.some((id, index) => id !== order[index]);
-    itemsTruncated = nextItemsTruncated;
-    order = nextOrder;
-    for (const [id, item] of watched) {
-      if (nextIds.has(id)) continue;
-      item.unsubscribe();
-      watched.delete(id);
-      if (entries.delete(id)) changed = true;
+    const snapshot = store.getOutlineSnapshot();
+    let changed = false;
+    if (snapshot.change?.from === outlineItems) {
+      const applied = applySplices(snapshot);
+      changed = applied.changed;
+      applied.removed.forEach((id) => { if (unwatch(id)) changed = true; });
+      applied.added.forEach((id) => { if (!watched.has(id)) watch(id); });
+    } else {
+      changed = replaceOrder(snapshot);
+      const nextIds = new Set(order);
+      for (const id of watched.keys()) if (!nextIds.has(id) && unwatch(id)) changed = true;
+      for (const id of order) if (!watched.has(id)) watch(id);
     }
-    for (const id of nextOrder) if (!watched.has(id)) watch(id);
+    outlineItems = snapshot.items;
+    const nextItemsTruncated = snapshot.items.length > options.maxItems;
+    changed ||= nextItemsTruncated !== itemsTruncated;
+    itemsTruncated = nextItemsTruncated;
     if (changed) dirty = true;
     reconciling = false;
     if (dirty) listeners.forEach((listener) => listener());
@@ -225,16 +303,7 @@ export function createRunSearch(store: RunSearchStore, options: RunSearchOptions
         const entry = entries.get(id);
         if (!entry) continue;
         characters ||= entry.truncated;
-        const matches: RunSearchMatch[] = [];
-        for (const field of entry.fields) {
-          let from = 0;
-          while (from <= field.folded.length - needle.length) {
-            const index = field.folded.indexOf(needle, from);
-            if (index < 0) break;
-            matches.push({ field: field.field, start: field.starts[index]!, end: field.ends[index + needle.length - 1]! });
-            from = index + Math.max(needle.length, 1);
-          }
-        }
+        const matches = matchesFor(entry, needle);
         if (matches.length > 0) results.push({ id, matches });
       }
       return { results, truncated: { items: itemsTruncated, characters } };
@@ -252,6 +321,8 @@ export function createRunSearch(store: RunSearchStore, options: RunSearchOptions
       watched.clear();
       entries.clear();
       order = [];
+      outlineItems = undefined;
+      prefixLength = 0;
       itemsTruncated = false;
       listeners.clear();
     },

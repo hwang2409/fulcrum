@@ -1,14 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createRunSearch,
   createRunStore,
   type OutlineItem,
+  type OutlineSnapshot,
   type RunItem,
-  type RunSearchStore,
 } from "../src/index.js";
+import { createRunSearch, type RunSearchStore } from "../src/search.js";
 
 const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
 const queuedStore = () => {
@@ -19,12 +19,15 @@ const queuedStore = () => {
 
 class TestStore implements RunSearchStore {
   outline: OutlineItem[] = [];
+  outlineSnapshot: OutlineSnapshot = { items: this.outline, change: null };
+  outlineVisits = 0;
   items = new Map<string, RunItem>();
   outlineListeners = new Set<() => void>();
   itemListeners = new Map<string, Set<() => void>>();
 
   getItem(id: string) { return this.items.get(id); }
   getOutline() { return this.outline; }
+  getOutlineSnapshot() { return this.outlineSnapshot; }
   subscribe(id: string, listener: () => void) {
     const listeners = this.itemListeners.get(id) ?? new Set();
     listeners.add(listener);
@@ -40,7 +43,17 @@ class TestStore implements RunSearchStore {
   }
   add(item: RunItem) {
     this.items.set(item.id, item);
-    this.outline.push({ id: item.id, kind: item.type });
+    const previous = this.outline;
+    const store = this;
+    const outlineItem: OutlineItem = {
+      get id() { store.outlineVisits++; return item.id; },
+      kind: item.type,
+    };
+    this.outline = [...previous, outlineItem];
+    this.outlineSnapshot = {
+      items: this.outline,
+      change: { from: previous, splices: [{ index: previous.length, deleteCount: 0, items: [outlineItem] }] },
+    };
     this.outlineListeners.forEach((listener) => listener());
   }
   change(item: RunItem) {
@@ -111,6 +124,19 @@ test("streaming work extracts no active text and indexes once at commit", () => 
   expect(search.query("needle").results[0]?.id).toBe("message:live");
   search.query("needle");
   expect(extractions).toBe(1);
+});
+
+test("one appended row visits constant outline data regardless of retained size", () => {
+  const store = new TestStore();
+  for (let index = 0; index < 5_000; index++) store.add(fakeMessage(`message:seed-${index}`, `seed ${index}`));
+  const search = createRunSearch(store, { maxItems: 5_000, maxCharsPerItem: 100 });
+  store.outlineVisits = 0;
+
+  store.add(fakeMessage("message:appended", "appended"));
+
+  expect(store.outlineVisits).toBeLessThanOrEqual(4);
+  expect(search.query("appended").results[0]?.id).toBe("message:appended");
+  expect(search.query("seed 0").results).toEqual([]);
 });
 
 test("requires explicit positive integer bounds", () => {
@@ -187,6 +213,22 @@ test("history prepend preserves newest bounds and reset replaces retained text",
   store.resync([{ type: "message_commit", message_id: "reset", message: message("reset text") }]);
   expect(search.query("new").results).toEqual([]);
   expect(search.query("reset").results[0]?.id).toBe("message:reset");
+
+  store.resync([]);
+  expect(search.query("reset").results).toEqual([]);
+});
+
+test("does not publish when searchable content and truncation are unchanged", () => {
+  const store = new TestStore();
+  store.add({ id: "user:1", type: "user", event: { type: "user_message", text: "same text", mode: "send" } });
+  const search = createRunSearch(store, { maxItems: 1, maxCharsPerItem: 100 });
+  let updates = 0;
+  search.subscribe(() => updates++);
+
+  store.change({ id: "user:1", type: "user", event: { type: "user_message", text: "same text", mode: "steer" } });
+
+  expect(updates).toBe(0);
+  expect(search.query("same").results[0]?.id).toBe("user:1");
 });
 
 test("dispose releases every store subscription and retained field", () => {
@@ -211,17 +253,18 @@ test("dispose releases every store subscription and retained field", () => {
   expect(search.query("before").results).toEqual([]);
 });
 
-test("a store-only root import drops the search implementation", async () => {
+test("the root barrel contains no search module code", async () => {
   const directory = await mkdtemp(join(tmpdir(), "fulcrum-search-"));
   try {
-    const entry = join(directory, "root.ts");
-    const root = new URL("../src/index.ts", import.meta.url).pathname;
-    await writeFile(entry, `import { createRunStore } from ${JSON.stringify(root)}; globalThis.store = createRunStore;`);
+    const sourceDirectory = new URL("../src", import.meta.url).pathname;
+    const copiedSource = join(directory, "src");
+    const entry = join(directory, "entry.ts");
+    await cp(sourceDirectory, copiedSource, { recursive: true });
+    await appendFile(join(copiedSource, "search.ts"), "\nglobalThis.__fulcrumSearchLoaded = true;\n");
+    await writeFile(entry, `import { createRunStore } from ${JSON.stringify(join(copiedSource, "index.ts"))}; globalThis.store = createRunStore;`);
     const build = await Bun.build({ entrypoints: [entry], target: "browser", minify: true });
     expect(build.success).toBe(true);
-    const output = await build.outputs[0]!.text();
-    expect(output).not.toContain("maxItems must be a positive integer");
-    expect(output).not.toContain("message.content.");
+    expect(await build.outputs[0]!.text()).not.toContain("__fulcrumSearchLoaded");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
