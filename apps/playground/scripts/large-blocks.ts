@@ -12,8 +12,8 @@
 // production react.
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { rm, writeFile } from "node:fs/promises";
+import { closeBrowser, stopChild } from "./lifecycle";
 
 const app = new URL("../", import.meta.url);
 const fixture = new URL(".large-blocks-test.html", app);
@@ -171,6 +171,7 @@ window.__results = results;
 </script>`);
 const vite = spawn("bun", ["x", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: app.pathname, stdio: "ignore", env: { ...process.env, NODE_ENV: "production" } }); // production react: the development build is several times slower
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+let browserPid: number | undefined;
 type Measured = { longTasks: number[]; maxLongTask: number; maxProbeGap: number; [key: string]: unknown };
 const failures: string[] = [];
 try {
@@ -180,6 +181,9 @@ try {
     await Bun.sleep(100);
   }
   browser = await chromium.launch();
+  // The browser's own pid, so a stuck close can be killed without touching any other chromium on the machine.
+  const { processInfo } = await (await browser.newBrowserCDPSession()).send("SystemInfo.getProcessInfo");
+  browserPid = processInfo.find((info) => info.type === "browser")?.id;
   const context = await browser.newContext({ viewport: { width: 1024, height: 900 } });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: `http://127.0.0.1:${port}` });
   const page = await context.newPage();
@@ -211,8 +215,10 @@ try {
     } as typeof post;
   });
   await page.goto(`http://127.0.0.1:${port}/.large-blocks-test.html`);
+  console.log("page result wait start");
   const results = await page.waitForFunction(() => (window as typeof window & { __results?: unknown }).__results, undefined, { timeout: 240_000 })
-    .then((handle) => handle.jsonValue()).catch((error) => { throw new Error([...failures, String(error)].join("\n")); }) as Record<string, Measured>;
+    .then((handle) => handle.jsonValue()).catch((error) => { throw new Error([...failures, String(error)].join("\n")); })
+    .finally(() => console.log("page result wait end")) as Record<string, Measured>;
   for (const [name, result] of Object.entries(results)) {
     if (name === "readSamples" || name === "readWarmup") continue;
     const { longTasks, ...rest } = result as Measured;
@@ -264,9 +270,22 @@ try {
   }
   if (failures.length) throw new Error(failures.join("\n"));
   console.log("large blocks: ok");
-} finally {
-  await browser?.close();
-  vite.kill("SIGTERM");
-  await once(vite, "exit").catch(() => {});
-  await rm(fixture, { force: true });
+} catch (error) {
+  // Printed before cleanup, so a cleanup that later hangs or fails cannot hide why the check failed.
+  console.error(error);
+  process.exitCode = 1;
 }
+// Each cleanup step is bounded and runs even when an earlier one failed; a cleanup failure fails the check.
+const cleanup: Array<[string, () => Promise<unknown>]> = [
+  ["browser", () => browser ? closeBrowser("large-blocks cleanup: browser.close", async () => {
+    for (const context of browser!.contexts()) await context.close();
+    await browser!.close();
+  }, browserPid) : Promise.resolve()],
+  ["vite", () => stopChild("large-blocks cleanup: vite", vite)],
+  ["fixture", () => rm(fixture, { force: true })],
+];
+for (const [name, step] of cleanup) {
+  console.log(`cleanup ${name}`);
+  await step().catch((error) => { console.error(String(error)); process.exitCode = 1; });
+}
+process.exit(); // every cleanup above has finished or hit its deadline, and leftover handles must not keep the step alive

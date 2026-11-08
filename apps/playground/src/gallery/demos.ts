@@ -26,7 +26,7 @@ const stream = (id: string, value: string): RunEvent[] => [
 ];
 
 // An AI SDK UI message stream through the real adapter: a text part ends, then a tool runs, reports a preliminary
-// output, and never ends. The stream never reaches `finish`, so the message stays open while the tool below runs.
+// output, and never ends. The stream never reaches `finish`; the adapter commits the message when the tool row seals it.
 function aiSdkTextThenTool(key: string): RunEvent[] {
   const { decode } = createAiSdkAdapter({ streamKey: key });
   return [
@@ -432,7 +432,7 @@ export const demos: Demo[] = [
     id: "ai-sdk-text-then-tool",
     part: "Message",
     title: "AI SDK text, then a running tool",
-    description: "Through @fulcrum/ai-sdk, the message stays open until the stream finishes; once a tool row follows it, the running tool carries the live signal and the finished text shows no cursor.",
+    description: "Through @fulcrum/ai-sdk, the text streams with the terminal cursor; when a tool row starts, the adapter commits the message, and the running tool carries the live signal.",
     events: aiSdkTextThenTool("gallery-ai-sdk"),
     live: 300,
   },
