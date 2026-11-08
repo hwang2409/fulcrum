@@ -30,6 +30,19 @@ These rules hold for every listener kind: global (`subscribe(listener)`), outlin
 10. Resync: `resync` publishes `change: null` ("take `items` whole"), calls outline listeners only when a change was pending or the rows differ, and calls the keyed listener of every prior and every new row; search, the Timeline live region, keyed item subscriptions, and both Timelines end on the replayed rows. Tests: "resync tells subscribers to take the outline whole: $name" (one row per case), "two resyncs before a frame: each notifies only when its rows differ, and the last replay wins", `packages/react/test/resync.test.tsx` "resync reaches every outline consumer whole: $name" (one column per consumer).
 11. Disposal: `dispose` drops pending events and history pages, publishes `{ items: [], change: null }`, and calls no listener after it; `dispatch`, `resync`, `beginHistory`, and `prepend` then throw "store is disposed", `endHistory` and `dispose` do nothing, and a reduction that disposes the store publishes nothing. Tests: "dispose publishes an empty outline, notifies no one after, and every later entry throws or does nothing", "dispose stops notifications, drops pending chunks, and rejects dispatch", "does not publish a reduction when disposed during the reduction".
 
+Every host callback the store invokes, and where it stands:
+
+| callback | status |
+|---|---|
+| global, outline, and keyed listeners | covered by the delivery owner |
+| diagnostics listeners | covered by the delivery owner |
+| `options.onError` | covered by the delivery owner |
+| `scheduler(job)` | outside: it schedules work, it does not deliver it; its throw reaches the caller of `dispatch` or `prepend` (the event was not scheduled) and leaves no flag set (rule 9) |
+| getters or proxies on a dispatched event | outside: a throw while reducing is a reduction failure, handled by desync and `onError`, not a listener error |
+| unsubscribe functions and `dispose` | call no host code |
+
+A new listener kind goes through the delivery owner and gets a row here and a test.
+
 ## backward history
 
 Call `beginHistory()` before publishing the newest page and `endHistory()` when the backward walk finishes. `prepend(older)` is valid only in that window. It reduces the older page, then the accepted event log, from an empty store. The result matches chronological reduction, including generated ids and cross-event folds. Accepted live events follow older history and win naturally.
