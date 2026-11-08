@@ -74,9 +74,12 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
     const Block = own(blocks, block.type) ?? own(defaultBlocks, block.type);
     if (Block) return <Block key={index} block={block} id={blockId} streaming={streaming} markdown={Rich} onOpen={onOpen} />;
     if (block.type !== "text") return <UnknownBlock key={index} block={block} id={blockId} streaming={streaming} />;
-    const text = String(block.text);
+    const source = String(block.text);
+    if (!source) return null;
+    if (Rich) return <Rich key={index} id={blockId} source={source} streaming={streaming} />;
+    // While it streams, plain text hides its trailing whitespace as markdown does, so the cursor hugs the last word.
+    const text = streaming ? source.trimEnd() : source;
     if (!text) return null;
-    if (Rich) return <Rich key={index} id={blockId} source={text} streaming={streaming} />;
     // Beside blocks, text needs its own element: the streaming cursor (styles.css) ends the last text span.
     return user || parts.length > 1 ? <span key={index}>{text}</span> : <Fragment key={index}>{text}</Fragment>;
   });

@@ -109,7 +109,7 @@ test("hides unmatched emphasis and link syntax while keeping their prose stable"
   expect(renderToStaticMarkup(<Markdown source="**bold" streaming />)).toBe('<p data-part="md-paragraph">bold</p>');
   expect(renderToStaticMarkup(<Markdown source="[docs](https://example.com" streaming />)).toBe('<p data-part="md-paragraph">docs</p>');
   expect(renderToStaticMarkup(<Markdown source="use ``a ` b" streaming />)).toContain('<code data-part="md-code-inline">a ` b</code>');
-  expect(renderToStaticMarkup(<Markdown source={'```ts\nconst x = 1;'} streaming />)).toContain('<pre data-part="md-code-block" data-language="ts">');
+  expect(renderToStaticMarkup(<Markdown source={'```ts\nconst x = 1;'} streaming />)).toContain('<pre data-part="md-code-block" data-language="ts" data-state="streaming">');
 });
 
 test("an unclosed backtick renders as inline code and never flashes raw syntax", () => {

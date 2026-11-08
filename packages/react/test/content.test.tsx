@@ -74,6 +74,15 @@ test("plain assistant text beside blocks has its own span, so the streaming curs
   expect(last.textContent).toBe("the answer");
 });
 
+test("streaming plain text hides its trailing whitespace like markdown, so the cursor hugs the last word; the commit keeps it", () => {
+  const { send } = render([{ type: "message_delta", message_id: "m", delta: "the answer " }], { markdown: false });
+  expect(q('[data-part="message"]').textContent).toBe("the answer");
+  send({ type: "message_delta", message_id: "m", delta: "is\n" });
+  expect(q('[data-part="message"]').textContent).toBe("the answer is");
+  send(commit([{ type: "text", text: "the answer is\n" }]));
+  expect(q('[data-part="message"]').textContent).toBe("the answer is\n");
+});
+
 test("empty text does not precede the first rendered content block", () => {
   render([commit([{ type: "text", text: "" }, { type: "file", kind: "file", filename: "a.png" }], "user")]);
   expect(q('[data-part="message-content"]').firstElementChild?.getAttribute("data-part")).toBe("file");
