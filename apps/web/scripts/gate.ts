@@ -615,7 +615,9 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
     const initial = await stableReconnectBottom(page, "initial", 2);
     phases.push(initial.at(-1)!);
     const before = phases.at(-1)!;
+    console.log(`reconnect-bottom-load ${JSON.stringify({ engine, run, ...before })}`);
     if (!before.pinned) throw new Error(`${engine} reconnect-bottom run ${run}: engine was not pinned before reconnect`);
+    if (Math.abs(before.gap) > 0.5) throw new ReconnectBottomFailure(before.gap, before.scrollTop - before.engineEnd);
     if (await page.locator('[data-part="jump-to-latest"]').count()) throw new Error(`${engine} reconnect-bottom run ${run}: jump control was present before reconnect`);
     const contextBefore = await reconnectBottomContext(page);
     assertReconnectBottomFixture(engine, run, "initial", before, contextBefore);
