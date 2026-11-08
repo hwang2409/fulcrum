@@ -136,6 +136,23 @@ test("live dropped status after stop marks not delivered without polling", async
   lease.release();
 });
 
+test("fake abort event marks its queued steer not delivered through the real client", async () => {
+  let active = false;
+  const fake = composerMethods(async () => {}, { get: () => active, set: (value) => { active = value; } });
+  let emitFake = (_event: Record<string, unknown>) => {};
+  const connection = await server((method, params) => fake.handle(method, params, "s", emitFake) ?? ok, ["delivery_id", "session_history_fidelity"], false);
+  emitFake = connection.emit;
+  const lease = connection.client.forSession("s");
+  const delivery = createDelivery(ids(), undefined, lease.store);
+  await delivery.submit(connection.client, "start", false);
+  await delivery.submit(connection.client, "stop this", true);
+  await delivery.stop(connection.client);
+  connection.calls.length = 0;
+  expect(await delivery.turnEnded(connection.client)).toEqual(["id-2"]);
+  expect(connection.calls).toEqual([]);
+  lease.release();
+});
+
 test("negotiated turn end without a drop event resolves without resending", async () => {
   jest.useFakeTimers();
   try {

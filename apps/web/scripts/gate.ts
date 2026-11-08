@@ -238,7 +238,7 @@ async function runStoppedSteerFollowScenario(page: Page, clearSent: () => void) 
     await page.locator('[data-kind="user"]', { hasText: "guard queued steer" }).waitFor();
     await page.locator('[data-part="composer-stop"]').click();
     await page.locator('.dock [data-part="composer"][data-state="idle"]').waitFor({ timeout: 5_000 });
-    await page.locator(".undelivered", { hasText: "not delivered" }).last().waitFor({ timeout: 8_000 });
+    await page.locator('[data-kind="user"]', { hasText: "guard queued steer" }).filter({ hasText: "not delivered" }).waitFor({ timeout: 8_000 });
     await sendAndFinish(page, "guard next turn one");
     await sendAndFinish(page, "guard next turn two");
     if (await scrollGap(page) > 4) throw new Error("the stopped-steer sequence lost the bottom before the final send");
@@ -724,9 +724,8 @@ try {
       await page.keyboard.press("Enter");
       await composer.and(page.locator('[data-state="idle"]')).waitFor({ timeout: 5000 });
       await settle(page);
-      await page.locator(".undelivered", { hasText: "not delivered" }).waitFor({ timeout: 3000 }).catch(() => { throw new Error("the dropped steer is not marked as not delivered"); });
-      const marked = await page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: "steer: keep it short" }).evaluate((row) => row.nextElementSibling?.classList.contains("undelivered") ?? false);
-      if (!marked) throw new Error("the not-delivered mark is not on the steer's row");
+      const stoppedSteer = page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: "steer: keep it short" });
+      await stoppedSteer.filter({ hasText: "not delivered" }).waitFor({ timeout: 3000 }).catch(() => { throw new Error("the dropped steer is not marked as not delivered"); });
       await Bun.sleep(300);
       if (fake.sent.filter((entry) => entry.text === "steer: keep it short").length !== 1) throw new Error("a steer the user stopped was resent");
       const active = await page.evaluate(() => document.activeElement?.tagName);
