@@ -17,7 +17,6 @@ export type VirtualOptions<Id extends string = string> = {
 
 export type Viewport = { scrollTop: number; size: number; source: ScrollSource };
 export type VirtualRange = { start: number; end: number };
-export type VirtualScrollState = { scrollTop: number; programmatic: boolean; correctionEvent: boolean };
 export type VirtualRow<Id extends string = string> = OutlineItem<Id> & {
   index: number;
   start: number;
@@ -99,8 +98,6 @@ export type Virtualizer<Id extends string = string> = {
   snapshotCache(): VirtualCache<Id>;
   subscribe(listener: () => void): () => void;
   getSnapshot(): VirtualSnapshot<Id>;
-  /** Reads the latest event state, including scroll-only changes that do not replace the rendered snapshot. */
-  getScrollState(): VirtualScrollState;
   getActions(): readonly VirtualAction[];
   destroy(): void;
 };
@@ -325,7 +322,6 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
   let recoveryOutline: readonly OutlineItem<Id>[] | null = null;
   let rangeCursorIndex = 0;
   let rangeCursorStart = 0;
-  let layoutVersion = 0;
   let sequence = 0;
   const actions: VirtualAction[] = [];
   const listeners = new Set<() => void>();
@@ -383,7 +379,6 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       if (index === undefined) continue;
       const delta = median - layout.valueAt(index);
       layout.update(index, median);
-      if (delta !== 0) layoutVersion++;
       if (index < rangeCursorIndex) rangeCursorStart += delta;
     }
   };
@@ -467,34 +462,9 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     return { id: item.id, index, offset: layout.prefix(index) - effectiveScrollTop() };
   };
 
-  const renderedViewportState = () => {
-    const visible = visibleRange();
-    const range = mountedRange(visible);
-    return {
-      rangeStart: range.start,
-      rangeEnd: range.end,
-      visibleStart: visible.start,
-      visibleEnd: visible.end,
-      viewportSize,
-      pinned,
-      unseenCount: unseenIds.size,
-      totalSize: layout.total,
-      layoutVersion,
-      pendingJump,
-    };
-  };
-
-  const sameRenderedViewportState = (left: ReturnType<typeof renderedViewportState>, right: ReturnType<typeof renderedViewportState>) =>
-    left.rangeStart === right.rangeStart && left.rangeEnd === right.rangeEnd
-    && left.visibleStart === right.visibleStart && left.visibleEnd === right.visibleEnd
-    && left.viewportSize === right.viewportSize && left.pinned === right.pinned
-    && left.unseenCount === right.unseenCount && left.totalSize === right.totalSize
-    && left.layoutVersion === right.layoutVersion && left.pendingJump === right.pendingJump;
-
   const setViewport = (viewport: Viewport): void => {
     checkSize(viewport.scrollTop);
     checkSize(viewport.size);
-    const renderedBefore = renderedViewportState();
     const writesScroll = Math.abs(viewport.scrollTop - scrollTop) >= 0.5;
     const expectedAnchor = captureExpectedAnchor();
     viewportSize = viewport.size;
@@ -517,8 +487,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     if (isCorrection) expectedCorrectionScroll = null;
     if (isCorrection) jump = 0;
     log("viewport", { scrollTop, size: viewportSize, programmatic, pinned });
-    const renderedAfter = renderedViewportState();
-    if (!sameRenderedViewportState(renderedBefore, renderedAfter)) changed();
+    changed();
   };
 
   return {
@@ -543,7 +512,6 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       recoveryOutline = null;
       rangeCursorIndex = 0;
       rangeCursorStart = 0;
-      layoutVersion = 0;
       actions.length = 0;
       snapshot = null;
     },
@@ -797,9 +765,6 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
         unseenCount: unseenIds.size,
       };
       return snapshot;
-    },
-    getScrollState() {
-      return { scrollTop, programmatic, correctionEvent };
     },
     getActions() {
       return [...actions];
