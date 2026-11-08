@@ -419,7 +419,7 @@ describe("timeline scroll provenance", () => {
     } finally { geometry.restore(); }
   });
 
-  type RouteContext = { host: HTMLElement; oldEnd: number };
+  type RouteContext = { host: HTMLElement; oldEnd: number; geometry: ReturnType<typeof installScrollGeometry> };
   const end = (host: HTMLElement) => host.scrollHeight - host.clientHeight;
   const hostWrite = (host: HTMLElement, top: number) => {
     host.scrollTop = top;
@@ -431,7 +431,20 @@ describe("timeline scroll provenance", () => {
     { name: "end clamp at the old end", run: ({ host, oldEnd }) => hostWrite(host, oldEnd), pinned: true, unpinned: false },
     { name: "end clamp at the new end", run: ({ host }) => hostWrite(host, host.scrollHeight), pinned: true, unpinned: null },
     { name: "host write to scrollHeight (F1)", run: ({ host }) => hostWrite(host, host.scrollHeight), pinned: null, unpinned: false },
+    // Cause, not distance: with no size change since our last write, a host move is intent even inside the engine's 48 px
+    // bottom threshold (the pinned stale-end cell below is that 10 px case: a pinned reader's end is never stale);
+    // with a content or viewport size change since then, it is layout and a pinned reader keeps follow.
     { name: "host write 10 px above a grown end (stale end)", run: ({ host }) => hostWrite(host, end(host) - 10), pinned: false, unpinned: false },
+    { name: "host move 100 px up, no size change", run: ({ host }) => hostWrite(host, end(host) - 100), pinned: false, unpinned: null },
+    { name: "host write 10 px above the end after content grew", run: ({ host, geometry }) => {
+      geometry.addDomExtra(30);
+      hostWrite(host, end(host) - 10);
+    }, pinned: true, unpinned: null },
+    // The captured WebKit reconnect route: a banner shrinks the box 3 px and the browser moves the reader 41 px up.
+    { name: "viewport shrink moves the reader 41 px up before the resize callback", run: ({ host, geometry }) => {
+      geometry.resizeBy(-3);
+      hostWrite(host, end(host) - 44);
+    }, pinned: true, unpinned: null },
     { name: "reader lease scroll to the end", run: ({ host }) => {
       act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 })));
       hostWrite(host, host.scrollHeight);
@@ -457,7 +470,7 @@ describe("timeline scroll provenance", () => {
           append();
         }
         const lastId = () => store.getOutline().at(-1)!.id;
-        route.run({ host, oldEnd });
+        route.run({ host, oldEnd, geometry });
         const pinnedAfter = route[state]!;
         expect(viewportCoverage(host, lastId()), `${route.name} must leave mounted rows under the viewport`).toStartWith("covered");
         const unseenBefore = Number(unseen());
