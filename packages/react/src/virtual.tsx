@@ -105,7 +105,6 @@ export function useVirtualList<Id extends string>(
     }
     if (appliedOutline.current !== outline) {
       appliedOutline.current = outline;
-      pinnedMeasurementNotified.current = false;
       const token = engine.beforeMutation();
       if (options.invalidateMeasurements) engine.invalidateMeasurements(options.invalidateMeasurements);
       engine.setOutline(outline, options.outlineUpdate);
