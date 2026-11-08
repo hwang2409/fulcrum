@@ -12,7 +12,9 @@
 //   skip link moves no row (n-2); every status reads mark first, then words (n-3); the realistic run's edit was
 //   approved (n-4); "empty output" and "huge output" open on the state they describe (n-5); at 390 px the theme
 //   select shows its whole value, "5 matches in 3 files" is one line, and sub-agent names keep at least 8 characters
-//   (n-7); the side nav's wrapped labels hold their lines together (n-7); Tab reaches a skip-to-content link first (n-9).
+//   (n-7), and every notification row fits, is labelled "notification", is a disclosure only when it has facts, and
+//   never shows raw data; the side nav's wrapped labels hold their lines together (n-7); Tab reaches a skip-to-content
+//   link first (n-9).
 import type { Browser, Page } from "playwright";
 
 type Sample = { position: string; gap: number; lastBottom: number; lines: number };
@@ -452,7 +454,7 @@ async function checkGallery(browser: Browser, port: number): Promise<string[]> {
       firstHidden,
       steer: look(steer),
       send: look(send),
-      notification: text("#fallback-notification [data-part=item]"),
+      notification: text("#notification-plain [data-part=notification]"),
       genericCut: text("#approval-generic [data-part=tool-gap]"),
       genericViewer: !!document.querySelector("#approval-generic [data-part=text-viewer]"),
       misordered,
@@ -518,12 +520,25 @@ async function checkGallery(browser: Browser, port: number): Promise<string[]> {
       const ch = parseFloat(getComputedStyle(node).fontSize) * 0.6;
       return { name: node.textContent!, shown: Math.floor(node.clientWidth / ch), full: node.scrollWidth <= node.clientWidth + 1 };
     }).filter((entry) => !entry.full && entry.shown < Math.min(8, entry.name.length));
-    return { label, fits: canvas.measureText(label).width <= room, wrappedMeta, names };
+    // Notifications: every row fits the column, says what it is, and only rows with facts are disclosures.
+    const notices = [...document.querySelectorAll<HTMLElement>("[id^=notification-] [data-part=notification]")];
+    const notificationIssues = notices.flatMap((notice) => {
+      const id = notice.closest("[id^=notification-]")!.id;
+      const out: string[] = [];
+      const column = notice.parentElement!.getBoundingClientRect();
+      if (notice.getBoundingClientRect().right > column.right + 1 || notice.scrollWidth > notice.clientWidth + 1) out.push(`${id} overflows`);
+      if (notice.getAttribute("aria-label") !== "notification") out.push(`${id} has no "notification" label`);
+      if ((notice.tagName === "DETAILS") !== (id !== "notification-plain" && id !== "notification-malformed")) out.push(`${id} is ${notice.tagName === "DETAILS" ? "" : "not "}a disclosure`);
+      if (/never shown|nested/.test(notice.textContent ?? "")) out.push(`${id} shows raw data`);
+      return out;
+    });
+    return { label, fits: canvas.measureText(label).width <= room, wrappedMeta, names, notifications: notices.length, notificationIssues };
   });
   if (!narrow.fits) failures.push(`gallery @ 390: the theme select cuts "${narrow.label}"`);
   if (narrow.wrappedMeta.length) failures.push(`gallery @ 390: "${narrow.wrappedMeta[0]}" wraps`);
+  if (narrow.notifications !== 4 || narrow.notificationIssues.length) failures.push(`gallery @ 390: ${narrow.notifications} notification rows (expected 4): ${narrow.notificationIssues.join(", ")}`);
   if (narrow.names.length) failures.push(`gallery @ 390: sub-agent names cut to ${narrow.names.map((entry) => `${entry.name}:${entry.shown}`).join(", ")} characters`);
-  if (!failures.length) console.log("ok   gallery: skip link, every-state rows, disabled steer, notification text, uncut generic approval, overlay skip link, mark order, approved edit, open demos, nav labels, 390 px fits");
+  if (!failures.length) console.log("ok   gallery: skip link, every-state rows, disabled steer, notification text, uncut generic approval, overlay skip link, mark order, approved edit, open demos, nav labels, 390 px fits and notifications");
   await page.close();
   return failures;
 }
@@ -588,7 +603,104 @@ async function checkStatusWords(browser: Browser, port: number): Promise<string[
   return failures;
 }
 
-const checks = { viewer1: (b: Browser, p: number) => checkViewer(b, p, 1), viewer4: (b: Browser, p: number) => checkViewer(b, p, 4), head: checkNarrowHead, focus: checkFocus, userLayout: checkUserLayout, gallery: checkGallery, status: checkStatusWords };
+type Clip = { x: number; y: number; width: number; height: number };
+// The painted box inside a clip, found in pixels (a pseudo-element mark has no DOM box): every pixel clearly unlike the
+// clip's most common color.
+async function ink(page: Page, clip: Clip) {
+  const png = (await page.screenshot({ clip })).toString("base64");
+  return page.evaluate(async ({ png, clip }) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${png}`;
+    await image.decode();
+    const context = new OffscreenCanvas(image.width, image.height).getContext("2d")!;
+    context.drawImage(image, 0, 0);
+    const data = context.getImageData(0, 0, image.width, image.height).data;
+    const scale = image.width / clip.width;
+    const color = (i: number) => (data[i]! << 16) | (data[i + 1]! << 8) | data[i + 2]!;
+    const counts = new Map<number, number>();
+    for (let i = 0; i < data.length; i += 4) counts.set(color(i), (counts.get(color(i)) ?? 0) + 1);
+    const bg = [...counts].sort((a, b) => b[1] - a[1])[0]![0];
+    let left = Infinity, top = Infinity, bottom = -1;
+    for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
+      const i = (y * image.width + x) * 4;
+      if (Math.abs(data[i]! - (bg >> 16)) + Math.abs(data[i + 1]! - ((bg >> 8) & 255)) + Math.abs(data[i + 2]! - (bg & 255)) <= 60) continue;
+      left = Math.min(left, x); top = Math.min(top, y); bottom = Math.max(bottom, y);
+    }
+    return { left: clip.x + left / scale, middle: clip.y + (top + bottom + 1) / 2 / scale, bottom: clip.y + (bottom + 1) / scale };
+  }, { png, clip });
+}
+
+// A closed notification's mark and the bottom of its first glyph (every demo line starts with a letter that sits on
+// the baseline), both as painted, so pixel snapping affects both the same way.
+async function notificationMark(page: Page, id: string) {
+  const summary = (await page.locator(`#notification-${id} [data-part=notification-summary]`).boundingBox())!;
+  const line = (await page.locator(`#notification-${id} [data-part=notification-line]`).boundingBox())!;
+  const mark = await ink(page, { x: summary.x + 2, y: summary.y + 2, width: line.x - summary.x - 4, height: Math.min(summary.height - 4, 26) });
+  const glyph = await ink(page, { x: line.x, y: line.y, width: 6, height: 20 });
+  return { left: mark.left, aboveBaseline: glyph.bottom - mark.middle, textX: line.x };
+}
+
+// Notification rows: the disclosure is a real disclosure control in Chromium's accessibility tree; the closed preview
+// is at most two lines; the triangle sits exactly where the quiet square sits; facts share one label column.
+async function checkNotification(browser: Browser, port: number): Promise<string[]> {
+  const failures: string[] = [];
+  const page = await browser.newPage({ viewport: { width: 1024, height: 900 }, deviceScaleFactor: 2, reducedMotion: "reduce" });
+  await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=github-dark`);
+  await page.waitForSelector("#notification-meta [data-part=notification]", { state: "attached" });
+  // Playwright's aria snapshot gives <summary> no role, so read Chromium's own tree, as a screen reader does.
+  const cdp = await page.context().newCDPSession(page);
+  const ax = async (selector: string) => {
+    await page.locator(selector).first().scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200); // the gallery paints a demo only once it is in view
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector });
+    const node = (await cdp.send("Accessibility.getPartialAXTree", { nodeId, fetchRelatives: false })).nodes[0]!;
+    const expanded = node.properties?.find((property) => property.name === "expanded")?.value.value;
+    return `${node.role?.value} "${node.name?.value ?? ""}" expanded=${expanded}`;
+  };
+  const control = "#notification-meta summary";
+  const closedAx = await ax(control);
+  await page.focus(control);
+  await page.keyboard.press("Enter");
+  const openAx = await ax(control);
+  await page.keyboard.press("Enter");
+  const tool = await ax("#tools-done summary[data-part=tool-header]");
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur()); // no focus ring in the mark's pixels
+  const line = "worker finished: 14 files checked, 2 fixed";
+  if (closedAx !== `DisclosureTriangle "${line}" expanded=false` || openAx !== `DisclosureTriangle "${line}" expanded=true`) failures.push(`notification: the summary reads ${closedAx}, then ${openAx}; expected a disclosure named once by its line, collapsed then expanded`);
+  if (!tool.startsWith("DisclosureTriangle ")) failures.push(`notification: a tool card summary reads ${tool}; notifications must expose the same control`);
+  for (const width of [1024, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.locator("#notification-plain").scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200);
+    const square = await notificationMark(page, "plain");
+    for (const id of ["meta", "long"]) {
+      await page.locator(`#notification-${id}`).scrollIntoViewIfNeeded();
+      await page.waitForTimeout(100);
+      const triangle = await notificationMark(page, id);
+      const dx = triangle.left - square.left;
+      const dy = square.aboveBaseline - triangle.aboveBaseline;
+      if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) failures.push(`notification @ ${width}: the closed ${id} triangle sits ${dx} px right of and ${dy} px lower than the plain row's square`);
+      if (triangle.textX !== square.textX) failures.push(`notification @ ${width}: the ${id} text starts at ${triangle.textX}, the plain row's at ${square.textX}`);
+    }
+    const preview = await page.evaluate(() => {
+      const node = document.querySelector<HTMLElement>("#notification-long [data-part=notification-line]")!;
+      const height = node.getBoundingClientRect().height;
+      const cards = [...document.querySelectorAll<HTMLDetailsElement>("[id^=notification-] details[data-part=notification]")];
+      cards.forEach((card) => { card.open = true; });
+      const values = [...document.querySelectorAll<HTMLElement>("[id^=notification-] [data-part=notification-meta] > dd")].map((dd) => Math.round(dd.getBoundingClientRect().left * 2) / 2);
+      cards.forEach((card) => { card.open = false; });
+      return { height, lineHeight: parseFloat(getComputedStyle(node).lineHeight), values: [...new Set(values)] };
+    });
+    if (preview.height > preview.lineHeight * 2 + 0.5) failures.push(`notification @ ${width}: the closed long preview is ${preview.height} px, more than two ${preview.lineHeight} px lines`);
+    if (preview.values.length !== 1) failures.push(`notification @ ${width}: fact values start at ${preview.values.join(", ")} px; they share one label column`);
+  }
+  if (!failures.length) console.log("ok   notification: disclosure in the a11y tree, two-line preview, triangle on the square, one label column");
+  await page.close();
+  return failures;
+}
+
+const checks = { viewer1: (b: Browser, p: number) => checkViewer(b, p, 1), viewer4: (b: Browser, p: number) => checkViewer(b, p, 4), head: checkNarrowHead, focus: checkFocus, userLayout: checkUserLayout, gallery: checkGallery, notification: checkNotification, status: checkStatusWords };
 
 /** ONLY=focus,gallery runs some of the checks. */
 export async function checkUx(browser: Browser, port: number): Promise<string[]> {

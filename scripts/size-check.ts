@@ -1,8 +1,8 @@
 const external = ["@fulcrum/core", "@fulcrum/highlight", "@fulcrum/markdown", "@fulcrum/react", "@fulcrum/zeta", "@fulcrum/virtual", "react", "react-dom"];
 const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external, ceiling: 9_000 }, // 8,563 after deterministic cross-page entity and state composition
-  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 32_000 }, // Timeline-owned scrolling plus RunStatus and RunEndMarker measure 31,559 with Bun 1.4.4; bundle size is not a product goal, and this ceiling only catches accidents. measured 26,983 after content blocks (reasoning, source, file, image, unsupported). measured 25,125 after strict UX round 6 (decision focus, viewer place and narrow head, notification text). measured 24,213 after strict UX round 5 (approval fold, skip link, cut fades, whole-block colors). measured 22,089 after composer. tool-card highlighting, ANSI, JSON, and the show-full-command control: ~15.5 kB; sub-agent row, run navigator, and history path: ~3.5 kB; composer: 0.8 kB
-  { name: "zeta", entry: "packages/zeta/dist/index.js", external, ceiling: 13_500 }, // shared backward history paging measures 13,218; bundle size is not a product goal, this ceiling only catches accidents
+  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 33_000 }, // 32,273 with the Notification part (31,645 before it, +628); Timeline-owned scrolling plus RunStatus and RunEndMarker measure 31,559 with Bun 1.4.4; bundle size is not a product goal, and this ceiling only catches accidents. measured 26,983 after content blocks (reasoning, source, file, image, unsupported). measured 25,125 after strict UX round 6 (decision focus, viewer place and narrow head, notification text). measured 24,213 after strict UX round 5 (approval fold, skip link, cut fades, whole-block colors). measured 22,089 after composer. tool-card highlighting, ANSI, JSON, and the show-full-command control: ~15.5 kB; sub-agent row, run navigator, and history path: ~3.5 kB; composer: 0.8 kB
+  { name: "zeta", entry: "packages/zeta/dist/index.js", external, ceiling: 13_500 }, // shared backward history paging plus typed session grants measure 13,218; bundle size is not a product goal, this ceiling only catches accidents
   { name: "virtual", entry: "packages/virtual/dist/index.js", external, ceiling: 11_000 },
   { name: "markdown", entry: "packages/markdown/dist/react.js", external, reportOnly: true },
 ];
@@ -31,7 +31,7 @@ for (const file of highlightFiles) {
   console.log(`highlight/${file}: ${bytes} bytes gzipped (reporting only)`);
 }
 const styles = [
-  { name: "react styles.css", file: "packages/react/styles.css", ceiling: 14_200 }, // 13,878 after approve-always (three-action grid, decision error); 13,524 after the unknown-outcome run status and end marker; 12,658 after content blocks: ~1.3 kB; 11,424 after strict UX round 6 (narrow viewer head, status word colors); sub-agent row and run bar: ~0.9 kB; composer: 1.1 kB; approval decisions, skip link, cut fades: 0.7 kB
+  { name: "react styles.css", file: "packages/react/styles.css", ceiling: 14_600 }, // 14,355 with the Notification part (13,978 before it, +377); 13,878 after approve-always (three-action grid, decision error); 13,524 after the unknown-outcome run status and end marker; 12,658 after content blocks: ~1.3 kB; 11,424 after strict UX round 6 (narrow viewer head, status word colors); sub-agent row and run bar: ~0.9 kB; composer: 1.1 kB; approval decisions, skip link, cut fades: 0.7 kB
   { name: "react themes.css", file: "packages/react/themes.css", ceiling: 8_000 },
 ];
 for (const sheet of styles) {
