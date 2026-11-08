@@ -31,7 +31,7 @@ import { checkUx } from "./ux-check.js";
 import { checkSubAgents } from "./subagent-check.js";
 import { checkWarmBodies } from "./warm-check.js";
 import { checkLineTokens } from "./token-check.js";
-import { ratio, recordCalibratedFailure, recordViewerTimingFailures, unthrottledCalibratedBudgets, viewerRatioBudget, type Calibration, type ViewerCheck, type ViewerSample, type ViewerTiming } from "./viewer-verdict.js";
+import { ratio, recordUnthrottledViewerFailures, recordViewerTimingFailures, viewerRatioBudget, type Calibration, type ViewerCheck, type ViewerSample, type ViewerTiming } from "./viewer-verdict.js";
 
 const widths = [390, 768, 1024, 1440];
 const touchWidth = 860; // the gallery's touch breakpoint
@@ -726,8 +726,7 @@ try {
       console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms [${measured.openSamples.map((value) => value.toFixed(1)).join(", ")}], append ${measured.appendMs.toFixed(1)} ms [${measured.appendSamples.map((value) => value.toFixed(1)).join(", ")}], calibration ${measured.calibration.median.toFixed(1)} ms [${measured.calibration.samples.map((value) => value.toFixed(1)).join(", ")}], normalized ${ratio(measured.openMs, measured.calibration.median).toFixed(2)}x/${ratio(measured.appendMs, measured.calibration.median).toFixed(2)}x, gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px, long tasks [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}], ${measured.tokens} token spans, 4x-throttled scroll frames median ${measured.scroll.median.toFixed(1)} ms / p95 ${measured.scroll.p95.toFixed(1)} ms / ${measured.scroll.over33} over 33 ms`);
       if (fixture === "read" && measured.longTasks.length) failures.push(`viewer read @ ${width}: long tasks while opening and highlighting [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}] ms`);
       if (fixture === "read" && !measured.tokens) failures.push(`viewer read @ ${width}: the mounted rows of a .ts file were not highlighted`);
-      for (const field of ["openMs", "appendMs"] as const)
-        recordCalibratedFailure(failures, `viewer ${fixture} @ ${width} ${field === "openMs" ? "open" : "append"}`, measured[field], measured.calibration, unthrottledCalibratedBudgets[width]![field]);
+      recordUnthrottledViewerFailures(measured, failures);
       if (Math.abs(measured.bottomGap) > 1) failures.push(`viewer ${fixture} @ ${width}: initial ${fixture === "read" ? "top" : "bottom"} gap ${measured.bottomGap.toFixed(1)} px, needs <=1 px`);
       if (Math.abs(measured.appendGap) > 1 && fixture !== "read") failures.push(`viewer ${fixture} @ ${width}: append bottom gap ${measured.appendGap.toFixed(1)} px, needs <=1 px`);
       if (!measured.middleMoved || measured.outerMiddleDelta !== 0) failures.push(`viewer ${fixture} @ ${width}: middle wheel did not stay inside viewer`);

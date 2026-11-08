@@ -15,15 +15,21 @@ const withMargin = (noOpMax: Record<number, CalibratedBudget>) => Object.fromEnt
   [width, { openMs: max.openMs * calibratedMargin, appendMs: max.appendMs * calibratedMargin }])) as Record<number, CalibratedBudget>;
 // 4x throttle, read fixture, per width and operation.
 export const pairedCalibratedBudgets = withMargin({ 390: { openMs: 0.71, appendMs: 1.35 }, 1440: { openMs: 0.82, appendMs: 1.31 } });
-// Unthrottled single, lines, and read fixtures. Read append is bimodal (it lands in the same or the next frame:
-// 1.26x or up to 2.96x), at any width, so append shares one budget across widths.
-export const unthrottledCalibratedBudgets = withMargin({ 390: { openMs: 0.92, appendMs: 2.96 }, 1440: { openMs: 0.86, appendMs: 2.96 } });
+// Unthrottled single, lines, and read opens, and single and lines appends. Read append is not judged here: it is
+// bimodal unthrottled (12-13 ms in the same frame or ~25 ms in the next), and the 4x-throttled read checks above
+// (paired append ratio, calibrated ceiling) measure the same append with 4x the CPU cost.
+const unthrottledCalibratedBudgets = withMargin({ 390: { openMs: 0.92, appendMs: 0.67 }, 1440: { openMs: 0.86, appendMs: 0.60 } });
 
 export const ratio = (candidate: number, baseline: number) => candidate / Math.max(baseline, 0.001);
 
-export function recordCalibratedFailure(failures: string[], name: string, candidate: number, calibration: Calibration, budget: number) {
+function recordCalibratedFailure(failures: string[], name: string, candidate: number, calibration: Calibration, budget: number) {
   const normalized = ratio(candidate, calibration.median);
   if (normalized > budget) failures.push(`${name}: calibrated ceiling, candidate ${candidate.toFixed(1)} ms / calibration ${calibration.median.toFixed(1)} ms = ${normalized.toFixed(2)}x is over ${budget.toFixed(2)}x`);
+}
+
+export function recordUnthrottledViewerFailures(measured: { fixture: string; width: number; openMs: number; appendMs: number; calibration: Calibration }, failures: string[]) {
+  for (const field of ["openMs", "appendMs"] as const) if (field === "openMs" || measured.fixture !== "read")
+    recordCalibratedFailure(failures, `viewer ${measured.fixture} @ ${measured.width} ${field === "openMs" ? "open" : "append"}`, measured[field], measured.calibration, unthrottledCalibratedBudgets[measured.width]![field]);
 }
 
 const checkRatio = (check: ViewerCheck, field: "openMs" | "appendMs") => check.pairedRatios?.[field] ?? ratio(check.candidate[field], check.baseline[field]);

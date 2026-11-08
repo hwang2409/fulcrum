@@ -43,16 +43,21 @@ describe("recordViewerTimingFailures", () => {
   }
 });
 
-describe("recordCalibratedFailure, unthrottled fixtures", () => {
-  const calibration = { median: 8.4, samples: [8.4] };
-  test("read append in the next frame passes (42492135444 a4 @ 390: 24.9 ms over 8.4 ms)", () => {
+describe("recordUnthrottledViewerFailures", () => {
+  // 42492135444 a4 @ 390, unthrottled: single open 7.5 / append 5.9 ms over 8.8 ms; read open 7.4 / append 24.9 ms over 8.4 ms.
+  const judge = (fixture: string, openMs: number, appendMs: number, calibration: number) => {
     const failures: string[] = [];
-    verdict.recordCalibratedFailure(failures, "viewer read @ 1440 append", 24.9, calibration, verdict.unthrottledCalibratedBudgets[1440]!.appendMs);
-    expect(failures).toEqual([]);
+    verdict.recordUnthrottledViewerFailures({ fixture, width: 390, openMs, appendMs, calibration: { median: calibration, samples: [calibration] } }, failures);
+    return failures;
+  };
+  test("no-op single and read pass, read append in the next frame included", () => {
+    expect(judge("single", 7.5, 5.9, 8.8)).toEqual([]);
+    expect(judge("read", 7.4, 24.9, 8.4)).toEqual([]);
   });
-  test("a pathological append fails", () => {
-    const failures: string[] = [];
-    verdict.recordCalibratedFailure(failures, "viewer read @ 1440 append", 40, calibration, verdict.unthrottledCalibratedBudgets[1440]!.appendMs);
-    expect(failures).toEqual(["viewer read @ 1440 append: calibrated ceiling, candidate 40.0 ms / calibration 8.4 ms = 4.76x is over 4.14x"]);
+  test("a 1.5x single append regression fails", () => {
+    expect(judge("single", 7.5, 5.9 * 1.5, 8.8)).toEqual(["viewer single @ 390 append: calibrated ceiling, candidate 8.9 ms / calibration 8.8 ms = 1.01x is over 0.94x"]);
+  });
+  test("a 1.5x read open regression fails", () => {
+    expect(judge("read", 7.4 * 1.5, 12.6, 8.4)).toEqual(["viewer read @ 390 open: calibrated ceiling, candidate 11.1 ms / calibration 8.4 ms = 1.32x is over 1.29x"]);
   });
 });
