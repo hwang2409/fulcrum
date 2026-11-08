@@ -225,9 +225,9 @@ export function useVirtualList<Id extends string>(
           userScrollUntil.current = performance.now() + 200;
         if (event.key.endsWith("Up") || event.key === "Home") engine.setFollow(false);
       };
-      const onPointerDown = (event: PointerEvent) => {
+      const onPointerDown = () => {
         userIntent();
-        if (event.target === container) touching.current = true;
+        userScrollUntil.current = performance.now() + 200;
       };
       const onPointerEnd = () => finishScroll();
       const onTouchStart = (event: TouchEvent) => {
