@@ -206,6 +206,48 @@ test("Message can opt user messages into markdown", () => {
   expect(q('[data-part="md-strong"]').textContent).toBe("strong");
 });
 
+test("a timeline row uses one keyed subscription and ignores output deltas", () => {
+  const { store, send } = setup(Array.from({ length: 200 }, (_, index) => ({
+    type: "message_commit" as const,
+    message_id: `row-${index}`,
+    message: message("one"),
+  })));
+  const subscriptions = new Map<string, number>();
+  const instrumented: RunStore = {
+    getState: store.getState,
+    getItem: store.getItem,
+    getOutline: store.getOutline,
+    getOutlineSnapshot: store.getOutlineSnapshot,
+    subscribe(first: string | (() => void), second?: () => void) {
+      if (typeof first === "string") subscriptions.set(first, (subscriptions.get(first) ?? 0) + 1);
+      return store.subscribe(first as string & (() => void), second);
+    },
+    subscribeOutline: store.subscribeOutline,
+  };
+  let renders = 0;
+  const Renderer = () => { renders++; return <span data-part="row-renderer" />; };
+  mount(<RunProvider store={instrumented}><Timeline virtual={false} renderers={{ message: Renderer }} /></RunProvider>);
+  expect(subscriptions.size).toBe(200);
+  expect([...subscriptions.values()].every((count) => count === 1)).toBe(true);
+  const before = renders;
+  for (let i = 0; i < 100; i++) send({ type: "message_delta", message_id: "row-0", delta: "x" });
+  expect(renders).toBe(before);
+});
+
+test("a row switches its renderer when the tool name changes", () => {
+  const { store, send } = setup([
+    { type: "tool_start", tool_call: { id: "row", name: "bash", arguments: {} } },
+  ]);
+  const names: string[] = [];
+  const renderers: Renderers = {
+    "tool:bash": () => { names.push("bash"); return <span />; },
+    "tool:cat": () => { names.push("cat"); return <span />; },
+  };
+  mount(<RunProvider store={store}><Timeline virtual={false} renderers={renderers} /></RunProvider>);
+  send({ type: "tool_start", tool_call: { id: "row", name: "cat", arguments: {} } });
+  expect(names).toEqual(["bash", "cat"]);
+});
+
 test("a delta re-renders only the streaming item", async () => {
   const { store, send } = setup([
     { type: "message_commit", message_id: "a", message: message("one") },
