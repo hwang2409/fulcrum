@@ -81,27 +81,28 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
   // Checks of messages that wait for their live status. The store listener exists only while one waits.
   const waiting = new Set<() => void>();
   let unsubscribe: (() => void) | null = null;
-  const dropped = async (client: ZetaClient, message: Message) => {
-    if (store && client.features.includes("delivery_id") && client.features.includes("session_history_fidelity")) {
-      const known = liveStatus(store, message);
-      if (known !== undefined) return known;
-      return new Promise<boolean>((resolve) => {
-        const check = () => { const status = liveStatus(store, message); if (status !== undefined) finish(status); };
-        const finish = (value: boolean) => {
-          clearTimeout(timer);
-          waiting.delete(check);
-          if (!waiting.size) { unsubscribe?.(); unsubscribe = null; }
-          resolve(value);
-        };
-        // Zeta sends a drop before the turn's end, so a status still missing after this wait means not dropped.
-        const timer = setTimeout(() => finish(false), LIVE_STATUS_WAIT_MS);
-        waiting.add(check);
-        unsubscribe ??= store.subscribe(() => [...waiting].forEach((waiter) => waiter()));
-      });
-    }
-    // fallback for servers without live delivery_status events.
+  const waitForLiveStatus = (live: SessionStore, message: Message) => new Promise<boolean | undefined>((resolve) => {
+    const check = () => { const status = liveStatus(live, message); if (status !== undefined) finish(status); };
+    const finish = (value: boolean | undefined) => {
+      clearTimeout(timer);
+      waiting.delete(check);
+      if (!waiting.size) { unsubscribe?.(); unsubscribe = null; }
+      resolve(value);
+    };
+    // Zeta sends a drop before the turn's end, so the status is normally on the row before this wait ends.
+    const timer = setTimeout(() => finish(undefined), LIVE_STATUS_WAIT_MS);
+    waiting.add(check);
+    unsubscribe ??= live.subscribe(() => [...waiting].forEach((waiter) => waiter()));
+  });
+  const queryStatus = async (client: ZetaClient, message: Message) => {
     const { status, outcome } = (await client.request("delivery_status", { delivery_id: message.id }, { timeoutMs: 15_000 })) as { status?: string; outcome?: string };
     return status === "dropped" || (status === "evicted" && outcome === "dropped");
+  };
+  const dropped = async (client: ZetaClient, message: Message) => {
+    if (!store || !client.features.includes("delivery_id") || !client.features.includes("session_history_fidelity")) return queryStatus(client, message);
+    const live = liveStatus(store, message) ?? await waitForLiveStatus(store, message);
+    // No live status: a restart snapshot may have rebuilt the store and lost the row the drop would mark, so ask zeta.
+    return live ?? queryStatus(client, message);
   };
   return {
     async submit(client: ZetaClient, text: string, steer: boolean) {

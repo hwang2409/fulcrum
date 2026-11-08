@@ -189,6 +189,21 @@ test("several turn-end drops fold into their resends in order, across the resent
   ])).toEqual({ users: [{ text: "first", status: undefined }, { text: "second", status: undefined }], notices: 0 });
 });
 
+test("a steer dropped twice (its resend raced a new turn and was dropped again) reloads as one delivered row", () => {
+  // Turn 1 drops A and B; A's resend starts turn 2; B's resend gets -32004, goes out as a steer, and turn 2 drops it too.
+  expect(historyUsers([
+    userRow("u1", "start", "id-1"),
+    dropRow("id-2", "A", "turn_end"), dropRow("id-3", "B", "turn_end"),
+    userRow("u4", "A", "id-4"),
+    { id: "a4", role: "assistant", content: [{ type: "text", text: "done" }], tool_result: null },
+    dropRow("id-5", "B", "turn_end"),
+    userRow("u6", "B", "id-6"),
+    userRow("u7", "next", "id-7"),
+  ]).users).toEqual([
+    { text: "start", status: undefined }, { text: "A", status: undefined }, { text: "B", status: undefined }, { text: "next", status: undefined },
+  ]);
+});
+
 test("a turn-end drop that nothing resent stays one not-delivered row, even before a later unrelated message", () => {
   expect(historyUsers([dropRow("id-2", "also check x", "turn_end")])).toEqual({ users: [{ text: "also check x", status: "dropped" }], notices: 0 });
   expect(historyUsers([dropRow("id-2", "also check x", "turn_end"), userRow("u3", "something else", "id-3"), userRow("u4", "also check x", "id-4")]).users)

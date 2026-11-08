@@ -1,5 +1,5 @@
 import { expect, jest, test } from "bun:test";
-import { createClient, type Transport } from "@fulcrum/zeta";
+import { createClient, fromZetaHistory, type Transport } from "@fulcrum/zeta";
 import { createDelivery, stopTurn } from "../src/delivery";
 import { composerMethods } from "../scripts/fake-zeta";
 
@@ -108,6 +108,49 @@ test("live dropped status resends without polling when fidelity is negotiated", 
   lease.release();
 });
 
+const fullFeatures = ["delivery_id", "user_message_event", "user_message_delivery_id", "session_history_fidelity"];
+
+test("a restart snapshot after the drop rebuilds the steer's row from history; its status is read there, without polling", async () => {
+  const { client, calls } = await server((method) => method === "delivery_status" ? { result: { status: "delivered" } } : ok, fullFeatures);
+  const lease = client.forSession("s");
+  const delivery = createDelivery(ids(), undefined, lease.store);
+  await delivery.submit(client, "start", false);
+  await delivery.submit(client, "try again", true);
+  lease.store.resync(fromZetaHistory([
+    { id: "u1", role: "user", content: [{ type: "text", text: "start" }], tool_result: null, delivery_id: "id-1" },
+    { id: "drop-1", role: "system", event: "delivery_status", delivery_id: "id-2", method: "steer", status: "dropped", reason: "turn_end", content: [{ type: "text", text: "try again" }] },
+  ]));
+  expect(lease.store.getItem("user:delivery:id-2")?.type).toBe("user"); // history names the row by its delivery id, not the intent
+  calls.length = 0;
+  await delivery.turnEnded(client);
+  expect(calls).toEqual([["send", { text: "try again", delivery_id: "id-3" }]]);
+  lease.release();
+});
+
+test("a restart snapshot between a steer and its turn end loses the live drop's row; zeta is asked once and the steer is resent once", async () => {
+  jest.useFakeTimers();
+  try {
+    const { client, calls, emit } = await server((method) => method === "delivery_status" ? { result: { status: "dropped" } } : ok, fullFeatures);
+    const lease = client.forSession("s");
+    const delivery = createDelivery(ids(), undefined, lease.store);
+    await delivery.submit(client, "start", false);
+    await delivery.submit(client, "survive restart", true);
+    lease.store.resync([]); // the snapshot's history has no row for the queued steer yet
+    emit({ event: "delivery_status", session_id: "s", id: "drop-1", role: "system", delivery_id: "id-2", method: "steer", status: "dropped", reason: "turn_end", content: [{ type: "text", text: "survive restart" }] });
+    calls.length = 0;
+    let result: string[] | undefined;
+    void delivery.turnEnded(client).then((value) => { result = value; });
+    await Promise.resolve();
+    jest.advanceTimersByTime(1_000);
+    for (let i = 0; i < 20 && !result; i++) await Promise.resolve();
+    expect(result).toEqual([]);
+    expect(calls).toEqual([["delivery_status", { delivery_id: "id-2" }], ["send", { text: "survive restart", delivery_id: "id-3" }]]);
+    lease.release();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 test("live dropped status may arrive after turn end starts", async () => {
   const { client, calls, emit } = await server(() => ok, ["delivery_id", "session_history_fidelity"]);
   const lease = client.forSession("s");
@@ -181,7 +224,7 @@ test("the store is watched only while a turn end waits for live drops, and the w
     for (let i = 0; i < 10; i++) await Promise.resolve();
     expect(listeners).toBe(0);
     expect(result).toEqual([]);
-    expect(calls).toEqual([["send", { text: "dropped one", delivery_id: "id-4" }]]);
+    expect(calls).toEqual([["delivery_status", { delivery_id: "id-3" }], ["send", { text: "dropped one", delivery_id: "id-4" }]]);
     const seen = notices;
     emit({ event: "user_message", session_id: "s", text: "later", mode: "send", attachments: [] });
     expect(notices).toBe(seen);
@@ -191,7 +234,7 @@ test("the store is watched only while a turn end waits for live drops, and the w
   }
 });
 
-test("negotiated turn end without a drop event resolves without resending", async () => {
+test("negotiated turn end without a drop event asks zeta once and does not resend a delivered steer", async () => {
   jest.useFakeTimers();
   try {
     const { client, calls } = await server(() => ok, ["delivery_id", "session_history_fidelity"]);
@@ -206,7 +249,7 @@ test("negotiated turn end without a drop event resolves without resending", asyn
     jest.advanceTimersByTime(1_000);
     for (let i = 0; i < 10; i++) await Promise.resolve();
     expect(result).toEqual([]);
-    expect(calls).toEqual([]);
+    expect(calls).toEqual([["delivery_status", { delivery_id: "id-2" }]]); // no live status after the wait: asked once, not resent
     lease.release();
   } finally {
     jest.useRealTimers();
