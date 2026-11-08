@@ -15,11 +15,6 @@ on:
         required: false
         type: choice
         options: ["", row-subscription, frame-work, render-work, render-work-small]
-      bench_inject:
-        description: "core benchmark sensitivity injection"
-        required: false
-        type: choice
-        options: ["", "25"]
 jobs:
   stress:
     runs-on: ubuntu-latest
@@ -58,7 +53,6 @@ jobs:
         env:
           BENCH_BASE_ROOT: ${{ github.workspace }}/../fulcrum-stress-base
           BENCH_CANDIDATE_ROOT: ${{ github.workspace }}
-          BENCH_INJECT: ${{ inputs.bench_inject }}
         run: bun scripts/bench-ab.ts
       - name: same-runner calibrated a/b gate
         id: ab

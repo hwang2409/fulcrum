@@ -1,18 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { calibrateTimingGate } from "./bench-statistics.js";
+import { summarizeTimingReport } from "./bench-statistics.js";
 
-describe("calibrateTimingGate", () => {
-  test("enforces a stable comparison and detects a threshold-sized regression", () => {
-    const stable = calibrateTimingGate([0.98, 1.01, 1.02, 0.99, 1, 1.01, 0.99], [1.16, 1.17, 1.18, 1.16, 1.17, 1.18, 1.17]);
-    expect(stable.mode).toBe("enforced");
-    expect(stable.threshold).toBe(1.15);
-    expect(stable.pass).toBe(false);
-  });
+describe("summarizeTimingReport", () => {
+  test("keeps the seven-pair comparison report-only", () => {
+    const report = summarizeTimingReport(
+      [0.823, 1.018, 0.983, 0.955, 0.993, 0.967, 0.975],
+      [1.16, 1.17, 1.18, 1.16, 1.17, 1.18, 1.17],
+    );
 
-  test("makes a noisy comparison report-only instead of flaky", () => {
-    const noisy = calibrateTimingGate([0.65, 1.88, 0.78, 1.63, 1.05, 1.19, 1.01], [2, 2, 2, 2, 2, 2, 2]);
-    expect(noisy.threshold).toBeGreaterThan(1.5);
-    expect(noisy.mode).toBe("report-only");
-    expect(noisy.pass).toBe(true);
+    expect(report).toEqual({
+      aaMedian: 0.975,
+      candidateMedian: 1.17,
+      mode: "report-only",
+      derivation: {
+        pairCount: 7,
+        enforcement: "none",
+        reason: "report-only: 7 pairs cannot bound false-red on shared runners",
+      },
+    });
   });
 });

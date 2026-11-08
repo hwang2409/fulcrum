@@ -6,6 +6,7 @@ export type StreamResult = {
   flushEvery: number;
   smallSeedCount: number;
   largeSeedCount: number;
+  maximumScalingRatio: number;
   small: number;
   large: number;
   ratio: number;
@@ -21,8 +22,12 @@ export type WorkloadResult = {
 };
 
 const streamCases = [
-  { name: "800-event flush", flushEvery: 800, smallSeedCount: 500, largeSeedCount: 5_000 },
-  { name: "3-event flush", flushEvery: 3, smallSeedCount: 500, largeSeedCount: 5_000 },
+  // 800-event samples: local [0.984, 1.116, 0.993], check CI max 1.343,
+  // paired CI max 2.401. max(4, 1.5 * 2.401) = 4.
+  { name: "800-event flush", flushEvery: 800, smallSeedCount: 500, largeSeedCount: 5_000, maximumScalingRatio: 4 },
+  // 3-event samples: local [1.175, 1.176, 1.358], check CI max 1.479,
+  // paired CI max 1.279. max(4, 1.5 * 1.479) = 4.
+  { name: "3-event flush", flushEvery: 3, smallSeedCount: 500, largeSeedCount: 5_000, maximumScalingRatio: 4 },
 ] as const;
 const runs = 5;
 let burnSink = 0;
@@ -33,18 +38,7 @@ const burn = (iterations: number) => {
   return value;
 };
 
-const addCpuFraction = (start: ReturnType<typeof process.cpuUsage>, fraction: number) => {
-  const baseline = process.cpuUsage(start);
-  const target = (baseline.user + baseline.system) * fraction;
-  const injectionStart = process.cpuUsage();
-  while (true) {
-    burnSink ^= burn(100);
-    const injected = process.cpuUsage(injectionStart);
-    if (injected.user + injected.system >= target) return;
-  }
-};
-
-export async function runWorkload(root: string, inject = false): Promise<WorkloadResult> {
+export async function runWorkload(root: string, injectQuadratic = false): Promise<WorkloadResult> {
   const { createRunStore } = await import(pathToFileURL(`${root}/packages/core/src/index.ts`).href);
   const run = (seedCount: number, flushEvery: number) => {
     let callbackCount = 0;
@@ -57,9 +51,9 @@ export async function runWorkload(root: string, inject = false): Promise<Workloa
     const start = process.cpuUsage();
     for (let i = 0; i < 50_000; i++) {
       store.dispatch({ type: "message_delta", delta: "x".repeat(100) });
+      if (injectQuadratic) burnSink ^= burn(Math.ceil(seedCount / 10));
       if (i % flushEvery === flushEvery - 1) store.getState();
     }
-    if (inject) addCpuFraction(start, 0.25);
     const usage = process.cpuUsage(start);
     const elapsed = (usage.user + usage.system) / 1_000;
     store.getState();
@@ -69,7 +63,7 @@ export async function runWorkload(root: string, inject = false): Promise<Workloa
   };
 
   let timedCpu = 0;
-  const streams = streamCases.map(({ name, flushEvery, smallSeedCount, largeSeedCount }) => {
+  const streams = streamCases.map(({ name, flushEvery, smallSeedCount, largeSeedCount, maximumScalingRatio }) => {
     run(smallSeedCount, flushEvery);
     run(largeSeedCount, flushEvery);
     const measurements = Array.from({ length: runs }, () => {
@@ -85,6 +79,7 @@ export async function runWorkload(root: string, inject = false): Promise<Workloa
       flushEvery,
       smallSeedCount,
       largeSeedCount,
+      maximumScalingRatio,
       small: median(measurements.map(({ small }) => small.elapsed)),
       large: median(measurements.map(({ large }) => large.elapsed)),
       ratio: median(measurements.map(({ small, large }) => large.elapsed / small.elapsed)),

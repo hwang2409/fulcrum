@@ -19,8 +19,7 @@ const calibrationRuns = 7;
 // Known limit: each run compares the candidate with its own base (the PR
 // merge-base, or HEAD^ on main), so this gate catches one change that is
 // 20% slower or more. Several smaller slowdowns can still add up across PRs.
-// The absolute budgets in `bun run bench:check` and the per-run report from
-// `bun run stress` guard the long-term trend; add a pinned-baseline trend
+// The per-run reports expose the long-term trend; add a pinned-baseline trend
 // check if drift is ever seen.
 const threshold = 1.2;
 const aaWarningThreshold = 1.1;
