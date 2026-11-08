@@ -138,7 +138,8 @@ function prepareUserProbe(node: HTMLElement, { streaming, probe }: UserProbe) {
     style.textContent = '[data-part="file"] { padding: 10px 16px 9px 14px; } [data-part="md-table"] :is(th, td) { padding: 8px 16px; } [data-part="md-code-block"] { padding: 16px; }';
     document.head.append(style);
   }
-  if (streaming) node.dataset.state = "streaming";
+  // What Message sets for a streaming message that is its timeline's newest row: the state, and data-latest for the cursor.
+  if (streaming) Object.assign(node.dataset, { state: "streaming", latest: "" });
   node.dataset.probeHeight = String(node.getBoundingClientRect().height);
   const content = node.querySelector<HTMLElement>("[data-part=message-content]")!;
   const prompt = node.querySelector<HTMLElement>("[data-part=message-prompt]")!;

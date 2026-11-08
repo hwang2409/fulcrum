@@ -25,7 +25,7 @@ const stream = (id: string, value: string): RunEvent[] => [
   { type: "message_commit", message_id: id, message: text("assistant", value) },
 ];
 
-// An AI SDK UI message stream through the real adapter: a text part ends, then a tool runs and streams preliminary
+// An AI SDK UI message stream through the real adapter: a text part ends, then a tool runs, reports a preliminary
 // output, and never ends. The stream never reaches `finish`, so the message stays open while the tool below runs.
 function aiSdkTextThenTool(key: string): RunEvent[] {
   const { decode } = createAiSdkAdapter({ streamKey: key });
@@ -36,7 +36,7 @@ function aiSdkTextThenTool(key: string): RunEvent[] {
     ...words("I'll inspect the project before changing anything.").map((delta) => ({ type: "text-delta", id: "text", delta })),
     { type: "text-end", id: "text" },
     { type: "tool-input-available", toolCallId: "call-ls", toolName: "shell", input: { command: "ls" } },
-    ...["README.md", "README.md\napps", "README.md\napps\npackages"].map((output) => ({ type: "tool-output-available", toolCallId: "call-ls", output, preliminary: true })),
+    { type: "tool-output-available", toolCallId: "call-ls", output: "README.md\napps\npackages", preliminary: true },
   ].flatMap(decode);
 }
 

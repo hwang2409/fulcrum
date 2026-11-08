@@ -291,21 +291,24 @@ async function checkCursorSteps(browser: Browser, port: number, failures: string
   await page.waitForSelector("#markdown-fence-streaming", { state: "attached", timeout: 10_000 });
   const ids = ["markdown-fence-streaming", "ai-sdk-text-then-tool", "ai-sdk-plain-text-then-tool"];
   const seen = new Set<string>();
+  // Each wrong state once, with the first tick and how many ticks showed it.
+  const wrong = new Map<string, { first: number; ticks: number }>();
+  const flag = (what: string, step: number) => { const at = wrong.get(what); if (at) at.ticks++; else wrong.set(what, { first: step, ticks: 1 }); };
   const before = failures.length;
   for (let step = 0; step < 200; step++) {
     await page.clock.runFor(30);
     for (const { id, later, holders } of await page.evaluate(readCursorStep, ids)) {
-      const at = `${id} step ${step}`;
-      if (holders.length > 1) failures.push(`${at}: ${holders.length} cursors`);
+      if (holders.length > 1) flag(`${id}: ${holders.length} cursors`, step);
       const [holder] = holders;
       if (later) seen.add(`${id} later`);
       if (!holder) continue;
-      if (later) failures.push(`${at}: the cursor stays on text that a later row follows (<${holder.tag}>)`);
-      if (holder.fence && holder.fence !== "streaming") failures.push(`${at}: the cursor is in a closed fence`);
+      if (later) flag(`${id}: the cursor stays on text that a later row follows (<${holder.tag}>)`, step);
+      if (holder.fence && holder.fence !== "streaming") flag(`${id}: the cursor is in a closed fence`, step);
       seen.add(`${id} ${holder.fence ? "fence" : holder.afterFence ? "after fence" : "text"}`);
     }
   }
   await page.close();
+  for (const [what, { first, ticks }] of wrong) failures.push(`${what}, from tick ${first}, in ${ticks} of 200 ticks`);
   for (const expected of ["markdown-fence-streaming fence", "markdown-fence-streaming after fence", ...ids.slice(1).flatMap((id) => [`${id} text`, `${id} later`])]) {
     if (!seen.has(expected)) failures.push(`cursor steps: never saw "${expected}" (the demo changed?)`);
   }
