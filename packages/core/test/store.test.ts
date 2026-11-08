@@ -436,6 +436,32 @@ test("resync from a listener is delivered after the running notification, not ne
   });
 });
 
+// notify delivers a snapshot: each pending flag/set is taken and cleared before any listener runs, so whatever a
+// listener adds (here a resync) lands in the next pass, even for a key the running pass already delivered.
+const resyncFrom = ["global", "outline", "keyed"] as const;
+test.each(resyncFrom)("resync from a %s listener: every consumer ends on the replayed state", (from) => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.dispatch(commit("a"));
+  store.dispatch(commit("b"));
+  let resynced = false;
+  const trigger = () => { if (!resynced) resynced = true, store.resync([commit("c")]); };
+  let globalView: string[] = [];
+  let outlineView: string[] = [];
+  const keyed: Record<string, string | undefined> = {};
+  store.subscribe(() => { globalView = ids(store.getState().outline); if (from === "global") trigger(); });
+  store.subscribeOutline(() => { outlineView = ids(store.getOutlineSnapshot().items); if (from === "outline") trigger(); });
+  for (const id of ["message:a", "message:b", "message:c"])
+    store.subscribe(id, () => { keyed[id] = store.getItem(id)?.id; if (from === "keyed" && id === "message:b") trigger(); });
+  while (jobs.length > 0) jobs.shift()!();
+  expect({ globalView, outlineView, keyed }).toEqual({
+    globalView: ["message:c"],
+    outlineView: ["message:c"],
+    keyed: { "message:a": undefined, "message:b": undefined, "message:c": "message:c" },
+  });
+  expect(store.getItem("message:a")).toBeUndefined();
+});
+
 test("prepend rejection keeps the last good state and visibly desyncs", () => {
   const errors: unknown[] = [];
   const store = createRunStore((flush) => flush(), { onError: (error) => errors.push(error) });

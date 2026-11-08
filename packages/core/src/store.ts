@@ -219,17 +219,20 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
     return true;
   };
+  // Delivers a snapshot: every pending flag and set is taken and cleared before any listener runs, so whatever a
+  // listener adds (a resync, a history page) lands in the fresh state and is delivered by the next pass.
   const notify = () => {
     if (!stateChanged || desynced || notifying) return;
     stateChanged = false;
     const outline = outlineChanged;
     outlineChanged = false;
+    const items = [...changedItems];
+    changedItems.clear();
     notifying = true;
     try {
       listeners.forEach((listener) => listener());
       if (outline) outlineListeners.forEach((listener) => listener());
-      for (const id of changedItems) itemListeners.get(id)?.forEach((listener) => listener());
-      changedItems.clear();
+      for (const id of items) itemListeners.get(id)?.forEach((listener) => listener());
     } finally {
       notifying = false;
     }

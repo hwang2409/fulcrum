@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
 import { createRunSearch } from "@fulcrum/core/search";
-import { RunProvider, Timeline } from "../src/index.js";
+import { RunProvider, Timeline, useItem } from "../src/index.js";
 
 // A resync is a discontinuity: the store publishes `change: null` and every consumer of the outline takes it whole.
 // One row per resync case; one column per store consumer that reacts to the outline change. A new consumer is one
@@ -172,4 +172,36 @@ test.each(rows)("resync reaches every outline consumer whole: $name", async ({ s
   };
   search.dispose();
   expect(observed).toEqual(expected);
+});
+
+// notify delivers a snapshot: a resync called from inside a store listener reaches every consumer on the next pass.
+// The keyed caller resyncs from tool:a1's listener, after tool:a0's listener already ran in the same pass.
+test.each(["global", "outline", "keyed"] as const)("resync called from a %s listener reaches every consumer", (from) => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const drain = () => act(() => { while (jobs.length > 0) jobs.shift()!(); });
+  let resynced = false;
+  const trigger = () => { if (!resynced) resynced = true, store.resync(tool("b0")); };
+  if (from === "global") store.subscribe(trigger);
+  if (from === "outline") store.subscribeOutline(trigger);
+  if (from === "keyed") store.subscribe("tool:a1", trigger);
+  const Probe = ({ id }: { id: string }) => <i data-probe-item={id}>{useItem(id)?.id ?? "missing"}</i>;
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  act(() => root!.render(
+    <RunProvider store={store}>
+      {["tool:a0", "tool:a1", "tool:b0"].map((id) => <Probe key={id} id={id} />)}
+      <section data-probe="plain"><Timeline virtual={false} /></section>
+    </RunProvider>,
+  ));
+  tools("a", 2).forEach(store.dispatch);
+  drain();
+  const probes = Object.fromEntries([...container.querySelectorAll<HTMLElement>("[data-probe-item]")].map((el) => [el.dataset.probeItem!, el.textContent]));
+  const rows = [...container.querySelectorAll<HTMLElement>('[data-probe="plain"] [data-part="timeline"] > [data-id]')].map((row) => row.dataset.id);
+  expect({ resynced, probes, rows }).toEqual({
+    resynced: true,
+    probes: { "tool:a0": "missing", "tool:a1": "missing", "tool:b0": "tool:b0" },
+    rows: ["tool:b0"],
+  });
 });
