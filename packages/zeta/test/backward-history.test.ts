@@ -8,6 +8,8 @@ const becomesTrueWithin = async (condition: () => boolean, timeoutMs = 10_000) =
   while (!condition() && Date.now() < deadline) await Bun.sleep(1);
   return condition();
 };
+const settlesWithin = (promise: Promise<unknown>, timeoutMs = 1_000) =>
+  Promise.race([promise.then(() => true, () => true), Bun.sleep(timeoutMs).then(() => false)]);
 
 test("publishes newest first and complete history oldest first", async () => {
   const requests: BackwardHistoryCursor[] = [];
@@ -82,14 +84,16 @@ test("uses one abort signal for every request", async () => {
     });
   }, { signal: controller.signal });
 
+  let settled = false;
   try {
     expect(await becomesTrueWithin(() => signals.length === 2)).toBe(true);
   } finally {
     controller.abort();
-    await opened.complete.catch(() => undefined);
+    settled = await settlesWithin(opened.complete);
   }
+  expect(signals.map((signal) => signal === controller.signal)).toEqual([true, true]);
+  expect(settled).toBe(true);
   await expect(opened.complete).rejects.toMatchObject({ name: "AbortError" });
-  expect(signals).toEqual([controller.signal, controller.signal]);
   expect(rejectOlder).toBeFunction();
 }, 15_000);
 
@@ -99,5 +103,30 @@ test("rejects when aborted after a final first page", async () => {
 
   controller.abort();
 
+  await expect(opened.complete).rejects.toMatchObject({ name: "AbortError" });
+});
+
+test("does not publish a continuation that resolves after abort", async () => {
+  const controller = new AbortController();
+  const snapshots: readonly unknown[][] = [];
+  let resolveOlder!: (value: unknown) => void;
+  // A custom request callback that ignores the signal and resolves late.
+  const opened = await openBackwardHistory(async ({ before }) => before === null
+    ? page(["new"], 1)
+    : new Promise((resolve) => { resolveOlder = resolve; }),
+  { signal: controller.signal, onSnapshot: ({ rows }) => snapshots.push(rows) });
+
+  let settled = false;
+  try {
+    expect(await becomesTrueWithin(() => resolveOlder !== undefined)).toBe(true);
+    controller.abort();
+    resolveOlder(page(["old"], null));
+  } finally {
+    controller.abort();
+    resolveOlder?.(page(["old"], null));
+    settled = await settlesWithin(opened.complete);
+  }
+  expect(snapshots).toEqual([["new"]]);
+  expect(settled).toBe(true);
   await expect(opened.complete).rejects.toMatchObject({ name: "AbortError" });
 });
