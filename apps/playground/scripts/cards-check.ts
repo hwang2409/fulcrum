@@ -9,7 +9,7 @@ import type { Browser, Page } from "playwright";
 // many terminal cursors; `tag`: the element that draws it; `tight`: prose whose last line can be made to fill its
 // width exactly, where the cursor must still not take a line of its own; `viewer`: a fence streaming as the code
 // viewer, whose head carries the running mark instead; `open`: a control to click first.
-type CursorCase = { id: string; cursors: 0 | 1; tag?: string; tight?: boolean; viewer?: boolean; open?: string };
+type CursorCase = { id: string; cursors: 0 | 1; tag?: string; tight?: boolean; viewer?: boolean; open?: string; sealed?: true };
 const cursorCases: CursorCase[] = [
   { id: "message-streaming", cursors: 1, tight: true },
   { id: "content-streaming", cursors: 1 },
@@ -20,9 +20,10 @@ const cursorCases: CursorCase[] = [
   // Ends in a closed fence: the block is final, so no cursor in it (it would add a line that the commit takes away).
   { id: "markdown-streaming", cursors: 0 },
   { id: "markdown-crossing", cursors: 0, viewer: true },
-  // The text ended and a tool row runs below it: the tool holds the live signal.
-  { id: "ai-sdk-text-then-tool", cursors: 0 },
-  { id: "ai-sdk-plain-text-then-tool", cursors: 0 },
+  // `sealed`: @fulcrum/ai-sdk commits a message when a new tool row seals it (#112), so the paused frame shows the
+  // committed text above the running tool row. checkCursorSteps sees the same message stream with one cursor first.
+  { id: "ai-sdk-text-then-tool", cursors: 0, sealed: true },
+  { id: "ai-sdk-plain-text-then-tool", cursors: 0, sealed: true },
   // An open reasoning block that streams shows its own state, not a cursor.
   { id: "reasoning-streaming", cursors: 0, open: "[data-part=reasoning] > summary" },
 ];
@@ -37,9 +38,12 @@ const modes: [Mode, { reducedMotion: "no-preference" | "reduce"; forcedColors: "
 // computed style, the height the cursor adds to the message (a line of its own makes it taller; the commit would take
 // it away), and the running mark of a streaming viewer. The ::after shows in the accessibility tree as an unnamed
 // generic node with no text: nothing is announced, and it is not a regression.
-function readCursor(id: string) {
-  const message = document.querySelector<HTMLElement>(`#${id} [data-part=message][data-state=streaming]`);
+function readCursor({ id, sealed }: { id: string; sealed?: true }) {
+  const message = document.querySelector<HTMLElement>(`#${id} [data-part=message][data-state=${sealed ? "done" : "streaming"}]`);
   if (!message) return undefined;
+  const next = message.closest("[data-part=timeline] > *")?.nextElementSibling;
+  // The timeline's child is the tool row itself, or a wrapper around it.
+  const tool = next?.matches("[data-part=tool]") ? next as HTMLElement : next?.querySelector<HTMLElement>("[data-part=tool]");
   const holders = [message, ...message.querySelectorAll<HTMLElement>("*")].filter((element) => getComputedStyle(element, "::after").content === '""');
   const probe = document.createElement("span");
   probe.style.color = "CanvasText";
@@ -63,6 +67,7 @@ function readCursor(id: string) {
     mark: markStyle && markStyle.content === '""' ? look(markStyle) : undefined,
     systemColor,
     extra: height - without,
+    toolAfter: tool?.dataset.state,
   };
 }
 
@@ -197,6 +202,7 @@ function checkLook(at: string, mode: Mode, look: Look, animation: string, system
 function checkCursorCase(at: string, mode: Mode, demo: CursorCase, cursor: NonNullable<ReturnType<typeof readCursor>>): string[] {
   if (cursor.holders.length !== demo.cursors) return [`${at}: ${cursor.holders.length} streaming cursors (${cursor.holders.map(({ tag }) => `<${tag}>`).join(", ")}), expected ${demo.cursors}`];
   const failures: string[] = [];
+  if (demo.sealed && cursor.toolAfter !== "streaming") failures.push(`${at}: the row after the committed message is ${cursor.toolAfter ? `a ${cursor.toolAfter} tool` : "not a tool"}, expected a running tool`);
   // Whatever it shows, the commit (which removes the cursor) must not change the message's height.
   if (cursor.extra > 0.5) failures.push(`${at}: the cursor adds ${cursor.extra.toFixed(1)} px, a line that the commit takes away`);
   if (demo.viewer) failures.push(...(cursor.mark ? checkLook(`${at}: the viewer's running mark`, mode, cursor.mark, "fulcrum-pulse", cursor.systemColor) : [`${at}: the streaming viewer shows no running mark`]));
@@ -224,8 +230,8 @@ async function checkStreamingCursor(page: Page, port: number, failures: string[]
       // Off screen, a row skips layout (content-visibility) and reports a placeholder height.
       await page.locator(`#${demo.id}`).scrollIntoViewIfNeeded({ timeout: 2_000 }).catch(() => {}); // a missing demo fails below
       await nextFrame(page);
-      const cursor = await page.evaluate(readCursor, demo.id);
-      failures.push(...(cursor ? checkCursorCase(at, mode, demo, cursor) : [`${at}: no streaming message`]));
+      const cursor = await page.evaluate(readCursor, { id: demo.id, sealed: demo.sealed });
+      failures.push(...(cursor ? checkCursorCase(at, mode, demo, cursor) : [`${at}: no ${demo.sealed ? "committed" : "streaming"} message`]));
     }
   }
   for (const width of [1440, 390]) {
@@ -251,7 +257,7 @@ async function checkStreamingCursor(page: Page, port: number, failures: string[]
     }
   }
   await page.setViewportSize({ width: 1440, height: 900 });
-  if (failures.length === before) console.log(`ok   streaming cursor: ${cursorCases.length} streaming messages show the expected cursor or running mark in normal, forced-colors, and reduced-motion modes; a line that fills its width (80 columns at full width) keeps the whole cursor on it, unclipped, at 1440 and 390; the commit moves nothing`);
+  if (failures.length === before) console.log(`ok   streaming cursor: ${cursorCases.length} messages show the expected cursor or running mark in normal, forced-colors, and reduced-motion modes; a line that fills its width (80 columns at full width) keeps the whole cursor on it, unclipped, at 1440 and 390; the commit moves nothing`);
 
   await page.emulateMedia({ forcedColors: "active", reducedMotion: "reduce" });
   await page.goto(`http://127.0.0.1:${port}/gallery.html#approval-pending`);
@@ -267,9 +273,12 @@ function readCursorStep(ids: string[]) {
   return ids.map((id) => {
     const message = document.querySelector<HTMLElement>(`#${id} [data-part=message]`);
     const holders = message ? [message, ...message.querySelectorAll<HTMLElement>("*")].filter((element) => getComputedStyle(element, "::after").content === '""') : [];
+    const next = message?.closest("[data-part=timeline] > *")?.nextElementSibling;
     return {
       id,
-      later: !!message?.closest("[data-part=timeline] > *")?.nextElementSibling,
+      state: message?.dataset.state,
+      later: !!next,
+      tool: (next?.matches("[data-part=tool]") ? next as HTMLElement : next?.querySelector<HTMLElement>("[data-part=tool]"))?.dataset.state,
       holders: holders.map((holder) => ({
         tag: holder.tagName.toLowerCase(),
         fence: holder.closest<HTMLElement>("[data-part=md-code-block]")?.dataset.state ?? null,
@@ -281,7 +290,8 @@ function readCursorStep(ids: string[]) {
 
 // The cursor through every step of live streams, one timer tick at a time on a paused clock: never more than one, in
 // the open fence while it streams and on the text after it once it closes, and never on text that a later row (a
-// running tool) follows, with markdown and with plain text.
+// running tool) follows, with markdown and with plain text. The ai-sdk demos go through both states of #112's rule: the
+// message streams with exactly one cursor before the tool row exists, then commits (no cursor) above the running tool.
 async function checkCursorSteps(browser: Browser, port: number, failures: string[]) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "no-preference" });
   const start = new Date("2026-01-01T00:00:00Z");
@@ -297,8 +307,20 @@ async function checkCursorSteps(browser: Browser, port: number, failures: string
   const before = failures.length;
   for (let step = 0; step < 200; step++) {
     await page.clock.runFor(30);
-    for (const { id, later, holders } of await page.evaluate(readCursorStep, ids)) {
+    for (const { id, state, later, tool, holders } of await page.evaluate(readCursorStep, ids)) {
       if (holders.length > 1) flag(`${id}: ${holders.length} cursors`, step);
+      if (id.startsWith("ai-sdk-")) {
+        if (!later && state === "streaming") {
+          if (holders.length !== 1) flag(`${id}: ${holders.length} cursors on the streaming message before the tool row, expected 1`, step);
+          else seen.add(`${id} streaming`);
+        }
+        // The replay plays one event per tick, so one tick can show the commit before tool_start; a live app gets both
+        // from one decode call, in one frame. Once the tool row exists, the message must be committed above it.
+        if (later) {
+          if (state !== "done" || tool !== "streaming") flag(`${id}: above the tool row the message is ${state} and the tool ${tool}, expected done and streaming`, step);
+          else seen.add(`${id} committed`);
+        }
+      }
       const [holder] = holders;
       if (later) seen.add(`${id} later`);
       if (!holder) continue;
@@ -309,10 +331,10 @@ async function checkCursorSteps(browser: Browser, port: number, failures: string
   }
   await page.close();
   for (const [what, { first, ticks }] of wrong) failures.push(`${what}, from tick ${first}, in ${ticks} of 200 ticks`);
-  for (const expected of ["markdown-fence-streaming fence", "markdown-fence-streaming after fence", ...ids.slice(1).flatMap((id) => [`${id} text`, `${id} later`])]) {
+  for (const expected of ["markdown-fence-streaming fence", "markdown-fence-streaming after fence", ...ids.slice(1).flatMap((id) => [`${id} text`, `${id} later`, `${id} streaming`, `${id} committed`])]) {
     if (!seen.has(expected)) failures.push(`cursor steps: never saw "${expected}" (the demo changed?)`);
   }
-  if (failures.length === before) console.log(`ok   cursor steps: 200 ticks of ${ids.join(", ")}: one cursor at most, in the open fence then after it, and none on text a running tool follows`);
+  if (failures.length === before) console.log(`ok   cursor steps: 200 ticks of ${ids.join(", ")}: one cursor at most, in the open fence then after it, and none on text a running tool follows; the ai-sdk messages stream with one cursor, then commit above the running tool`);
 }
 
 // Every part stays still under reduced motion even outside a Timeline or Composer: the gallery's rows (paused in their
