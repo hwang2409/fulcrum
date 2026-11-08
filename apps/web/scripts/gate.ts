@@ -683,104 +683,123 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
   }
 }
 
-async function checkReconnectBottom(page: Page, engine: string) {
+// Opens a fresh context for one gate row and closes it even when the row fails, so a failed row cannot leave a page,
+// focus, or controller socket behind for the next row. The caller's page leaves first: zeta admits one controller.
+async function withRowPage(page: Page, engine: string, row: (rowPage: Page) => Promise<void>, prepare?: (rowPage: Page) => Promise<void>) {
   const browser = page.context().browser();
-  if (!browser) throw new Error(`${engine}: reconnect fixture browser is unavailable`);
+  if (!browser) throw new Error(`${engine}: gate row browser is unavailable`);
   const viewport = page.viewportSize() ?? { width: 1440, height: 900 };
   await page.goto("about:blank");
-  const fixtureContext = await browser.newContext({ viewport });
-  const fixturePage = await fixtureContext.newPage();
-  await installReconnectBottomFixture(fixturePage);
-  const failures: ReconnectBottomFailure[] = [];
+  const context = await browser.newContext({ viewport });
   try {
-    for (let run = 1; run <= reconnectBottomRuns; run++) {
-      try {
-        await reconnectBottomIteration(fixturePage, engine, run);
-      } catch (error) {
-        if (!expectReconnectBottomFailure || !(error instanceof ReconnectBottomFailure)) throw error;
-        failures.push(error);
-        console.log(`expected reconnect-bottom failure ${engine} ${run}/${reconnectBottomRuns}: ${error.message}`);
-      }
-    }
-    if (expectReconnectBottomFailure) {
-      if (failures.length !== reconnectBottomRuns) throw new Error(`${engine}: only ${failures.length}/${reconnectBottomRuns} old-source runs reached the reconnect-bottom failure`);
-      throw new Error(`${engine}: deterministic old-source proof failed ${failures.length}/${reconnectBottomRuns} at ${failures.map(({ gap }) => gap.toFixed(3)).join(",")} px`);
-    }
+    const rowPage = await context.newPage();
+    await prepare?.(rowPage);
+    await row(rowPage);
   } finally {
-    await fixtureContext.close();
+    await context.close();
   }
 }
 
+async function checkReconnectBottom(page: Page, engine: string) {
+  const failures: ReconnectBottomFailure[] = [];
+  for (let run = 1; run <= reconnectBottomRuns; run++) {
+    try {
+      await withRowPage(page, engine, (rowPage) => reconnectBottomIteration(rowPage, engine, run), installReconnectBottomFixture);
+    } catch (error) {
+      if (!expectReconnectBottomFailure || !(error instanceof ReconnectBottomFailure)) throw error;
+      failures.push(error);
+      console.log(`expected reconnect-bottom failure ${engine} ${run}/${reconnectBottomRuns}: ${error.message}`);
+    }
+  }
+  if (expectReconnectBottomFailure) {
+    if (failures.length !== reconnectBottomRuns) throw new Error(`${engine}: only ${failures.length}/${reconnectBottomRuns} old-source runs reached the reconnect-bottom failure`);
+    throw new Error(`${engine}: deterministic old-source proof failed ${failures.length}/${reconnectBottomRuns} at ${failures.map(({ gap }) => gap.toFixed(3)).join(",")} px`);
+  }
+}
+
+// A wait whose timeout names what did not happen.
+const waitNamed = (locator: Locator, failure: string, timeout: number, state: "attached" | "detached" | "visible" = "visible") =>
+  locator.waitFor({ state, timeout }).catch(() => { throw new Error(`${failure} within ${timeout / 1000} s`); });
+
+// Restores LONG's history (the row appends to it) even when the row fails; the row runs in its own context.
 async function checkExternalScrollIntent(page: Page, engine: string, kind: "scrollIntoView" | "tab-focus") {
   const history = fake.historyOf(LONG);
   try {
-    await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
-    await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
-    await page.getByText(/loading session history/).waitFor({ state: "detached", timeout: 15_000 });
-    await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
-    await waitAtBottom(page, `${engine} ${kind}: the long run did not load pinned at the bottom`);
-    const targetId = await page.evaluate(() => {
-      const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
-      if (!scroll) throw new Error("timeline scroll host is missing");
-      const scrollBox = scroll.getBoundingClientRect();
-      const targets = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")]
-        .filter((row) => row.getBoundingClientRect().bottom < scrollBox.top - 1);
-      const target = targets[0];
-      if (!target?.dataset.virtualId) throw new Error("no mounted overscan row above the viewport");
-      const targetStart = target.getBoundingClientRect().top - scrollBox.top + scroll.scrollTop;
-      const distanceFromEnd = scroll.scrollHeight - targetStart;
-      if (distanceFromEnd <= 2 * scroll.clientHeight) {
-        throw new Error(`mounted target is only ${distanceFromEnd.toFixed(1)} px from the DOM end; need more than two ${scroll.clientHeight.toFixed(1)} px viewports`);
-      }
-      return target.dataset.virtualId;
-    });
-    const target = page.locator(`[data-virtual-id="${targetId}"]`);
-    const readPosition = () => page.evaluate(() => {
+    await withRowPage(page, engine, (rowPage) => externalScrollIntentRow(rowPage, engine, kind));
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
+}
+
+async function externalScrollIntentRow(page: Page, engine: string, kind: "scrollIntoView" | "tab-focus") {
+  const row = `${engine} ${kind} row`;
+  await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
+  await waitNamed(page.locator('[data-run-ready="true"]'), `${row}: the long run was not ready`, 15_000);
+  await waitNamed(page.getByText(/loading session history/), `${row}: history paging did not finish`, 15_000, "detached");
+  await waitNamed(page.locator('[data-virtual-id="message:l999"]'), `${row}: the last history row message:l999 did not mount`, 15_000);
+  await waitAtBottom(page, `${engine} ${kind}: the long run did not load pinned at the bottom`);
+  const targetId = await page.evaluate(() => {
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
+    if (!scroll) throw new Error("timeline scroll host is missing");
+    const scrollBox = scroll.getBoundingClientRect();
+    const targets = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")]
+      .filter((row) => row.getBoundingClientRect().bottom < scrollBox.top - 1);
+    const target = targets[0];
+    if (!target?.dataset.virtualId) throw new Error("no mounted overscan row above the viewport");
+    const targetStart = target.getBoundingClientRect().top - scrollBox.top + scroll.scrollTop;
+    const distanceFromEnd = scroll.scrollHeight - targetStart;
+    if (distanceFromEnd <= 2 * scroll.clientHeight) {
+      throw new Error(`mounted target is only ${distanceFromEnd.toFixed(1)} px from the DOM end; need more than two ${scroll.clientHeight.toFixed(1)} px viewports`);
+    }
+    return target.dataset.virtualId;
+  });
+  const target = page.locator(`[data-virtual-id="${targetId}"]`);
+  const readPosition = () => page.evaluate(() => {
+    const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+    const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+    return { gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop, viewport: scroll.clientHeight, following: engine?.getSnapshot().pinned ?? null };
+  });
+  let moved;
+  if (kind === "scrollIntoView") {
+    moved = await target.evaluate((element) => {
+      element.scrollIntoView({ block: "center" });
       const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
       const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
       return { gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop, viewport: scroll.clientHeight, following: engine?.getSnapshot().pinned ?? null };
     });
-    let moved;
-    if (kind === "scrollIntoView") {
-      moved = await target.evaluate((element) => {
-        element.scrollIntoView({ block: "center" });
-        const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
-        const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
-        return { gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop, viewport: scroll.clientHeight, following: engine?.getSnapshot().pinned ?? null };
-      });
-    } else {
-      await page.evaluate((id) => {
-        const target = document.querySelector<HTMLElement>(`[data-virtual-id="${id}"]`)!;
-        target.tabIndex = 2;
-        const sentinel = document.createElement("button");
-        sentinel.dataset.gateFocusSentinel = "true";
-        sentinel.tabIndex = 1;
-        sentinel.style.position = "fixed";
-        sentinel.style.inset = "auto 0 0 auto";
-        sentinel.textContent = "focus start";
-        document.body.append(sentinel);
-        sentinel.focus();
-      }, targetId);
-      await page.keyboard.press("Tab");
-      if (!await target.evaluate((element) => document.activeElement === element)) {
-        throw new Error(`${engine} tab-focus: Tab did not focus ${targetId}`);
-      }
-      moved = await readPosition();
+  } else {
+    await page.evaluate((id) => {
+      const target = document.querySelector<HTMLElement>(`[data-virtual-id="${id}"]`)!;
+      target.tabIndex = 2;
+      const sentinel = document.createElement("button");
+      sentinel.dataset.gateFocusSentinel = "true";
+      sentinel.tabIndex = 1;
+      sentinel.style.position = "fixed";
+      sentinel.style.inset = "auto 0 0 auto";
+      sentinel.textContent = "focus start";
+      document.body.append(sentinel);
+      sentinel.focus();
+    }, targetId);
+    await page.keyboard.press("Tab");
+    if (!await target.evaluate((element) => document.activeElement === element)) {
+      throw new Error(`${engine} tab-focus: Tab did not focus ${targetId}`);
     }
-    if (moved.gap <= moved.viewport) {
-      throw new Error(`${engine} ${kind}: move check snapped back (gap ${moved.gap.toFixed(3)} px, viewport ${moved.viewport.toFixed(3)} px, follow ${moved.following})`);
-    }
-    const appendText = `${kind} ${engine} append`;
-    fake.emit({ event: "user_message", session_id: LONG, text: appendText, mode: "send", attachments: [], delivery_id: `${kind}-${engine}-append` });
-    await page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: appendText }).waitFor({ timeout: 5_000 });
-    const after = await readPosition();
-    if (after.gap < moved.gap - 1 || after.following !== false) {
-      throw new Error(`${engine} ${kind}: no-snap check failed (moved gap ${moved.gap.toFixed(3)} px, after gap ${after.gap.toFixed(3)} px, follow ${after.following})`);
-    }
-    await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
-  } finally {
-    fake.restoreHistory(LONG, history);
+    moved = await readPosition();
   }
+  if (moved.gap <= moved.viewport) {
+    throw new Error(`${engine} ${kind}: move check snapped back (gap ${moved.gap.toFixed(3)} px, viewport ${moved.viewport.toFixed(3)} px, follow ${moved.following})`);
+  }
+  const appendText = `${kind} ${engine} append`;
+  fake.emit({ event: "user_message", session_id: LONG, text: appendText, mode: "send", attachments: [], delivery_id: `${kind}-${engine}-append` });
+  // The append signal is public UI: virtualization need not mount the new row for a reader scrolled into content.
+  // A snap back re-pins the reader and so also hides the control; the no-snap check reports that cause first.
+  const appended = waitNamed(page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]'), `${row}: jump control with unseen=1 did not appear after the append`, 5_000);
+  const signal = await appended.then(() => null, (error: Error) => error);
+  const after = await readPosition();
+  if (after.gap < moved.gap - 1 || after.following !== false) {
+    throw new Error(`${engine} ${kind}: no-snap check failed (moved gap ${moved.gap.toFixed(3)} px, after gap ${after.gap.toFixed(3)} px, follow ${after.following}, jump control ${signal ? "missing" : "shown"})`);
+  }
+  if (signal) throw signal;
 }
 
 async function reconnectAnchorScenario(page: Page, engine: string) {
