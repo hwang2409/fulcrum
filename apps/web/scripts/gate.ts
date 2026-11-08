@@ -714,7 +714,7 @@ async function checkReconnectBottom(page: Page, engine: string) {
 async function checkExternalScrollIntent(page: Page, engine: string, kind: "scrollIntoView" | "tab-focus") {
   const history = fake.historyOf(LONG);
   try {
-    await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+    await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
     await page.locator('[data-run-ready="true"]').waitFor({ timeout: 15_000 });
     await page.getByText(/loading session history/).waitFor({ state: "detached", timeout: 15_000 });
     await page.locator('[data-virtual-id="message:l999"]').waitFor({ timeout: 15_000 });
@@ -734,11 +734,20 @@ async function checkExternalScrollIntent(page: Page, engine: string, kind: "scro
       }
       return target.dataset.virtualId;
     });
-    const scroll = page.locator('[data-part="timeline-scroll"]');
     const target = page.locator(`[data-virtual-id="${targetId}"]`);
-    const beforeGap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+    const readPosition = () => page.evaluate(() => {
+      const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+      const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+      return { gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop, viewport: scroll.clientHeight, following: engine?.getSnapshot().pinned ?? null };
+    });
+    let moved;
     if (kind === "scrollIntoView") {
-      await target.evaluate((element) => element.scrollIntoView({ block: "center" }));
+      moved = await target.evaluate((element) => {
+        element.scrollIntoView({ block: "center" });
+        const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+        const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+        return { gap: scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop, viewport: scroll.clientHeight, following: engine?.getSnapshot().pinned ?? null };
+      });
     } else {
       await page.evaluate((id) => {
         const target = document.querySelector<HTMLElement>(`[data-virtual-id="${id}"]`)!;
@@ -756,21 +765,19 @@ async function checkExternalScrollIntent(page: Page, engine: string, kind: "scro
       if (!await target.evaluate((element) => document.activeElement === element)) {
         throw new Error(`${engine} tab-focus: Tab did not focus ${targetId}`);
       }
+      moved = await readPosition();
     }
-    await page.waitForFunction(({ beforeGap }) => {
-      const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]');
-      return scroll !== null && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop > beforeGap + 1;
-    }, { beforeGap }, { timeout: 5_000 });
-    await settle(page);
-    const readerGap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
-    fake.emit({ event: "user_message", session_id: LONG, text: `${kind} ${engine} append`, mode: "send", attachments: [], delivery_id: `${kind}-${engine}-append` });
+    if (moved.gap <= moved.viewport) {
+      throw new Error(`${engine} ${kind}: move check snapped back (gap ${moved.gap.toFixed(3)} px, viewport ${moved.viewport.toFixed(3)} px, follow ${moved.following})`);
+    }
+    const appendText = `${kind} ${engine} append`;
+    fake.emit({ event: "user_message", session_id: LONG, text: appendText, mode: "send", attachments: [], delivery_id: `${kind}-${engine}-append` });
+    await page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: appendText }).waitFor({ timeout: 5_000 });
+    const after = await readPosition();
+    if (after.gap < moved.gap - 1 || after.following !== false) {
+      throw new Error(`${engine} ${kind}: no-snap check failed (moved gap ${moved.gap.toFixed(3)} px, after gap ${after.gap.toFixed(3)} px, follow ${after.following})`);
+    }
     await page.locator('[data-part="jump-to-latest"][data-unseen-count="1"]').waitFor({ timeout: 5_000 });
-    await settle(page);
-    const afterGap = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
-    if (afterGap < readerGap - 1) {
-      throw new Error(`${engine} ${kind}: reader gap shrank from ${readerGap.toFixed(3)} to ${afterGap.toFixed(3)} px after append`);
-    }
-    if (afterGap <= 0.5) throw new Error(`${engine} ${kind}: reader snapped back to the bottom`);
   } finally {
     fake.restoreHistory(LONG, history);
   }
