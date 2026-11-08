@@ -59,8 +59,11 @@ export type OpenResult = { lease: SessionLease; syncing: boolean; complete: Prom
 type HistoryPage = { messages?: unknown[]; next_offset?: number | null };
 type BackwardHistoryPage = { messages?: unknown[]; next_before?: number | null; history_validator?: HistoryValidator };
 const isApprovalEvent = (event: RunEvent) => event.type === "approval_request" || event.type === "approval_end";
-/** The outcome for an idle snapshot's `run_end`, given every history row the open has loaded so far. */
-type EndOutcome = (rows: unknown[], status: ServerStatus) => RunEndOutcome | undefined;
+/**
+ * The outcome for an idle snapshot's `run_end`, given every history row the open has loaded so far. `"later"` is a run
+ * the open never saw start: the snapshot starts and ends it with no outcome, as a run seen live ends.
+ */
+type EndOutcome = (rows: unknown[], status: ServerStatus) => RunEndOutcome | "later" | undefined;
 const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, historyApprovals = true, liveApprovalStatus = false, endOutcome: EndOutcome = () => undefined): RunEvent[] => {
   let events = fromZetaHistory(rows).filter((event) => historyApprovals || !isApprovalEvent(event));
   if (liveApprovalStatus && !status.pending_approvals_truncated) {
@@ -74,7 +77,9 @@ const snapshotEvents = (id: string, rows: unknown[], status: ServerStatus, histo
       ...(approval.resolution_pending ? { state: "resolving", status: "resolving…", disabled_reason: "the server is saving this decision" } : {}),
     }));
   const outcome = status.state === "idle" ? endOutcome(rows, status) : undefined;
-  events.push(status.state === "idle" ? { type: "run_end", ...(outcome ? { outcome } : {}) } : { type: "run_start" });
+  if (status.state !== "idle") events.push({ type: "run_start" });
+  else if (outcome === "later") events.push({ type: "run_start" }, { type: "run_end" });
+  else events.push({ type: "run_end", ...(outcome ? { outcome } : {}) });
   return events;
 };
 const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -479,24 +484,28 @@ export function createSessions(connection: Source, { selected = null, onSelect }
   const servedTurns = new Map<string, string>();
   // An interrupted turn stays "outcome unknown" until the session serves a later turn: the newest served turn id (an idle
   // status' last_turn_outcome, else this client's last turn_start) names one when it is not the interrupted turn. Every
-  // snapshot passes here, so a run that started and ended while a reopen replayed clears the marker like a live one.
-  const servedTurn = (id: string, turn: string | undefined) => {
-    const interrupted = interruptedTurns.get(id);
-    if (!interrupted || turn === undefined || turn === interrupted.turn) return;
-    interruptedTurns.delete(id);
-    servedTurns.set(id, turn);
-  };
-  const endOutcome = (id: string): EndOutcome => (rows, status) => {
-    const ownIdle = status.session?.session_id === id && status.state === "idle";
-    servedTurn(id, (ownIdle && statusTurnOutcome(status.last_turn_outcome) ? status.last_turn_outcome!.turn_id : undefined) ?? client?.servedTurn(id));
-    const interrupted = interruptedTurns.get(id);
-    const statusOutcome = ownIdle ? statusTurnOutcome(status.last_turn_outcome, interrupted?.turn) : undefined;
-    if (statusOutcome) return statusOutcome;
-    if (!interrupted) {
-      const turn = servedTurns.get(id);
-      return turn ? servedTurnOutcome(rows, turn) : undefined;
-    }
-    return interrupted.turn ? servedTurnOutcome(rows, interrupted.turn) ?? "unknown" : "unknown";
+  // snapshot of an open reads this, so a run that started and ended while a reopen replayed clears the marker and, like a
+  // run seen live, names no outcome in that open.
+  const endOutcome = (id: string): EndOutcome => {
+    let later: string | undefined;
+    return (rows, status) => {
+      const ownIdle = status.session?.session_id === id && status.state === "idle";
+      const newest = (ownIdle && statusTurnOutcome(status.last_turn_outcome) ? status.last_turn_outcome!.turn_id : undefined) ?? client?.servedTurn(id);
+      if (newest !== undefined && interruptedTurns.has(id) && newest !== interruptedTurns.get(id)!.turn) {
+        interruptedTurns.delete(id);
+        servedTurns.set(id, newest);
+        later = newest;
+      }
+      if (later !== undefined && newest === later) return "later";
+      const interrupted = interruptedTurns.get(id);
+      const statusOutcome = ownIdle ? statusTurnOutcome(status.last_turn_outcome, interrupted?.turn) : undefined;
+      if (statusOutcome) return statusOutcome;
+      if (!interrupted) {
+        const turn = servedTurns.get(id);
+        return turn ? servedTurnOutcome(rows, turn) : undefined;
+      }
+      return interrupted.turn ? servedTurnOutcome(rows, interrupted.turn) ?? "unknown" : "unknown";
+    };
   };
   let openGeneration = 0;
   let openAbort: AbortController | null = null;

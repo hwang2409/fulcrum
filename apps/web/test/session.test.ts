@@ -276,7 +276,9 @@ const startLaterTurn = (event: (params: Record<string, unknown>) => void) => {
   event({ event: "turn_start", session_id: "b", data: { turn: 2, turn_id: laterTurn } });
 };
 
-// The interrupted-turn marker means "outcome unknown until its next run starts". Each row names the fact that decides it.
+// The interrupted-turn marker means "outcome unknown until its next run starts". A later run clears it the same way
+// whether it was seen live or replayed: that open names no outcome for it, and a reopen names it from status. Each row
+// names the fact that decides it.
 test.each([
   {
     name: "a live run after the interruption clears the marker",
@@ -314,7 +316,7 @@ test.each([
       });
       return { view, live: present(view).open?.lease.store.getState().endOutcome, reopened: await reopened(view) };
     },
-    live: "completed",
+    live: undefined,
     reopened: "completed",
   },
   {
@@ -324,7 +326,7 @@ test.each([
       const { view } = await interruptedReconnect({ status: idleStatus({ turn_id: laterTurn, reason: "completed" }), rows: [...history.b!, endRow(turn, "error")] });
       return { view, live: present(view).open?.lease.store.getState().endOutcome, reopened: await reopened(view) };
     },
-    live: "completed",
+    live: undefined,
     reopened: "completed",
   },
   {
