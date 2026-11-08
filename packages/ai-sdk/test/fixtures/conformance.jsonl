@@ -33,7 +33,7 @@
 {"scenario":"tool-error","sessionId":"tool-error","part":{"type":"tool-output-error","toolCallId":"call-error","errorText":"exit 1","providerExecuted":true,"dynamic":true}}
 {"scenario":"tool-error","sessionId":"tool-error","part":{"type":"finish-step"}}
 {"scenario":"tool-error","sessionId":"tool-error","part":{"type":"finish","finishReason":"stop"}}
-{"scenario":"approval","sessionId":"approval","stream":"approval-request-1","part":{"type":"start","messageId":"approval-message"}}
+{"scenario":"approval","sessionId":"approval","stream":"approval-request-1","originalMessages":[{"parts":[{"type":"text","text":"go"}],"id":"id-2","role":"user"}],"part":{"type":"start","messageId":"approval-message"}}
 {"scenario":"approval","sessionId":"approval","stream":"approval-request-1","part":{"type":"start-step"}}
 {"scenario":"approval","sessionId":"approval","stream":"approval-request-1","part":{"type":"text-start","id":"text-ask"}}
 {"scenario":"approval","sessionId":"approval","stream":"approval-request-1","part":{"type":"text-delta","id":"text-ask","delta":"deploying to production."}}
@@ -43,7 +43,7 @@
 {"scenario":"approval","sessionId":"approval","stream":"approval-request-1","part":{"type":"finish-step"}}
 {"scenario":"approval","sessionId":"approval","stream":"approval-request-1","part":{"type":"finish","finishReason":"tool-calls"}}
 {"scenario":"approval","sessionId":"approval","event":{"type":"approval_end","request_id":"w:approval:approval-1","decision":"deny","data":{"reason":"not on a friday"}}}
-{"scenario":"approval","sessionId":"approval","stream":"approval-request-2","part":{"type":"start","messageId":"approval-message"}}
+{"scenario":"approval","sessionId":"approval","stream":"approval-request-2","originalMessages":[{"parts":[{"type":"text","text":"go"}],"id":"id-2","role":"user"},{"id":"approval-message","role":"assistant","parts":[{"type":"step-start"},{"type":"text","text":"deploying to production.","state":"done"},{"type":"tool-deploy","toolCallId":"call-approval","state":"approval-responded","input":{"target":"production"},"approval":{"id":"approval-1","approved":false,"reason":"not on a friday"}}]}],"part":{"type":"start","messageId":"approval-message"}}
 {"scenario":"approval","sessionId":"approval","stream":"approval-request-2","part":{"type":"tool-output-denied","toolCallId":"call-approval"}}
 {"scenario":"approval","sessionId":"approval","stream":"approval-request-2","part":{"type":"start-step"}}
 {"scenario":"approval","sessionId":"approval","stream":"approval-request-2","part":{"type":"text-start","id":"text-after"}}

@@ -14,15 +14,16 @@ test("AI SDK UI message stream conforms to generic run events", () => {
     name: "ai-sdk",
     fixtures,
     capabilities: { approval: true, reasoning: true, reset: false, usage: true },
-    // A session row is a chunk of one of its streams (`stream`, default the session), or an event the host dispatched.
+    // A session row is a chunk of one of its streams (`stream`, default the session; a stream's first row carries the
+    // messages its request sent), or an event the host dispatched.
     create: (sessionId) => {
       const adapters = new Map<string, ReturnType<typeof createAiSdkAdapter>>();
       return {
         decode: (value) => {
-          const row = value as { stream?: string; part?: unknown; event?: RunEvent };
+          const row = value as { stream?: string; originalMessages?: unknown[]; part?: unknown; event?: RunEvent };
           if (row.event) return [row.event];
           const streamKey = row.stream ?? sessionId;
-          const adapter = adapters.get(streamKey) ?? createAiSdkAdapter({ streamKey });
+          const adapter = adapters.get(streamKey) ?? createAiSdkAdapter({ streamKey, originalMessages: row.originalMessages });
           adapters.set(streamKey, adapter);
           return adapter.decode(row.part);
         },
@@ -100,6 +101,7 @@ test("entity id encoding is injective and reversible", () => {
     for (const value of values) identities.push({ source: "wire", kind, id: value });
     for (const streamKey of values.filter((value) => value.trim())) identities.push({ source: "synthetic", kind, streamKey, counter: 1 }, { source: "synthetic", kind, streamKey, counter: 2 });
   }
+  for (const messageId of values) identities.push({ source: "message", kind: "message", messageId, counter: 1 }, { source: "message", kind: "message", messageId, counter: 2 });
   const encoded = identities.map(encodeAiSdkEntityId);
   expect(new Set(encoded).size).toBe(new Set(identities.map((identity) => JSON.stringify(identity))).size);
   expect(encoded.map(decodeAiSdkEntityId)).toEqual(identities);
@@ -162,8 +164,8 @@ test("pinned AI SDK writer ids round trip to their original wire ids", () => {
   const message = decodeFixture("text").find((event) => event.type === "message_commit");
   const tool = decodeFixture("tool").find((event) => event.type === "tool_start");
   const approval = decodeFixture("approval").find((event) => event.type === "approval_request");
-  // A UI message spans steps and approval continuations, so its fulcrum messages are stream-keyed; each keeps the wire id.
-  expect(message?.type === "message_commit" ? decodeAiSdkEntityId(message.message_id!) : undefined).toEqual({ source: "synthetic", kind: "message", streamKey: "text", counter: 1 });
+  // A UI message spans steps and approval continuations, so its fulcrum messages are its numbered segments; each keeps the wire id.
+  expect(message?.type === "message_commit" ? decodeAiSdkEntityId(message.message_id!) : undefined).toEqual({ source: "message", kind: "message", messageId: "message-1", counter: 1 });
   expect(message?.type === "message_commit" ? message.message.metadata : undefined).toEqual({ wireId: "message-1" });
   expect(tool?.type === "tool_start" ? decodeAiSdkEntityId(tool.tool_call.id) : undefined).toEqual({ source: "wire", kind: "tool", id: "call-1" });
   expect(tool?.type === "tool_start" ? tool.tool_call.meta : undefined).toMatchObject({ wireId: "call-1" });
@@ -336,10 +338,11 @@ test("tool part titles are validated as wire strings", () => {
   expect(adapter.decode({ type: "tool-input-start", toolCallId: "b", toolName: "x", title: 5 })[0]?.type).toBe("error");
 });
 
-// A chat that records what the SDK was told, or refuses.
-const recordingChat = (fail?: Error) => {
+// A chat whose last message asks for these approvals, and records what the SDK was told, or refuses.
+const pendingMessages = (ids: string[]) => [{ parts: ids.map((id) => ({ type: "tool-deploy", state: "approval-requested", approval: { id } })) }];
+const recordingChat = (fail?: Error, pending = ["a", "approval-1", ""]) => {
   const responses: AiSdkApprovalResponse[] = [];
-  return { responses, addToolApprovalResponse: async (response: AiSdkApprovalResponse) => { if (fail) throw fail; responses.push(response); } };
+  return { responses, messages: pendingMessages(pending), addToolApprovalResponse: async (response: AiSdkApprovalResponse) => { if (fail) throw fail; responses.push(response); } };
 };
 
 test("no chunk ends an approval: the decision is the host's, and respondToApproval ends the request the adapter opened", async () => {
@@ -372,7 +375,7 @@ test("respondToApproval ends the card only after the SDK records the decision", 
   await expect(respondToApproval({ chat: recordingChat(), dispatch }, { requestId: "w:approval:a", approved: "yes" as never })).rejects.toThrow("approved");
   expect(dispatched).toEqual([]);
   // A synchronous chat (the SDK's type allows void) works the same.
-  await respondToApproval({ chat: { addToolApprovalResponse: () => {} }, dispatch }, { requestId: "w:approval:a", approved: true });
+  await respondToApproval({ chat: { messages: pendingMessages(["a"]), addToolApprovalResponse: () => {} }, dispatch }, { requestId: "w:approval:a", approved: true });
   expect(dispatched).toEqual([{ type: "approval_end", request_id: "w:approval:a", decision: "approve" }]);
 });
 
@@ -433,7 +436,7 @@ test("a multi-step run reads text, tool, text in order: each step's text after a
     "reasoning:two folders|text:The project has two folders.",
   ]);
   const ids = events.filter((event) => event.type === "message_commit").map((event) => event.message_id);
-  expect(ids).toEqual(["s:message:multi:1", "s:message:multi:2"]);
+  expect(ids).toEqual(["m:message:multi:1", "m:message:multi:2"]);
   expect(play().events).toEqual(events);
 });
 
@@ -482,13 +485,13 @@ test.each(["text", "reasoning", "tool", "tool-error"])("decodeAiSdkMessage(%s) r
   const adapter = createAiSdkAdapter({ streamKey: sessionId });
   const live = snapshot(parts.flatMap((part) => adapter.decode(part)));
   expect(live.length).toBeGreaterThan(0);
-  expect(snapshot(decodeAiSdkMessage({ ...persisted, role: "assistant" }, { streamKey: sessionId }))).toEqual(live);
+  expect(snapshot(decodeAiSdkMessage({ ...persisted, role: "assistant" }))).toEqual(live);
 });
 
 test("decodeAiSdkMessage keeps input errors, streaming input, data parts, and refuses what is not an assistant message", () => {
-  const decode = (message: unknown) => decodeAiSdkMessage(message, { streamKey: "reload" });
+  const decode = (message: unknown) => decodeAiSdkMessage(message);
   const codes = (events: RunEvent[]) => events.filter((event) => event.type === "error").map((event) => event.type === "error" ? event.error.code : "");
-  for (const message of [null, { role: "user", parts: [] }, { role: "assistant" }]) expect(codes(decode(message))).toEqual(["adapter_invalid_payload"]);
+  for (const message of [null, { id: "u", role: "user", parts: [] }, { id: "m", role: "assistant" }, { role: "assistant", parts: [] }]) expect(codes(decode(message))).toEqual(["adapter_invalid_payload"]);
   const events = decode({ id: "m", role: "assistant", parts: [
     { type: "dynamic-tool", toolName: "shell", toolCallId: "bad", state: "output-error", rawInput: "{oops", errorText: "invalid json" },
     { type: "tool-search", toolCallId: "typing", state: "input-streaming", input: { q: "fu" } },

@@ -58,8 +58,7 @@ const mermaidDist = dirname(fileURLToPath(import.meta.resolve("@fulcrum/mermaid"
 if (typeof MermaidFence !== "function" || !existsSync(join(mermaidDist, "render.js")) || readdirSync(join(mermaidDist, "chunks")).length === 0)
   throw new Error("mermaid lazy render module is missing");
 
-const reloaded = decodeAiSdkMessage({ id: "packed", role: "assistant", parts: [{ type: "text", text: "reloaded" }] }, { streamKey: "packed-reload" });
-if (typeof respondToApproval !== "function" || !reloaded.some((event) => event.type === "message_commit"))
+if (typeof respondToApproval !== "function" || typeof decodeAiSdkMessage !== "function")
   throw new Error("ai-sdk approval and reload exports are missing");
 
 const store = createRunStore(() => {});
@@ -75,7 +74,10 @@ onAiSdkPart({ type: "text-start", id: "text" });
 onAiSdkPart({ type: "text-delta", id: "text", delta: "hello" });
 onAiSdkPart({ type: "text-end", id: "text" });
 onAiSdkPart({ type: "finish" });
-if (store.getOutline()[0]?.id !== "message:s:message:chat-request-123:1") throw new Error("AI SDK README quickstart did not commit its message");
+if (store.getOutline()[0]?.id !== "message:m:message:packed:1") throw new Error("AI SDK README quickstart did not commit its message");
+// The reload of the persisted message gets the live id: it replaces the row instead of adding one.
+for (const event of decodeAiSdkMessage({ id: "packed", role: "assistant", parts: [{ type: "step-start" }, { type: "text", text: "hello" }] })) store.dispatch(event);
+if (store.getOutline().length !== 1) throw new Error("AI SDK reload did not reuse the live message id");
 if (typeof AgentRun !== "function") throw new Error("React quickstart did not load");
 `);
   run(["bun", "run", "consumer.tsx"], consumer);

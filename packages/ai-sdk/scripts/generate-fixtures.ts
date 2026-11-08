@@ -1,5 +1,5 @@
 import { writeFile } from "node:fs/promises";
-import { convertToModelMessages, createUIMessageStream, jsonSchema, simulateReadableStream, stepCountIs, streamText, tool, type ToolSet, type UIMessageChunk } from "ai";
+import { convertToModelMessages, createUIMessageStream, jsonSchema, simulateReadableStream, stepCountIs, streamText, tool, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import type { RunEvent } from "@fulcrum/core";
 import { encodeAiSdkEntityId, respondToApproval } from "../src/index.js";
@@ -25,12 +25,13 @@ async function modelParts(messageId: string, chunks: unknown[], withUsage = fals
   return parts;
 }
 
-type SessionEntry = { stream: string; part: UIMessageChunk } | { event: RunEvent };
+type SessionEntry = { stream: string; originalMessages?: UIMessage[]; part: UIMessageChunk } | { event: RunEvent };
 /**
  * A host session on a real chat: each request runs its model steps through `streamText(...).toUIMessageStream()` as a
  * server route does, and the host answers each approval with `respondToApproval`, then continues. Returns what the
- * host fed its store, in order: each stream's chunks under its own stream key, and the event respondToApproval
- * dispatched between the request and its continuation.
+ * host fed its store, in order: each stream's chunks under its own stream key (the first one carries the messages the
+ * request sent, which the stream's adapter takes as `originalMessages`), and the event respondToApproval dispatched
+ * between the request and its continuation.
  */
 async function hostSession(name: string, requests: unknown[][][], tools: ToolSet, response: { approved: boolean; reason?: string }) {
   const log: SessionEntry[] = [];
@@ -49,7 +50,7 @@ async function hostSession(name: string, requests: unknown[][][], tools: ToolSet
     const parts: UIMessageChunk[] = [];
     for await (const part of result.toUIMessageStream({ originalMessages: messages, generateMessageId: () => `${name}-message` })) parts.push(part);
     const stream = `${name}-request-${++request}`;
-    for (const part of parts) log.push({ stream, part });
+    parts.forEach((part, index) => log.push(index ? { stream, part } : { stream, originalMessages: structuredClone(messages), part }));
     return parts;
   });
   await chat.sendMessage({ text: "go" });

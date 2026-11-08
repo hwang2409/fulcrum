@@ -4,7 +4,7 @@ import { AbstractChat, simulateReadableStream, type ChatState, type ChatStatus, 
 class MemoryState implements ChatState<UIMessage> {
   status: ChatStatus = "ready";
   error: Error | undefined;
-  messages: UIMessage[] = [];
+  constructor(public messages: UIMessage[]) {}
   pushMessage = (message: UIMessage) => { this.messages = [...this.messages, message]; };
   popMessage = () => { this.messages = this.messages.slice(0, -1); };
   replaceMessage = (index: number, message: UIMessage) => { this.messages = this.messages.map((old, at) => at === index ? message : old); };
@@ -13,13 +13,14 @@ class MemoryState implements ChatState<UIMessage> {
 
 /**
  * A real ai 6.0.0 chat whose requests the test answers: `respond` gets the messages the chat sends and returns the UI
- * message stream a server route would. `addToolApprovalResponse` and `messages` are the SDK's own.
+ * message stream a server route would. `addToolApprovalResponse` and `messages` are the SDK's own. `messages` starts a
+ * reloaded chat from persisted messages, as `useChat({ messages })` does.
  */
 export class TestChat extends AbstractChat<UIMessage> {
-  constructor(respond: (messages: UIMessage[]) => Promise<UIMessageChunk[]>) {
+  constructor(respond: (messages: UIMessage[]) => Promise<UIMessageChunk[]>, messages: UIMessage[] = []) {
     let id = 0;
     super({
-      state: new MemoryState(),
+      state: new MemoryState(structuredClone(messages)),
       generateId: () => `id-${++id}`,
       transport: {
         sendMessages: async ({ messages }) => simulateReadableStream({ chunks: await respond(messages), chunkDelayInMs: null }),

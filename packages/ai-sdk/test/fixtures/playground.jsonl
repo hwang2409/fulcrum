@@ -1,4 +1,4 @@
-{"stream":"ai-sdk-demo-request-1","part":{"type":"start","messageId":"ai-sdk-demo-message"}}
+{"stream":"ai-sdk-demo-request-1","originalMessages":[{"parts":[{"type":"text","text":"go"}],"id":"id-2","role":"user"}],"part":{"type":"start","messageId":"ai-sdk-demo-message"}}
 {"stream":"ai-sdk-demo-request-1","part":{"type":"start-step"}}
 {"stream":"ai-sdk-demo-request-1","part":{"type":"reasoning-start","id":"reasoning-demo"}}
 {"stream":"ai-sdk-demo-request-1","part":{"type":"reasoning-delta","id":"reasoning-demo","delta":"check the current directory first"}}
@@ -11,7 +11,7 @@
 {"stream":"ai-sdk-demo-request-1","part":{"type":"finish-step"}}
 {"stream":"ai-sdk-demo-request-1","part":{"type":"finish","finishReason":"tool-calls"}}
 {"event":{"type":"approval_end","request_id":"w:approval:approval-1","decision":"approve"}}
-{"stream":"ai-sdk-demo-request-2","part":{"type":"start","messageId":"ai-sdk-demo-message"}}
+{"stream":"ai-sdk-demo-request-2","originalMessages":[{"parts":[{"type":"text","text":"go"}],"id":"id-2","role":"user"},{"id":"ai-sdk-demo-message","role":"assistant","parts":[{"type":"step-start"},{"type":"reasoning","text":"check the current directory first","state":"done"},{"type":"text","text":"i'll inspect the project.\n","state":"done"},{"type":"tool-shell","toolCallId":"call-demo","state":"approval-responded","input":{"command":"ls"},"approval":{"id":"approval-1","approved":true}}]}],"part":{"type":"start","messageId":"ai-sdk-demo-message"}}
 {"stream":"ai-sdk-demo-request-2","part":{"type":"tool-output-available","toolCallId":"call-demo","output":"README.md","preliminary":true}}
 {"stream":"ai-sdk-demo-request-2","part":{"type":"tool-output-available","toolCallId":"call-demo","output":"README.md\napps","preliminary":true}}
 {"stream":"ai-sdk-demo-request-2","part":{"type":"tool-output-available","toolCallId":"call-demo","output":"README.md\napps\npackages","preliminary":true}}
