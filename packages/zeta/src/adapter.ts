@@ -215,7 +215,7 @@ const turnData = (data: Record<string, unknown>) => {
   return data;
 };
 
-const childHoldDateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
+const childHoldDateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
 const childHoldDeadline = (value: unknown) => {
   if (typeof value !== "string") return undefined;
   const date = new Date(value);

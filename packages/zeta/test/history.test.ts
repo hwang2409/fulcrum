@@ -90,7 +90,7 @@ test("child holds use the same readable notification in live and history", () =>
   for (const event of history) historyStore.dispatch(event);
   expect(liveStore.getState()).toEqual(historyStore.getState());
   const item = liveStore.getItem(liveStore.getOutline()[0]!.id);
-  const readableDeadline = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(data.until));
+  const readableDeadline = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.until));
   expect(item).toMatchObject({ event: { type: "notification", data: { kind: "child_hold", text: `child worker waits for a provider rate limit until ${readableDeadline}` } } });
   expect(JSON.stringify(item)).not.toContain("secret-account");
 });
