@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as verdict from "./viewer-verdict"; // a namespace import, so the table also runs against older verdict modules
-import type { ViewerSample } from "./viewer-verdict";
+import type { ScalingCheck, ScalingSide, ViewerSample } from "./viewer-verdict";
 
 const { recordViewerTimingFailures } = verdict;
 
@@ -75,5 +75,49 @@ describe("recordUnthrottledViewerFailures", () => {
   test("a 2x common regression fails on a mid runner", () => {
     expect(judge("single", 7.5, 5.9 * 2, 8.8)).toEqual(["viewer single @ 390 append: calibrated ceiling, candidate 11.8 ms / calibration 8.8 ms = 1.34x is over 1.02x"]);
     expect(judge("read", 7.4 * 2, 12.6, 8.4)).toEqual(["viewer read @ 390 open: calibrated ceiling, candidate 14.8 ms / calibration 8.4 ms = 1.76x is over 1.46x"]);
+  });
+});
+
+describe("recordViewerScalingFailures", () => {
+  // Push counts per append are illustrative no-op values; the task times are real CI pairs.
+  const side = (appendTaskMs: number, segmentPushes = 42, appendPushes = 50): ScalingSide => ({ appendTaskMs, appendPushes, segmentPushes });
+  const pairs = (small: number[], large: number[]) => small.map((ms, index) => ({ small: side(ms), large: side(large[index]!) }));
+  // Optional call: on a verdict module without the paired probe, every row still reaches its behavior assertion.
+  const judge = (check: ScalingCheck) => {
+    const failures: string[] = [];
+    const summary = verdict.recordViewerScalingFailures?.(check, failures);
+    return { failures, taskRatio: summary?.taskRatio.toFixed(3) };
+  };
+  // The highest no-op median (42537804733, probe 5, AMD EPYC 7763): 21 pairs, one 180 ms outlier the median ignores.
+  const highestNoOp = pairs(
+    [38.66, 42.75, 39.97, 65.02, 39.91, 30.95, 32.10, 70.18, 39.71, 43.18, 45.96, 32.02, 40.37, 44.44, 37.03, 36.48, 50.52, 54.08, 39.00, 52.19, 38.90],
+    [39.89, 50.16, 38.96, 44.09, 37.90, 35.65, 33.45, 38.75, 39.34, 43.42, 34.04, 41.95, 35.11, 38.06, 43.98, 44.41, 35.02, 29.49, 44.03, 43.05, 180.04]);
+  // The lowest contract-size O(n) mutation (42536755137, probe 5, AMD EPYC 9V74): 55 ms per append at 128k lines.
+  const lowestMutation = pairs(
+    [55.91, 47.29, 47.10, 65.11, 59.45, 48.89, 48.52, 51.46, 50.99, 50.59, 60.19, 55.11, 51.19, 65.98, 45.11, 81.12, 49.35, 52.60, 49.55, 75.43, 52.87],
+    [101.94, 108.50, 97.61, 115.73, 89.98, 102.83, 98.55, 96.14, 97.12, 108.20, 96.29, 221.27, 92.72, 98.05, 101.51, 115.81, 97.28, 101.59, 98.37, 101.47, 93.72]);
+
+  test("the highest no-op pair set passes", () => {
+    expect(judge({ pairs: highestNoOp, mountedRows: 1 })).toEqual({ failures: [], taskRatio: "0.991" });
+  });
+  test("the lowest O(n) mutation fails with its ratio, budget, and pairs", () => {
+    const { failures, taskRatio } = judge({ pairs: lowestMutation, mountedRows: 1 });
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toStartWith("viewer append scaling: median paired 128k/16k task ratio 1.905x is over 1.387x (pairs 1.823, 2.294, ");
+    expect(taskRatio).toBe("1.905");
+  });
+  test("the budget itself passes and 0.001 over it fails", () => {
+    expect(judge({ pairs: pairs([1], [1.387]), mountedRows: 1 }).failures).toEqual([]);
+    expect(judge({ pairs: pairs([1], [1.388]), mountedRows: 1 }).failures).toEqual(["viewer append scaling: median paired 128k/16k task ratio 1.388x is over 1.387x (pairs 1.388)"]);
+  });
+  test("the canaries and the mounted-row limit keep their meaning", () => {
+    const even = [40, 40, 40];
+    const canaries = (large: ScalingSide) => judge({ pairs: even.map((ms) => ({ small: side(ms), large })), mountedRows: 201 }).failures;
+    expect(canaries(side(40, 60, 91))).toEqual([
+      "viewer append scaling: canary 128k/16k segment-push ratio 1.419x is over 1.400x",
+      "viewer append scaling: canary 128k/16k all-push ratio 1.820x is over 1.800x",
+      "viewer append scaling: 1m mounted rows 201 is over 200",
+    ]);
+    expect(judge({ pairs: pairs(even, even), mountedRows: 200 })).toEqual({ failures: [], taskRatio: "1.000" });
   });
 });

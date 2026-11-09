@@ -56,16 +56,19 @@ export function recordViewerTimingFailures(check: ViewerCheck, width: number, fa
     recordCalibratedFailure(failures, `viewer read @ ${width} ${field === "openMs" ? "open" : "append"} (4x throttle)`, check.candidate[field], check.calibration, pairedCalibratedBudgets[width]![field]);
 }
 
-// One side of an append scaling pair: the median of several appends to the same open viewer, 4x throttled.
+// One side of an append scaling pair: the first append after open (4x throttle, one 65,535-character line).
 export type ScalingSide = { appendTaskMs: number; appendPushes: number; segmentPushes: number };
-// The same append measured at 16k and at 128k lines, back to back.
+// The same append at 16k and at 128k lines, measured back to back in alternating order.
 export type ScalingPair = { small: ScalingSide; large: ScalingSide };
 export type ScalingCheck = { pairs: ScalingPair[]; mountedRows: number };
 
 // Append scaling owns O(n)-per-append viewer work (layout.ts contract (c)). Correct virtualized work is O(visible), so
-// the 128k/16k append task ratio stays near 1x; each pair's ratio cancels the runner drift that two medians taken
-// apart do not. Budget: TODO from paired no-op samples.
-export const viewerScalingTaskBudget = 2.27;
+// the 128k/16k append task ratio stays near 1x. Each pair's ratio cancels the runner drift that two medians taken apart
+// did not (the old ratio of medians ran 0.77-2.27x on no-op runs and overlapped the regression). Budget = the highest
+// no-op median over 21 pairs x the shared 1.4x margin. No-op: 20 CI jobs on 4 runner classes (runs 42536743002 and
+// 42537804733), 0.887-0.991x. Contract-size O(n) mutation (55 ms per append at 128k, 6.9 ms at 16k): 10 jobs (runs
+// 42536755137 and 42537806722), 1.905-2.417x, so the lowest sits 1.37x over the budget.
+export const viewerScalingTaskBudget = 0.991 * viewerRatioBudget;
 // Canaries: Array.push and pushed `text-*` segments per append. Rebuilding segments or visiting every row raises them.
 const segmentPushBudget = 1.4;
 const pushBudget = 1.8;

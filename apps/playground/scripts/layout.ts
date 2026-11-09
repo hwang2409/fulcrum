@@ -21,8 +21,9 @@
 // 370% of the correct append cost), measured as head-only append task-time scaling between 16k and 128k lines.
 // (d) a slowdown shared by head and base fails the calibrated ceiling: candidate median / same-run fixed-DOM work, per
 // width and operation (budgets and samples in viewer-verdict.ts).
-// The scaling probe runs several appends under 4x CPU throttling. Array.push and pushed `text-*` segment counts are
-// cheap extra canaries for rebuilding segments or visiting every row; task-time scaling is the proof.
+// The scaling probe measures 21 interleaved 16k/128k pairs of first appends under 4x CPU throttling and judges the
+// median per-pair task ratio (viewer-verdict.ts). Array.push and pushed `text-*` segment counts are cheap extra canaries
+// for rebuilding segments or visiting every row; task-time scaling is the proof.
 import { chromium, type Locator, type Page } from "playwright";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
