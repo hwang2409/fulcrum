@@ -315,7 +315,7 @@ export async function checkViewerFollowHead(page: Page, port: number, failures: 
       if (!state.textColors.includes(text))
         failures.push(`${at}: the status word "${word}" is colored ${text} (status colors mark, never color text)`);
     const lefts = states.map(({ jumpLeft }) => jumpLeft);
-    if (width <= 560 && Math.max(...lefts) - Math.min(...lefts) > 0.5)
+    if (Math.max(...lefts) - Math.min(...lefts) > 0.5)
       failures.push(`${at}: the jump button's left edge moves ${(Math.max(...lefts) - Math.min(...lefts)).toFixed(1)} px between its labels`);
     for (const state of states) {
       if (width >= 300 && state.wraps) failures.push(`${at}: the viewer head wraps onto a second row when ${state.position}`);
