@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
-import { lineEndBackslash, waits } from "./accepted-changes.js";
+import { headerCellMarker, lineEndBackslash, waits } from "./accepted-changes.js";
 
 // The rule this file locks: streaming never hides text the model already sent. At every streamed prefix, every
 // character of the final committed text whose source character has arrived is visible in the rendered tail, in order.
@@ -81,22 +81,35 @@ function firstMissing(owed: string, shown: string) {
   return ahead.length;
 }
 
-/** Streams `source` in `deltas` and checks the rule at every delta boundary; `identity` adds the in-place-change check. */
-function check(source: string, deltas: readonly string[], identity = false) {
+/**
+ * Streams `source` in `deltas` and checks the rule at every delta boundary; `identity` adds the in-place-change check.
+ * `every` > 1 checks one boundary in `every` (rotating with the source, so the corpus covers every offset) and every
+ * boundary that ends a line or the stream; each delta is still appended and rendered.
+ */
+function check(source: string, deltas: readonly string[], identity = false, every = 1) {
   const final = visible(parseMarkdown(source));
   const indexes = sourceIndexes(final, source);
   const document = createStreamingDocument();
   let end = 0;
   let previous = new Map<Block, string>();
-  for (const delta of deltas) {
+  for (const [step, delta] of deltas.entries()) {
     end += delta.length;
     document.append(delta);
     const blocks = document.render();
+    if ((step + source.length) % every && !delta.endsWith("\n") && step < deltas.length - 1) continue;
     const lineStart = source.lastIndexOf("\n", end - 1) + 1;
     const growing = source.slice(lineStart, end);
     const allowed = Object.values(waits);
     const sent = source.slice(0, end);
-    const held = (at: number) => at >= lineStart ? allowed.some((wait) => wait(growing, at - lineStart)) : lineEndBackslash(sent, at);
+    let paragraphStart = lineStart;
+    while (paragraphStart > 0) {
+      const above = source.lastIndexOf("\n", paragraphStart - 2) + 1;
+      if (/^[ \t>]*$/.test(source.slice(above, paragraphStart - 1))) break;
+      paragraphStart = above;
+    }
+    const before = source.slice(paragraphStart, lineStart);
+    const held = (at: number) => headerCellMarker(source, at, end)
+      || (at >= lineStart ? allowed.some((wait) => wait(growing, at - lineStart, before)) : lineEndBackslash(sent, at, growing));
     const owedIndexes = indexes.filter((index) => index >= 0 && index < end && !held(index));
     const owed = owedIndexes.map((index) => source[index]!).join("");
     const missing = firstMissing(owed, visible(blocks));
@@ -174,6 +187,16 @@ const repros = [
   "[x][ref] tail",
   "[WARN] disk almost full",
   "see map[key] foo] and ![alt] text",
+  // a link tail waits until the link closes or its line ends, never past the line end
+  "see [a](http://x.y\nnext\n",
+  "see [a](x then\nmore\n",
+  "call [f](a, b) and [g](\nnext\n",
+  "see [a][missing ref\nnext\n",
+  "use arr[i](x) to call and arr[j](y z w\nok\n",
+  "![alt](no close here\nnext\n",
+  "see [docs] | and [a|b](x then\nmore",
+  "- see [a](x then\n  more",
+  "> see [a][r\n> more",
   "Run `" + "jq '.items[] | .name' ".repeat(12) + "` then " + "arr[i] = b[j]; ".repeat(20) + "[docs](https://e.com/x) end",
   // a lone tilde is text
   "cd ~/src && ls ~ | wc -l\nnext",
@@ -181,6 +204,9 @@ const repros = [
   "*a b\nmore",
   "2 * 3 *x\nmore",
   "a_b *c\nmore",
+  // a `*` or `_` that cannot open (intraword, followed by a space) shows on the growing line too
+  "use snake_case_name and 2 * 3 more",
+  "one\ntwo\nthree\nuse snake_case_name and 2 * 3 more",
   "~~a\nmore",
   "*a b\nmore* tail",
   "`a b\nmore",
@@ -188,6 +214,13 @@ const repros = [
   "a\\\n\nb",
   "a\\\nb",
   "> a\\\n> b",
+  // a backslash that ends a line, then a line that starts a new block: the backslash is text once that line shows text
+  "para\\\n# head",
+  "- item\\\n  more\\\n- next",
+  "> q\\\n- x",
+  "- a\\\n- b long text here",
+  "- item\\\n  more\\\n- next\\",
+  "a\\\n```\nx",
   "`a b\nmore` tail",
   "run `npm test\nthen ``x`` and `y\nz",
   // an entity is text until it ends
@@ -211,7 +244,7 @@ function corpus(count: number) {
   let seed = 120;
   const next = (n: number) => (seed = (seed * 1103515245 + 12345) % 2147483648) % n;
   const pick = <T,>(items: readonly T[]) => items[next(items.length)]!;
-  const words = ["use", "grep", "foo", "sort", "-u", "a", "b", "x1", "true", "false", "42", "`a | b`", "a < b", "x<y", "<br", "a[0]", "[x]", "x]", "[ok](u)"];
+  const words = ["use", "grep", "foo", "sort", "-u", "a", "b", "x1", "true", "false", "42", "`a | b`", "a < b", "x<y", "<br", "a[0]", "[x]", "x]", "[ok](u)", "[a](u", "[g](", "[b][r"];
   const joins = [" ", " ", " | ", "|", " || ", " \\| ", "||", " \\ "];
   const lines = ["| a | b |", "|---|---|", "| :-- | --: |", "| 1 | 2 |", "a | b", "--|--", ""];
   const prefixes = ["", "", "> ", "- ", "  "];
@@ -243,16 +276,33 @@ const sources = [...repros, ...corpus(400)];
 // Delta plans: one character, 7 characters, one whole line (with its line break) per delta, and three lines per delta.
 // The line plans are how servers that send line-sized deltas, and a store that batches a frame, deliver text.
 const lines = (source: string) => source.match(/[^\n]*\n|[^\n]+$/g) ?? [];
-const plans: Array<[string, (source: string) => string[], boolean]> = [
-  ["every character", (source) => [...source], false],
+// The character plan checks every prefix on CI. Locally (many test jobs share one machine) it checks the repros at every
+// prefix and the random corpus at one prefix in 4 plus every line end: the char plan alone took 79-111 s under load.
+const sampled = process.env.CI ? 1 : 4;
+const plans: Array<[string, (source: string) => string[], boolean, number?]> = [
+  ["every character", (source) => [...source], false, sampled],
   ["7-character deltas", (source) => source.match(/[^]{1,7}/g) ?? [], false],
   ["one whole line per delta", lines, true],
   ["three lines per delta", (source) => lines(source).reduce<string[]>((deltas, line, index) => (index % 3 ? deltas[deltas.length - 1] += line : deltas.push(line), deltas), []), true],
 ];
 
-for (const [name, plan, identity] of plans) {
-  test(`every streamed prefix shows every character of the final text sent so far (${sources.length} sources, ${name})`, () => {
-    const failures = sources.map((source) => check(source, plan(source), identity)).filter(Boolean);
+for (const [name, plan, identity, every = 1] of plans) {
+  test(`every streamed prefix shows every character of the final text sent so far (${sources.length} sources, ${name}${every > 1 ? `, corpus 1 prefix in ${every}` : ""})`, () => {
+    const failures = sources.map((source, index) => check(source, plan(source), identity, index < repros.length ? 1 : every)).filter(Boolean);
     expect(failures.slice(0, 8), `${failures.length} of ${sources.length} sources hide sent text`).toEqual([]);
-  }, 120_000);
+    // All four plans use about 8 s of CPU; the limit is wall time on a machine shared with other test jobs.
+  }, 300_000);
 }
+
+// A `\r` is a line end on its own or before `\n`: the line shows as ended in the frame the `\r` arrives, not one delta
+// later, and a `\n` that opens the next delta is not a second line end.
+test("a carriage return ends its line in the frame it arrives", () => {
+  for (const [deltas, ended] of [[["see <y\r", "\nz"], "see <y"], [["see <y\r", "z"], "see <y"], [["a [b](c\r", "\n", "d"], "a [b](c"]] as const) {
+    const document = createStreamingDocument();
+    document.append(deltas[0]);
+    expect(visible(document.render()), JSON.stringify(deltas)).toBe(ended);
+    for (const delta of deltas.slice(1)) document.append(delta);
+    document.finish();
+    expect(JSON.stringify(document.render()), JSON.stringify(deltas)).toBe(JSON.stringify(parseMarkdown(deltas.join(""))));
+  }
+});

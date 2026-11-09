@@ -4,7 +4,7 @@ import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
 import { normalizeReferenceLabel, normalizeReferenceLeafLine, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
 import { literalBrackets, PendingInline } from "./pending-inline.js";
-import { MarkdownLineResolver, tableCells, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
+import { MarkdownLineResolver, pendingMarkerLine, tableCells, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
 type MarkdownToken = {
   type: string;
@@ -322,9 +322,13 @@ function bracketMarks(source: string) {
 // The one bracket wait (the text inside `[...]` always shows): an open `[` hides, and a closed `[...]` hides its two
 // brackets only until the character after `]` decides it. Anything but `(` or `[` makes them text at once; after `(` or
 // `[` they, and the destination or label, hide until the link closes or the line ends. A later `[x]: url` definition
-// never makes a bracket wait (if it turns earlier text into a link, that rare change is accepted).
+// never makes a bracket wait (if it turns earlier text into a link, that rare change is accepted). Only the growing
+// line waits: CommonMark lets a link span lines, but a line end shows what it holds (a link that closes on a later line
+// takes its brackets back then, an accepted change).
 function withoutOpenLink(source: string, growing: boolean) {
-  const marks = bracketMarks(source);
+  if (!growing) return source;
+  const lineStart = source.lastIndexOf("\n") + 1;
+  const marks = bracketMarks(source).filter((mark) => mark >= lineStart);
   const hidden = new Set<number>();
   const open: number[] = [];
   let cut = source.length;
@@ -722,17 +726,6 @@ function appendPendingParagraph(blocks: Block[], pending: Inline[], continuesPar
   return block;
 }
 
-function hideOpenInlineLink(value: string) {
-  const match = /(!?)\[([^\]\n]*)\]\(/g;
-  let open: RegExpExecArray | null = null;
-  for (let next = match.exec(value); next; next = match.exec(value)) open = next;
-  if (!open) return value;
-  const suffix = value.slice(open.index + open[0].length);
-  let depth = 1;
-  for (const character of suffix) depth += character === "(" ? 1 : character === ")" ? -1 : 0;
-  return depth > 0 ? value.slice(0, open.index) + (open[1] ? "" : open[2]) : value;
-}
-
 function reconcileBlocks(committed: readonly Block[], preview: Block[]): Block[] {
   return preview.map((block, index) => {
     const prior = committed[index];
@@ -777,7 +770,7 @@ export function createStreamingDocument(): StreamingDocument {
   let previewBlocks: readonly Block[] | undefined;
   let viewSource = "";
   let pendingReferenceApply = false;
-  let trailingCarriageReturn = false;
+  let afterCarriageReturn = false;
   // The growing line's inline nodes and the identity used to reuse them.
   let pendingInline: PendingInline | undefined;
   let pendingInlineState: PendingInlineState | undefined;
@@ -1151,15 +1144,11 @@ export function createStreamingDocument(): StreamingDocument {
     return inline.nodes;
   };
 
+  // A `\r` ends its line at once (alone or before `\n`, CommonMark treats both as a line end), so the line shows as
+  // ended in the same frame; a `\n` that opens the next delta belongs to it and is dropped.
   const normalizeDelta = (delta: string) => {
-    if (trailingCarriageReturn) {
-      delta = delta.startsWith("\n") ? delta : `\n${delta}`;
-      trailingCarriageReturn = false;
-    }
-    if (delta.endsWith("\r")) {
-      delta = delta.slice(0, -1);
-      trailingCarriageReturn = true;
-    }
+    if (afterCarriageReturn && delta.startsWith("\n")) delta = delta.slice(1);
+    afterCarriageReturn = delta.endsWith("\r");
     return delta.replace(/\r\n?/g, "\n");
   };
 
@@ -1173,10 +1162,6 @@ export function createStreamingDocument(): StreamingDocument {
     },
     finish() {
       if (finished) return;
-      if (trailingCarriageReturn) {
-        trailingCarriageReturn = false;
-        appendNormalized("\n");
-      }
       const resolution = resolver.finish();
       if (resolution) apply(resolution);
       if (openCode) openCode.open = false;
@@ -1207,6 +1192,12 @@ export function createStreamingDocument(): StreamingDocument {
         else if (disposition === "none" && classification.offset < pending.length) appendOpenCode(overlay, classification.content);
       } else {
         const continuesParagraph = Boolean(openParagraph) && resolver.pendingContinuesParagraph(pending);
+        // A backslash that ends the open paragraph waits while the next line is blank or only block markers: a line
+        // that continues the paragraph makes it a hard break; any other line closes the paragraph, so it is text now.
+        if (openParagraph && !continuesParagraph && !pendingMarkerLine(pending) && /(?<!\\)(?:\\\\)*\\$/.test(openParagraph.source)) {
+          const paragraph = tailParagraph(overlay)!;
+          paragraph.children = [...paragraph.children, { type: "text", value: "\\" }];
+        }
         // Every growing line shows as sent: as the open table's next row, or as paragraph text inside the containers it
         // continues. A pipe in it is text until a delimiter row ends below it (the resolver's one table rule).
         const row = openTable && classification.kind === "paragraph" ? resolver.pendingTableRow : undefined;

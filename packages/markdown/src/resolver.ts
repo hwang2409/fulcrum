@@ -241,6 +241,14 @@ const startsTable = (paragraph: string, delimiter: string) => {
   return header.includes("|") && tableCells(header).length === tableCells(delimiter).length;
 };
 
+// A line of only a block marker may still become a heading, a rule, a setext underline, a list item, or a fence. A line
+// of pipes, colons, and dashes shows as sent: it is text until it ends as a complete delimiter row. A lone `<` or `]` is
+// text too (an autolink `<` waits in the inline parse).
+const markerOnly = (content: string) => /^[ \t]*(?:#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})?[ \t]*$/.test(content);
+
+/** The growing line is blank or only block markers so far (after its container markers): it decides nothing yet. */
+export const pendingMarkerLine = (line: string) => markerOnly(stripPendingContainers(line));
+
 /** `inParagraph`: the line continues an open paragraph, which a reference definition cannot interrupt. */
 function classifyLeaf(line: string, growing: boolean, inParagraph = false): PendingClassification {
   let content = stripPendingContainers(line);
@@ -260,10 +268,7 @@ function classifyLeaf(line: string, growing: boolean, inParagraph = false): Pend
   if (task) content = content.slice(task[0].length);
   else if (item && /^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
   if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
-  // A line of pipes, colons, and dashes shows as sent: it is text until it ends as a complete delimiter row. A lone `<`
-  // or `]` is text too (an autolink `<` waits in the inline parse).
-  if (/^[ \t]*(?:#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
-    return EMPTY;
+  if (markerOnly(content)) return EMPTY;
   if (growing) return { content, kind: "paragraph", offset: line.length - content.length };
   return { content, kind: "paragraph", offset: 0 };
 }
