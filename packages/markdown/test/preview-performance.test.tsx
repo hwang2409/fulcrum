@@ -68,7 +68,8 @@ test("continuation preview copies a bounded amount per delta at any line length"
 });
 
 test("continuation preview delta cost stays flat as the line grows", () => {
-  // Times the next 128k of 64-byte deltas on a 32k or an 8,192k line: flat ~1x, O(line) work per delta ~256x.
+  // Times the next 128k of 64-byte deltas on a 32k or an 8,192k line. Measured: clean 0.94-1.19x; a whole-line
+  // `lastIndexOf` per delta 19-24x. The limit 256^0.28 = 4.7 is near their geometric middle, ~4x from each side.
   // A long window (~50 ms) keeps one scheduler stall a small part of a sample. The large line is built once and
   // each sample continues it; a line is rebuilt only after it doubles, so the small one restarts every sample.
   const window = 128_000;
@@ -89,7 +90,7 @@ test("continuation preview delta cost stays flat as the line grows", () => {
     line.end += window;
     Bun.gc(true);
     return () => streamContinuation(continuationLine, from, from + window, line.document);
-  }, { exponent: 0.25, samples: 5 });
+  }, { exponent: 0.28, samples: 5 });
 }, 60_000);
 
 test("frozen blocks retain identity while only the open path is rebuilt", () => {

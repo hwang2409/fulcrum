@@ -3,8 +3,9 @@ import { expect } from "bun:test";
 // Shared by every timing-based scaling test, so no test picks its own tight margin.
 // Over a span S between the two sizes, work of order n^k grows ~S^k times. The default limit S^1.5 sits at the
 // geometric middle between linear (~S) and quadratic (~S^2): at the minimum 32x span each side is ~5.7x from 181.
-// A test that times a fixed window of work after `size` of setup (flat ~1 vs O(n) per step ~S) passes
-// `exponent: 0.25`, a quarter step below the middle, as the default sits a half step above linear.
+// A test that times a fixed window of work after `size` of setup (flat ~1 vs O(n) per step, which a fixed per-step
+// cost dilutes far below S) passes a small exponent, set so the limit sits near the geometric middle of its measured
+// clean and regressed ratios.
 export const MIN_SPAN = 32;
 // Below this a sample is mostly timer and scheduler noise; each size repeats its work until a sample reaches it.
 const MIN_SAMPLE_NS = 1e6;
