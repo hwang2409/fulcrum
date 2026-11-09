@@ -2,11 +2,13 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import { afterAll, afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test, setDefaultTimeout } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
 import { RunProvider, ToolCall } from "../src/index.js";
+// These tests count work over megabyte texts; on a loaded machine one can take several seconds (no timing is asserted).
+setDefaultTimeout(60_000);
 
 // A 600 px viewport, so the virtual viewer mounts rows (happy-dom has no layout).
 const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -296,11 +298,34 @@ test("a resync to a different history starts the text over, then appends to the 
   expect([shown("a"), count("a")]).toEqual(seen);
 });
 
-// A long-lived open viewer keeps only what the appends added: after warm-up, retained heap over 200 appends of 100
-// characters stays within a small multiple of the added text. Before stream tails, each append left a full-text
-// sized copy alive (about 2 MB per append on a 1,000,000-line output in Chromium).
-test("a long-lived open viewer retains about the text its appends add, not a copy of the whole text", () => {
-  const { heapSize } = require("bun:jsc") as { heapSize: () => number };
+// Live objects by kind, from a JSC heap snapshot: stream chunks (an Object with `value` and `cache` properties), segment
+// records (`id` and `kind`), and strings (flat and rope). Integer fields have no edge in the snapshot.
+function liveObjects() {
+  Bun.gc(true);
+  const snap = Bun.generateHeapSnapshot() as unknown as { nodes: number[]; nodeClassNames: string[]; edges: number[]; edgeTypes: string[]; edgeNames: string[] };
+  const property = snap.edgeTypes.indexOf("Property");
+  const names = new Map<number, Set<string>>();
+  for (let at = 0; at < snap.edges.length; at += 4) {
+    if (snap.edges[at + 2] !== property) continue;
+    const from = snap.edges[at]!;
+    (names.get(from) ?? names.set(from, new Set()).get(from)!).add(snap.edgeNames[snap.edges[at + 3]!]!);
+  }
+  const counts = { chunks: 0, segments: 0, strings: 0 };
+  for (let at = 0; at < snap.nodes.length; at += 4) {
+    const className = snap.nodeClassNames[snap.nodes[at + 2]!];
+    if (className === "string") counts.strings++;
+    const own = names.get(snap.nodes[at]!);
+    if (className !== "Object" || !own) continue;
+    if (own.has("value") && own.has("cache")) counts.chunks++;
+    if (own.has("id") && own.has("kind") && own.size === 2) counts.segments++;
+  }
+  return counts;
+}
+
+// A long-lived open viewer keeps what its appends add, not an object per append: after warm-up, 400 appends of 100
+// characters (one line each) leave about one stream chunk per compaction run and one segment record per 2,000
+// characters. Counted by object kind, not by heap totals.
+test("a long-lived open viewer keeps objects per text added, not per append", () => {
   const store = createRunStore((job) => job());
   store.dispatch(start("a"));
   store.dispatch(out("a", big(1_000_000)));
@@ -310,12 +335,14 @@ test("a long-lived open viewer retains about the text its appends add, not a cop
   let index = 0;
   const appendSome = (count: number) => { for (const end = index + count; index < end; index++) act(() => store.dispatch(out("a", tail))); };
   appendSome(100);
-  Bun.gc(true);
-  const before = heapSize();
-  appendSome(200);
-  Bun.gc(true);
-  const growth = heapSize() - before;
-  console.log(`retained over 200 appends of 100 characters: ${(growth / 1024).toFixed(0)} KiB`);
-  // 20,000 characters added. A copy of the 2,000,000-character text is 2 MB (one-byte) or 4 MB; even one copy fails.
-  expect(growth).toBeLessThan(1024 * 1024);
+  const before = liveObjects();
+  appendSome(400);
+  const after = liveObjects();
+  const per = (key: keyof typeof before) => (after[key] - before[key]) / 400;
+  console.log(`per append: ${per("chunks").toFixed(3)} chunks, ${per("segments").toFixed(3)} segment records, ${per("strings").toFixed(3)} strings`);
+  // A chunk per append (no compaction) is 1; a run of 32 chunks is one.
+  expect(per("chunks")).toBeLessThanOrEqual(1 / 16);
+  // 40,000 characters in 2,000-character segments: 20 segments, each a record and its list entry (0.1 per append); a
+  // record per append is 1. Strings are only logged: other strings' churn moves their count either way.
+  expect(per("segments")).toBeLessThanOrEqual(0.25);
 });

@@ -1,5 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, test, setDefaultTimeout } from "bun:test";
 import { createRunStore, streamTail, type RunEvent, type RunItem } from "../src/index.js";
+// These tests count work over megabyte texts; on a loaded machine one can take several seconds (no timing is asserted).
+setDefaultTimeout(60_000);
 
 type ToolItem = Extract<RunItem, { type: "tool" }>;
 type MessageItem = Extract<RunItem, { type: "message" }>;
@@ -120,4 +122,24 @@ test("streamTail walks exactly the chunks since the previous snapshot, whatever 
   expect(work(200_000, 10)).toBe(10);
   expect(work(200_000, 1)).toBe(1);
   expect(work(200_000, 0)).toBe(0);
+});
+
+test("across many compactions, every held snapshot reads its own text and each next tail is its delta", () => {
+  const store = run();
+  const held: ToolItem[] = [];
+  let expected = "";
+  const texts: string[] = [];
+  for (let index = 0; index < 300; index++) {
+    // Mixed sizes, so runs end by chunk count and by characters.
+    const delta = index % 7 === 0 ? `${"w".repeat(900)}\n` : `line ${index}\n`;
+    store.dispatch(out(delta));
+    const item = tool(store);
+    expect(item.output.length).toBe(expected.length + delta.length); // a read, as a render does
+    if (held.length) expect(streamTail(held.at(-1), item, "output")).toBe(delta);
+    expected += delta;
+    held.push(item);
+    texts.push(expected);
+  }
+  // Snapshots from inside compacted runs: their own chains still give their text.
+  held.forEach((item, index) => expect(item.output).toBe(texts[index]!));
 });
