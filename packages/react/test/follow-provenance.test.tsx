@@ -1078,9 +1078,16 @@ describe("timeline scroll provenance", () => {
     }
   });
 
-  // Review 4 B1: browsers animate wheel and key scrolls, so one reader gesture reaches the end over several frames and
-  // scroll callbacks. A reader who scrolls all the way down re-pins, however many frames the gesture takes.
-  test.each(["wheel one tick", "End key, keyup after frame 1"] as const)("an animated reader scroll down to the end re-pins (%s)", (gesture) => {
+  // One public-hook table covers browser motion as a sequence of callbacks, not a frame cadence. Repeated keydown rows
+  // also prove that a held key accumulates reach and keeps it when keyup precedes the last viewport of motion.
+  const motionRows = [
+    { name: "End, consecutive callbacks", key: "End", repeats: 1, quietFrames: 0, distance: 600 },
+    { name: "End, two quiet frames between callbacks", key: "End", repeats: 1, quietFrames: 2, distance: 600 },
+    { name: "PageDown, five quiet frames between callbacks", key: "PageDown", repeats: 1, quietFrames: 5, distance: 600 },
+    { name: "smooth wheel, two quiet frames between callbacks", key: null, repeats: 1, quietFrames: 2, distance: 600 },
+    { name: "held PageDown repeat keeps three-page reach after early keyup", key: "PageDown", repeats: 3, quietFrames: 2, distance: 1_500 },
+  ] as const;
+  test.each(motionRows)("motion continuation: $name", ({ key, repeats, quietFrames, distance }) => {
     const geometry = installScrollGeometry();
     const observer = installRowObserver();
     const nextFrame = () => observer.measure(() => undefined);
@@ -1088,25 +1095,30 @@ describe("timeline scroll provenance", () => {
       const { append, host, jump, unseen } = mountTimeline();
       observer.measure(() => 72);
       act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
-      moveReader(host, host.scrollHeight - host.clientHeight - 600);
-      nextFrame(); // two frames with no reader callback settle the reader's scroll
+      moveReader(host, host.scrollHeight - host.clientHeight - distance);
+      nextFrame();
       nextFrame();
       append();
       expect(unseen(), "the reader starts unpinned with one unseen row").toBe("1");
       const start = host.scrollTop;
-      const distance = host.scrollHeight - host.clientHeight - start;
-      const key = (type: "keydown" | "keyup") => act(() => document.body.dispatchEvent(new KeyboardEvent(type, { key: "End", bubbles: true, cancelable: true })));
-      if (gesture !== "wheel one tick") clickRow();
-      if (gesture === "wheel one tick") act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 })));
-      else key("keydown");
-      [0.4, 0.75, 0.95, 1].forEach((share, frame) => {
-        moveReader(host, share === 1 ? host.scrollHeight : start + distance * share); // the browser's animation frame
-        if (frame === 0 && gesture !== "wheel one tick") key("keyup");
-        nextFrame();
+      const end = host.scrollHeight - host.clientHeight;
+      const remaining = end - start;
+      const sendKey = (type: "keydown" | "keyup") => act(() => document.body.dispatchEvent(new KeyboardEvent(type, { key: key!, bubbles: true, cancelable: true })));
+      if (key) {
+        clickRow();
+        for (let repeat = 0; repeat < repeats; repeat++) sendKey("keydown");
+      } else act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 600 })));
+      [0.2, 0.45, 0.7, 1].forEach((share, callback) => {
+        moveReader(host, share === 1 ? host.scrollHeight : start + remaining * share);
+        if (callback === 0 && key) {
+          expect(end - host.scrollTop, "keyup occurs while the end is more than one viewport away").toBeGreaterThan(key === "PageDown" && repeats > 1 ? host.clientHeight : 0);
+          sendKey("keyup");
+        }
+        for (let frame = 0; frame < quietFrames; frame++) nextFrame();
       });
-      expect(host.scrollTop, "the gesture ends exactly at the end").toBe(host.scrollHeight - host.clientHeight);
+      expect(host.scrollTop, "the gesture ends exactly at the end").toBe(end);
       append();
-      expect(unseen(), "a reader who scrolled down to the end follows again").toBe("0");
+      expect(unseen(), "the complete gesture must re-pin even when callbacks pause").toBe("0");
       expect(jump(), "the jump control leaves once the reader is at the end").toBeNull();
     } finally {
       observer.restore();
