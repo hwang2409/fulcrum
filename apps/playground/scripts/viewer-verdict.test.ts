@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as verdict from "./viewer-verdict"; // a namespace import, so the table also runs against older verdict modules
 import type { ScalingCheck, ScalingSide, ViewerSample } from "./viewer-verdict";
 
-const { recordViewerTimingFailures } = verdict;
+const { recordViewerTimingFailures, median } = verdict;
 
 // A settled no-op CI run (42492135444 a2 @ 1440, 4x throttle): candidate open 26.8 ms, append 55.8 ms, open task
 // 34.9 ms, append task 74.9 ms; fixed-DOM calibration 42.9 ms; paired ratios ~1.0x.
@@ -52,29 +52,46 @@ describe("recordViewerTimingFailures", () => {
 });
 
 describe("recordUnthrottledViewerFailures", () => {
-  // 42492135444 a4 @ 390, unthrottled: single open 7.5 / append 5.9 ms over 8.8 ms; read open 7.4 / append 24.9 ms over 8.4 ms.
-  const judge = (fixture: string, openMs: number, appendMs: number, calibration: number, width = 390) => {
+  // The append ceiling guards +10 ms per append (about 2x); min hides regressions on only some appends; #127's
+  // compare/copy counter owns the O(n)-per-append class; the A/B median catches regressions on most appends.
+  // The object also carries the medians, so the table runs against the older median verdict too.
+  const judge = (fixture: string, openMs: number, appendSamples: number[], calibrationSamples: number[], width = 390) => {
     const failures: string[] = [];
-    verdict.recordUnthrottledViewerFailures({ fixture, width, openMs, appendMs, calibration: { median: calibration, samples: [calibration] } }, failures);
+    verdict.recordUnthrottledViewerFailures({ fixture, width, openMs, appendSamples, appendMs: median(appendSamples), calibration: { median: median(calibrationSamples), samples: calibrationSamples } }, failures);
     return failures;
   };
   test("no-op single and read pass, read append in the next frame included", () => {
-    expect(judge("single", 7.5, 5.9, 8.8)).toEqual([]);
-    expect(judge("read", 7.4, 24.9, 8.4)).toEqual([]);
+    // 42492135444 a4 @ 390: single open 7.5 / append 5.9 ms over 8.8 ms; read open 7.4 / append 24.9 ms over 8.4 ms.
+    expect(judge("single", 7.5, [5.9], [8.8])).toEqual([]);
+    expect(judge("read", 7.4, [24.9], [8.4])).toEqual([]);
   });
-  test("the highest recorded no-op values pass", () => {
-    expect(judge("single", 5.8, 3.2, 5.6)).toEqual([]); // 42509897759: open 1.04x on a fast runner (its slowdown touches only read)
-    expect(judge("lines", 3.4, 5.4, 7.4)).toEqual([]); // 42507931601: append 0.73x
-    expect(judge("single", 5.8, 3.3, 6.4, 1440)).toEqual([]); // 42509897759: open 0.91x @ 1440, the 1440 open maximum
+  test("the highest recorded no-op opens pass", () => {
+    expect(judge("single", 5.8, [3.2], [5.6])).toEqual([]); // 42509897759: open 1.04x on a fast runner (its slowdown touches only read)
+    expect(judge("single", 5.8, [3.3], [6.4], 1440)).toEqual([]); // 42509897759: open 0.91x @ 1440, the 1440 open maximum
   });
-  test("the lowest recorded mutations fail", () => {
-    expect(judge("read", 31.6, 36.4, 8.4)).toEqual(["viewer read @ 390 open: calibrated ceiling, candidate 31.6 ms / calibration 8.4 ms = 3.76x is over 1.46x"]); // 42507931601, +25 ms
-    expect(judge("read", 32.0, 36.7, 8.5, 1440)).toEqual(["viewer read @ 1440 open: calibrated ceiling, candidate 32.0 ms / calibration 8.5 ms = 3.76x is over 1.27x"]); // 42507931601, +25 ms
-    expect(judge("lines", 4.0, 43.5, 10.1, 1440)).toEqual(["viewer lines @ 1440 append: calibrated ceiling, candidate 43.5 ms / calibration 10.1 ms = 4.31x is over 1.02x"]); // 42513755996, append CPU work
+  // #118 (check 42531346403 a1): three appends in the page's 2x state made the median 1.25x and failed a no-op PR.
+  test("the #118 slow-state replay passes", () => {
+    expect(judge("lines", 3.9, [6.8, 6.5, 13.2, 13.0, 12.9], [10.1, 10.0, 10.3, 11.4, 11.6])).toEqual([]);
   });
-  test("a 2x common regression fails on a mid runner", () => {
-    expect(judge("single", 7.5, 5.9 * 2, 8.8)).toEqual(["viewer single @ 390 append: calibrated ceiling, candidate 11.8 ms / calibration 8.8 ms = 1.34x is over 1.02x"]);
-    expect(judge("read", 7.4 * 2, 12.6, 8.4)).toEqual(["viewer read @ 390 open: calibrated ceiling, candidate 14.8 ms / calibration 8.4 ms = 1.76x is over 1.46x"]);
+  // The highest no-change sets of runs 42543048265 and 42543855004; 1.45x slower crosses the 1.4x budget.
+  test("the highest no-change sample sets pass, and 1.45x of them fails", () => {
+    const highest = [{ width: 390, append: [6.2, 5.2, 5.7, 5.3, 5.3], calibration: [8.2, 8.1, 7.9, 8.2, 10.2] }, { width: 1440, append: [6.6, 5.5, 5.5, 5.4, 5.1], calibration: [8.6, 8.0, 8.4, 10.0, 10.0] }];
+    for (const { width, append, calibration } of highest) {
+      expect(judge("single", 5, append, calibration, width)).toEqual([]);
+      expect(judge("single", 5, append.map((ms) => ms * 1.45), calibration, width)).toHaveLength(1);
+    }
+  });
+  test("the lowest +10 ms per append sample sets fail", () => {
+    expect(judge("single", 5, [17.4, 16.3, 16.2, 16.2, 16.1], [10.9, 10.6, 10.5, 10.6, 13.1])).toEqual(["viewer single @ 390 append: calibrated ceiling, fastest append 16.100 ms / fastest calibration 10.500 ms = 1.533x is over 0.921x"]); // 42543048265
+    expect(judge("lines", 4, [16.8, 15.5, 15.6, 16.1, 16.0], [17.9, 18.6, 19.4, 12.2, 11.9], 1440)).toEqual(["viewer lines @ 1440 append: calibrated ceiling, fastest append 15.500 ms / fastest calibration 11.900 ms = 1.303x is over 0.893x"]); // 42543048265
+  });
+  test("the lowest recorded open mutations and an append CPU proof fail", () => {
+    expect(judge("read", 31.6, [36.4], [8.4])).toEqual(["viewer read @ 390 open: calibrated ceiling, candidate 31.6 ms / calibration 8.4 ms = 3.76x is over 1.46x"]); // 42507931601, +25 ms
+    expect(judge("read", 32.0, [36.7], [8.5], 1440)).toEqual(["viewer read @ 1440 open: calibrated ceiling, candidate 32.0 ms / calibration 8.5 ms = 3.76x is over 1.27x"]); // 42507931601, +25 ms
+    expect(judge("lines", 4.0, [43.5], [10.1], 1440)).toEqual(["viewer lines @ 1440 append: calibrated ceiling, fastest append 43.500 ms / fastest calibration 10.100 ms = 4.307x is over 0.893x"]); // 42513755996, append CPU work
+  });
+  test("a 2x common open regression fails on a mid runner", () => {
+    expect(judge("read", 7.4 * 2, [12.6], [8.4])).toEqual(["viewer read @ 390 open: calibrated ceiling, candidate 14.8 ms / calibration 8.4 ms = 1.76x is over 1.46x"]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { createRunStore, type OutlineSnapshot, type RunEvent } from "../src/index.js";
+import { createRunStore, type OutlineSnapshot, type RunEvent, type RunStore, type StoreDiagnostics } from "../src/index.js";
 import { seededRandom } from "./fuzz.js";
 
 const message = (text: string) => ({
@@ -154,24 +154,6 @@ test("an approval folding into its tool row is one replace in place, even with a
   jobs.shift()!();
   expect(applyChange(store.getOutlineSnapshot())).toEqual([{ index: 7, deleteCount: 1, items: [] }]);
   expect(ids(store.getOutline()).slice(5)).toEqual(["tool:write-3", "message:between"]);
-});
-
-test("serializes dispatches that re-enter during a reduction", () => {
-  const store = createRunStore((job) => job());
-  const nested = { type: "user_message", text: "nested", mode: "send", delivery_id: "nested" } as const;
-  const outer = {
-    type: "user_message", text: "outer", mode: "send",
-    get delivery_id() { store.dispatch(nested); return "outer"; },
-  } as const;
-  store.dispatch(outer);
-  expect(store.getOutline()).toEqual([
-    { id: "user:delivery:outer", kind: "user" },
-    { id: "user:delivery:nested", kind: "user" },
-  ]);
-  expect(store.getItem("user:delivery:outer")).toBeDefined();
-  expect(store.getItem("user:delivery:nested")).toBeDefined();
-  expect(store.hasMessageDelivery("outer")).toBe(true);
-  expect(store.hasMessageDelivery("nested")).toBe(true);
 });
 
 test("keeps one snapshot for every subscriber notification pass", () => {
@@ -560,11 +542,338 @@ const syncDispatch = [
   { entry: "endHistory", outline: ["message:b", "message:x"] },
   { entry: "prepend from a listener", outline: ["message:b", "message:a", "message:c", "message:x"] },
   { entry: "endHistory from a listener", outline: ["message:b", "message:a", "message:c", "message:x"] },
+  { entry: "dispatch during a reduction", outline: ["user:delivery:outer", "user:delivery:nested"] },
 ];
 test.each(syncDispatch)("$entry with a synchronous scheduler: a listener's dispatch is delivered after the pass", ({ entry, outline }) => {
   const probe = Bun.spawnSync([process.execPath, new URL("./notify-probe.ts", import.meta.url).pathname, entry], { timeout: 3_000 });
   const result = probe.exitCode === 0 ? JSON.parse(probe.stdout.toString()) : { exitCode: probe.exitCode, signal: probe.signalCode, stderr: probe.stderr.toString() };
   expect(result).toEqual({ seen: outline, outline });
+});
+
+// Regression locks for the README notification contract: the history entries deliver their own pass and rethrow like
+// the scheduler job and resync do, reads never surface a listener error, and the console fallback catches later errors.
+test.each(["beginHistory", "prepend", "endHistory"] as const)("%s delivers every listener, rethrows the first error, and reports the rest", (entry) => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  if (entry !== "beginHistory") store.beginHistory();
+  const calls: string[] = [];
+  for (const name of ["first", "second", "third"]) store.subscribe(() => { calls.push(name); if (name !== "third") throw new Error(name); });
+  store.dispatch(commit("a"));
+  store.getState(); // reduced, not yet delivered: the entry's own pass delivers it
+  const reported = spyOn(globalThis, "reportError").mockImplementation(() => {});
+  try {
+    expect(() => entry === "prepend" ? store.prepend([commit("b")]) : store[entry]()).toThrow("first");
+    expect(calls).toEqual(["first", "second", "third"]);
+    expect(reported.mock.calls.map(([error]) => (error as Error).message)).toEqual(["second"]);
+  } finally {
+    reported.mockRestore();
+  }
+});
+
+test("read methods never throw a listener error, inside or after a failing pass", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const readAll = () => {
+    store.getState(); store.getItem("message:a"); store.getOutline(); store.getOutlineSnapshot();
+    store.hasMessageDelivery("a"); store.getDiagnostics();
+  };
+  let readThrew = false;
+  store.subscribe(() => { throw new Error("boom"); });
+  store.subscribe(() => { try { readAll(); } catch { readThrew = true; } });
+  store.dispatch(commit("a"));
+  expect(jobs.shift()!).toThrow("boom");
+  store.dispatch(commit("b"));
+  expect(readAll).not.toThrow();
+  expect(readThrew).toBe(false);
+  expect(jobs.shift()!).toThrow("boom");
+});
+
+test("later listener errors go to console.error where reportError does not exist", () => {
+  const store = createRunStore((job) => job());
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "reportError");
+  const logged = spyOn(console, "error").mockImplementation(() => {});
+  delete (globalThis as { reportError?: unknown }).reportError;
+  try {
+    for (const name of ["first", "second"]) store.subscribe(() => { throw new Error(name); });
+    expect(() => store.dispatch(commit("a"))).toThrow("first");
+    expect(logged.mock.calls.map(([error]) => (error as Error).message)).toEqual(["second"]);
+  } finally {
+    if (saved) Object.defineProperty(globalThis, "reportError", saved);
+    logged.mockRestore();
+  }
+});
+
+// Diagnostics listeners and onError go through the same delivery owner as every other listener. A malformed event
+// changes diagnostics during whichever call flushes it: a read must not throw, the other listeners still run, and the
+// entry that delivers (the dispatch's scheduler job, or dispatch itself under a sync scheduler) rethrows the first error.
+const malformed = { type: "message_commit" } as unknown as RunEvent;
+test("a throwing diagnostics listener: reads never throw, the others still run, and the scheduler job rethrows", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const calls: string[] = [];
+  for (const name of ["first", "second"]) store.subscribeDiagnostics(() => { calls.push(name); if (name === "first") throw new Error("diag boom"); });
+  store.dispatch(malformed);
+  expect(() => store.getState()).not.toThrow();
+  expect(calls).toEqual(["first", "second"]);
+  expect(store.getDiagnostics().ignoredEvents).toBe(1);
+  expect(jobs.shift()!).toThrow("diag boom");
+  expect(() => store.getState()).not.toThrow();
+});
+
+test("a throwing diagnostics listener under a sync scheduler: dispatch rethrows after every listener ran", () => {
+  const store = createRunStore((job) => job());
+  const calls: string[] = [];
+  for (const name of ["first", "second"]) store.subscribeDiagnostics(() => { calls.push(name); if (name === "first") throw new Error("diag boom"); });
+  expect(() => store.dispatch(malformed)).toThrow("diag boom");
+  expect(calls).toEqual(["first", "second"]);
+  expect(store.getDiagnostics().ignoredEvents).toBe(1);
+});
+
+test("resyncFailed delivers every diagnostics listener, then rethrows the first error", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job), { onError() {} });
+  store.dispatch(new Proxy({ type: "retry" }, { get(target, key, receiver) { if (key === "type") throw new Error("reduce"); return Reflect.get(target, key, receiver); } }) as RunEvent);
+  jobs.shift()!();
+  expect(store.getDiagnostics().desynced).toBe(true);
+  const calls: string[] = [];
+  for (const name of ["first", "second"]) store.subscribeDiagnostics(() => { calls.push(name); if (name === "first") throw new Error("diag boom"); });
+  expect(() => store.resyncFailed(new Error("reload failed"))).toThrow("diag boom");
+  expect(calls).toEqual(["first", "second"]);
+  expect(store.getDiagnostics().resyncError).toBe("reload failed");
+});
+
+test("a throwing onError never escapes a read: the store still desyncs, and the scheduler job rethrows it", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job), { onError() { throw new Error("onError boom"); } });
+  let diagnosticsCalls = 0;
+  store.subscribeDiagnostics(() => diagnosticsCalls++);
+  store.dispatch(new Proxy({ type: "retry" }, { get(target, key, receiver) { if (key === "type") throw new Error("reduce"); return Reflect.get(target, key, receiver); } }) as RunEvent);
+  expect(() => store.getState()).not.toThrow();
+  expect({ diagnosticsCalls, desynced: store.getDiagnostics().desynced }).toEqual({ diagnosticsCalls: 1, desynced: true });
+  expect(jobs.shift()!).toThrow("onError boom");
+});
+
+test("a throwing onError on a rejected prepend page never escapes a read: the store desyncs, and the scheduler job rethrows it", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job), { onError() { throw new Error("onError boom"); } });
+  store.beginHistory();
+  store.prepend([new Proxy({ type: "retry" }, { get(target, key, receiver) { if (key === "type") throw new Error("reduce"); return Reflect.get(target, key, receiver); } }) as RunEvent]);
+  expect(() => store.getState()).not.toThrow();
+  expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "reduce" });
+  expect(jobs.shift()!).toThrow("onError boom");
+});
+
+// Formatting a thrown value runs host code too: a `message` getter, toString, or Proxy traps. The store desyncs first,
+// and an unreadable value becomes a fixed reason, so reads, diagnostics, and onError still agree.
+const throwingType = (thrown: () => unknown) =>
+  new Proxy({ type: "retry" }, { get(target, key, receiver) { if (key === "type") throw thrown(); return Reflect.get(target, key, receiver); } }) as RunEvent;
+const unreadable = [
+  { name: "a null-prototype object", thrown: () => Object.create(null) as unknown },
+  { name: "an Error whose message getter throws", thrown: () => Object.defineProperty(new Error("x"), "message", { get() { throw new Error("message getter"); } }) },
+  { name: "a Proxy whose every trap throws", thrown: () => new Proxy({}, new Proxy({}, { get() { return () => { throw new Error("trap"); }; } })) },
+  { name: "a revoked Proxy", thrown: () => { const { proxy, revoke } = Proxy.revocable({}, {}); revoke(); return proxy; } },
+  { name: "a Symbol.toPrimitive that throws", thrown: () => ({ [Symbol.toPrimitive]() { throw new Error("primitive"); } }) },
+];
+test.each(unreadable)("an unreadable thrown value: reads never throw, diagnostics say desynced, and onError runs once: $name", ({ thrown }) => {
+  const jobs: Array<() => void> = [];
+  const errors: unknown[] = [];
+  const seen: StoreDiagnostics[] = [];
+  const store: RunStore = createRunStore((job) => jobs.push(job), { onError: (error) => { errors.push(error); seen.push(store.getDiagnostics()); } });
+  const value = thrown();
+  store.dispatch(throwingType(() => value));
+  expect(() => store.getState()).not.toThrow();
+  expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "unreadable error" });
+  expect(seen).toEqual([store.getDiagnostics()]); // onError runs after the desync is published
+  expect(errors.length).toBe(1);
+  expect(errors[0]).toBe(value);
+  expect(jobs.shift()!).not.toThrow();
+  expect(() => store.resyncFailed(value)).not.toThrow();
+  expect(store.getDiagnostics().resyncError).toBe("unreadable error");
+});
+
+test("hasMessageDelivery formats only a string id: a non-string argument runs no host code", () => {
+  const store = createRunStore((job) => job());
+  let ran = 0;
+  const hostile = { toString() { ran++; return "a"; }, [Symbol.toPrimitive]() { ran++; return "a"; } };
+  expect(store.hasMessageDelivery(hostile as unknown as string)).toBe(false);
+  expect(store.hasMessageDelivery(Symbol("s") as unknown as string)).toBe(false);
+  expect(ran).toBe(0);
+});
+
+test("options.onError is read once, at creation: a getter cannot throw from a read", () => {
+  const jobs: Array<() => void> = [];
+  const errors: unknown[] = [];
+  let created = false;
+  const store = createRunStore((job) => jobs.push(job), {
+    get onError() {
+      if (created) throw new Error("onError getter");
+      return (error: unknown) => { errors.push(error); };
+    },
+  });
+  created = true;
+  store.dispatch(throwingType(() => new Error("reduce")));
+  expect(() => store.getState()).not.toThrow();
+  expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "reduce" });
+  expect(errors.map((error) => (error as Error).message)).toEqual(["reduce"]);
+  expect(jobs.shift()!).not.toThrow();
+});
+
+// The events argument is plain data, but a throwing iterator is host code: it reaches the caller before any change.
+const throwingIterator = { [Symbol.iterator]() { throw new Error("iterator"); } } as unknown as RunEvent[];
+test.each(["resync", "prepend"] as const)("a throwing events iterator: %s throws to its caller and changes nothing", (entry) => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.beginHistory();
+  store.resync([commit("a")]);
+  const state = store.getState();
+  const snapshot = store.getOutlineSnapshot();
+  const diagnostics = store.getDiagnostics();
+  let calls = 0;
+  store.subscribe(() => calls++);
+  store.dispatch(commit("b")); // queued, not reduced: the throwing entry must not flush or deliver it
+  expect(() => store[entry](throwingIterator)).toThrow("iterator");
+  expect(calls).toBe(0);
+  expect(jobs).toHaveLength(1);
+  expect(store.getDiagnostics()).toBe(diagnostics);
+  expect(ids(snapshot.items)).toEqual(["message:a"]);
+  expect(state.outline).toBe(snapshot.items);
+  jobs.shift()!();
+  expect({ calls, outline: ids(store.getOutline()) }).toEqual({ calls: 1, outline: ["message:a", "message:b"] });
+});
+
+test("a proxy that throws while a prepend compares items: reads never throw, the store desyncs, and onError runs once", () => {
+  const jobs: Array<() => void> = [];
+  const errors: unknown[] = [];
+  const store = createRunStore((job) => jobs.push(job), { onError: (error) => errors.push(error) });
+  // Each read of tool_call returns a new arguments proxy, so the prepend's re-reduction holds a different object and
+  // the identity check walks into it.
+  const args = () => new Proxy({}, { ownKeys() { throw new Error("ownKeys trap"); } });
+  store.beginHistory();
+  store.dispatch({ type: "tool_start", get tool_call() { return { id: "t", name: "x", arguments: args() }; } } as RunEvent);
+  jobs.shift()!();
+  store.prepend([commit("b")]);
+  expect(() => store.getState()).not.toThrow();
+  expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "ownKeys trap" });
+  expect(errors.map((error) => (error as Error).message)).toEqual(["ownKeys trap"]);
+  expect(ids(store.getOutline())).toEqual(["tool:t"]);
+  expect(jobs.shift()!).not.toThrow();
+});
+
+// The host's error sink (reportError, or console.error where it does not exist) is host code too. A sink that throws,
+// like a fail-on-console test setup, must not cut a pass short, replace the first error, or leave it for a later job.
+const throwingSinks = [
+  { sink: "reportError", install: () => spyOn(globalThis, "reportError").mockImplementation(() => { throw new Error("sink"); }), restore: () => {} },
+  {
+    sink: "console.error",
+    install: () => {
+      const saved = Object.getOwnPropertyDescriptor(globalThis, "reportError")!;
+      delete (globalThis as { reportError?: unknown }).reportError;
+      const spy = spyOn(console, "error").mockImplementation(() => { throw new Error("sink"); });
+      return { mockRestore: () => { spy.mockRestore(); Object.defineProperty(globalThis, "reportError", saved); } };
+    },
+  },
+];
+test.each(throwingSinks)("a throwing $sink: every listener runs, the job rethrows the first error, and reads never throw", ({ install }) => {
+  const sinkSpy = install();
+  try {
+    const jobs: Array<() => void> = [];
+    const store = createRunStore((job) => jobs.push(job));
+    const calls: string[] = [];
+    let throwing = true;
+    for (const name of ["a", "b", "c"]) store.subscribe(() => { calls.push(name); if (throwing && name !== "c") throw new Error(name); });
+    for (const name of ["d1", "d2"]) store.subscribeDiagnostics(() => { if (throwing) throw new Error(name); });
+    store.dispatch(commit("a"));
+    expect(jobs.shift()!).toThrow("a");
+    expect(calls).toEqual(["a", "b", "c"]);
+    store.dispatch(malformed);
+    expect(() => store.getState()).not.toThrow();
+    expect(jobs.shift()!).toThrow("d1");
+    throwing = false;
+    calls.length = 0;
+    store.dispatch(commit("b"));
+    expect(jobs.shift()!).not.toThrow();
+    expect(calls).toEqual(["a", "b", "c"]);
+  } finally {
+    sinkSpy.mockRestore();
+  }
+});
+
+// A throw escaping the host's scheduler reaches the caller, but must not leave a job marked as queued: that would
+// silence every later dispatch, like a pass flag left set.
+test("a throwing scheduler does not stop later dispatches from scheduling", () => {
+  const jobs: Array<() => void> = [];
+  let refuse = true;
+  const store = createRunStore((job) => { if (refuse) throw new Error("scheduler boom"); jobs.push(job); });
+  expect(() => store.dispatch(commit("a"))).toThrow("scheduler boom");
+  refuse = false;
+  store.dispatch(commit("b"));
+  expect(jobs).toHaveLength(1);
+  jobs.shift()!();
+  expect(ids(store.getOutline())).toEqual(["message:a", "message:b"]);
+});
+
+test("dispose publishes an empty outline, notifies no one after, and every later entry throws or does nothing", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.dispatch(commit("a"));
+  jobs.shift()!();
+  store.beginHistory();
+  let calls = 0;
+  store.subscribe(() => calls++);
+  store.subscribeOutline(() => calls++);
+  store.subscribe("message:a", () => calls++);
+  store.prepend([commit("b")]);
+  store.dispose();
+  while (jobs.length > 0) jobs.shift()!();
+  expect({ calls, snapshot: store.getOutlineSnapshot() }).toEqual({ calls: 0, snapshot: { items: [], change: null } });
+  expect(() => store.dispatch(commit("c"))).toThrow("store is disposed");
+  expect(() => store.resync([commit("c")])).toThrow("store is disposed");
+  expect(() => store.beginHistory()).toThrow("store is disposed");
+  expect(() => store.prepend([commit("c")])).toThrow("store is disposed");
+  expect(() => { store.endHistory(); store.dispose(); }).not.toThrow();
+  expect(calls).toBe(0);
+});
+
+// dispose from a listener stops the rest of the running pass: no global, outline, keyed, or diagnostics listener runs
+// after it.
+test("dispose from a listener stops the rest of the pass: global, outline, keyed", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  const calls: string[] = [];
+  store.subscribe(() => { calls.push("first"); store.dispose(); });
+  store.subscribe(() => calls.push("second"));
+  store.subscribeOutline(() => calls.push("outline"));
+  store.subscribe("message:a", () => calls.push("keyed"));
+  store.dispatch(commit("a"));
+  jobs.shift()!();
+  expect(calls).toEqual(["first"]);
+});
+
+test("dispose from a diagnostics listener stops the rest of the pass: diagnostics", () => {
+  const store = createRunStore((job) => job());
+  const calls: string[] = [];
+  store.subscribeDiagnostics(() => { calls.push("first"); store.dispose(); });
+  store.subscribeDiagnostics(() => calls.push("second"));
+  store.dispatch(malformed);
+  expect(calls).toEqual(["first"]);
+});
+
+// A listener error that a read flushed belongs to the job the dispatch queued; dispose drops that job's work, so the
+// error goes to the host's error report instead of surfacing from a job after dispose.
+test("dispose hands an undelivered listener error to reportError, and no job rethrows it after dispose", () => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.subscribeDiagnostics(() => { throw new Error("diag boom"); });
+  store.dispatch(malformed);
+  store.getState();
+  const reported = spyOn(globalThis, "reportError").mockImplementation(() => {});
+  try {
+    store.dispose();
+    expect(jobs.shift()!).not.toThrow();
+    expect(reported.mock.calls.map(([error]) => (error as Error).message)).toEqual(["diag boom"]);
+  } finally {
+    reported.mockRestore();
+  }
 });
 
 test("prepend rejection keeps the last good state and visibly desyncs", () => {
