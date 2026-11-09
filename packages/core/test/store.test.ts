@@ -953,32 +953,71 @@ const generatedHistory = (seed: number) => {
   return events;
 };
 
-test("prepend equals whole-log reduction at every page seam", () => {
-  let cases = 0;
+// A seam bug depends on the events on each side of the cut: which kind they are and whether the cut splits one stream,
+// tool, approval, or sub-agent. That shape is the coverage unit, so a seed runs every split only while it still shows a
+// shape seen fewer than SHAPE_SEEDS times; the others get one random split. (#58 ran every split of all 1,100 seeds:
+// ~31,000 store runs, 4 s alone, a timeout under load, and no shape the selected seeds miss.)
+const SHAPE_SEEDS = 5;
+const seamOwner = (event: Record<string, any> | undefined): unknown =>
+  event?.message_id ?? event?.tool_call?.id ?? event?.request_id ?? event?.childRunId ?? event?.data?.turn;
+const seamSide = (event: Record<string, any> | undefined, before: Record<string, any> | undefined) => {
+  if (!event) return "edge";
+  if (event.type === "message_delta") return `delta:${event.kind}`;
+  if (event.type === "turn_end") return `turn_end:${before?.type}`;
+  if (event.type === "approval_end") return `approval_end:${event.decision}`;
+  if (event.type === "sub_agent") return `sub_agent:${event.status}`;
+  return event.type as string;
+};
+const seamShape = (events: readonly Record<string, any>[], split: number) => {
+  const older = events[split - 1], newer = events[split];
+  const inside = seamOwner(older) !== undefined && seamOwner(older) === seamOwner(newer);
+  return `${seamSide(older, events[split - 2])}>${seamSide(newer, older)}${inside ? ":inside" : ""}`;
+};
+
+test("prepend equals whole-log reduction at every page seam shape", () => {
+  const shapeSeeds = new Map<string, number>();
+  // `queued` holds every page for one frame, so they reach the store as one coalesced prepend (#98).
+  const expectSplits = (events: RunEvent[], splits: readonly number[], expectedView: ReturnType<typeof prependView>, label: string, queued = false) => {
+    const frames: Array<() => void> = [];
+    const actual = createRunStore(queued ? (flush) => frames.push(flush) : (flush) => flush());
+    actual.beginHistory();
+    actual.resync(events.slice(splits[0]));
+    for (let page = 1; page <= splits.length; page++) actual.prepend(events.slice(splits[page] ?? 0, splits[page - 1]));
+    while (frames.length > 0) frames.shift()!();
+    expect(prependView(actual), `${label}${queued ? " queued" : ""}, splits ${splits.join("/")}`).toEqual(expectedView);
+  };
   for (let seed = 10_001; seed <= 11_100; seed++) {
     const events = generatedHistory(seed);
     const expected = createRunStore((flush) => flush());
     expected.resync(events);
     const expectedView = prependView(expected);
-    for (let split = 0; split <= events.length; split++) {
-      const actual = createRunStore((flush) => flush());
-      actual.beginHistory();
-      actual.resync(events.slice(split));
-      actual.prepend(events.slice(0, split));
-      expect(prependView(actual), `seed ${seed}, split ${split}`).toEqual(expectedView);
-      cases++;
+    const shapes = new Set(Array.from({ length: events.length + 1 }, (_, split) => seamShape(events, split)));
+    if ([...shapes].some((shape) => (shapeSeeds.get(shape) ?? 0) < SHAPE_SEEDS)) {
+      for (const shape of shapes) shapeSeeds.set(shape, (shapeSeeds.get(shape) ?? 0) + 1);
+      for (let split = 0; split <= events.length; split++) expectSplits(events, [split], expectedView, `seed ${seed}`);
+    } else {
+      expectSplits(events, [(seed * 7) % (events.length + 1)], expectedView, `seed ${seed}`);
     }
     const first = seed % (events.length + 1);
     const second = first + seed % (events.length - first + 1);
-    const actual = createRunStore((flush) => flush());
-    actual.beginHistory();
-    actual.resync(events.slice(second));
-    actual.prepend(events.slice(first, second));
-    actual.prepend(events.slice(0, first));
-    expect(prependView(actual), `seed ${seed}, splits ${first}/${second}`).toEqual(expectedView);
-    cases++;
+    expectSplits(events, [second, first], expectedView, `seed ${seed}`);
+    expectSplits(events, [second, first], expectedView, `seed ${seed}`, true);
   }
-  expect(cases).toBeGreaterThan(30_000);
+  // Every shape these seeds produce, each seen in at least SHAPE_SEEDS seeds that ran all their splits. The count and the
+  // named sub-variant shapes catch a generator that silently lost one; when the generator changes on purpose, update both.
+  const requiredShapes = [
+    "delta:text>delta:text:inside",
+    "delta:reasoning>delta:reasoning:inside",
+    "delta:text>message_commit:inside",
+    "tool_start>tool_input:inside",
+    "tool_input>tool_end:inside",
+    "approval_request>approval_end:approve:inside",
+    "approval_request>approval_end:deny:inside",
+    "sub_agent:running>sub_agent:done:inside",
+  ];
+  expect(requiredShapes.filter((shape) => !shapeSeeds.has(shape)), "missing seam shapes").toEqual([]);
+  expect(shapeSeeds.size, "seam shape count").toBe(138);
+  expect([...shapeSeeds].filter(([, seeds]) => seeds < SHAPE_SEEDS), "shapes in too few seeds").toEqual([]);
 });
 
 test("prepend inserts older rows without resetting or replacing the live tail", () => {

@@ -516,7 +516,7 @@ export function reduceAllWithEntities(
         const itemId = toolItemId(id);
         const old = getItem(itemId);
         const prior = old?.type === "tool" ? old : undefined;
-        // Output events report output; only tool_start, tool_input, and approval_request define the call.
+        // Output events report output; only tool_start and tool_input define a tool row's call.
         const replace = event.replace === true;
         const continuing = !replace && Boolean(next.activeToolIds[id]);
         const item = appendText<RunItem>(
