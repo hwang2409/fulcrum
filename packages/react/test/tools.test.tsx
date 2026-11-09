@@ -645,12 +645,18 @@ test("renderDeliveryNote replaces the delivery note, and null hides it", () => {
   expect(hidden.textContent).toBe("> steer");
 });
 
-test("renderDeliveryNote replaces a text-omitted note, and null hides its default row", () => {
+test("renderDeliveryNote replaces a text-omitted note", () => {
   const store = createRunStore(() => {});
   store.dispatch({ type: "delivery_status", delivery_id: "d", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" });
 
   const replaced = mount(<RunProvider store={store}><Fallback id="user:delivery:d" renderDeliveryNote={() => <>host lost it</>} /></RunProvider>);
   expect(replaced.querySelector('[data-part="delivery-note"]')?.textContent).toBe("host lost it");
+});
+
+test("a null delivery note hides a text-omitted row in the default renderer", () => {
+  const store = createRunStore(() => {});
+  store.dispatch({ type: "user_message", text: "", text_omitted: true, mode: "steer", delivery_id: "d", delivery_status: "dropped" });
+
   const hidden = mount(<RunProvider store={store}><Fallback id="user:delivery:d" renderDeliveryNote={() => null} /></RunProvider>);
   expect(hidden.querySelector('[data-id="user:delivery:d"]')).toBeNull();
 });
