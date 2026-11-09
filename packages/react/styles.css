@@ -411,9 +411,10 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="approval-actions"] button:hover { text-decoration: underline; text-underline-offset: 3px; }
 [data-part="approval-actions"] button:active { transform: scale(0.96); }
 [data-part="approval-actions"] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
-/* Unavailable (reconnecting) and in flight look the same in every theme. In flight stays focusable (aria-disabled, not
-   disabled): a disabled button drops the keyboard user's focus to the page while the decision is sent. */
-[data-part="approval-actions"] button:is(:disabled, [aria-disabled="true"]) {
+/* Unavailable (reconnecting) and in flight look the same in every theme. Both stay focusable (aria-disabled, not
+   disabled): a disabled button drops the keyboard user's focus to the page and is skipped by Tab, so its reason is
+   never read. */
+[data-part="approval-actions"] button[aria-disabled="true"] {
   border-color: var(--fulcrum-muted);
   background: var(--fulcrum-surface);
   color: var(--fulcrum-muted);
@@ -422,8 +423,8 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   text-decoration: none;
   transform: none;
 }
-[data-part="approval-actions"] button[data-action="approve"]:is(:disabled, [aria-disabled="true"]) { background: var(--fulcrum-surface); color: var(--fulcrum-muted); }
-[data-part="approval-actions"] button[aria-disabled="true"]:not(:disabled) { cursor: progress; }
+[data-part="approval-actions"] button[data-action="approve"][aria-disabled="true"] { background: var(--fulcrum-surface); color: var(--fulcrum-muted); }
+[data-part="approval"][data-state="submitting"] [data-part="approval-actions"] button { cursor: progress; }
 [data-part="approval-actions"] [role="status"] { flex: 1 1 100%; color: var(--fulcrum-fg); font-size: 12px; }
 /* A failed decision says why under the actions, which are enabled again for a retry. */
 [data-part="approval-error"] { display: block; padding: 0 12px 12px; color: var(--fulcrum-danger); font-size: 12px; overflow-wrap: anywhere; }
@@ -1214,7 +1215,8 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="reasoning"] { --rail: CanvasText; --mark: CanvasText; }
   [data-part="reasoning-status"]::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
-  [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  [data-part="approval-actions"] button[data-action="approve"]:not([aria-disabled="true"]) { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  [data-part="approval-actions"] button[aria-disabled="true"] { border-color: GrayText; color: GrayText; }
   [data-part="message"] { --fulcrum-cursor: CanvasText; }
   [data-part="sub-agent"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }

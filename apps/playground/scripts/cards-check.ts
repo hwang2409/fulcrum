@@ -384,12 +384,54 @@ async function checkStandaloneMotion(page: Page, port: number, failures: string[
   else console.log("ok   host widget: a host's own data-part widget outside fulcrum keeps its animation and transition under reduced motion");
 }
 
+// An approval the host has paused: each action is a Tab stop whose accessible description (chromium's accessibility
+// tree, what a screen reader reads) is the visible reason, Enter, Space and a click decide nothing, and the skip link
+// lands on the row, not on an action that cannot act.
+export async function checkApprovalReason(page: Page, port: number, failures: string[]) {
+  const demo = "#approval-always-disabled";
+  await page.goto(`http://127.0.0.1:${port}/gallery.html${demo}`);
+  await page.waitForSelector(`${demo} [data-part=approval-actions] [role=status]`);
+  const reason = (await page.textContent(`${demo} [data-part=approval-actions] [role=status]`))!.trim();
+  const cdp = await page.context().newCDPSession(page);
+  const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+  const { nodeIds } = await cdp.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: `${demo} [data-part=approval-actions] button` });
+  const found: string[] = [];
+  for (const nodeId of nodeIds) {
+    const { nodes } = await cdp.send("Accessibility.getPartialAXTree", { nodeId, fetchRelatives: false });
+    const button = nodes.find((node) => node.role?.value === "button");
+    const name = String(button?.name?.value);
+    if (button?.description?.value !== reason) found.push(`${name} is described as "${button?.description?.value ?? ""}", expected the reason "${reason}"`);
+  }
+  await cdp.detach();
+  if (nodeIds.length < 3) found.push(`${nodeIds.length} action(s), expected approve, approve-always, and deny`);
+  const card = `${demo} [data-part=approval]`;
+  const decided = () => page.evaluate((selector) => [...document.querySelectorAll<HTMLElement>(selector)].filter((row) => row.dataset.state !== "pending").length, card);
+  // Tab from the row walks every action; pressing each one changes nothing.
+  await page.focus(card);
+  for (const action of ["approve", "approve-always", "deny"]) {
+    await page.keyboard.press("Tab");
+    const focused = await page.evaluate(() => (document.activeElement as HTMLElement).dataset.action);
+    if (focused !== action) found.push(`Tab reached ${focused ?? "no action"}, expected ${action}`);
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Space");
+  }
+  await page.click(`${card} [data-action=approve]`, { force: true });
+  if (await decided()) found.push("Enter, Space or a click decided a paused approval");
+  await page.click(`${demo} [data-part=jump-to-approval]`, { force: true });
+  await page.waitForTimeout(100);
+  const landed = await page.evaluate(() => (document.activeElement as HTMLElement).dataset.part ?? (document.activeElement as HTMLElement).dataset.action);
+  if (landed !== "approval") found.push(`the skip link focused ${landed}, expected the approval row`);
+  for (const problem of found) failures.push(`approval-always-disabled: ${problem}`);
+  if (!found.length) console.log("ok   approval-always-disabled: each paused action is a Tab stop described by its reason; pressing it decides nothing");
+}
+
 export async function checkCards(browser: Browser, port: number): Promise<string[]> {
   const failures: string[] = [];
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await checkStreamingCursor(page, port, failures);
   await checkCursorSteps(browser, port, failures);
   await checkStandaloneMotion(page, port, failures);
+  await checkApprovalReason(page, port, failures);
   await page.goto(`http://127.0.0.1:${port}/gallery.html#tools-done`);
   await page.waitForSelector("#tools-done [data-part=tool-body]");
   await page.waitForTimeout(500);
