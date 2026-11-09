@@ -39,7 +39,7 @@ function installScrollGeometry() {
   Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 800 });
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
     configurable: true,
-    get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height.match(/[\d.]+/)?.[0] ?? "0") + 16 + domExtra,
+    get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height.match(/[\d.]+/)?.[0] ?? "0") + domExtra,
   });
   Object.defineProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,

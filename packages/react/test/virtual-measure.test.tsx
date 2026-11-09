@@ -90,8 +90,8 @@ test("a pinned late row measurement re-applies the bottom after the browser shif
     // The pinned reader sits where the adapter put it, the engine's end; a browser cannot hold another position
     // without a scroll callback. The DOM range is two pixels taller than the virtualizer's measured range, as WebKit
     // can report after reconnect, so the row observer must take the reader to the DOM end.
-    let scrollTop = 201 * 72 - 600;
-    const scrollHeight = 201 * 72 + 2;
+    let scrollTop = 201 * 72 + 16 - 600;
+    const scrollHeight = 201 * 72 + 16 + 2;
     Object.defineProperty(scroll!, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } });
     Object.defineProperty(scroll!, "scrollHeight", { configurable: true, get: () => scrollHeight });
     const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")));

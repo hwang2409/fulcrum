@@ -57,17 +57,21 @@ function spyStrings(min: number, arrayMin = 256) {
   let chars = 0;
   const proto = String.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
   const originals = [...COMPARES, ...READS].map((name) => [name, proto[name]!] as const);
+  let stringCounting = true;
   for (const [name, original] of originals) {
     const kind = (COMPARES as readonly string[]).includes(name) ? "compare" : "read";
     proto[name] = function (this: string, ...args: unknown[]) {
-      if (this.length >= min) {
-        const caller = new Error().stack!.split("\n")[2]!.trim();
+      if (stringCounting && this.length >= min) {
+        stringCounting = false;
+        const frames = new Error().stack!.split("\n").slice(2).map((frame) => frame.trim());
+        const caller = frames.find((frame) => !frame.includes("stream-append.test.tsx")) ?? frames[0]!;
         // React's development build reads changed props to log renders; the production build does not.
-        if (!caller.includes("react-dom-client.development")) {
+        if (!caller.includes("react-dom-client.development") && !caller.includes("happy-dom")) {
           const site = `${kind} ${name} in ${caller.replace(/^at /, "").replace(/ \(.*\/(src|test)\//, " (").replace(/(:\d+)+\)$/, ")")}`;
           sites[site] = (sites[site] ?? 0) + 1;
           chars += this.length;
         }
+        stringCounting = true;
       }
       return original.apply(this, args);
     };

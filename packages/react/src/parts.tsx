@@ -803,7 +803,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, runKey, rendere
         role="log"
         aria-label={ariaLabel}
         aria-live="off"
-        style={{ ...virtualContainerStyle, height: `calc(${list.snapshot.totalSize}px + 2 * var(--fulcrum-virtual-gutter, 8px))` }}
+        style={{ ...virtualContainerStyle, height: list.snapshot.totalSize + 16 }}
         onFocusCapture={(event) => setFocusedId(event.target instanceof Element ? event.target.closest<HTMLElement>("[data-virtual-id]")?.dataset.virtualId ?? null : null)}
         onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedId(null); }}
       >

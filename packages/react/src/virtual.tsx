@@ -77,8 +77,11 @@ export function useVirtualList<Id extends string>(
   const rowCallbacks = useRef(new Map<Id, RefCallback<HTMLElement>>());
   const rowIds = useRef(new WeakMap<Element, Id>());
   const observerRef = useRef<ResizeObserver | null>(null);
+  const pendingEntries = useRef(new Map<Id, number>());
+  const resizeFrame = useRef<number | null>(null);
+  const historyPending = useRef(options.historyPending === true);
+  historyPending.current = options.historyPending === true;
   const initial = useRef(true);
-  const wasEnabled = useRef(options.enabled !== false);
   const appliedOutline = useRef<readonly OutlineItem<Id>[] | null>(null);
   const attachment = useRef<HTMLElement | null>(null);
   const releaseCurrent = useRef<(() => void) | null>(null);
@@ -102,19 +105,25 @@ export function useVirtualList<Id extends string>(
     const measuredPrefix = timelineTop - hostTopInViewport - host.clientTop + host.scrollTop;
     // happy-dom has no layout and returns zero for both rects; a direct child then has no host prefix.
     const prefix = timeline && timelineTop === 0 && hostTopInViewport === 0 ? 0 : measuredPrefix;
-    const cssGutter = timeline ? Number.parseFloat(getComputedStyle(timeline).getPropertyValue("--fulcrum-virtual-gutter")) : NaN;
-    const gutter = Number.isFinite(cssGutter) ? cssGutter : defaultVirtualGutter;
+    const gutter = defaultVirtualGutter;
     const hostTop = host.scrollTop;
-    const hostEnd = Math.max(0, host.scrollHeight - host.clientHeight);
+    const measuredEnd = Math.max(0, host.scrollHeight - host.clientHeight);
+    const noLayoutEnd = timeline ? prefix + engine.getSnapshot().totalSize + 2 * defaultVirtualGutter - host.clientHeight : 0;
+    const hostEnd = measuredEnd === 0 && noLayoutEnd > 0 ? noLayoutEnd : measuredEnd;
     return { prefix, gutter, hostTop, hostEnd, engineTop: Math.max(0, hostTop - prefix - gutter) };
   }, []);
 
-  const writeScroll = useCallback((target: ScrollTarget) => {
+  const writeScroll = useCallback((target: ScrollTarget, syncEngine = true) => {
     const host = containerRef.current;
     if (!host) return;
     const before = geometry(host);
-    host.scrollTop = target === "end" ? before.hostEnd : before.prefix + before.gutter + target;
+    const logicalEnd = before.prefix + engine.getSnapshot().totalSize + 2 * defaultVirtualGutter - host.clientHeight;
+    const desiredHostTop = target === "end"
+      ? Math.max(before.hostEnd, logicalEnd)
+      : before.prefix + before.gutter + target;
+    host.scrollTop = desiredHostTop;
     const after = geometry(host);
+    if (Math.abs(after.hostTop - desiredHostTop) > 1) coordinator.current.target = target;
     coordinator.current.owned = {
       requested: target,
       hostReadBack: after.hostTop,
@@ -123,7 +132,11 @@ export function useVirtualList<Id extends string>(
     };
     coordinator.current.settledHostTop = after.hostTop;
     coordinator.current.settledHostEnd = after.hostEnd;
-    engine.setViewport({ scrollTop: after.engineTop, size: Math.max(0, host.clientHeight - after.gutter), source: "programmatic" });
+    const size = Math.max(0, host.clientHeight - after.gutter);
+    const snapshot = engine.getSnapshot();
+    if (syncEngine && (Math.abs(snapshot.scrollTop - after.engineTop) >= 0.5 || snapshot.viewportSize !== size)) {
+      engine.setViewport({ scrollTop: after.engineTop, size, source: "programmatic" });
+    }
   }, [engine, geometry]);
 
   const retainTarget = useCallback((result: MutationResult, token?: MutationToken<Id>) => {
@@ -149,8 +162,10 @@ export function useVirtualList<Id extends string>(
       appliedResetKey.current = options.resetKey;
       appliedOutline.current = null;
       initial.current = true;
-      wasEnabled.current = options.enabled !== false;
-      coordinator.current.generation++;
+      releaseCurrent.current?.();
+      attachment.current = null;
+      releaseCurrent.current = null;
+      containerRef.current = null;
       coordinator.current.owned = null;
       coordinator.current.target = null;
       recoveryToken.current = null;
@@ -162,14 +177,17 @@ export function useVirtualList<Id extends string>(
       if (options.invalidateMeasurements) engine.invalidateMeasurements(options.invalidateMeasurements);
       engine.setOutline(outline, options.outlineUpdate);
       engine.setLoaded("all");
-      if (initial.current) initial.current = false;
-      else if (options.enabled !== false && wasEnabled.current) {
-        retainTarget(engine.afterMutation(token, { recoveryComplete: options.historyPending !== true }), token);
+      if (initial.current) {
+        initial.current = false;
+        if (options.enabled !== false && engine.getSnapshot().pinned) coordinator.current.target = "end";
+      } else {
+        const result = engine.afterMutation(token, { recoveryComplete: options.historyPending !== true });
+        if (options.enabled !== false) retainTarget(result, token);
+        else if (result.recoveryPending) recoveryToken.current = token;
       }
     } else if (recoveryToken.current && options.historyPending !== true) {
       retainTarget(engine.afterMutation(recoveryToken.current, { recoveryComplete: true }));
     }
-    wasEnabled.current = options.enabled !== false;
   }, [engine, outline, options.enabled, options.historyPending, options.invalidateMeasurements, options.outlineUpdate, options.resetKey, resetPending, retainTarget]);
 
   useLayoutEffect(() => {
@@ -194,13 +212,19 @@ export function useVirtualList<Id extends string>(
         if (generation !== coordinator.current.generation) return;
         const current = geometry(host);
         engine.setViewport({ scrollTop: current.engineTop, size: Math.max(0, host.clientHeight - current.gutter), source });
+        if (source === "user" && Math.abs(current.hostTop - current.hostEnd) <= 1 && !engine.getSnapshot().pinned) {
+          engine.requestFollow();
+        }
         coordinator.current.settledHostTop = current.hostTop;
         coordinator.current.settledHostEnd = current.hostEnd;
       };
       const settle = () => {
         const current = geometry(host);
         const owned = coordinator.current.owned;
-        if (owned && Math.abs(current.hostTop - owned.hostReadBack) <= 1) {
+        const ownedEnd = owned?.requested === "end"
+          ? Math.abs(current.hostTop - owned.hostReadBack) <= 1 && Math.abs(current.hostEnd - owned.hostEnd) <= 1
+          : owned !== null && Math.abs(current.engineTop - owned.engineReadBack) <= 1;
+        if (ownedEnd) {
           coordinator.current.owned = null;
           report("observe");
           return;
@@ -210,17 +234,25 @@ export function useVirtualList<Id extends string>(
         report("user");
       };
 
-      if (engine.getSnapshot().pinned) writeScroll("end");
-      else report("user");
+      const attachedSnapshot = engine.getSnapshot();
+      writeScroll(attachedSnapshot.pinned ? "end" : attachedSnapshot.scrollTop);
 
+      const flushMeasurements = () => {
+        resizeFrame.current = null;
+        if (generation !== coordinator.current.generation || pendingEntries.current.size === 0) return;
+        const token = engine.beforeMutation();
+        for (const [id, size] of pendingEntries.current) engine.measure(id, size);
+        pendingEntries.current.clear();
+        retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }), token);
+      };
       const rowObserver = new ResizeObserver((entries) => {
         if (generation !== coordinator.current.generation || entries.length === 0) return;
-        const token = engine.beforeMutation();
         for (const entry of entries) {
           const id = rowIds.current.get(entry.target);
-          if (id !== undefined) engine.measure(id, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
+          if (id !== undefined) pendingEntries.current.set(id, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
         }
-        retainTarget(engine.afterMutation(token));
+        if (resizeFrame.current === null) resizeFrame.current = requestAnimationFrame(flushMeasurements);
+        if (engine.getSnapshot().pinned) writeScroll("end", false);
       });
       observerRef.current = rowObserver;
       for (const row of rows.current.values()) rowObserver.observe(row);
@@ -241,9 +273,13 @@ export function useVirtualList<Id extends string>(
         if (beforePinned && current.hostEnd > coordinator.current.settledHostEnd + 0.5) writeScroll("end");
         else settle();
       });
+      const observedSiblings = new Set<Element>();
       const observeSiblings = () => {
-        siblingObserver.disconnect();
-        for (const child of host.children) if (child !== timelineElement.current) siblingObserver.observe(child);
+        const nextSiblings = new Set([...host.children].filter((child) => child !== timelineElement.current));
+        for (const child of observedSiblings) if (!nextSiblings.has(child)) siblingObserver.unobserve(child);
+        for (const child of nextSiblings) if (!observedSiblings.has(child)) siblingObserver.observe(child);
+        observedSiblings.clear();
+        for (const child of nextSiblings) observedSiblings.add(child);
       };
       observeSiblings();
       const siblingMutations = new MutationObserver(observeSiblings);
@@ -265,6 +301,9 @@ export function useVirtualList<Id extends string>(
         coordinator.current.owned = null;
         coordinator.current.target = null;
         coordinator.current.touching = false;
+        if (resizeFrame.current !== null) cancelAnimationFrame(resizeFrame.current);
+        resizeFrame.current = null;
+        pendingEntries.current.clear();
         rowObserver.disconnect();
         viewportObserver.disconnect();
         siblingObserver.disconnect();
@@ -307,7 +346,10 @@ export function useVirtualList<Id extends string>(
         rows.current.set(id, element);
         rowIds.current.set(element, id);
         observerRef.current?.observe(element);
-      } else rows.current.delete(id);
+      } else {
+        rows.current.delete(id);
+        pendingEntries.current.delete(id);
+      }
     };
     rowCallbacks.current.set(id, callback);
     return callback;

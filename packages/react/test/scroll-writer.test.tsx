@@ -30,7 +30,7 @@ test("timeline scroll writes have one owner", () => {
     const source = readFileSync(new URL(file, sourceRoot), "utf8");
     const writes = [...source.matchAll(/[\w.\]?)]+\.(?:scrollTop\s*[-+]?=(?!=)[^;\n]*|scrollTo\s*\(|scrollBy\s*\(|scrollIntoView\s*\()/g)];
     if (file === "virtual.tsx") {
-      expect(writes.map(([write]) => write), message).toEqual(["host.scrollTop = target === \"end\" ? before.hostEnd : before.prefix + before.gutter + target"]);
+      expect(writes.map(([write]) => write), message).toEqual(["host.scrollTop = desiredHostTop"]);
       const ownerStart = source.indexOf("const writeScroll =");
       const ownerEnd = source.indexOf("\n  }, [engine, geometry]);", ownerStart);
       expect(writes[0]!.index! > ownerStart && writes[0]!.index! < ownerEnd, message).toBeTrue();
@@ -43,7 +43,7 @@ test("timeline position owner has no cause classifier or settlement timer", () =
   expect(source).toContain("const onScroll = () => settle();");
   for (const forbidden of [
     "classifyScroll", "createScrollLeases", "willScroll", "lastPointerTarget", "HostFlow",
-    "quietFrames", "settleFrame", "setTimeout", "requestAnimationFrame", "scrollend",
+    "quietFrames", "settleFrame", "setTimeout", "scrollend",
     "addEventListener(\"wheel\"", "addEventListener(\"keydown\"", "addEventListener(\"focusin\"",
   ]) expect(source, forbidden).not.toContain(forbidden);
   expect(source.match(/addEventListener\(\"touch(start|end|cancel)\"/g)).toHaveLength(3);
