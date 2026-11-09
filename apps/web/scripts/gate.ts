@@ -733,6 +733,7 @@ const waitNamed = (locator: Locator, failure: string, timeout: number, state: "a
 type AnimatedGesture = "PageDown" | "End" | "PageDown repeated" | "PageDown (body focus)";
 
 // A freshly launched engine loads the app cold (module graph, fonts); open the long run once before its first row.
+// These rows are new: their load waits are 30 s, since Firefox loads the 1,000-row run slowly on a busy machine.
 async function warmEngine(page: Page, engine: string) {
   await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
   await waitNamed(page.locator('[data-run-ready="true"]'), `${engine}: warm-up: the long run was not ready`, 30_000);
@@ -745,9 +746,9 @@ async function checkAnimatedReaderScrollRepins(page: Page, engine: string, gestu
     await withRowPage(page, engine, async (rowPage) => {
       const row = `${engine} animated ${gesture} re-pin`;
       await rowPage.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
-      await waitNamed(rowPage.locator('[data-run-ready="true"]'), `${row}: the long run was not ready`, 15_000);
-      await waitNamed(rowPage.getByText(/loading session history/), `${row}: history paging did not finish`, 15_000, "detached");
-      await waitNamed(rowPage.locator('[data-virtual-id="message:l999"]'), `${row}: the last history row message:l999 did not mount`, 15_000);
+      await waitNamed(rowPage.locator('[data-run-ready="true"]'), `${row}: the long run was not ready`, 30_000);
+      await waitNamed(rowPage.getByText(/loading session history/), `${row}: history paging did not finish`, 30_000, "detached");
+      await waitNamed(rowPage.locator('[data-virtual-id="message:l999"]'), `${row}: the last history row message:l999 did not mount`, 30_000);
       await waitAtBottom(rowPage, `${row}: the long run did not load pinned at the bottom`);
 
       // Leave the bottom with real input: the pointer over the timeline, wheel up (less than a page for PageDown).
