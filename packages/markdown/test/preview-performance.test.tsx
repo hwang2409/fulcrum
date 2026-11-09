@@ -57,7 +57,7 @@ function streamContinuation(line: string, from: number, to: number, document = c
   return document;
 }
 
-const continuationLine = "word **b** `c` and more ".repeat(87_000);
+const continuationLine = "word **b** `c` and more ".repeat(420_000);
 
 test("continuation preview copies a bounded amount per delta at any line length", () => {
   for (const size of [32_000, 1_024_000]) {
@@ -68,11 +68,28 @@ test("continuation preview copies a bounded amount per delta at any line length"
 });
 
 test("continuation preview delta cost stays flat as the line grows", () => {
-  // Times the same 32k of 64-byte deltas after a 32k or 2,048k line: flat ~1x, O(line) work per delta ~64x.
-  expectGrowthBelow([32_000, 2_048_000], (size) => {
-    const document = streamContinuation(continuationLine, 0, size);
-    return () => streamContinuation(continuationLine, size, size + 32_000, document);
-  }, { exponent: 0.25, samples: 3 });
+  // Times the next 128k of 64-byte deltas on a 32k or an 8,192k line: flat ~1x, O(line) work per delta ~256x.
+  // A long window (~50 ms) keeps one scheduler stall a small part of a sample. The large line is built once and
+  // each sample continues it; a line is rebuilt only after it doubles, so the small one restarts every sample.
+  const window = 128_000;
+  const lines = new Map<number, { document: ReturnType<typeof createStreamingDocument>; end: number }>();
+  expectGrowthBelow([32_000, 8_192_000], (size) => {
+    let line = lines.get(size);
+    if (!line || line.end + window > 2 * size) {
+      const document = createStreamingDocument();
+      document.append("first paragraph\n");
+      // Setup arrives in large chunks: same stable state as 64-byte deltas, a fraction of the time.
+      for (let offset = 0; offset < size; offset += 16_384) {
+        document.append(continuationLine.slice(offset, Math.min(size, offset + 16_384)));
+        document.render();
+      }
+      lines.set(size, line = { document, end: size });
+    }
+    const from = line.end;
+    line.end += window;
+    Bun.gc(true);
+    return () => streamContinuation(continuationLine, from, from + window, line.document);
+  }, { exponent: 0.25, samples: 5 });
 }, 60_000);
 
 test("frozen blocks retain identity while only the open path is rebuilt", () => {

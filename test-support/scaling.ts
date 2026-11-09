@@ -8,16 +8,17 @@ import { expect } from "bun:test";
 export const MIN_SPAN = 32;
 // Below this a sample is mostly timer and scheduler noise; each size repeats its work until a sample reaches it.
 const MIN_SAMPLE_NS = 1e6;
-// A warm-up ratio this far over the limit is a certain failure; stop before the slow timed rounds.
+// Two warm-up ratios in a row this far over the limit are a certain failure; stop before the slow timed rounds.
 const FAST_FAIL_FACTOR = 4;
 
 /**
  * Times `prepare(size)()` at the smallest and largest size and fails when the time grows more than span^exponent.
  * `prepare` does untimed setup and returns the work to time; it is called again for every repeat, since work may
  * consume its setup. Only the two end sizes are judged: middle sizes add time but no extra separation.
- * Each size is warmed up once (a warm-up ratio over 4x the limit fails at once), which also picks how many repeats
- * make a sample of at least 1 ms; then each round times both sizes (so load drift hits both alike), and the fastest
- * per-repeat time of `samples` rounds counts.
+ * One run of each size picks how many repeats make a sample of at least 1 ms; then one warm-up sample of each size is
+ * taken. A warm-up ratio over 4x the limit is checked by a second warm-up, and fails at once only if that one is over
+ * too, so one stall cannot fail the test. Then each round times both sizes (so load drift hits both alike), and the fastest per-repeat time of
+ * `samples` rounds counts.
  */
 export function expectGrowthBelow(
   sizes: readonly [smallest: number, largest: number],
@@ -33,9 +34,8 @@ export function expectGrowthBelow(
     work();
     return Bun.nanoseconds() - start;
   };
-  timeOnce(sizes[0]); // the first, unoptimized run of the small size would understate the warm-up ratio
-  const warmUp = sizes.map(timeOnce);
-  const repeats = warmUp.map((time) => Math.max(1, Math.ceil(MIN_SAMPLE_NS / time)));
+  timeOnce(sizes[0]); // the first, unoptimized run of the small size would overstate its time
+  const repeats = sizes.map((size) => Math.max(1, Math.ceil(MIN_SAMPLE_NS / timeOnce(size))));
   const time = (index: number) => {
     let total = 0;
     for (let repeat = 0; repeat < repeats[index]!; repeat++) total += timeOnce(sizes[index]!);
@@ -47,7 +47,8 @@ export function expectGrowthBelow(
     expect(ratio, `${phase}time grew ${ratio.toFixed(1)}x over a ${span}x size span (limit ${span}^${exponent} = ${limit.toFixed(1)}); ${table}`).toBeLessThanOrEqual(bound);
     return ratio;
   };
-  judge(warmUp, "warm-up ", limit * FAST_FAIL_FACTOR);
+  const warmUp = [time(0), time(1)];
+  if (warmUp[1]! / warmUp[0]! > limit * FAST_FAIL_FACTOR) judge([time(0), time(1)], "warm-up ", limit * FAST_FAIL_FACTOR);
   const fastest = [Infinity, Infinity];
   for (let round = 0; round < samples; round++)
     for (const index of [0, 1]) fastest[index] = Math.min(fastest[index]!, time(index));

@@ -9,15 +9,26 @@ test("accepts linear work", () => {
 });
 
 test("rejects quadratic work at the warm-up, before the timed rounds", () => {
-  let calls = 0;
+  let largeCalls = 0;
   const started = Bun.nanoseconds();
   expect(() => expectGrowthBelow([100, 6_400], (size) => () => {
-    calls++;
+    if (size === 6_400) largeCalls++;
     for (let outer = 0; outer < size; outer++) loop(size);
   })).toThrow("warm-up time grew");
-  // The 100 size repeats up to the 1 ms sample floor; the 6,400 size (~40 ms, 4096x the 100 size against a fast-fail bound of 2048x) runs only its one warm-up.
-  expect(calls).toBeLessThan(200);
+  // The 6,400 size (~25 ms, 4096x the 100 size against a fast-fail bound of 2048x) runs only its repeat-picking run
+  // and two warm-ups, never the timed rounds.
+  expect(largeCalls).toBe(3);
   expect(Bun.nanoseconds() - started).toBeLessThan(5e9);
+});
+
+test("one stall in the warm-up does not fail linear work", () => {
+  let largeCalls = 0;
+  expectGrowthBelow([1_000, 64_000], (size) => () => {
+    // The first warm-up of the large size stalls 200 ms, far past the fast-fail bound (64^1.5 x 4 = 2048x).
+    if (size === 64_000 && largeCalls++ === 0) Bun.sleepSync(200);
+    loop(size * 16);
+  });
+  expect(largeCalls).toBeGreaterThan(2);
 });
 
 test("rejects O(n)-per-step work under the flat exponent", () => {
