@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
+import { expectSubquadratic } from "../../../test-support/scaling.js";
 
 const splits = [1, 2, 3, 7, 20, 1000];
 
@@ -75,23 +76,16 @@ test("a closed paragraph hides reference brackets that a later definition remove
 
 test("committing a long rich line is linear in its length", () => {
   const unit = "plain **strong** and *emphasis* with `code`. ";
-  const commit = (length: number) => {
-    const samples = Array.from({ length: 3 }, () => {
-      const document = createStreamingDocument();
-      document.append(unit.repeat(Math.ceil(length / unit.length)).slice(0, length));
-      document.render();
-      const start = performance.now();
+  expectSubquadratic([31_250, 1_000_000], (length) => {
+    const document = createStreamingDocument();
+    document.append(unit.repeat(Math.ceil(length / unit.length)).slice(0, length));
+    document.render();
+    return () => {
       document.append("\n");
       document.render();
-      return performance.now() - start;
-    });
-    return samples.sort((a, b) => a - b)[1]!;
-  };
-  const small = commit(100_000);
-  const large = commit(1_000_000);
-  // Quadratic commits took ~200 ms at 100k and 6-8 s at 1 MB; linear ones take tens of ms.
-  expect(large, `1 MB commit ${large.toFixed(1)} ms, 100k commit ${small.toFixed(1)} ms`).toBeLessThan(1_000);
-});
+    };
+  }, 3);
+}, 60_000);
 
 test("an escaped bracket pair never shows a backslash that later disappears", () => {
   for (const source of ["see \\[x\\]\n\nnext\n", "\\[ A = \\pi \\]\n\nnext\n", "a \\[b] and \\\\[c]\n\nnext\n"]) {
