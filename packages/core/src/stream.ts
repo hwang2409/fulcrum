@@ -115,8 +115,8 @@ export function appendText<T extends object>(
  * content blocks are not addressable: each delta copies the block into a new `message.content`, so there is no chain to
  * take a tail from; making one a stream adds a field here. Undefined when `item` does not continue `previous`'s
  * stream: a replace, a restarted tool, a resync or history reload, an older snapshot, a row that never streamed, or a
- * `previous` older than the field's last read (the stream compacts what is behind its last read; read the field of
- * each snapshot you keep as a base, as a render does). Costs the chunks appended since `previous`; it never reads or
+ * `previous` from before the field's previous read (a long stream compacts runs behind it; read the field of each
+ * snapshot you keep as a base, as a render does). Costs the chunks appended since `previous`; it never reads or
  * compares the whole text.
  */
 export function streamTail(previous: MessageItem | undefined, item: MessageItem, field: "text"): string | undefined;
