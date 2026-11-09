@@ -12,6 +12,8 @@ Delivery, listener errors, re-entry, resync, and disposal follow the [notificati
 
 Malformed known events with an invalid required field are counted by `getDiagnostics()` and ignored. An invalid optional field is omitted, counted in `sanitizedFields`, and the sanitized event is applied. Valid events keep their identity and do not allocate a validation copy. An arbitrary event kind becomes an `unknown` row; the built-in React `Fallback` shows only its kind, not its data.
 
+A `user_message` can set `text_omitted: true` when the harness did not keep the message text. The text remains the empty string, so consumers keep one user-row shape and can distinguish missing text from a kept empty message. A dropped `delivery_status` without a matching message creates this row and reconciles a later message through `delivery_id`.
+
 If validated reduction throws, the store calls `onError` and exposes `desynced` and its reason through `getDiagnostics()` and `subscribeDiagnostics()`. Reads keep the last good snapshot. New dispatches are refused until `resync(events)` installs history. These guarantees apply through `createRunStore`; direct reducer callers own the maps they supply and must retain the maps returned with state.
 
 ## Notification contract

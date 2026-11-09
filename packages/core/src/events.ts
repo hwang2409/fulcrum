@@ -238,6 +238,8 @@ export type RunEvent =
        * a new message stays one row. Leave it unset when the transport cannot tell; every message is then its own row.
        */
       intent?: string;
+      /** The harness did not keep this message's text. */
+      text_omitted?: true;
       delivery_status?: "delivered" | "dropped";
       delivery_reason?: string;
     }
