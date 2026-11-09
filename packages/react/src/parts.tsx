@@ -427,7 +427,7 @@ export const Fallback = memo(function Fallback({ id, className, renderDeliveryNo
   if (textOmitted && (note == null || note === false)) return null;
   const content = <>{display.label}{display.attachments?.length ? <ToolResultBlocks id={id} blocks={display.attachments} /> : null}</>;
   return (
-    <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state}>
+    <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state} data-text-omitted={textOmitted ? "" : undefined}>
       {user && !textOmitted ? <UserMessageContent style={pre}>{content}</UserMessageContent> : user ? null : content}
       {note == null || note === false ? null : <div data-part="delivery-note">{note}</div>}
     </div>

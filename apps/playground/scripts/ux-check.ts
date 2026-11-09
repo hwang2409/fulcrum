@@ -246,6 +246,40 @@ function readUserGeometry(node: HTMLElement): UserGeometry {
   };
 }
 
+type OmittedUserGeometry = {
+  text: string;
+  rowHeight: number;
+  noteHeight: number;
+  noteVisible: boolean;
+  messageBoxes: number;
+  bodyBoxes: number;
+  bubblePaint: boolean;
+  overflow: boolean;
+};
+
+async function measureOmittedUser(page: Page, id: string): Promise<OmittedUserGeometry> {
+  const row = page.locator(`#${id} [data-part=item][data-kind=user]`).first();
+  await row.waitFor();
+  await page.evaluate(() => document.fonts.ready.then(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))));
+  return row.evaluate((node) => {
+    const note = node.querySelector<HTMLElement>("[data-part=delivery-note]")!;
+    const rowBox = node.getBoundingClientRect();
+    const noteBox = note.getBoundingClientRect();
+    const style = getComputedStyle(note);
+    const rowStyle = getComputedStyle(node);
+    return {
+      text: note.textContent?.trim() ?? "",
+      rowHeight: rowBox.height,
+      noteHeight: noteBox.height,
+      noteVisible: style.display !== "none" && style.visibility !== "hidden" && noteBox.width > 0 && noteBox.height > 0,
+      messageBoxes: node.querySelectorAll("[data-part=message]").length,
+      bodyBoxes: node.querySelectorAll("[data-part=message-content]").length,
+      bubblePaint: parseFloat(rowStyle.borderLeftWidth) > 0 || rowStyle.backgroundColor !== "rgba(0, 0, 0, 0)",
+      overflow: node.scrollWidth > node.clientWidth + 0.5 || node.scrollHeight > node.clientHeight + 0.5 || note.scrollWidth > note.clientWidth + 0.5 || note.scrollHeight > note.clientHeight + 0.5,
+    };
+  });
+}
+
 /** Where a user message puts its prompt mark, text lines, streaming cursor, and file row. */
 async function measureUser(page: Page, id: string, nth: number, streaming: boolean, probe?: UserProbe["probe"]): Promise<UserGeometry> {
   const message = page.locator(`#${id} :is([data-part=message][data-role=user], [data-part=item][data-kind=user])`).nth(nth);
@@ -289,11 +323,11 @@ function checkUserCase(at: string, geometry: UserGeometry): string[] {
   return failures;
 }
 
-type UserCase = { id: string; nth?: number; name?: string; streaming?: boolean; text?: boolean; wraps?: boolean; probe?: "root-14" | "root-18" | "padding" };
+type UserCase = { id: string; nth?: number; name?: string; streaming?: boolean; text?: boolean; wraps?: boolean; noteOnly?: boolean; probe?: "root-14" | "root-18" | "padding" };
 const firstBlocks = ["h1", "h2", "list", "blockquote", "code fence", "plain code fence", "large code fence", "table", "attachment only", "image only", "source", "reasoning", "empty text then file"];
 const userCases: UserCase[] = [
   { id: "fallback-user", name: "Fallback user row", text: true, wraps: true },
-  { id: "fallback-user-dropped", name: "Fallback dropped steer", text: true, wraps: true },
+  { id: "fallback-user-dropped", name: "Fallback dropped steer without kept text", noteOnly: true },
   { id: "message-user-role", text: true }, { id: "message-user-long", text: true }, { id: "message-user-role", streaming: true, text: true },
   { id: "message-user-long", streaming: true, text: true }, { id: "message-user-markdown", text: true }, { id: "user-block-indent", text: true },
   ...firstBlocks.map((name, nth) => ({ id: "user-first-blocks", nth, name })),
@@ -361,10 +395,20 @@ async function checkUserLayout(browser: Browser, port: number): Promise<string[]
   const output = process.env.SCREENSHOT_DIR ?? "/tmp/fulcrum-user-layout";
   await Bun.$`mkdir -p ${output}`;
   const matrix = ["light", "dracula", "gruvbox-dark"].flatMap((theme) => [1440, 390].flatMap((width) => userCases.map((test) => ({ theme, width, test }))));
-  for (const { theme, width, test: { id, nth = 0, name = id, streaming = false, text, wraps = id === "message-user-long", probe } } of matrix) {
+  for (const { theme, width, test: { id, nth = 0, name = id, streaming = false, text, wraps = id === "message-user-long", noteOnly, probe } } of matrix) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
     await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}#${id}`);
     const at = `user layout @ ${theme} ${width}: ${name}${streaming ? " streaming" : ""}`;
+    if (noteOnly) {
+      const geometry = await measureOmittedUser(page, id);
+      if (!geometry.noteVisible || !geometry.text) failures.push(`${at}: the delivery note is not visible`);
+      if (geometry.messageBoxes || geometry.bodyBoxes || geometry.bubblePaint) failures.push(`${at}: the note-only row has ${geometry.messageBoxes} message bubble(s), ${geometry.bodyBoxes} message body box(es), bubble paint ${geometry.bubblePaint}`);
+      if (Math.abs(geometry.rowHeight - geometry.noteHeight) > 0.5) failures.push(`${at}: the ${geometry.rowHeight.toFixed(2)} px row is not the note's ${geometry.noteHeight.toFixed(2)} px height`);
+      if (geometry.overflow) failures.push(`${at}: the note-only row overflows`);
+      if (process.env.UX_GEOMETRY) console.log(JSON.stringify({ theme, width, name, noteOnly, ...geometry }));
+      await page.close();
+      continue;
+    }
     const geometry = await measureUser(page, id, nth, streaming, probe);
     failures.push(...checkUserCase(at, geometry), ...(text ? checkTextLines(at, geometry, wraps) : []));
     if (streaming && !(geometry.cursor?.width && geometry.cursor.height)) failures.push(`${at}: no streaming cursor (${geometry.cursor ? `${geometry.cursor.width}x${geometry.cursor.height} px` : "none drawn"})`);
@@ -382,7 +426,7 @@ async function checkUserLayout(browser: Browser, port: number): Promise<string[]
     await page.locator(`#${id}`).screenshot({ path: `${output}/${id}-${theme}-${width}.png` });
     await page.close();
   }
-  if (!failures.length) console.log(`ok   user layout: ${firstBlocks.length} first-block shapes, 14/18 px roots, +4 px block padding, hidden prompt semantics, and text geometry in 3 themes at 1440 and 390`);
+  if (!failures.length) console.log(`ok   user layout: ${firstBlocks.length} first-block shapes, note-only delivery geometry, 14/18 px roots, +4 px block padding, hidden prompt semantics, and text geometry in 3 themes at 1440 and 390`);
   return failures;
 }
 
