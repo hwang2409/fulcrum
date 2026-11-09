@@ -656,7 +656,7 @@ test("a pending approval exposes adapter-supplied reconnect and resolving states
   expect(card.getAttribute("data-state")).toBe("reconnecting");
   expect(card.textContent).toContain("reconnecting…");
   expect(card.textContent).toContain("decisions are disabled while disconnected");
-  expect([...card.querySelectorAll("button")].every((button) => button.disabled)).toBe(true);
+  expect([...card.querySelectorAll("button")].every((button) => button.getAttribute("aria-disabled") === "true")).toBe(true);
 
   act(() => store.dispatch({
     type: "approval_request", request_id: "r1", delegated: false,
@@ -665,6 +665,35 @@ test("a pending approval exposes adapter-supplied reconnect and resolving states
   } as RunEvent));
   expect(card.getAttribute("data-state")).toBe("resolving");
   expect(card.textContent).toContain("resolving…");
+});
+
+test("an unavailable approval's actions stay in the tab order, are described by the visible reason, and do nothing", async () => {
+  const reason = "opening another session — decisions are paused";
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false });
+  const calls: string[] = [];
+  const renderers: Renderers = { approval: ({ id }) => <Approval id={id} onApprove={() => void calls.push("approve")} onApproveAlways={() => void calls.push("always")} onDeny={() => void calls.push("deny")} disabledReason={reason} /> };
+  mount(<RunProvider store={store}><Timeline renderers={renderers} /></RunProvider>);
+  const buttons = [...container.querySelectorAll<HTMLButtonElement>('[data-part="approval-actions"] button')];
+  expect(buttons.map((button) => button.dataset.action)).toEqual(["approve", "approve-always", "deny"]);
+  for (const button of buttons) {
+    // A disabled button leaves the tab order, so a keyboard user never hears why it is unavailable.
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    const described = document.getElementById(button.getAttribute("aria-describedby") ?? "");
+    expect(described?.textContent).toBe(reason);
+    expect(described?.getAttribute("role")).toBe("status");
+    act(() => {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+      button.click();
+    });
+  }
+  expect(calls).toEqual([]);
+  expect(container.querySelector('[data-part="approval"]')!.getAttribute("data-state")).toBe("pending");
+  // The skip link never lands on an action that cannot act: it focuses the row instead.
+  await act(async () => q('[data-part="jump-to-approval"]').click());
+  expect(document.activeElement).toBe(q('[data-part="approval"]'));
 });
 
 test("a reconnect keeps focus in the pending approval row", () => {
@@ -684,7 +713,7 @@ test("a reconnect keeps focus in the pending approval row", () => {
 
   expect(document.activeElement).toBe(card);
   expect(card.contains(document.activeElement)).toBe(true);
-  expect([...card.querySelectorAll('[data-part="approval-actions"] button')].every((button) => button.disabled)).toBe(true);
+  expect([...card.querySelectorAll('[data-part="approval-actions"] button')].every((button) => button.getAttribute("aria-disabled") === "true")).toBe(true);
   expect(card.textContent).toContain("decisions are disabled while disconnected");
 
   act(() => store.dispatch({ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false }));
@@ -825,7 +854,6 @@ test("the approve-always action takes the host's label and is disabled with the 
     state: "reconnecting", status: "reconnecting…", disabled_reason: "decisions are disabled while disconnected",
   } as RunEvent);
   const always = q('[data-action="approve-always"]') as HTMLButtonElement;
-  expect(always.disabled).toBe(true);
   expect(always.getAttribute("aria-disabled")).toBe("true");
   act(() => always.click());
   expect(calls).toEqual([]);

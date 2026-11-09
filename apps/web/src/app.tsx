@@ -1,11 +1,11 @@
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
 import { MermaidFence } from "@fulcrum/mermaid";
-import { Approval, Code, Composer, Fallback, HighlightContext, Message, RunEndMarker, RunProvider, RunStatus, Timeline, useRunStatus, useItemSelector, useRun, useRunStore, useTimeline, type LoadMedia, type Renderers } from "@fulcrum/react";
+import { Approval, Code, Composer, deliveryNoteText, Fallback, HighlightContext, Message, RunEndMarker, RunProvider, RunStatus, Timeline, useRunStatus, useItemSelector, useRun, useRunStore, useTimeline, type LoadMedia, type Renderers } from "@fulcrum/react";
 import { ContentReadError, type SessionStore, type ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { createConnection, serveCommand, type Connection, type ConnectionState } from "./connection";
-import { createDelivery } from "./delivery";
+import { createDelivery, visibleDeliveryNotice, type DeliveryNotice } from "./delivery";
 import { ago, createSessions, sessionPresentation, sessionTitle, topLevel, type OpenRun, type SessionMeta, type Sessions, type SessionsState } from "./session";
 import { ThemePicker, useTheme } from "./theme";
 
@@ -23,16 +23,16 @@ function ZetaApproval({ id }: { id: string }) {
   const delegated = useItemSelector(id, (item) => item?.type === "approval" && item.request.type === "approval_request" && item.request.delegated);
   return <Approval id={id} onApprove={decide?.approve} onApproveAlways={delegated ? undefined : decide?.approveAlways} onDeny={decide?.deny} disabledReason={decide?.disabledReason} />;
 }
-// The intents of steers a stop dropped: zeta never gave them to the agent, so their rows must not look delivered.
-const Undelivered = createContext<ReadonlySet<string>>(new Set());
+// Final delivery outcomes that came from a status query, not a delivery-status event on the row.
+const Undelivered = createContext<ReadonlyMap<string, DeliveryNotice["outcome"]>>(new Map());
 function UserRow({ id }: { id: string }) {
   const delivery = useItemSelector(id, (item) => (item?.type === "user" && item.event.type === "user_message" ? { intent: item.event.intent, status: item.event.delivery_status } : undefined));
   const undelivered = useContext(Undelivered);
-  const lost = delivery?.status !== "dropped" && delivery?.intent !== undefined && undelivered.has(delivery.intent);
+  const outcome = delivery?.intent === undefined ? undefined : visibleDeliveryNotice(undelivered.get(delivery.intent), delivery.status);
   return (
     <>
       <Fallback id={id} />
-      {lost ? <p className="undelivered" role="note">not delivered · the stop ended the turn before zeta took this steer</p> : null}
+      {outcome ? <p className="undelivered" data-outcome={outcome} role="note">{deliveryNoteText(outcome, outcome === "dropped" ? "abort" : undefined)}</p> : null}
     </>
   );
 }
@@ -359,10 +359,10 @@ function Run({ client, sessions, open, opener, focusComposer, readOnly, ready }:
       scroll.current?.parentElement?.querySelector<HTMLTextAreaElement>(".dock textarea")?.focus({ preventScroll: true });
     } else if (!opener.current?.closest("#sessions") && (document.activeElement === opener.current || document.activeElement === document.body)) scroll.current?.focus({ preventScroll: true });
   }, [open.lease.store, opener, focusComposer]);
-  const [undelivered, setUndelivered] = useState<ReadonlySet<string>>(() => new Set());
+  const [undelivered, setUndelivered] = useState<ReadonlyMap<string, DeliveryNotice["outcome"]>>(() => new Map());
   const [followRequest, setFollowRequest] = useState(0);
-  const onUndelivered = useCallback((intents: string[]) => {
-    if (intents.length) setUndelivered((current) => new Set([...current, ...intents]));
+  const onUndelivered = useCallback((notices: DeliveryNotice[]) => {
+    if (notices.length) setUndelivered((current) => new Map([...current, ...notices.map(({ intent, outcome }) => [intent, outcome] as const)]));
   }, []);
   const loadMedia = useMemo<LoadMedia | undefined>(() => client ? async (block, signal) => {
     try {
@@ -404,7 +404,7 @@ function EmptyRun() {
 const offline = () => Promise.reject(new Error("not connected to zeta serve"));
 
 /** The message box: send while idle, steer while a turn runs (zeta always takes steering), stop the turn. */
-function RunComposer({ client, store, onUndelivered, onOwnSend, readOnly }: { client: ZetaClient | null; store: SessionStore; onUndelivered(intents: string[]): void; onOwnSend(): void; readOnly: boolean }) {
+function RunComposer({ client, store, onUndelivered, onOwnSend, readOnly }: { client: ZetaClient | null; store: SessionStore; onUndelivered(notices: DeliveryNotice[]): void; onOwnSend(): void; readOnly: boolean }) {
   const running = useRun((state) => state.agent === "running");
   const delivery = useMemo(() => createDelivery(undefined, (event) => {
     const deliveryId = event.type === "user_message" && event.delivery_id;
@@ -416,9 +416,9 @@ function RunComposer({ client, store, onUndelivered, onOwnSend, readOnly }: { cl
     if (!running && wasRunning.current && client) delivery.turnEnded(client).then(onUndelivered, () => {});
     wasRunning.current = running;
   }, [running, client, delivery, onUndelivered]);
-  const onSubmit = useCallback((text: string, { steer }: { steer: boolean }) => {
+  const onSubmit = useCallback((text: string, { steer }: { steer: boolean }, trackDelivery: (deliveryId: string) => void) => {
     if (!client) return offline();
-    return delivery.submit(client, text, steer).then(() => { onOwnSend(); });
+    return delivery.submit(client, text, steer, trackDelivery).then(() => { onOwnSend(); });
   }, [client, delivery, onOwnSend]);
   const onStop = useCallback(() => (client ? delivery.stop(client) : offline()), [client, delivery]);
   return (

@@ -222,7 +222,8 @@ const approvalEnd = (ended: RunEvent | undefined) => {
 
 type ApprovalAction = "approve" | "approve-always" | "deny";
 
-const ApprovalButton = ({ action, label = action, handler, sending, disabledReason, decide }: { action: ApprovalAction; label?: string; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: ApprovalAction, handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{label}</button> : null;
+// Unavailable is aria-disabled, not disabled: a disabled button leaves the tab order, so Tab never reads its reason.
+const ApprovalButton = ({ action, label = action, handler, sending, reasonId, decide }: { action: ApprovalAction; label?: string; handler?: Decide; sending: boolean; reasonId?: string; decide: (action: ApprovalAction, handler: Decide) => () => void }) => handler || reasonId ? <button type="button" data-action={action} aria-disabled={!handler || sending || undefined} aria-describedby={handler ? undefined : reasonId} onClick={handler ? decide(action, handler) : undefined}>{label}</button> : null;
 
 const ApprovalActions = function ApprovalActions({
   sending,
@@ -241,13 +242,15 @@ const ApprovalActions = function ApprovalActions({
   disabledReason?: string;
   decide: (action: ApprovalAction, handler: Decide) => () => void;
 }) {
+  const id = useId();
   if (!onApprove && !onApproveAlways && !onDeny && !disabledReason) return null;
   const busy = Boolean(sending);
+  const reasonId = disabledReason ? id : undefined;
   return <div data-part="approval-actions">
-    <ApprovalButton action="approve" handler={onApprove} sending={busy} disabledReason={disabledReason} decide={decide} />
-    {approveAlwaysLabel !== undefined ? <ApprovalButton action="approve-always" label={approveAlwaysLabel} handler={onApproveAlways} sending={busy} disabledReason={disabledReason} decide={decide} /> : null}
-    <ApprovalButton action="deny" handler={onDeny} sending={busy} disabledReason={disabledReason} decide={decide} />
-    {disabledReason ? <span role="status">{disabledReason}</span> : null}
+    <ApprovalButton action="approve" handler={onApprove} sending={busy} reasonId={reasonId} decide={decide} />
+    {approveAlwaysLabel !== undefined ? <ApprovalButton action="approve-always" label={approveAlwaysLabel} handler={onApproveAlways} sending={busy} reasonId={reasonId} decide={decide} /> : null}
+    <ApprovalButton action="deny" handler={onDeny} sending={busy} reasonId={reasonId} decide={decide} />
+    {disabledReason ? <span role="status" id={id}>{disabledReason}</span> : null}
   </div>;
 };
 
@@ -398,14 +401,14 @@ const dropReasons: Record<string, string> = {
   failed: "the turn failed",
   restart: "the server restarted",
 };
-const defaultDeliveryNote = ({ event }: UserMessageItem): ReactNode => {
-  if (event.delivery_status !== "dropped") return null;
-  const why = event.delivery_reason !== undefined && Object.hasOwn(dropReasons, event.delivery_reason)
-    ? dropReasons[event.delivery_reason]
-    : undefined;
-  const note = why ? `not delivered · ${why}` : "not delivered";
-  return event.text_omitted ? `${note} · text not kept` : note;
+export const deliveryNoteText = (status: "delivered" | "dropped" | "unknown", reason?: string, textOmitted = false) => {
+  if (status === "delivered") return null;
+  const why = reason !== undefined && Object.hasOwn(dropReasons, reason) ? dropReasons[reason] : undefined;
+  const note = `${status === "unknown" ? "not confirmed" : "not delivered"}${why ? ` · ${why}` : ""}`;
+  return textOmitted ? `${note} · text not kept` : note;
 };
+const defaultDeliveryNote = ({ event }: UserMessageItem): ReactNode =>
+  deliveryNoteText(event.delivery_status ?? "delivered", event.delivery_reason, event.text_omitted);
 
 export type FallbackProps = ItemProps & {
   /**
@@ -501,7 +504,7 @@ function ApprovalSkip({ items, reveal }: { items: readonly { id: string; kind?: 
   const summary = toolSummary({ id: pending.id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false });
   const jump = async () => {
     const card = await reveal(pending.id);
-    (card?.querySelector<HTMLElement>("[data-part=approval-actions] button:not(:disabled)") ?? card)?.focus();
+    (card?.querySelector<HTMLElement>("[data-part=approval-actions] button:not([aria-disabled=true])") ?? card)?.focus();
   };
   return <button type="button" data-part="jump-to-approval" onClick={() => void jump()}>jump to approval: {view?.kind === "shell" ? "" : `${toolLabel(tool_call.name)} `}{oneLine(summary)}</button>;
 }
