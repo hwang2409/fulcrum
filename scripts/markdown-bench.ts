@@ -163,12 +163,12 @@ const commitTime = (length: number) => {
 const commits = [100_000, 200_000, 1_000_000].map((length) => [length, commitTime(length)] as const);
 for (const [length, time] of commits) console.log(`newline  ${`rich line commit ${length / 1000}k`.padEnd(22)} median ${time.toFixed(3)} ms`);
 const commitRatio = commits[2]![1] / Math.max(commits[0]![1], 0.1);
+// Report only: the gate is the 32x-span test in packages/markdown/test/closed-paragraphs.test.tsx.
 console.log(`rich line commit growth 100k -> 1 MB: ${commitRatio.toFixed(1)}x (linear is ~10x)`);
-if (commitRatio > 25 || commits[2]![1] > 500) failed = true;
 
 // A continuation preview must append its delta and bounded provisional suffix without copying or scanning the whole
-// line. This only reports the doubling ratios (clean is about 2.0x); the gate is the 32x-span subquadratic test in
-// packages/markdown/test/preview-performance.test.tsx, because a 2.3x doubling limit flaked on shared runners.
+// line. This only reports the doubling ratios (clean is about 2.0x); the gates are the copy-count and flat-delta tests
+// in packages/markdown/test/preview-performance.test.tsx, because a 2.3x doubling limit flaked on shared runners.
 const continuationTimes = () => {
   const line = "word **b** `c` and more ".repeat(16_000);
   const document = createStreamingDocument();
