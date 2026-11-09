@@ -38,6 +38,8 @@ export type ComposerProps = ComposerCallbacks &
   ({ state: Exclude<ComposerState, "read-only">; reason?: never } | { state: "read-only"; reason: string });
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error)) || "unknown error";
+const noDelivery = () => false;
+const noSubscription = () => () => {};
 
 /**
  * The draft left after `sent` was accepted, given the draft `current` the user has now. Only the sent text leaves:
@@ -81,8 +83,8 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
   const [deliveryId, setDeliveryId] = useState<string>();
   const store = useContext(StoreContext);
   const hasMessageDelivered = useCallback((delivery: string) => store?.hasMessageDelivery?.(delivery) ?? false, [store]);
-  const readDelivery = deliveryId === undefined ? () => false : () => hasMessageDelivered(deliveryId);
-  const echoed = useSyncExternalStore(deliveryId === undefined || !store ? () => () => {} : store.subscribe, readDelivery, readDelivery);
+  const readDelivery = deliveryId === undefined ? noDelivery : () => hasMessageDelivered(deliveryId);
+  const echoed = useSyncExternalStore(deliveryId === undefined || !store ? noSubscription : store.subscribe, readDelivery, readDelivery);
   const delivered = useCallback((send: Send) => {
     if (send.delivered) return;
     send.delivered = true;
