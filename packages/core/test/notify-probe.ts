@@ -45,6 +45,13 @@ if (entry === "resync") {
   store.beginHistory();
   const stop = store.subscribe(() => { stop(); store.prepend([commit("b")]); store.endHistory(); store.dispatch(commit("x")); });
   store.resync([commit("a"), commit("c")]);
+} else if (entry === "dispatch during a reduction") {
+  // An event getter dispatches while the job reduces: the nested event is serialized after the outer one.
+  const nested: RunEvent = { type: "user_message", text: "nested", mode: "send", delivery_id: "nested" };
+  store.dispatch({ type: "user_message", text: "outer", mode: "send", get delivery_id() { store.dispatch(nested); return "outer"; } });
+  for (const id of ["outer", "nested"]) {
+    if (!store.getItem(`user:delivery:${id}`) || !store.hasMessageDelivery(id)) throw new Error(`missing ${id}`);
+  }
 } else throw new Error(`unknown entry ${entry}`);
 drain();
 console.log(JSON.stringify({ seen, outline: ids(store.getOutline()) }));
