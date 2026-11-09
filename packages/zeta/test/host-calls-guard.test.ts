@@ -6,11 +6,16 @@ import ts from "typescript";
 // (ii) an implementation in the package's own modules (a relative import; an interface method is host code), or
 // (iii) a platform function on the short list below. Any other call, including a function read from a Set, a Map, a
 // parameter, or `options`, whatever its name, must run inside an owner as an AST ancestor (its body, or an inline
-// function passed to it), or sit on a line marked `// host code: outside` (one per "outside" row of the README table).
-type Rule = { file: string; owners: string[] };
+// function passed to it), or sit on a line marked `// host code: outside; README row "<row>"` (an "outside" row of the
+// README table). An async or generator function never counts as owned: code after its first await, or all of a
+// generator's body, runs after the owner's try has returned.
+// shortcut: exotic forms stay uncaught: a tagged template (`fn\`x\``), `set.forEach(Function.prototype.call as never)`,
+// and a host function cast `as never` (it hides the call signature, as in `new Promise(listener as never)`). Upgrade
+// if one of them shows up in review.
+type Rule = { file: string; readme: string; owners: string[] };
 const rules: Rule[] = [
-  { file: "packages/core/src/store.ts", owners: ["call", "sink"] },
-  { file: "packages/zeta/src/client.ts", owners: ["call", "deliver", "sink"] },
+  { file: "packages/core/src/store.ts", readme: "packages/core/README.md", owners: ["call", "sink"] },
+  { file: "packages/zeta/src/client.ts", readme: "packages/zeta/README.md", owners: ["call", "deliver", "sink"] },
 ];
 const root = new URL("../../../", import.meta.url).pathname;
 
@@ -130,6 +135,7 @@ function scan(text: string, rule: Rule): string[] {
   const owned = (node: ts.Node) => {
     for (let current = node.parent; !ts.isSourceFile(current); current = current.parent) {
       if (!ts.isFunctionLike(current)) continue;
+      if (ts.getCombinedModifierFlags(current as ts.Declaration) & ts.ModifierFlags.Async || "asteriskToken" in current && current.asteriskToken) return false;
       const parent = current.parent;
       if (ts.isVariableDeclaration(parent) && isOwner(parent.name as ts.Identifier)) return true;
       if (!ts.isCallExpression(parent)) return false;
@@ -171,6 +177,7 @@ const planted: { rule: Rule; anchor: string; forms: string[] }[] = [
       "  onError?.(new Error(\"boom\"));",
       "  for (const l of listeners) l();",
       "  diagnosticsListeners.forEach((listener) => listener.call(null));",
+      "  call(async () => { await 0; for (const l of listeners) l(); });",
     ],
   },
   {
@@ -189,6 +196,9 @@ const planted: { rule: Rule; anchor: string; forms: string[] }[] = [
       "  setTimeout([...closeListeners][0]!, 0);",
       "  Promise.resolve(closedError).then([...closeListeners][0]);",
       "  call(() => { setTimeout(() => { for (const l of closeListeners) l(closedError); }, 0); });",
+      "  call(async () => { await closedError; for (const l of closeListeners) l(closedError); });",
+      "  call(async () => { for (const l of closeListeners) l(closedError); });",
+      "  call(function* () { for (const l of closeListeners) l(closedError); });",
     ],
   },
 ];
@@ -207,12 +217,32 @@ test.each(planted)("each planted direct host call in $rule.file fails the guard"
   }
 }, 60_000);
 
-// Every `// host code: outside` marker is load-bearing: removing any one of them fails the guard at that line.
+// The type of call() refuses an async function too, so tsc stops it before the guard runs.
+test.each(planted)("an async function passed to call() in $rule.file does not type-check", async ({ rule, anchor, forms }) => {
+  const lines = (await read(rule)).split("\n");
+  const at = lines.findIndex((line) => line.startsWith(anchor));
+  for (const form of forms.filter((form) => form.startsWith("  call(async"))) {
+    const built = program(rule.file, [...lines.slice(0, at), form, ...lines.slice(at)].join("\n"));
+    const file = built.getSourceFile(root + rule.file)!;
+    const errors = built.getSemanticDiagnostics(file).filter((diagnostic) => file.getLineAndCharacterOfPosition(diagnostic.start!).line === at)
+      .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
+    expect({ form, refused: errors.some((error) => error.includes("is not assignable to type 'never'")) }).toEqual({ form, refused: true });
+  }
+}, 60_000);
+
+// Every `// host code: outside` marker is load-bearing: removing any one of them fails the guard at that line. Each one
+// names an existing "outside" row of its README table, by the start of the row's first cell.
 test.each(rules)("removing any outside marker in $file fails the guard", async (rule) => {
   const lines = (await read(rule)).split("\n");
   const marked = lines.flatMap((line, index) => line.includes("// host code: outside") ? [index] : []);
   expect(marked.length).toBeGreaterThan(0);
+  const rows = (await Bun.file(root + rule.readme).text()).split("\n").flatMap((line) => {
+    const cells = line.split("|").map((cell) => cell.trim());
+    return line.startsWith("| ") && cells[2]?.startsWith("outside") ? [cells[1]!.replaceAll("`", "")] : [];
+  });
   for (const index of marked) {
+    const row = /\/\/ host code: outside; README row "([^"]+)"/.exec(lines[index]!)?.[1];
+    expect({ line: index + 1, row, exists: !!row && rows.some((cell) => cell.startsWith(row)) }).toEqual({ line: index + 1, row, exists: true });
     const stripped = lines.with(index, lines[index]!.replace(/\s*\/\/ host code: outside.*$/, ""));
     expect({ line: index + 1, found: scan(stripped.join("\n"), rule).some((violation) => violation.startsWith(`${rule.file}:${index + 1}:`)) })
       .toEqual({ line: index + 1, found: true });

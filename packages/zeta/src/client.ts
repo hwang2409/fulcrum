@@ -103,7 +103,7 @@ const advanceContent = (chunk: ContentChunk, state: ContentAssembly) => {
 async function readContentChunks(handle: string, cap: number, read: (offset: number) => Promise<unknown>) {
   const state: ContentAssembly = { offset: 0, chunks: [] };
   while (true) {
-    const { chunk, bytes } = validatedChunk(await read(state.offset), handle, state, cap); // host code: outside; the client's own function, held as a value (README row "client functions held as values")
+    const { chunk, bytes } = validatedChunk(await read(state.offset), handle, state, cap); // host code: outside; README row "client functions held as values"
     state.chunks.push(bytes);
     if (chunk.eof) return finishContent(chunk, state);
     advanceContent(chunk, state);
@@ -141,7 +141,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     recovery.canceled = true;
     recovery.controller?.abort();
     if (recovery.timer) clearTimeout(recovery.timer);
-    recovery.wake?.(); // host code: outside; the client's own function, held as a value
+    recovery.wake?.(); // host code: outside; README row "client functions held as values"
     recoveries.delete(session);
   };
   const cancelLoad = (session: string) => {
@@ -164,7 +164,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     } catch {}
   };
   // host code: a host error goes to sink() once and never reaches the socket loop, the recovery loop, or another listener.
-  const call = (run: () => void) => {
+  // The return type refuses an async function: code after its first await would run outside this try.
+  const call = <T>(run: () => T extends PromiseLike<unknown> ? never : T) => {
     try {
       run();
     } catch (error) {
@@ -174,7 +175,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const deliver = <T>(listeners: ReadonlySet<(value: T) => void>, value: T) => {
     for (const listener of listeners) call(() => listener(value));
   };
-  const store = createRunStore(scheduler); // host code: outside; hands the scheduler to the store (README row "scheduler")
+  const store = createRunStore(scheduler); // host code: outside; README row "scheduler"
   let evictionCount = 0;
   const evict = (id: string) => {
     cancelRecovery(id);
@@ -188,7 +189,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!value) return false;
     stores.delete(id);
     holders.delete(id);
-    value.dispose(); // host code: outside; core dispose calls no listener (README row "store dispose")
+    value.dispose(); // host code: outside; README row "store dispose"
     evictionCount++;
     return true;
   };
@@ -226,7 +227,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
           const controller = new AbortController();
           recovery.controller = controller;
           // A throw, or a value that cannot be iterated, is a load failure here, not a listener error.
-          const history = [...await load(controller.signal)]; // host code: outside
+          const history = [...await load(controller.signal)]; // host code: outside; README row "load(signal)"
           recovery.controller = undefined;
           if (recovery.canceled || stores.get(session) !== target) return;
           call(() => target.resync(history));
@@ -299,7 +300,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const controller = new AbortController();
     activeLoads.set(session, controller);
     try {
-      const history = await load(controller.signal); // host code: outside; a throw rejects replay to its caller
+      const history = await load(controller.signal); // host code: outside; README row "load(signal)"
       if (controller.signal.aborted) throw Object.assign(new Error("request aborted"), { name: "AbortError" });
       if (!keepQuarantined) activeLoads.delete(session);
       const value = createSession(session);
@@ -351,7 +352,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const request = pending.get(id); if (!request) return;
     pending.delete(id); if (request.timer) clearTimeout(request.timer);
     deliveryIdentity.settle(id);
-    callback(request); // host code: outside; the client's own function, held as a value
+    callback(request); // host code: outside; README row "client functions held as values"
   };
   const handleEvent = (message: TransportMessage) => {
     if (!message.params || typeof message.params !== "object") return call(() => store.dispatch(adapterError("event params are invalid")));
@@ -378,11 +379,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
         closeReason = { kind: "output_overflow", message: message.error.message, role };
       }
       const error = Object.assign(new Error(message.error.message), message.error);
-      pending.forEach((_, id) => settle(id, (request) => request.reject(error))); // host code: outside; the client's own function, held as a value
+      pending.forEach((_, id) => settle(id, (request) => request.reject(error))); // host code: outside; README row "client functions held as values"
       return;
     }
     if (typeof message.id !== "number" || !pending.has(message.id)) return;
-    settle(message.id, (item) => message.error ? item.reject(Object.assign(new Error(message.error.message), message.error)) : item.resolve(message.result)); // host code: outside; the client's own function, held as a value
+    settle(message.id, (item) => message.error ? item.reject(Object.assign(new Error(message.error.message), message.error)) : item.resolve(message.result)); // host code: outside; README row "client functions held as values"
   };
   transport.onMessage((text) => { // host code: outside; README row "transport"
     if (text.length > maxFrame || (text.length > maxFrame / 3 && encoder.encode(text).byteLength > maxFrame)) return call(() => store.dispatch(adapterError(`frame exceeds ${maxFrame} bytes`)));
@@ -408,9 +409,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     closed = true;
     closedError = error;
     deliveryIdentity.close();
-    pending.forEach((_, id) => settle(id, (request) => request.reject(error))); // host code: outside; the client's own function, held as a value
+    pending.forEach((_, id) => settle(id, (request) => request.reject(error))); // host code: outside; README row "client functions held as values"
     closeAbort.abort(error);
-    closeWaiters.forEach((reject) => reject(error)); // host code: outside; the client's own function, held as a value
+    closeWaiters.forEach((reject) => reject(error)); // host code: outside; README row "client functions held as values"
     closeWaiters.clear();
     attachmentGates.clear();
     cancelLoads();
@@ -431,7 +432,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (requestOptions.signal?.aborted) return Promise.reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
-      const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" }))); // host code: outside; the client's own function, held as a value
+      const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" }))); // host code: outside; README row "client functions held as values"
       const item: Pending = { resolve, reject };
       pending.set(id, item);
       deliveryIdentity.track(id, {
@@ -442,9 +443,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
         deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined,
       });
       if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true }); // host code: outside; README row "request signal"
-      if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs); // host code: outside; the client's own function, held as a value
+      if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs); // host code: outside; README row "client functions held as values"
       try { transport.send(JSON.stringify({ jsonrpc: "2.0", id, method, params })); } // host code: outside; README row "transport"
-      catch (error) { settle(id, (entry) => entry.reject(error)); } // host code: outside; the client's own function, held as a value
+      catch (error) { settle(id, (entry) => entry.reject(error)); } // host code: outside; README row "client functions held as values"
     });
   };
   const hostCommandsEnabled = () => options.hostCommands !== undefined && options.hostCommands !== null && negotiatedFeatures.includes("session_host_commands");
@@ -467,7 +468,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const retryBusy = async (request: () => Promise<unknown>, requestOptions: RequestOptions) => {
     for (const delay of [0, 250, 500, 1_000]) {
       if (delay) await retryDelay(delay, ...(requestOptions.signal ? [requestOptions.signal] : []), closeAbort.signal);
-      try { return await request(); } // host code: outside; the client's own function, held as a value
+      try { return await request(); } // host code: outside; README row "client functions held as values"
       catch (error) {
         if ((error as { code?: unknown })?.code !== -32004 || delay === 1_000) throw error;
       }
@@ -480,7 +481,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (closed) throw closedError;
     let supply: Promise<unknown>;
     try {
-      supply = Promise.resolve(options.hostCommands!(sessionId)).catch(() => { // host code: outside; guarded by this try and catch
+      supply = Promise.resolve(options.hostCommands!(sessionId)).catch(() => { // host code: outside; README row "hostCommands(sessionId)"
         throw new HostCommandError("host_command_supplier_failed", "host command supplier failed");
       });
     } catch {
@@ -556,7 +557,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       negotiatedFeatures = negotiatedProtocol !== "1.0" && Array.isArray(features) && features.every((feature): feature is string => typeof feature === "string") ? features : [];
       if (options.hostCommands && !negotiatedFeatures.includes("session_host_commands") && !warnedHostCommandsUnavailable) {
         warnedHostCommandsUnavailable = true;
-        console.warn("session_host_commands was requested but is not offered; host commands are disabled"); // host code: outside; a throw rejects hello
+        console.warn("session_host_commands was requested but is not offered; host commands are disabled"); // host code: outside; README row "console.warn"
       }
       return result;
     });
