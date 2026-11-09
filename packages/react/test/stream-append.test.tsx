@@ -324,8 +324,20 @@ function liveObjects() {
 
 // A long-lived open viewer keeps what its appends add, not an object per append: after warm-up, 400 appends of 100
 // characters (one line each) leave about one stream chunk per compaction run and one segment record per 2,000
-// characters. Counted by object kind, not by heap totals.
-test("a long-lived open viewer keeps objects per text added, not per append", () => {
+// characters. Counted by object kind, not by heap totals. A heap snapshot leaves JSC slower for the rest of the process
+// (later suites ran 6-10x slower in CI), so the counting runs in its own bun process.
+const RETENTION = "a long-lived open viewer keeps objects per text added, not per append";
+const inChild = process.env.FULCRUM_RETENTION_CHILD === "1";
+test.skipIf(inChild)(RETENTION, () => {
+  const child = Bun.spawnSync([process.execPath, "test", import.meta.path, "-t", RETENTION], {
+    cwd: import.meta.dir,
+    env: { ...process.env, FULCRUM_RETENTION_CHILD: "1" },
+  });
+  const output = child.stdout.toString() + child.stderr.toString();
+  console.log(output.split("\n").filter((line) => line.startsWith("per append")).join("\n"));
+  if (child.exitCode !== 0 || !output.includes(" 1 pass")) throw new Error(`retention child failed:\n${output}`);
+});
+test.if(inChild)(`${RETENTION} (child)`, () => {
   const store = createRunStore((job) => job());
   store.dispatch(start("a"));
   store.dispatch(out("a", big(1_000_000)));
