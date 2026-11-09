@@ -220,9 +220,26 @@ function stripPendingContainers(line: string) {
   }
 }
 
-/** A line that starts with a pipe and has a cell word: it shows as sent, pipes kept, until a delimiter row makes it a
- * table header. A line of only pipes is markup, like a lone `>`, and stays hidden while it may become a header. */
-export const isPipeRow = (content: string) => /^[ \t]*\|/.test(content) && /[^ \t|]/.test(content);
+/** The cells of a table row: split on pipes that are not escaped, without the outer border pipes. */
+export function tableCells(line: string) {
+  const cells: string[] = [];
+  let cell = "";
+  for (let index = 0; index < line.length; index++) {
+    if (line[index] === "\\" && line[index + 1] === "|") cell += line[++index]!;
+    else if (line[index] === "|") { cells.push(cell); cell = ""; }
+    else cell += line[index];
+  }
+  cells.push(cell);
+  if (!cells[0]?.trim()) cells.shift();
+  if (!cells.at(-1)?.trim()) cells.pop();
+  return cells;
+}
+
+/** GFM: a delimiter row makes a table only of the line directly above it, with a pipe and the same number of cells. */
+const startsTable = (paragraph: string, delimiter: string) => {
+  const header = paragraph.slice(paragraph.lastIndexOf("\n") + 1);
+  return header.includes("|") && tableCells(header).length === tableCells(delimiter).length;
+};
 
 function classifyLeaf(line: string, growing: boolean): PendingClassification {
   let content = stripPendingContainers(line);
@@ -237,8 +254,9 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   if (task) content = content.slice(task[0].length);
   else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
   if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
-  // The anchored row test fails on the first prose character, so the whole-line `[:-]` scan rarely runs.
-  if (/^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(content) && /[:-]/.test(content))
+  // A growing line of only delimiter-row characters (pipes, colons, dashes) may still become a delimiter row: it waits
+  // until its line ends, like a lone `>`. The anchored test fails on the first prose character.
+  if (/^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(content))
     return EMPTY;
   if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
     return EMPTY;
@@ -246,11 +264,7 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   // An open `[` may still close on a later line.
   const openBracket = content.lastIndexOf("[");
   if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
-  // A pipe row shows as sent until it is a table (isPipeRow); other header candidates hide their pipes.
-  const visibleContent = content.includes("|") && !isPipeRow(content)
-    ? content.split("|").map((cell) => cell.trim()).join("")
-    : content;
-  return { content: visibleContent, kind: "paragraph", offset: 0 };
+  return { content, kind: "paragraph", offset: 0 };
 }
 
 function htmlBlockEnd(line: string) {
@@ -333,8 +347,18 @@ export class MarkdownLineResolver {
     return classifyLeaf(line, false);
   }
 
-  get pendingStartsWithSettledProse() {
-    return this.pendingLine.settledProseStart;
+  /** The pending line's row content when it continues the open table: the read-only part of `continueTableRow`. */
+  get pendingTableRow() {
+    if (this.openLeaf?.kind !== "table") return undefined;
+    const line = this.pendingLine.content;
+    const { cursor, unmatched, blank } = this.matchContinuations(line);
+    const { startsContainer, startsBlock } = this.lineStart(cursor, unmatched);
+    return this.continueTableRow(line, cursor, unmatched, blank, startsContainer, startsBlock)?.leaf?.content;
+  }
+
+  /** How many open containers the pending line continues: a new paragraph on it belongs inside them. */
+  get pendingContainerDepth() {
+    return this.matchContinuations(this.pendingLine.content).matchedDepth;
   }
 
   get hasPendingLookahead() {
@@ -683,7 +707,7 @@ export class MarkdownLineResolver {
     if (lead === undefined || !"#`~*-_=|:".includes(lead)) return false;
     const leaf = this.openLeaf;
     if (leaf?.kind === "paragraph" && leaf.tableEligible) {
-      if (!unmatched && "|-:".includes(lead) && leaf.content.includes("|") && isTableDelimiter(unmatchedContent)) return true;
+      if (!unmatched && "|-:".includes(lead) && isTableDelimiter(unmatchedContent) && startsTable(leaf.content, unmatchedContent)) return true;
       if ("=-".includes(lead) && /^ {0,3}(?:=+|-+)\s*$/.test(unmatchedContent)) return true;
     }
     return /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/.test(unmatchedContent);
@@ -798,7 +822,7 @@ export class MarkdownLineResolver {
       };
     }
     const tableDelimiter = opened.length === 0 && this.openLeaf?.kind === "paragraph" && this.openLeaf.tableEligible
-      && this.openLeaf.content.split("|").some((cell) => cell.trim()) && isTableDelimiter(content);
+      && isTableDelimiter(content) && startsTable(this.openLeaf.content, content);
     if (tableDelimiter) {
       this.openLeaf = { kind: "table" };
       return {

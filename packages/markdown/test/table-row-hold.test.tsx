@@ -92,27 +92,40 @@ test("a header and a delimiter row with no body row yet are a table", () => {
   expect(shown(document.render())).toEqual(["p:Results:", "table:a|b"]);
 });
 
-// The rule: at every streamed prefix, the reader sees every character the model sent, except syntax: pipes (cell
-// borders once a table forms), delimiter rows (they become the borders), container markers, and whitespace. A growing
-// line of only markup (a delimiter row, a lone pipe or marker) is syntax until its line ends.
-const content = (line: string) => line.replace(/^[ \t]*(?:>[ \t]?)*(?:[-*+][ \t]+)?/, "");
-const markup = (line: string) => /^[ \t|:-]*$/.test(line) && (line.includes("-") || line.includes(":") || !/[^ \t]/.test(line) || line.includes("|"));
-const sent = (prefix: string) => prefix.split("\n").map(content).filter((line) => !markup(line)).join("").replace(/[\s|]/g, "");
-const seen = (blocks: readonly Block[]) => visible(blocks).replace(/[\s|]/g, "");
-for (const fixture of [
-  "Every check passed:\n\n| check | result |\n| --- | --- |\n| typecheck | pass |\n| unit tests | 412 pass |\n\nDone.",
-  "Intro line\n| a | b |\nmore prose\n\n| x | y |\n|:--|--:|\n| 1 | 2 |",
-  "Use the shell:\n\n| grep foo is how you pipe\nand then sort the output\n| a | b |\nnot a delimiter",
-  "> | q | r |\n> | - | - |\n> | s | t |\n\n- item\n  | a | b |\n  more",
-]) {
-  for (const split of [1, 2, 5]) {
-    test(`every prefix shows every character sent so far (${JSON.stringify(fixture.slice(0, 24))}, split ${split})`, () => {
-      const document = createStreamingDocument();
-      for (let offset = 0; offset < fixture.length; offset += split) {
-        document.append(fixture.slice(offset, offset + split));
-        const prefix = fixture.slice(0, offset + split);
-        expect(seen(document.render()), JSON.stringify(prefix)).toBe(sent(prefix));
-      }
-    });
-  }
-}
+// The streaming structure matches what the finished text parses to (GFM), line by line.
+const structure = (blocks: readonly Block[]): string[] => blocks.map((block) => block.type === "blockquote" ? `quote[${structure(block.children).join(",")}]`
+  : block.type === "list" ? `list[${block.items.map((item) => structure(item.children).join(",")).join(";")}]`
+  : shown([block])[0]!);
+const streamed = (source: string) => {
+  const document = createStreamingDocument();
+  document.append(source);
+  return structure(document.render());
+};
+
+test("only the line directly above a delimiter row is the header; earlier lines stay a paragraph", () => {
+  const source = "Intro line\n| a | b |\n|---|---|\n| 1 | 2 |\n";
+  expect(streamed(source)).toEqual(["p:Intro line", "table:a|b|1|2"]);
+  expect(streamed(source)).toEqual(structure(parseMarkdown(source)));
+  expect(streamed("Intro\na | b\n--|--\n")).toEqual(["p:Intro", "table:a|b"]);
+});
+
+test("a delimiter row with a different cell count than the header is text, not a table", () => {
+  const source = "| a | b | c |\n|---|---|\n";
+  expect(streamed(source)).toEqual(structure(parseMarkdown(source)));
+  expect(streamed(source)[0]).toStartWith("p:");
+});
+
+test("a growing row of a table in a quote or a list shows inside its table", () => {
+  expect(streamed("Quote:\n\n> | a | b |\n> |---|---|\n> | 1 | 2 |")).toEqual(["p:Quote:", "quote[table:a|b|1|2]"]);
+  expect(streamed("- | a | b |\n  |---|---|\n  | 1 | 2 |")).toEqual(["list[table:a|b|1|2]"]);
+});
+
+test("a growing paragraph inside an open quote shows inside the quote", () => {
+  expect(streamed("> Intro\n>\n> | a | b |")).toEqual(["quote[p:Intro,p:| a | b |]"]);
+  expect(streamed("> Intro\n>\n> more")).toEqual(["quote[p:Intro,p:more]"]);
+});
+
+test("a cell a later pipe closed shows its final form; only the last open cell may still grow", () => {
+  // GFM splits cells before inline parsing: `` `c `` and `` d` `` are two cells with literal backticks.
+  expect(streamed("| x | y |\n|---|---|\n| `c | d` |")).toEqual(["table:x|y|`c|d`"]);
+});

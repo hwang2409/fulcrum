@@ -4,7 +4,7 @@ import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
 import { normalizeReferenceLabel, normalizeReferenceLeafLine, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
 import { PendingInline } from "./pending-inline.js";
-import { isPipeRow, MarkdownLineResolver, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
+import { MarkdownLineResolver, tableCells, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
 type MarkdownToken = {
   type: string;
@@ -50,19 +50,11 @@ type PendingInlineState = {
   offset: number;
   lineLength: number;
   continues: boolean;
-  tableCandidate: boolean;
   referenceCount: number;
-  raw: boolean;
 };
 
-const pendingTableCandidate = (line: string, offset: number, continues: boolean, settled: boolean) => {
-  if (!continues || settled) return false;
-  while (line[offset] === " " || line[offset] === "\t") offset++;
-  return line[offset] === "|";
-};
-
-const pendingInlineMatches = (state: PendingInlineState | undefined, offset: number, continues: boolean, tableCandidate: boolean, referenceCount: number, raw: boolean) =>
-  state?.offset === offset && state.continues === continues && state.tableCandidate === tableCandidate && state.referenceCount === referenceCount && state.raw === raw;
+const pendingInlineMatches = (state: PendingInlineState | undefined, offset: number, continues: boolean, referenceCount: number) =>
+  state?.offset === offset && state.continues === continues && state.referenceCount === referenceCount;
 
 const markdown = new MarkdownIt({ html: false, linkify: true, breaks: false, typographer: false });
 const block = (markdown as any).block;
@@ -672,10 +664,6 @@ type ParagraphRecord = {
   block: Extract<Block, { type: "paragraph" }>;
   source: string;
   labels: Set<string>;
-  /** The last line has pipes that stay hidden only while it is the last line. */
-  lastLinePipes?: boolean;
-  /** The last line is a pipe row (isPipeRow): it shows as sent, pipes kept, until it is a table. */
-  pipeRow?: boolean;
 };
 
 type TableBlock = Extract<Block, { type: "table" }>;
@@ -689,23 +677,6 @@ type TableCellRecord = {
 };
 type ReferenceUser = ParagraphRecord | TableCellRecord;
 type TableRecord = { header: string; delimiter: string; cells: TableCellRecord[] };
-
-// The open paragraph's last line can still become a table header, which turns its pipes into cell borders.
-function hideTableCandidatePipes(inlines: Inline[]) {
-  for (let index = inlines.length - 1; index >= 0; index--) {
-    const inline = inlines[index]!;
-    if (inline.type === "break") return;
-    if ("children" in inline) hideTableCandidatePipes(inline.children);
-    // A header row splits cells before inline parsing, so a pipe inside a code span is a border too.
-    if (inline.type === "code") inline.value = inline.value.replace(/\|/g, "");
-    if (inline.type !== "text") continue;
-    const lineStart = inline.value.lastIndexOf("\n") + 1;
-    const line = inline.value.slice(lineStart).replace(/[ \t]*\|[ \t]*/g, "");
-    // A last line of only pipes may become a table header, so its line break waits too.
-    inline.value = (line || index < inlines.length - 1 ? inline.value.slice(0, lineStart) : inline.value.slice(0, Math.max(0, lineStart - 1))) + line;
-    if (lineStart) return;
-  }
-}
 
 // The text of `value` with each `[label]` that may still become a reference reduced to its link text.
 function pendingReferenceParts(value: string, labels?: ReadonlySet<string>): Inline[] {
@@ -770,20 +741,6 @@ function clearTightParagraphs(blocks: Block[]) {
   }
 }
 
-function tableCells(line: string) {
-  const cells: string[] = [];
-  let cell = "";
-  for (let index = 0; index < line.length; index++) {
-    if (line[index] === "\\" && line[index + 1] === "|") cell += line[++index]!;
-    else if (line[index] === "|") { cells.push(cell); cell = ""; }
-    else cell += line[index];
-  }
-  cells.push(cell);
-  if (!cells[0]?.trim()) cells.shift();
-  if (!cells.at(-1)?.trim()) cells.pop();
-  return cells;
-}
-
 function closeOpenCode(blocks: Block[]): boolean {
   const code = tailCode(blocks);
   if (!code?.open) return false;
@@ -804,12 +761,6 @@ function appendOpenCode(blocks: Block[], content: string): boolean {
         if (appendOpenCode(block.items[item]!.children, content)) return true;
   }
   return false;
-}
-
-const tableDelimiterLine = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
-
-function safeTableText(value: string) {
-  return value.split("\n").filter((line) => !(line.includes("|") && tableDelimiterLine.test(line))).join("\n").replaceAll("|", "");
 }
 
 function cloneOpenPath(blocks: readonly Block[], cloneLeaf = true): Block[] {
@@ -856,10 +807,24 @@ function appendPendingTableRow(blocks: Block[], source: string, references: Envi
   const table = tailTable(blocks);
   if (!table) return false;
   const cells = tableCells(source);
-  const row = Array.from({ length: table.header.length }, (_, index) => parseInline(cells[index]?.trim() ?? "", true, references));
+  // A pipe after a cell ends it, so only a last cell with no border after it may still grow (an open code span in it
+  // waits for its closer); every other cell shows its final form, as GFM splits cells before inline parsing.
+  const growing = /(?:^|[^\\])\|[ \t]*$/.test(source) ? -1 : cells.length - 1;
+  const row = Array.from({ length: table.header.length }, (_, index) => parseInline(cells[index]?.trim() ?? "", index === growing, references));
   row.forEach((cell) => markPendingReferences(cell));
   table.rows = [...table.rows, row];
   return true;
+}
+
+// The children of the first `depth` open containers in `blocks` (a cloned open path), where a new growing paragraph goes.
+function openChildren(blocks: Block[], frames: readonly TreeFrame[], depth: number) {
+  let children = blocks;
+  for (const frame of frames.slice(1, depth)) {
+    const last = children.at(-1);
+    if (frame.kind === "quote" && last?.type === "blockquote") children = last.children;
+    else if (frame.kind === "item" && last?.type === "list") children = last.items.at(-1)?.children ?? children;
+  }
+  return children;
 }
 
 function appendPendingParagraph(blocks: Block[], pending: Inline[], continuesParagraph: boolean) {
@@ -884,28 +849,6 @@ function hideOpenInlineLink(value: string) {
   let depth = 1;
   for (const character of suffix) depth += character === "(" ? 1 : character === ")" ? -1 : 0;
   return depth > 0 ? value.slice(0, open.index) + (open[1] ? "" : open[2]) : value;
-}
-
-function containsTable(blocks: readonly Block[]): boolean {
-  return blocks.some((block) => block.type === "table"
-    || block.type === "blockquote" && containsTable(block.children)
-    || block.type === "list" && block.items.some((item) => containsTable(item.children)));
-}
-
-function hideTableSyntax(blocks: Block[]) {
-  const inline = (nodes: Inline[], table = false) => nodes.forEach((node) => {
-    if (node.type === "text") node.value = table ? safeTableText(node.value).replace(/[\[\]]/g, "") : safeTableText(node.value);
-    else if ("children" in node) inline(node.children, table);
-  });
-  const visit = (items: Block[]) => items.forEach((block) => {
-    if (block.type === "blockquote") visit(block.children);
-    else if (block.type === "list") block.items.forEach((item) => visit(item.children));
-    else if (block.type === "table") {
-      block.header.forEach((cell) => inline(cell, true));
-      block.rows.forEach((row) => row.forEach((cell) => inline(cell, true)));
-    }
-  });
-  visit(blocks);
 }
 
 function reconcileBlocks(committed: readonly Block[], preview: Block[]): Block[] {
@@ -955,25 +898,6 @@ export function createStreamingDocument(): StreamingDocument {
   // The growing line's inline nodes and the identity used to reuse them.
   let pendingInline: PendingInline | undefined;
   let pendingInlineState: PendingInlineState | undefined;
-  // A streaming pipe row (isPipeRow) may be a table header: it shows as sent, pipes kept, and becomes the table when its
-  // delimiter row ends, or stays as it is when a later line proves it prose. Never held back (a model may stall on it, or
-  // end there), and never stripped of its pipes (its cells would read as one word). Other lines that may be a header
-  // still hide their pipes (hideTableCandidatePipes). Settled once per line, by its first characters after `offset`:
-  // indexing the line flattens it, so a check per frame would copy the whole line every frame.
-  let pendingRow: { offset: number; scanned: number; pipe: boolean; raw: boolean; settled: boolean } | undefined;
-  const settlePendingRow = (line: string, offset: number) => {
-    if (pendingRow?.offset !== offset) pendingRow = { offset, scanned: offset, pipe: false, raw: false, settled: false };
-    const row = pendingRow;
-    for (; !row.settled && row.scanned < line.length; row.scanned++) {
-      const character = line[row.scanned];
-      if (character === " " || character === "\t") continue;
-      if (character === "|") row.pipe = true;
-      else {
-        row.raw = row.pipe;
-        row.settled = true;
-      }
-    }
-  };
   const pendingLooseLists = new Set<ListBlock>();
   const looseLists = new WeakSet<ListBlock>();
 
@@ -1067,7 +991,6 @@ export function createStreamingDocument(): StreamingDocument {
       ? parseInline(inlineSource, streaming, environment())
       : [{ type: "text", value: inlineSource }];
     if (pendingReferences) markPendingReferences(record.block.children, bracketLabels(inlineSource));
-    if (streaming && !record.pipeRow) hideTableCandidatePipes(record.block.children);
     registerReferences(record);
     tailParses++;
   };
@@ -1089,7 +1012,7 @@ export function createStreamingDocument(): StreamingDocument {
       item.checked = task[1]!.toLowerCase() === "x";
       content = content.slice(task[0].length);
     }
-    const record: ParagraphRecord = { block, source: content, labels: new Set(), lastLinePipes: content.includes("|"), pipeRow: isPipeRow(content) };
+    const record: ParagraphRecord = { block, source: content, labels: new Set() };
     // The growing line already holds stable nodes for this text; only its unresolved tail is parsed again.
     updateParagraph(record, true, true, pendingInline?.commit(content));
     paragraphRecords.set(block, record);
@@ -1101,11 +1024,9 @@ export function createStreamingDocument(): StreamingDocument {
   const appendParagraphLine = (record: ParagraphRecord, content: string) => {
     const addition = `\n${content}`;
     record.source += addition;
-    record.pipeRow = isPipeRow(content);
     const child = record.block.children.length === 1 ? record.block.children[0] : undefined;
-    if (child?.type === "text" && !record.lastLinePipes && !/[\\&<>*_~`\[\]|]/.test(content)) child.value += addition;
+    if (child?.type === "text" && !/[\\&<>*_~`\[\]]/.test(content)) child.value += addition;
     else updateParagraph(record, true);
-    record.lastLinePipes = content.includes("|");
   };
 
   const updateTableCell = (record: TableCellRecord) => {
@@ -1196,8 +1117,14 @@ export function createStreamingDocument(): StreamingDocument {
       const paragraph = children.at(-1);
       if (paragraph?.type === "paragraph") {
         const record = paragraphRecords.get(paragraph)!;
-        unregister(record);
-        const headerCells = tableCells(record.source);
+        // GFM: the header is only the line directly above the delimiter; earlier lines stay a paragraph above the table.
+        const split = record.source.lastIndexOf("\n");
+        const header = record.source.slice(split + 1);
+        if (split >= 0) {
+          record.source = record.source.slice(0, split);
+          updateParagraph(record);
+        } else unregister(record);
+        const headerCells = tableCells(header);
         const delimiterCells = tableCells(leaf.content);
         const table: TableBlock = {
           type: "table",
@@ -1209,8 +1136,9 @@ export function createStreamingDocument(): StreamingDocument {
               : value.endsWith(":") ? "right" : value.startsWith(":") ? "left" : undefined;
           }),
         };
-        children[children.length - 1] = table;
-        const tableRecord: TableRecord = { header: record.source, delimiter: leaf.content, cells: [] };
+        if (split >= 0) children.push(table);
+        else children[children.length - 1] = table;
+        const tableRecord: TableRecord = { header, delimiter: leaf.content, cells: [] };
         for (let column = 0; column < headerCells.length; column++)
           tableRecord.cells.push(createTableCell(table, headerCells[column]!.trim(), true, 0, column));
         tables.set(table, tableRecord);
@@ -1301,7 +1229,6 @@ export function createStreamingDocument(): StreamingDocument {
       if (piece.endsWith("\n")) {
         pendingInline = undefined;
         pendingInlineState = undefined;
-        pendingRow = undefined;
       }
     }
   };
@@ -1309,22 +1236,19 @@ export function createStreamingDocument(): StreamingDocument {
   const parsePending = (source: string, streaming: boolean) => {
     const nodes = parseInline(source, streaming, environment());
     markPendingReferences(nodes, bracketLabels(source));
-    if (!pendingRow?.raw) hideTableCandidatePipes(nodes);
     return nodes.filter((node) => node.type !== "text" || node.value);
   };
 
   const pendingPreview = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean): Inline[] => {
     const line = resolver.pending.content;
     if (classification.kind !== "paragraph") return [];
-    const tableCandidate = pendingTableCandidate(line, classification.offset, continues, resolver.pendingStartsWithSettledProse);
-    const raw = pendingRow?.raw === true;
-    const startsInline = !pendingInline || !pendingInlineMatches(pendingInlineState, classification.offset, continues, tableCandidate, resolver.references.size, raw);
+    const startsInline = !pendingInline || !pendingInlineMatches(pendingInlineState, classification.offset, continues, resolver.references.size);
     if (startsInline) {
       // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
       const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
       const after = open && openParagraph!.source[open.index + open.length];
       const prefix = continues && openParagraph
-        ? [...openParagraph.block.children, { type: tableCandidate ? "pending-reference" as const : "text" as const, value: "\n" }]
+        ? [...openParagraph.block.children, { type: "text" as const, value: "\n" }]
         : undefined;
       pendingInline = new PendingInline(
         parsePending,
@@ -1335,9 +1259,7 @@ export function createStreamingDocument(): StreamingDocument {
         offset: classification.offset,
         lineLength: 0,
         continues,
-        tableCandidate,
         referenceCount: resolver.references.size,
-        raw,
       };
     }
     const inline = pendingInline!;
@@ -1399,12 +1321,12 @@ export function createStreamingDocument(): StreamingDocument {
         else if (disposition === "none" && classification.offset < pending.length) appendOpenCode(overlay, classification.content);
       } else {
         const continuesParagraph = Boolean(openParagraph) && resolver.pendingContinuesParagraph(pending);
-        const startsBlock = openParagraph ? !continuesParagraph : /^[ \t]*(?:> ?|(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)|#{1,6}(?:[ \t]+|$)|`{3,}|~{3,}|<)/.test(pending);
-        if (openTable && !startsBlock && classification.kind === "paragraph" && classification.offset < pending.length && appendPendingTableRow(overlay, resolver.pendingLeafContent, environment()))
-          pendingRow = { offset: classification.offset, scanned: 0, pipe: false, raw: false, settled: true };
-        else {
-          if (classification.kind === "paragraph") settlePendingRow(pending, classification.offset);
-          appendPendingParagraph(overlay, pendingPreview(classification, continuesParagraph), continuesParagraph);
+        // Every growing line shows as sent: as the open table's next row, or as paragraph text inside the containers it
+        // continues. A pipe in it is text until a delimiter row ends below it (the resolver's one table rule).
+        const row = openTable && classification.kind === "paragraph" ? resolver.pendingTableRow : undefined;
+        if (row === undefined || !appendPendingTableRow(overlay, row, environment())) {
+          const parent = continuesParagraph || frames.length === 1 ? overlay : openChildren(overlay, frames, resolver.pendingContainerDepth);
+          appendPendingParagraph(parent, pendingPreview(classification, continuesParagraph), continuesParagraph);
         }
       }
       previewSource = source;
