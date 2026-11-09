@@ -9,6 +9,8 @@ const allEvents = readFileSync(new URL("./fixtures/all-events.jsonl", import.met
 const fields: Record<string, string[]> = {
   sub_agent_receipt: ["event", "data", "data.kind", "data.child_instance_id", "data.status", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
   child_idle: ["event", "data", "data.child_instance_id", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
+  // child_hold fields from zeta 1bef23e0 src/zeta/agent/conversation_channel.py:336-353.
+  child_hold: ["event", "data", "data.notification_id", "data.origin", "data.kind", "data.child_instance_id", "data.child_session_path", "data.description", "data.status", "data.reason", "data.until", "data.provider", "data.account", "data.retry_after", "data.text"],
   task_exit_notification: ["event", "data", "data.notification_id"],
   project_inbox_notification: ["event", "data", "data.notification_id"],
   child_question: ["event", "data", "data.child_instance_id", "data.notification_id", "data.summary", "data.question", "data.description", "data.text", "data.preview", "data.started_at", "data.updated_at", "data.completed_at", "data.sequence"],
