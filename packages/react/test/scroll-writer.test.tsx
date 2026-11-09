@@ -117,6 +117,7 @@ test.each(scenarios)("timeline routes $name through the DOM-aware scroll writer"
   const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
   const descriptors = (["clientHeight", "scrollHeight", "scrollTop"] as const).map((name) => [name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name)] as const);
   const positions = new WeakMap<HTMLElement, number>();
+  let scrollTopReads = 0;
   globalThis.ResizeObserver = class {
     private entry: Observer;
     constructor(callback: ResizeObserverCallback) { this.entry = { callback, observed: new Set() }; observers.push(this.entry); }
@@ -136,7 +137,7 @@ test.each(scenarios)("timeline routes $name through the DOM-aware scroll writer"
   });
   Object.defineProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
-    get() { return positions.get(this as HTMLElement) ?? 0; },
+    get() { if ((this as HTMLElement).hasAttribute("data-test-scroll")) scrollTopReads++; return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
   });
 
@@ -154,7 +155,10 @@ test.each(scenarios)("timeline routes $name through the DOM-aware scroll writer"
   try {
     render(outline);
     const host = container.querySelector<HTMLElement>("[data-test-scroll]")!;
+    scrollTopReads = 0;
     scenario.run({ host, observers, getList: () => list!, render, outline });
+    if (scenario.name === "layout snapshot replay")
+      expect(scrollTopReads, "a same-size layout replay has no correction or possible clamp, so it must not read DOM geometry").toBe(0);
     const gap = host.scrollHeight - host.clientHeight - host.scrollTop;
     if (scenario.pinned) expect(gap, `${scenario.name}: pinned DOM gap`).toBeLessThanOrEqual(0.5);
     else {
