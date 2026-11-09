@@ -58,6 +58,8 @@ A rejected page is atomic: it publishes nothing and enters the same visible desy
 
 A `user_message` can carry `intent`, the client id for the user's request. A later message with the same intent replaces that row, so a dropped and resent message appears once. `delivery_id` is its durable identity: an echo with the same id joins the existing row. `hasMessageDelivery(deliveryId)` reports whether that durable row exists.
 
+An image content block uses `omitted: true` when the host did not keep the image bytes. It can still carry metadata such as `filename`, `mediaType`, `width`, `height`, and `size`.
+
 `run_end.outcome` can be `completed`, `cancelled`, `failed`, `disconnected`, or `unknown`. `unknown` means the host could not observe the result. The store keeps it in `state.endOutcome` until the next `run_start`.
 
 ## tools
