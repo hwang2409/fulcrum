@@ -1,3 +1,5 @@
+import type { RunItem } from "./events.js";
+
 /** The newest full text read on one stream. One per chain, so held older versions never each pin a full copy. */
 type Cache = { chunk?: Chunk; text: string };
 
@@ -64,12 +66,14 @@ export function appendText<T extends object>(
 }
 
 /**
- * The text appended to `item`'s streamed field (a message's `text`, a tool's `output`) since `previous`, an earlier
- * snapshot of the same row: `item`'s text is exactly `previous`'s text followed by the result. Undefined when `item`
- * does not continue `previous`'s stream: a replace, a restarted tool, a resync or history reload, an older snapshot, a
- * row that never streamed. Costs the chunks appended since `previous`; it never reads or compares the whole text.
+ * The text appended to a row's stream since `previous`, an earlier snapshot of the same row: `item`'s text is exactly
+ * `previous`'s text followed by the result. A row has one stream, decided by its type: a message's `text`
+ * (`message_delta` of kind text or assistant) or a tool's `output` (`tool_output`; `tool_end` keeps it). Other deltas
+ * (reasoning, blocks) and `tool_input` (the whole call each time) are not streams. Undefined when `item` does not
+ * continue `previous`'s stream: a replace, a restarted tool, a resync or history reload, an older snapshot, a row that
+ * never streamed. Costs the chunks appended since `previous`; it never reads or compares the whole text.
  */
-export function streamTail(previous: object | undefined, item: object): string | undefined {
+export function streamTail(previous: RunItem | undefined, item: RunItem): string | undefined {
   const base = previous && chunks.get(previous);
   const chunk = chunks.get(item);
   // A different cache is a different stream: only appendText from a prior row shares its cache.

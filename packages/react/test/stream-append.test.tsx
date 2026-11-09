@@ -26,7 +26,7 @@ afterEach(() => {
 const call = (id: string) => ({ id, name: "bash", arguments: { command: "log" } });
 const start = (id: string): RunEvent => ({ type: "tool_start", tool_call: call(id), view: { kind: "shell", command: "log" } });
 const out = (id: string, output: string, replace?: boolean): RunEvent => ({ type: "tool_output", tool_call: call(id), output, ...(replace ? { replace } : {}) });
-const end = (id: string): RunEvent => ({ type: "tool_end", tool_call: call(id), tool_result: { tool_call_id: id, content: "" } });
+const end = (id: string): RunEvent => ({ type: "tool_end", tool_call: call(id), tool_result: { tool_call_id: id, content: "", is_error: false } });
 
 function mount(store: ReturnType<typeof createRunStore>, ids: string[]) {
   container = document.createElement("div");
@@ -48,7 +48,7 @@ const shown = (id: string) => [...card(id).querySelectorAll('[data-part="text-vi
 // A compare (startsWith, endsWith) reads both strings in full; any other call on a concatenated (rope) string makes the
 // engine flatten it, a full copy. So the count is the per-append full-length work, and the key names the hook doing it.
 const COMPARES = ["startsWith", "endsWith"] as const;
-const READS = ["slice", "substring", "charCodeAt", "codePointAt", "at", "charAt", "indexOf", "lastIndexOf", "includes", "match", "matchAll", "split", "replace", "search", "trim", "toLowerCase", "normalize", "localeCompare"] as const;
+const READS = ["slice", "substring", "charCodeAt", "codePointAt", "at", "charAt", "indexOf", "lastIndexOf", "includes", "match", "matchAll", "split", "replace", "search", "trim", "trimStart", "trimEnd", "toLowerCase", "normalize", "localeCompare"] as const;
 function spyStrings(min: number) {
   const sites: Record<string, number> = {};
   let chars = 0;
