@@ -146,18 +146,14 @@ test("an image opener decided as text shows `![` in place", () => {
   expect(paragraph(document.render()).startsWith("see ![x w")).toBe(true);
 });
 
-// Known gap, the same on main (e5a9bcb): while a line streams, an emphasis never pairs across a `[` that is decided as
-// text; the emphasis appears at commit. Owned by the follow-up delimiter stack (a CommonMark delimiter list that
-// re-pairs closers when a bracket leaves it).
-test("known gap, as on main: emphasis across a text-decided `[` appears at commit, not while the line streams", () => {
+test("emphasis across a text-decided bracket appears before line commit", () => {
   const pad = "w ".repeat(100);
   for (const source of [`*a [${pad}b* c]x ${pad}end`, `*a ${pad}[b* c]x ${pad}end`, `[a *b ${pad}] c ${pad}d* end`]) {
     const document = createStreamingDocument();
     for (let offset = 0; offset < source.length; offset += 4) document.append(source.slice(offset, offset + 4));
     const streaming = document.render();
-    expect(streaming[0]?.type === "paragraph" && hasEmphasis(streaming[0].children), source).toBe(false);
+    expect(streaming[0]?.type === "paragraph" && hasEmphasis(streaming[0].children), source).toBe(true);
     document.finish();
-    const final = document.render();
-    expect(final[0]?.type === "paragraph" && hasEmphasis(final[0].children), source).toBe(true);
+    expect(JSON.stringify(document.render())).toBe(JSON.stringify(parseMarkdown(source)));
   }
 });
