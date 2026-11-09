@@ -81,7 +81,6 @@ describe("prefix and range math", () => {
     virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
     virtual.setOutline(Array.from({ length: 2 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
     virtual.setFollow(false);
-    virtual.setViewport({ scrollTop: 0, size: 20, source: "user" });
     virtual.setOutline(Array.from({ length: 7 }, (_, index) => ({ id: `row-${index}`, kind: "row" })));
     expect(virtual.getSnapshot().unseenCount).toBe(2);
     virtual.setOutline([
@@ -211,7 +210,7 @@ describe("anchoring", () => {
     const virtual = engine([10, 10, 10, 10], 10, 12);
     let token = { ...virtual.beforeMutation(), anchor: { id: "row-2", index: 2, offset: 8 } };
     virtual.setOutline(items([10, 10, 10, 10]).outline.slice(3));
-    virtual.afterMutation(token);
+    virtual.afterMutation(token, { recoveryComplete: false });
 
     token = virtual.beforeMutation();
     virtual.setOutline(items([10, 10, 10, 10]).outline);
@@ -220,6 +219,20 @@ describe("anchoring", () => {
     virtual.measure("row-1", 20);
     virtual.afterMutation(token);
     expect(virtual.getSnapshot().scrollTop).toBe(22);
+  });
+  test("progressive recovery waits for completion before using the nearest surviving row", () => {
+    const virtual = engine([10, 10, 10, 10], 10, 12);
+    const token = { ...virtual.beforeMutation(), anchor: { id: "row-2", index: 2, offset: 8 } };
+    virtual.setOutline(items([10, 10, 10, 10]).outline.slice(3));
+    expect(virtual.afterMutation(token, { recoveryComplete: false })).toMatchObject({
+      scrollTop: 12,
+      jump: 0,
+      recoveryPending: true,
+    });
+    expect(virtual.afterMutation(token, { recoveryComplete: true })).toMatchObject({
+      recoveryPending: false,
+      scrollTop: 0,
+    });
   });
   test("correction clamps at the scroll bounds", () => {
     const virtual = engine([10, 10], 10, 5);
@@ -276,7 +289,7 @@ describe("bottom and scroll semantics", () => {
     virtual.setViewport({ scrollTop: 112, size: 10, source: "user" });
     let token = { ...virtual.beforeMutation(), anchor: { id: "row-11", index: 11, offset: -2 } };
     virtual.setOutline(outline.slice(12));
-    virtual.afterMutation(token);
+    virtual.afterMutation(token, { recoveryComplete: false });
     virtual.setViewport({ scrollTop: 30, size: 10, source: "observe" });
     token = virtual.beforeMutation();
     virtual.setOutline(outline);
@@ -343,11 +356,16 @@ describe("bottom and scroll semantics", () => {
     virtual.setOutline(items([100, 100, 100]).outline);
     expect(virtual.afterMutation(token)).toMatchObject({ followedBottom: false, scrollTop: 0 });
   });
-  test("programmatic scroll does not change pinned state", () => {
-    const virtual = engine([100, 100], 10, 0);
-    virtual.setViewport({ scrollTop: 190, size: 10, source: "programmatic" });
-    expect(virtual.getSnapshot().pinned).toBe(false);
-    expect(virtual.getSnapshot().programmatic).toBe(true);
+  test.each([
+    ["user", 1, true], ["user", 4, true], ["user", 4.01, false], ["user", 5, false],
+    ["programmatic", 1, true], ["programmatic", 4, true], ["programmatic", 4.01, false], ["programmatic", 5, false],
+  ] as const)("%s position %.2f px from the bottom sets follow to %s", (source, distance, following) => {
+    const virtual = createVirtualizer({ estimateSize: () => 100 });
+    virtual.setOutline(items([100, 100]).outline);
+    virtual.setLoaded("all");
+    virtual.setViewport({ scrollTop: 190 - distance, size: 10, source });
+    expect(virtual.getSnapshot().pinned).toBe(following);
+    expect(virtual.getSnapshot().unseenCount).toBe(0);
   });
   test("user scroll changes pinned state", () => {
     const virtual = engine([100, 100], 10, 0);
@@ -433,10 +451,10 @@ describe("bottom and scroll semantics", () => {
       expect(virtual.afterMutation(correction)).toMatchObject({ scrollTop: 30, jump: -20 });
       overlap(virtual);
       virtual.setViewport({ scrollTop: 30, size: 10, source: "user" });
-      expect(virtual.getSnapshot()).toMatchObject({ pinned: false, programmatic: true, correctionEvent: true });
+      expect(virtual.getSnapshot()).toMatchObject({ pinned: true, programmatic: true, correctionEvent: true });
       const append = virtual.beforeMutation();
       virtual.setOutline([...items([10, 30]).outline, { id: "row-2", kind: "10:2" }]);
-      expect(virtual.afterMutation(append)).toMatchObject({ followedBottom: false, scrollTop: 30 });
+      expect(virtual.afterMutation(append)).toMatchObject({ followedBottom: true, scrollTop: 40 });
     });
   }
   test("moves an expected correction with content and scroll-bound changes", () => {
@@ -478,7 +496,8 @@ describe("bottom and scroll semantics", () => {
         let lastUserPinned = false;
         if (event === 0) {
           virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });
-          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: true, programmatic: true, pinned: false });
+          expect(virtual.getSnapshot()).toMatchObject({ correctionEvent: true, programmatic: true, pinned: true });
+          lastUserPinned = true;
         } else if (event === 1) {
           virtual.flushPendingCorrection();
           virtual.setViewport({ scrollTop: 30, size: virtual.getSnapshot().viewportSize, source: "user" });

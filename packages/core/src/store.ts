@@ -23,7 +23,12 @@ export type OutlineChange = { readonly from: readonly OutlineItem[]; readonly sp
  * `change` is null when there is nothing to edit from: the first snapshot, after `resync`, and after `dispose`. A null
  * change means "take `items` whole"; a resync is a discontinuity, never an edit of what a view held.
  */
-export type OutlineSnapshot = { readonly items: readonly OutlineItem[]; readonly change: OutlineChange | null };
+export type OutlineSnapshot = {
+  readonly items: readonly OutlineItem[];
+  readonly change: OutlineChange | null;
+  /** True while older history can still replace this outline. Missing means complete. */
+  readonly historyPending?: boolean;
+};
 
 const defaultScheduler: Scheduler = (callback) =>
   typeof requestAnimationFrame === "function"
@@ -110,6 +115,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let pending: RunEvent[] = [];
   let acceptedLog: RunEvent[] = [];
   let historyOpen = false;
+  const outlineView = (items: readonly OutlineItem[], change: OutlineChange | null): OutlineSnapshot =>
+    historyOpen ? { items, change, historyPending: true } : { items, change };
   let pendingOlderPages: RunEvent[][] = [];
   const listeners = new Set<Listener>();
   const outlineListeners = new Set<Listener>();
@@ -128,7 +135,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let diagnostics: StoreDiagnostics = { ignoredEvents, sanitizedFields, desynced };
   let stateChanged = false;
   let outlineChanged = false;
-  let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
+  let outlineSnapshot: OutlineSnapshot = outlineView(current.outline, null);
   const changedItems = new Set<string>();
   let edits: OutlineSplice[] = [];
   // The host's error report. A sink that throws (a fail-on-console test setup, a mocked reportError) is host code too:
@@ -219,7 +226,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     if (current.outline !== beforeOutline) {
       // One change per notification: flushes before it (a read forces one) extend it, so subscribers see one edit list.
       const prior = outlineChanged ? outlineSnapshot.change : { from: beforeOutline, splices: [] };
-      outlineSnapshot = { items: current.outline, change: prior && { from: prior.from, splices: mergeSplices(prior.splices, edits) } };
+      outlineSnapshot = outlineView(current.outline, prior && { from: prior.from, splices: mergeSplices(prior.splices, edits) });
       outlineChanged = true;
     }
     edits = [];
@@ -274,7 +281,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     acceptedLog = nextLog;
     stateChanged = true;
     if (splice.deleteCount > 0 || splice.items.length > 0) {
-      outlineSnapshot = { items: current.outline, change: { from: beforeOutline, splices: [splice] } };
+      outlineSnapshot = outlineView(current.outline, { from: beforeOutline, splices: [splice] });
       outlineChanged = true;
     }
     setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
@@ -293,6 +300,17 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       listeners.forEach(call);
       if (outline) outlineListeners.forEach(call);
       for (const id of items) itemListeners.get(id)?.forEach(call);
+    } finally {
+      notifying = false;
+    }
+    if (stateChanged || flushDeferred) flushDeferred = false, flush(), flushPrepend(), notify();
+  };
+
+  const notifyOutline = () => {
+    if (desynced || notifying) return;
+    notifying = true;
+    try {
+      outlineListeners.forEach(call);
     } finally {
       notifying = false;
     }
@@ -396,7 +414,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       entities.clear();
       messageAliases.clear();
       current = structuredClone(initialState);
-      outlineSnapshot = { items: current.outline, change: null };
+      outlineSnapshot = outlineView(current.outline, null);
       edits = [];
       stateChanged = false;
       outlineChanged = false;
@@ -406,7 +424,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       const flushed = flush();
       stateChanged = true;
       outlineChanged = (!flushed && notifying) || resyncOutlineChange(prior, pendingOutline, current.outline);
-      outlineSnapshot = { items: current.outline, change: null };
+      outlineSnapshot = outlineView(current.outline, null);
       if (!desynced) setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
       notify();
       report();
@@ -417,9 +435,12 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       refuseDesynced();
       if (historyOpen) throw new Error("history is already open");
       flush();
-      notify();
+      const outlineWillNotify = stateChanged && outlineChanged;
       acceptedLog = [];
       historyOpen = true;
+      outlineSnapshot = outlineView(current.outline, null);
+      notify();
+      if (!outlineWillNotify) notifyOutline();
       report();
     },
     /** Finishes the history walk and releases its accepted-event log. `prepend` is invalid after this call. */
@@ -428,9 +449,12 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (!historyOpen) return;
       flush();
       flushPrepend();
-      notify();
+      const outlineWillNotify = stateChanged && outlineChanged;
       acceptedLog = [];
       historyOpen = false;
+      outlineSnapshot = outlineView(current.outline, null);
+      notify();
+      if (!outlineWillNotify) notifyOutline();
       report();
     },
     /**
@@ -470,7 +494,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       acceptedLog = [];
       historyOpen = false;
       current = structuredClone(initialState);
-      outlineSnapshot = { items: current.outline, change: null };
+      outlineSnapshot = outlineView(current.outline, null);
       entities = new Map();
       messageAliases.clear();
       listeners.clear();

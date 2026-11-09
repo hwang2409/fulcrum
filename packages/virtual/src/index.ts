@@ -1,5 +1,5 @@
 export type OutlineItem<Id extends string = string> = { readonly id: Id; readonly kind: string };
-/** "user" is reader intent, "programmatic" is the host's own scroll write, and "observe" is a position nobody intends (layout). */
+/** "user" and "programmatic" are settled positions; "observe" is intermediate geometry inside a mutation. */
 export type ScrollSource = "user" | "programmatic" | "observe";
 
 export type VirtualCache<Id extends string = string> = {
@@ -33,6 +33,8 @@ export type MutationToken<Id extends string = string> = {
 };
 export type MutationResult = {
   scrollTop: number;
+  /** True while progressive history still owns an unresolved anchor. */
+  recoveryPending?: boolean;
   correction: number;
   appliedCorrection: number;
   jump: number;
@@ -82,7 +84,7 @@ export const formatVirtualDebug = (snapshot: VirtualSnapshot, actions: readonly 
   JSON.stringify({ range: snapshot.range, visible: snapshot.visible, totalSize: snapshot.totalSize, scrollTop: snapshot.scrollTop, pinned: snapshot.pinned, actions: actions.slice(-8) }, null, 2);
 
 export type Virtualizer<Id extends string = string> = {
-  /** Distance from the end (px) within which a reader scroll keeps follow on. */
+  /** Distance from the end (px) within which any settled position follows new output. */
   readonly bottomThreshold: number;
   reset(): void;
   setOutline(items: readonly OutlineItem<Id>[], update?: OutlineUpdate<Id> | null): void;
@@ -92,7 +94,7 @@ export type Virtualizer<Id extends string = string> = {
   setLoaded(ids: Iterable<Id> | "all"): void;
   setFollow(follow: boolean): void;
   beforeMutation(options?: { mode?: "anchor" | "shift" }): MutationToken<Id>;
-  afterMutation(token: MutationToken<Id>, options?: { deferCorrection?: boolean }): MutationResult;
+  afterMutation(token: MutationToken<Id>, options?: { deferCorrection?: boolean; recoveryComplete?: boolean }): MutationResult;
   flushPendingCorrection(notify?: boolean, releaseOwnership?: boolean): MutationResult;
   scrollToId(id: Id, viewportOffset?: number): number;
   scrollToEnd(): number;
@@ -297,7 +299,7 @@ const medianPositive = (samples: ReadonlyMap<string, number>): number | null => 
 export function createVirtualizer<Id extends string = string>(options: VirtualOptions<Id>): Virtualizer<Id> {
   const overscan = options.overscan;
   const maxMounted = options.maxMounted ?? 200;
-  const bottomThreshold = options.bottomThreshold ?? 48;
+  const bottomThreshold = options.bottomThreshold ?? 4;
   if (overscan !== undefined) checkSize(overscan);
   if (!Number.isInteger(maxMounted) || maxMounted < 1) throw new RangeError("maxMounted must be a positive integer");
   checkSize(bottomThreshold);
@@ -482,12 +484,12 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     scrollTop = nextScrollTop;
     correctionEvent = isCorrection;
     programmatic = viewport.source === "programmatic" || isCorrection;
-    const ownsRecovery = missingAnchor !== null || recoveryOutline !== null;
-    if (viewport.source === "user" && !isCorrection && layout.length > 0 && (!ownsRecovery || writesScroll)) {
+    const settled = viewport.source !== "observe" && !isCorrection;
+    if (settled && layout.length > 0) {
       missingAnchor = null;
       recoveryOutline = null;
       const distance = layout.total - scrollTop - viewportSize;
-      pinned = pinned ? distance <= bottomThreshold : distance < 0.5;
+      pinned = distance <= bottomThreshold;
       if (pinned) unseenIds.clear();
     }
     if (isCorrection) expectedCorrectionScroll = null;
@@ -572,10 +574,8 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
         idsByKind = new Map();
         totalMeasuredSize = 0;
         layout = new Sequence(items.map(entry));
-        const recoveryComplete = !recoveryOutline || items.length >= recoveryOutline.length;
-        if (recoveryComplete) for (const id of unseenIds) if (!ids.has(id)) unseenIds.delete(id);
+        if (!recoveryOutline) for (const id of unseenIds) if (!ids.has(id)) unseenIds.delete(id);
         if (appendedFrom >= 0) for (let index = appendedFrom; index < items.length; index++) unseenIds.add(items[index]!.id);
-        if (recoveryComplete) recoveryOutline = null;
       }
       appliedOutline = items;
       rangeCursorIndex = cursorId === undefined ? 0 : (layout.indexOf(cursorId) ?? Math.min(rangeCursorIndex, Math.max(0, layout.length - 1)));
@@ -667,14 +667,27 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
         recoveryOutline = null;
         requested = layout.total - token.distanceFromEnd;
       } else {
-        const returned = missingAnchor && layout.indexOf(missingAnchor.id) !== undefined ? missingAnchor : null;
-        const anchor = returned ?? token.anchor;
+        const anchor = missingAnchor ?? token.anchor;
+        const exactIndex = anchor ? layout.indexOf(anchor.id) : undefined;
+        if (anchor && exactIndex === undefined && mutationOptions?.recoveryComplete === false) {
+          missingAnchor ??= anchor;
+          recoveryOutline ??= appliedOutline;
+          correctionEvent = false;
+          programmatic = true;
+          jump = 0;
+          log("correction", { correction: 0, appliedCorrection: 0, pendingJump, followedBottom, scrollTop });
+          changed();
+          return { scrollTop, correction: 0, appliedCorrection: 0, jump: 0, pendingJump, followedBottom, recoveryPending: true };
+        }
         if (anchor && layout.length > 0) {
-          const exactIndex = layout.indexOf(anchor.id);
           const index = exactIndex ?? Math.min(anchor.index, layout.length - 1);
           requested = layout.prefix(index) - anchor.offset;
-          if (!missingAnchor && exactIndex === undefined) missingAnchor = anchor;
-        } else if (anchor && !missingAnchor) missingAnchor = anchor;
+        }
+        if (exactIndex !== undefined) recoveryOutline = null;
+        else if (mutationOptions?.recoveryComplete !== false) {
+          missingAnchor = null;
+          recoveryOutline = null;
+        }
       }
       const correction = requested - logicalBefore;
       if (mutationOptions?.deferCorrection) {
@@ -691,7 +704,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       const appliedCorrection = jump;
       log("correction", { correction, appliedCorrection, pendingJump, followedBottom, scrollTop });
       changed();
-      return { scrollTop, correction, appliedCorrection, jump, pendingJump, followedBottom };
+      return { scrollTop, correction, appliedCorrection, jump, pendingJump, followedBottom, recoveryPending: false };
     },
     flushPendingCorrection(notify = true, releaseOwnership = false) {
       const before = scrollTop;
@@ -704,7 +717,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       programmatic = !releaseOwnership;
       log("correction", { correction, appliedCorrection: jump, pendingJump, followedBottom: false, scrollTop });
       if (notify) changed();
-      return { scrollTop, correction, appliedCorrection: jump, jump, pendingJump, followedBottom: false };
+      return { scrollTop, correction, appliedCorrection: jump, jump, pendingJump, followedBottom: false, recoveryPending: false };
     },
     scrollToId(id, viewportOffset = 0) {
       missingAnchor = null;

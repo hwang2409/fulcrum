@@ -30,24 +30,23 @@ test("timeline scroll writes have one owner", () => {
     const source = readFileSync(new URL(file, sourceRoot), "utf8");
     const writes = [...source.matchAll(/[\w.\]?)]+\.(?:scrollTop\s*[-+]?=(?!=)[^;\n]*|scrollTo\s*\(|scrollBy\s*\(|scrollIntoView\s*\()/g)];
     if (file === "virtual.tsx") {
-      expect(writes.map(([write]) => write), message).toEqual(["container.scrollTop = value"]);
+      expect(writes.map(([write]) => write), message).toEqual(["host.scrollTop = target === \"end\" ? before.hostEnd : before.prefix + before.gutter + target"]);
       const ownerStart = source.indexOf("const writeScroll =");
-      const ownerEnd = source.indexOf("\n  };", ownerStart);
+      const ownerEnd = source.indexOf("\n  }, [engine, geometry]);", ownerStart);
       expect(writes[0]!.index! > ownerStart && writes[0]!.index! < ownerEnd, message).toBeTrue();
     } else expect(writes.map(([write]) => write), `${file}: ${message}`).toEqual([...(OTHER_SCROLL_WRITES[file] ?? [])]);
   }
 });
 
-test("every timeline scroll callback reports the real viewport", () => {
+test("timeline position owner has no cause classifier or settlement timer", () => {
   const source = readFileSync(SOURCE, "utf8");
-  const start = source.indexOf("const onScroll = () => {");
-  const end = source.indexOf("\n      };", start);
-  expect(start >= 0 && end > start, "onScroll must stay a `const onScroll = () => {` arrow in useVirtualList").toBeTrue();
-  const body = source.slice(start, end);
-  const reports = [...body.matchAll(/engine\.setViewport\(/g)];
-  const message = "onScroll must report the real viewport on every callback: call engine.setViewport once, before any return; classification only picks source \"user\" or \"observe\"";
-  expect(reports.length, message).toBe(1);
-  expect(/\breturn\b/.test(body.slice(0, reports[0]!.index)), message).toBeFalse();
+  expect(source).toContain("const onScroll = () => settle();");
+  for (const forbidden of [
+    "classifyScroll", "createScrollLeases", "willScroll", "lastPointerTarget", "HostFlow",
+    "quietFrames", "settleFrame", "setTimeout", "requestAnimationFrame", "scrollend",
+    "addEventListener(\"wheel\"", "addEventListener(\"keydown\"", "addEventListener(\"focusin\"",
+  ]) expect(source, forbidden).not.toContain(forbidden);
+  expect(source.match(/addEventListener\(\"touch(start|end|cancel)\"/g)).toHaveLength(3);
 });
 
 type Row = { readonly id: string; readonly kind: "row" };
@@ -107,7 +106,7 @@ function Harness({ outline, resetKey, expose }: {
     }
   }, [list.scrollToEnd, list.snapshot.totalSize]);
   expose(list);
-  return <div ref={scrollRef} data-test-scroll=""><div ref={list.timelineRef} style={{ height: list.snapshot.totalSize }}>
+  return <div ref={scrollRef} data-test-scroll=""><div ref={list.timelineRef} style={{ height: list.snapshot.totalSize + 16 }}>
     {list.snapshot.rows.map((row) => <div key={row.id} ref={list.observeRow(row.id)} data-virtual-id={row.id} />)}
   </div></div>;
 }
@@ -131,7 +130,7 @@ test.each(scenarios)("timeline routes $name through the DOM-aware scroll writer"
     configurable: true,
     get() {
       if (!(this as HTMLElement).hasAttribute("data-test-scroll")) return 0;
-      return Number.parseFloat((this as HTMLElement).firstElementChild?.getAttribute("style")?.match(/height:\s*([\d.]+)/)?.[1] ?? "0") + 2;
+      return Number.parseFloat((this as HTMLElement).firstElementChild?.getAttribute("style")?.match(/height:\s*([\d.]+)/)?.[1] ?? "0");
     },
   });
   Object.defineProperty(HTMLElement.prototype, "scrollTop", {
@@ -159,7 +158,7 @@ test.each(scenarios)("timeline routes $name through the DOM-aware scroll writer"
     if (scenario.pinned) expect(gap, `${scenario.name}: pinned DOM gap`).toBeLessThanOrEqual(0.5);
     else {
       expect(gap, `${scenario.name}: unpinned route must keep its engine or anchor position`).toBeGreaterThan(2);
-      expect(host.scrollTop, `${scenario.name}: DOM and engine positions must agree`).toBe(list!.snapshot.scrollTop);
+      expect(host.scrollTop, `${scenario.name}: DOM and engine positions must agree`).toBe(list!.snapshot.scrollTop + 8);
     }
   } finally {
     act(() => root.unmount());

@@ -270,6 +270,19 @@ test("an unexpected reduction failure marks the store desynced until history rep
   expect(store.getOutline()).toEqual([{ id: "user:delivery:history", kind: "user" }]);
 });
 
+test("outline snapshots publish whether progressive history is pending", () => {
+  const store = createRunStore((flush) => flush());
+  const pending: Array<boolean | undefined> = [];
+  store.subscribeOutline(() => pending.push(store.getOutlineSnapshot().historyPending));
+
+  expect(store.getOutlineSnapshot().historyPending).toBeUndefined();
+  store.beginHistory();
+  expect(store.getOutlineSnapshot().historyPending).toBe(true);
+  store.endHistory();
+  expect(store.getOutlineSnapshot().historyPending).toBeUndefined();
+  expect(pending).toEqual([true, undefined]);
+});
+
 test("history windows reject prepends after releasing their accepted events", () => {
   const store = createRunStore((flush) => flush());
   store.beginHistory();
