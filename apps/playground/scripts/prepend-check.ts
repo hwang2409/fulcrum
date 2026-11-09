@@ -18,9 +18,9 @@ try {
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       for (let i = 0; i < 400; i++) { if (await scroll.evaluate((el) => el.scrollTop) < 250) break; await page.mouse.wheel(0, -600); await page.waitForTimeout(30); }
       await page.waitForTimeout(1200);
-      const probeBefore = await page.evaluate(() => (window as any).__commits);
+      const probeBefore = await page.evaluate(() => (window as any).__probeCommits ?? 0);
       await page.evaluate(async () => { (window as any).__bumpCommit(); await new Promise<void>((resolve) => setTimeout(resolve, 100)); });
-      const probeCommits = (await page.evaluate(() => (window as any).__commits)) - probeBefore;
+      const probeCommits = (await page.evaluate(() => (window as any).__probeCommits ?? 0)) - probeBefore;
       const upward = await page.evaluate((start) => { const corrections = (window as any).__fulcrumVirtual.getActions().filter((a: any) => a.sequence > start && a.type === "correction"); return { sum: corrections.reduce((s: number, a: any) => s + a.detail.appliedCorrection, 0), abs: corrections.reduce((s: number, a: any) => s + Math.abs(a.detail.appliedCorrection), 0) }; }, upwardStart);
       const result = await page.evaluate(async ({ upward, probeCommits }) => {
         const w = window as any, scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!, engine = w.__fulcrumVirtual;
