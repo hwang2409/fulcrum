@@ -111,84 +111,249 @@ test("settled host command suppliers release close waiters", async () => {
 });
 
 // Zeta 6f29fc4b docs/serve-protocol.md:404-419 and src/zeta/server/handlers/lifecycle.py:60-82.
-test("a full-id send waits for its prefix resume attachment", async () => {
-  const fake = fakeTransport();
-  const client = createClient(fake.transport, undefined, undefined, { hostCommands: () => [command()] });
-  await hello(fake, client);
+type AttachmentCase = {
+  name: string;
+  expectedWire: string[];
+  expectedSuppliers: string[];
+  deferSuppliers?: boolean;
+  run(context: {
+    fake: ReturnType<typeof fakeTransport>;
+    client: ReturnType<typeof createClient>;
+    supplied: ReturnType<typeof deferred<HostCommand[]>>[];
+  }): Promise<void>;
+};
 
-  const resuming = client.request("resume", { session_id: "abcd" });
-  await Bun.sleep(0);
-  const resume = fake.sent.at(-1)!;
-  const sending = client.request("send", { session_id: "abcdef12-full", text: "hello" });
-  expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "resume"]);
+const replyResume = (fake: ReturnType<typeof fakeTransport>, canonicalId: string) => {
+  const request = fake.sent.at(-1)!;
+  expect(request.method).toBe("resume");
+  fake.reply(request, { session: { session_id: canonicalId } });
+};
 
-  fake.reply(resume, { session: { session_id: "abcdef12-full" } });
-  await resuming;
-  await Bun.sleep(0);
-  expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "resume", "send"]);
-  fake.reply(fake.sent.at(-1)!, { accepted: true });
-  await sending;
-});
+const attachmentCases: AttachmentCase[] = [
+  {
+    name: "prefix first",
+    expectedWire: ["resume:abcd:1", "resume:abcdef12-full:2"],
+    expectedSuppliers: ["abcd", "abcdef12-full"],
+    deferSuppliers: true,
+    async run({ fake, client, supplied }) {
+      const first = client.request("resume", { session_id: "abcd" });
+      const second = client.request("resume", { session_id: "abcdef12-full" });
+      expect(supplied).toHaveLength(1);
+      supplied[0]!.resolve([command({ FOO: "1" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await first;
+      await Bun.sleep(0);
+      supplied[1]!.resolve([command({ FOO: "2" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await second;
+    },
+  },
+  {
+    name: "full id first",
+    expectedWire: ["resume:abcdef12-full:1", "resume:abcd:2"],
+    expectedSuppliers: ["abcdef12-full", "abcd"],
+    deferSuppliers: true,
+    async run({ fake, client, supplied }) {
+      const first = client.request("resume", { session_id: "abcdef12-full" });
+      const second = client.request("resume", { session_id: "abcd" });
+      expect(supplied).toHaveLength(1);
+      supplied[0]!.resolve([command({ FOO: "1" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await first;
+      await Bun.sleep(0);
+      supplied[1]!.resolve([command({ FOO: "2" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await second;
+    },
+  },
+  {
+    name: "two prefixes of one id",
+    expectedWire: ["resume:abcd:1", "resume:abcdef:2"],
+    expectedSuppliers: ["abcd", "abcdef"],
+    deferSuppliers: true,
+    async run({ fake, client, supplied }) {
+      const first = client.request("resume", { session_id: "abcd" });
+      const second = client.request("resume", { session_id: "abcdef" });
+      expect(supplied).toHaveLength(1);
+      supplied[0]!.resolve([command({ FOO: "1" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await first;
+      await Bun.sleep(0);
+      supplied[1]!.resolve([command({ FOO: "2" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await second;
+    },
+  },
+  {
+    name: "overlapping prefix resolves to a different session",
+    expectedWire: ["resume:abcd1111-full:1", "resume:abcd:2", "send:abcd1111-full:-", "resume:abcd1111-full:3", "send:abcd1111-full:-"],
+    expectedSuppliers: ["abcd1111-full", "abcd", "abcd1111-full"],
+    deferSuppliers: true,
+    async run({ fake, client, supplied }) {
+      const first = client.request("resume", { session_id: "abcd1111-full" });
+      const second = client.request("resume", { session_id: "abcd" });
+      expect(supplied).toHaveLength(1);
+      supplied[0]!.resolve([command({ FOO: "1" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcd1111-full");
+      await first;
+      await Bun.sleep(0);
+      supplied[1]!.resolve([command({ FOO: "2" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcd2222-full");
+      await second;
+      const sending = client.request("send", { session_id: "abcd1111-full", text: "hello", delivery_id: "d-one" });
+      const send = fake.sent.at(-1)!;
+      fake.fail(send, -32003, { code: "host_binding_required" });
+      await Bun.sleep(0);
+      supplied[2]!.resolve([command({ FOO: "3" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcd1111-full");
+      await Bun.sleep(0);
+      fake.reply(fake.sent.at(-1)!, { accepted: true });
+      await sending;
+    },
+  },
+  {
+    name: "abort while the supplier is pending",
+    expectedWire: ["resume:abcdef12-full:2"],
+    expectedSuppliers: ["abcd", "abcdef12-full"],
+    deferSuppliers: true,
+    async run({ fake, client, supplied }) {
+      const controller = new AbortController();
+      const first = client.request("resume", { session_id: "abcd" }, { signal: controller.signal });
+      controller.abort();
+      supplied[0]!.resolve([command({ FOO: "1" })]);
+      await expect(first).rejects.toMatchObject({ name: "AbortError" });
+      const second = client.request("resume", { session_id: "abcdef12-full" });
+      supplied[1]!.resolve([command({ FOO: "2" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await second;
+    },
+  },
+  {
+    name: "abort while waiting for the previous gate",
+    expectedWire: ["resume:abcd:1", "resume:abcdef12-full:3"],
+    expectedSuppliers: ["abcd", "abcdef12-full", "abcdef12-full"],
+    deferSuppliers: true,
+    async run({ fake, client, supplied }) {
+      const first = client.request("resume", { session_id: "abcd" });
+      supplied[0]!.resolve([command({ FOO: "1" })]);
+      await Bun.sleep(0);
+      const controller = new AbortController();
+      const aborted = client.request("resume", { session_id: "abcdef12-full" }, { signal: controller.signal });
+      controller.abort();
+      replyResume(fake, "abcdef12-full");
+      await first;
+      await Bun.sleep(0);
+      supplied[1]!.resolve([command({ FOO: "2" })]);
+      await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+      const final = client.request("resume", { session_id: "abcdef12-full" });
+      supplied[2]!.resolve([command({ FOO: "3" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await final;
+    },
+  },
+  {
+    name: "abort after resume reaches the wire",
+    expectedWire: ["resume:abcd:1", "resume:abcdef12-full:2"],
+    expectedSuppliers: ["abcd", "abcdef12-full"],
+    deferSuppliers: true,
+    async run({ fake, client, supplied }) {
+      const controller = new AbortController();
+      const first = client.request("resume", { session_id: "abcd" }, { signal: controller.signal });
+      supplied[0]!.resolve([command({ FOO: "1" })]);
+      await Bun.sleep(0);
+      controller.abort();
+      await expect(first).rejects.toMatchObject({ name: "AbortError" });
+      const second = client.request("resume", { session_id: "abcdef12-full" });
+      supplied[1]!.resolve([command({ FOO: "2" })]);
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await second;
+    },
+  },
+  ...(["session_id_ambiguous", "session_not_found"] as const).map((code): AttachmentCase => ({
+    name: `${code} leaves no attachment identity behind`,
+    expectedWire: ["resume:abcd:1", "resume:abcdef12-full:2"],
+    expectedSuppliers: ["abcd", "abcdef12-full"],
+    async run({ fake, client }) {
+      const failed = client.request("resume", { session_id: "abcd" });
+      await Bun.sleep(0);
+      const data = { code, session_id: "abcd", ...(code === "session_id_ambiguous" ? { candidates: ["abcdef12", "abcd9876"] } : {}) };
+      fake.fail(fake.sent.at(-1)!, -32602, data);
+      expect(await failed.catch((error: unknown) => error)).toMatchObject({ code: -32602, data });
+      const next = client.request("resume", { session_id: "abcdef12-full" });
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await next;
+    },
+  })),
+  {
+    name: "duplicate resume",
+    expectedWire: ["resume:abcd:1", "resume:abcd:2"],
+    expectedSuppliers: ["abcd", "abcd"],
+    async run({ fake, client }) {
+      const first = client.request("resume", { session_id: "abcd" });
+      await Bun.sleep(0);
+      const second = client.request("resume", { session_id: "abcd" });
+      expect(fake.sent.filter(({ method }) => method === "resume")).toHaveLength(1);
+      replyResume(fake, "abcdef12-full");
+      await first;
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await second;
+    },
+  },
+  {
+    name: "recovery after prefix resume",
+    expectedWire: ["resume:abcd:1", "send:abcd:-", "resume:abcdef12-full:2", "send:abcd:-"],
+    expectedSuppliers: ["abcd", "abcdef12-full"],
+    async run({ fake, client }) {
+      const resuming = client.request("resume", { session_id: "abcd" });
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await resuming;
+      const sending = client.request("send", { session_id: "abcd", text: "hello", delivery_id: "d-one" });
+      fake.fail(fake.sent.at(-1)!, -32003, { code: "host_binding_required" });
+      await Bun.sleep(0);
+      replyResume(fake, "abcdef12-full");
+      await Bun.sleep(0);
+      fake.reply(fake.sent.at(-1)!, { accepted: true });
+      await sending;
+    },
+  },
+];
 
-test("host-binding recovery after a prefix resume uses its canonical session id", async () => {
-  const suppliedFor: Array<string | null> = [];
+test.each(attachmentCases)("attachment identity: $name", async ({ expectedWire, expectedSuppliers, deferSuppliers, run }) => {
+  const supplied: ReturnType<typeof deferred<HostCommand[]>>[] = [];
+  const supplierIds: string[] = [];
   const fake = fakeTransport();
   const client = createClient(fake.transport, undefined, undefined, { hostCommands: (sessionId) => {
-    suppliedFor.push(sessionId);
-    return [command()];
+    supplierIds.push(sessionId ?? "new");
+    const pending = deferred<HostCommand[]>();
+    supplied.push(pending);
+    if (!deferSuppliers) pending.resolve([command({ FOO: String(supplied.length) })]);
+    return pending.promise;
   } });
   await hello(fake, client);
 
-  const resuming = client.request("resume", { session_id: "abcd" });
-  await Bun.sleep(0);
-  fake.reply(fake.sent.at(-1)!, { session: { session_id: "abcdef12-full" } });
-  await resuming;
+  await run({ fake, client, supplied });
 
-  const sending = client.request("send", { session_id: "abcd", text: "hello", delivery_id: "d-one" });
-  const firstSend = fake.sent.at(-1)!;
-  fake.fail(firstSend, -32003, { code: "host_binding_required" });
-  await Bun.sleep(0);
-  expect(fake.sent.at(-1)).toMatchObject({ method: "resume", params: { session_id: "abcdef12-full" } });
-  expect(suppliedFor).toEqual(["abcd", "abcdef12-full"]);
-  fake.reply(fake.sent.at(-1)!, { session: { session_id: "abcdef12-full" } });
-  await Bun.sleep(0);
-  fake.reply(fake.sent.at(-1)!, { accepted: true });
-  await sending;
-});
-
-test("an ambiguous prefix keeps Zeta's structured error and is not retried", async () => {
-  const fake = fakeTransport();
-  const client = createClient(fake.transport, undefined, undefined, { hostCommands: () => [command()] });
-  await hello(fake, client);
-
-  const resuming = client.request("resume", { session_id: "abcd" });
-  await Bun.sleep(0);
-  const data = { code: "session_id_ambiguous", session_id: "abcd", candidates: ["abcdef12", "abcd9876"] };
-  fake.fail(fake.sent.at(-1)!, -32602, data);
-
-  expect(await resuming.catch((error: unknown) => error)).toMatchObject({ code: -32602, data });
-  expect(fake.sent.filter(({ method }) => method === "resume")).toHaveLength(1);
-});
-
-test("a full-id send still waits for its full-id resume attachment", async () => {
-  const supplied = deferred<HostCommand[]>();
-  const fake = fakeTransport();
-  const client = createClient(fake.transport, undefined, undefined, { hostCommands: () => supplied.promise });
-  await hello(fake, client);
-
-  const resuming = client.request("resume", { session_id: "abcdef12-full" });
-  const sending = client.request("send", { session_id: "abcdef12-full", text: "hello" });
-  expect(fake.sent.map(({ method }) => method)).toEqual(["hello"]);
-
-  supplied.resolve([command()]);
-  await Bun.sleep(0);
-  expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "resume"]);
-  fake.reply(fake.sent.at(-1)!, { session: { session_id: "abcdef12-full" } });
-  await resuming;
-  await Bun.sleep(0);
-  expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "resume", "send"]);
-  fake.reply(fake.sent.at(-1)!, { accepted: true });
-  await sending;
+  const wire = fake.sent.slice(1).map(({ method, params }) => {
+    const commands = params.host_commands as HostCommand[] | undefined;
+    return `${method}:${String(params.session_id ?? "-")}:${commands?.[0]?.environment?.FOO ?? "-"}`;
+  });
+  expect(wire).toEqual(expectedWire);
+  expect(supplierIds).toEqual(expectedSuppliers);
 });
 
 test("close rejects new_session while its host command supplier never settles", async () => {
