@@ -79,3 +79,23 @@ The client retries a desynced history load immediately, then after 0.5, 1, 2, 4,
 The client requests `served_turn_end`. Live `turn_start` then includes `data.turn_id`, and `client.servedTurn(sessionId)` returns the last id. `fromZetaHistory` skips durable `served_turn_end` rows. `servedTurnOutcome(rows, turnId)` maps the newest matching reason: `completed` stays `completed`, `user_stop` becomes `cancelled`, `error` becomes `failed`, and `disconnect` becomes `disconnected`.
 
 The web app marks an outcome only when a session was running at an `output_overflow` close (`-32011`) and is idle after reconnect. It uses zeta's recorded outcome, or `unknown` when an older server or history has no matching end. An ordinary drop, a silent overflow close, another session, or a turn still running after reconnect stays unmarked. A socket that closes within 10 seconds continues reconnect backoff at 0.5, 1, 2, 4, 8, then every 10 seconds.
+
+## listener contract
+
+The client calls host code at the places below. A throwing listener never reaches the socket loop, the recovery loop, or another listener: every other listener still runs, the frame's remaining events and the next frame are still handled, and pending requests still settle. Its error goes to the host's error sink exactly once: `reportError`, or `console.error` where it does not exist, the same sink as the core store. A sink that throws is dropped, since there is nowhere left to report it. Tests: `packages/zeta/test/host-calls.test.ts`.
+
+In `client.ts`, host code runs only through `call()` (one host call) and `deliver()` (every listener of a set), plus the "outside" rows below, each marked `// host code: outside`. `packages/zeta/test/host-calls-guard.test.ts` reads `client.ts` and `packages/core/src/store.ts` and fails on any other host call, with a message that names the owner to use.
+
+| callback | status |
+| --- | --- |
+| `onSessionGrantsChanged` listeners | covered by `deliver()` |
+| `onClose` listeners | covered by `deliver()` |
+| `closeError`, the third argument of `createClient` | covered by `call()`; on a throw the client still closes, with the default "transport closed" error |
+| store listeners reached through the client's `dispatch` (live events, adapter errors, replayed history), `resync`, and `resyncFailed` | covered by `call()`: with a synchronous scheduler these store entries rethrow a listener's error (core rule 4). A resync that delivered still ends recovery, and a failed recovery still rejects `retrySession` with the load failure |
+| settling pending requests and host command close waiters | not host code: the client's own promise resolvers; the caller's reactions run later, as microtasks |
+| abort listeners on a request signal, a retry delay, and the close signal | not host code: the client's own handlers; they only settle the client's promises |
+| `hostCommands(sessionId)` | outside: inside a `try` and `.catch`; a throw or rejection becomes `host_command_supplier_failed`, and its value is never logged |
+| `load(signal)` of `replay` | outside: in `replay`, a throw rejects `replay`; in recovery, a throw is a load failure that backs off and retries |
+| `scheduler` | outside: the client passes it to its core stores (core rule 9) |
+| transport `send`, `close`, `onMessage`, `onClose`, `ready` | outside: calls into the host's transport, not deliveries; a `send` throw rejects that request, and the others throw or reject to the code that called them |
+| `console.warn` when host commands are not offered | outside: runs once in `hello`; a throw rejects `hello` |

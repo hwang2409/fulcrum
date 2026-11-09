@@ -152,6 +152,28 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     for (const session of recoveries.keys()) cancelRecovery(session);
     for (const session of activeLoads.keys()) cancelLoad(session);
   };
+  // Host code runs only through call() and deliver() (listeners, the closeError callback, and store entries that can
+  // rethrow a store listener's error), plus sink() and the lines marked "host code: outside", one per "outside" row of
+  // packages/zeta/README.md, "listener contract". test/host-calls-guard.test.ts fails on any other host call.
+  // sink() is the host's error report, the same as the core store's: reportError, or console.error where it does not
+  // exist. A sink that throws is dropped, since there is nowhere left to report it.
+  const sink = (error: unknown) => {
+    try {
+      if (typeof reportError === "function") reportError(error);
+      else console.error(error);
+    } catch {}
+  };
+  // host code: a host error goes to sink() once and never reaches the socket loop, the recovery loop, or another listener.
+  const call = (run: () => void) => {
+    try {
+      run();
+    } catch (error) {
+      sink(error);
+    }
+  };
+  const deliver = <T>(listeners: ReadonlySet<(value: T) => void>, value: T) => {
+    for (const listener of listeners) call(() => listener(value));
+  };
   const store = createRunStore(scheduler);
   let evictionCount = 0;
   const evict = (id: string) => {
@@ -181,7 +203,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   });
   const failRecovery = (session: string, target: SessionStore, recovery: Recovery, failure: unknown) => {
     if (recovery.canceled) return;
-    if (stores.get(session) === target) target.resyncFailed(failure);
+    if (stores.get(session) === target) call(() => target.resyncFailed(failure));
     throw failure;
   };
   const resyncSession = async (session: string, target: SessionStore) => {
@@ -203,10 +225,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
         try {
           const controller = new AbortController();
           recovery.controller = controller;
-          const history = await load(controller.signal);
+          // A throw, or a value that cannot be iterated, is a load failure here, not a listener error.
+          const history = [...await load(controller.signal)]; // host code: outside
           recovery.controller = undefined;
           if (recovery.canceled || stores.get(session) !== target) return;
-          target.resync(history);
+          call(() => target.resync(history));
           quarantined.delete(session);
           return;
         } catch (error) {
@@ -276,14 +299,14 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const controller = new AbortController();
     activeLoads.set(session, controller);
     try {
-      const history = await load(controller.signal);
+      const history = await load(controller.signal); // host code: outside; a throw rejects replay to its caller
       if (controller.signal.aborted) throw Object.assign(new Error("request aborted"), { name: "AbortError" });
       if (!keepQuarantined) activeLoads.delete(session);
       const value = createSession(session);
       holders.set(session, 1);
       let released = false;
       const lease = { store: value, release() { if (released) return; released = true; const count = holders.get(session); if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1)); } };
-      for (const event of history) lease.store.dispatch(event);
+      for (const event of history) call(() => lease.store.dispatch(event));
       if (!keepQuarantined) {
         quarantined.delete(session);
         quarantineRevisions.delete(session);
@@ -331,10 +354,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     callback(request);
   };
   const handleEvent = (message: TransportMessage) => {
-    if (!message.params || typeof message.params !== "object") return store.dispatch(adapterError("event params are invalid"));
+    if (!message.params || typeof message.params !== "object") return call(() => store.dispatch(adapterError("event params are invalid")));
     if (message.params.event === "session_grants_changed") {
       const event = parseSessionGrantsChanged(message.params.data);
-      if (event) sessionGrantsListeners.forEach((listener) => listener(event));
+      if (event) deliver(sessionGrantsListeners, event);
       return;
     }
     const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
@@ -346,7 +369,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return;
     }
     const sessionStore = eventStore(session);
-    for (const event of fromZetaEvent(message.params).map((item) => stampIntent(item, session))) sessionStore.dispatch(event);
+    for (const event of fromZetaEvent(message.params).map((item) => stampIntent(item, session))) call(() => sessionStore.dispatch(event));
   };
   const handleReply = (message: TransportMessage) => {
     if (message.id === null && message.error) {
@@ -362,10 +385,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     settle(message.id, (item) => message.error ? item.reject(Object.assign(new Error(message.error.message), message.error)) : item.resolve(message.result));
   };
   transport.onMessage((text) => {
-    if (text.length > maxFrame || (text.length > maxFrame / 3 && encoder.encode(text).byteLength > maxFrame)) return store.dispatch(adapterError(`frame exceeds ${maxFrame} bytes`));
+    if (text.length > maxFrame || (text.length > maxFrame / 3 && encoder.encode(text).byteLength > maxFrame)) return call(() => store.dispatch(adapterError(`frame exceeds ${maxFrame} bytes`)));
     let value: unknown;
-    try { value = JSON.parse(text); } catch { return store.dispatch(adapterError("frame is not valid JSON")); }
-    if (!value || typeof value !== "object") return store.dispatch(adapterError("frame must be an object"));
+    try { value = JSON.parse(text); } catch { return call(() => store.dispatch(adapterError("frame is not valid JSON"))); }
+    if (!value || typeof value !== "object") return call(() => store.dispatch(adapterError("frame must be an object")));
     const message = value as TransportMessage;
     if (message.method === "event") handleEvent(message);
     else handleReply(message);
@@ -379,7 +402,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   let closeReason: CloseReason | undefined;
   const closeClient = (code?: number) => {
     if (closed) return;
-    const error = closeError?.(handshaken, code, closeReason) ?? new Error("transport closed");
+    let custom: unknown;
+    call(() => { custom = closeError?.(handshaken, code, closeReason); });
+    const error = custom ?? new Error("transport closed");
     closed = true;
     closedError = error;
     deliveryIdentity.close();
@@ -389,7 +414,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     closeWaiters.clear();
     attachmentGates.clear();
     cancelLoads();
-    closeListeners.forEach((listener) => listener(error));
+    deliver(closeListeners, error);
   };
   transport.onClose?.((code) => { closeClient(code); });
   /** Calls `listener` once when the transport closes, with the same error that rejected pending requests. */
@@ -425,10 +450,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const hostCommandsEnabled = () => options.hostCommands !== undefined && options.hostCommands !== null && negotiatedFeatures.includes("session_host_commands");
   const retryDelay = (delay: number, ...signals: AbortSignal[]) => new Promise<void>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const listeners = signals.map((signal) => [signal, () => abort(signal)] as const);
+    const aborts = signals.map((signal) => [signal, () => abort(signal)] as const);
     const cleanup = () => {
       if (timer) clearTimeout(timer);
-      listeners.forEach(([signal, listener]) => signal.removeEventListener("abort", listener));
+      aborts.forEach(([signal, onAbort]) => signal.removeEventListener("abort", onAbort));
     };
     const abort = (signal: AbortSignal) => {
       cleanup();
@@ -437,7 +462,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const alreadyAborted = signals.find((signal) => signal.aborted);
     if (alreadyAborted) return abort(alreadyAborted);
     timer = setTimeout(() => { cleanup(); resolve(); }, delay);
-    listeners.forEach(([signal, listener]) => signal.addEventListener("abort", listener, { once: true }));
+    aborts.forEach(([signal, onAbort]) => signal.addEventListener("abort", onAbort, { once: true }));
   });
   const retryBusy = async (request: () => Promise<unknown>, requestOptions: RequestOptions) => {
     for (const delay of [0, 250, 500, 1_000]) {
@@ -455,7 +480,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (closed) throw closedError;
     let supply: Promise<unknown>;
     try {
-      supply = Promise.resolve(options.hostCommands!(sessionId)).catch(() => {
+      supply = Promise.resolve(options.hostCommands!(sessionId)).catch(() => { // host code: outside; guarded by this try and catch
         throw new HostCommandError("host_command_supplier_failed", "host command supplier failed");
       });
     } catch {
@@ -531,7 +556,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       negotiatedFeatures = negotiatedProtocol !== "1.0" && Array.isArray(features) && features.every((feature): feature is string => typeof feature === "string") ? features : [];
       if (options.hostCommands && !negotiatedFeatures.includes("session_host_commands") && !warnedHostCommandsUnavailable) {
         warnedHostCommandsUnavailable = true;
-        console.warn("session_host_commands was requested but is not offered; host commands are disabled");
+        console.warn("session_host_commands was requested but is not offered; host commands are disabled"); // host code: outside; a throw rejects hello
       }
       return result;
     });
