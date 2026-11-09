@@ -28,7 +28,7 @@ export const LARGE = "s-large-pages";
 const seeded = [
   meta(ACTIVE, 2, { name: "fix the flaky reconnect test in packages/zeta" }),
   meta("s-themes", 45, { first_message_preview: "check every theme's muted text against 4.5:1 on the surface color" }),
-  meta(LONG, 60 * 5, { first_message_preview: "profile the virtual timeline with 400 rows of history" }),
+  meta(LONG, 60 * 5, { first_message_preview: "profile the virtual timeline with 1,000 rows of history" }),
   meta("s-child", 3, { parent_session_id: ACTIVE, first_message_preview: "worker: run the zeta tests" }),
   meta("s-markdown", 60 * 26, { name: "streaming markdown: nested lists in block quotes", model: "gpt-5.1-codex" }),
   meta("s-docs", 60 * 24 * 3, { first_message_preview: "write the quickstart for @fulcrum/react" }),
@@ -82,7 +82,7 @@ const histories: Record<string, Json[]> = {
     { id: "t1d", role: "tool_result", content: [text("stdout:\nthemes.css\nthemes.ts\n\nstderr:\n")], tool_result: bashResult("t-ls", "themes.css\nthemes.ts\n") },
     { id: "t2", role: "assistant", content: [text("All 12 themes pass on `bg`. On `surface`, **solarized-light** is closest at 4.61:1.\n\n| theme | bg | surface |\n| --- | --- | --- |\n| gruvbox-dark | 5.9 | 5.4 |\n| solarized-light | 4.9 | 4.61 |")], tool_result: null },
   ],
-  [LONG]: Array.from({ length: 400 }, (_, index) => index % 2 === 0
+  [LONG]: Array.from({ length: 1_000 }, (_, index) => index % 2 === 0
     ? { id: `l${index}`, role: "user", content: [text(`step ${index / 2 + 1}: measure frame ${index}`)], tool_result: null }
     : { id: `l${index}`, role: "assistant", content: [text(`frame ${index} took **${(index % 7) + 3} ms**; \`content-visibility\` skipped ${index * 3} rows.`)], tool_result: null }),
 };
@@ -351,7 +351,6 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let servedTurnEndOffered = true;
   let backwardHistoryOffered = true;
   let laterHistoryDelay = 0;
-  let sendReplyDelay = 0;
   let lastTurnEnd: string | undefined;
   const lastTurnEnds = new Map<string, { turn_id: string; reason: TurnEndReason }>();
   const servedTurnEndReads = new Map<string, number>();
@@ -576,8 +575,6 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if ((method === "send" || method === "send_images") && active && hostBindingRequired.has(active)) return reply({ error: { code: -32003, message: "host binding required", data: { code: "host_binding_required" } } });
         const handled = composer.handle(method, params, active, send);
-        // The echo is already out: the delay opens the window where the echoed row and the unsent draft both show.
-        if (handled && method === "send" && sendReplyDelay > 0) await wait(sendReplyDelay);
         if (handled) return reply(handled);
         reply({ error: { code: -32601, message: `method not found: ${method}` } });
         });
@@ -594,8 +591,27 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     requests,
     /** Every accepted send and steer, in order. */
     sent: composer.sent,
-    /** Sends one server-originated event to connected clients. */
-    emit(event: Json) { for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); },
+    /**
+     * Sends one server-originated event to connected clients. A `user_message` send echo with a `delivery_id` is
+     * durable first, as in zeta: `DeliveryRequests.send` commits the message with `append_client_delivery_async`
+     * before `_deliver_after_commit` echoes it (zeta src/zeta/server/delivery.py:94-109 at 13adea43). Other events
+     * leave history unchanged; call `restoreHistory` after a check that appends.
+     */
+    emit(event: Json) {
+      if (event.event === "user_message" && event.mode === "send" && typeof event.session_id === "string" && typeof event.delivery_id === "string") {
+        histories[event.session_id] = [...(histories[event.session_id] ?? []), {
+          id: `emitted-${event.delivery_id}`,
+          role: "user",
+          content: [text(String(event.text ?? ""))],
+          delivery_id: event.delivery_id,
+          tool_result: null,
+        }];
+      }
+      for (const socket of sockets) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event }));
+    },
+    /** Returns a session's history to what it was before this check's durable emits. */
+    restoreHistory(session: string, rows: readonly Json[]) { histories[session] = [...rows]; },
+    historyOf(session: string): readonly Json[] { return histories[session] ?? []; },
     clearSent() { composer.clearSent(); },
     get aborts() { return composer.aborts; },
     /** Closes every socket, like a network blip; the server keeps running. */
@@ -631,8 +647,6 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     setServedTurnEnd(next: boolean) { servedTurnEndOffered = next; },
     setBackwardHistory(next: boolean) { backwardHistoryOffered = next; },
     setLaterHistoryDelay(ms: number) { laterHistoryDelay = ms; },
-    /** Holds the `send` reply this long after its `user_message` echo. */
-    setSendReplyDelay(ms: number) { sendReplyDelay = ms; },
     /** How many served_turn_end rows naming `turnId` history pages have carried, to any client. */
     servedTurnEndReads(turnId: string) { return servedTurnEndReads.get(turnId) ?? 0; },
     /** The turn whose end the server recorded last. */
@@ -659,7 +673,6 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
       servedTurnEndOffered = true;
       backwardHistoryOffered = true;
       laterHistoryDelay = 0;
-      sendReplyDelay = 0;
       openDelay = initialOpenDelay;
       rejectCreate = false;
       if (empty) this.setEmpty(false);
