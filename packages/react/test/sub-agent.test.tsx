@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type RunSource, type SubAgentEvent } from "@fulcrum/core";
-import { Approval, RunNavigator, RunProvider, subAgentRow, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunNavigatorProps } from "../src/index.js";
+import { Approval, RunNavigator, RunProvider, SubAgentNavigationProvider, subAgentRow, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunNavigatorProps } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 

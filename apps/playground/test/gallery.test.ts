@@ -8,10 +8,11 @@ import { demos } from "../src/gallery/demos";
 import { sourceFor } from "../src/gallery/source";
 
 test("every exported part of @fulcrum/react has a gallery demo", () => {
-  // Components are the capitalized value exports; the providers (RunProvider, HighlightContext) wrap demos, so they need
-  // none of their own. Tool bodies render inside ToolCall and Approval, so each needs a demo call with its view kind
-  // (generic: no view).
-  const components = Object.keys(parts).filter((name) => /^[A-Z]/.test(name) && name !== "RunProvider" && name !== "HighlightContext");
+  // Components are the capitalized value exports; providers wrap demos, so they need none of their own. RunNavigator's
+  // demos exercise the shared sub-agent provider. Tool bodies render inside ToolCall and Approval, so each needs a demo
+  // call with its view kind (generic: no view).
+  const providers = new Set(["RunProvider", "SubAgentNavigationProvider", "HighlightContext"]);
+  const components = Object.keys(parts).filter((name) => /^[A-Z]/.test(name) && !providers.has(name));
   const bodies = components.filter((name) => name.endsWith("Body") && name !== "ToolBody");
   const parents = components.filter((name) => !name.endsWith("Body"));
   const shown = new Set([...demos, ...composerDemos, ...codeDemos].map((demo) => demo.part));
