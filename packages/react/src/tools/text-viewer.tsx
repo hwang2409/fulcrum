@@ -198,6 +198,9 @@ function useSegments(text: string, appendOnly: boolean, estimatedLines: number, 
     let { segments, sealed } = prior;
     let open = prior.open + tail;
     let start = segments.at(-1)!.start;
+    // shortcut: an append that seals a segment copies the segment arrays (O(n / SEGMENT_CHARS) references), because
+    // useVirtualList (virtual.tsx) applies an outline only when its identity changes (`appliedOutline.current !==
+    // outline`). The 1-line fix there: also apply when `options.outlineUpdate` is new; then push here in place.
     if (open.length > size) {
       segments = [...segments];
       sealed = [...sealed];
@@ -328,8 +331,8 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
   const [place, setPlace] = useState<Place>(follow ? "bottom" : "top");
   const [newOutput, setNewOutput] = useState(false);
   const seenLength = useRef(text.length);
-  // useSegments either extends its array (old segments are the same objects) or builds a new one: an extension is an
-  // append from the prior segments.
+  // useSegments either extends its array (a copy whose old segments are the same objects) or builds a new one: an
+  // extension is one splice after the prior segments.
   const prior = useRef<TextSegment[]>([]);
   const from = prior.current;
   const update = from.length > 0 && segments.length > from.length && segments[from.length - 1] === from.at(-1)

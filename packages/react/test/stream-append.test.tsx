@@ -5,7 +5,7 @@ GlobalRegistrator.register();
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { createRunStore, type RunEvent } from "@fulcrum/core";
+import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
 import { RunProvider, ToolCall } from "../src/index.js";
 
 // A 600 px viewport, so the virtual viewer mounts rows (happy-dom has no layout).
@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 const call = (id: string) => ({ id, name: "bash", arguments: { command: "log" } });
-const start = (id: string): RunEvent => ({ type: "tool_start", tool_call: call(id), view: { kind: "shell", command: "log" } });
+const start = (id: string, view: ToolView = { kind: "shell", command: "log" }): RunEvent => ({ type: "tool_start", tool_call: call(id), view });
 const out = (id: string, output: string, replace?: boolean): RunEvent => ({ type: "tool_output", tool_call: call(id), output, ...(replace ? { replace } : {}) });
 const end = (id: string): RunEvent => ({ type: "tool_end", tool_call: call(id), tool_result: { tool_call_id: id, content: "", is_error: false } });
 
@@ -49,7 +49,7 @@ const shown = (id: string) => [...card(id).querySelectorAll('[data-part="text-vi
 // engine flatten it, a full copy. So the count is the per-append full-length work, and the key names the hook doing it.
 const COMPARES = ["startsWith", "endsWith"] as const;
 const READS = ["slice", "substring", "charCodeAt", "codePointAt", "at", "charAt", "indexOf", "lastIndexOf", "includes", "match", "matchAll", "split", "replace", "search", "trim", "trimStart", "trimEnd", "toLowerCase", "normalize", "localeCompare"] as const;
-function spyStrings(min: number) {
+function spyStrings(min: number, arrayMin = 256) {
   const sites: Record<string, number> = {};
   let chars = 0;
   const proto = String.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
@@ -69,29 +69,67 @@ function spyStrings(min: number) {
       return original.apply(this, args);
     };
   }
-  return { result: () => ({ sites, chars }), restore: () => { for (const [name, original] of originals) proto[name] = original; } };
+  // Arrays too: a step that copies or visits an array of every segment or row (the segment index, the virtual list's
+  // rows, sizes, or offsets) costs O(n) per append. Counted when the array has at least `arrayMin` entries.
+  const arrayProto = Array.prototype as unknown as Record<PropertyKey, (...args: unknown[]) => unknown>;
+  const arrayOriginals = ARRAY_METHODS.map((name) => [name, arrayProto[name]!] as const);
+  let elements = 0;
+  const arraySites: Record<string, number> = {};
+  for (const [name, original] of arrayOriginals) {
+    arrayProto[name] = function (this: unknown[], ...args: unknown[]) {
+      // slice copies only its result; every other method here visits (or copies) the whole array.
+      if (counting && (name === "slice" ? sliceLength(this.length, args) : this.length) >= arrayMin) {
+        counting = false; // the stack read below must not count itself
+        const caller = new Error().stack!.split("\n")[2]!.trim();
+        // Only fulcrum's own code (packages/*/src or dist), not React, the DOM shim, or this test.
+        if (/\/packages\/[^/]+\/(src|dist)\//.test(caller)) {
+          const site = `array ${String(name)} in ${caller.replace(/^at /, "").replace(/ \(.*\/(src|dist)\//, " (").replace(/(:\d+)+\)$/, ")")}`;
+          arraySites[site] = (arraySites[site] ?? 0) + 1;
+          elements += this.length;
+        }
+        counting = true;
+      }
+      return original.apply(this, args);
+    };
+  }
+  let counting = true;
+  return {
+    result: () => ({ sites, chars, arraySites, elements }),
+    restore: () => {
+      counting = false;
+      for (const [name, original] of originals) proto[name] = original;
+      for (const [name, original] of arrayOriginals) arrayProto[name] = original;
+    },
+  };
 }
+const sliceLength = (length: number, [start = 0, end = length]: unknown[]) => {
+  const at = (value: unknown) => { const index = Number(value); return index < 0 ? Math.max(length + index, 0) : Math.min(index, length); };
+  return Math.max(at(end) - at(start), 0);
+};
+const ARRAY_METHODS: PropertyKey[] = ["slice", "map", "filter", "forEach", "indexOf", "lastIndexOf", "find", "findIndex", "findLast", "findLastIndex", "concat", "reduce", "reduceRight", "some", "every", "includes", "join", "flat", "flatMap", "fill", "sort", "reverse", "splice", "entries", "keys", "values", "toSorted", "toSpliced", "with", "copyWithin", Symbol.iterator];
 
 const big = (lines: number) => "x\n".repeat(lines);
 const red = (lines: number) => "\u001b[31mx\u001b[0m\n".repeat(lines);
 
 // Appends `appends` deltas to an output over `text`, then ends the tool; returns the spied full-length work of the
 // appends, and of the end separately.
-function appendWork(text: string, appends: number, delta: (index: number) => string, open = true) {
+// `min`: the shortest string that counts as the whole text; it stays above the appended text, whose own reads are the
+// tail's cost.
+function appendWork(text: string, appends: number, delta: (index: number) => string, open = true, view?: ToolView, min = 10_000) {
   const store = createRunStore((job) => job());
-  store.dispatch(start("a"));
+  store.dispatch(start("a", view));
   store.dispatch(out("a", text));
   mount(store, ["a"]);
   if (open) openViewer("a");
   expect(card("a").querySelector(open ? '[data-part="text-viewer"]' : '[data-action="open-viewer"]')).not.toBeNull();
-  const spy = spyStrings(10_000);
+  const spy = spyStrings(min);
   try {
     for (let index = 0; index < appends; index++) act(() => store.dispatch(out("a", delta(index))));
   } finally {
     spy.restore();
   }
   const work = spy.result();
-  const endSpy = spyStrings(10_000);
+  const endSpy = spyStrings(min);
   try {
     act(() => store.dispatch(end("a")));
   } finally {
@@ -101,31 +139,73 @@ function appendWork(text: string, appends: number, delta: (index: number) => str
   act(() => root?.unmount());
   root = undefined;
   container.remove();
-  return { ...work, end: endSpy.result().sites };
+  return { ...work, end: endSpy.result().sites, endArrays: endSpy.result().arraySites };
 }
 
 const plainTail = (index: number) => `\npaired tail ${index}`;
 const ansiTail = (index: number) => `\u001b[32mgreen ${index}\u001b[0m\n`;
 // The end's only full read is JSON detection of the finished plain output, once (ANSI output is never JSON).
-const paths = [
+const source = (lines: number) => Array.from({ length: lines }, (_, index) => ["let a = 1;\n", "a++;\n", "f(a);\n", "// c\n"][index % 4]).join("");
+// The layout gate's scaling probe: a file read (numbered lines), each append one 65,536-character line.
+const longLine = () => `\n${"x".repeat(65_535)}`;
+const paths: Array<{ name: string; small: string; large: string; delta: (index: number) => string; end: Record<string, number>; view?: ToolView; min?: number }> = [
+  { name: "file read", small: source(16_000), large: source(512_000), delta: longLine, end: {}, view: { kind: "read", path: "src/huge.ts" }, min: 100_000 },
   { name: "plain output", small: big(31_250), large: big(1_000_000), delta: plainTail, end: { "read trimStart in jsonText (tools/json.ts)": 1 } },
   { name: "ANSI output", small: red(6_250), large: red(200_000), delta: ansiTail, end: {} },
 ];
 
-for (const { name, large, delta, end: atEnd } of paths) for (const open of [true, false]) test(`an append to a large ${name} in the ${open ? "open viewer" : "closed preview"} does no full-length compare or read (exact, by hook)`, () => {
-  const work = appendWork(large, 10, delta, open);
-  console.log(`${name}: ${work.chars} chars of full-length work over 10 appends`, work.sites, "at the end", work.end);
+// Array steps that may run on an append, each named: anything else that visits or copies an array of at least 256
+// entries (every segment, row, size, or offset) fails the test.
+const allowedArrays = new Set([
+  // shortcut: an append that seals a segment copies the segment arrays (O(n / 2,000) references), because
+  // useVirtualList applies an outline only when its identity changes; the next test bounds it to sealing appends.
+  // Remove this entry once virtual.tsx takes an in-place append.
+  "array Symbol(Symbol.iterator) in useSegments (tools/text-viewer.tsx)",
+  // Row-local: one mounted row's own spans (at most one per character of a 2,000-character segment).
+  "array entries in AnsiRun (tools/text-viewer.tsx)",
+]);
+
+for (const { name, large, delta, end: atEnd, view, min } of paths) for (const open of [true, false]) test(`an append to a large ${name} in the ${open ? "open viewer" : "closed preview"} does no full-length compare or read (exact, by hook)`, () => {
+  const work = appendWork(large, 10, delta, open, view, min);
+  console.log(`${name}: ${work.chars} chars of full-length work over 10 appends`, work.sites, work.arraySites, "at the end", work.end, work.endArrays);
   // An entry names the hook and string method that touched the whole text on an append; there must be none.
   expect(work.sites).toEqual({});
+  expect(Object.keys(work.arraySites).filter((site) => !allowedArrays.has(site))).toEqual([]);
   expect(work.end).toEqual(atEnd);
+  expect(Object.keys(work.endArrays).filter((site) => !allowedArrays.has(site))).toEqual([]);
 });
 
-for (const { name, small, large, delta } of paths) for (const open of [true, false]) test(`per-append work for the ${name} in the ${open ? "open viewer" : "closed preview"} is flat in its length (32x span)`, () => {
-  const low = appendWork(small, 10, delta, open);
-  const high = appendWork(large, 10, delta, open);
+test("the segment arrays are copied only by an append that seals a segment, once per append", () => {
+  const copy = "array Symbol(Symbol.iterator) in useSegments (tools/text-viewer.tsx)";
+  const store = createRunStore((job) => job());
+  store.dispatch(start("a"));
+  store.dispatch(out("a", big(1_000_000)));
+  mount(store, ["a"]);
+  openViewer("a");
+  const copies = (delta: string) => {
+    const spy = spyStrings(10_000);
+    try {
+      act(() => store.dispatch(out("a", delta)));
+    } finally {
+      spy.restore();
+    }
+    return spy.result().arraySites[copy] ?? 0;
+  };
+  // The open segment holds up to 2,000 characters: fill it to the edge without sealing, one character at a time.
+  copies("\n"); // a newline ends the last full segment's text, so what follows starts a fresh open segment
+  let unsealed = 0;
+  for (let index = 0; index < 50; index++) unsealed += copies("y");
+  expect(unsealed).toBe(0);
+  // One append that seals 33 segments copies the two arrays (segments, their texts) once, not per segment.
+  expect(copies("z".repeat(66_000))).toBe(2);
+});
+
+for (const { name, small, large, delta, view, min } of paths) for (const open of [true, false]) test(`per-append work for the ${name} in the ${open ? "open viewer" : "closed preview"} is flat in its length (32x span)`, () => {
+  const low = appendWork(small, 10, delta, open, view, min);
+  const high = appendWork(large, 10, delta, open, view, min);
   // 32x the text; a cost proportional to the text grows 32x. The limit is near the geometric middle (sqrt 32 ~ 5.7).
   const ratio = (high.chars + 1) / (low.chars + 1);
-  console.log(`${name}: ${low.chars} vs ${high.chars} chars of full-length work (${ratio.toFixed(2)}x)`);
+  console.log(`${name}: ${low.chars} vs ${high.chars} chars of full-length work (${ratio.toFixed(2)}x); array entries visited ${low.elements} vs ${high.elements}`);
   expect(ratio).toBeLessThan(5.7);
 });
 

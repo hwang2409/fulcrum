@@ -137,7 +137,7 @@ export const GrownText = createContext<(Grown & { text: string }) | null>(null);
  * Terminal text with its escape codes applied (undefined while the text has no control characters), and how the shown
  * text grew when `text` is a known append to the previous text.
  */
-function useAnsi(text: string, grown: Grown | undefined): { parsed: AnsiText | undefined; grown?: Grown } {
+function useAnsi(text: string, grown: Grown | undefined, done: boolean): { parsed: AnsiText | undefined; grown?: Grown } {
   // `owned`: parsed is this hook's own copy. parseAnsi extends its prior's spans in place, so a memoized (shared) result
   // is copied once before it is extended; extending it in place corrupted the next replay of the same text.
   const cache = useRef<{ source: string; parsed?: AnsiText; owned: boolean }>({ source: "", owned: false });
@@ -150,14 +150,18 @@ function useAnsi(text: string, grown: Grown | undefined): { parsed: AnsiText | u
     : undefined;
   let parsed: AnsiText | undefined;
   let shown: Grown | undefined;
-  if (delta === undefined) parsed = ansiOf(text);
-  else if (prior.parsed || hasControls(delta)) {
+  if (delta === undefined) {
+    parsed = ansiOf(text);
+    // A streaming text takes its own copy of the shared parse now, inside this already whole-text render, so the
+    // first append does not copy every span.
+    if (parsed && !done) parsed = { ...parsed, spans: [...parsed.spans] };
+  } else if (prior.parsed || hasControls(delta)) {
     const base = prior.parsed ? (prior.owned ? prior.parsed : { ...prior.parsed, spans: [...prior.parsed.spans] }) : parseAnsi(prior.source);
     const step = continueAnsi(delta, base);
     parsed = step.parsed;
     if (prior.parsed) shown = { previous: base.text, tail: step.added };
   } else shown = { previous: prior.source, tail: delta };
-  cache.current = { source: text, parsed, owned: delta !== undefined && parsed !== undefined };
+  cache.current = { source: text, parsed, owned: parsed !== undefined && (delta !== undefined || !done) };
   return { parsed, grown: shown };
 }
 
@@ -182,7 +186,7 @@ function outputView(ansi: AnsiText | undefined, text: string, done: boolean, lan
 
 export function Output({ text, id, stream, done = true, language, pretty = false, follow = true }: OutputProps) {
   const known = useContext(GrownText);
-  const { parsed: ansi, grown } = useAnsi(text, known?.text === text ? known : undefined);
+  const { parsed: ansi, grown } = useAnsi(text, known?.text === text ? known : undefined, done);
   const { shown, format, appendOnly } = useMemo(() => outputView(ansi, text, done, language, pretty), [ansi, text, done, language, pretty]);
   return <TextViewer text={shown} id={id} label={stream ?? "output"} appendOnly={appendOnly} grown={appendOnly ? grown : undefined} follow={follow} stream={stream} format={format} done={done} />;
 }
@@ -206,10 +210,13 @@ export function numberedBlocks({ text, id, language, done = true }: NumberedProp
 
 /** Numbered text uses rich rows while small and the shared viewer while large. */
 export function NumberedLines({ text, start = 1, id, language, done = true }: NumberedProps) {
-  const metrics = useTextMetrics(text, true);
+  const known = useContext(GrownText);
+  const grown = known?.text === text ? known : undefined;
+  const metrics = useTextMetrics(text, true, grown);
   const large = needsTextViewer(text, metrics);
   const tokens = useTokens(large ? "" : text, language, id, done);
-  if (large) return <TextViewer text={text} id={id} label="content" appendOnly metrics={metrics} format={language ? { language } : undefined} done={done} />;
+  const format = useMemo(() => language ? { language } : undefined, [language]);
+  if (large) return <TextViewer text={text} id={id} label="content" appendOnly grown={grown} metrics={metrics} format={format} done={done} />;
   const lines = splitLines(text);
   const tokenRows = tokens ? tokenLines(tokens) : undefined;
   const digits = String(start + lines.length).length;
