@@ -986,6 +986,35 @@ describe("timeline scroll provenance", () => {
     }
   });
 
+  // mermaid-check "swap virtual bottom": a new row mounts at its estimate, measures smaller, and our own commit shrinks
+  // the DOM, so the browser clamps a pinned reader to the new end with no callback yet. The row then wraps taller
+  // before that callback runs: the reader must still be at the end, not read as moving up.
+  test("our commit shrinks the DOM under a pinned reader, then the last row grows before the callback: the reader stays pinned", () => {
+    const geometry = installScrollGeometry();
+    const observer = installRowObserver();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      observer.measure(() => 72);
+      append();
+      const added = [...container!.querySelectorAll<HTMLElement>("[data-virtual-id]")].at(-1)!.dataset.virtualId!;
+      const pinnedTop = host.scrollTop;
+      expect(host.scrollHeight - host.clientHeight - pinnedTop, "the reader starts at the end").toBeLessThanOrEqual(0.5);
+      observer.measure((id) => id === added ? 34 : undefined); // 38 px under the estimate: the browser clamps up
+      const clampedTop = host.scrollTop;
+      expect(clampedTop, "our commit shrank the DOM: the browser clamped the reader up").toBeLessThan(pinnedTop - 0.5);
+      host.scrollTop = clampedTop; // a browser stores the clamped position (this geometry only clamps on read)
+      geometry.addDomExtra(23); // the row wraps before the clamp's scroll callback runs
+      act(() => host.dispatchEvent(new Event("scroll")));
+      expect(host.scrollHeight - host.clientHeight - host.scrollTop, "a pinned reader stays at the end after the clamp and the wrap").toBeLessThanOrEqual(0.5);
+      append();
+      expect(unseen(), "follow must survive our own clamp").toBe("0");
+      expect(jump()).toBeNull();
+    } finally {
+      observer.restore();
+      geometry.restore();
+    }
+  });
+
   test("a late row resize while the reader's key scroll is in flight: the reader's scroll wins, nothing snaps back", () => {
     const geometry = installScrollGeometry();
     const observer = installRowObserver();

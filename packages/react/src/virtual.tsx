@@ -440,10 +440,15 @@ export function useVirtualList<Id extends string>(
 
   useLayoutEffect(() => {
     const container = containerRef.current;
+    if (!container) return;
+    const top = container.scrollTop;
     // The reader's scroll in flight (input armed, a position we have not seen yet) wins over a correction.
-    if (container && Math.abs(snapshot.jump) >= 0.5 && Math.abs(container.scrollTop - snapshot.scrollTop) >= 0.5
-      && !(leases.current?.active() && Math.abs(container.scrollTop - lastScrollTop.current) >= 0.5))
-      writeScroll(snapshot.scrollTop);
+    if (leases.current?.active() && Math.abs(top - lastScrollTop.current) >= 0.5) return;
+    if (Math.abs(snapshot.jump) >= 0.5 && Math.abs(top - snapshot.scrollTop) >= 0.5) writeScroll(snapshot.scrollTop);
+    // Our commit shrank the DOM under a pinned reader and the browser clamped it to the new end before any callback:
+    // record that end as our write, or content that grows before the callback reads as the reader moving up.
+    else if (snapshot.pinned && Math.abs(top - lastScrollTop.current) >= 0.5
+      && Math.abs(top - Math.max(0, container.scrollHeight - container.clientHeight)) < 0.5) writeScroll("end");
   }, [snapshot, writeScroll]);
 
   useLayoutEffect(() => () => engine.destroy(), [engine]);
