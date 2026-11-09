@@ -6,6 +6,8 @@
 
 `createRunStore()` owns one run. Dispatch generic `RunEvent` values, read ordered `{ id, kind }` entries with `getOutline()`, and read an entity with `getItem(id)`. The scheduler batches reduction and subscriber notification. Synchronous reads flush pending events. Use keyed subscriptions for entity rows and `subscribeOutline()` for the ordered timeline.
 
+Each notification pass calls every global, outline, and keyed listener it owes, even if one throws. The first error is rethrown when delivery ends, by the call that delivered it: the scheduler job, or `resync`, `beginHistory`, `prepend`, or `endHistory`. With a synchronous scheduler such as `createRunStore((job) => job())` the job runs inside `dispatch`, so `dispatch` rethrows it. Later errors go to `reportError` (or `console.error` where it does not exist), so none vanish. Read methods (`getState`, `getItem`, `getOutline`, and the rest) never throw a listener error. A listener may resync, page history, or dispatch. A resync, a history page, or a dispatch whose scheduler job ran during the pass is delivered by the next pass, right after the current one, never nested in it. Any other dispatch from a listener waits for its scheduler job, as usual. A synchronous scheduler is safe.
+
 `getOutlineSnapshot()` returns `{ items, change }`. A change is `{ from, splices }`, where each ordered splice is `{ index, deleteCount, items }`. Applying the splices to `from` produces `items`. Changes from one notification are merged. `change` is `null` for the first snapshot, after `resync`, and after disposal; `null` means "take `items` whole". An approval that folds into its tool row produces one splice, not a new row.
 
 Malformed known events with an invalid required field are counted by `getDiagnostics()` and ignored. An invalid optional field is omitted, counted in `sanitizedFields`, and the sanitized event is applied. Valid events keep their identity and do not allocate a validation copy. An arbitrary event kind becomes an `unknown` row; the built-in React `Fallback` shows only its kind, not its data.
@@ -26,7 +28,7 @@ A `user_message` can carry `intent`, the client id for the user's request. A lat
 
 ## tools
 
-`tool_start`, `tool_input`, and `approval_request` define a call. `tool_output` and `tool_end` report its output and result; they never change a known call's name, arguments, or meta, and the row keeps the call object it has. Send `tool_start` to redefine a call. An output event for an unknown call starts its row with the event's call.
+`tool_start` and `tool_input` define a tool row's call; an `approval_request` carries the call for its approval row. `tool_output` and `tool_end` report its output and result; they never change a known call's name, arguments, or meta, and the row keeps the call object it has. Send `tool_start` to redefine a call. An output event for an unknown call starts its row with the event's call.
 
 `tool_output` appends to the row's output. A protocol that resends the whole output so far (snapshots, or the AI SDK's preliminary tool output) sends `tool_output` with `replace: true`: the row keeps its position and approval decision, its output becomes the event's output, its result and error state clear, and it is live again.
 

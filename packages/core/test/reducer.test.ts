@@ -172,6 +172,22 @@ test("delta changes only the streaming message identity", () => {
   expect(store.getOutline()).toBe(outline);
 });
 
+test("a commit on an already committed message replaces it in place", () => {
+  const store = replay([
+    { type: "message_commit", message_id: "m", message: message("first") },
+    { type: "tool_start", tool_call: toolCall },
+    { type: "message_delta", message_id: "live", delta: "streaming" },
+  ]);
+  const outline = store.getOutline();
+  const before = store.getItem("message:m");
+  store.dispatch({ type: "message_commit", message_id: "m", message: message("first, with metadata") });
+
+  expect(store.getItem("message:m")).toMatchObject({ message: message("first, with metadata"), version: before!.version + 1, active: false });
+  expect(store.getOutline().map(({ id }) => id)).toEqual(outline.map(({ id }) => id));
+  // Committing another message ends the streaming one: commit a stale message only once nothing streams.
+  expect(store.getItem("message:live")).toMatchObject({ active: false });
+});
+
 test("tool output changes only the streamed tool identity", () => {
   const store = replay([
     { type: "message_commit", message_id: "other", message: message("old") },
