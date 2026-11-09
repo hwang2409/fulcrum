@@ -389,7 +389,7 @@ describe("timeline scroll provenance", () => {
     } finally { geometry.restore(); }
   });
 
-  test.each(["focus", "keyboard keyup"] as const)("%s one-shot expires after the next rendering opportunity", (kind) => {
+  test.each(["focus", "keyboard keyup"] as const)("%s without a scroll route does not claim a later own write", (kind) => {
     const geometry = installScrollGeometry();
     const saved = { raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
     const frames = new Map<number, FrameRequestCallback>();
@@ -416,7 +416,7 @@ describe("timeline scroll provenance", () => {
     }
   });
 
-  test("touch momentum settles after two quiet animation frames without scrollend", () => {
+  test("a touch tap without movement does not block a later explicit follow", () => {
     const geometry = installScrollGeometry();
     const saved = { raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
     const frames = new Map<number, FrameRequestCallback>();
@@ -565,8 +565,10 @@ describe("timeline scroll provenance", () => {
       settle(host);
     }, pinned: true, unpinned: false },
     { name: "reader lease scroll to the end", run: ({ host }) => {
-      act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 })));
+      clickRow();
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
       hostWrite(host, host.scrollHeight);
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "End", bubbles: true })));
     }, pinned: true, unpinned: true },
     { name: "unmatched move into content", run: ({ host }) => hostWrite(host, 2_000), pinned: false, unpinned: false },
   ];
@@ -645,12 +647,15 @@ describe("timeline scroll provenance", () => {
   const startLease = (kind: LeaseKind, { host }: Mounted) => act(() => {
     if (kind === "wheel") host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 }));
     else if (kind === "focus") {
-      // A focus scrolls only a row that is not fully visible: this one hangs 40 px below the viewport.
+      // A focus scrolls only a row that is not fully visible: this one extends past the viewport.
       host.getBoundingClientRect = rect(0, 600);
-      firstRow().getBoundingClientRect = rect(580, 640);
+      firstRow().getBoundingClientRect = rect(580, 1_000);
       firstRow().dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
     }
-    else if (kind === "keyboard") firstRow().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    else if (kind === "keyboard") {
+      clickRow();
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    }
     else if (kind === "scrollbar") {
       host.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 816, bottom: 600, width: 816, height: 600, toJSON: () => ({}) });
       host.dispatchEvent(new PointerEvent("pointerdown", { clientX: 808, clientY: 300, bubbles: true }));
@@ -660,18 +665,18 @@ describe("timeline scroll provenance", () => {
       host.dispatchEvent(touch);
     }
   });
-  // A key ends at its release event. A scrollbar drag, a wheel, focus, or touch lease ends when its scroll moved and then
-  // settled (two frames with no reader callback); without a start, the release or the settle alone changes nothing.
+  // A key ends at its release event. Other moving leases end on the next callback against their direction; without a
+  // start, a release or reversal changes nothing.
   const endLease = async (kind: LeaseKind, { host }: Mounted, started: boolean) => {
-    if (kind === "scrollbar" && started) moveReader(host, host.scrollTop - 40); // a drag before the release
+    const before = host.scrollTop;
+    if (started && kind !== "keyboard") moveReader(host, before + 40);
     act(() => {
-      if (kind === "keyboard") firstRow().dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowDown", bubbles: true }));
+      if (kind === "keyboard") document.body.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowDown", bubbles: true }));
       else if (kind === "scrollbar") document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
       else if (kind === "touch") host.dispatchEvent(new Event("touchend", { bubbles: true }));
     });
-    if (kind === "keyboard" || (kind === "scrollbar" && !started)) return;
-    if (started && kind !== "scrollbar") moveReader(host, host.scrollTop - 40);
-    await settleReader();
+    if (kind === "keyboard" || !started) return;
+    moveReader(host, before);
   };
   const hideDocument = () => {
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
@@ -703,7 +708,7 @@ describe("timeline scroll provenance", () => {
   const unpinnedWithUnseen = async () => {
     const timeline = mountTimeline(true);
     act(() => timeline.host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
-    moveReader(timeline.host);
+    moveReader(timeline.host, timeline.host.scrollHeight - timeline.host.clientHeight - 300);
     await settleReader();
     timeline.append();
     expect(timeline.unseen()).toBe("1");
@@ -1084,7 +1089,7 @@ describe("timeline scroll provenance", () => {
     { name: "End, consecutive callbacks", key: "End", repeats: 1, quietFrames: 0, distance: 600 },
     { name: "End, two quiet frames between callbacks", key: "End", repeats: 1, quietFrames: 2, distance: 600 },
     { name: "PageDown, five quiet frames between callbacks", key: "PageDown", repeats: 1, quietFrames: 5, distance: 600 },
-    { name: "smooth wheel, two quiet frames between callbacks", key: null, repeats: 1, quietFrames: 2, distance: 600 },
+    { name: "smooth wheel, two quiet frames between callbacks", key: null, repeats: 1, quietFrames: 2, distance: 500 },
     { name: "held PageDown repeat keeps three-page reach after early keyup", key: "PageDown", repeats: 3, quietFrames: 2, distance: 1_500 },
   ] as const;
   test.each(motionRows)("motion continuation: $name", ({ key, repeats, quietFrames, distance }) => {
@@ -1126,9 +1131,8 @@ describe("timeline scroll provenance", () => {
     }
   });
 
-  // Round 5: a lease settles after two frames with no reader callback. Our own writes are not reader callbacks, so a
-  // pinned stream that writes every frame must not keep one wheel tick's lease alive: the WebKit banner clamp later
-  // (3 px shrink, 41 px up, no input) is still layout and the reader keeps following.
+  // Reaching the boundary ends the wheel lease. Our own writes do not recreate or extend it, so the later WebKit
+  // banner clamp (3 px shrink, 41 px up, no input) is layout and the reader keeps following.
   test("our own writes never extend a reader lease: after a wheel re-pin and a pinned stream, the banner clamp is layout", () => {
     const geometry = installScrollGeometry();
     const observer = installRowObserver();
@@ -1137,7 +1141,7 @@ describe("timeline scroll provenance", () => {
       const { append, host, unseen } = mountTimeline();
       observer.measure(() => 72);
       act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
-      moveReader(host, host.scrollHeight - host.clientHeight - 600);
+      moveReader(host, host.scrollHeight - host.clientHeight - 500);
       nextFrame();
       nextFrame();
       append();
@@ -1324,8 +1328,8 @@ describe("timeline scroll provenance", () => {
       observer.measure(() => 72);
       if (direction === "down to the end") {
         act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
-        moveReader(host, host.scrollHeight - host.clientHeight - 600);
-        nextFrame(); // two frames with no reader callback settle the reader's scroll
+        moveReader(host, host.scrollHeight - host.clientHeight - 500);
+        nextFrame();
         nextFrame();
         append();
         expect(unseen(), "the reader starts unpinned").toBe("1");

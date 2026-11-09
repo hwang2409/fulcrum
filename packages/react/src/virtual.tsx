@@ -23,101 +23,121 @@ const isIOSWebKit = () => navigator.userAgent.includes("iP");
 
 type ScrollLeaseKind = "wheel" | "focus" | "keyboard" | "scrollbar" | "touch";
 type HeldLeaseKind = "keyboard" | "scrollbar" | "touch";
+type ScrollDirection = -1 | 1;
 type ScrollLeases = ReturnType<typeof createScrollLeases>;
 
 /**
- * The one owner of reader-input leases for one scroll host: which scroll callbacks the reader caused.
- * The caller arms a lease only for input that will scroll this host (`willScroll`). An armed lease waits for its first
- * reader callback, however late the browser starts the animation; an armed lease that never moved ends at the next
- * input of another kind, at a pointer press, at window blur, when the document is hidden, or at host detach. A lease
- * never arms without a direction: a touch tap (no touchmove) or a scrollbar press released before any move ends it, and
- * the caller arms focus only for a target the browser must scroll into view. Once the
- * scroll moved, the lease ends two frames after the last reader callback and once nothing is held (a key, the
- * scrollbar, a finger). Native scrollend never ends a lease: Chromium sends it in the middle of a key animation. Our own
- * writes are not reader callbacks, so a stream that writes every frame cannot keep a lease alive. Plain state only.
+ * The one owner of reader-input leases for one scroll host. A lease follows motion that continues in the input's
+ * direction and bounded reach; it does not expire between sparse browser callbacks. An inconsistent callback ends it.
+ * Native scrollend is not an end signal because Chromium can send it in the middle of a key animation.
  */
 function createScrollLeases(onSettled: () => void) {
   const held = new Set<HeldLeaseKind>();
-  let armed: ScrollLeaseKind | null = null;
-  let moving = false;
-  let touching = false;
-  let swiped = false;
-  let readerCallbacks = 0;
-  let settleFrame: number | null = null;
-  const pressed = () => touching || held.has("keyboard") || held.has("scrollbar");
-  const stopSettling = () => {
-    if (settleFrame != null) cancelAnimationFrame(settleFrame);
-    settleFrame = null;
+  let kind: ScrollLeaseKind | null = null;
+  let phase: "armed" | "moving" | null = null;
+  let direction: ScrollDirection | null = null;
+  let limit = 0;
+  let reach = 0;
+  const boundary = (top: number, dir: ScrollDirection, distance: number) => top + dir * distance;
+  const extend = (top: number, dir: ScrollDirection, distance: number) => {
+    const next = boundary(top, dir, distance);
+    limit = dir > 0 ? Math.max(limit, next) : Math.min(limit, next);
   };
-  const settle = () => {
-    stopSettling();
-    let seen = readerCallbacks;
-    let quietFrames = 0;
-    const observe = () => {
-      settleFrame = null;
-      if (pressed()) return; // the release settles again
-      if (readerCallbacks === seen) quietFrames++;
-      else {
-        seen = readerCallbacks;
-        quietFrames = 0;
-      }
-      if (quietFrames < 2) {
-        settleFrame = requestAnimationFrame(observe);
-        return;
-      }
-      moving = false;
-      held.delete("touch");
-      onSettled();
-    };
-    settleFrame = requestAnimationFrame(observe);
+  const accumulate = (top: number, dir: ScrollDirection, distance: number) => {
+    limit = dir > 0 ? Math.max(limit, top) + distance : Math.min(limit, top) - distance;
+  };
+  const clear = (settled: boolean) => {
+    const wasMoving = phase === "moving";
+    kind = null;
+    phase = null;
+    direction = null;
+    limit = 0;
+    reach = 0;
+    if (settled && wasMoving) onSettled();
   };
   return {
-    /** Input that will scroll this host. */
-    start(kind: ScrollLeaseKind) {
-      if (kind === "touch") {
-        touching = true;
-        swiped = false;
+    /** Input that will scroll this host. Same-direction repeats extend the current target in every phase. */
+    start(nextKind: ScrollLeaseKind, top: number, nextDirection: ScrollDirection | null, nextReach: number) {
+      if (nextDirection !== null && kind === nextKind && direction === nextDirection && phase !== null) {
+        accumulate(top, nextDirection, nextReach);
+        reach = nextReach;
+      } else {
+        clear(true);
+        kind = nextKind;
+        phase = "armed";
+        direction = nextDirection;
+        reach = nextReach;
+        if (nextDirection !== null) limit = boundary(top, nextDirection, nextReach);
       }
-      if (kind === "keyboard" || kind === "scrollbar" || kind === "touch") held.add(kind);
-      if (!moving) armed = kind;
+      if (nextKind === "keyboard" || nextKind === "scrollbar" || nextKind === "touch") held.add(nextKind);
     },
-    /** Input that will not scroll this host: it ends an armed lease of another kind that never moved. */
-    input(kind: ScrollLeaseKind | "pointer") {
-      if (!moving && armed !== null && armed !== kind) armed = null;
+    /** Input that will not scroll this host. A pointer press also stops a running animation lease. */
+    input(nextKind: ScrollLeaseKind | "pointer") {
+      if (phase === "moving" && nextKind === "pointer") clear(true);
+      else if (phase === "armed" && kind !== nextKind) clear(false);
     },
-    /** A finger moved: a touch lease that has not scrolled yet has a direction, so its release keeps it armed. */
-    swipe() { swiped = true; },
-    /** Ends a held lease; an end without its start changes nothing. A moving scroll settles. An unmoved key stays armed
-     * (its scroll may start after keyup); an unmoved scrollbar press or a tap has no direction and disarms. */
-    end(kind: HeldLeaseKind) {
-      if (!held.has(kind)) return;
-      if (kind === "touch") touching = false;
-      if (kind !== "touch" || !moving) held.delete(kind);
-      if (moving) settle();
-      else if (armed === kind && (kind === "scrollbar" || (kind === "touch" && !swiped))) armed = null;
-    },
-    /** Called once per scroll callback: whether the reader caused it. Our own write never extends a lease. */
-    consume(ours: boolean) {
-      const fromReader = armed !== null || moving || held.size > 0;
-      if (fromReader && !ours) {
-        readerCallbacks++;
-        armed = null;
-        moving = true;
-        if (settleFrame == null && !pressed()) settle();
+    /** Touch movement supplies the content-scroll direction before momentum starts. */
+    swipe(nextDirection: ScrollDirection, top: number) {
+      if (kind !== "touch" || phase === null) return;
+      if (direction === null) {
+        direction = nextDirection;
+        limit = boundary(top, nextDirection, Number.POSITIVE_INFINITY);
       }
-      return fromReader;
+    },
+    /** Ends a held lease. Releasing preserves accumulated reach; an unmoved scrollbar press or tap arms nothing. */
+    end(endedKind: HeldLeaseKind, top: number, releaseReach: number) {
+      if (!held.delete(endedKind) || kind !== endedKind || phase === null) return;
+      if (direction === null) {
+        clear(false);
+        return;
+      }
+      extend(top, direction, releaseReach);
+    },
+    /** Called once per scroll callback: whether the callback continues reader motion. */
+    consume(facts: { ours: boolean; top: number; lastTop: number; atEnd: boolean; resized: boolean }) {
+      const delta = facts.top - facts.lastTop;
+      if (facts.ours) {
+        if (direction !== null && Number.isFinite(limit)) limit += delta;
+        return false;
+      }
+      if (held.size > 0 && phase !== null) {
+        if (Math.abs(delta) > 0.5 && direction === null) {
+          direction = delta > 0 ? 1 : -1;
+          limit = boundary(facts.top, direction, reach);
+        }
+        if (Math.abs(delta) > 0.5) phase = "moving";
+        return true;
+      }
+      if (phase === null || direction === null) return false;
+      if (facts.resized) {
+        clear(true);
+        return false;
+      }
+      if (Math.abs(delta) <= 0.5) return phase === "moving";
+      const inDirection = direction * delta > 0.5;
+      const inReach = direction > 0 ? facts.top <= limit + 1.5 : facts.top >= limit - 1.5;
+      if (!inDirection) {
+        if (phase === "moving") clear(true);
+        return false;
+      }
+      if (!inReach || (direction < 0 && facts.atEnd)) {
+        if (phase === "moving") clear(true);
+        return false;
+      }
+      phase = "moving";
+      const oneMove = kind === "focus";
+      const atBoundary = (direction > 0 && facts.atEnd) || (direction < 0 && facts.top <= 0.5);
+      if (oneMove || atBoundary) clear(true);
+      return true;
     },
     held: () => held.size > 0,
-    /** Whether reader input is in flight, without consuming it. */
-    active: () => armed !== null || moving || held.size > 0,
-    touching: () => touching,
+    /** Corrections yield only while a directional reader motion is active. */
+    active: () => held.size > 0 || (phase !== null && direction !== null),
+    touching: () => held.has("touch"),
     /** Window blur, a hidden document, or host detach: no release event will come. */
     release() {
-      stopSettling();
-      armed = null;
-      moving = false;
-      touching = false;
       held.clear();
+      clear(true);
     },
   };
 }
@@ -321,14 +341,23 @@ export function useVirtualList<Id extends string>(
         const top = container.scrollTop;
         const pendingMatch = pending !== null && (Math.abs(top - pending.value) < 0.5
           || (typeof pending.target === "number" && Math.abs(top - pending.target) < 0.5));
+        const priorDomEnd = pending?.previousEnd ?? lastDomEnd.current;
+        const slack = Math.min(1, Math.abs(domEnd - priorDomEnd));
+        const atEnd = Math.abs(top - priorDomEnd) <= slack + 0.5 || Math.abs(top - domEnd) <= slack + 0.5;
         const kind = classifyScroll({
-          lease: hostLeases.consume(pendingMatch),
+          lease: hostLeases.consume({
+            ours: pendingMatch,
+            top,
+            lastTop: lastScrollTop.current,
+            atEnd,
+            resized: Math.abs(container.clientHeight - before.viewportSize) >= 0.5,
+          }),
           pendingMatch,
           top,
           lastTop: lastScrollTop.current,
           domEnd,
           lastDomEnd: lastDomEnd.current,
-          priorDomEnd: pending?.previousEnd ?? lastDomEnd.current,
+          priorDomEnd,
           scrollHeight: container.scrollHeight,
           lastScrollHeight: lastScrollHeight.current,
           clientHeight: container.clientHeight,
@@ -347,7 +376,10 @@ export function useVirtualList<Id extends string>(
       const onWheel = (event: WheelEvent) => {
         const vertical = Math.abs(event.deltaY) > Math.abs(event.deltaX);
         if (event.defaultPrevented || !vertical || !willScroll(container, event.target as Element | null, event.deltaY > 0)) return hostLeases.input("wheel");
-        hostLeases.start("wheel");
+        const direction = event.deltaY > 0 ? 1 : -1;
+        const pixels = event.deltaMode === 2 ? Math.abs(event.deltaY) * container.clientHeight
+          : event.deltaMode === 1 ? Math.abs(event.deltaY) * 40 : Math.abs(event.deltaY);
+        hostLeases.start("wheel", container.scrollTop, direction, Math.max(container.clientHeight, pixels));
         if (event.deltaY < 0 && engine.getSnapshot().pinned) engine.setFollow(false);
       };
       // A scroll key arms only when the browser will scroll this host with it: this host is the nearest scroller that can
@@ -360,11 +392,13 @@ export function useVirtualList<Id extends string>(
         const pageLevel = target === null || target === document.body || target === document.documentElement;
         const from = pageLevel ? lastPointerTarget : target;
         if (event.defaultPrevented || (!down && !up) || target?.closest(keyOwners) || !willScroll(container, from, down)) return hostLeases.input("keyboard");
-        hostLeases.start("keyboard");
+        const direction = down ? 1 : -1;
+        const reach = event.key === "End" || event.key === "Home" ? Number.POSITIVE_INFINITY : container.clientHeight;
+        hostLeases.start("keyboard", container.scrollTop, direction, reach);
         if (up && engine.getSnapshot().pinned) engine.setFollow(false);
       };
       // Any key release ends the held key: a still-held key repeats its keydown, and a lost arrow keyup under Cmd still releases.
-      const onKeyUp = () => hostLeases.end("keyboard");
+      const onKeyUp = () => hostLeases.end("keyboard", container.scrollTop, container.clientHeight);
       const onPointerDown = (event: PointerEvent) => {
         lastPointerTarget = event.target instanceof Element ? event.target : null;
         const bounds = container.getBoundingClientRect();
@@ -373,24 +407,26 @@ export function useVirtualList<Id extends string>(
         const horizontal = event.clientY >= bounds.top + container.clientHeight && event.clientY <= bounds.bottom
           && event.clientX >= bounds.left && event.clientX <= bounds.right;
         // Overlay scrollbars take no gutter, so a press on the host itself (not a row) is a scrollbar press too.
-        if (event.target === container || vertical || horizontal) hostLeases.start("scrollbar");
+        if (event.target === container || vertical || horizontal) hostLeases.start("scrollbar", container.scrollTop, null, container.clientHeight);
         else hostLeases.input("pointer");
       };
-      const onPointerEnd = () => hostLeases.end("scrollbar");
+      const onPointerEnd = () => hostLeases.end("scrollbar", container.scrollTop, container.clientHeight);
       let touchY: number | null = null;
       const onTouchStart = (event: TouchEvent) => {
-        hostLeases.start("touch");
+        hostLeases.start("touch", container.scrollTop, null, Number.POSITIVE_INFINITY);
         touchY = event.touches[0]?.clientY ?? null;
       };
       const onTouchMove = (event: TouchEvent) => {
-        hostLeases.swipe();
         const next = event.touches[0]?.clientY;
-        if (next !== undefined && touchY != null && next > touchY && engine.getSnapshot().pinned) engine.setFollow(false);
+        if (next !== undefined && touchY != null && Math.abs(next - touchY) > 0.5) {
+          hostLeases.swipe(next < touchY ? 1 : -1, container.scrollTop);
+          if (next > touchY && engine.getSnapshot().pinned) engine.setFollow(false);
+        }
         touchY = next ?? null;
       };
       const onTouchEnd = () => {
         touchY = null;
-        hostLeases.end("touch");
+        hostLeases.end("touch", container.scrollTop, Number.POSITIVE_INFINITY);
       };
       const onScrollEnd = () => finishScroll(); // never ends a lease: Chromium sends scrollend in the middle of a key animation
       // A focus scrolls this host only when its target is not fully visible inside it; a focus that needs no scroll arms nothing.
@@ -398,7 +434,8 @@ export function useVirtualList<Id extends string>(
         if (!(event.target instanceof Element) || !container.contains(event.target)) return;
         const bounds = container.getBoundingClientRect();
         const box = event.target.getBoundingClientRect();
-        if (box.top < bounds.top || box.bottom > bounds.bottom) hostLeases.start("focus");
+        if (box.top < bounds.top) hostLeases.start("focus", container.scrollTop, -1, bounds.top - box.top);
+        else if (box.bottom > bounds.bottom) hostLeases.start("focus", container.scrollTop, 1, box.bottom - bounds.bottom);
       };
       const onBlur = () => hostLeases.release();
       const onVisibilityChange = () => {
