@@ -186,7 +186,7 @@ export function useVirtualList<Id extends string>(
         if (!correction && !atPhysicalEnd && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
         lastScrollTop.current = container.scrollTop;
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
-        if (atPhysicalEnd) engine.setFollow(true);
+        if (atPhysicalEnd && before.pinned) engine.setFollow(true);
         followerScrollTop.current = container.scrollTop;
         if (correction) return;
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);

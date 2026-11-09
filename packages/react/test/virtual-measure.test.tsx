@@ -76,6 +76,17 @@ test("two row growths before measurement keep a pinned reader at the physical en
       if (height === 100) act(() => host.dispatchEvent(new Event("scroll")));
     }
     expect(physicalHeight - host.clientHeight - host.scrollTop).toBeLessThanOrEqual(4);
+
+    const wheel = new Event("wheel");
+    Object.defineProperty(wheel, "deltaY", { value: -100 });
+    act(() => host.dispatchEvent(wheel));
+    host.scrollTop = physicalHeight - host.clientHeight - 120;
+    act(() => host.dispatchEvent(new Event("scroll")));
+    act(() => store.dispatch(commits("detached", 1)[0]!));
+    physicalHeight -= 200;
+    host.scrollTop = host.scrollTop;
+    act(() => host.dispatchEvent(new Event("scroll")));
+    expect(container.querySelector('[data-part="jump-to-latest"]')).not.toBeNull();
   } finally {
     act(() => root.unmount());
     container.remove();
