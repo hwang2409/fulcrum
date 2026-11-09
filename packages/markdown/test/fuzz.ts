@@ -1,4 +1,5 @@
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
+import { withoutDefinitionLabels, withoutDelimiterCells } from "./accepted-changes.js";
 
 type Random = () => number;
 type FuzzFailure = { source: string; splitSeed: number; reason: string };
@@ -75,9 +76,11 @@ function inlineVisible(nodes: readonly Inline[], includeProvisional = true): str
     : inlineVisible(node.children, includeProvisional)).join("");
 }
 
-// Line-edge spaces select block indentation or a break style; they are syntax, not rendered characters.
+// Line-edge spaces select block indentation or a break style; they are syntax, not rendered characters. A pipe is
+// table syntax: a streaming row shows its pipes until a delimiter row turns them into cell borders.
+// A delimiter row arriving shows as sent until it completes (accepted-changes.ts).
 const paragraphVisible = (nodes: readonly Inline[], includeProvisional: boolean) =>
-  inlineVisible(nodes, includeProvisional).replace(/(^|\n)[ \t]+/g, "$1").replace(/[ \t]+(?=\n|$)/g, "");
+  withoutDelimiterCells(inlineVisible(nodes, includeProvisional)).replace(/[ \t]*\|[ \t]*/g, "").replace(/(^|\n)[ \t]+/g, "$1").replace(/[ \t]+(?=\n|$)/g, "");
 
 // Table layout owns cell-edge spacing, so only table-cell whitespace is normalized.
 const tableCellVisible = (nodes: readonly Inline[], includeProvisional: boolean) =>
@@ -144,7 +147,7 @@ function checkSource(source: string, splitSeed: number, stats?: FuzzStats): stri
       const rendered = document.render();
       // Block wrappers do not render separator text; table cells alone normalize layout-owned edge whitespace.
       const currentStableVisible = visible(rendered, false);
-      if (!isSubsequence(previousStableVisible, currentStableVisible)) {
+      if (!isSubsequence(withoutDefinitionLabels(source, previousStableVisible), withoutDefinitionLabels(source, currentStableVisible))) {
         if (stats) stats.visibilityFailures++;
         return `visible text disappeared or reordered: ${JSON.stringify(previousStableVisible)} -> ${JSON.stringify(currentStableVisible)}`;
       }
@@ -152,7 +155,7 @@ function checkSource(source: string, splitSeed: number, stats?: FuzzStats): stri
     }
     const active = document.render();
     const expected = parseMarkdown(source);
-    if (!isSubsequence(visible(active, false), visible(expected)))
+    if (!isSubsequence(withoutDefinitionLabels(source, visible(active, false)), withoutDefinitionLabels(source, visible(expected))))
       return `active render reveals non-final text: ${JSON.stringify(active)} != ${JSON.stringify(expected)}`;
     if (!equalValue(active, expected, { count: 0 }) && matchesActiveException(active, expected, source) && stats) stats.eofReferences++;
     document.finish();

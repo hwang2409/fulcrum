@@ -1,12 +1,15 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
+import { withoutDefinitionLabels, withoutDelimiterCells } from "./accepted-changes.js";
 
 type Case = { name: string; source: string; depth: number; flash?: boolean };
 const splits = [1, 2, 3, 7, 20, 1000];
 const json = (x: readonly Block[]) => JSON.stringify(x, (k, v) => k === "open" ? undefined : v);
 const inline = (xs: readonly Inline[]): string => xs.map((x) => x.type === "text" || x.type === "pending-reference" || x.type === "code" ? x.value : x.type === "image" ? x.alt : x.type === "break" ? "\n" : inline(x.children)).join("");
-const visible = (bs: readonly Block[]): string => bs.map((b) => b.type === "paragraph" || b.type === "heading" ? inline(b.children) : b.type === "code" ? b.value : b.type === "blockquote" ? visible(b.children) : b.type === "list" ? b.items.map((i) => visible(i.children)).join("") : b.type === "table" ? [...b.header, ...b.rows.flat()].map(inline).join("") : "").join("");
-const compact = (s: string) => s.replace(/\s/g, "");
+// A delimiter row arriving shows as sent until it completes (accepted-changes.ts).
+const visible = (bs: readonly Block[]): string => bs.map((b) => b.type === "paragraph" || b.type === "heading" ? withoutDelimiterCells(inline(b.children)) : b.type === "code" ? b.value : b.type === "blockquote" ? visible(b.children) : b.type === "list" ? b.items.map((i) => visible(i.children)).join("") : b.type === "table" ? [...b.header, ...b.rows.flat()].map(inline).join("") : "").join("");
+// A pipe is table syntax: a streaming row shows its pipes until a delimiter row turns them into cell borders.
+const compact = (s: string) => s.replace(/[\s|]/g, "");
 const subsequence = (needle: string, haystack: string) => { let i = 0; for (const c of haystack) if (c === needle[i]) i++; return i === needle.length; };
 const wrap = (source: string, depth: number) => {
   for (let level = 0; level < depth; level++) {
@@ -43,13 +46,13 @@ cases.push({ name: "loose-list", depth: 1, source: "- first\n\n  second paragrap
 
 test("reviewer generator prefixes only reveal final visible text", () => {
   for (const current of cases) {
-    const expectedVisible = compact(visible(parseMarkdown(current.source)));
+    const expectedVisible = withoutDefinitionLabels(current.source, compact(visible(parseMarkdown(current.source))));
     if (current.flash === false) continue;
     for (const split of splits) {
       const document = createStreamingDocument();
       for (let offset = 0; offset < current.source.length; offset += split) {
         document.append(current.source.slice(offset, offset + split));
-        const shown = compact(visible(document.render()));
+        const shown = withoutDefinitionLabels(current.source, compact(visible(document.render())));
         expect(subsequence(shown, expectedVisible), `${current.name}, split ${split}, offset ${Math.min(offset + split, current.source.length)}, shown ${JSON.stringify(shown)}`).toBe(true);
       }
     }
