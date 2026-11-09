@@ -12,7 +12,7 @@
 import { mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { chromium, webkit, type Locator, type Page } from "playwright";
+import { chromium, firefox, webkit, type Locator, type Page } from "playwright";
 import { themes } from "@fulcrum/react";
 import { ACTIVE, LONG, startFakeZeta } from "./fake-zeta";
 
@@ -721,6 +721,112 @@ async function checkReconnectBottom(page: Page, engine: string) {
 const waitNamed = (locator: Locator, failure: string, timeout: number, state: "attached" | "detached" | "visible" = "visible") =>
   locator.waitFor({ state, timeout }).catch(() => { throw new Error(`${failure} within ${timeout / 1000} s`); });
 
+// Review 4 B1: browsers animate key scrolls, so one reader gesture reaches the end over several scroll callbacks. A
+// reader who scrolls down to the end with real input follows again. The row first proves the gesture took more than one
+// callback, so it cannot pass on an engine that did not animate it. Real input only, named waits. Headless wheel input
+// does not animate (one callback in Chromium and WebKit), so the wheel case lives in the hook rows. "PageDown (body
+// focus)" clicks a row and then moves focus to the page body: the browser scrolls the scroller of the last click.
+// WebKit's End from a focused row does not end at the end of a virtual list (probe: it lands on the DOM end of that
+// moment, then rows measure and the end moves; focus also leaves the row), so WebKit presses PageDown until the end
+// instead. WebKit's later PageDowns from a focused row move less than a page (probe: 638 px, then 241 px, on 110b875
+// and on this branch alike), so the row repeats the key, up to five times, and counts the callbacks of the last press.
+type AnimatedGesture = "PageDown" | "End" | "PageDown repeated" | "PageDown (body focus)";
+
+// A freshly launched engine loads the app cold (module graph, fonts); open the long run once before its first row.
+async function warmEngine(page: Page, engine: string) {
+  await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+  await waitNamed(page.locator('[data-run-ready="true"]'), `${engine}: warm-up: the long run was not ready`, 30_000);
+  await page.goto("about:blank");
+}
+
+async function checkAnimatedReaderScrollRepins(page: Page, engine: string, gesture: AnimatedGesture) {
+  const history = fake.historyOf(LONG);
+  try {
+    await withRowPage(page, engine, async (rowPage) => {
+      const row = `${engine} animated ${gesture} re-pin`;
+      await rowPage.goto(`${origin}/?theme=tokyo-night&virtualDebug=1#session=${LONG}`);
+      await waitNamed(rowPage.locator('[data-run-ready="true"]'), `${row}: the long run was not ready`, 15_000);
+      await waitNamed(rowPage.getByText(/loading session history/), `${row}: history paging did not finish`, 15_000, "detached");
+      await waitNamed(rowPage.locator('[data-virtual-id="message:l999"]'), `${row}: the last history row message:l999 did not mount`, 15_000);
+      await waitAtBottom(rowPage, `${row}: the long run did not load pinned at the bottom`);
+
+      // Leave the bottom with real input: the pointer over the timeline, wheel up (less than a page for PageDown).
+      const scroll = rowPage.locator('[data-part="timeline-scroll"]');
+      const box = await scroll.boundingBox();
+      if (!box) throw new Error(`${row}: no scroll viewport`);
+      await rowPage.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await rowPage.mouse.wheel(0, -(gesture === "End" ? 2 : gesture === "PageDown repeated" ? 1.5 : 0.5) * box.height);
+      fake.emit({ event: "user_message", session_id: LONG, text: `animated ${engine} ${gesture} away`, mode: "send", attachments: [], delivery_id: `animated-away-${engine}-${gesture}` });
+      await waitNamed(rowPage.locator('[data-part="jump-to-latest"][data-unseen-count="1"]'), `${row}: the reader did not leave the bottom (no jump control with unseen=1)`, 10_000);
+      const settled = () => rowPage.evaluate(async () => {
+        const w = window as typeof window & { __animatedScrolls?: number };
+        let seen = -1;
+        while (seen !== w.__animatedScrolls) {
+          seen = w.__animatedScrolls ?? 0;
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }
+      });
+      await rowPage.evaluate(() => {
+        const w = window as typeof window & { __animatedScrolls?: number };
+        w.__animatedScrolls = 0;
+        document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.addEventListener("scroll", () => { w.__animatedScrolls!++; });
+      });
+      await settled(); // the wheel-up animation finishes before the counted gesture starts
+      await rowPage.evaluate(() => { (window as typeof window & { __animatedScrolls?: number }).__animatedScrolls = 0; });
+
+      {
+        // A click on a visible row focuses it; rows handle only arrows, so the browser scrolls the timeline for this key.
+        const visibleRow = await rowPage.evaluate(() => {
+          const bounds = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.getBoundingClientRect();
+          const row = [...document.querySelectorAll<HTMLElement>("[data-virtual-id]")].find((element) => {
+            const box = element.getBoundingClientRect();
+            return box.top > bounds.top + 40 && box.bottom < bounds.bottom - 40 && box.height > 20;
+          });
+          if (!row) return null;
+          const box = row.getBoundingClientRect();
+          return { x: box.left + 8, y: box.top + box.height / 2 };
+        });
+        if (!visibleRow) throw new Error(`${row}: no fully visible row to focus`);
+        await rowPage.mouse.click(visibleRow.x, visibleRow.y);
+        await settled();
+        await rowPage.evaluate(() => { (window as typeof window & { __animatedScrolls?: number }).__animatedScrolls = 0; });
+        if (gesture === "PageDown (body focus)") await rowPage.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+        if (gesture === "PageDown repeated") {
+          const gap = () => scroll.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+          for (let press = 1; press <= 5 && await gap() > 1; press++) {
+            await rowPage.evaluate(() => { (window as typeof window & { __animatedScrolls?: number }).__animatedScrolls = 0; });
+            await rowPage.keyboard.press("PageDown");
+            await settled();
+          }
+        } else await rowPage.keyboard.press(gesture === "End" ? "End" : "PageDown");
+      }
+      await rowPage.waitForFunction(() => {
+        const element = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+        return element.scrollHeight - element.clientHeight - element.scrollTop <= 1;
+      }, undefined, { timeout: 5_000 }).catch(() => { throw new Error(`${row}: the gesture did not reach the end within 5 s`); });
+      await settled();
+      const callbacks = await rowPage.evaluate(() => (window as typeof window & { __animatedScrolls?: number }).__animatedScrolls ?? 0);
+      console.log(`animated ${engine.padEnd(15)} ${gesture.padEnd(8)} ${callbacks} scroll callbacks`);
+      if (callbacks < 2) throw new Error(`${row}: the gesture took ${callbacks} scroll callback(s); it was not animated, so this row proves nothing`);
+
+      const text = `animated ${engine} ${gesture} append`;
+      fake.emit({ event: "user_message", session_id: LONG, text, mode: "send", attachments: [], delivery_id: `animated-${engine}-${gesture}` });
+      await waitNamed(rowPage.locator('[data-part="timeline"] [data-kind="user"]', { hasText: text }), `${row}: the appended row did not mount`, 5_000, "attached");
+      await settled();
+      const after = await rowPage.evaluate(() => {
+        const element = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+        const engine = (window as typeof window & { __fulcrumVirtual?: { getSnapshot(): { pinned: boolean } } }).__fulcrumVirtual;
+        return { gap: element.scrollHeight - element.clientHeight - element.scrollTop, following: engine?.getSnapshot().pinned ?? null, jump: !!document.querySelector('[data-part="jump-to-latest"]') };
+      });
+      if (after.following !== true || after.jump || after.gap > 1) {
+        throw new Error(`${row}: a reader who scrolled down to the end (${callbacks} callbacks) did not follow (follow ${after.following}, jump control ${after.jump ? "shown" : "hidden"}, gap ${after.gap.toFixed(3)} px)`);
+      }
+    });
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
+}
+
 // Restores LONG's history (the row appends to it) even when the row fails; the row runs in its own context.
 type ExternalScrollKind = "scrollIntoView" | "tab-focus" | "host-write-after-growth";
 
@@ -1294,6 +1400,25 @@ try {
       await check("webkit: host writes after growth mount rows under the viewport and keep follow off", () => checkExternalScrollIntent(reconnectWebkitPage, "webkit", "host-write-after-growth"));
       await check("webkit: scroll keys in the composer keep a pinned timeline following", () => checkComposerKeyKeepsFollow(reconnectWebkitPage, "webkit"));
       await check("webkit: an unpinned 1,000-row run keeps its mid-run anchor through store replacement", () => checkReconnectAnchor(reconnectWebkitPage, "webkit"));
+      for (const gesture of ["PageDown", "PageDown repeated", "PageDown (body focus)"] as const) {
+        await check(`webkit: an animated ${gesture} to the end re-pins`, () => checkAnimatedReaderScrollRepins(reconnectWebkitPage, "webkit", gesture));
+      }
+      // Chromium animates key scrolls with smooth scrolling on; Firefox animates by default. Firefox runs only these rows.
+      for (const [engine, launch] of [
+        ["chromium smooth", () => chromium.launch({ channel: "chromium", args: ["--enable-smooth-scrolling"] })],
+        ["firefox", () => firefox.launch()],
+      ] as const) {
+        const animated = await launch();
+        try {
+          const animatedPage = await animated.newPage({ viewport: { width: 1440, height: 900 } });
+          await warmEngine(animatedPage, engine);
+          for (const gesture of ["PageDown", "End", "PageDown (body focus)"] as const) {
+            await check(`${engine}: an animated ${gesture} to the end re-pins`, () => checkAnimatedReaderScrollRepins(animatedPage, engine, gesture));
+          }
+        } finally {
+          await animated.close();
+        }
+      }
     } finally {
       await reconnectWebkit.close();
       await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);

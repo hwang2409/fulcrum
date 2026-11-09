@@ -106,15 +106,16 @@ function installRowObserver() {
   globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
   globalThis.cancelAnimationFrame = () => {};
   return {
-    /** Reports the size `size(id)` gives each observed row (undefined: no report), then runs the browser's next frame. */
-    measure(size: (id: string) => number | undefined) {
+    /** Reports the size `size(id)` gives each observed row (undefined: no report), then runs the browser's next frame
+     * unless `frame` is false (a frame that has not run yet, as under heavy CPU load). */
+    measure(size: (id: string) => number | undefined, frame = true) {
       const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")))!;
       const entries = [...rows.observed].flatMap((target) => {
         const blockSize = size(target.getAttribute("data-virtual-id")!);
         return blockSize === undefined ? [] : [{ target, borderBoxSize: [{ blockSize, inlineSize: 800 }], contentRect: { height: blockSize } }];
       });
       act(() => rows.report(entries as unknown as ResizeObserverEntry[], {} as ResizeObserver));
-      act(() => { for (const frame of frames.splice(0)) frame(0); });
+      if (frame) act(() => { for (const next of frames.splice(0)) next(0); });
     },
     restore() {
       globalThis.ResizeObserver = saved.ResizeObserver;
@@ -1068,6 +1069,40 @@ describe("timeline scroll provenance", () => {
       act(() => host.dispatchEvent(new Event("scroll")));
       append();
       expect(unseen(), "the banner clamp after the stream is layout, not the reader leaving").toBe("0");
+    } finally {
+      observer.restore();
+      geometry.restore();
+    }
+  });
+
+  // Gamma CI (chromium, CPU 12x, run s-long): measured rows replace larger estimates, the DOM end shrinks (821 -> 682),
+  // and the browser clamps scrollTop down (227 -> 88) with the gap to the end still 0. The clamp's scroll callback came
+  // late, after main's 50 ms ignore window, and main unpinned the timeline (unseen 8 -> 384, the last row never mounted).
+  // A clamp at the DOM end with no input is layout however late it arrives.
+  test("pinned: rows measure smaller than their estimates, and the browser's clamp to the new end arrives late: the reader stays pinned", async () => {
+    const geometry = installScrollGeometry();
+    const observer = installRowObserver();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      expect(unseen()).toBe("0");
+      const lastId = () => [...container!.querySelectorAll<HTMLElement>("[data-virtual-id]")].at(-1)!.dataset.virtualId!;
+      const before = host.scrollTop;
+      // Every mounted row is 42 px smaller than the 72 px message estimate. The browser clamps scrollTop to the new DOM
+      // end at layout; under load the clamp's scroll callback runs before the measurement frame, and late.
+      const shrink = 42 * container!.querySelectorAll("[data-virtual-id]").length;
+      geometry.addDomExtra(-shrink); // rows are in flow: the DOM end shrinks at once; the engine learns it at its frame
+      observer.measure(() => 30, false);
+      expect(host.scrollHeight - host.clientHeight, "the DOM end shrank").toBeLessThan(before);
+      await new Promise((resolve) => setTimeout(resolve, 80)); // past any short ignore window
+      act(() => host.dispatchEvent(new Event("scroll"))); // the browser's late clamp callback, at the DOM end
+      geometry.addDomExtra(shrink); // the measurement frame moves the shrink into the rows' own size
+      for (let frame = 0; frame < 3; frame++) observer.measure(() => undefined);
+      expect(host.scrollTop, "the clamp leaves the reader at the DOM end").toBe(host.scrollHeight - host.clientHeight);
+      append();
+      observer.measure(() => 30);
+      expect(unseen(), "a late clamp to the DOM end is layout: the reader stays pinned").toBe("0");
+      expect(jump()).toBeNull();
+      expect(lastId(), "the newest row is mounted").toBe("message:added-300");
     } finally {
       observer.restore();
       geometry.restore();
