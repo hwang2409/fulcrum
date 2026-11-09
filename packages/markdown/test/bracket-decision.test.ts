@@ -92,8 +92,10 @@ const positionSources = [
   `x [${"word text ".repeat(30)}]\`\``,
 ];
 
-// Every visible `[` or `]` sits where it is in the source, at every prefix, including the frame where the deciding
-// character and the line end arrive in one delta. An undecided `[` has no glyph anywhere.
+// The invariant, at every prefix, including the frame where the deciding character and the line end arrive in one
+// delta: "the opener has one source position; hidden there until decided, shown there when decided, never
+// re-materialized elsewhere." Every visible `[` or `]` sits where it is in the source; the label's `[` has no glyph
+// until the character after its `]` (or its line end) arrives, and has one at its place from then on.
 for (const delta of [1, 2, 4, 30]) {
   test(`a decided bracket shows at its own source position at every prefix (${delta}-character deltas)`, () => {
     const failures: string[] = [];
@@ -103,6 +105,9 @@ for (const delta of [1, 2, 4, 30]) {
       // The alignments that matter: delta boundaries just before the last `]` and before each of the few characters
       // after it, so `].\n` (the `]`, its deciding character, and the line end) lands in one delta in some.
       const close = source.lastIndexOf("]");
+      const opener = bracketPlaces(source)[0]!;
+      const lineEnd = source.indexOf("\n", source.indexOf("[")) + 1 || Infinity;
+      const decidedAt = Math.min(close >= 0 ? close + 2 : Infinity, lineEnd);
       const shifts = new Set([0, ...Array.from({ length: 8 }, (_, back) => ((close - back) % delta + delta) % delta)]);
       for (const shift of shifts) {
         const document = createStreamingDocument();
@@ -114,6 +119,7 @@ for (const delta of [1, 2, 4, 30]) {
           const sent = new Set(bracketPlaces(source.slice(0, end)));
           const wrong = shown.filter((place) => !sent.has(place));
           if (wrong.length) failures.push(`${JSON.stringify(source.slice(0, 40))}... prefix ${end}: ${wrong.join(", ")} has no bracket of the source there`);
+          if (shown.includes(opener) !== end >= decidedAt) failures.push(`${JSON.stringify(source.slice(0, 40))}... prefix ${end}: the label's \`[\` is ${end >= decidedAt ? "hidden after" : "shown before"} its decision at ${decidedAt}`);
         }
       }
     }
