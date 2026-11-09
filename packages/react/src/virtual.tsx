@@ -222,6 +222,13 @@ export function useVirtualList<Id extends string>(
       };
       const settle = () => {
         const current = geometry(host);
+        const engineSnapshot = engine.getSnapshot();
+        const viewportSize = Math.max(0, host.clientHeight - current.gutter);
+        if (engineSnapshot.pinned && Math.abs(engineSnapshot.viewportSize - viewportSize) >= 0.5) {
+          report("observe");
+          writeScroll("end");
+          return;
+        }
         const owned = coordinator.current.owned;
         const ownedEnd = owned?.requested === "end"
           ? Math.abs(current.hostTop - owned.hostReadBack) <= 1 && Math.abs(current.hostEnd - owned.hostEnd) <= 1
