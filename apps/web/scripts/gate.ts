@@ -28,7 +28,7 @@ const failures: string[] = [];
 const fail = (message: string) => { failures.push(message); console.log(`FAIL ${message}`); };
 const ok = (message: string) => console.log(`ok   ${message}`);
 const check = async (name: string, run: () => Promise<void>) => {
-  try { await run(); ok(name); } catch (error) { fail(`${name}: ${error instanceof Error ? error.message.split("\n")[0] : error}`); } finally { fake.resetFaults(); }
+  try { await run(); ok(name); } catch (error) { fail(`${name}: ${error instanceof Error ? error.message.split("\n").slice(0, 8).join("\n") : error}`); } finally { fake.resetFaults(); }
 };
 
 // Runs in the page: sideways scroll, control sizes and names, native controls, and text contrast.
@@ -1114,31 +1114,47 @@ try {
       if (await page.getByText("zeta is busy with another session", { exact: true }).count()) throw new Error("busy panel remained after retry");
     });
 
+    const idleServer = async () => {
+      for (let attempt = 0; fake.running && attempt < 300; attempt++) await Bun.sleep(100);
+      if (fake.running) throw new Error("the server turn did not end");
+    };
     await check("slow catalog keeps the selected transcript and composer usable", async () => {
-      fake.setLive(false);
-      fake.setMode("slow-catalog");
-      await page.goto("about:blank");
-      fake.drop();
-      await fake.start();
-      await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
-      await page.locator('[data-part="timeline"] [data-part="message"], [data-part="timeline"] [data-part="tool"]').first().waitFor({ timeout: 10_000 }).catch(() => { throw new Error("newest history page did not render"); });
-      await page.getByText(/loading sessions/).waitFor({ timeout: 10_000 }).catch(() => { throw new Error("catalog loading state did not render"); });
-      await page.locator(".dock textarea").fill("sent while the catalog loads");
-      await page.locator(".dock textarea").press("Enter");
-      await page.getByText("sent while the catalog loads", { exact: true }).waitFor({ timeout: 2000 });
-      await shoot(page, "slow-catalog-1440");
-      await page.setViewportSize({ width: 390, height: 844 });
-      await page.locator(".menu").click();
-      await page.getByRole("button", { name: "new session" }).waitFor();
-      await shoot(page, "slow-catalog-390");
-      await page.setViewportSize({ width: 1440, height: 900 });
-      fake.setMode("ok");
-      await Bun.sleep(31_000);
-      fake.clearSent();
-      await fake.start();
-      fake.setLive(true);
-      await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1`);
-      await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+      try {
+        fake.setLive(false);
+        fake.setMode("slow-catalog");
+        // The echo arrives 300 ms before the send reply: the echoed row and the unsent draft show at the same time.
+        fake.setSendReplyDelay(300);
+        await page.goto("about:blank");
+        fake.drop();
+        await fake.start();
+        await page.goto(`${origin}/?theme=tokyo-night#session=${ACTIVE}`);
+        await page.locator('[data-part="timeline"] [data-part="message"], [data-part="timeline"] [data-part="tool"]').first().waitFor({ timeout: 10_000 }).catch(() => { throw new Error("newest history page did not render"); });
+        await page.getByText(/loading sessions/).waitFor({ timeout: 10_000 }).catch(() => { throw new Error("catalog loading state did not render"); });
+        await page.locator(".dock textarea").fill("sent while the catalog loads");
+        await page.locator(".dock textarea").press("Enter");
+        // The timeline row, not any text: the composer field holds the same text until the send reply arrives.
+        const sentRow = page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: "sent while the catalog loads" });
+        await sentRow.waitFor({ timeout: 2000 });
+        await page.locator('.dock [data-part="composer"]:not([data-pending])').waitFor({ timeout: 2000 }).catch(() => { throw new Error("the send did not resolve"); });
+        if (await sentRow.count() !== 1) throw new Error(`${await sentRow.count()} transcript rows for one send`);
+        if (await page.locator(".dock textarea").inputValue() !== "") throw new Error("the composer kept the sent text");
+        await shoot(page, "slow-catalog-1440");
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.locator(".menu").click();
+        await page.getByRole("button", { name: "new session" }).waitFor();
+        await shoot(page, "slow-catalog-390");
+      } finally {
+        // Restores the shared state even when a step above throws, so one failure cannot fail the next cases.
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await idleServer(); // the sent message's turn shares the fake's one running flag with the live turn below
+        fake.setMode("ok");
+        fake.drop(); // the held catalog request answers a closed socket
+        fake.clearSent();
+        await fake.start();
+        fake.setLive(true);
+        await page.goto(`${origin}/?theme=tokyo-night&virtualDebug=1`);
+        await page.locator(".badge", { hasText: "connected" }).waitFor({ timeout: 15_000 });
+      }
     });
 
     // Connected: list, history, live run, approval, follow-bottom.
@@ -1239,10 +1255,6 @@ try {
     // The debug overlay intentionally sits above the app. Keep it visible without intercepting the overflow checks' real composer clicks.
     await page.addStyleTag({ content: '[data-part="virtual-debug"] { pointer-events: none !important; }' });
     const hellos = () => fake.requests.filter((request) => request.method === "hello").length;
-    const idleServer = async () => {
-      for (let attempt = 0; fake.running && attempt < 300; attempt++) await Bun.sleep(100);
-      if (fake.running) throw new Error("the server turn did not end");
-    };
     const uniqueRows = async () => {
       const ids = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-part="timeline"] [data-id]')].map((node) => node.dataset.id));
       if (new Set(ids).size !== ids.length) throw new Error("the rebuild has duplicate transcript rows");

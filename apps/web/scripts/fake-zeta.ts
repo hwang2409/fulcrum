@@ -351,6 +351,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let servedTurnEndOffered = true;
   let backwardHistoryOffered = true;
   let laterHistoryDelay = 0;
+  let sendReplyDelay = 0;
   let lastTurnEnd: string | undefined;
   const lastTurnEnds = new Map<string, { turn_id: string; reason: TurnEndReason }>();
   const servedTurnEndReads = new Map<string, number>();
@@ -575,6 +576,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if ((method === "send" || method === "send_images") && active && hostBindingRequired.has(active)) return reply({ error: { code: -32003, message: "host binding required", data: { code: "host_binding_required" } } });
         const handled = composer.handle(method, params, active, send);
+        // The echo is already out: the delay opens the window where the echoed row and the unsent draft both show.
+        if (handled && method === "send" && sendReplyDelay > 0) await wait(sendReplyDelay);
         if (handled) return reply(handled);
         reply({ error: { code: -32601, message: `method not found: ${method}` } });
         });
@@ -647,6 +650,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
     setServedTurnEnd(next: boolean) { servedTurnEndOffered = next; },
     setBackwardHistory(next: boolean) { backwardHistoryOffered = next; },
     setLaterHistoryDelay(ms: number) { laterHistoryDelay = ms; },
+    /** Holds the `send` reply this long after its `user_message` echo. */
+    setSendReplyDelay(ms: number) { sendReplyDelay = ms; },
     /** How many served_turn_end rows naming `turnId` history pages have carried, to any client. */
     servedTurnEndReads(turnId: string) { return servedTurnEndReads.get(turnId) ?? 0; },
     /** The turn whose end the server recorded last. */
@@ -673,6 +678,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
       servedTurnEndOffered = true;
       backwardHistoryOffered = true;
       laterHistoryDelay = 0;
+      sendReplyDelay = 0;
       openDelay = initialOpenDelay;
       rejectCreate = false;
       if (empty) this.setEmpty(false);
