@@ -81,20 +81,30 @@ function applySgr(style: Style, params: string): Style {
 
 /** Applies SGR codes and strips every other control sequence. Pass the previous result to continue a stream. */
 export function parseAnsi(chunk: string, prior?: AnsiText): AnsiText {
+  return continueAnsi(chunk, prior).parsed;
+}
+
+/**
+ * parseAnsi, and `added`: the text this chunk adds after `prior.text`. Reads only the chunk: prior.text is joined, never
+ * read, so continuing a long stream costs the chunk.
+ */
+export function continueAnsi(chunk: string, prior?: AnsiText): { parsed: AnsiText; added: string } {
   const input = prior ? prior.tail + chunk : chunk;
-  let text = prior?.text ?? "";
+  const offset = prior?.text.length ?? 0;
+  let added = "";
   const spans = prior?.spans ?? [];
   let style = prior?.style ?? {};
   let styleClass = classes(style);
   let tail = "";
   const emit = (from: number, to: number) => {
     if (to <= from) return;
-    const start = text.length;
-    text += input.slice(from, to);
+    const start = offset + added.length;
+    added += input.slice(from, to);
+    const end = offset + added.length;
     if (!styleClass) return;
     const last = spans.at(-1);
-    if (last && last.end === start && last.style === styleClass) spans[spans.length - 1] = { ...last, end: text.length };
-    else spans.push({ start, end: text.length, style: styleClass });
+    if (last && last.end === start && last.style === styleClass) spans[spans.length - 1] = { ...last, end };
+    else spans.push({ start, end, style: styleClass });
   };
   let at = 0;
   CONTROL.lastIndex = 0;
@@ -139,7 +149,7 @@ export function parseAnsi(chunk: string, prior?: AnsiText): AnsiText {
     CONTROL.lastIndex = end;
   }
   emit(at, input.length);
-  return { text, spans, style, tail };
+  return { parsed: { text: (prior?.text ?? "") + added, spans, style, tail }, added };
 }
 
 /** The spans that overlap [start, end), clipped to it and shifted to start at 0. */
