@@ -406,12 +406,13 @@ export async function checkApprovalReason(page: Page, port: number, failures: st
   if (nodeIds.length < 3) found.push(`${nodeIds.length} action(s), expected approve, approve-always, and deny`);
   const card = `${demo} [data-part=approval]`;
   const decided = () => page.evaluate((selector) => [...document.querySelectorAll<HTMLElement>(selector)].filter((row) => row.dataset.state !== "pending").length, card);
-  // Tab from the row walks every action; pressing each one changes nothing.
-  await page.focus(card);
+  // Each aria-disabled action stays a Tab stop; focusing it directly checks Enter and Space without depending on
+  // unrelated controls that may appear between the row and its actions.
   for (const action of ["approve", "approve-always", "deny"]) {
-    await page.keyboard.press("Tab");
-    const focused = await page.evaluate(() => (document.activeElement as HTMLElement).dataset.action);
-    if (focused !== action) found.push(`Tab reached ${focused ?? "no action"}, expected ${action}`);
+    const button = `${card} [data-action=${action}]`;
+    const target = page.locator(button).first();
+    if ((await target.getAttribute("tabindex")) === "-1") found.push(`${action} is not a Tab stop`);
+    await target.focus();
     await page.keyboard.press("Enter");
     await page.keyboard.press("Space");
   }

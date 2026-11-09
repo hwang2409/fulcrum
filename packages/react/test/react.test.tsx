@@ -620,7 +620,11 @@ test("an unavailable approval's actions stay in the tab order, are described by 
     const described = document.getElementById(button.getAttribute("aria-describedby") ?? "");
     expect(described?.textContent).toBe(reason);
     expect(described?.getAttribute("role")).toBe("status");
-    act(() => button.click());
+    act(() => {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+      button.click();
+    });
   }
   expect(calls).toEqual([]);
   expect(container.querySelector('[data-part="approval"]')!.getAttribute("data-state")).toBe("pending");
