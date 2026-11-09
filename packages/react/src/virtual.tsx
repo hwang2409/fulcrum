@@ -29,7 +29,9 @@ type ScrollLeases = ReturnType<typeof createScrollLeases>;
  * The one owner of reader-input leases for one scroll host: which scroll callbacks the reader caused.
  * The caller arms a lease only for input that will scroll this host (`willScroll`). An armed lease waits for its first
  * reader callback, however late the browser starts the animation; an armed lease that never moved ends at the next
- * input of another kind, at a pointer press, at window blur, when the document is hidden, or at host detach. Once the
+ * input of another kind, at a pointer press, at window blur, when the document is hidden, or at host detach. A lease
+ * never arms without a direction: a touch tap (no touchmove) or a scrollbar press released before any move ends it, and
+ * the caller arms focus only for a target the browser must scroll into view. Once the
  * scroll moved, the lease ends two frames after the last reader callback and once nothing is held (a key, the
  * scrollbar, a finger). Native scrollend never ends a lease: Chromium sends it in the middle of a key animation. Our own
  * writes are not reader callbacks, so a stream that writes every frame cannot keep a lease alive. Plain state only.
@@ -39,6 +41,7 @@ function createScrollLeases(onSettled: () => void) {
   let armed: ScrollLeaseKind | "pointer" | null = null;
   let moving = false;
   let touching = false;
+  let swiped = false;
   let readerCallbacks = 0;
   let settleFrame: number | null = null;
   const pressed = () => touching || held.has("keyboard") || held.has("scrollbar");
@@ -71,7 +74,10 @@ function createScrollLeases(onSettled: () => void) {
   return {
     /** Input that will scroll this host. */
     start(kind: ScrollLeaseKind) {
-      if (kind === "touch") touching = true;
+      if (kind === "touch") {
+        touching = true;
+        swiped = false;
+      }
       if (kind === "keyboard" || kind === "scrollbar" || kind === "touch") held.add(kind);
       if (!moving) armed = kind;
     },
@@ -79,12 +85,16 @@ function createScrollLeases(onSettled: () => void) {
     input(kind: ScrollLeaseKind | "pointer") {
       if (!moving && armed !== null && armed !== kind) armed = null;
     },
-    /** Ends a held lease; an end without its start changes nothing. A moving scroll settles; an unmoved one stays armed. */
+    /** A finger moved: a touch lease that has not scrolled yet has a direction, so its release keeps it armed. */
+    swipe() { swiped = true; },
+    /** Ends a held lease; an end without its start changes nothing. A moving scroll settles. An unmoved key stays armed
+     * (its scroll may start after keyup); an unmoved scrollbar press or a tap has no direction and disarms. */
     end(kind: HeldLeaseKind) {
       if (!held.has(kind)) return;
       if (kind === "touch") touching = false;
       if (kind !== "touch" || !moving) held.delete(kind);
       if (moving) settle();
+      else if (armed === kind && (kind === "scrollbar" || (kind === "touch" && !swiped))) armed = null;
     },
     /** Called once per scroll callback: whether the reader caused it. Our own write never extends a lease. */
     consume(ours: boolean) {
@@ -373,6 +383,7 @@ export function useVirtualList<Id extends string>(
         touchY = event.touches[0]?.clientY ?? null;
       };
       const onTouchMove = (event: TouchEvent) => {
+        hostLeases.swipe();
         const next = event.touches[0]?.clientY;
         if (next !== undefined && touchY != null && next > touchY && engine.getSnapshot().pinned) engine.setFollow(false);
         touchY = next ?? null;
@@ -382,8 +393,12 @@ export function useVirtualList<Id extends string>(
         hostLeases.end("touch");
       };
       const onScrollEnd = () => finishScroll(); // never ends a lease: Chromium sends scrollend in the middle of a key animation
+      // A focus scrolls this host only when its target is not fully visible inside it; a focus that needs no scroll arms nothing.
       const onFocusIn = (event: FocusEvent) => {
-        if (event.target instanceof Node && container.contains(event.target)) hostLeases.start("focus");
+        if (!(event.target instanceof Element) || !container.contains(event.target)) return;
+        const bounds = container.getBoundingClientRect();
+        const box = event.target.getBoundingClientRect();
+        if (box.top < bounds.top || box.bottom > bounds.bottom) hostLeases.start("focus");
       };
       const onBlur = () => hostLeases.release();
       const onVisibilityChange = () => {

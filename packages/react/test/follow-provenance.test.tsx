@@ -638,12 +638,18 @@ describe("timeline scroll provenance", () => {
   // a held lease defers the host's follow request, and an armed lease makes the next scroll the reader's
   // (so a non-input scroll to the end re-pins, which F1 forbids for a host write without input).
   type LeaseKind = "wheel" | "focus" | "keyboard" | "scrollbar" | "touch";
-  type Transition = "start" | "normal end" | "blur end" | "visibility end" | "detach end" | "end without start" | "duplicate start";
+  type Transition = "start" | "normal end" | "release without move" | "blur end" | "visibility end" | "detach end" | "end without start" | "duplicate start";
   type Mounted = ReturnType<typeof mountTimeline>;
   const firstRow = () => container!.querySelector<HTMLElement>("[data-virtual-id]")!;
+  const rect = (top: number, bottom: number) => () => ({ x: 0, y: top, left: 0, top, right: 816, bottom, width: 816, height: bottom - top, toJSON: () => ({}) });
   const startLease = (kind: LeaseKind, { host }: Mounted) => act(() => {
     if (kind === "wheel") host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 }));
-    else if (kind === "focus") firstRow().dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    else if (kind === "focus") {
+      // A focus scrolls only a row that is not fully visible: this one hangs 40 px below the viewport.
+      host.getBoundingClientRect = rect(0, 600);
+      firstRow().getBoundingClientRect = rect(580, 640);
+      firstRow().dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    }
     else if (kind === "keyboard") firstRow().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     else if (kind === "scrollbar") {
       host.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 816, bottom: 600, width: 816, height: 600, toJSON: () => ({}) });
@@ -654,16 +660,17 @@ describe("timeline scroll provenance", () => {
       host.dispatchEvent(touch);
     }
   });
-  // A held lease ends at its release event. A wheel, focus, or touch lease ends when its scroll moved and then settled
-  // (two frames with no reader callback); without a start, the release or the settle alone changes nothing.
+  // A key ends at its release event. A scrollbar drag, a wheel, focus, or touch lease ends when its scroll moved and then
+  // settled (two frames with no reader callback); without a start, the release or the settle alone changes nothing.
   const endLease = async (kind: LeaseKind, { host }: Mounted, started: boolean) => {
+    if (kind === "scrollbar" && started) moveReader(host, host.scrollTop - 40); // a drag before the release
     act(() => {
       if (kind === "keyboard") firstRow().dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowDown", bubbles: true }));
       else if (kind === "scrollbar") document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
       else if (kind === "touch") host.dispatchEvent(new Event("touchend", { bubbles: true }));
     });
-    if (kind === "keyboard" || kind === "scrollbar") return;
-    if (started) moveReader(host, host.scrollTop - 40);
+    if (kind === "keyboard" || (kind === "scrollbar" && !started)) return;
+    if (started && kind !== "scrollbar") moveReader(host, host.scrollTop - 40);
     await settleReader();
   };
   const hideDocument = () => {
@@ -673,6 +680,7 @@ describe("timeline scroll provenance", () => {
   const runTransition = async (kind: LeaseKind, transition: Transition, timeline: Mounted) => {
     if (transition === "end without start") return endLease(kind, timeline, false);
     startLease(kind, timeline);
+    if (transition === "release without move") return endLease(kind, timeline, false);
     if (transition === "duplicate start") { startLease(kind, timeline); await endLease(kind, timeline, true); }
     else if (transition === "normal end") await endLease(kind, timeline, true);
     else if (transition === "blur end") act(() => window.dispatchEvent(new Event("blur")));
@@ -680,13 +688,15 @@ describe("timeline scroll provenance", () => {
     else if (transition === "detach end") timeline.detach();
   };
   // [held: defers follow, armed: the next scroll is the reader's]; "duplicate start" is two starts and one normal end.
-  const heldKind = { held: [true, true], "normal end": [false, true], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, true] } as const;
+  // A release without a move: a released key stays armed (its scroll may start after keyup); a touch tap or an
+  // unmoved scrollbar press has no direction, so it arms nothing.
+  const heldKind = { held: [true, true], "normal end": [false, true], "release without move": [false, true], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, true] } as const;
   const leaseTable: Record<LeaseKind, Record<Transition, readonly [boolean, boolean]>> = {
     keyboard: { ...heldKind, start: heldKind.held },
-    scrollbar: { ...heldKind, start: heldKind.held },
-    touch: { start: [true, true], "normal end": [false, false], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, false] },
-    wheel: { start: [false, true], "normal end": [false, false], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, false] },
-    focus: { start: [false, true], "normal end": [false, false], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, false] },
+    scrollbar: { ...heldKind, start: heldKind.held, "normal end": [false, false], "release without move": [false, false], "duplicate start": [false, false] },
+    touch: { start: [true, true], "normal end": [false, false], "release without move": [false, false], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, false] },
+    wheel: { start: [false, true], "normal end": [false, false], "release without move": [false, true], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, false] },
+    focus: { start: [false, true], "normal end": [false, false], "release without move": [false, true], "blur end": [false, false], "visibility end": [false, false], "detach end": [false, false], "end without start": [false, false], "duplicate start": [false, false] },
   };
   const leaseRows = (Object.keys(leaseTable) as LeaseKind[]).flatMap((kind) =>
     (Object.keys(leaseTable[kind]) as Transition[]).map((transition) => [kind, transition, ...leaseTable[kind][transition]] as const));
@@ -714,6 +724,74 @@ describe("timeline scroll provenance", () => {
       await runTransition(kind, transition, timeline);
       hostWrite(timeline.host, timeline.host.scrollHeight);
       expect(timeline.unseen(), armed ? "an armed lease makes the scroll to the end the reader's" : "without a lease a host write to the end must not resume follow (F1)").toBe(armed ? "0" : "1");
+    } finally { geometry.restore(); }
+  });
+
+  // Input with no direction arms no lease, so it cannot claim our commit's clamp-up as the reader leaving (design review
+  // M2, the mermaid commit-clamp route). A focus that needs a scroll still arms, and its scroll down keeps the pin.
+  const noDirectionInput = {
+    "a row click that focuses a fully visible row": (host: HTMLElement) => {
+      const row = [...container!.querySelectorAll<HTMLElement>("[data-virtual-id]")].at(-2)!;
+      host.getBoundingClientRect = rect(0, 600);
+      row.getBoundingClientRect = rect(400, 450);
+      act(() => row.dispatchEvent(new PointerEvent("pointerdown", { clientX: 8, clientY: 420, bubbles: true })));
+      act(() => row.dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
+      act(() => document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })));
+    },
+    "a touch tap": (host: HTMLElement) => {
+      const touch = new Event("touchstart", { bubbles: true }) as TouchEvent;
+      Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+      act(() => host.dispatchEvent(touch));
+      act(() => host.dispatchEvent(new Event("touchend", { bubbles: true })));
+    },
+    "a scrollbar press released without a move": (host: HTMLElement) => {
+      host.getBoundingClientRect = rect(0, 600);
+      act(() => host.dispatchEvent(new PointerEvent("pointerdown", { clientX: 808, clientY: 300, bubbles: true })));
+      act(() => document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })));
+    },
+  };
+  test.each(Object.keys(noDirectionInput) as Array<keyof typeof noDirectionInput>)("pinned, %s, then our commit's clamp-up and a wrap before the callback: follow stays on", (input) => {
+    const geometry = installScrollGeometry();
+    const observer = installRowObserver();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      observer.measure(() => 72);
+      append();
+      const added = [...container!.querySelectorAll<HTMLElement>("[data-virtual-id]")].at(-1)!.dataset.virtualId!;
+      const pinnedTop = host.scrollTop;
+      expect(host.scrollHeight - host.clientHeight - pinnedTop, "the reader starts at the end").toBeLessThanOrEqual(0.5);
+      noDirectionInput[input](host);
+      expect(host.scrollTop, `${input} moved nothing`).toBe(pinnedTop);
+      observer.measure((id) => id === added ? 34 : undefined); // 38 px under the estimate: the browser clamps up
+      const clampedTop = host.scrollTop;
+      expect(clampedTop, "our commit shrank the DOM: the browser clamped the reader up").toBeLessThan(pinnedTop - 0.5);
+      host.scrollTop = clampedTop; // a browser stores the clamped position (this geometry only clamps on read)
+      geometry.addDomExtra(23); // the row wraps before the clamp's scroll callback runs
+      act(() => host.dispatchEvent(new Event("scroll")));
+      append();
+      expect(unseen(), `${input} has no direction: follow must survive our own clamp`).toBe("0");
+      expect(jump()).toBeNull();
+    } finally {
+      observer.restore();
+      geometry.restore();
+    }
+  });
+
+  test("pinned, focus on a last row that hangs below the viewport: the browser scrolls it into view and follow stays on", () => {
+    const geometry = installScrollGeometry();
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      geometry.addDomExtra(20); // the last row grew 20 px below the viewport before any callback
+      const last = [...container!.querySelectorAll<HTMLElement>("[data-virtual-id]")].at(-1)!;
+      host.getBoundingClientRect = rect(0, 600);
+      last.getBoundingClientRect = rect(560, 620);
+      act(() => last.dispatchEvent(new FocusEvent("focusin", { bubbles: true })));
+      host.scrollTop = host.scrollHeight; // the browser scrolls the focused row into view, down to the end
+      act(() => host.dispatchEvent(new Event("scroll")));
+      append();
+      expect(unseen(), "a focus that scrolls down to the end keeps follow").toBe("0");
+      expect(jump()).toBeNull();
+      expect(host.scrollHeight - host.clientHeight - host.scrollTop).toBeLessThanOrEqual(0.5);
     } finally { geometry.restore(); }
   });
 
