@@ -57,17 +57,15 @@ button:active:not(:disabled) { transform: scale(0.97); }
 
 /* State words: the word stays fg; its square mark carries the color. */
 .badge, .state { display: inline-flex; align-items: center; gap: 6px; color: var(--fulcrum-fg); font-size: 12px; white-space: nowrap; }
-.badge { --tone: var(--fulcrum-muted); margin-left: auto; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--tone) 55%, transparent); background: color-mix(in srgb, var(--tone) 12%, var(--fulcrum-bg)); }
-.badge[data-tone="ok"] { --tone: var(--fulcrum-ok); }
-.badge[data-tone="busy"] { --tone: var(--fulcrum-accent); }
-.badge[data-tone="warn"] { --tone: var(--fulcrum-warn); }
+.badge, .state { --tone: var(--fulcrum-muted); }
+.badge { margin-left: auto; padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--tone) 55%, transparent); background: color-mix(in srgb, var(--tone) 12%, var(--fulcrum-bg)); }
+.badge[data-tone="ok"], .state[data-status="open"] { --tone: var(--fulcrum-ok); }
+.badge[data-tone="busy"], .state[data-status="running"] { --tone: var(--fulcrum-accent); }
+.badge[data-tone="warn"], .state[data-status="approval"], .state[data-status="unknown"] { --tone: var(--fulcrum-warn); }
 .badge[data-tone="danger"] { --tone: var(--fulcrum-danger); }
-.badge::before, .state::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--fulcrum-muted); }
-.badge[data-tone="ok"]::before, .state[data-status="open"]::before { background: var(--fulcrum-ok); }
-.badge[data-tone="busy"]::before, .state[data-status="running"]::before { background: var(--fulcrum-accent); animation: pulse 1s infinite alternate; }
-.badge[data-tone="warn"]::before, .state[data-status="approval"]::before, .state[data-status="unknown"]::before { background: var(--fulcrum-warn); }
-.badge[data-tone="danger"]::before { background: var(--fulcrum-danger); }
-.state[data-status="idle"]::before { background: var(--fulcrum-muted); }
+/* The bg ring makes bg the color next to the mark on the badge's tint, as in styles.css. */
+.badge::before, .state::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--tone); outline: 1px solid var(--fulcrum-bg); }
+.badge[data-tone="busy"]::before, .state[data-status="running"]::before { animation: pulse 1s infinite alternate; }
 .run-meta .state[data-status="approval"] { font-weight: 700; }
 
 .list-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--fulcrum-border); }
@@ -171,9 +169,11 @@ button:active:not(:disabled) { transform: scale(0.97); }
 .empty-run h2 { margin-bottom: 4px; font-size: 14px; font-weight: 700; }
 .empty-run p { color: var(--fulcrum-muted); font-size: 13px; }
 
-/* A steer that a stop dropped: the row stays, struck through, with a danger rail and a note that says why. */
+/* A steer that a stop dropped: the row stays, struck through, with a danger rail and a note (fg, after a danger square)
+   that says why. */
 .run-scroll [data-kind="user"]:has(+ .undelivered) { border-left-color: var(--fulcrum-danger); color: var(--fulcrum-muted); text-decoration: line-through; text-decoration-color: var(--fulcrum-danger); }
-.undelivered { margin: 4px 0 0; padding-left: 14px; color: var(--fulcrum-danger); font-size: 12px; font-weight: 700; }
+.undelivered { --tone: var(--fulcrum-danger); margin: 4px 0 0; padding-left: 14px; color: var(--fulcrum-fg); font-size: 12px; font-weight: 700; }
+.undelivered::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; vertical-align: 1px; background: var(--tone); outline: 1px solid var(--fulcrum-bg); }
 
 /* Notices and empty states. */
 .panel { width: min(64ch, calc(100% - 48px)); margin: max(32px, 12dvh) auto 32px; padding: 20px 24px; border: 1px solid var(--fulcrum-border); border-left: var(--rail) solid var(--fulcrum-muted); }

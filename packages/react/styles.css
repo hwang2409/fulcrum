@@ -73,24 +73,28 @@
   overflow: auto;
 }
 
-/* How the run ended, when the host reports it; warn (the base) for disconnected and unknown. The chip is a 6% tint over bg
-   with a 55% border: light enough that ok, warn, and danger need no lighter (dark themes) or darker (light themes) value
-   than bg, surface, and the diff rows already ask of them, so the decoration never sets the palette. The border is not
-   text and needs no 4.5:1. test/themes.test.ts models this tint; change both together. */
-[data-part="run-status"][data-status="unknown"] { color: var(--fulcrum-warn); font-weight: 700; }
+/* How the run ended, when the host reports it; warn (the base) for disconnected and unknown. A chip: the words in fg, the
+   tone in its square, on a 6% tint of it with a 55% border. A stop by the user is quiet: muted words, a hollow mark. */
+[data-part="run-status"][data-status="unknown"] { --mark: var(--fulcrum-warn); display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-fg); font-weight: 700; }
 [data-part="run-end-marker"] {
+  --mark: var(--fulcrum-warn);
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: fit-content;
   margin: 8px 12px;
   padding: 3px 8px;
-  border: 1px solid color-mix(in srgb, var(--fulcrum-warn) 55%, var(--fulcrum-border));
-  background: color-mix(in srgb, var(--fulcrum-warn) 6%, var(--fulcrum-bg));
-  color: var(--fulcrum-warn);
-  font-size: 11px;
+  border: 1px solid color-mix(in srgb, var(--mark) 55%, transparent);
+  background: color-mix(in srgb, var(--mark) 6%, var(--fulcrum-bg));
+  color: var(--fulcrum-fg);
+  font-size: 12px;
   line-height: 1.4;
 }
-[data-part="run-end-marker"][data-outcome="completed"] { border-color: color-mix(in srgb, var(--fulcrum-ok) 55%, var(--fulcrum-border)); background: color-mix(in srgb, var(--fulcrum-ok) 6%, var(--fulcrum-bg)); color: var(--fulcrum-ok); }
-[data-part="run-end-marker"][data-outcome="cancelled"] { border-color: var(--fulcrum-border); background: var(--fulcrum-bg); color: var(--fulcrum-muted); }
-[data-part="run-end-marker"][data-outcome="failed"] { border-color: color-mix(in srgb, var(--fulcrum-danger) 55%, var(--fulcrum-border)); background: color-mix(in srgb, var(--fulcrum-danger) 6%, var(--fulcrum-bg)); color: var(--fulcrum-danger); }
+[data-part="run-end-marker"]::before { transform: none; }
+[data-part="run-end-marker"][data-outcome="completed"] { --mark: var(--fulcrum-ok); }
+[data-part="run-end-marker"][data-outcome="failed"] { --mark: var(--fulcrum-danger); }
+[data-part="run-end-marker"][data-outcome="cancelled"] { --mark: transparent; border-color: var(--fulcrum-border); background: var(--fulcrum-bg); color: var(--fulcrum-muted); }
+[data-part="run-end-marker"][data-outcome="cancelled"]::before { outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
 
 /* Skip layout and paint for off-screen items in long timelines. */
 [data-part="timeline"][data-virtual="false"] > * {
@@ -139,7 +143,7 @@
   border: 1px solid var(--fulcrum-warn);
   border-radius: 0;
   background: var(--fulcrum-bg);
-  color: var(--fulcrum-warn);
+  color: var(--fulcrum-fg);
   font: 700 13px/1 var(--fulcrum-font);
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -251,7 +255,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="tool"][open] > [data-part="tool-header"]::before { transform: translateY(-1px) rotate(90deg); }
 [data-part="approval"] > [data-part="tool-header"]::before { border-left-color: transparent; }
 
-/* Color carries meaning, one hue per kind of fact: the tool in accent, the shell prompt in ok, and paths, numbers, +/-,
+/* Color carries meaning, one hue per kind of fact: the tool in accent, and paths, numbers, +/-,
    patterns, and content types in the --fulcrum-ui-* accents (themes.css). Those are UI text; tok-* colors are for code
    only, so tool facts never use them (test/themes.test.ts). */
 [data-part="tool-name"] { color: var(--fulcrum-accent); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -260,17 +264,21 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="summary-range"] { color: var(--fulcrum-muted); }
 [data-part="summary-count"] { color: var(--fulcrum-ui-number); }
 [data-part="summary-pattern"] { color: var(--fulcrum-ui-pattern); }
-[data-part="shell-prompt"] { color: var(--fulcrum-ok); font-weight: 700; user-select: none; }
+[data-part="shell-prompt"] { color: var(--fulcrum-muted); font-weight: 700; user-select: none; }
 [data-part="diff-stat"][data-change="insert"] { color: var(--fulcrum-ui-added); }
 [data-part="diff-stat"][data-change="delete"] { color: var(--fulcrum-ui-removed); }
 :is([data-part="tool-status"], [data-part="text-viewer-status"]) { display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-muted); white-space: nowrap; }
-/* The state mark: a square in the state color next to the word. */
-:is([data-part="tool-status"], [data-part="text-viewer-status"])::before {
+/* The state mark: a 7 px square in the tone (--mark) next to the word, which stays fg or muted: ok, warn, and danger are
+   marks only, never text (test/themes.test.ts). Its 1 px bg ring makes bg the color next to it on a surface, a tint, or a
+   hover, where the mark keeps 3.1:1. Each part sets only --mark. */
+:where([data-part="tool-status"], [data-part="text-viewer-status"], [data-part="sub-agent-status"], [data-part="tool-empty"], [data-part="run-end-marker"], [data-part="run-status"][data-status="unknown"], [data-part="fetch-status"]:not([data-status-class="1xx"]), [data-part="tool-exit"], [data-part="text-viewer-position"]:is([data-position="at-bottom"], [data-position="new-output"]), [data-part="approval-error"], [data-part="run-notice"][data-tone="error"], [data-part="composer-message"]:not(:empty), [data-part="composer-stop"], [data-part="image"][data-state="error"] [data-part="image-placeholder"], [data-part="reasoning"][data-state="streaming"] [data-part="reasoning-status"])::before,
+:where([data-part="run-state"]) {
   content: "";
   flex: none;
   width: 7px;
   height: 7px;
   background: var(--mark);
+  outline: 1px solid var(--fulcrum-bg);
   transform: translateY(-1px);
 }
 
@@ -328,25 +336,25 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 /* State vocabulary. Running: accent rail and a pulsing mark. Failed: danger rail and border, bold word.
    Canceled: muted, the summary struck through. Needs approval: warn on every edge, bold word. */
 [data-state="streaming"] { --rail: var(--fulcrum-accent); --mark: var(--fulcrum-accent); }
-[data-state="streaming"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-accent); }
-[data-part="tool"][data-state="done"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-ok); }
+[data-state="streaming"] > [data-part="tool-header"] > [data-part="tool-status"],
+[data-part="tool"][data-state="done"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-fg); }
 [data-state="streaming"] > [data-part="tool-header"] > [data-part="tool-status"]::before { animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
 [data-part="tool"][data-state="error"] { --rail: var(--fulcrum-danger); --mark: var(--fulcrum-danger); border-color: var(--fulcrum-danger); }
-[data-state="error"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-danger); font-weight: 700; }
+[data-state="error"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-fg); font-weight: 700; }
 [data-state="canceled"] { --rail: var(--fulcrum-muted); --mark: transparent; }
 [data-state="canceled"] > [data-part="tool-header"] > [data-part="tool-status"]::before { outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
 [data-state="canceled"] > [data-part="tool-header"] > [data-part="tool-summary"] { text-decoration: line-through; }
 
 [data-part="approval"][data-state="done"] { --mark: var(--fulcrum-muted); }
-/* A resolved approval says its decision in color: approved in ok, denied in danger; other endings stay muted. */
+/* A resolved approval's mark says its decision: approved in ok, denied in danger, other endings muted. The decision word
+   is fg; other endings stay muted. */
 [data-part="approval"][data-decision="approve"] { --mark: var(--fulcrum-ok); }
 [data-part="approval"][data-decision="deny"] { --mark: var(--fulcrum-danger); }
-[data-part="approval"][data-decision] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--mark); }
-/* A call's folded approval is a word after the call's mark ("■ approved · done"). It takes its color from its own
-   decision, never from the card's mark: a canceled card's hollow mark is transparent. */
+[data-part="approval"]:is([data-decision="approve"], [data-decision="deny"]) > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-fg); }
+/* A call's folded approval is a word after the call's mark ("■ approved · done"): an approval is the expected path, so
+   it is muted; a denial is the news, so it is fg and bold. */
 [data-part="tool-approval"] { color: var(--fulcrum-muted); }
-[data-part="tool-approval"][data-decision="approve"] { color: var(--fulcrum-ok); }
-[data-part="tool-approval"][data-decision="deny"] { color: var(--fulcrum-danger); }
+[data-part="tool-approval"][data-decision="deny"] { color: var(--fulcrum-fg); font-weight: 700; }
 [data-part="approval"][data-state="pending"],
 [data-part="approval"][data-state="submitting"],
 [data-part="approval"][data-state="reconnecting"],
@@ -354,7 +362,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="approval"][data-state="pending"] > [data-part="tool-header"] > [data-part="tool-status"],
 [data-part="approval"][data-state="submitting"] > [data-part="tool-header"] > [data-part="tool-status"],
 [data-part="approval"][data-state="reconnecting"] > [data-part="tool-header"] > [data-part="tool-status"],
-[data-part="approval"][data-state="resolving"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-warn); font-weight: 700; }
+[data-part="approval"][data-state="resolving"] > [data-part="tool-header"] > [data-part="tool-status"] { color: var(--fulcrum-fg); font-weight: 700; }
 [data-part="approval"][data-state="submitting"] > [data-part="tool-header"] > [data-part="tool-status"]::before { animation: fulcrum-pulse 0.6s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
 
 /* Every control inside a card (and a large code block's viewer) is a fulcrum button: no browser chrome in any state. Quiet text buttons (copy, open,
@@ -425,8 +433,10 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="approval-actions"] button[data-action="approve"]:is(:disabled, [aria-disabled="true"]) { background: var(--fulcrum-surface); color: var(--fulcrum-muted); }
 [data-part="approval-actions"] button[aria-disabled="true"]:not(:disabled) { cursor: progress; }
 [data-part="approval-actions"] [role="status"] { flex: 1 1 100%; color: var(--fulcrum-fg); font-size: 12px; }
-/* A failed decision says why under the actions, which are enabled again for a retry. */
-[data-part="approval-error"] { display: block; padding: 0 12px 12px; color: var(--fulcrum-danger); font-size: 12px; overflow-wrap: anywhere; }
+/* A failed decision says why under the actions, which are enabled again for a retry: fg words after a danger square,
+   wrapped lines hung under the words. */
+[data-part="approval-error"] { --mark: var(--fulcrum-danger); display: block; padding: 0 12px 12px 27px; text-indent: -15px; color: var(--fulcrum-fg); font-size: 12px; overflow-wrap: anywhere; }
+[data-part="approval-error"]::before { display: inline-block; margin-right: 8px; vertical-align: 1px; transform: none; }
 @media (pointer: coarse) { [data-part="approval-actions"] button { min-height: 44px; } }
 
 [data-part="tool-duration"] { color: var(--fulcrum-ui-number); font-weight: 400; }
@@ -436,9 +446,11 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="tool-gap"] { display: block; margin: 0; padding: 6px 12px; color: var(--fulcrum-muted); font-size: 12px; }
 /* An empty body says why in words, with the state's mark: pulsing while the tool runs. */
 [data-part="tool-empty"] { display: flex; align-items: center; gap: 8px; min-height: 32px; }
-[data-part="tool-empty"]::before { content: ""; flex: none; width: 6px; height: 6px; background: var(--fulcrum-muted); }
-[data-part="tool-empty"][data-state="streaming"]::before { background: var(--fulcrum-accent); animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
-[data-part="tool-empty"][data-state="error"]::before { background: var(--fulcrum-danger); }
+[data-part="tool-empty"] { --mark: var(--fulcrum-muted); }
+[data-part="tool-empty"]::before { width: 6px; height: 6px; transform: none; }
+[data-part="tool-empty"][data-state="streaming"] { --mark: var(--fulcrum-accent); }
+[data-part="tool-empty"][data-state="streaming"]::before { animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
+[data-part="tool-empty"][data-state="error"] { --mark: var(--fulcrum-danger); }
 [data-part="tool-foot"] {
   display: flex;
   align-items: center;
@@ -477,11 +489,12 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   [data-part="text-viewer-status"] > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
 [data-part="text-viewer-position"] { white-space: nowrap; }
-/* A streaming fence's viewer says so in its accent, its mark pulsing like a running tool's. */
-[data-part="text-viewer-status"] { color: var(--fulcrum-accent); }
+/* A streaming fence's viewer says so, its accent mark pulsing like a running tool's. */
+[data-part="text-viewer-status"] { color: var(--fulcrum-fg); }
 [data-part="text-viewer-status"]::before { animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
-[data-part="text-viewer-position"][data-position="at-bottom"] { color: var(--fulcrum-ok); }
-[data-part="text-viewer-position"][data-position="new-output"] { color: var(--fulcrum-warn); font-weight: 700; }
+[data-part="text-viewer-position"]:is([data-position="at-bottom"], [data-position="new-output"]) { display: inline-flex; align-items: baseline; gap: 6px; }
+[data-part="text-viewer-position"][data-position="at-bottom"] { --mark: var(--fulcrum-ok); color: var(--fulcrum-muted); }
+[data-part="text-viewer-position"][data-position="new-output"] { --mark: var(--fulcrum-warn); color: var(--fulcrum-fg); font-weight: 700; }
 [data-part="text-viewer"] {
   position: relative;
   max-height: 320px;
@@ -504,13 +517,13 @@ div[data-part="text-viewer-row"] { padding: 0; }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-[data-part="tool-exit"] { color: var(--fulcrum-ok); }
-[data-part="tool-exit"]:not([data-exit-code="0"]) { color: var(--fulcrum-danger); font-weight: 700; }
+[data-part="tool-exit"] { --mark: var(--fulcrum-ok); display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-fg); }
+[data-part="tool-exit"]:not([data-exit-code="0"]) { --mark: var(--fulcrum-danger); font-weight: 700; }
 [data-part="tool-cwd"],
 [data-part="tool-path"] { color: var(--fulcrum-ui-path); }
 [data-part="tool-size"] { color: var(--fulcrum-ui-number); }
 
-/* Shell: the header reads "$ command"; the tool name stays for screen readers. stderr gets a label and a danger edge. */
+/* Shell: the header reads "$ command"; the tool name stays for screen readers. stderr gets a label and a danger rail. */
 [data-tool-view="shell"] > [data-part="tool-header"] { grid-template-columns: auto minmax(0, 1fr) auto; }
 [data-tool-view="shell"] [data-part="tool-name"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 [data-tool-view="shell"] [data-part="tool-summary"] { color: var(--fulcrum-fg); }
@@ -524,11 +537,11 @@ div[data-part="text-viewer-row"] { padding: 0; }
 @media (max-width: 860px) {
   [data-tool-view="shell"] [data-part="tool-summary"] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; white-space: normal; overflow-wrap: anywhere; padding-left: 2ch; text-indent: -2ch; }
 }
-[data-part="shell-command"]::before { content: "$ "; color: var(--fulcrum-ok); font-weight: 700; }
+[data-part="shell-command"]::before { content: "$ "; color: var(--fulcrum-muted); font-weight: 700; }
 [data-tool-view="shell"] [data-part="tool-output"] { background: var(--fulcrum-bg); }
 [data-part="tool-output"][data-stream="stderr"] { border-left: 2px solid var(--fulcrum-danger); padding-left: 10px; }
 /* column-reverse puts ::after at the top. */
-[data-part="tool-output"][data-stream="stderr"]::after { content: "stderr"; color: var(--fulcrum-danger); font-size: 12px; font-weight: 700; }
+[data-part="tool-output"][data-stream="stderr"]::after { content: "stderr"; color: var(--fulcrum-fg); font-size: 12px; font-weight: 700; }
 
 /* Numbered lines (read, write, search): a gutter that copy-select skips. Files read top-down, so no reverse. */
 [data-part="tool-lines"],
@@ -571,12 +584,12 @@ div[data-part="text-viewer-row"] { padding: 0; }
 
 /* Fetch: the status, the full url, and the page title above the body. */
 [data-part="fetch-meta"] { display: flex; flex-wrap: wrap; gap: 0 12px; padding: 6px 12px; }
-/* HTTP status by class: 2xx ok, 3xx accent, 4xx warn, 5xx danger. */
-[data-part="fetch-status"] { font-weight: 700; }
-[data-part="fetch-status"][data-status-class="2xx"] { color: var(--fulcrum-ok); }
-[data-part="fetch-status"][data-status-class="3xx"] { color: var(--fulcrum-accent); }
-[data-part="fetch-status"][data-status-class="4xx"] { color: var(--fulcrum-warn); }
-[data-part="fetch-status"][data-status-class="5xx"] { color: var(--fulcrum-danger); }
+/* HTTP status by class, in its mark: 2xx ok, 3xx accent, 4xx warn, 5xx danger. */
+[data-part="fetch-status"] { display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-fg); font-weight: 700; }
+[data-part="fetch-status"][data-status-class="2xx"] { --mark: var(--fulcrum-ok); }
+[data-part="fetch-status"][data-status-class="3xx"] { --mark: var(--fulcrum-accent); }
+[data-part="fetch-status"][data-status-class="4xx"] { --mark: var(--fulcrum-warn); }
+[data-part="fetch-status"][data-status-class="5xx"] { --mark: var(--fulcrum-danger); }
 [data-part="fetch-type"] { color: var(--fulcrum-ui-type); }
 [data-part="fetch-url"] { min-width: 0; color: var(--fulcrum-ui-path); overflow-wrap: anywhere; }
 [data-part="fetch-title"] { color: var(--fulcrum-muted); }
@@ -589,7 +602,7 @@ div[data-part="text-viewer-row"] { padding: 0; }
   border-left-width: 2px;
   color: var(--fulcrum-fg);
 }
-[data-part="item"][data-kind="error"]::before { content: "error  "; color: var(--fulcrum-danger); font-weight: 700; white-space: pre; }
+[data-part="item"][data-kind="error"]::before { content: "error  "; color: var(--fulcrum-fg); font-weight: 700; white-space: pre; }
 /* The user's own stop: the canceled mark (an empty square), no alarm. */
 [data-part="item"][data-kind="stopped"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; transform: translateY(-1px); }
 [data-part="item"][data-kind="notification"]::before,
@@ -653,7 +666,6 @@ summary[data-part="notification-summary"]:focus-visible { outline: 2px solid var
 [data-part="sub-agent"] {
   --rail: var(--fulcrum-border);
   --mark: var(--fulcrum-muted);
-  --state: var(--fulcrum-muted);
   appearance: none;
   display: grid;
   grid-template-rows: 20px 18px;
@@ -685,8 +697,7 @@ button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-a
 [data-part="sub-agent-head"] > [data-part="sub-agent-task"] { flex: 1 1 0; }
 /* At reflow widths (320 px) the elapsed time and tool count give way too; the state and the open mark never do. */
 [data-part="sub-agent-head"] > [data-part="sub-agent-meta"] { flex: 0 1 auto; margin-left: auto; }
-[data-part="sub-agent-status"] { display: inline-flex; align-items: baseline; gap: 6px; color: var(--state); }
-[data-part="sub-agent-status"]::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--mark); transform: translateY(-1px); }
+[data-part="sub-agent-status"] { display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-fg); }
 [data-part="sub-agent-name"] { color: var(--fulcrum-accent); font-weight: 700; }
 [data-part="sub-agent-task"] { color: var(--fulcrum-fg); }
 [data-part="sub-agent-meta"] { color: var(--fulcrum-ui-number); font-size: 12px; }
@@ -697,18 +708,19 @@ button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-a
 [data-part="sub-agent-activity"] { flex: 1; color: var(--fulcrum-muted); }
 [data-part="sub-agent-reason"] { flex: none; max-width: 100%; color: var(--fulcrum-fg); }
 [data-part="sub-agent-reason"]::before { content: "no details: "; color: var(--fulcrum-muted); }
-[data-part="sub-agent"][data-state="running"] { --rail: var(--fulcrum-accent); --mark: var(--fulcrum-accent); --state: var(--fulcrum-accent); }
+[data-part="sub-agent"][data-state="running"] { --rail: var(--fulcrum-accent); --mark: var(--fulcrum-accent); }
 [data-part="sub-agent"][data-state="running"] [data-part="sub-agent-status"]::before { animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
-[data-part="sub-agent"][data-state="done"] { --mark: var(--fulcrum-ok); --state: var(--fulcrum-ok); }
-[data-part="sub-agent"][data-state="error"] { --rail: var(--fulcrum-danger); --mark: var(--fulcrum-danger); --state: var(--fulcrum-danger); border-color: var(--fulcrum-danger); }
+[data-part="sub-agent"][data-state="done"] { --mark: var(--fulcrum-ok); }
+[data-part="sub-agent"][data-state="error"] { --rail: var(--fulcrum-danger); --mark: var(--fulcrum-danger); border-color: var(--fulcrum-danger); }
 [data-part="sub-agent"][data-state="error"] [data-part="sub-agent-status"] { font-weight: 700; }
 [data-part="sub-agent"][data-state="canceled"] { --rail: var(--fulcrum-muted); --mark: transparent; }
+[data-part="sub-agent"][data-state="canceled"] [data-part="sub-agent-status"] { color: var(--fulcrum-muted); }
 [data-part="sub-agent"][data-state="canceled"] [data-part="sub-agent-status"]::before { outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
-[data-part="sub-agent"][data-state="idle"] { --mark: var(--fulcrum-ui-type); --state: var(--fulcrum-ui-type); }
-/* Waiting on the user: warn on every edge and the state word as a boxed badge, so it stands out in a long run. */
-[data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { --rail: var(--fulcrum-warn); --mark: var(--fulcrum-warn); --state: var(--fulcrum-warn); border-color: var(--fulcrum-warn); }
+[data-part="sub-agent"][data-state="idle"] { --mark: var(--fulcrum-ui-type); }
+/* Waiting on the user: warn on every edge and the state word, in bold fg, boxed in warn, so it stands out in a long run. */
+[data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { --rail: var(--fulcrum-warn); --mark: var(--fulcrum-warn); border-color: var(--fulcrum-warn); }
 [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) [data-part="sub-agent-status"],
-[data-part="run-urgency"] { padding: 0 5px; border: 1px solid var(--fulcrum-warn); color: var(--fulcrum-warn); font-weight: 700; line-height: 16px; }
+[data-part="run-urgency"] { padding: 0 5px; border: 1px solid var(--fulcrum-warn); color: var(--fulcrum-fg); font-weight: 700; line-height: 16px; }
 
 /* Run navigator: a fixed run bar (back, breadcrumb, state) over one scrolling timeline. Give it a height. */
 [data-part="run-navigator"] { display: flex; flex-direction: column; min-height: 0; background: var(--fulcrum-bg); }
@@ -754,15 +766,17 @@ button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-a
 [data-part="run-crumb"] { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px; }
 span[data-part="run-crumb"] { color: var(--fulcrum-fg); font-weight: 700; outline: none; }
 [data-part="run-label"] { max-width: 32ch; overflow: hidden; text-overflow: ellipsis; }
-[data-part="run-state"] { flex: none; width: 7px; height: 7px; background: var(--fulcrum-muted); }
-[data-part="run-state"][data-state="running"] { background: var(--fulcrum-accent); }
-[data-part="run-state"]:is([data-state="waiting_approval"], [data-state="waiting_input"]) { background: var(--fulcrum-warn); }
-[data-part="run-state"][data-state="done"] { background: var(--fulcrum-ok); }
-[data-part="run-state"][data-state="error"] { background: var(--fulcrum-danger); }
-[data-part="run-state"][data-state="idle"] { background: var(--fulcrum-ui-type); }
+[data-part="run-state"] { --mark: var(--fulcrum-muted); transform: none; }
+[data-part="run-state"][data-state="running"] { --mark: var(--fulcrum-accent); }
+[data-part="run-state"]:is([data-state="waiting_approval"], [data-state="waiting_input"]) { --mark: var(--fulcrum-warn); }
+[data-part="run-state"][data-state="done"] { --mark: var(--fulcrum-ok); }
+[data-part="run-state"][data-state="error"] { --mark: var(--fulcrum-danger); }
+[data-part="run-state"][data-state="idle"] { --mark: var(--fulcrum-ui-type); }
 [data-part="run-urgency"] { font-size: 12px; }
 [data-part="run-notice"] { min-width: 0; overflow: hidden; color: var(--fulcrum-muted); font-size: 12px; text-overflow: ellipsis; }
-[data-part="run-notice"][data-tone="error"] { color: var(--fulcrum-danger); }
+/* The bar clips the notice, so its square keeps 1 px for its bg ring. */
+[data-part="run-notice"][data-tone="error"] { --mark: var(--fulcrum-danger); color: var(--fulcrum-fg); }
+[data-part="run-notice"][data-tone="error"]::before { display: inline-block; margin: 0 6px 0 1px; vertical-align: 1px; transform: none; }
 /* Empty, it takes no room in the bar but stays in the accessibility tree as a live region. */
 [data-part="run-notice"]:empty { position: absolute; }
 @media (pointer: coarse) {
@@ -815,15 +829,8 @@ summary[data-part="reasoning-header"]::before {
 [data-part="reasoning"][open] > summary[data-part="reasoning-header"]::before { transform: translateY(-1px) rotate(90deg); }
 [data-part="reasoning-name"] { color: var(--fulcrum-ui-number); font-weight: 700; }
 [data-part="reasoning-status"] { display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-muted); white-space: nowrap; }
-[data-part="reasoning"][data-state="streaming"] [data-part="reasoning-status"] { color: var(--fulcrum-accent); }
-[data-part="reasoning"][data-state="streaming"] [data-part="reasoning-status"]::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  background: var(--mark);
-  transform: translateY(-1px);
-  animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate;
-}
+[data-part="reasoning"][data-state="streaming"] [data-part="reasoning-status"] { color: var(--fulcrum-fg); }
+[data-part="reasoning"][data-state="streaming"] [data-part="reasoning-status"]::before { animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
 /* The newest words while it thinks: end-aligned in a clipped box, so a long line shows its end as it grows; the inner
    span is at least the box wide, so a short line still starts at the left. */
 [data-part="reasoning-preview"] { display: flex; flex: 1; justify-content: flex-end; min-width: 0; overflow: hidden; color: var(--fulcrum-muted); white-space: nowrap; }
@@ -874,7 +881,8 @@ a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--f
 @keyframes fulcrum-image-loading { to { background-position-x: -200%; } }
 /* An image that will never load needs no reserved box: one line says why. */
 [data-part="image"][data-state="blocked"] [data-part="image-placeholder"] { width: auto; height: auto; aspect-ratio: auto; justify-content: flex-start; padding: 6px 12px; }
-[data-part="image"][data-state="error"] [data-part="image-placeholder"] { color: var(--fulcrum-danger); }
+[data-part="image"][data-state="error"] [data-part="image-placeholder"] { --mark: var(--fulcrum-danger); color: var(--fulcrum-fg); }
+[data-part="image"][data-state="error"] [data-part="image-placeholder"]::before { transform: none; }
 [data-part="image-caption"] { font-size: 12px; }
 [data-part="image-dialog"] {
   max-width: 95vw;
@@ -893,7 +901,7 @@ a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--f
 [data-part="block-unknown-header"] { flex-wrap: wrap; align-items: center; row-gap: 0; min-height: 34px; padding: 0 0 0 10px; }
 [data-part="block-actions"] { display: flex; margin-left: auto; white-space: nowrap; }
 [data-part="block-unknown-header"] > :is([data-part="block-label"], [data-part="block-type"]) { line-height: 32px; }
-[data-part="block-unknown-header"] > [data-part="block-label"] { color: var(--fulcrum-warn); }
+[data-part="block-unknown-header"] > [data-part="block-label"] { color: var(--fulcrum-fg); font-weight: 700; }
 [data-part="block-unknown"] > [data-part="tool-args"] { border-top: 1px solid var(--fulcrum-border); }
 
 @media (max-width: 480px) {
@@ -1116,17 +1124,9 @@ ul[data-part="md-list"] { list-style: "- "; }
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-[data-part="composer-status"][data-tone="busy"] { color: var(--fulcrum-accent); }
-[data-part="composer-status"][data-tone="danger"] { color: var(--fulcrum-danger); font-weight: 700; }
-[data-part="composer-message"]:not(:empty)::before {
-  content: "";
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 8px;
-  vertical-align: 1px;
-  background: currentColor;
-}
+[data-part="composer-status"][data-tone="busy"] { --mark: var(--fulcrum-accent); color: var(--fulcrum-fg); }
+[data-part="composer-status"][data-tone="danger"] { --mark: var(--fulcrum-danger); color: var(--fulcrum-fg); font-weight: 700; }
+[data-part="composer-message"]::before { display: inline-block; margin: 0 8px 0 1px; vertical-align: 1px; transform: none; }
 [data-part="composer-status"][data-tone="busy"] > [data-part="composer-message"]::before { animation: fulcrum-pulse 0.6s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
 [data-part="composer"] button {
   flex: none;
@@ -1146,8 +1146,11 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="composer-submit"] { --action: var(--fulcrum-accent); }
 /* Steer is not a warning: the same accent as send, outlined, so it reads as "add to the turn", not as a new message. */
 [data-part="composer"] [data-part="composer-submit"][data-action="steer"]:not([aria-disabled="true"]) { background: var(--fulcrum-bg); color: var(--fulcrum-accent); }
-/* Stop is the quiet, destructive one: danger text on the page, never filled. Its min width holds "stopping". */
-[data-part="composer"] [data-part="composer-stop"] { --action: var(--fulcrum-danger); min-width: calc(8ch + 32px); background: var(--fulcrum-bg); color: var(--fulcrum-danger); }
+/* Stop is the quiet, destructive one: a danger border and square around fg words, never filled. Its min width holds
+   "stopping" and the square, so the button keeps its width. */
+[data-part="composer"] [data-part="composer-stop"] { --mark: var(--fulcrum-danger); min-width: calc(8ch + 45px); border-color: var(--fulcrum-danger); background: var(--fulcrum-bg); color: var(--fulcrum-fg); }
+[data-part="composer-stop"]::before { display: inline-block; margin-right: 6px; vertical-align: 1px; transform: none; }
+[data-part="composer-stop"][aria-disabled="true"] { --mark: var(--fulcrum-muted); }
 [data-part="composer"] button:hover { text-decoration: underline; text-underline-offset: 3px; }
 [data-part="composer"] button:active { transform: scale(0.96); }
 [data-part="composer"] button:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
@@ -1210,16 +1213,18 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="approval"],
   [data-part="item"][data-kind="error"] { --rail: CanvasText; --mark: CanvasText; border-color: CanvasText; }
   [data-part="approval"][data-state="pending"] { border-width: 2px; }
-  :is([data-part="tool-status"], [data-part="text-viewer-status"])::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="reasoning"] { --rail: CanvasText; --mark: CanvasText; }
-  [data-part="reasoning-status"]::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
   [data-part="message"] { --fulcrum-cursor: CanvasText; }
   [data-part="sub-agent"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }
-  :is([data-part="sub-agent-status"], [data-part="run-state"])::before,
-  [data-part="run-state"] { forced-color-adjust: none; background: CanvasText; }
+  /* Every status mark: the shared mark list, as system colors on the system Canvas. */
+  :where([data-part="tool-status"], [data-part="text-viewer-status"], [data-part="sub-agent-status"], [data-part="tool-empty"], [data-part="run-end-marker"], [data-part="run-status"][data-status="unknown"], [data-part="fetch-status"]:not([data-status-class="1xx"]), [data-part="tool-exit"], [data-part="text-viewer-position"]:is([data-position="at-bottom"], [data-position="new-output"]), [data-part="approval-error"], [data-part="run-notice"][data-tone="error"], [data-part="composer-message"]:not(:empty), [data-part="composer-stop"], [data-part="image"][data-state="error"] [data-part="image-placeholder"], [data-part="reasoning"][data-state="streaming"] [data-part="reasoning-status"])::before,
+  :where([data-part="run-state"]) { forced-color-adjust: none; background: CanvasText; outline-color: Canvas; }
+  [data-state="canceled"] > [data-part="tool-header"] > [data-part="tool-status"]::before,
+  [data-part="sub-agent"][data-state="canceled"] [data-part="sub-agent-status"]::before,
+  [data-part="run-end-marker"][data-outcome="cancelled"]::before { background: none; outline-color: CanvasText; }
   [data-part="composer"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="composer"] button { border-color: ButtonText; }
   [data-part="composer-submit"]:not([aria-disabled="true"]) { forced-color-adjust: none; background: Highlight; color: HighlightText; }

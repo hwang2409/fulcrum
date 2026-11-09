@@ -72,9 +72,12 @@ code { font: inherit; color: var(--fulcrum-fg); }
 /* Active mode and its live numbers, in one line. */
 .status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; padding: 6px 24px; border-bottom: 1px solid var(--fulcrum-border); background: var(--fulcrum-surface); color: var(--fulcrum-muted); font-size: 12px; }
 .mode { display: inline-flex; align-items: baseline; gap: 8px; color: var(--fulcrum-fg); font-weight: 700; }
-.mode::before { content: ""; width: 7px; height: 7px; background: var(--fulcrum-muted); }
-.mode[data-state="streaming"]::before { background: var(--fulcrum-accent); animation: shell-pulse 1s infinite alternate; }
-.mode[data-state="waiting"]::before { background: var(--fulcrum-warn); }
+.mode { --mark: var(--fulcrum-muted); }
+.mode[data-state="streaming"] { --mark: var(--fulcrum-accent); }
+.mode[data-state="waiting"] { --mark: var(--fulcrum-warn); }
+/* The status bar is surface; the bg ring keeps the mark measured on bg, as in styles.css. */
+.mode::before { content: ""; width: 7px; height: 7px; background: var(--mark); outline: 1px solid var(--fulcrum-bg); }
+.mode[data-state="streaming"]::before { animation: shell-pulse 1s infinite alternate; }
 .mode span { color: var(--fulcrum-muted); font-weight: 400; }
 
 /* Owned Timeline mode needs a definite-height host; host-owned mode keeps the scroll element explicit. */

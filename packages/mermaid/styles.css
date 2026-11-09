@@ -84,7 +84,7 @@
   border: 1px solid var(--fulcrum-border);
   border-top: 0;
   border-left: 2px solid var(--fulcrum-danger);
-  color: var(--fulcrum-danger);
+  color: var(--fulcrum-fg);
   font: 12px/1.5 var(--fulcrum-font);
   overflow-wrap: anywhere;
 }

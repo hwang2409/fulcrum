@@ -1,16 +1,17 @@
 /* @fulcrum/react themes. Load after styles.css and keep the themes you use.
    Set data-fulcrum-theme="<name>" on <html> or on any subtree. With no attribute, github-light or github-dark follows the OS.
-   Each palette uses its official colors; the source is above each block. UI text (fg, muted, accent, ok, warn, danger)
-   reaches 4.5:1 on bg, surface, and the diff row tints, and ok, warn, and danger also on their run-end-marker tint (6%
-   over bg). Where an official fg, muted, or accent misses that, it is mixed with the least black (light themes) or white
-   (dark themes) that reaches it, and muted mixes fg into bg where a palette has no secondary text color. Where an
-   official ok, warn, or danger misses it, the comment names the official value, and the color takes the smallest OKLCH
-   lightness change at the same hue and chroma, so each status color stays in its palette's family. ok, warn, and danger
-   keep a floor of 4.6:1 as text and 3.1:1 as marks, a margin so another blend, gamma, or subpixel rendering cannot drop
-   a value that passes only by rounding below AA. fg also reaches
-   4.5:1 on a 12% status or accent tint over bg, for badges and highlighted rows. Syntax colors (tok-*, code only) keep the official hex where it reaches 4.5:1 on bg, surface, and the diff
-   rows, and the 16 ansi-* terminal colors where it reaches 3:1 on bg and surface. Where it does not, the comment names the
-   official value, and the color takes the smallest OKLCH lightness change at the same hue and chroma that reaches the
+   Each palette uses its official colors; the source is above each block. UI text (fg, muted, accent) reaches 4.5:1 on
+   bg, surface, and the diff row tints. Where an official fg, muted, or accent misses that, it is mixed with the least
+   black (light themes) or white (dark themes) that reaches it, and muted mixes fg into bg where a palette has no
+   secondary text color. ok, warn, and danger are never text, only marks: the status word is fg or muted, and a square,
+   rail, or border next to it carries the tone. Each square is ringed in bg (styles.css), so a mark is measured on bg,
+   where it keeps 3.1:1 (a margin over the 3:1 non-text minimum). Where an official ok, warn, or danger misses that,
+   the comment names the official value, and the color takes the smallest OKLCH lightness change at the same hue and
+   chroma that reaches it, so each status color stays in its palette's family. fg also reaches 4.5:1 on a 12% status or
+   accent tint over bg, for badges and highlighted rows.
+   Syntax colors (tok-*, code only) keep the official hex where it reaches 4.5:1 on bg, surface, and the diff rows, and
+   the 16 ansi-* terminal colors where it reaches 3:1 on bg and surface. Where it does not, the comment names the official
+   value, and the color takes the smallest OKLCH lightness change at the same hue and chroma that reaches the
    ratio. The ui-* accents color tool facts (paths, numbers, +/- counts, patterns, content types), which are UI
    text: each starts from the official hex of the tok-* color its comment names and, where that misses 4.5:1 on bg or
    surface, takes the smallest OKLCH lightness change that reaches it (packages/react/test/themes.test.ts). */
@@ -25,7 +26,7 @@
   --fulcrum-surface: #32302f;
   --fulcrum-border: #504945;
   --fulcrum-accent: #83a598;
-  --fulcrum-danger: #ff6f5a; /* official #fb4934 is 3.66:1 on inserted row; OKLCH L +0.054 */
+  --fulcrum-danger: #fb4934;
   --fulcrum-ok: #b8bb26;
   --fulcrum-warn: #fabd2f;
   --fulcrum-tok-keyword: #ff6c57; /* official #fb4934 is 3.66:1 on inserted row; OKLCH L +0.050 */
@@ -78,8 +79,8 @@
   --fulcrum-border: #d5c4a1;
   --fulcrum-accent: #076678;
   --fulcrum-danger: #9d0006;
-  --fulcrum-ok: #696501; /* official #79740e is 3.69:1 on deleted row; OKLCH L -0.052 */
-  --fulcrum-warn: #8a5700; /* official #b57614 is 2.86:1 on deleted row; OKLCH L -0.116 */
+  --fulcrum-ok: #79740e;
+  --fulcrum-warn: #b57614;
   --fulcrum-tok-keyword: #9d0006;
   --fulcrum-tok-string: #6b6600; /* official #79740e is 3.69:1 on deleted row; OKLCH L -0.046 */
   --fulcrum-tok-number: #8f3f71;
@@ -128,7 +129,7 @@
   --fulcrum-surface: #21222c;
   --fulcrum-border: #44475a;
   --fulcrum-accent: #bd93f9;
-  --fulcrum-danger: #ff7a74; /* official #ff5555 is 3.73:1 on inserted row; OKLCH L +0.051 */
+  --fulcrum-danger: #ff5555;
   --fulcrum-ok: #50fa7b;
   --fulcrum-warn: #ffb86c;
   --fulcrum-tok-keyword: #ff79c6;
@@ -179,7 +180,7 @@
   --fulcrum-surface: #3b4252;
   --fulcrum-border: #434c5e;
   --fulcrum-accent: #88c0d0;
-  --fulcrum-danger: #f7939b; /* official #bf616a is 2.46:1 on surface; OKLCH L +0.164 */
+  --fulcrum-danger: #c1626b; /* official #bf616a is 3.05:1 on bg; OKLCH L +0.005 */
   --fulcrum-ok: #a3be8c;
   --fulcrum-warn: #ebcb8b;
   --fulcrum-tok-keyword: #90b1d1; /* official #81a1c1 is 3.74:1 on surface; OKLCH L +0.050 */
@@ -332,9 +333,9 @@
   --fulcrum-surface: #e6e9ef;
   --fulcrum-border: #ccd0da;
   --fulcrum-accent: color-mix(in srgb, #1e66f5 89%, black);
-  --fulcrum-danger: #c80134; /* official #d20f39 is 4.18:1 on deleted row; OKLCH L -0.023 */
-  --fulcrum-ok: #1d7300; /* official #40a02b is 2.57:1 on deleted row; OKLCH L -0.139 */
-  --fulcrum-warn: #8e5600; /* official #df8e1d is 2.01:1 on deleted row; OKLCH L -0.209 */
+  --fulcrum-danger: #d20f39;
+  --fulcrum-ok: #3c9c26; /* official #40a02b is 2.96:1 on bg; OKLCH L -0.012 */
+  --fulcrum-warn: #c27803; /* official #df8e1d is 2.31:1 on bg; OKLCH L -0.076 */
   --fulcrum-tok-keyword: #8331e9; /* official #8839ef is 4.17:1 on deleted row; OKLCH L -0.018 */
   --fulcrum-tok-string: #1d7400; /* official #40a02b is 2.57:1 on deleted row; OKLCH L -0.135 */
   --fulcrum-tok-number: #af4100; /* official #fe640b is 2.29:1 on deleted row; OKLCH L -0.170 */
@@ -383,9 +384,9 @@
   --fulcrum-surface: #073642;
   --fulcrum-border: #586e75;
   --fulcrum-accent: color-mix(in srgb, #268bd2 82%, white);
-  --fulcrum-danger: #ff695e; /* official #dc322f is 2.81:1 on surface; OKLCH L +0.121 */
-  --fulcrum-ok: #8fa41c; /* official #859900 is 4.06:1 on surface; OKLCH L +0.035 */
-  --fulcrum-warn: #c0931c; /* official #b58900 is 4.05:1 on surface; OKLCH L +0.033 */
+  --fulcrum-danger: #dc322f;
+  --fulcrum-ok: #859900;
+  --fulcrum-warn: #b58900;
   --fulcrum-tok-keyword: #8da218; /* official #859900 is 4.06:1 on surface; OKLCH L +0.028 */
   --fulcrum-tok-string: #35a99f; /* official #2aa198 is 4.12:1 on surface; OKLCH L +0.024 */
   --fulcrum-tok-number: #35a99f; /* official #2aa198 is 4.12:1 on surface; OKLCH L +0.024 */
@@ -434,9 +435,9 @@
   --fulcrum-surface: #eee8d5;
   --fulcrum-border: #93a1a1;
   --fulcrum-accent: color-mix(in srgb, #268bd2 78%, black);
-  --fulcrum-danger: #cb1c1f; /* official #dc322f is 3.77:1 on surface; OKLCH L -0.047 */
-  --fulcrum-ok: #5f6e01; /* official #859900 is 2.62:1 on surface; OKLCH L -0.137 */
-  --fulcrum-warn: #836200; /* official #b58900 is 2.62:1 on surface; OKLCH L -0.139 */
+  --fulcrum-danger: #dc322f;
+  --fulcrum-ok: #829502; /* official #859900 is 2.97:1 on bg; OKLCH L -0.011 */
+  --fulcrum-warn: #b08603; /* official #b58900 is 2.98:1 on bg; OKLCH L -0.012 */
   --fulcrum-tok-keyword: #606f00; /* official #859900 is 2.62:1 on surface; OKLCH L -0.132 */
   --fulcrum-tok-string: #00756e; /* official #2aa198 is 2.58:1 on surface; OKLCH L -0.136 */
   --fulcrum-tok-number: #00756e; /* official #2aa198 is 2.58:1 on surface; OKLCH L -0.136 */
@@ -537,9 +538,9 @@
   --fulcrum-surface: #f6f8fa;
   --fulcrum-border: #d1d9e0;
   --fulcrum-accent: color-mix(in srgb, #0969da 99%, black);
-  --fulcrum-danger: #cf212d; /* official #d1242f is 4.49:1 on deleted row; OKLCH L -0.006 */
-  --fulcrum-ok: #137b33; /* official #1a7f37 is 4.35:1 on deleted row; OKLCH L -0.013 */
-  --fulcrum-warn: #916001; /* official #9a6700 is 4.17:1 on deleted row; OKLCH L -0.025 */
+  --fulcrum-danger: #d1242f;
+  --fulcrum-ok: #1a7f37;
+  --fulcrum-warn: #9a6700;
   --fulcrum-tok-keyword: #cf222e;
   --fulcrum-tok-string: #0a3069;
   --fulcrum-tok-number: #0550ae;
@@ -588,7 +589,7 @@
   --fulcrum-surface: #21252b;
   --fulcrum-border: #3e4451;
   --fulcrum-accent: #61afef;
-  --fulcrum-danger: #f37d86; /* official #e06c75 is 3.74:1 on inserted row; OKLCH L +0.055 */
+  --fulcrum-danger: #e06c75;
   --fulcrum-ok: #98c379;
   --fulcrum-warn: #e5c07b;
   --fulcrum-tok-keyword: #cf81e6; /* official #c678dd is 4.06:1 on inserted row; OKLCH L +0.028 */
