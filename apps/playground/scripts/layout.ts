@@ -21,8 +21,9 @@
 // 370% of the correct append cost), measured as head-only append task-time scaling between 16k and 128k lines.
 // (d) a slowdown shared by head and base fails the calibrated ceiling: candidate median / same-run fixed-DOM work, per
 // width and operation (budgets and samples in viewer-verdict.ts).
-// The scaling probe runs several appends under 4x CPU throttling. Array.push and pushed `text-*` segment counts are
-// cheap extra canaries for rebuilding segments or visiting every row; task-time scaling is the proof.
+// The scaling probe measures 21 interleaved 16k/128k pairs of first appends under 4x CPU throttling and judges the
+// median per-pair task ratio (viewer-verdict.ts). Array.push and pushed `text-*` segment counts are cheap extra canaries
+// for rebuilding segments or visiting every row; task-time scaling is the proof.
 import { chromium, type Locator, type Page } from "playwright";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -33,7 +34,7 @@ import { checkUx } from "./ux-check.js";
 import { checkSubAgents } from "./subagent-check.js";
 import { checkWarmBodies } from "./warm-check.js";
 import { checkLineTokens } from "./token-check.js";
-import { ratio, recordUnthrottledViewerFailures, recordViewerTimingFailures, viewerRatioBudget, type Calibration, type ViewerCheck, type ViewerSample, type ViewerTiming } from "./viewer-verdict.js";
+import { median, ratio, recordUnthrottledViewerFailures, recordViewerScalingFailures, recordViewerTimingFailures, viewerRatioBudget, type Calibration, type ScalingCheck, type ScalingPair, type ViewerCheck, type ViewerSample, type ViewerTiming } from "./viewer-verdict.js";
 
 const widths = [390, 768, 1024, 1440];
 const touchWidth = 860; // the gallery's touch breakpoint
@@ -237,10 +238,8 @@ type ViewerMeasurement = ViewerTiming & { fixture: string; width: number; calibr
 type ViewerPair = { base: ViewerSample; candidate: ViewerSample };
 
 const viewerSamples = 5;
-const viewerScalingBudget = 1.4;
-const viewerScalingTotalBudget = 1.8;
-const viewerScalingTaskBudget = 2.27;
-const median = (values: number[]) => [...values].sort((left, right) => left - right)[values.length >> 1]!;
+const viewerScalingPairs = 21;
+const scalingDelta = `\n${"x".repeat(65_535)}`; // one long line per append: a rebuilt segment shows in the canaries
 const ratios = (pairs: ViewerPair[], field: keyof ViewerSample) => pairs.map((pair) => ratio(pair.candidate[field], pair.base[field]));
 // Five alternating base/head pairs use their median ratio, not a ratio of independent medians. The 1.4x A/B ceiling
 // leaves the required margin over observed A/A noise. Scaling compares the same append at 16k and 128k lines; correct
@@ -373,9 +372,11 @@ async function appendViewer(page: Page, slowdown: number, offset: number, count 
   return { appendMs: median(samples), appendTaskMs: median(taskSamples), appendPushes: median(measured.map(({ pushes }) => pushes)), segmentPushes: median(measured.map(({ segmentPushes }) => segmentPushes)), samples, taskSamples };
 }
 
-async function measureViewerSample(page: Page, url: string, slowdown: number, sample: number, lines?: number) {
+// `scalingLines`: one side of an append scaling pair, the first append after open to a viewer of that many lines. Later
+// appends at 128k lines are bimodal on CI runners (about 30 or 60 ms, 4x throttle); the first is not.
+async function measureViewerSample(page: Page, url: string, slowdown: number, sample: number, scalingLines?: number) {
   const query = new URLSearchParams({ viewerFixture: "read" });
-  if (lines) query.set("viewerLines", String(lines));
+  if (scalingLines) query.set("viewerLines", String(scalingLines));
   await page.goto(`${url}/gallery.html?${query}`);
   await prepareViewerOpen(page);
   const cdp = await page.context().newCDPSession(page);
@@ -390,7 +391,7 @@ async function measureViewerSample(page: Page, url: string, slowdown: number, sa
   await viewer.locator("[class^=tok-]").first().waitFor();
   await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await page.waitForTimeout(100); // keep asynchronous range coloring outside the scoped append task
-  const appended = await appendViewer(page, slowdown, sample * viewerSamples);
+  const appended = await appendViewer(page, slowdown, sample * viewerSamples, scalingLines ? 1 : viewerSamples, scalingLines ? scalingDelta : undefined);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
   await cdp.detach();
   return { openMs, openTaskMs, ...appended };
@@ -483,40 +484,26 @@ async function checkViewerTiming(browser: Awaited<ReturnType<typeof chromium.lau
   } finally { await page.close(); }
 }
 
-async function measureAppendAtSize(page: Page, lines: number, sample: number) {
-  await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read&viewerLines=${lines}`);
-  await openViewer(page);
-  const viewer = page.locator('[data-part="text-viewer"]');
-  await viewer.locator("[class^=tok-]").first().waitFor();
-  await viewer.evaluate((node) => { node.scrollTop = node.scrollHeight; });
-  await page.waitForTimeout(100);
-  return appendViewer(page, 0, sample * viewerSamples, viewerSamples, `\n${"x".repeat(65_535)}`);
-}
-
-async function checkViewerScaling(browser: Awaited<ReturnType<typeof chromium.launch>>) {
+async function checkViewerScaling(browser: Awaited<ReturnType<typeof chromium.launch>>): Promise<ScalingCheck> {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
-  const cdp = await page.context().newCDPSession(page);
   try {
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    const small = await measureAppendAtSize(page, 16_000, 0);
-    const large = await measureAppendAtSize(page, 128_000, 1);
-    const taskRatio = ratio(large.appendTaskMs, small.appendTaskMs);
-    const operationRatio = ratio(large.segmentPushes + 1, small.segmentPushes + 1);
-    const totalOperationRatio = ratio(large.appendPushes, small.appendPushes);
+    const pairs: ScalingPair[] = [];
+    for (let pair = 0; pair < viewerScalingPairs; pair++) {
+      // Each pair measures 16k and 128k back to back, in alternating order, so runner drift cancels inside the pair.
+      const first = await measureViewerSample(page, candidateUrl, 0, pair, pair % 2 ? 128_000 : 16_000);
+      const second = await measureViewerSample(page, candidateUrl, 0, pair, pair % 2 ? 16_000 : 128_000);
+      pairs.push(pair % 2 ? { small: second, large: first } : { small: first, large: second });
+    }
     await page.goto(`${candidateUrl}/gallery.html?viewerFixture=read&viewerLines=1000000`);
     await openViewer(page);
-    const mountedRows = await page.locator('[data-part="text-viewer-row"]').count();
-    console.log(`viewer append scaling: task 16k ${small.appendTaskMs.toFixed(2)} ms [${small.taskSamples.map((value) => value.toFixed(2)).join(", ")}], 128k ${large.appendTaskMs.toFixed(2)} ms [${large.taskSamples.map((value) => value.toFixed(2)).join(", ")}], ratio ${taskRatio.toFixed(2)}x; canary segment pushes ${small.segmentPushes}/${large.segmentPushes}, ratio ${operationRatio.toFixed(2)}x; canary all pushes ${small.appendPushes}/${large.appendPushes}, ratio ${totalOperationRatio.toFixed(2)}x; 1m mounted rows ${mountedRows}`);
-    return { operationRatio, totalOperationRatio, taskRatio, mountedRows };
-  } finally {
-    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
-    await cdp.detach();
-    await page.close();
-  }
+    return { pairs, mountedRows: await page.locator('[data-part="text-viewer-row"]').count() };
+  } finally { await page.close(); }
 }
 
-function recordViewerScalingFailure(scaling: Awaited<ReturnType<typeof checkViewerScaling>>, failures: string[]) {
-  if (scaling.taskRatio > viewerScalingTaskBudget || scaling.operationRatio > viewerScalingBudget || scaling.totalOperationRatio > viewerScalingTotalBudget || scaling.mountedRows > 200) failures.push(`viewer append scaling: 128k/16k task ratio ${scaling.taskRatio.toFixed(2)}x must stay <=${viewerScalingTaskBudget}x; canary segment-push ratio ${scaling.operationRatio.toFixed(2)}x must stay <=${viewerScalingBudget}x, canary all-push ratio ${scaling.totalOperationRatio.toFixed(2)}x must stay <=${viewerScalingTotalBudget}x, and 1m mounted rows ${scaling.mountedRows} must stay <=200`);
+function recordViewerScaling(check: ScalingCheck, failures: string[]) {
+  const summary = recordViewerScalingFailures(check, failures);
+  const show = (side: "small" | "large") => check.pairs.map((pair) => pair[side].appendTaskMs.toFixed(2)).join(", ");
+  console.log(`viewer append scaling: paired 128k/16k task ratio ${summary.taskRatio.toFixed(3)}x [${summary.taskRatios.map((value) => value.toFixed(3)).join(", ")}], task 16k [${show("small")}] ms, 128k [${show("large")}] ms; canary segment-push ratio ${summary.segmentPushRatio.toFixed(3)}x, all-push ratio ${summary.pushRatio.toFixed(3)}x; 1m mounted rows ${check.mountedRows}`);
 }
 
 // A large edit or search keeps its structure in the open viewer: language tokens, row kinds, and marks.
@@ -544,7 +531,7 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const failures: string[] = [];
 try {
   const pairedProof = [ratio(6, 4), ratio(12, 8), ratio(18, 12), ratio(24, 16), ratio(30, 20)];
-  if (median(pairedProof) <= viewerRatioBudget || median([1.1, 1.15, 1.2, 1.25, 1.3]) > viewerRatioBudget || ratio(23, 10) <= viewerScalingTaskBudget || ratio(22, 10) > viewerScalingTaskBudget)
+  if (median(pairedProof) <= viewerRatioBudget || median([1.1, 1.15, 1.2, 1.25, 1.3]) > viewerRatioBudget)
     throw new Error("viewer timing regression sensitivity self-check failed");
   console.log("ok   viewer timing sensitivity: paired ratios reject a 1.5x regression without rejecting A/A noise");
   const servers = [[candidateUrl, preview], ...(baseUrl && basePreview ? [[baseUrl, basePreview] as const] : [])] as const;
@@ -558,7 +545,7 @@ try {
   browser = await chromium.launch();
   if (process.env.VIEWER_TIMING_ONLY) {
     for (const width of [390, 1440]) recordViewerTimingFailures(await checkViewerTiming(browser, width), width, failures);
-    recordViewerScalingFailure(await checkViewerScaling(browser), failures);
+    recordViewerScaling(await checkViewerScaling(browser), failures);
     await browser.close();
     browser = undefined;
     for (const child of previews) child.kill("SIGTERM");
@@ -733,7 +720,7 @@ try {
     }
   }
   for (const width of [390, 1440]) recordViewerTimingFailures(await checkViewerTiming(browser, width), width, failures);
-  recordViewerScalingFailure(await checkViewerScaling(browser), failures);
+  recordViewerScaling(await checkViewerScaling(browser), failures);
   for (const fixture of ["edit", "search"] as const) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
     const problems = await checkStructuredViewer(page, fixture);
