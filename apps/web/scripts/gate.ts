@@ -612,7 +612,7 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
       if (load.pinned && Math.abs(load.gap) > 0.5) throw new ReconnectBottomFailure(load.gap, load.scrollTop - load.engineEnd);
       throw error;
     }
-    const initial = await stableReconnectBottom(page, "initial", 2);
+    const initial = await stableReconnectBottom(page, "initial");
     phases.push(initial.at(-1)!);
     const before = phases.at(-1)!;
     console.log(`reconnect-bottom-load ${JSON.stringify({ engine, run, ...before })}`);

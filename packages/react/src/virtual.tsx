@@ -244,6 +244,7 @@ export function useVirtualList<Id extends string>(
         for (const [id, size] of pendingEntries.current) engine.measure(id, size);
         pendingEntries.current.clear();
         retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }), token);
+        applyTarget();
       };
       const rowObserver = new ResizeObserver((entries) => {
         if (generation !== coordinator.current.generation || entries.length === 0) return;
