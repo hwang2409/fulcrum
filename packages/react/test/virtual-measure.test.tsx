@@ -14,6 +14,62 @@ const commits = (prefix: string, count: number): RunEvent[] => Array.from({ leng
   { type: "message_commit", message_id: `${prefix}-${index}`, message: { role: "assistant", content: [{ type: "text", text: `${prefix}-${index}` }] } }
 ));
 
+test("two row growths before measurement keep a pinned reader at the physical end", async () => {
+  const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
+  const frames: FrameRequestCallback[] = [];
+  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
+  const dimensions = {
+    clientHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight"),
+    scrollHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight"),
+    scrollTop: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop"),
+  };
+  const positions = new WeakMap<HTMLElement, number>();
+  let physicalHeight = 0;
+  globalThis.ResizeObserver = class {
+    private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+    constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+    observe(element: Element) { this.entry.observed.add(element); }
+    unobserve(element: Element) { this.entry.observed.delete(element); }
+    disconnect() { this.entry.observed.clear(); }
+  } as unknown as typeof ResizeObserver;
+  globalThis.requestAnimationFrame = (callback) => frames.push(callback);
+  globalThis.cancelAnimationFrame = () => {};
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => physicalHeight });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+  });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    const store = createRunStore((flush) => flush());
+    store.resync(commits("growth", 201));
+    act(() => root.render(<RunProvider store={store}><Timeline virtual /></RunProvider>));
+    const host = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+    physicalHeight = Number.parseFloat(container.querySelector<HTMLElement>('[data-part="timeline"]')!.style.height);
+    await Bun.sleep(60);
+    host.scrollTop = physicalHeight;
+    act(() => host.dispatchEvent(new Event("scroll")));
+    const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")))!;
+    const target = [...rows.observed].find((element) => element.hasAttribute("data-virtual-id"))!;
+    for (const height of [100, 200]) {
+      physicalHeight += 100;
+      act(() => rows.report([{ target, borderBoxSize: [{ blockSize: height, inlineSize: 800 }], contentRect: { height } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+    }
+    expect(physicalHeight - host.clientHeight - host.scrollTop).toBeLessThanOrEqual(4);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    globalThis.ResizeObserver = saved.ResizeObserver;
+    globalThis.requestAnimationFrame = saved.raf;
+    globalThis.cancelAnimationFrame = saved.caf;
+    for (const [key, descriptor] of Object.entries(dimensions)) if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+  }
+});
+
 test("a row resize reported just before a resync replaces its id is not measured into the new outline", () => {
   // A controllable ResizeObserver and frame queue: the browser reports a resize, then React commits before the frame.
   // Timeline has two observers (rows and the viewport); keep each one's callback and targets.
