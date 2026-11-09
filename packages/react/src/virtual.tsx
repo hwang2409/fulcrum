@@ -185,7 +185,8 @@ export function useVirtualList<Id extends string>(
         const atPhysicalEnd = container.scrollHeight - container.clientHeight - container.scrollTop < 1;
         if (!correction && !atPhysicalEnd && container.scrollTop < lastScrollTop.current) engine.setFollow(false);
         lastScrollTop.current = container.scrollTop;
-        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: atPhysicalEnd ? "programmatic" : "user" });
+        engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: "user" });
+        if (atPhysicalEnd) engine.setFollow(true);
         followerScrollTop.current = container.scrollTop;
         if (correction) return;
         if (scrollEndTimer.current != null) clearTimeout(scrollEndTimer.current);
