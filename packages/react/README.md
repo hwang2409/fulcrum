@@ -70,6 +70,12 @@ When a host accepts a local send or steer, increment `followRequest` on `Timelin
   ```
 
   Every URL goes through `safeUrl` from `@fulcrum/core`: links are http, https, mailto, or relative; images may also be inline png, jpeg, gif, webp, avif, or bmp `data:` URLs. Any URL longer than `MAX_URL_CHARS` (8 MiB) is refused before any other work. Addresses never become labels, titles, or data attributes.
+- delivery note: a user row whose message was dropped shows a `data-part="delivery-note"` line under its text: "not delivered", plus why in words for the known reasons (`turn_end` "the turn ended first", `abort` "the run was stopped", `clear` "the pending steers were cleared", `disconnect` "the connection was lost", `failed` "the turn failed", `restart` "the server restarted"). An unknown reason shows only "not delivered", never the raw token. The note is plain text after the message, so a screen reader reads it right after the message text. Pass `renderDeliveryNote` to `Fallback` to show your own note (for example with a resend button). It gets every user message row as a `UserMessageItem` (read `item.event.delivery_status` and `delivery_reason`); return a node to put in the note, or `null` for no note. Pass a stable function:
+
+  ```tsx
+  const note = (item: UserMessageItem) => item.event.delivery_status === "dropped" ? <>not sent <ResendButton id={item.id} /></> : null;
+  const renderers: Renderers = { user: ({ id }) => <Fallback id={id} renderDeliveryNote={note} /> }; // module scope
+  ```
 - approval actions: `Approval` takes `onApprove` and `onDeny`, each called with the request id. Return a promise to keep the card busy (`approving` or `denying`, every action `aria-disabled`) until it settles; reject to show the error and re-enable the actions. Pass `onApproveAlways` to offer a third action between them (`data-action="approve-always"`, text `approveAlwaysLabel`, default `always allow`) for a host that can approve this call and remember the grant. It shares approve's busy word, error, and disabled states; without it the card renders exactly as before. The decided card still reads `approved`, because `approval_end` does not say whether the grant was remembered. `disabledReason` disables every action and shows the reason.
 - tool body slot: `ToolCall` and `Approval` own the one header row (`tool-name`, `tool-summary`, `tool-status`), the disclosure, the state rail, and the approval actions. A per-tool card passes only what goes inside `data-part="tool-body"`, so it never draws a second header:
 

@@ -10,8 +10,8 @@ import { CHART_PNG } from "./chart";
  * `runs` are child runs by id, shown in a RunNavigator: a sub-agent row whose run is missing here is unavailable. A
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
-/** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. `plain`: no markdown at all. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; sourceFailure?: DemoSourceFailure; open?: boolean; markdownAll?: boolean; plain?: boolean; approval?: DemoApproval };
+/** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. `plain`: no markdown at all. `hostDeliveryNote`: user rows use a host's renderDeliveryNote. */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; sourceFailure?: DemoSourceFailure; open?: boolean; markdownAll?: boolean; plain?: boolean; hostDeliveryNote?: boolean; approval?: DemoApproval };
 /**
  * How the gallery's fake host answers approvals. `always` lists the request ids that get the third action (the rest
  * keep approve and deny); `reply` holds the decision until the card's "answer" button, or rejects it.
@@ -476,13 +476,6 @@ export const demos: Demo[] = [
     title: "user role, wrapping",
     description: "A long user message: the prompt mark hangs in its own column and every line starts at the text edge.",
     events: [{ type: "message_commit", message_id: "m-user-long", message: text("user", userParityText) }],
-  },
-  {
-    id: "message-user-dropped",
-    part: "Message",
-    title: "user role, dropped-delivery text",
-    description: "The committed-message geometry reference for a dropped user_message row.",
-    events: [{ type: "message_commit", message_id: "m-user-dropped", message: text("user", `${userParityText} · not delivered · abort`) }],
   },
   {
     id: "message-user-markdown",
@@ -1030,11 +1023,32 @@ export const demos: Demo[] = [
     id: "fallback-user-dropped",
     part: "Fallback",
     title: "dropped steer",
-    description: "A dropped steer keeps the shared user layout and adds its delivery outcome.",
+    description: "A dropped steer keeps the shared user layout; a delivery note under it says why, in words.",
     events: [
       { type: "user_message", text: userParityText, mode: "steer", delivery_id: "gallery-dropped" },
-      { type: "delivery_status", delivery_id: "gallery-dropped", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
+      { type: "delivery_status", delivery_id: "gallery-dropped", method: "steer", status: "dropped", content: "steer dropped: turn_end", reason: "turn_end" },
     ],
+  },
+  {
+    id: "fallback-user-dropped-unknown",
+    part: "Fallback",
+    title: "dropped steer, unknown reason",
+    description: "A drop reason fulcrum does not know shows only \"not delivered\", never the raw token.",
+    events: [
+      { type: "user_message", text: "Also run the auth tests.", mode: "steer", delivery_id: "gallery-dropped-unknown" },
+      { type: "delivery_status", delivery_id: "gallery-dropped-unknown", method: "steer", status: "dropped", content: "steer dropped: quota_exhausted", reason: "quota_exhausted" },
+    ],
+  },
+  {
+    id: "fallback-user-dropped-host",
+    part: "Fallback",
+    title: "dropped steer, host note",
+    description: "renderDeliveryNote: the host replaces the note with its own words and a resend button.",
+    events: [
+      { type: "user_message", text: "Also run the auth tests.", mode: "steer", delivery_id: "gallery-dropped-host" },
+      { type: "delivery_status", delivery_id: "gallery-dropped-host", method: "steer", status: "dropped", content: "steer dropped: turn_end", reason: "turn_end" },
+    ],
+    hostDeliveryNote: true,
   },
   {
     id: "fallback-error",
