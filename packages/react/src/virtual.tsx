@@ -225,8 +225,15 @@ export function useVirtualList<Id extends string>(
         const engineSnapshot = engine.getSnapshot();
         const viewportSize = Math.max(0, host.clientHeight - current.gutter);
         if (engineSnapshot.pinned && Math.abs(engineSnapshot.viewportSize - viewportSize) >= 0.5) {
-          report("observe");
-          writeScroll("end");
+          const owned = coordinator.current.owned;
+          const readerMoved = owned === null || Math.abs(current.hostTop - owned.hostReadBack) > 4;
+          viewportTransaction(false);
+          if (readerMoved) {
+            coordinator.current.target = null;
+            report("user");
+          } else {
+            applyTarget();
+          }
           return;
         }
         const owned = coordinator.current.owned;
@@ -277,13 +284,14 @@ export function useVirtualList<Id extends string>(
       observerRef.current = rowObserver;
       for (const row of rows.current.values()) rowObserver.observe(row);
 
-      const viewportObserver = new ResizeObserver(() => {
+      const viewportTransaction = (apply = true) => {
         if (generation !== coordinator.current.generation) return;
         const token = engine.beforeMutation();
         report("observe");
         retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }));
-        applyTarget();
-      });
+        if (apply) applyTarget();
+      };
+      const viewportObserver = new ResizeObserver(() => viewportTransaction());
       viewportObserver.observe(host);
 
       const siblingObserver = new ResizeObserver(() => {

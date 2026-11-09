@@ -1790,7 +1790,7 @@ test("same-run replacement keeps a pinned reader at bottom while a different run
 });
 
 test("a pinned reader keeps following when a reconnect banner leaves and the browser clamps its scroll", () => {
-  const items = Array.from({ length: 1_002 }, (_, index) => committedItem(String(index)));
+  const items = Array.from({ length: 1_003 }, (_, index) => committedItem(String(index)));
   const source = timelineStore(items.slice(0, 1_000), "run-a");
   const replay = timelineStore(items.slice(0, 1_000), "run-a");
   const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -1816,7 +1816,6 @@ test("a pinned reader keeps following when a reconnect banner leaves and the bro
     // A reconnect layout can shrink the viewport before ResizeObserver runs. The unchanged browser position is layout,
     // not reader intent, so it must not cancel follow while the new physical end is temporarily farther away.
     height = 515;
-    viewport.scrollTop -= 35;
     act(() => viewport.dispatchEvent(new Event("scroll")));
     act(() => replay.replace(items.slice(0, 1_001), [{ index: 1_000, deleteCount: 0, items: items.slice(1_000, 1_001) }]));
     expect(q('[data-part="timeline"]').getAttribute("data-unseen-count"), "viewport layout must not unpin the reader").toBe("0");
@@ -1830,9 +1829,18 @@ test("a pinned reader keeps following when a reconnect banner leaves and the bro
     act(() => viewport.dispatchEvent(new Event("scroll")));
     expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
     lag = 0;
-    act(() => replay.replace(items, [{ index: 1_001, deleteCount: 0, items: items.slice(1_001) }]));
+    act(() => replay.replace(items.slice(0, 1_002), [{ index: 1_001, deleteCount: 0, items: items.slice(1_001, 1_002) }]));
     expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
     expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+
+    height = 565;
+    viewport.scrollTop -= 5;
+    const readerTop = viewport.scrollTop;
+    act(() => viewport.dispatchEvent(new Event("scroll")));
+    act(() => replay.replace(items, [{ index: 1_002, deleteCount: 0, items: items.slice(1_002) }]));
+    expect(viewport.scrollTop, "reader movement during viewport layout must win").toBe(readerTop);
+    expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("1");
+    expect(container.querySelector('[data-part="jump-to-latest"]')).not.toBeNull();
   } finally {
     performance.now = now;
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
