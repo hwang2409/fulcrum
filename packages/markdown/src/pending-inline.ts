@@ -363,6 +363,11 @@ export class PendingInline {
   private publicationValid = true;
 
   private recordDelimiterSource(delta: string) {
+    if (delta && !/[*_~]/.test(delta)) {
+      this.delimiterTail = delta.at(-1)!;
+      this.tildeOdd = false;
+      return;
+    }
     for (const character of delta) {
       if (character === "*" || character === "_") {
         this.work.delimiterRecords++;
