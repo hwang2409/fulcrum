@@ -3,10 +3,12 @@
 // a viewer whose append cost doubled for the rest of the page's life once it switched (batch-k results, 2026-11-08).
 // Needs a production build (`bun run build`). Usage:
 //   bun scripts/viewer-retention.ts [--root <playground dir>] [--port 4191] [--fixture lines|single|read] [--lines N]
-//     [--runs 10] [--appends 100] [--chars N] [--warmup N]
+//     [--runs 10] [--appends 100] [--chars N] [--warmup N] [--classes]
 // `--chars N`: each append is a newline and N - 1 letters (default: "\npaired tail <i>"). `--lines N`: the read
 // fixture's line count. `--warmup N`: appends before the first heap reading; they fill fixed-size caches (the virtual
-// engine's 2,000-entry action log) and warm the JIT, so the measured growth is only what scales.
+// engine's 2,000-entry action log) and warm the JIT, so the measured growth is only what scales. `--classes`: also take
+// a heap snapshot before and after the appends and print the classes whose live count or size grew most (V8 names
+// rope strings "concatenated string"). A pair of runs with the same text in more appends gives the cost per append.
 // The timed appends run with no forced collection; the two collections (before and after) only measure retention.
 import { chromium, type Page } from "playwright";
 import { spawn } from "node:child_process";
@@ -22,6 +24,7 @@ const { values } = parseArgs({
     chars: { type: "string" },
     lines: { type: "string" },
     warmup: { type: "string", default: "0" },
+    classes: { type: "boolean", default: false },
   },
 });
 const port = Number(values.port);
@@ -46,6 +49,37 @@ async function retained(page: Page) {
   await cdp.detach();
   return usedSize;
 }
+
+// Live count and self size by class: an object's constructor name, or the node type in parentheses for strings, code
+// and other non-objects. Taken after the forced collections of `retained`, so it counts only live nodes.
+async function classes(page: Page) {
+  const cdp = await page.context().newCDPSession(page);
+  const chunks: string[] = [];
+  cdp.on("HeapProfiler.addHeapSnapshotChunk", ({ chunk }) => chunks.push(chunk));
+  await cdp.send("HeapProfiler.takeHeapSnapshot", { reportProgress: false });
+  await cdp.detach();
+  const { snapshot: { meta }, nodes, strings } = JSON.parse(chunks.join("")) as { snapshot: { meta: { node_fields: string[]; node_types: [string[]] } }; nodes: number[]; strings: string[] };
+  const width = meta.node_fields.length;
+  const [typeAt, nameAt, sizeAt] = ["type", "name", "self_size"].map((field) => meta.node_fields.indexOf(field)) as [number, number, number];
+  const result = new Map<string, { count: number; size: number }>();
+  for (let at = 0; at < nodes.length; at += width) {
+    const type = meta.node_types[0][nodes[at + typeAt]!]!;
+    const key = type === "object" ? strings[nodes[at + nameAt]!]! : `(${type})`;
+    const entry = result.get(key) ?? { count: 0, size: 0 };
+    entry.count++;
+    entry.size += nodes[at + sizeAt]!;
+    result.set(key, entry);
+  }
+  return result;
+}
+
+const growth = (before: Map<string, { count: number; size: number }>, after: Map<string, { count: number; size: number }>) =>
+  [...after].map(([key, { count, size }]) => ({ key, count: count - (before.get(key)?.count ?? 0), size: size - (before.get(key)?.size ?? 0) }))
+    .filter(({ count, size }) => count !== 0 || size !== 0)
+    .sort((a, b) => Math.abs(b.size) - Math.abs(a.size))
+    .slice(0, 12)
+    .map(({ key, count, size }) => `${key} ${count >= 0 ? "+" : ""}${count} (${size >= 0 ? "+" : ""}${size} B)`)
+    .join("; ");
 
 // One append in its own frame: from the frame's start to the viewer's first DOM mutation (as the layout gate measures).
 const appendWall = (page: Page, index: number) => page.evaluate((tail) => new Promise<number>((resolve) => requestAnimationFrame(() => {
@@ -86,6 +120,7 @@ try {
     await page.waitForTimeout(500);
     for (let index = 0; index < warmup; index++) await appendWall(page, index);
     const before = await retained(page);
+    const classesBefore = values.classes ? await classes(page) : undefined;
     const samples: { wall: number; task: number }[] = [];
     let added = 0;
     for (let index = 0; index < appends; index++) { added += delta(warmup + index).length; samples.push(await append(page, warmup + index)); }
@@ -93,6 +128,11 @@ try {
     const walls = samples.map(({ wall }) => wall);
     await page.waitForTimeout(200);
     const after = await retained(page);
+    if (classesBefore) {
+      const classesAfter = await classes(page);
+      const ropes = (classesAfter.get("(concatenated string)")?.count ?? 0) - (classesBefore.get("(concatenated string)")?.count ?? 0);
+      console.log(`run ${run + 1} classes: rope nodes ${ropes >= 0 ? "+" : ""}${ropes}; ${growth(classesBefore, classesAfter)}`);
+    }
     const first = median(times.slice(0, 20));
     const last = median(times.slice(-20));
     const result = { first, last, growth: after - before, added, switched: last > first * 1.2 };

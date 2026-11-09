@@ -2,9 +2,10 @@ import type { RunItem } from "./events.js";
 
 /**
  * The newest full text read on one stream, and its chain's compaction state: `boundary` is the last compacted chunk,
- * `run` the chunks and characters read since it. One per chain, so held older versions never each pin a full copy.
+ * `run` the chunks and characters read since it, `rebuilt` the text's length at the last rebuild. One per chain, so
+ * held older versions never each pin a full copy (only the chunk of each rebuild holds one; see read).
  */
-type Cache = { chunk?: Chunk; text: string; boundary?: Chunk; runChunks: number; runChars: number };
+type Cache = { chunk?: Chunk; text: string; boundary?: Chunk; runChunks: number; runChars: number; rebuilt: number };
 
 // `previous` and `value` change only when a read compacts the chunk into a run (see read); its text stays the same.
 type Chunk = {
@@ -17,8 +18,10 @@ type Chunk = {
 // Past this many chunks, or this much text, read since the last compaction, the next read compacts them into one.
 const RUN_CHUNKS = 32;
 const RUN_CHARS = 4_096;
+// Once the text has grown by this fraction (1/8) since the last rebuild, the next read rebuilds it (see read).
+const REBUILD_GROWTH = 8;
 
-const emptyCache = (): Cache => ({ chunk: undefined, text: "", boundary: undefined, runChunks: 0, runChars: 0 });
+const emptyCache = (): Cache => ({ chunk: undefined, text: "", boundary: undefined, runChunks: 0, runChars: 0, rebuilt: 0 });
 
 type MessageItem = Extract<RunItem, { type: "message" }>;
 type ToolItem = Extract<RunItem, { type: "tool" }>;
@@ -52,14 +55,21 @@ function compact(cache: Cache, previous: Chunk): void {
 
 /**
  * A frame read joins only the chunks after the stream's last read, so reading every frame costs the new text, not the
- * whole chain. The text is the previous read's string plus the new text (engines extend that string cheaply, even
- * after a consumer flattened it). The cache moves to the longest version read; reading an older version joins its
- * chain and leaves it.
+ * whole chain. The text is the previous read's string plus the new text. The cache moves to the longest version read;
+ * reading an older version joins its chain and leaves it.
  *
  * Compaction: once the chunks read since the last compaction pass a run, the previous read's chunk takes the run joined
  * as its value and links straight to the last compacted chunk. Its text is unchanged, snapshots held from inside the
  * run keep their own chains, and the chunks in between are free otherwise. So a long stream keeps about one chunk per
  * run, not one per append. The previous read's chunk, never the newest: a renderer takes its next tail from it.
+ *
+ * Rebuild: each read's text is a rope (engine concatenation) node over the previous read's text, so the cached text
+ * holds one node per read. Once the text has grown by 1/REBUILD_GROWTH since the last rebuild, the read compacts the
+ * whole chain instead: the previous read's chunk takes the whole text as one flat string and ends the chain, and the
+ * text restarts from it. The node chain and the chunks behind it are then free (except for held snapshots), so the cache
+ * holds one node per read since the last rebuild, which added at most 1/REBUILD_GROWTH of the text, and the rebuilds
+ * copy at most REBUILD_GROWTH + 1 characters per added one. Held snapshots pin one full string per rebuild at most:
+ * their sizes grow geometrically, so all of them together are at most REBUILD_GROWTH + 1 times the text.
  */
 function read(chunk: Chunk): string {
   const { cache } = chunk;
@@ -72,22 +82,32 @@ function read(chunk: Chunk): string {
     chars += cursor.value.length;
     cursor = cursor.previous;
   }
-  const text = (cursor ? cache.text : "") + values.reverse().join("");
-  if (chunk.length < (cache.chunk?.length ?? 0)) return text;
+  const added = values.reverse().join("");
   const previous = cursor; // the previous read's chunk when this read extends it, otherwise undefined
-  cache.chunk = chunk;
-  cache.text = text;
   if (!previous) {
-    // A first read, or another branch: this chunk starts the compaction run.
+    // A first read, or another branch (shorter: an older version, which leaves the cache). This read starts a run.
+    if (chunk.length < (cache.chunk?.length ?? 0)) return added;
+    cache.chunk = chunk;
+    cache.text = added;
     cache.boundary = undefined;
     cache.runChunks = 0;
     cache.runChars = 0;
-    return text;
+    cache.rebuilt = chunk.length;
+    return added;
   }
-  if (cache.runChunks > RUN_CHUNKS || cache.runChars > RUN_CHARS) compact(cache, previous);
+  if (chunk.length - cache.rebuilt > cache.rebuilt / REBUILD_GROWTH) {
+    cache.boundary = undefined;
+    compact(cache, previous);
+    cache.text = previous.value + added;
+    cache.rebuilt = previous.length;
+  } else {
+    if (cache.runChunks > RUN_CHUNKS || cache.runChars > RUN_CHARS) compact(cache, previous);
+    cache.text += added;
+  }
+  cache.chunk = chunk;
   cache.runChunks += values.length;
   cache.runChars += chars;
-  return text;
+  return cache.text;
 }
 
 export function appendText<T extends object>(

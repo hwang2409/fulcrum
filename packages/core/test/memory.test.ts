@@ -89,3 +89,17 @@ test("held stream versions that were each read do not each pin a full string", (
 
   expect(retained).toBeLessThan(finalTextBytes * 3 + 8_000_000);
 }, 30_000);
+
+// Each read's text is a rope node over the previous read's text; a cache that only extends keeps one node per read for
+// the stream's life (20 B each in V8). The rebuild keeps those of the reads since the last 1/8 of growth: with equal
+// appends from empty, at most 1/9 per append. Counted in a heap snapshot (child process), not by heap totals.
+test.each([[4_000, 100], [20_000, 20]])("a stream read after each of %i appends of %i characters keeps few rope nodes", (appends, size) => {
+  const probe = Bun.spawnSync([process.execPath, new URL("./rope-probe.ts", import.meta.url).pathname, String(appends), String(size)], { timeout: 60_000 });
+  if (probe.exitCode !== 0) throw new Error(`rope probe failed: ${probe.stderr.toString()}`);
+  const { ropesPerAppend, joinedPerChar } = JSON.parse(probe.stdout.toString()) as { ropesPerAppend: number; joinedPerChar: number };
+  console.log(`${appends}x${size}: ${ropesPerAppend.toFixed(4)} rope nodes per append, ${joinedPerChar.toFixed(2)} characters joined per added one`);
+  // Without the rebuild: 1. With it: at most 1/9; the limit sits at their geometric middle.
+  expect(ropesPerAppend).toBeLessThanOrEqual(1 / 3);
+  // A read joins its new text (1), a run compaction its run (1), and the rebuilds at most 9 per added character.
+  expect(joinedPerChar).toBeLessThanOrEqual(11);
+}, 60_000);
