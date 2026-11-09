@@ -42,7 +42,7 @@ const plainRenderers: Renderers = { ...renderers, message: ({ id }) => <Message 
 // A host's own delivery note: its words and a resend action, in place of fulcrum's default note.
 function HostResend() {
   const [sent, setSent] = useState(false);
-  return <>not sent · {sent ? "sent again" : <button type="button" onClick={() => setSent(true)}>resend</button>}</>;
+  return <>not sent · {sent ? "sent again" : <button type="button" className="delivery-note-action" onClick={() => setSent(true)}>resend</button>}</>;
 }
 const hostDeliveryNote = (item: UserMessageItem) => item.event.delivery_status === "dropped" ? <HostResend /> : null;
 const hostNoteRenderers: Renderers = { ...renderers, user: ({ id }) => <Fallback id={id} renderDeliveryNote={hostDeliveryNote} /> };
