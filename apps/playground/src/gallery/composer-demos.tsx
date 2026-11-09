@@ -1,5 +1,6 @@
-import { Composer, type ComposerState } from "@fulcrum/react";
-import { useEffect, useRef, useState } from "react";
+import { createRunStore } from "@fulcrum/core";
+import { Composer, RunProvider, type ComposerState } from "@fulcrum/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Composer states for the gallery. `submit` and `stop` say how the fake harness answers: "pending" never settles and
@@ -14,7 +15,7 @@ export type ComposerDemo = {
   state: ComposerState;
   reason?: string;
   draft?: string;
-  submit?: "pending" | "reject";
+  submit?: "pending" | "reject" | "echo";
   stop?: "pending" | "reject";
   live?: true;
 };
@@ -28,6 +29,7 @@ export const composerDemos: ComposerDemo[] = [
   demo("draft", "draft", "A short draft: the field grows a line at a time.", { state: "idle", draft: "the reconnect test fails one run in ten.\nfind out why and fix it." }),
   demo("grow", "long draft", "The field stops growing at ten lines and scrolls; the bar stays in place.", { state: "idle", draft: long }),
   demo("sending", "sending", "Submit is in flight: the action is disabled, and the field keeps the draft.", { state: "idle", draft: "run the full suite once", submit: "pending" }),
+  demo("echo-before-reply", "echo before reply", "The run echoed the delivery id while the reply is still pending: the confirmed draft is clear and cannot send twice.", { state: "idle", draft: "run the focused test", submit: "echo" }),
   demo("send-error", "send failed", "The harness rejected it: the draft stays, the error is announced, and send retries. Same height as sending.", { state: "idle", draft: "run the full suite once", submit: "reject" }),
   demo("steerable", "steer", "A turn runs and the harness takes input into it: the action is steer, and stop is shown.", { state: "steerable", draft: "also check the windows path" }),
   demo("steering", "steering", "A steer is in flight.", { state: "steerable", draft: "also check the windows path", submit: "pending" }),
@@ -67,16 +69,27 @@ function useLiveHarness(toast: (message: string) => void) {
 export function ComposerCard({ demo, toast }: { demo: ComposerDemo; toast: (message: string) => void }) {
   const body = useRef<HTMLDivElement>(null);
   const live = useLiveHarness(toast);
+  const store = useMemo(() => createRunStore((flush) => flush()), []);
   // Frozen states: act once, after mount, so the card shows the state the harness answer leads to. Submit goes through
   // Enter in the field and stop through a click, the two paths that never move focus, so the page keeps its scroll.
   useEffect(() => {
     if (demo.submit) body.current?.querySelector("textarea")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     else if (demo.stop) body.current?.querySelector<HTMLButtonElement>('[data-part="composer-stop"]')?.click();
   }, [demo]);
-  const answer = (mode?: "pending" | "reject") => () => (mode === "reject" ? Promise.reject(new Error("socket closed before the server answered")) : mode === "pending" ? never() : Promise.resolve());
+  const answer = (mode?: "pending" | "reject" | "echo") => (_text?: string, _intent?: unknown, trackDelivery?: (id: string) => void) => {
+    if (mode === "reject") return Promise.reject(new Error("socket closed before the server answered"));
+    if (mode === "echo") {
+      trackDelivery?.("gallery-echo");
+      store.dispatch({ type: "user_message", text: demo.draft!, mode: "send", delivery_id: "gallery-echo" });
+    }
+    return mode ? never() : Promise.resolve();
+  };
   const props = demo.live
     ? { state: live.state, onSubmit: live.onSubmit, onStop: live.onStop }
     : { state: demo.state, onSubmit: answer(demo.submit), onStop: answer(demo.stop) };
+  const composer = props.state === "read-only"
+    ? <Composer state="read-only" reason={demo.reason!} label={`message (${demo.title})`} defaultValue={demo.draft} onSubmit={props.onSubmit} />
+    : <Composer {...props} state={props.state} label={`message (${demo.title})`} placeholder="message the agent" defaultValue={demo.draft} />;
   return (
     <article className="demo" id={demo.id}>
       <header className="demo-head">
@@ -89,11 +102,7 @@ export function ComposerCard({ demo, toast }: { demo: ComposerDemo; toast: (mess
         </div>
       </header>
       <div className="demo-body" ref={body}>
-        {props.state === "read-only" ? (
-          <Composer state="read-only" reason={demo.reason!} label={`message (${demo.title})`} defaultValue={demo.draft} onSubmit={props.onSubmit} />
-        ) : (
-          <Composer {...props} state={props.state} label={`message (${demo.title})`} placeholder="message the agent" defaultValue={demo.draft} />
-        )}
+        {demo.submit === "echo" ? <RunProvider store={store}>{composer}</RunProvider> : composer}
       </div>
     </article>
   );

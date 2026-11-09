@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type ApprovalDecision, type RunEvent, type ToolView } from "@fulcrum/core";
-import { Approval, Fallback, RunProvider, Timeline, ToolCall, useItem, type Renderers } from "../src/index.js";
+import { Approval, deliveryNoteText, Fallback, RunProvider, Timeline, ToolCall, useItem, type Renderers } from "../src/index.js";
 import { boundLines } from "../src/tools/common.js";
 import { segmentText } from "../src/tools/text-viewer.js";
 
@@ -615,6 +615,11 @@ test.each([
   const view = mount(<RunProvider store={store}><Fallback id="user:delivery:d" /></RunProvider>);
   expect(deliveryNote(view)?.textContent).toBe(`not delivered · ${words}`);
   expect(view.querySelector('[data-part="message-content"]')?.textContent).toBe("steer");
+});
+
+test("an unconfirmed delivery uses readable words and never exposes an unknown reason token", () => {
+  expect(deliveryNoteText("unknown")).toBe("not confirmed");
+  expect(deliveryNoteText("unknown", "future_reason")).toBe("not confirmed");
 });
 
 test("an unknown or missing drop reason says only not delivered", () => {

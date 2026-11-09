@@ -401,14 +401,14 @@ const dropReasons: Record<string, string> = {
   failed: "the turn failed",
   restart: "the server restarted",
 };
-const defaultDeliveryNote = ({ event }: UserMessageItem): ReactNode => {
-  if (event.delivery_status !== "dropped") return null;
-  const why = event.delivery_reason !== undefined && Object.hasOwn(dropReasons, event.delivery_reason)
-    ? dropReasons[event.delivery_reason]
-    : undefined;
-  const note = why ? `not delivered · ${why}` : "not delivered";
-  return event.text_omitted ? `${note} · text not kept` : note;
+export const deliveryNoteText = (status: "delivered" | "dropped" | "unknown", reason?: string, textOmitted = false) => {
+  if (status === "delivered") return null;
+  const why = reason !== undefined && Object.hasOwn(dropReasons, reason) ? dropReasons[reason] : undefined;
+  const note = `${status === "unknown" ? "not confirmed" : "not delivered"}${why ? ` · ${why}` : ""}`;
+  return textOmitted ? `${note} · text not kept` : note;
 };
+const defaultDeliveryNote = ({ event }: UserMessageItem): ReactNode =>
+  deliveryNoteText(event.delivery_status ?? "delivered", event.delivery_reason, event.text_omitted);
 
 export type FallbackProps = ItemProps & {
   /**
