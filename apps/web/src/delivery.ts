@@ -105,10 +105,19 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
     return live ?? queryStatus(client, message);
   };
   return {
-    async submit(client: ZetaClient, text: string, steer: boolean) {
+    /** `trackDelivery` gets the attempt's delivery id, so the composer can clear its draft at zeta's echo of it. */
+    async submit(client: ZetaClient, text: string, steer: boolean, trackDelivery?: (deliveryId: string) => void) {
       const message = unsettled?.text === text ? unsettled : fresh(client, text);
       unsettled = message;
-      const delivered = await deliver(client, steer ? "steer" : "send", message);
+      if (message.id) trackDelivery?.(message.id);
+      let delivered: Awaited<ReturnType<typeof deliver>>;
+      try {
+        delivered = await deliver(client, steer ? "steer" : "send", message);
+      } catch (error) {
+        // zeta echoed this id into the run, so it took the message: a later message with the same text needs a new id.
+        if (message.id && store?.hasMessageDelivery(message.id)) unsettled = null;
+        throw error;
+      }
       unsettled = null;
       if (delivered.result.accepted === false) throw refusal(delivered.result);
       reconcileAccepted(message, delivered.used, delivered.result);

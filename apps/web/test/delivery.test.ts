@@ -86,6 +86,24 @@ test("a retry of the same text after a failure reuses its id; the next message a
   expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-1", "id-2"]);
 });
 
+test("submit names its delivery id to the composer; a failure after zeta's echo spends the id, so the same text later is a new message", async () => {
+  let echoThenFail = true;
+  const { client, calls, emit } = await server((method, params) => {
+    if (method !== "send" || !echoThenFail) return ok;
+    emit({ event: "user_message", session_id: "s", text: params.text, mode: "send", attachments: [], delivery_id: params.delivery_id });
+    return { error: { code: -32000, message: "reply lost" } };
+  }, fullFeatures, false);
+  const lease = client.forSession("s");
+  const tracked: string[] = [];
+  const delivery = createDelivery(ids(), undefined, lease.store);
+  await expect(delivery.submit(client, "hello", false, (id: string) => tracked.push(id))).rejects.toThrow("reply lost");
+  echoThenFail = false;
+  await delivery.submit(client, "hello", false, (id: string) => tracked.push(id));
+  expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-2"]);
+  expect(tracked).toEqual(["id-1", "id-2"]);
+  lease.release();
+});
+
 test("a turn that ends before a steer lands sends it instead, and one that starts before a send steers, with the same id", async () => {
   const { client, calls } = await server((method) => (method === "steer" ? { error: { code: -32005, message: "no turn is running" } } : ok));
   await createDelivery(ids()).submit(client, "late steer", true);

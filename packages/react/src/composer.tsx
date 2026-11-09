@@ -1,4 +1,5 @@
 import { useCallback, useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useMessageDelivered } from "./hooks.js";
 
 /** What the user asked for when they submitted: steering a running turn, or a new message. */
 export type ComposerIntent = { readonly steer: boolean };
@@ -7,8 +8,13 @@ type ComposerCallbacks = {
   /**
    * Delivers the draft. Resolve once the harness has accepted it; reject to keep the draft and show the error. It is
    * never called again while its promise is pending, and never with a blank draft.
+   *
+   * When the harness echoes sent messages into the run with a delivery id, call `trackDelivery(id)` with this send's
+   * id (at any time before the promise settles). The send then counts as delivered at its first confirmation: the
+   * promise resolving, or a user message with that id in the `RunProvider` store, whichever comes first. A rejection
+   * after the echo is ignored, since the message reached the run. Without `trackDelivery`, only the promise counts.
    */
-  onSubmit(text: string, intent: ComposerIntent): Promise<unknown>;
+  onSubmit(text: string, intent: ComposerIntent, trackDelivery: (deliveryId: string) => void): Promise<unknown>;
   /** Stops the running turn. Shown only while a turn runs. A returned promise drives the pending and error states. */
   onStop?(): Promise<unknown> | void;
   /** The field's accessible name. */
@@ -40,6 +46,9 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
  */
 export const unsentDraft = (current: string, sent: string) => (current.startsWith(sent) ? current.slice(sent.length) : current);
 
+/** One submit in flight: the text it sent, and whether it already counts as delivered (the draft lost that text). */
+type Send = { sent: string; delivered: boolean };
+
 /** Runs a callback as a promise, so a synchronous throw takes the rejection path too. */
 const attempt = (action: () => unknown) => new Promise<unknown>((resolve) => resolve(action()));
 
@@ -52,9 +61,11 @@ const statusLine = ({ sending, stopping, error, steer, state }: Pending) => ({
 
 /**
  * The message box under a run. Keyboard: Enter submits, Shift+Enter adds a newline, and Enter never submits during
- * IME composition. The draft clears only when `onSubmit` resolves, and only the part that was sent: text the user
- * appended while it was in flight stays exactly as typed, and a draft they rewrote stays whole (`unsentDraft`). The field is never disabled, so focus
- * and typing survive every state.
+ * IME composition. The draft clears at the send's first confirmation (`onSubmit` resolves, or the run shows the
+ * message's delivery id from `trackDelivery`), once, and only the part that was sent: text the user appended while it
+ * was in flight stays exactly as typed, and a draft they rewrote stays whole (`unsentDraft`). A send without either
+ * keeps the draft, so the host's retry of the same text can reuse its delivery id. The field is never disabled, so
+ * focus and typing survive every state.
  */
 export function Composer({ state, reason, onSubmit, onStop, label = "message", placeholder, defaultValue = "", className }: ComposerProps) {
   const id = useId();
@@ -65,6 +76,19 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
   // Refs, not state, so a second click or key in the same frame sees the first one.
   const inFlight = useRef({ submit: false, stop: false });
   const input = useRef<HTMLTextAreaElement>(null);
+  // The submit in flight and its tracked delivery id: the run's echo of that id confirms it before the reply does.
+  const inFlightSend = useRef<Send | null>(null);
+  const [deliveryId, setDeliveryId] = useState<string>();
+  const echoed = useMessageDelivered(deliveryId);
+  const delivered = useCallback((send: Send) => {
+    if (send.delivered) return;
+    send.delivered = true;
+    setText((current) => unsentDraft(current, send.sent));
+  }, []);
+  // A layout effect, so the cleared draft paints in the same frame as the echoed row.
+  useLayoutEffect(() => {
+    if (echoed && inFlightSend.current) delivered(inFlightSend.current);
+  }, [echoed, delivered]);
   const running = state === "running" || state === "steerable";
   const steer = state === "steerable";
 
@@ -107,15 +131,17 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
   const submit = () => {
     if (inFlight.current.submit || !text.trim() || state === "running") return;
     inFlight.current.submit = true;
-    const sent = text;
+    const send: Send = { sent: text, delivered: false };
+    inFlightSend.current = send;
     setSending(true);
     setError(undefined);
-    attempt(() => onSubmit(sent, { steer }))
+    const trackDelivery = (id: string) => { if (inFlightSend.current === send && !send.delivered) setDeliveryId(id); };
+    attempt(() => onSubmit(send.sent, { steer }, trackDelivery))
       .then(
-        () => setText((current) => unsentDraft(current, sent)),
-        (failure: unknown) => setError({ kind: "submit", text: `could not ${steer ? "steer" : "send"}: ${errorText(failure)}` }),
+        () => delivered(send),
+        (failure: unknown) => { if (!send.delivered) setError({ kind: "submit", text: `could not ${steer ? "steer" : "send"}: ${errorText(failure)}` }); },
       )
-      .finally(() => { inFlight.current.submit = false; setSending(false); });
+      .finally(() => { inFlight.current.submit = false; inFlightSend.current = null; setDeliveryId(undefined); setSending(false); });
   };
   const stop = () => {
     if (inFlight.current.stop || !onStop) return;

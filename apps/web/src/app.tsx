@@ -416,9 +416,9 @@ function RunComposer({ client, store, onUndelivered, onOwnSend, readOnly }: { cl
     if (!running && wasRunning.current && client) delivery.turnEnded(client).then(onUndelivered, () => {});
     wasRunning.current = running;
   }, [running, client, delivery, onUndelivered]);
-  const onSubmit = useCallback((text: string, { steer }: { steer: boolean }) => {
+  const onSubmit = useCallback((text: string, { steer }: { steer: boolean }, trackDelivery: (deliveryId: string) => void) => {
     if (!client) return offline();
-    return delivery.submit(client, text, steer).then(() => { onOwnSend(); });
+    return delivery.submit(client, text, steer, trackDelivery).then(() => { onOwnSend(); });
   }, [client, delivery, onOwnSend]);
   const onStop = useCallback(() => (client ? delivery.stop(client) : offline()), [client, delivery]);
   return (
