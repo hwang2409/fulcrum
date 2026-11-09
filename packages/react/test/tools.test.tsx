@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type ApprovalDecision, type RunEvent, type ToolView } from "@fulcrum/core";
-import { Approval, Fallback, RunProvider, Timeline, ToolCall } from "../src/index.js";
+import { Approval, Fallback, RunProvider, Timeline, ToolCall, useItem, type Renderers } from "../src/index.js";
 import { boundLines } from "../src/tools/common.js";
 import { segmentText } from "../src/tools/text-viewer.js";
 
@@ -592,9 +592,89 @@ test("dropped steering is explicit live and compact after reload", () => {
     { type: "delivery_status", delivery_id: "dropped-steer", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
     { type: "delivery_status", delivery_id: "history-only", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
   ].forEach((event) => store.dispatch(event as RunEvent));
-  mount(<RunProvider store={store}><Fallback id="user:delivery:dropped-steer" /><Fallback id="notification:1" /></RunProvider>);
-  expect(q('[data-id="user:delivery:dropped-steer"] [data-part="message-content"]').textContent).toBe("this steer must be dropped · not delivered · abort");
-  expect(q('[data-id="notification:1"]').textContent).toBe("steer dropped: abort");
+  mount(<RunProvider store={store}><Fallback id="user:delivery:dropped-steer" /><Fallback id="user:delivery:history-only" /></RunProvider>);
+  expect(q('[data-id="user:delivery:dropped-steer"] [data-part="message-content"]').textContent).toBe("this steer must be dropped");
+  expect(q('[data-id="user:delivery:dropped-steer"] [data-part="delivery-note"]').textContent).toBe("not delivered · the run was stopped");
+  expect(q('[data-id="user:delivery:history-only"] [data-part="message-content"]')).toBeNull();
+  expect(q('[data-id="user:delivery:history-only"] [data-part="delivery-note"]').textContent).toBe("not delivered · the run was stopped · text not kept");
+});
+
+const droppedSteer = (reason?: string): RunEvent => ({ type: "user_message", text: "steer", mode: "steer", delivery_id: "d", delivery_status: "dropped", ...(reason === undefined ? {} : { delivery_reason: reason }) });
+const deliveryNote = (within: HTMLElement) => within.querySelector('[data-id="user:delivery:d"] [data-part="delivery-note"]');
+
+test.each([
+  ["turn_end", "the turn ended first"],
+  ["abort", "the run was stopped"],
+  ["clear", "the pending steers were cleared"],
+  ["disconnect", "the connection was lost"],
+  ["failed", "the turn failed"],
+  ["restart", "the server restarted"],
+])("a steer dropped for %s reads as words, not the token", (reason, words) => {
+  const store = createRunStore(() => {});
+  store.dispatch(droppedSteer(reason));
+  const view = mount(<RunProvider store={store}><Fallback id="user:delivery:d" /></RunProvider>);
+  expect(deliveryNote(view)?.textContent).toBe(`not delivered · ${words}`);
+  expect(view.querySelector('[data-part="message-content"]')?.textContent).toBe("steer");
+});
+
+test("an unknown or missing drop reason says only not delivered", () => {
+  for (const reason of ["quota_exhausted", undefined]) {
+    const store = createRunStore(() => {});
+    store.dispatch(droppedSteer(reason));
+    const view = mount(<RunProvider store={store}><Fallback id="user:delivery:d" /></RunProvider>);
+    expect(deliveryNote(view)?.textContent).toBe("not delivered");
+    if (reason) expect(view.textContent).not.toContain(reason);
+  }
+});
+
+test("renderDeliveryNote replaces the delivery note, and null hides it", () => {
+  const store = createRunStore(() => {});
+  store.dispatch(droppedSteer("turn_end"));
+  store.dispatch({ type: "user_message", text: "delivered", mode: "send", delivery_id: "ok", delivery_status: "delivered" });
+  const seen: string[] = [];
+  const view = mount(<RunProvider store={store}>
+    <Fallback id="user:delivery:d" renderDeliveryNote={(item) => { seen.push(item.id); return <>lost · <button type="button">resend</button></>; }} />
+    <Fallback id="user:delivery:ok" renderDeliveryNote={(item) => { seen.push(item.id); return null; }} />
+  </RunProvider>);
+  expect(deliveryNote(view)?.textContent).toBe("lost · resend");
+  expect(deliveryNote(view)?.querySelector("button")?.textContent).toBe("resend");
+  expect(seen).toEqual(["user:delivery:d", "user:delivery:ok"]);
+  expect(view.querySelector('[data-id="user:delivery:ok"] [data-part="delivery-note"]')).toBeNull();
+  const hidden = mount(<RunProvider store={store}><Fallback id="user:delivery:d" renderDeliveryNote={() => null} /></RunProvider>);
+  expect(deliveryNote(hidden)).toBeNull();
+  expect(hidden.textContent).toBe("> steer");
+});
+
+test("renderDeliveryNote replaces a text-omitted note", () => {
+  const store = createRunStore(() => {});
+  store.dispatch({ type: "delivery_status", delivery_id: "d", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" });
+
+  const replaced = mount(<RunProvider store={store}><Fallback id="user:delivery:d" renderDeliveryNote={() => <>host lost it</>} /></RunProvider>);
+  expect(replaced.querySelector('[data-part="delivery-note"]')?.textContent).toBe("host lost it");
+});
+
+test("a null delivery note hides a text-omitted row in the default renderer", () => {
+  const store = createRunStore(() => {});
+  store.dispatch({ type: "user_message", text: "", text_omitted: true, mode: "steer", delivery_id: "d", delivery_status: "dropped" });
+
+  const hidden = mount(<RunProvider store={store}><Fallback id="user:delivery:d" renderDeliveryNote={() => null} /></RunProvider>);
+  expect(hidden.querySelector('[data-id="user:delivery:d"]')).toBeNull();
+});
+
+test("a text-omitted row reaches a custom user renderer and its nested Fallback", () => {
+  const store = createRunStore(() => {});
+  store.dispatch({ type: "delivery_status", delivery_id: "d", method: "steer", status: "dropped", content: "steer dropped: clear", reason: "clear" });
+  const seen: Array<{ type?: string; textOmitted?: true }> = [];
+  const User = ({ id }: { id: string }) => {
+    const item = useItem(id);
+    seen.push({ type: item?.type, textOmitted: item?.type === "user" && item.event.type === "user_message" ? (item.event as { text_omitted?: true }).text_omitted : undefined });
+    return <Fallback id={id} renderDeliveryNote={() => <>host note</>} />;
+  };
+  const renderers: Renderers = { user: User };
+
+  const view = mount(<RunProvider store={store}><Timeline virtual={false} renderers={renderers} /></RunProvider>);
+  expect(seen.at(-1)).toEqual({ type: "user", textOmitted: true });
+  expect(view.querySelector('[data-part="delivery-note"]')?.textContent).toBe("host note");
 });
 
 test("a notification row says what the notification says", () => {

@@ -271,6 +271,21 @@ test("history windows reject prepends after releasing their accepted events", ()
   expect(() => store.prepend([])).toThrow("prepend requires an open history window");
 });
 
+test("prepend joins an older message to its newer dropped status", () => {
+  const store = createRunStore((flush) => flush());
+  store.beginHistory();
+  store.dispatch({ type: "delivery_status", delivery_id: "d", method: "steer", status: "dropped", content: "steer dropped: turn_end", reason: "turn_end" });
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:d", kind: "user" }]);
+  expect(store.getItem("user:delivery:d")).toMatchObject({ event: { text: "", text_omitted: true } });
+
+  store.prepend([{ type: "user_message", text: "keep going", mode: "steer", delivery_id: "d" }]);
+
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:d", kind: "user" }]);
+  expect(store.getItem("user:delivery:d")).toMatchObject({
+    event: { text: "keep going", delivery_status: "dropped", delivery_reason: "turn_end" },
+  });
+});
+
 test("prepend composes a message stream split across the page seam", () => {
   const store = createRunStore((flush) => flush());
   store.beginHistory();

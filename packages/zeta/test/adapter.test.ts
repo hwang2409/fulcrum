@@ -59,6 +59,11 @@ test("maps a zeta message image exactly as ImageContent sends it: data, mimeType
   });
 });
 
+test("marks an image whose history bytes were omitted", () => {
+  const [commit] = fromZetaEvent({ event: "assistant_message", data: { message_id: "h" }, message: { role: "assistant", content: [{ type: "image", mimeType: "image/png", width: 3, height: 2, data_omitted: true }] } });
+  expect(commit).toMatchObject({ message: { content: [{ type: "image", omitted: true, mediaType: "image/png" }] } });
+});
+
 test("a zeta tool result's image blocks reach the tool row, with an MCP image's caption and pixel size", () => {
   const read = zeta.tool_end.tool_result.content_blocks[1] as { data: string; path: string; size: number };
   const [end] = fromZetaEvent(zeta.tool_end);

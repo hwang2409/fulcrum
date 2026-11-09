@@ -11,7 +11,7 @@ import { createRunStore } from "@fulcrum/core";
 import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown, type Fences, type MarkdownProps } from "@fulcrum/markdown/react";
 import { MermaidFence } from "@fulcrum/mermaid";
-import { Approval, Message, RunEndMarker, RunNavigator, RunProvider, RunStatus, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunLocation } from "@fulcrum/react";
+import { Approval, Fallback, Message, RunEndMarker, RunNavigator, RunProvider, RunStatus, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunLocation, type UserMessageItem } from "@fulcrum/react";
 import { CodeCard, codeDemos } from "./code-demos";
 import { ComposerCard, composerDemos } from "./composer-demos";
 import { demos, type Demo, type DemoApproval } from "./demos";
@@ -39,6 +39,13 @@ const renderers: Renderers = {
 };
 const markdownAllRenderers: Renderers = { ...renderers, message: ({ id }) => <Message id={id} markdown={RichMarkdown} markdownFor="all" /> };
 const plainRenderers: Renderers = { ...renderers, message: ({ id }) => <Message id={id} markdown={false} /> };
+// A host's own delivery note: its words and a resend action, in place of fulcrum's default note.
+function HostResend() {
+  const [sent, setSent] = useState(false);
+  return <>not sent · {sent ? "sent again" : <button type="button" className="delivery-note-action" onClick={() => setSent(true)}>resend</button>}</>;
+}
+const hostDeliveryNote = (item: UserMessageItem) => item.event.delivery_status === "dropped" ? <HostResend /> : null;
+const hostNoteRenderers: Renderers = { ...renderers, user: ({ id }) => <Fallback id={id} renderDeliveryNote={hostDeliveryNote} /> };
 
 // A live demo starts empty and plays; paused from the start (reduced motion), it shows its in-progress state instead.
 // A demo with child runs shows its finished state when paused, since it plays once and stops.
@@ -200,7 +207,7 @@ function DemoCard({ demo, toast, inspect }: { demo: Demo; toast: (message: strin
           ) : (
             <RunProvider key={generation} store={store} highlight={highlight}>
               {demo.part === "RunStatus" ? <RunStatus /> : null}
-              <Timeline renderers={demo.markdownAll ? markdownAllRenderers : demo.plain ? plainRenderers : renderers} />
+              <Timeline renderers={demo.markdownAll ? markdownAllRenderers : demo.plain ? plainRenderers : demo.hostDeliveryNote ? hostNoteRenderers : renderers} />
               {demo.part === "RunEndMarker" ? <RunEndMarker /> : null}
             </RunProvider>
           )}

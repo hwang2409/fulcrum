@@ -10,8 +10,8 @@ import { CHART_PNG } from "./chart";
  * `runs` are child runs by id, shown in a RunNavigator: a sub-agent row whose run is missing here is unavailable. A
  * live demo with runs streams every run in step and stops at the end instead of looping, so a drill-in is never reset.
  */
-/** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. `plain`: no markdown at all. */
-export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; sourceFailure?: DemoSourceFailure; open?: boolean; markdownAll?: boolean; plain?: boolean; approval?: DemoApproval };
+/** `open`: the demo's tool cards start open, for a demo about what their body says. `markdownAll`: user text renders as markdown too. `plain`: no markdown at all. `hostDeliveryNote`: user rows use a host's renderDeliveryNote. */
+export type Demo = { id: string; part: string; title: string; description: string; events: RunEvent[]; live?: number; runs?: Record<string, RunEvent[]>; sourceFailure?: DemoSourceFailure; open?: boolean; markdownAll?: boolean; plain?: boolean; hostDeliveryNote?: boolean; approval?: DemoApproval };
 /**
  * How the gallery's fake host answers approvals. `always` lists the request ids that get the third action (the rest
  * keep approve and deny); `reply` holds the decision until the card's "answer" button, or rejects it.
@@ -108,6 +108,7 @@ const trace = { type: "file", kind: "file", url: "data:application/json;base64,e
 const chart = { type: "image", url: CHART_PNG, mediaType: "image/png", alt: "bundle size per entry, in kB", width: 640, height: 360, size: 2_940 };
 const unsized = { type: "image", url: CHART_PNG, mediaType: "image/png", filename: "chart.png" };
 const blocked = { type: "image", url: "data:image/svg+xml;base64,PHN2Zy8+", filename: "logo.svg" };
+const omitted = { type: "image", omitted: true, filename: "history.png", width: 640, height: 360 };
 const custom = { type: "chart-spec", spec: { mark: "bar", encoding: { x: "entry", y: "kB" } }, rows: 7 };
 const contentPieces: Piece[] = [thinking, "The browser bundle imports `node:path` through `constants.ts`. ", docs, issue, "Here is the size of each entry after the fix:\n\n", chart, report, "Move the alias into the config's server block."];
 
@@ -393,12 +394,51 @@ export const demos: Demo[] = [
     live: 90,
   },
   {
+    id: "markdown-table-flip",
+    part: "Message",
+    title: "markdown table, one character at a time",
+    description: "The header and delimiter rows show as sent while they arrive; the delimiter row's line end turns them into a table in one move.",
+    events: [
+      ...[..."Every check passed:\n\n| check name here | result summary text |\n|:-----------|------------:|\n| typecheck | pass |\n"].map((delta): RunEvent => ({ type: "message_delta", message_id: "markdown-table-flip", delta })),
+      { type: "message_commit", message_id: "markdown-table-flip", message: text("assistant", "Every check passed:\n\n| check name here | result summary text |\n|:-----------|------------:|\n| typecheck | pass |\n") },
+    ],
+    live: 30,
+  },
+  {
     id: "markdown-fence-streaming",
     part: "Message",
     title: "code fence, streaming",
-    description: "While the fence is open, the cursor fills the next cell of its newest code line; once the fence closes, it leaves the block for the text after it.",
+    description: "While the fence streams, the cursor fills the next cell of its newest code line; it stays there when the fence closes, so the block never changes height, and moves to the text after it.",
     events: stream("markdown-fence-live", "Run the focused tests first:\n\n```sh\nbun test packages/react\nbun run typecheck\n```\n\nThen push."),
     live: 90,
+  },
+  {
+    id: "message-notification-midstream",
+    part: "Message",
+    title: "a notification lands mid-stream",
+    description: "A background notification and an event the adapter does not know arrive while the text streams: they report on the run, so the message keeps the cursor.",
+    events: (() => {
+      const deltas = stream("notification-midstream", "Reading the files now and summarising each one in turn, more text keeps arriving here.").slice(0, -1);
+      return [...deltas.slice(0, 6), { type: "notification", notification_id: "bg-1", data: { message: "background task finished: bun test packages/react" } }, { type: "unknown", name: "some_future_event", data: {} }, ...deltas.slice(6)];
+    })(),
+  },
+  {
+    id: "message-block-tail",
+    part: "Message",
+    title: "streaming, a block last",
+    description: "The message still streams, and its newest part is a file: with no text line to end, the file carries the live signal, a static accent rail like a running tool's.",
+    events: blockStream("block-tail", ["The bundle report is ready: ", report]).slice(0, -1),
+  },
+  {
+    id: "markdown-large-tail",
+    part: "Message",
+    title: "streaming, a closed large block last",
+    description: "A large fence closed and the message has not said more yet: the code viewer carries the running rail until the next text.",
+    events: [
+      { type: "message_delta", message_id: "markdown-large-tail", delta: "The whole generated table:\n\n```ts\n" },
+      ...Array.from({ length: 60 }, (_, i): RunEvent => ({ type: "message_delta", message_id: "markdown-large-tail", delta: `export const value${i} = compute(${i}, "item-${i}");\n` })),
+      { type: "message_delta", message_id: "markdown-large-tail", delta: "```\n" },
+    ],
   },
   {
     id: "ai-sdk-text-then-tool",
@@ -437,13 +477,6 @@ export const demos: Demo[] = [
     title: "user role, wrapping",
     description: "A long user message: the prompt mark hangs in its own column and every line starts at the text edge.",
     events: [{ type: "message_commit", message_id: "m-user-long", message: text("user", userParityText) }],
-  },
-  {
-    id: "message-user-dropped",
-    part: "Message",
-    title: "user role, dropped-delivery text",
-    description: "The committed-message geometry reference for a dropped user_message row.",
-    events: [{ type: "message_commit", message_id: "m-user-dropped", message: text("user", `${userParityText} · not delivered · abort`) }],
   },
   {
     id: "message-user-markdown",
@@ -603,8 +636,8 @@ export const demos: Demo[] = [
     id: "image-done",
     part: "ImageBlock",
     title: "images, done",
-    description: "A known size reserves its exact shape; an unknown size gets a fixed frame; an unsafe address (an inline svg) is not drawn. Click an image to open it.",
-    events: committed("image-done", [chart, unsized, blocked]),
+    description: "A known size reserves its exact shape; an unknown size gets a fixed frame; an image omitted from history says so; an unsafe address (an inline svg) is not drawn. Click an image to open it.",
+    events: committed("image-done", [chart, unsized, omitted, blocked]),
   },
   {
     id: "tool-images",
@@ -990,12 +1023,31 @@ export const demos: Demo[] = [
   {
     id: "fallback-user-dropped",
     part: "Fallback",
-    title: "dropped steer",
-    description: "A dropped steer keeps the shared user layout and adds its delivery outcome.",
+    title: "dropped steer, text not kept",
+    description: "A text-less dropped steer is still a user row; its note says why and that the text was not kept.",
     events: [
-      { type: "user_message", text: userParityText, mode: "steer", delivery_id: "gallery-dropped" },
-      { type: "delivery_status", delivery_id: "gallery-dropped", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
+      { type: "delivery_status", delivery_id: "gallery-dropped", method: "steer", status: "dropped", content: "steer dropped: turn_end", reason: "turn_end" },
     ],
+  },
+  {
+    id: "fallback-user-dropped-unknown",
+    part: "Fallback",
+    title: "dropped steer, unknown reason",
+    description: "A drop reason fulcrum does not know shows only \"not delivered\", never the raw token.",
+    events: [
+      { type: "user_message", text: "Also run the auth tests.", mode: "steer", delivery_id: "gallery-dropped-unknown" },
+      { type: "delivery_status", delivery_id: "gallery-dropped-unknown", method: "steer", status: "dropped", content: "steer dropped: quota_exhausted", reason: "quota_exhausted" },
+    ],
+  },
+  {
+    id: "fallback-user-dropped-host",
+    part: "Fallback",
+    title: "dropped steer, host note",
+    description: "renderDeliveryNote: the host replaces a text-less drop note with its own words and a resend button.",
+    events: [
+      { type: "delivery_status", delivery_id: "gallery-dropped-host", method: "steer", status: "dropped", content: "steer dropped: turn_end", reason: "turn_end" },
+    ],
+    hostDeliveryNote: true,
   },
   {
     id: "fallback-error",

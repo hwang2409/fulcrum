@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
+import { withoutDelimiterCells } from "./accepted-changes.js";
 
 const json = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
 
@@ -11,13 +12,14 @@ function inlineVisible(nodes: readonly Inline[], includeProvisional = true): str
     : inlineVisible(node.children, includeProvisional)).join("");
 }
 
+// A delimiter row arriving shows as sent until it completes (accepted-changes.ts).
 function visible(blocks: readonly Block[], includeProvisional = true): string {
-  return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? inlineVisible(block.children, includeProvisional)
+  return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? withoutDelimiterCells(inlineVisible(block.children, includeProvisional))
     : block.type === "code" ? block.value
     : block.type === "blockquote" ? visible(block.children, includeProvisional)
     : block.type === "list" ? block.items.map((item) => visible(item.children, includeProvisional)).join("")
     : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => inlineVisible(cell, includeProvisional)).join("")
-    : "").join("").replace(/\s/g, "");
+    : "").join("").replace(/[\s|]/g, "");
 }
 
 function isSubsequence(needle: string, haystack: string) {

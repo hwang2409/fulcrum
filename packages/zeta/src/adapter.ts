@@ -65,6 +65,7 @@ const image = (input: Record<string, unknown>, at: string): ImageContentBlock =>
   const filename = input.path === undefined || input.path === null ? undefined : basename(string(input.path, `${at}.path`));
   return {
     type: "image",
+    ...(input.data_omitted === true ? { omitted: true } : {}),
     ...(data && mediaType ? { url: `data:${mediaType};base64,${data}` } : {}),
     ...(handle ? { source: { kind: "lazy", key: handle } } : {}),
     ...(mediaType ? { mediaType } : {}),
