@@ -550,19 +550,26 @@ export function reduceAllWithEntities(
         const old = getItem(itemId);
         const prior = old?.type === "tool" ? old : undefined;
         const result = event.tool_result;
-        const item: RunItem = {
-          id: itemId,
-          type: "tool",
-          tool_call: prior?.tool_call ?? event.tool_call,
-          view: event.view ?? prior?.view,
-          output: prior?.output ?? "",
-          version: (prior?.version ?? 0) + 1,
-          active: false,
-          result,
-          is_error: result?.is_error ?? false,
-          canceled: result?.is_canceled ?? false,
-          ...(prior?.approval ? { approval: prior.approval } : {}),
-        };
+        // The output stays the same stream (an empty append), so a viewer reads no text again when the tool ends.
+        const item = appendText<RunItem>(
+          {
+            id: itemId,
+            type: "tool",
+            tool_call: prior?.tool_call ?? event.tool_call,
+            view: event.view ?? prior?.view,
+            output: "",
+            version: (prior?.version ?? 0) + 1,
+            active: false,
+            result,
+            is_error: result?.is_error ?? false,
+            canceled: result?.is_canceled ?? false,
+            ...(prior?.approval ? { approval: prior.approval } : {}),
+          },
+          prior,
+          "output",
+          () => prior?.output ?? "",
+          "",
+        );
         if (prior) setItem(item);
         else appendItem(item);
         setToolActive(id, false);

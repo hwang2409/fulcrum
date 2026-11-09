@@ -44,64 +44,90 @@ function openViewer(id: string) {
 const count = (id: string) => card(id).querySelector('[data-part="text-viewer-count"]')?.textContent ?? "";
 const shown = (id: string) => [...card(id).querySelectorAll('[data-part="text-viewer-row"], [data-part="tool-output"]')].map((row) => row.textContent).join("");
 
-// Test-only spy: every String.prototype call on a stream-sized string (>= `min` UTF-16 units). A compare reads both
-// strings in full; any other call can make the engine flatten a concatenated (rope) string, a full copy.
+// Test-only spy: every String.prototype call on a stream-sized string (>= `min` UTF-16 units), keyed by its caller.
+// A compare (startsWith, endsWith) reads both strings in full; any other call on a concatenated (rope) string makes the
+// engine flatten it, a full copy. So the count is the per-append full-length work, and the key names the hook doing it.
 const COMPARES = ["startsWith", "endsWith"] as const;
-const READS = ["slice", "substring", "charCodeAt", "codePointAt", "at", "charAt", "indexOf", "lastIndexOf", "includes", "match", "matchAll", "split", "replace", "search"] as const;
+const READS = ["slice", "substring", "charCodeAt", "codePointAt", "at", "charAt", "indexOf", "lastIndexOf", "includes", "match", "matchAll", "split", "replace", "search", "trim", "toLowerCase", "normalize", "localeCompare"] as const;
 function spyStrings(min: number) {
-  const counts = { compares: 0, reads: 0, chars: 0 };
+  const sites: Record<string, number> = {};
+  let chars = 0;
   const proto = String.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
   const originals = [...COMPARES, ...READS].map((name) => [name, proto[name]!] as const);
   for (const [name, original] of originals) {
-    const compare = (COMPARES as readonly string[]).includes(name);
+    const kind = (COMPARES as readonly string[]).includes(name) ? "compare" : "read";
     proto[name] = function (this: string, ...args: unknown[]) {
       if (this.length >= min) {
-        if (compare) counts.compares++;
-        else counts.reads++;
-        counts.chars += this.length;
+        const caller = new Error().stack!.split("\n")[2]!.trim();
+        // React's development build reads changed props to log renders; the production build does not.
+        if (!caller.includes("react-dom-client.development")) {
+          const site = `${kind} ${name} in ${caller.replace(/^at /, "").replace(/ \(.*\/(src|test)\//, " (").replace(/:\d+\)$/, ")")}`;
+          sites[site] = (sites[site] ?? 0) + 1;
+          chars += this.length;
+        }
       }
       return original.apply(this, args);
     };
   }
-  return { counts, restore: () => { for (const [name, original] of originals) proto[name] = original; } };
+  return { result: () => ({ sites, chars }), restore: () => { for (const [name, original] of originals) proto[name] = original; } };
 }
 
 const big = (lines: number) => "x\n".repeat(lines);
+const red = (lines: number) => "\u001b[31mx\u001b[0m\n".repeat(lines);
 
-// Appends `appends` deltas to an open viewer over `lines` lines; returns the spied work per append.
-function appendWork(lines: number, appends: number) {
+// Appends `appends` deltas to an open output viewer over `text`; returns the spied full-length work of those appends.
+function appendWork(text: string, appends: number, delta: (index: number) => string, open = true) {
   const store = createRunStore((job) => job());
   store.dispatch(start("a"));
-  store.dispatch(out("a", big(lines)));
+  store.dispatch(out("a", text));
   mount(store, ["a"]);
-  openViewer("a");
-  expect(card("a").querySelector('[data-part="text-viewer"]')).not.toBeNull();
-  const spy = spyStrings(Math.min(lines, 10_000));
+  if (open) openViewer("a");
+  expect(card("a").querySelector(open ? '[data-part="text-viewer"]' : '[data-action="open-viewer"]')).not.toBeNull();
+  const spy = spyStrings(10_000);
   try {
-    for (let index = 0; index < appends; index++) act(() => store.dispatch(out("a", `\npaired tail ${index}`)));
+    for (let index = 0; index < appends; index++) act(() => store.dispatch(out("a", delta(index))));
   } finally {
     spy.restore();
   }
-  return { compares: spy.counts.compares / appends, reads: spy.counts.reads / appends, chars: spy.counts.chars / appends };
+  const work = spy.result();
+  act(() => root?.unmount());
+  root = undefined;
+  container.remove();
+  return work;
 }
 
-test("an append to a 2,000,000-character open output compares and reads none of the old text", () => {
-  const work = appendWork(1_000_000, 10);
-  console.log(`per append: ${work.compares} full compares, ${work.reads} full reads, ${work.chars} chars handed to string methods`);
-  expect(work.compares).toBe(0);
-  expect(work.reads).toBe(0);
-  expect(count("a")).toBe("1,000,010 lines · 2,000,140 characters");
+const plainTail = (index: number) => `\npaired tail ${index}`;
+const ansiTail = (index: number) => `\u001b[32mgreen ${index}\u001b[0m\n`;
+const paths = [
+  { name: "plain output", small: big(31_250), large: big(1_000_000), delta: plainTail },
+  { name: "ANSI output", small: red(6_250), large: red(200_000), delta: ansiTail },
+];
+
+for (const { name, large, delta } of paths) for (const open of [true, false]) test(`an append to a large ${name} in the ${open ? "open viewer" : "closed preview"} does no full-length compare or read (exact, by hook)`, () => {
+  const work = appendWork(large, 10, delta, open);
+  console.log(`${name}: ${work.chars} chars of full-length work over 10 appends`, work.sites);
+  // An entry names the hook and string method that touched the whole text on an append; there must be none.
+  expect(work.sites).toEqual({});
 });
 
-test("per-append work is flat in the stream length (31,250 vs 1,000,000 lines)", () => {
-  const small = appendWork(31_250, 10);
-  act(() => root?.unmount());
-  container.remove();
-  const large = appendWork(1_000_000, 10);
+for (const { name, small, large, delta } of paths) for (const open of [true, false]) test(`per-append work for the ${name} in the ${open ? "open viewer" : "closed preview"} is flat in its length (32x span)`, () => {
+  const low = appendWork(small, 10, delta, open);
+  const high = appendWork(large, 10, delta, open);
   // 32x the text; a cost proportional to the text grows 32x. The limit is near the geometric middle (sqrt 32 ~ 5.7).
-  const ratio = (large.chars + 1) / (small.chars + 1);
-  console.log(`chars per append: ${small.chars} at 31,250 lines, ${large.chars} at 1,000,000 lines (${ratio.toFixed(2)}x)`);
+  const ratio = (high.chars + 1) / (low.chars + 1);
+  console.log(`${name}: ${low.chars} vs ${high.chars} chars of full-length work (${ratio.toFixed(2)}x)`);
   expect(ratio).toBeLessThan(5.7);
+});
+
+test("the appended plain output is counted and shown", () => {
+  const store = createRunStore((job) => job());
+  store.dispatch(start("a"));
+  store.dispatch(out("a", big(1_000_000)));
+  mount(store, ["a"]);
+  openViewer("a");
+  for (let index = 0; index < 10; index++) act(() => store.dispatch(out("a", plainTail(index))));
+  expect(count("a")).toBe("1,000,011 lines · 2,000,140 characters");
+  expect(shown("a").endsWith("\npaired tail 8\npaired tail 9")).toBe(true);
 });
 
 const ESC = "\u001b";
@@ -112,26 +138,35 @@ const cases: Case[] = [
   { name: "append splitting an ANSI escape", events: (id) => [out(id, `x ${ESC}[3`), out(id, "1mred"), out(id, `${ESC}[0m done\n`)], text: "x red done\n" },
   { name: "append splitting a surrogate pair", events: (id) => [out(id, "a\ud83d"), out(id, "\ude00b")], text: "a\ud83d\ude00b" },
   { name: "append splitting a line", events: (id) => [out(id, "hel"), out(id, "lo\nwor"), out(id, "ld\n")], text: "hello\nworld\n" },
+  { name: "appends longer than the preview's tail window, with graphemes at the cuts", events: (id) => [out(id, "y".repeat(3_000)), out(id, "e\u0301".repeat(1_500)), out(id, "\n\ud83d\udc69\ud83c\udffd\u200d\ud83d\udcbb".repeat(300))], text: "\n\ud83d\udc69\ud83c\udffd\u200d\ud83d\udcbb" },
   { name: "replace", events: (id) => [out(id, "old text\n"), out(id, "new\n", true), out(id, "more\n")], text: "new\nmore\n" },
   { name: "tool_end then a new tool on the same id", events: (id) => [out(id, "first\n"), end(id), start(id), out(id, "second\n")], text: "second\n" },
 ];
 
-// Each step's display after every event equals a fresh render of the same events (the full path), at a size that
-// opens the viewer (incremental) and at a small size (inline).
-for (const { name, events, text } of cases) for (const prefix of ["", big(60_000)]) {
-  test(`${name} (${prefix ? "open viewer" : "inline"}): every step shows what a fresh render shows`, () => {
+// Each step's display after every event equals a fresh render of the same events (the full path): small (inline),
+// and large in the open viewer and in the closed preview (both incremental).
+const modes = [["inline", ""], ["open viewer", big(60_000)], ["closed preview", big(60_000)]] as const;
+const display = (id: string) => [shown(id), count(id) || (card(id).querySelector('[data-action="open-viewer"]')?.textContent ?? "")];
+function show(mode: string) {
+  if (mode === "open viewer") return openViewer("a");
+  const details = card("a");
+  if (!details.open) act(() => { details.open = true; details.dispatchEvent(new Event("toggle")); });
+}
+for (const { name, events, text } of cases) for (const [mode, prefix] of modes) {
+  test(`${name} (${mode}): every step shows what a fresh render shows`, () => {
     const live = createRunStore((job) => job());
     live.dispatch(start("a"));
     if (prefix) live.dispatch(out("a", prefix));
     mount(live, ["a"]);
-    openViewer("a");
+    show(mode);
     const steps = events("a");
-    const seen: Array<[string, string]> = [];
+    const seen: string[][] = [];
     for (const event of steps) {
       act(() => live.dispatch(event));
-      seen.push([shown("a"), count("a")]);
+      seen.push(display("a"));
     }
-    expect(seen.at(-1)![0].endsWith(text) || seen.at(-1)![0] === text).toBe(true);
+    expect(seen.at(-1)![0]!.endsWith(text)).toBe(true);
+    if (mode !== "inline") expect(seen[0]![1]).not.toBe(""); // the first step is still large
     act(() => root?.unmount());
     container.remove();
     for (let step = 0; step < steps.length; step++) {
@@ -140,8 +175,8 @@ for (const { name, events, text } of cases) for (const prefix of ["", big(60_000
       if (prefix) fresh.dispatch(out("a", prefix));
       steps.slice(0, step + 1).forEach(fresh.dispatch);
       mount(fresh, ["a"]);
-      openViewer("a");
-      expect([shown("a"), count("a")]).toEqual(seen[step]!);
+      show(mode);
+      expect(display("a")).toEqual(seen[step]!);
       act(() => root?.unmount());
       container.remove();
     }

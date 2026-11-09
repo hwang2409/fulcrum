@@ -34,6 +34,10 @@ A `user_message` can carry `intent`, the client id for the user's request. A lat
 
 `tool_start` on a known call restarts its row in place: output, result, and error clear, the view becomes the event's `view`, an approval decision stays, the row keeps its position.
 
+## streamed text
+
+A message's `text` and a tool's `output` grow by appends. `streamTail(previous, item)` takes two snapshots of the same row and returns the text appended between them: `item`'s text is exactly `previous`'s text followed by the result. It returns `undefined` when `item` does not continue `previous`'s stream: a `replace: true` output, a restarted tool, a resync or history reload, an older snapshot, or a row that never streamed. Then read the text whole. It costs the chunks appended since `previous` and never reads or compares the whole text, so a view of a multi-megabyte output can extend itself from the tail. `tool_end` keeps the output's stream, so the tail across it is `""`.
+
 ## tool views
 
 Use `defineToolMap()` to map harness tool arguments to agent-neutral views. See [using another harness](../../docs/other-harnesses.md) for schemas, examples, and approval decisions.

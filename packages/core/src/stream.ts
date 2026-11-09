@@ -14,9 +14,10 @@ const chunkFor = (item: object, value: () => string): Chunk | undefined => {
   const chunk = chunks.get(item);
   if (chunk) return chunk;
   const materialized = value();
-  return materialized
-    ? { value: materialized, length: materialized.length, cache: { chunk: undefined, text: "" } }
-    : undefined;
+  if (!materialized) return undefined;
+  const first: Chunk = { value: materialized, length: materialized.length, cache: { chunk: undefined, text: "" } };
+  chunks.set(item, first); // so streamTail can continue from a row whose text was a plain string
+  return first;
 };
 
 /**
@@ -60,4 +61,24 @@ export function appendText<T extends object>(
   });
   chunks.set(item, chunk);
   return item;
+}
+
+/**
+ * The text appended to `item`'s streamed field (a message's `text`, a tool's `output`) since `previous`, an earlier
+ * snapshot of the same row: `item`'s text is exactly `previous`'s text followed by the result. Undefined when `item`
+ * does not continue `previous`'s stream: a replace, a restarted tool, a resync or history reload, an older snapshot, a
+ * row that never streamed. Costs the chunks appended since `previous`; it never reads or compares the whole text.
+ */
+export function streamTail(previous: object | undefined, item: object): string | undefined {
+  const base = previous && chunks.get(previous);
+  const chunk = chunks.get(item);
+  // A different cache is a different stream: only appendText from a prior row shares its cache.
+  if (!base || !chunk || chunk.cache !== base.cache) return undefined;
+  const values: string[] = [];
+  let cursor: Chunk | undefined = chunk;
+  while (cursor && cursor !== base && cursor.length >= base.length) {
+    values.push(cursor.value);
+    cursor = cursor.previous;
+  }
+  return cursor === base ? values.reverse().join("") : undefined;
 }

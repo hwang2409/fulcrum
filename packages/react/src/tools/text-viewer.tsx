@@ -98,32 +98,49 @@ const safeEnd = (text: string, end: number) => {
 };
 
 // Native searches, not a loop over every character: a 440 kB block took tens of ms per pass on a 4x-throttled page.
+const newlinesIn = (text: string) => {
+  let count = 0;
+  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) count++;
+  return count;
+};
 export function textMetrics(text: string): TextMetrics {
-  let newlines = 0;
-  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) newlines++;
+  const newlines = newlinesIn(text);
   const pairs = text.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g)?.length ?? 0; // one character each, as for...of counts
   return { characters: text.length - pairs, lines: text === "" ? 0 : newlines + (text.endsWith("\n") ? 0 : 1) };
 }
 
-export function useTextMetrics(text: string, appendOnly = false): TextMetrics {
-  const cache = useRef<{ text: string; metrics: TextMetrics }>({ text: "", metrics: { characters: 0, lines: 0 } });
+/** `text` is `previous` followed by `tail`: a known append, so hooks extend their result from the tail alone. */
+export type Grown = { previous: string; tail: string };
+
+type MetricsCache = { text: string; metrics: TextMetrics; newlines: number; last: number };
+const isHigh = (code: number) => code >= 0xd800 && code <= 0xdbff;
+const isLow = (code: number) => code >= 0xdc00 && code <= 0xdfff;
+
+/**
+ * `textMetrics(text)`, extended from the tail when the text grew by a known append (`grown`) or, with `appendOnly`,
+ * extends the previous text (checked in full). The cache keeps the last code unit, so an append never reads the old text.
+ */
+export function useTextMetrics(text: string, appendOnly = false, grown?: Grown): TextMetrics {
+  const cache = useRef<MetricsCache>({ text: "", metrics: { characters: 0, lines: 0 }, newlines: 0, last: -1 });
   const prior = cache.current;
   if (text === prior.text) return prior.metrics;
-  let metrics: TextMetrics;
-  if (appendOnly && text.startsWith(prior.text)) {
-    const delta = text.slice(prior.text.length);
-    const deltaMetrics = textMetrics(delta);
-    const joinsSurrogatePair = prior.text.length > 0 && delta.length > 0
-      && /[\uD800-\uDBFF]/.test(prior.text.at(-1)!) && /[\uDC00-\uDFFF]/.test(delta[0]!);
-    let newlines = prior.metrics.lines - (prior.text && !prior.text.endsWith("\n") ? 1 : 0);
-    for (const character of delta) if (character === "\n") newlines++;
-    metrics = {
-      characters: prior.metrics.characters + deltaMetrics.characters - Number(joinsSurrogatePair),
-      lines: text === "" ? 0 : newlines + (text.endsWith("\n") ? 0 : 1),
-    };
-  } else metrics = textMetrics(text);
-  cache.current = { text, metrics };
-  return metrics;
+  const delta = grown && grown.previous === prior.text ? grown.tail
+    : appendOnly && text.startsWith(prior.text) ? text.slice(prior.text.length)
+    : undefined;
+  let next: MetricsCache;
+  if (delta !== undefined) {
+    const newlines = prior.newlines + newlinesIn(delta);
+    const last = delta ? delta.charCodeAt(delta.length - 1) : prior.last;
+    const joinsPair = delta !== "" && isHigh(prior.last) && isLow(delta.charCodeAt(0));
+    const characters = prior.metrics.characters + textMetrics(delta).characters - Number(joinsPair);
+    next = { text, newlines, last, metrics: { characters, lines: text.length === 0 ? 0 : newlines + (last === 10 ? 0 : 1) } };
+  } else {
+    const metrics = textMetrics(text);
+    const last = text ? text.charCodeAt(text.length - 1) : -1;
+    next = { text, metrics, newlines: metrics.lines - (text && last !== 10 ? 1 : 0), last };
+  }
+  cache.current = next;
+  return next.metrics;
 }
 
 export const needsTextViewer = (text: string, metrics = textMetrics(text)) =>
@@ -158,24 +175,46 @@ export function segmentText(text: string, estimatedLines: number, size = SEGMENT
   return segments;
 }
 
-/** Builds only newly reached fixed-size segments when appendOnly text grows. */
-function useSegments(text: string, appendOnly: boolean, estimatedLines: number, size = SEGMENT_CHARS) {
-  const cache = useRef<{ text: string; segments: TextSegment[] }>({ text: "", segments: [] });
+/** The viewer's segments with each one's text: `sealed[i]` for every segment but the last, `open` for the last. */
+type Segmented = { text: string; segments: TextSegment[]; sealed: string[]; open: string };
+
+/**
+ * Text in fixed-size segments. A known append (`grown`, or with `appendOnly` a text that extends the previous one,
+ * checked in full) extends the last segment from the tail and builds only newly reached segments; the old segments
+ * stay the same objects. Rows draw from the segment texts, so an append never reads the whole text.
+ */
+function useSegments(text: string, appendOnly: boolean, estimatedLines: number, size = SEGMENT_CHARS, grown?: Grown): Segmented {
+  const cache = useRef<Segmented>({ text: "", segments: [], sealed: [], open: "" });
   const prior = cache.current;
-  if (text === prior.text) return prior.segments;
-  const canAppend = appendOnly && prior.text.length > 0 && text.startsWith(prior.text);
-  let segments: TextSegment[];
-  if (canAppend) {
-    segments = prior.segments;
-    let start = segments.at(-1)?.start ?? 0;
-    if (text.length - start > size) segments = [...segments];
-    while (text.length - start > size) {
-      start = segmentEnd(text, start, size);
+  if (text === prior.text) return prior;
+  const tail = prior.text === "" ? undefined
+    : grown && grown.previous === prior.text ? grown.tail
+    : appendOnly && text.startsWith(prior.text) ? text.slice(prior.text.length)
+    : undefined;
+  let next: Segmented;
+  if (tail !== undefined) {
+    let { segments, sealed } = prior;
+    let open = prior.open + tail;
+    let start = segments.at(-1)!.start;
+    if (open.length > size) {
+      segments = [...segments];
+      sealed = [...sealed];
+    }
+    while (open.length > size) {
+      const end = segmentEnd(open, 0, size);
+      sealed.push(open.slice(0, end));
+      open = open.slice(end);
+      start += end;
       segments.push({ id: `text-${start}`, kind: String(estimatedLines), start });
     }
-  } else segments = segmentText(text, estimatedLines, size);
-  cache.current = { text, segments };
-  return segments;
+    next = { text, segments, sealed, open };
+  } else {
+    const segments = segmentText(text, estimatedLines, size);
+    const sealed = segments.slice(0, -1).map((segment, index) => text.slice(segment.start, segments[index + 1]!.start));
+    next = { text, segments, sealed, open: text.slice(segments.at(-1)?.start ?? 0) };
+  }
+  cache.current = next;
+  return next;
 }
 
 const AnsiRun = ({ text, spans }: { text: string; spans: AnsiSpan[] }) => {
@@ -255,12 +294,16 @@ function sliceTokens({ tokens, starts }: WholeTokens, start: number, end: number
   return out;
 }
 
-const styledBlock = (text: string, start: number, end: number, format: TextFormat | undefined, id: string, done: boolean): Block =>
-  ({ code: text.slice(start, end), language: format?.spans ? undefined : format?.language, id: `${id}@${start}`, done });
+// `text` holds the whole text's [offset, offset + text.length); start and end are positions in the whole text.
+const styledBlock = (text: string, start: number, end: number, format: TextFormat | undefined, id: string, done: boolean, offset = 0): Block =>
+  ({ code: text.slice(start - offset, end - offset), language: format?.spans ? undefined : format?.language, id: `${id}@${start}`, done });
 
-/** `text[start, end)` in its format. Each range is its own highlight block, so a viewer only highlights mounted rows. */
-export const Styled = memo(function Styled({ text, start = 0, end = text.length, format, id, done = true, whole }: { text: string; start?: number; end?: number; format?: TextFormat; id: string; done?: boolean; whole?: WholeTokens | null }) {
-  const { code: slice, language, id: block } = styledBlock(text, start, end, format, id, done);
+/**
+ * `[start, end)` of the whole text in its format; `text` is the whole text from `offset` on (a viewer passes one
+ * segment). Each range is its own highlight block, so a viewer only highlights mounted rows.
+ */
+export const Styled = memo(function Styled({ text, offset = 0, start = offset, end = offset + text.length, format, id, done = true, whole }: { text: string; offset?: number; start?: number; end?: number; format?: TextFormat; id: string; done?: boolean; whole?: WholeTokens | null }) {
+  const { code: slice, language, id: block } = styledBlock(text, start, end, format, id, done, offset);
   const covered = whole && whole.length >= end ? whole : null; // a seed may cover only a prefix of the text
   const own = useTokens(slice, covered ? undefined : language, block, done);
   const tokens = covered ? sliceTokens(covered, start, end) : own;
@@ -272,11 +315,11 @@ export const Styled = memo(function Styled({ text, start = 0, end = text.length,
 const counts = new Intl.NumberFormat("en-US");
 const count = (value: number) => counts.format(value);
 
-type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean; seed?: Token[] | null; caption?: string; focus?: boolean; live?: boolean };
+type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; texts?: Segmented; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean; seed?: Token[] | null; caption?: string; focus?: boolean; live?: boolean };
 type Place = "top" | "middle" | "bottom";
 const placeWords: Record<Place, string> = { top: "at top", middle: "scrolled", bottom: "at bottom" };
 
-function VirtualText({ text, label, follow, metrics, segments, rows, format, id, done, copy, seed, caption, focus, live }: ViewerProps) {
+function VirtualText({ text, label, follow, metrics, segments, texts, rows, format, id, done, copy, seed, caption, focus, live }: ViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(follow);
   const lastTop = useRef(0);
@@ -299,11 +342,13 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
     enabled: true,
     outlineUpdate: update,
   });
+  // A text row is one segment: it draws from the segment's own text, never from a slice of the whole text.
   const ranges = list.snapshot.rows.map((row) => {
     const last = row.index === segments.length - 1;
-    return { start: segments[row.index]!.start, end: segments[row.index + 1]?.start ?? (rows ? rows.count : text.length), done: done || !last };
+    const slice = texts ? texts.sealed[row.index] ?? texts.open : "";
+    return { start: segments[row.index]!.start, end: segments[row.index + 1]?.start ?? (rows ? rows.count : text.length), done: done || !last, slice };
   });
-  const whole = useWholeTokens(rows ? "" : text, metrics.lines, format, id, done, rows ? [] : ranges.map(({ start, end, done }) => styledBlock(text, start, end, format, id, done)), seed);
+  const whole = useWholeTokens(rows ? "" : text, metrics.lines, format, id, done, rows ? [] : ranges.map(({ start, end, done, slice }) => styledBlock(slice, start, end, format, id, done, start)), seed);
   useLayoutEffect(() => {
     if (follow && following.current) list.scrollToEnd();
     else if (text.length > seenLength.current) setNewOutput(true);
@@ -366,7 +411,7 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
       >
         <div ref={list.timelineRef} data-part="text-viewer-content" style={{ height: list.snapshot.totalSize }}>
           {list.snapshot.rows.map((row, index) => {
-            const { start, end, done: rangeDone } = ranges[index]!;
+            const { start, end, done: rangeDone, slice } = ranges[index]!;
             const Row = rows ? "div" : "pre";
             return (
               <Row
@@ -375,7 +420,7 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
                 data-part="text-viewer-row"
                 data-language={rows?.language}
                 style={{ position: "absolute", insetInline: 0, transform: `translateY(${row.start}px)` } as CSSProperties}
-              >{rows ? rows.render(start, end) : <Styled text={text} start={start} end={end} format={format} id={id} done={rangeDone} whole={whole} />}</Row>
+              >{rows ? rows.render(start, end) : <Styled text={slice} offset={start} format={format} id={id} done={rangeDone} whole={whole} />}</Row>
             );
           })}
         </div>
@@ -384,20 +429,50 @@ function VirtualText({ text, label, follow, metrics, segments, rows, format, id,
   );
 }
 
-// The preview's cut points: the first 40 lines (at most HEAD_CHARS) and the last 20 (at most TAIL_CHARS).
-function previewRanges(text: string) {
-  let headEnd = Math.min(HEAD_CHARS, text.length);
+/**
+ * A closed preview's text: `head` is the text's first characters, `tail` its last (positions from `length -
+ * tail.length`). Each window holds what the preview's cut points read, with room for safeEnd's grapheme lookback, so a
+ * known append (`grown`) moves the tail window by the appended text alone and never reads the whole text.
+ */
+type Ends = { text: string; head: string; tail: string };
+const HEAD_WINDOW = HEAD_CHARS + 2 * GRAPHEME_LOOKBACK;
+const TAIL_WINDOW = TAIL_CHARS + 2 * GRAPHEME_LOOKBACK;
+const endsOf = (text: string): Ends => ({ text, head: text.slice(0, HEAD_WINDOW), tail: text.slice(-TAIL_WINDOW) });
+
+function useEnds(text: string, grown?: Grown): Ends {
+  const cache = useRef<Ends>({ text: "", head: "", tail: "" });
+  const prior = cache.current;
+  if (text === prior.text) return prior;
+  const delta = grown && grown.previous === prior.text ? grown.tail : undefined;
+  const next = delta === undefined
+    ? endsOf(text)
+    : {
+      text,
+      head: prior.head.length >= HEAD_WINDOW ? prior.head : (prior.head + delta).slice(0, HEAD_WINDOW),
+      tail: (prior.tail + delta).slice(-TAIL_WINDOW),
+    };
+  cache.current = next;
+  return next;
+}
+
+// The preview's cut points: the first 40 lines (at most HEAD_CHARS) and the last 20 (at most TAIL_CHARS). Reads only
+// the two windows: a position past the head window is in the tail window.
+function previewRanges({ text, head, tail }: Ends) {
+  const length = text.length;
+  const offset = length - tail.length;
+  let headEnd = Math.min(HEAD_CHARS, length);
   let seen = 0;
   for (let index = 0; index < headEnd; index++) {
-    if (text.charCodeAt(index) === 10 && ++seen === 40) { headEnd = index + 1; break; }
+    if (head.charCodeAt(index) === 10 && ++seen === 40) { headEnd = index + 1; break; }
   }
-  const tailCharStart = Math.max(headEnd, text.length - TAIL_CHARS);
+  const tailCharStart = Math.max(headEnd, length - TAIL_CHARS);
   let tailStart = tailCharStart;
   seen = 0;
-  for (let index = text.length - 1; index >= headEnd; index--) {
-    if (text.charCodeAt(index) === 10 && ++seen === 21) { tailStart = Math.max(tailCharStart, index + 1); break; }
+  // A newline before tailCharStart - 1 cannot move tailStart past tailCharStart: the scan stops there.
+  for (let index = length - 1; index >= Math.max(headEnd, tailCharStart - 1); index--) {
+    if (tail.charCodeAt(index - offset) === 10 && ++seen === 21) { tailStart = Math.max(tailCharStart, index + 1); break; }
   }
-  return { headEnd: safeEnd(text, headEnd), tailStart: safeEnd(text, tailStart) };
+  return { headEnd: safeEnd(head, headEnd), tailStart: offset + safeEnd(tail, tailStart - offset), offset };
 }
 
 export type TextViewerProps = {
@@ -406,6 +481,8 @@ export type TextViewerProps = {
   /** Stable per surface (`<item id>:stdout`): highlight blocks and their cache are keyed by it. */
   id: string;
   appendOnly?: boolean;
+  /** How `text` grew from the previous render's text, when the caller knows (a streamed output): nothing re-reads it. */
+  grown?: Grown;
   follow?: boolean;
   part?: string;
   stream?: string;
@@ -420,15 +497,16 @@ export type TextViewerProps = {
 };
 
 /** One bounded, virtualized disclosure for every large tool text surface. */
-export function TextViewer({ text, label, id, appendOnly = false, follow = false, part = "tool-output", stream, metrics: suppliedMetrics, format, done = true, rows, opened = false }: TextViewerProps) {
+export function TextViewer({ text, label, id, appendOnly = false, grown, follow = false, part = "tool-output", stream, metrics: suppliedMetrics, format, done = true, rows, opened = false }: TextViewerProps) {
   const [open, setOpen] = useState<boolean | "focus">(opened);
-  const measuredMetrics = useTextMetrics(suppliedMetrics ? "" : text, appendOnly);
+  const measuredMetrics = useTextMetrics(suppliedMetrics ? "" : text, appendOnly, grown);
   const metrics = suppliedMetrics ?? measuredMetrics;
   const large = needsTextViewer(text, metrics);
   // Segments are built only for an open viewer: text in fixed-size ranges that start on a line, rows in fixed groups.
   // shortcut: the tool viewer keeps 2,000 even for highlighted text; 500 made opening a 1,000,000-line .ts read take
   // 20 ms (the layout gate's bound is 16). Upgrade when segments are built lazily, so their count no longer costs the open.
-  const textSegments = useSegments(open && !rows ? text : "", appendOnly, segmentLines(text, metrics));
+  const textSegments = useSegments(open && !rows ? text : "", appendOnly, segmentLines(text, metrics), SEGMENT_CHARS, grown);
+  const ends = useEnds(large && !open && !rows ? text : "", grown);
   // "open all" unmounts itself: the viewer it opens takes focus.
   const openViewer = () => setOpen("focus");
   const rowSegments = useMemo(() => open && rows ? rowGroups(rows) : [], [open, rows]);
@@ -457,15 +535,15 @@ export function TextViewer({ text, label, id, appendOnly = false, follow = false
       {cap.expand ? <ExpandButton lines={metrics.lines} expand={cap.expand} /> : null}
     </>
   );
-  if (open) return <VirtualText text={text} label={label} follow={follow} metrics={metrics} segments={rows ? rowSegments : textSegments} rows={rows} format={format} id={id} done={done} focus={open === "focus"} />;
-  const { headEnd, tailStart } = previewRanges(text);
-  const shown = textMetrics(text.slice(0, headEnd)).lines + textMetrics(text.slice(tailStart)).lines;
+  if (open) return <VirtualText text={text} label={label} follow={follow} metrics={metrics} segments={rows ? rowSegments : textSegments.segments} texts={rows ? undefined : textSegments} rows={rows} format={format} id={id} done={done} focus={open === "focus"} />;
+  const { headEnd, tailStart, offset } = previewRanges(ends);
+  const shown = textMetrics(ends.head.slice(0, headEnd)).lines + textMetrics(ends.tail.slice(tailStart - offset)).lines;
   return (
     <>
       <pre data-part={part} data-stream={stream} data-language={format?.language} data-anchor={follow ? undefined : "start"}><span>
-        <Styled text={text} end={headEnd} format={format} id={id} />
+        <Styled text={ends.head} end={headEnd} format={format} id={id} />
         <span data-part="tool-gap">… {count(metrics.lines - shown)} more lines of {count(metrics.lines)} …{"\n"}</span>
-        <Styled text={text} start={tailStart} format={format} id={id} done={done} />
+        <Styled text={ends.tail} offset={offset} start={tailStart} format={format} id={id} done={done} />
       </span></pre>
       <OpenButton metrics={metrics} open={openViewer} />
     </>
@@ -504,7 +582,7 @@ export function CodeViewer({ text, language, id, done = true, label = "code", se
   const segments = useSegments(text, !done, segmentLines(text, metrics, size), size);
   const format = useMemo(() => language ? { language } : undefined, [language]);
   // A block still streaming in follows its newest line, as the timeline follows the run; a finished one starts at its top.
-  return <VirtualText text={text} label={label} follow={!done} metrics={metrics} segments={segments} format={format} id={id} done={done} copy seed={seed} caption={language} live={!done} />;
+  return <VirtualText text={text} label={label} follow={!done} metrics={metrics} segments={segments.segments} texts={segments} format={format} id={id} done={done} copy seed={seed} caption={language} live={!done} />;
 }
 
 /**
@@ -568,6 +646,7 @@ export function viewerBlocks({ text, id, format, done = true, rows }: Pick<TextV
     return large && head < tail ? [...rows.blocks(0, head), ...rows.blocks(tail, rows.count)] : rows.blocks(0, rows.count);
   }
   if (!large) return [styledBlock(text, 0, text.length, format, id, done)];
-  const { headEnd, tailStart } = previewRanges(text);
-  return [styledBlock(text, 0, headEnd, format, id, true), styledBlock(text, tailStart, text.length, format, id, done)];
+  const ends = endsOf(text);
+  const { headEnd, tailStart, offset } = previewRanges(ends);
+  return [styledBlock(ends.head, 0, headEnd, format, id, true), styledBlock(ends.tail, tailStart, text.length, format, id, done, offset)];
 }
