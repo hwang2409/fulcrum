@@ -55,6 +55,17 @@ test("gallery fixtures cover every public run state", () => {
   }
 });
 
+test("gallery shows text-less dropped steers with default and host delivery notes", () => {
+  for (const id of ["fallback-user-dropped", "fallback-user-dropped-host"]) {
+    const demo = demos.find((candidate) => candidate.id === id);
+    expect(demo).toBeDefined();
+    const { store } = reduced(demo!);
+    expect(store.getOutline()).toEqual([{ id: `user:delivery:${id === "fallback-user-dropped" ? "gallery-dropped" : "gallery-dropped-host"}`, kind: "user" }]);
+    const item = store.getItem(store.getOutline()[0]!.id);
+    expect(item).toMatchObject({ type: "user", event: { text: "", text_omitted: true, delivery_status: "dropped" } });
+  }
+});
+
 test("gallery navigator failure fixture opens through its configured source error", () => {
   const demo = demosFor("RunNavigator").find((candidate) => candidate.sourceFailure);
   expect(demo).toBeDefined();

@@ -140,12 +140,14 @@ test("648 incomplete definitions equal one-shot parsing after finish", () => {
   expect(cases).toBe(648);
 });
 
+// A label is text until its definition line ends, so `[shared]` stays as sent while the destination arrives.
 test("a terminal definition keeps its stable label visible until its continuation line is decided", () => {
   const source = "reader opens [shared].\n\n[shared]: https://example.com/docs";
   const document = createStreamingDocument();
   document.append(source);
-  expect(json(document.render())).toContain('"type":"text","value":"shared"');
+  expect(json(document.render())).toContain('reader opens [shared].');
   expect(json(document.render())).not.toContain('"type":"pending-reference"');
+  // The line end completes the definition (a title line may still change it), so the label is now its link.
   document.append("\n");
   expect(json(document.render())).toContain('"type":"text","value":"shared"');
   expect(json(document.render())).not.toContain('"type":"pending-reference"');

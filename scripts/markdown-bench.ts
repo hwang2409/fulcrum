@@ -97,16 +97,28 @@ const richUnit = "plain **strong** and *emphasis* with `code`. ";
 
 // A growing 1 MB rich line copies only the delta plus the fixed pending suffix, whatever its markers do.
 const PENDING_SUFFIX = 128;
+// Minified JSON on one line in prose, nested `depth` arrays deep, each level padded with `width` strings on both sides.
+const nestedJson = (depth: number, width: number) => {
+  const fill = Array.from({ length: width }, (_, index) => `"item-${index}"`).join(",");
+  let value = `{"leaf":true}`;
+  for (let level = 0; level < depth; level++) value = `[${fill},${value},${fill}]`;
+  return `Result: ${value}`;
+};
 const adversarialRows = [
   ["300k openers underscore", `${"*a ".repeat(100_000)}${"_x".repeat(200)}`],
   ["300k openers brackets", `${"*a ".repeat(100_000)}${"]x".repeat(200)}`],
   ["bracket over 300k openers", `[${"*a ".repeat(100_000)}]x`],
   ["30k openers underscore", `${"*a ".repeat(10_000)}${"_x".repeat(200)}`],
+  // Closers that decide nested `[` as text one after another: each decision reveals its `[` in place, never parses the
+  // text inside it again (that re-parse made the JSON row's closing frames 0.3-0.8 s).
+  ["minified JSON depth 30", nestedJson(30, 280)],
+  ["1000 nested brackets", `${"[w ".repeat(1_000)}${"ab ".repeat(30_000)}${"]x ".repeat(1_000)}`],
 ] as const;
 for (const [name, source] of adversarialRows) {
   const result = measure(source, 1_024);
   console.log(`1024 B  ${name.padEnd(26)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  p999 ${result.p999.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  work ${result.workRatio.toFixed(2)}x  max-copy ${result.maxCopied}`);
-  if (result.p99 > 10 || result.max > 100 || result.workRatio > 1.2) failed = true;
+  // A frame copies its delta twice (stable text and suffix) plus the suffix window and cut slack, whatever its closers do.
+  if (result.p99 > 10 || result.max > 100 || result.workRatio > 1.2 || result.maxCopied > 2 * (1_024 + PENDING_SUFFIX + 66) + 16) failed = true;
 }
 
 const richLines = [

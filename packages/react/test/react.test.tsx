@@ -299,6 +299,63 @@ test("only the newest row streams the cursor: text that a tool row follows stops
   expect(latest()).toEqual(["message:n"]);
 });
 
+test("a notification or an unknown event that lands mid-stream never takes the cursor from the streaming message", () => {
+  const { store, send: more } = setup([{ type: "message_delta", message_id: "m", delta: "Reading the files now" }]);
+  const commits: Record<string, number> = {};
+  const renderers: Renderers = { message: ({ id }) => <Profiler id={id} onRender={() => (commits[id] = (commits[id] ?? 0) + 1)}><Message id={id} /></Profiler> };
+  mount(<RunProvider store={store}><Timeline virtual={false} renderers={renderers} /></RunProvider>);
+  const before = commits["message:m"];
+  more({ type: "notification", notification_id: "bg-1", data: { message: "background task finished" } });
+  more({ type: "unknown", name: "some_future_event", data: {} });
+  expect(latest()).toEqual(["message:m"]);
+  // Neither passive row is the newest streamable row, so the message is not even told about them.
+  expect(commits["message:m"]).toBe(before);
+  more({ type: "message_delta", message_id: "m", delta: " and summarising" });
+  expect(latest()).toEqual(["message:m"]);
+  // The next thing the agent does (a tool) still takes it.
+  more({ type: "tool_start", tool_call: call("ls", "shell") });
+  expect(latest()).toEqual([]);
+});
+
+test("a pipe row the model already sent shows while a tool runs below its uncommitted message, and at the end", () => {
+  const { store, send: more } = setup([{ type: "message_delta", message_id: "m", delta: "Results:\n\n| a | b |\n" }]);
+  mount(<RunProvider store={store}><Timeline virtual={false} renderers={{ message: ({ id }) => <Message id={id} markdown={Markdown} /> }} /></RunProvider>);
+  const shown = () => q('[data-part="message"]').textContent;
+  // A stall on the row: it shows as sent, pipes kept.
+  expect(shown()).toContain("| a | b |");
+  // A tool starts before any commit: the message stays streaming above it, and the row still shows.
+  more({ type: "tool_start", tool_call: call("ls", "shell") });
+  expect(q('[data-part="message"]').dataset.state).toBe("streaming");
+  expect(shown()).toContain("| a | b |");
+  // The turn ends without a commit: the finished parse shows the lone row as text.
+  more({ type: "turn_end" });
+  expect(shown()).toContain("| a | b |");
+});
+
+for (const [name, end] of [
+  ["a commit", { type: "message_commit", message_id: "m", message: message("| a | b |") }],
+  ["turn_end", { type: "turn_end" }],
+] as const) {
+  test(`a message that ends on a lone pipe row (${name}) shows it`, () => {
+    const { store, send: more } = setup([{ type: "message_delta", message_id: "m", delta: "| a | b |" }]);
+    mount(<RunProvider store={store}><Message id="message:m" markdown={Markdown} /></RunProvider>);
+    expect(q('[data-part="message"]').textContent).toBe("| a | b |");
+    more(end as RunEvent);
+    expect(q('[data-part="message"]').dataset.state).not.toBe("streaming");
+    expect(q('[data-part="message"]').textContent).toBe("| a | b |");
+  });
+}
+
+test("Markdown that stops streaming on a pipe row shows it, raw or as the table its delimiter makes", () => {
+  mount(<Markdown source={"Results:\n\n| a | b |"} streaming />);
+  expect(container.textContent).toContain("| a | b |");
+  act(() => root!.render(<Markdown source={"Results:\n\n| a | b |"} />));
+  expect(container.textContent).toContain("| a | b |");
+  act(() => root!.render(<Markdown source={"Results:\n\n| a | b |\n| - | - |"} streaming />));
+  act(() => root!.render(<Markdown source={"Results:\n\n| a | b |\n| - | - |"} />));
+  expect([...container.querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["a", "b"]);
+});
+
 test("a streaming message outside a Timeline is the newest row", () => {
   const { store } = setup([{ type: "message_delta", message_id: "m", delta: "hello" }]);
   mount(<RunProvider store={store}><Message id="message:m" /></RunProvider>);

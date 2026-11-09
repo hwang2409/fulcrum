@@ -44,6 +44,8 @@ export type LazyContentBlock = ContentBlock & { source: LazyContentSource };
 /** An image. `width` and `height` (pixels) let the renderer reserve its exact shape before it loads. `size` is in bytes. */
 export interface ImageContentBlock extends ContentBlock {
   type: "image";
+  /** The host did not keep the image bytes. */
+  omitted?: true;
   url?: string;
   source?: LazyContentSource;
   mediaType?: string;
@@ -238,6 +240,8 @@ export type RunEvent =
        * a new message stays one row. Leave it unset when the transport cannot tell; every message is then its own row.
        */
       intent?: string;
+      /** The harness did not keep this message's text. */
+      text_omitted?: true;
       delivery_status?: "delivered" | "dropped";
       delivery_reason?: string;
     }
