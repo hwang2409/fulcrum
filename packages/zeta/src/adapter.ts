@@ -215,16 +215,29 @@ const turnData = (data: Record<string, unknown>) => {
   return data;
 };
 
+const childHoldDateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" });
+const childHoldDeadline = (value: unknown) => {
+  if (typeof value !== "string") return undefined;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return undefined;
+  try {
+    // Use a fixed, readable UTC date/time so the default copy is stable across hosts.
+    return childHoldDateFormatter.format(date);
+  } catch {
+    return undefined;
+  }
+};
+
 const childHoldNotification = (data: Record<string, unknown>): RunEvent => {
   const description = string(data.description, "data.description");
-  const until = string(data.until, "data.until");
   const reason = string(data.reason, "data.reason");
   const cause = reason === "rate_limit" ? "provider rate limit" : reason === "subscription_limit" ? "subscription limit" : reason;
+  const deadline = childHoldDeadline(data.until);
   const { account: _account, text: _text, ...safe } = data;
   return {
     type: "notification",
     notification_id: optionalString(data.notification_id, "data.notification_id"),
-    data: { ...safe, text: `child ${description} waits for a ${cause} until ${until}` },
+    data: { ...safe, text: `child ${description} waits for a ${cause}${deadline ? ` until ${deadline}` : ""}` },
   };
 };
 
@@ -362,7 +375,6 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
           ? [subAgent(data, "running", undefined, "agent_instance_id")]
           : [{ type: "notification", notification_id: optionalString(data.notification_id, "data.notification_id"), data: { ...data } }];
       }
-      case "child_hold":
       case "sub_agent_receipt":
       case "notification_by_kind":
       case "task_exit_notification":

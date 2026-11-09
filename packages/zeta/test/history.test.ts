@@ -90,8 +90,17 @@ test("child holds use the same readable notification in live and history", () =>
   for (const event of history) historyStore.dispatch(event);
   expect(liveStore.getState()).toEqual(historyStore.getState());
   const item = liveStore.getItem(liveStore.getOutline()[0]!.id);
-  expect(item).toMatchObject({ event: { type: "notification", data: { kind: "child_hold", text: "child worker waits for a provider rate limit until 2030-01-02T03:04:05+00:00" } } });
+  const readableDeadline = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(data.until));
+  expect(item).toMatchObject({ event: { type: "notification", data: { kind: "child_hold", text: `child worker waits for a provider rate limit until ${readableDeadline}` } } });
   expect(JSON.stringify(item)).not.toContain("secret-account");
+});
+
+test("child hold copy omits missing or invalid deadlines", () => {
+  for (const until of [undefined, "not-a-date"]) {
+    const [event] = fromZetaEvent({ event: "child_hold", data: { kind: "child_hold", description: "worker", reason: "subscription_limit", ...(until === undefined ? {} : { until }) } });
+    expect(event).toMatchObject({ type: "notification", data: { text: "child worker waits for a subscription limit" } });
+    expect((event as { type: "notification"; data: Record<string, unknown> }).data.text).not.toContain("Invalid Date");
+  }
 });
 
 test("legacy child hold receipts remain notifications", () => {
