@@ -14,10 +14,19 @@ const commits = (prefix: string, count: number): RunEvent[] => Array.from({ leng
   { type: "message_commit", message_id: `${prefix}-${index}`, message: { role: "assistant", content: [{ type: "text", text: `${prefix}-${index}` }] } }
 ));
 
+const restoreProperty = (target: object, key: PropertyKey, descriptor?: PropertyDescriptor) => {
+  if (descriptor) Object.defineProperty(target, key, descriptor);
+  else Reflect.deleteProperty(target, key);
+};
+
 test("two row growths before measurement keep a pinned reader at the physical end", async () => {
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
   const frames: FrameRequestCallback[] = [];
-  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
+  const saved = {
+    ResizeObserver: Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver"),
+    requestAnimationFrame: Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame"),
+    cancelAnimationFrame: Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame"),
+  };
   const dimensions = {
     clientHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight"),
     scrollHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight"),
@@ -70,10 +79,10 @@ test("two row growths before measurement keep a pinned reader at the physical en
   } finally {
     act(() => root.unmount());
     container.remove();
-    globalThis.ResizeObserver = saved.ResizeObserver;
-    globalThis.requestAnimationFrame = saved.raf;
-    globalThis.cancelAnimationFrame = saved.caf;
-    for (const [key, descriptor] of Object.entries(dimensions)) if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+    restoreProperty(globalThis, "ResizeObserver", saved.ResizeObserver);
+    restoreProperty(globalThis, "requestAnimationFrame", saved.requestAnimationFrame);
+    restoreProperty(globalThis, "cancelAnimationFrame", saved.cancelAnimationFrame);
+    for (const [key, descriptor] of Object.entries(dimensions)) restoreProperty(HTMLElement.prototype, key, descriptor);
   }
 });
 
@@ -82,7 +91,11 @@ test("a row resize reported just before a resync replaces its id is not measured
   // Timeline has two observers (rows and the viewport); keep each one's callback and targets.
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
   const frames: FrameRequestCallback[] = [];
-  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
+  const saved = {
+    ResizeObserver: Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver"),
+    requestAnimationFrame: Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame"),
+    cancelAnimationFrame: Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame"),
+  };
   globalThis.ResizeObserver = class {
     private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
     constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
@@ -113,9 +126,9 @@ test("a row resize reported just before a resync replaces its id is not measured
   } finally {
     act(() => root.unmount());
     container.remove();
-    globalThis.ResizeObserver = saved.ResizeObserver;
-    globalThis.requestAnimationFrame = saved.raf;
-    globalThis.cancelAnimationFrame = saved.caf;
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    restoreProperty(globalThis, "ResizeObserver", saved.ResizeObserver);
+    restoreProperty(globalThis, "requestAnimationFrame", saved.requestAnimationFrame);
+    restoreProperty(globalThis, "cancelAnimationFrame", saved.cancelAnimationFrame);
+    restoreProperty(HTMLElement.prototype, "clientHeight", clientHeight);
   }
 });
