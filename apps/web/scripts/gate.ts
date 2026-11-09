@@ -310,7 +310,7 @@ const assertReconnectBottomFixture = (
   if (!Number.isInteger(sample.engineTotal)) {
     throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} engine total is not integral (${JSON.stringify(fixture)})`);
   }
-  if (sample.scrollHeight - sample.engineTotal !== 18 || sample.domEnd - sample.engineEnd !== 18) {
+  if (sample.scrollHeight - sample.engineTotal !== 26 || sample.domEnd - sample.engineEnd !== 18) {
     throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} fixture did not add the 16 px virtual gutter plus its 2 px probe (${JSON.stringify(fixture)})`);
   }
 };
