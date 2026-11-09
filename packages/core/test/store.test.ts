@@ -146,24 +146,6 @@ test("an approval folding into its tool row is one replace in place, even with a
   expect(ids(store.getOutline()).slice(5)).toEqual(["tool:write-3", "message:between"]);
 });
 
-test("serializes dispatches that re-enter during a reduction", () => {
-  const store = createRunStore((job) => job());
-  const nested = { type: "user_message", text: "nested", mode: "send", delivery_id: "nested" } as const;
-  const outer = {
-    type: "user_message", text: "outer", mode: "send",
-    get delivery_id() { store.dispatch(nested); return "outer"; },
-  } as const;
-  store.dispatch(outer);
-  expect(store.getOutline()).toEqual([
-    { id: "user:delivery:outer", kind: "user" },
-    { id: "user:delivery:nested", kind: "user" },
-  ]);
-  expect(store.getItem("user:delivery:outer")).toBeDefined();
-  expect(store.getItem("user:delivery:nested")).toBeDefined();
-  expect(store.hasMessageDelivery("outer")).toBe(true);
-  expect(store.hasMessageDelivery("nested")).toBe(true);
-});
-
 test("keeps one snapshot for every subscriber notification pass", () => {
   const store = createRunStore((job) => job());
   const seenA: string[][] = [];
@@ -550,6 +532,7 @@ const syncDispatch = [
   { entry: "endHistory", outline: ["message:b", "message:x"] },
   { entry: "prepend from a listener", outline: ["message:b", "message:a", "message:c", "message:x"] },
   { entry: "endHistory from a listener", outline: ["message:b", "message:a", "message:c", "message:x"] },
+  { entry: "dispatch during a reduction", outline: ["user:delivery:outer", "user:delivery:nested"] },
 ];
 test.each(syncDispatch)("$entry with a synchronous scheduler: a listener's dispatch is delivered after the pass", ({ entry, outline }) => {
   const probe = Bun.spawnSync([process.execPath, new URL("./notify-probe.ts", import.meta.url).pathname, entry], { timeout: 3_000 });
@@ -668,6 +651,87 @@ test("a throwing onError on a rejected prepend page never escapes a read: the st
   expect(() => store.getState()).not.toThrow();
   expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "reduce" });
   expect(jobs.shift()!).toThrow("onError boom");
+});
+
+// Formatting a thrown value runs host code too: a `message` getter, toString, or Proxy traps. The store desyncs first,
+// and an unreadable value becomes a fixed reason, so reads, diagnostics, and onError still agree.
+const throwingType = (thrown: () => unknown) =>
+  new Proxy({ type: "retry" }, { get(target, key, receiver) { if (key === "type") throw thrown(); return Reflect.get(target, key, receiver); } }) as RunEvent;
+const unreadable = [
+  { name: "a null-prototype object", thrown: () => Object.create(null) as unknown },
+  { name: "an Error whose message getter throws", thrown: () => Object.defineProperty(new Error("x"), "message", { get() { throw new Error("message getter"); } }) },
+];
+test.each(unreadable)("an unreadable thrown value: reads never throw, diagnostics say desynced, and onError runs once: $name", ({ thrown }) => {
+  const jobs: Array<() => void> = [];
+  const errors: unknown[] = [];
+  const store = createRunStore((job) => jobs.push(job), { onError: (error) => errors.push(error) });
+  const value = thrown();
+  store.dispatch(throwingType(() => value));
+  expect(() => store.getState()).not.toThrow();
+  expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "unreadable error" });
+  expect(errors).toEqual([value]);
+  expect(jobs.shift()!).not.toThrow();
+  expect(() => store.resyncFailed(value)).not.toThrow();
+  expect(store.getDiagnostics().resyncError).toBe("unreadable error");
+});
+
+test("options.onError is read once, at creation: a getter cannot throw from a read", () => {
+  const jobs: Array<() => void> = [];
+  const errors: unknown[] = [];
+  let created = false;
+  const store = createRunStore((job) => jobs.push(job), {
+    get onError() {
+      if (created) throw new Error("onError getter");
+      return (error: unknown) => { errors.push(error); };
+    },
+  });
+  created = true;
+  store.dispatch(throwingType(() => new Error("reduce")));
+  expect(() => store.getState()).not.toThrow();
+  expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "reduce" });
+  expect(errors.map((error) => (error as Error).message)).toEqual(["reduce"]);
+  expect(jobs.shift()!).not.toThrow();
+});
+
+// The events argument is plain data, but a throwing iterator is host code: it reaches the caller before any change.
+const throwingIterator = { [Symbol.iterator]() { throw new Error("iterator"); } } as unknown as RunEvent[];
+test.each(["resync", "prepend"] as const)("a throwing events iterator: %s throws to its caller and changes nothing", (entry) => {
+  const jobs: Array<() => void> = [];
+  const store = createRunStore((job) => jobs.push(job));
+  store.beginHistory();
+  store.resync([commit("a")]);
+  const state = store.getState();
+  const snapshot = store.getOutlineSnapshot();
+  const diagnostics = store.getDiagnostics();
+  let calls = 0;
+  store.subscribe(() => calls++);
+  store.dispatch(commit("b")); // queued, not reduced: the throwing entry must not flush or deliver it
+  expect(() => store[entry](throwingIterator)).toThrow("iterator");
+  expect(calls).toBe(0);
+  expect(jobs).toHaveLength(1);
+  expect(store.getDiagnostics()).toBe(diagnostics);
+  expect(ids(snapshot.items)).toEqual(["message:a"]);
+  expect(state.outline).toBe(snapshot.items);
+  jobs.shift()!();
+  expect({ calls, outline: ids(store.getOutline()) }).toEqual({ calls: 1, outline: ["message:a", "message:b"] });
+});
+
+test("a proxy that throws while a prepend compares items: reads never throw, the store desyncs, and onError runs once", () => {
+  const jobs: Array<() => void> = [];
+  const errors: unknown[] = [];
+  const store = createRunStore((job) => jobs.push(job), { onError: (error) => errors.push(error) });
+  // Each read of tool_call returns a new arguments proxy, so the prepend's re-reduction holds a different object and
+  // the identity check walks into it.
+  const args = () => new Proxy({}, { ownKeys() { throw new Error("ownKeys trap"); } });
+  store.beginHistory();
+  store.dispatch({ type: "tool_start", get tool_call() { return { id: "t", name: "x", arguments: args() }; } } as RunEvent);
+  jobs.shift()!();
+  store.prepend([commit("b")]);
+  expect(() => store.getState()).not.toThrow();
+  expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "ownKeys trap" });
+  expect(errors.map((error) => (error as Error).message)).toEqual(["ownKeys trap"]);
+  expect(ids(store.getOutline())).toEqual(["tool:t"]);
+  expect(jobs.shift()!).not.toThrow();
 });
 
 // The host's error sink (reportError, or console.error where it does not exist) is host code too. A sink that throws,
