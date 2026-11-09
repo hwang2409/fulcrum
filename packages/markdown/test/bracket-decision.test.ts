@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
 import { PENDING_INLINE_SUFFIX } from "../src/pending-inline.js";
+import { expectGrowthBelow } from "../../../test-support/scaling.js";
 
 // A stable `[` decided as text: the opener has one source position; hidden there until decided, shown there when
 // decided, never re-materialized elsewhere. Deciding it reveals the markers kept in place and never parses the text
@@ -53,20 +54,20 @@ for (const [name, build] of shapes) for (const delta of [1, 7, 1024]) {
   }, 60_000);
 }
 
-// A stray `]` after many stable openers finds no bracket below it: one step to the bracket below, not a walk.
-test("stray closing brackets after stable emphasis openers stay linear", () => {
-  const source = "*a ".repeat(20_000) + "] ".repeat(20_000);
-  const document = createStreamingDocument();
-  const start = performance.now();
-  for (let offset = 0; offset < source.length; offset += 1024) {
-    document.append(source.slice(offset, offset + 1024));
-    document.render();
-  }
-  const elapsed = performance.now() - start;
-  expect(document.stats.copiedCharacters).toBeLessThanOrEqual(4 * source.length);
-  // A coarse backstop: the walk took 1.9-5.6 s here; the copy count above is the gate.
-  expect(elapsed).toBeLessThan(1_500);
-});
+// A stray closer after many stable emphasis openers: a `]` with no bracket below it, or an `_` with no `_` opener below
+// it, takes one step through the stable index instead of a walk down the whole stack (quadratic on main e5a9bcb).
+for (const closer of ["] ", "x_ "]) test(`stray ${JSON.stringify(closer)} closers after stable emphasis openers scale linearly`, () => {
+  expectGrowthBelow([1_000, 32_000], (size) => {
+    const source = "*a ".repeat(size) + closer.repeat(size);
+    return () => {
+      const document = createStreamingDocument();
+      for (let offset = 0; offset < source.length; offset += 1024) {
+        document.append(source.slice(offset, offset + 1024));
+        document.render();
+      }
+    };
+  });
+}, 60_000);
 
 /** The non-space, non-bracket characters before each `[` or `]` of `value`, with the glyph: where a bracket sits. */
 const bracketPlaces = (value: string) => {
