@@ -414,7 +414,7 @@ export const demos: Demo[] = [
     id: "message-block-tail",
     part: "Message",
     title: "streaming, a block last",
-    description: "The message still streams, and its newest part is a file: with no text line to end, the file carries the live signal, a pulsing accent rail like a running tool's.",
+    description: "The message still streams, and its newest part is a file: with no text line to end, the file carries the live signal, a static accent rail like a running tool's.",
     events: blockStream("block-tail", ["The bundle report is ready: ", report]).slice(0, -1),
   },
   {

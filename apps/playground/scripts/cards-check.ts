@@ -203,20 +203,92 @@ function readViewerCommitShift() {
   return moved ? `markdown-crossing: the viewer head moves when its status word goes at the commit (${JSON.stringify(before)} -> ${JSON.stringify(after)})` : undefined;
 }
 
-// Runs in the page. A streaming viewer keeps its "streaming" word and its count at every width, as a running tool keeps
-// "running".
+// Runs in the page. A streaming viewer keeps its "streaming" word and its count, as a running tool keeps "running". A
+// head of 300 px or less keeps the streaming mark and gives the word to screen readers only, so it stays one row.
 function readViewerWord() {
   const word = document.querySelector<HTMLElement>("#markdown-crossing [data-part=md-code-block][data-state=streaming] [data-part=text-viewer-status] > span");
   if (!word) return "markdown-crossing: no streaming viewer status word";
-  const { width } = word.getBoundingClientRect();
-  if (width < 20 || getComputedStyle(word).clipPath !== "none") return `markdown-crossing: the viewer's "streaming" word is hidden (${width.toFixed(1)} px wide)`;
-  // Neither the state nor the count is cut, and the head keeps one row.
   const head = word.closest<HTMLElement>("[data-part=text-viewer-head]")!;
+  const { width } = word.getBoundingClientRect();
+  const narrow = head.getBoundingClientRect().width <= 300;
+  if (!narrow && (width < 20 || getComputedStyle(word).clipPath !== "none")) return `markdown-crossing: the viewer's "streaming" word is hidden (${width.toFixed(1)} px wide)`;
+  const mark = getComputedStyle(word.parentElement!, "::before");
+  if (mark.content !== '""' || parseFloat(mark.width) < 4) return "markdown-crossing: the viewer's streaming mark is not drawn";
+  // Neither the state nor the count is cut, and the head keeps one row.
   const count = head.querySelector<HTMLElement>("[data-part=text-viewer-count]")!;
   if (count.scrollWidth > count.clientWidth + 0.5) return `markdown-crossing: the viewer's count is cut (${count.clientWidth} of ${count.scrollWidth} px)`;
   // Items centered in one row overlap vertically; a wrapped item starts below another's bottom.
   const boxes = [...head.children].map((child) => child.getBoundingClientRect()).filter((box) => box.width > 1);
   return Math.max(...boxes.map((box) => box.top)) >= Math.min(...boxes.map((box) => box.bottom)) ? "markdown-crossing: the viewer head wraps onto a second row" : undefined;
+}
+
+// Runs in the page. The streaming viewer's head: its height, its top and the scroll box's top in page coordinates (so a
+// page scroll does not count), whether its items wrap onto a second row, and the position the viewer reports.
+function readViewerHead() {
+  const scope = document.querySelector("#markdown-crossing [data-part=md-code-block][data-state=streaming]");
+  const head = scope?.querySelector<HTMLElement>("[data-part=text-viewer-head]");
+  const viewer = scope?.querySelector<HTMLElement>("[data-part=text-viewer]");
+  if (!head || !viewer) return undefined;
+  const boxes = [...head.children].map((child) => child.getBoundingClientRect()).filter((box) => box.width > 1);
+  const box = head.getBoundingClientRect();
+  return {
+    position: head.querySelector("[data-part=text-viewer-position]")?.textContent ?? "",
+    height: box.height,
+    top: box.top + scrollY,
+    viewerTop: viewer.getBoundingClientRect().top + scrollY,
+    wraps: Math.max(...boxes.map((item) => item.top)) >= Math.min(...boxes.map((item) => item.bottom)),
+  };
+}
+
+// The streaming viewer's head is one row of the same height in every follow state: following, scrolled up, at the top,
+// and back at the bottom, and with "new output" (the longest position word). Scrolling the code never moves it.
+export async function checkViewerFollowHead(page: Page, port: number, failures: string[]) {
+  const scope = "#markdown-crossing [data-part=md-code-block][data-state=streaming]";
+  await page.goto(`http://127.0.0.1:${port}/gallery.html#markdown-crossing`);
+  await page.waitForSelector(`${scope} [data-part=text-viewer]`, { timeout: 10_000 });
+  await page.evaluate(() => document.fonts.ready);
+  const before = failures.length;
+  for (const width of [280, 320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const viewer = page.locator(`${scope} [data-part=text-viewer]`);
+    await viewer.scrollIntoViewIfNeeded();
+    await nextFrame(page);
+    const states: NonNullable<ReturnType<typeof readViewerHead>>[] = [];
+    const read = async () => {
+      await nextFrame(page);
+      const state = await page.evaluate(readViewerHead);
+      if (state) states.push(state);
+    };
+    await read(); // following
+    const box = (await viewer.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    for (let step = 0; step < 3; step++) await page.mouse.wheel(0, -120);
+    await read(); // scrolled up
+    // A paused gallery stream sends no more output: show the longest position word as the viewer would.
+    await page.evaluate((selector) => {
+      const position = document.querySelector<HTMLElement>(`${selector} [data-part=text-viewer-position]`)!;
+      position.dataset.position = "new-output";
+      position.textContent = "new output";
+    }, scope);
+    await read();
+    const jump = (target: string) => page.locator(`${scope} [data-action=jump-${target}]`).click({ timeout: 2_000 }).catch(() => {});
+    await jump("bottom");
+    await jump("top");
+    await read(); // at top
+    await jump("bottom");
+    await read(); // back at the bottom
+    const at = `markdown-crossing @ ${width}`;
+    if (states.length !== 5) failures.push(`${at}: no streaming viewer head in every follow state (${states.length} of 5)`);
+    const [first] = states;
+    if (first && new Set(states.map(({ position }) => position)).size < 3) failures.push(`${at}: the follow states did not change the position (${states.map(({ position }) => position).join(", ")})`);
+    for (const state of states) {
+      if (width >= 300 && state.wraps) failures.push(`${at}: the viewer head wraps onto a second row when ${state.position}`);
+      if (first && (Math.abs(state.height - first.height) > 0.5 || Math.abs(state.top - first.top) > 0.5 || Math.abs(state.viewerTop - first.viewerTop) > 0.5))
+        failures.push(`${at}: the viewer head changes from ${first.position} (height ${first.height.toFixed(1)}, top ${first.top.toFixed(1)}, code top ${first.viewerTop.toFixed(1)}) to ${state.position} (height ${state.height.toFixed(1)}, top ${state.top.toFixed(1)}, code top ${state.viewerTop.toFixed(1)})`);
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  if (failures.length === before) console.log("ok   viewer head: one row of the same height and place in every follow state at 280, 320, 390, and 1440");
 }
 
 // Runs in the page. Only a text line keeps the cursor's end gutter: a block that never hangs the cursor (code, a table,
@@ -282,7 +354,9 @@ function checkCursorCase(at: string, mode: Mode, demo: CursorCase, cursor: NonNu
     if (mode === "forced colors") {
       if (rail.background !== cursor.highlightColor || rail.adjust !== "none") failures.push(`${at}: the ${rail.part} rail is ${rail.background}/${rail.adjust}, expected Highlight ${cursor.highlightColor}/none`);
       if (rail.background === rail.border) failures.push(`${at}: the ${rail.part} rail is the color of its own border (${rail.border}): live looks finished`);
-    } else if (rail.background !== cursor.runningRail) failures.push(`${at}: the ${rail.part} rail is ${rail.background}, a running tool's rail is ${cursor.runningRail}`);
+    }
+    // In every mode, forced colors too, live work has one rail color.
+    if (rail.background !== cursor.runningRail) failures.push(`${at}: the ${rail.part} rail is ${rail.background}, a running tool's rail is ${cursor.runningRail}`);
   }
   if (demo.sealed && cursor.toolAfter !== "streaming") failures.push(`${at}: the row after the committed message is ${cursor.toolAfter ? `a ${cursor.toolAfter} tool` : "not a tool"}, expected a running tool`);
   // Whatever it shows, the commit (which removes the cursor) must not change the message's height.
@@ -341,7 +415,7 @@ async function checkStreamingCursor(page: Page, port: number, failures: string[]
       if (failure) failures.push(`${failure} @ ${width}`);
     }
   }
-  // The narrowest phone: the viewer head still keeps its state word and its whole count on one row.
+  // The narrowest phone: the viewer head still keeps its streaming mark and its whole count on one row.
   await page.setViewportSize({ width: 320, height: 900 });
   await nextFrame(page);
   const narrow = await page.evaluate(readViewerWord);
@@ -487,6 +561,7 @@ export async function checkCards(browser: Browser, port: number): Promise<string
   const failures: string[] = [];
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await checkStreamingCursor(page, port, failures);
+  await checkViewerFollowHead(page, port, failures);
   await checkCursorSteps(browser, port, failures);
   await checkStandaloneMotion(page, port, failures);
   await page.goto(`http://127.0.0.1:${port}/gallery.html#tools-done`);
