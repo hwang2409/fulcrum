@@ -21,6 +21,9 @@
 // 370% of the correct append cost), measured as head-only append task-time scaling between 16k and 128k lines.
 // (d) a slowdown shared by head and base fails the calibrated ceiling: candidate median / same-run fixed-DOM work, per
 // width and operation (budgets and samples in viewer-verdict.ts).
+// (e) the unthrottled single and lines appends judge the fastest of 5 appends over the fastest of 5 calibrations, and
+// guard +10 ms per append (about 2x). Min hides a regression that hits only some appends: #127's compare/copy counter
+// owns O(n)-per-append work, and the A/B check's median catches a regression on most appends.
 // The scaling probe measures 21 interleaved 16k/128k pairs of first appends under 4x CPU throttling and judges the
 // median per-pair task ratio (viewer-verdict.ts). Array.push and pushed `text-*` segment counts are cheap extra canaries
 // for rebuilding segments or visiting every row; task-time scaling is the proof.
@@ -34,7 +37,7 @@ import { checkUx } from "./ux-check.js";
 import { checkSubAgents } from "./subagent-check.js";
 import { checkWarmBodies } from "./warm-check.js";
 import { checkLineTokens } from "./token-check.js";
-import { median, ratio, recordUnthrottledViewerFailures, recordViewerScalingFailures, recordViewerTimingFailures, viewerRatioBudget, type Calibration, type ScalingCheck, type ScalingPair, type ViewerCheck, type ViewerSample, type ViewerTiming } from "./viewer-verdict.js";
+import { fastestAppendRatio, median, ratio, recordUnthrottledViewerFailures, recordViewerScalingFailures, recordViewerTimingFailures, viewerRatioBudget, type Calibration, type ScalingCheck, type ScalingPair, type ViewerCheck, type ViewerSample, type ViewerTiming } from "./viewer-verdict.js";
 
 const widths = [390, 768, 1024, 1440];
 const touchWidth = 860; // the gallery's touch breakpoint
@@ -718,7 +721,7 @@ try {
     for (const fixture of ["single", "lines", "read"] as const) {
       const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
       const measured = await measureViewer(page, width, fixture);
-      console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms [${measured.openSamples.map((value) => value.toFixed(1)).join(", ")}], append ${measured.appendMs.toFixed(1)} ms [${measured.appendSamples.map((value) => value.toFixed(1)).join(", ")}], calibration ${measured.calibration.median.toFixed(1)} ms [${measured.calibration.samples.map((value) => value.toFixed(1)).join(", ")}], normalized ${ratio(measured.openMs, measured.calibration.median).toFixed(2)}x/${ratio(measured.appendMs, measured.calibration.median).toFixed(2)}x, gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px, long tasks [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}], ${measured.tokens} token spans, 4x-throttled scroll frames median ${measured.scroll.median.toFixed(1)} ms / p95 ${measured.scroll.p95.toFixed(1)} ms / ${measured.scroll.over33} over 33 ms`);
+      console.log(`viewer ${fixture} @ ${width}: open ${measured.openMs.toFixed(1)} ms [${measured.openSamples.map((value) => value.toFixed(1)).join(", ")}], append ${measured.appendMs.toFixed(1)} ms [${measured.appendSamples.map((value) => value.toFixed(1)).join(", ")}], calibration ${measured.calibration.median.toFixed(1)} ms [${measured.calibration.samples.map((value) => value.toFixed(1)).join(", ")}], normalized open ${ratio(measured.openMs, measured.calibration.median).toFixed(2)}x, fastest append ${fastestAppendRatio(measured.appendSamples, measured.calibration).toFixed(3)}x, gaps ${measured.bottomGap.toFixed(1)}/${measured.appendGap.toFixed(1)} px, long tasks [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}], ${measured.tokens} token spans, 4x-throttled scroll frames median ${measured.scroll.median.toFixed(1)} ms / p95 ${measured.scroll.p95.toFixed(1)} ms / ${measured.scroll.over33} over 33 ms`);
       if (fixture === "read" && measured.longTasks.length) failures.push(`viewer read @ ${width}: long tasks while opening and highlighting [${measured.longTasks.map((ms) => ms.toFixed(0)).join(", ")}] ms`);
       if (fixture === "read" && !measured.tokens) failures.push(`viewer read @ ${width}: the mounted rows of a .ts file were not highlighted`);
       recordUnthrottledViewerFailures(measured, failures);
