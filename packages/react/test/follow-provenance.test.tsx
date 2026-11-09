@@ -1093,14 +1093,45 @@ describe("timeline scroll provenance", () => {
     { name: "armed PageDown repeats keep three-page reach after early keyup", key: "PageDown", repeats: 3, repeatPhase: "armed", quietFrames: 2, distance: 1_500 },
     { name: "held moving PageDown repeats extend reach before keyup", key: "PageDown", repeats: 3, repeatPhase: "held", quietFrames: 2, distance: 1_500 },
     { name: "released moving PageDown repeats extend retained reach", key: "PageDown", repeats: 3, repeatPhase: "moving", quietFrames: 2, distance: 1_500 },
+    { name: "upward lease rejects a far layout clamp at the new end", layoutClamp: true },
   ] as const;
-  test.each(motionRows)("motion continuation: $name", ({ key, repeats, repeatPhase, quietFrames, distance }) => {
+  test.each(motionRows)("motion continuation: $name", (row) => {
     const geometry = installScrollGeometry();
     const observer = installRowObserver();
     const nextFrame = () => observer.measure(() => undefined);
     try {
-      const { append, host, jump, unseen } = mountTimeline();
+      const { append, follow, host, jump, unseen } = mountTimeline();
       observer.measure(() => 72);
+      if ("layoutClamp" in row) {
+        act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+        moveReader(host, host.scrollHeight - host.clientHeight - 300);
+        append();
+        expect(unseen(), "the reader is unpinned before the settling layout starts").toBe("1");
+        const engineEnd = host.scrollHeight - host.clientHeight;
+        act(() => host.dispatchEvent(new PointerEvent("pointerdown", { clientX: 10, clientY: 10, bubbles: true })));
+        act(() => document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })));
+        geometry.addDomExtra(5_000); // layout grows before the engine receives its measurement
+        hostWrite(host, engineEnd + 2_000);
+        act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+        moveReader(host, engineEnd + 1_700); // establish a moving upward lease within one viewport
+        geometry.addDomExtra(-5_000); // settling layout clamps far upward to the engine's unchanged end
+        const clampedTop = host.scrollTop;
+        host.scrollTop = clampedTop;
+        act(() => host.dispatchEvent(new Event("scroll")));
+        host.scrollTop = clampedTop - 1_000;
+        act(() => host.dispatchEvent(new Event("scroll")));
+        follow();
+        expect(host.scrollTop, "a far layout clamp must end the stale lease before an explicit owner write").toBe(clampedTop);
+        act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+        moveReader(host, clampedTop - 300);
+        append();
+        geometry.addDomExtra(5_000);
+        expect(host.scrollHeight - host.clientHeight - host.scrollTop, "the reader stays more than 500 px from the grown end").toBeGreaterThan(500);
+        expect(unseen(), "the layout clamp must leave later reader intent unpinned").toBe("1");
+        expect(jump(), "the jump control stays available after the layout clamp").not.toBeNull();
+        return;
+      }
+      const { key, repeats, repeatPhase, quietFrames, distance } = row;
       act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
       moveReader(host, host.scrollHeight - host.clientHeight - distance);
       nextFrame();
