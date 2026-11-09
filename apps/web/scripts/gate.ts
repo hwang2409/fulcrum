@@ -732,12 +732,20 @@ const waitNamed = (locator: Locator, failure: string, timeout: number, state: "a
 // and on this branch alike), so the row repeats the key, up to five times, and counts the callbacks of the last press.
 type AnimatedGesture = "PageDown" | "End" | "PageDown repeated" | "PageDown (body focus)";
 
-// A freshly launched engine loads the app cold (module graph, fonts); open the long run once before its first row.
-// These rows are new: their load waits are 30 s, since Firefox loads the 1,000-row run slowly on a busy machine.
+// A freshly launched engine loads the app cold (module graph, fonts, the first history pages). Open the long run once,
+// in a row context like the rows use, before the first row. These rows are new: their load waits are 30 s, since Firefox
+// loads the 1,000-row run slowly on a busy machine.
 async function warmEngine(page: Page, engine: string) {
-  await page.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
-  await waitNamed(page.locator('[data-run-ready="true"]'), `${engine}: warm-up: the long run was not ready`, 30_000);
-  await page.goto("about:blank");
+  const history = fake.historyOf(LONG);
+  try {
+    await withRowPage(page, engine, async (rowPage) => {
+      await rowPage.goto(`${origin}/?theme=tokyo-night#session=${LONG}`);
+      await waitNamed(rowPage.locator('[data-run-ready="true"]'), `${engine}: warm-up: the long run was not ready`, 30_000);
+      await waitNamed(rowPage.getByText(/loading session history/), `${engine}: warm-up: history paging did not finish`, 30_000, "detached");
+    });
+  } finally {
+    fake.restoreHistory(LONG, history);
+  }
 }
 
 async function checkAnimatedReaderScrollRepins(page: Page, engine: string, gesture: AnimatedGesture) {
