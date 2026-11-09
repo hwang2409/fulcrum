@@ -499,8 +499,8 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 /* The count is never cut: when a head cannot hold a row, it wraps (styles below keep the usual states on one row). */
 [data-part="text-viewer-count"] { flex: 1 0 auto; white-space: nowrap; }
 /* A narrow head is one row in every follow state, so scrolling never moves the code. The position word yields in every
-   state: the jump button says where the view is, and a warn square before it says new output arrived below (status
-   colors mark, never color text). The square's space is kept in every state, so it appears without a shift. Narrower
+   state: the jump button says where the view is, and a warn chevron before it says new output arrived below (status
+   colors mark, never color text). The chevron's space is kept in every state, so it appears without a shift. Narrower
    still, "ln" stands for "lines" and the streaming mark for its word. Screen readers keep every word and aria-label. */
 @container text-viewer-head (max-width: 560px) {
   [data-part="text-viewer-wide"] { display: none; }
@@ -509,7 +509,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   /* As wide as its longer label ("bottom"), so "top" and "bottom" share one left edge. */
   [data-part="text-viewer-head"] > [data-action^="jump-"] { box-sizing: content-box; min-width: calc(6ch + 13px); text-align: start; }
   [data-part="text-viewer-position"][data-position="new-output"] ~ [data-action="jump-bottom"] { font-weight: 700; }
-  [data-part="text-viewer-position"][data-position="new-output"] ~ [data-action="jump-bottom"]::before { background: var(--fulcrum-warn); }
+  [data-part="text-viewer-position"][data-position="new-output"] ~ [data-action="jump-bottom"]::before { box-sizing: border-box; border-right: 2px solid var(--fulcrum-warn); border-bottom: 2px solid var(--fulcrum-warn); transform: translateY(-1px) rotate(45deg); }
 }
 @container text-viewer-head (max-width: 300px) {
   :is([data-part="text-viewer-unit"], [data-part="text-viewer-status"] > span) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -521,7 +521,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="text-viewer-status"] { --mark: var(--fulcrum-accent); }
 [data-part="text-viewer-status"]::before { animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
 [data-part="text-viewer-position"][data-position="new-output"] { color: var(--fulcrum-fg); font-weight: 700; }
-[data-part="text-viewer-position"][data-position="new-output"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-inline-end: 6px; background: var(--fulcrum-warn); }
+[data-part="text-viewer-position"][data-position="new-output"]::before { content: ""; display: inline-block; box-sizing: border-box; width: 7px; height: 7px; margin-inline-end: 6px; border-right: 2px solid var(--fulcrum-warn); border-bottom: 2px solid var(--fulcrum-warn); transform: translateY(-1px) rotate(45deg); }
 [data-part="text-viewer"] {
   position: relative;
   max-height: 320px;
@@ -1250,8 +1250,8 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="approval"],
   [data-part="item"][data-kind="error"] { --rail: CanvasText; --mark: CanvasText; border-color: CanvasText; }
   [data-part="approval"][data-state="pending"] { border-width: 2px; }
-  :is([data-part="tool-status"], [data-part="text-viewer-status"])::before,
-  :is([data-part="text-viewer-position"][data-position="new-output"], [data-part="text-viewer-position"][data-position="new-output"] ~ [data-action="jump-bottom"])::before { forced-color-adjust: none; background: CanvasText; }
+  :is([data-part="tool-status"], [data-part="text-viewer-status"])::before { forced-color-adjust: none; background: CanvasText; }
+  :is([data-part="text-viewer-position"][data-position="new-output"], [data-part="text-viewer-position"][data-position="new-output"] ~ [data-action="jump-bottom"])::before { forced-color-adjust: none; border-color: CanvasText; }
   [data-part="reasoning"] { --rail: CanvasText; --mark: CanvasText; }
   [data-part="reasoning-status"]::before { forced-color-adjust: none; background: CanvasText; }
   [data-part="approval-actions"] button { border-color: ButtonText; }

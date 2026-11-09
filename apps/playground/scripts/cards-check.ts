@@ -243,7 +243,15 @@ function readViewerHead() {
       const jump = head.querySelector("[data-action=jump-bottom]");
       if (!jump) return undefined;
       const style = getComputedStyle(jump, "::before");
-      return { width: parseFloat(style.width) || 0, filled: !/^(?:transparent|rgba\(0, 0, 0, 0\))$/.test(style.backgroundColor), fill: style.backgroundColor, textColor: getComputedStyle(jump).color };
+      const filled = !/^(?:transparent|rgba\(0, 0, 0, 0\))$/.test(style.backgroundColor);
+      return { width: parseFloat(style.width) || 0, filled, drawn: filled || parseFloat(style.borderBottomWidth) > 0 || parseFloat(style.borderRightWidth) > 0, fill: style.backgroundColor, textColor: getComputedStyle(jump).color,
+        shape: [filled, style.borderBottomWidth, style.borderRightWidth, style.borderRadius].join("|") };
+    })(),
+    streamingShape: (() => {
+      const status = head.querySelector("[data-part=text-viewer-status]");
+      if (!status) return "";
+      const style = getComputedStyle(status, "::before");
+      return [!/^(?:transparent|rgba\(0, 0, 0, 0\))$/.test(style.backgroundColor), style.borderBottomWidth, style.borderRightWidth, style.borderRadius].join("|");
     })(),
     // Each status word's text color, and the two text colors it may use: the head's muted and the code's fg (status
     // colors mark, never color text).
@@ -297,10 +305,12 @@ export async function checkViewerFollowHead(page: Page, port: number, failures: 
     const [first] = states;
     if (first && new Set(states.map(({ position }) => position)).size < 3) failures.push(`${at}: the follow states did not change the position (${states.map(({ position }) => position).join(", ")})`);
     const fresh = states.find(({ position }) => position === "new output");
-    if (fresh && !fresh.positionShown && !(fresh.mark && fresh.mark.filled && fresh.mark.width >= 6))
-      failures.push(`${at}: with new output below, the head shows neither the position word nor the jump button's warn square`);
+    if (fresh && !fresh.positionShown && !(fresh.mark && fresh.mark.drawn && fresh.mark.width >= 6))
+      failures.push(`${at}: with new output below, the head shows neither the position word nor the jump button's warn chevron`);
     if (fresh?.mark?.filled && fresh.mark.textColor === fresh.mark.fill)
       failures.push(`${at}: the jump button's text turns ${fresh.mark.textColor} on new output (status colors mark, never color text)`);
+    if (fresh?.mark?.shape === fresh?.streamingShape)
+      failures.push(`${at}: streaming and new-output marks have the same shape (${fresh.mark.shape})`);
     for (const state of states) for (const { word, text } of state.words)
       if (!state.textColors.includes(text))
         failures.push(`${at}: the status word "${word}" is colored ${text} (status colors mark, never color text)`);

@@ -43,12 +43,23 @@ function blockContents(blocks: readonly Block[], into = new Map<Block, string>()
   return into;
 }
 
-/** The source index each non-space character of `final` came from, matched from the end (so never earlier than real). */
+/**
+ * Markdown collapses whitespace runs, removes indentation and trailing space, and turns preserved line and block
+ * boundaries into separators. Canonicalizing those four syntax changes still requires every visible-word separator.
+ */
+const comparable = (value: string) => value.trim().replace(/\s+/g, " ");
+
+/** The source index each comparable final character came from, matched from the end (so never earlier than real). */
 function sourceIndexes(final: string, source: string) {
   const indexes: number[] = [];
   let cursor = source.length;
   for (let index = final.length - 1; index >= 0; index--) {
-    const at = /\s/.test(final[index]!) ? -1 : source.lastIndexOf(final[index]!, cursor - 1);
+    let at = cursor - 1;
+    if (final[index] === " ") {
+      while (at >= 0 && !/\s/.test(source[at]!)) at--;
+    } else {
+      at = source.lastIndexOf(final[index]!, at);
+    }
     indexes[index] = at;
     if (at >= 0) cursor = at;
   }
@@ -93,8 +104,8 @@ function firstMissing(owed: string, shown: string) {
  * `every` > 1 checks one boundary in `every` (rotating with the source, so the corpus covers every offset) and every
  * boundary that ends a line or the stream; each delta is still appended and rendered.
  */
-function check(source: string, deltas: readonly string[], identity = false, every = 1) {
-  const final = visible(parseMarkdown(source));
+function check(source: string, deltas: readonly string[], identity = false, every = 1, show = visible) {
+  const final = comparable(visible(parseMarkdown(source)));
   const indexes = sourceIndexes(final, source);
   const document = createStreamingDocument();
   let end = 0;
@@ -117,13 +128,18 @@ function check(source: string, deltas: readonly string[], identity = false, ever
     const before = source.slice(paragraphStart, lineStart);
     const held = (at: number) => headerCellMarker(source, at, end)
       || (at >= lineStart ? allowed.some((wait) => wait(growing, at - lineStart, before)) : lineEndBackslash(sent, at, growing));
-    const owedIndexes = indexes.filter((index) => index >= 0 && index < end && !held(index));
-    const owed = owedIndexes.map((index) => source[index]!).join("");
-    const shown = visible(blocks);
+    const owedCharacters = indexes.flatMap((index, at) => {
+      const next = indexes[at + 1];
+      const separatesVisibleText = final[at] !== " " || (next !== undefined && next < end && !held(next));
+      return index >= 0 && index < end && !held(index) && separatesVisibleText ? [{ character: final[at]!, index }] : [];
+    });
+    const owedIndexes = owedCharacters.map(({ index }) => index);
+    const owed = owedCharacters.map(({ character }) => character).join("");
+    const shown = comparable(show(blocks));
     // The reverse direction: everything shown is sent text, in order (owed ⊆ shown ⊆ sent), so no character shows
     // before the text that precedes it in the source, and no stand-in character shows at all.
-    const extra = unexplained(shown.replace(/\s+/g, ""), sent.replace(/\s+/g, ""));
-    if (extra >= 0) return `a shown character the sent text does not explain at that place: ${JSON.stringify(shown.replace(/\s+/g, "")[extra])} (shown character ${extra}) of ${clip(source)}, prefix ${clip(sent)}`;
+    const extra = unexplained(shown, comparable(sent));
+    if (extra >= 0) return `a shown character the sent text does not explain at that place: ${JSON.stringify(shown[extra])} (shown character ${extra}) of ${clip(source)}, prefix ${clip(sent)}`;
     const missing = firstMissing(owed, shown);
     if (missing >= 0) {
       const offset = owedIndexes[missing]!;
@@ -142,7 +158,7 @@ function check(source: string, deltas: readonly string[], identity = false, ever
   }
   // The stream end ends the last line: nothing of the final text may stay hidden.
   document.finish();
-  const missing = firstMissing(indexes.filter((index) => index >= 0).map((index) => source[index]!).join(""), visible(document.render()));
+  const missing = firstMissing(indexes.flatMap((index, at) => index >= 0 ? final[at]! : []), comparable(show(document.render())));
   if (missing >= 0) return `a character is hidden at the stream end: offset ${indexes.filter((index) => index >= 0)[missing]} of ${clip(source)}`;
   return undefined;
 }
@@ -309,6 +325,11 @@ for (const [name, plan, identity, every = 1] of plans) {
     // All four plans use about 8 s of CPU; the limit is wall time on a machine shared with other test jobs.
   }, 300_000);
 }
+
+test("the property catches a hidden word-separating space", () => {
+  const failure = check("hello world", [..."hello world"], false, 1, (blocks) => visible(blocks).replace(" ", ""));
+  expect(failure).toContain('a hidden character no named wait covers: " " at offset 5');
+});
 
 // A `\r` is a line end on its own or before `\n`: the line shows as ended in the frame the `\r` arrives, not one delta
 // later, and a `\n` that opens the next delta is not a second line end.
