@@ -484,31 +484,97 @@ test("a resolved approval says how it ended, and a folded one marks its tool car
   expect(status("tool:ran-call")).toBe("approved·done");
 });
 
-test("an approval's decision word is colored by styles.css: approved ok, denied danger, other endings muted", () => {
+// Status tokens are marks only (test/themes.test.ts): every status word is fg, or muted when calm, and its square,
+// rail, or border carries the tone. Distinct sentinel colors tell each token apart in the computed style.
+const SENTINELS = { fg: "rgb(1, 1, 1)", muted: "rgb(2, 2, 2)", ok: "rgb(0, 128, 0)", warn: "rgb(200, 150, 0)", danger: "rgb(255, 0, 0)", accent: "rgb(0, 0, 255)", "ui-type": "rgb(3, 3, 3)" };
+const word = (color: string) => Object.entries(SENTINELS).find(([, rgb]) => rgb === color)?.[0] ?? color;
+
+test("styles.css writes every tool, approval, exit, and HTTP status word in fg or muted, never in its status color", () => {
   const style = document.createElement("style");
-  style.textContent = ":root { --fulcrum-ok: rgb(0, 128, 0); --fulcrum-danger: rgb(255, 0, 0); --fulcrum-muted: rgb(128, 128, 128); }" + readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+  style.textContent = `:root { ${Object.entries(SENTINELS).map(([name, rgb]) => `--fulcrum-${name}: ${rgb};`).join(" ")} }` + readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   document.head.append(style);
   try {
     const call = (id: string) => ({ id, name: "bash", arguments: { command: "ls" } });
     const ask = (id: string): RunEvent => ({ type: "approval_request", request_id: id, tool_call: call(`${id}-call`), delegated: false });
+    const fetch = (id: string, status: number) => tool(id, "fetch", { kind: "fetch", url: "https://a.test", status }, "body");
     render([
       ask("yes"), { type: "approval_end", request_id: "yes", decision: "approve" },
       ask("no"), { type: "approval_end", request_id: "no", decision: "deny" },
       ask("abort"), { type: "approval_end", request_id: "abort", decision: "abort" },
+      ask("wait"),
       ask("ran"), { type: "approval_end", request_id: "ran", decision: "approve" }, { type: "tool_start", tool_call: call("ran-call") },
-      // A call whose approval was lost, then canceled: the card's mark is hollow (transparent), its word is not.
-      ask("lost"), { type: "approval_end", request_id: "lost", decision: "abort", data: { reason: "controller_disconnected" } }, { type: "tool_start", tool_call: call("lost-call") },
-      { type: "tool_end", tool_call: call("lost-call"), tool_result: { tool_call_id: "lost-call", content: "", is_error: false, is_canceled: true } },
-    ], ["approval:yes", "approval:no", "approval:abort", "tool:ran-call", "tool:lost-call"]);
-    const color = (selector: string) => getComputedStyle(q(selector)).color;
-    expect(color('[data-id="approval:yes"] [data-part="tool-status"]')).toBe("rgb(0, 128, 0)");
-    expect(color('[data-id="approval:no"] [data-part="tool-status"]')).toBe("rgb(255, 0, 0)");
-    expect(color('[data-id="approval:abort"] [data-part="tool-status"]')).toBe("rgb(128, 128, 128)");
-    expect(color('[data-id="tool:ran-call"] [data-part="tool-approval"]')).toBe("rgb(0, 128, 0)");
-    expect(q('[data-id="tool:lost-call"]').dataset.state).toBe("canceled");
-    expect(q('[data-id="tool:lost-call"] [data-part="tool-approval"]').textContent).toBe("connection lost");
-    expect(color('[data-id="tool:lost-call"] [data-part="tool-approval"]')).toBe("rgb(128, 128, 128)");
+      ask("nope"), { type: "approval_end", request_id: "nope", decision: "deny" }, { type: "tool_start", tool_call: call("nope-call") },
+      ...tool("ok", "bash", { kind: "shell", command: "ls", exitCode: 0 }, "a\n"),
+      ...tool("bad", "bash", { kind: "shell", command: "ls", exitCode: 2 }, "a\n", { is_error: true }),
+      ...tool("live", "bash", { kind: "shell", command: "ls" }, "a\n", false),
+      ...fetch("f2", 200), ...fetch("f3", 301), ...fetch("f4", 404), ...fetch("f5", 503),
+    ], ["approval:yes", "approval:no", "approval:abort", "approval:wait", "tool:ran-call", "tool:nope-call", "tool:ok", "tool:bad", "tool:live", "tool:f2", "tool:f3", "tool:f4", "tool:f5"]);
+    ["tool:ok", "tool:bad", "tool:f2", "tool:f3", "tool:f4", "tool:f5"].forEach(openCard);
+    const color = (selector: string) => word(getComputedStyle(q(selector)).color);
+    const status = (id: string) => color(`[data-id="${id}"] [data-part="tool-status"]`);
+    expect({
+      approved: status("approval:yes"), denied: status("approval:no"), canceled: status("approval:abort"), pending: status("approval:wait"),
+      "folded approved": color('[data-id="tool:ran-call"] [data-part="tool-approval"]'), "folded denied": color('[data-id="tool:nope-call"] [data-part="tool-approval"]'),
+      done: status("tool:ok"), error: status("tool:bad"), running: status("tool:live"),
+      "exit 0": color('[data-id="tool:ok"] [data-part="tool-exit"]'), "exit 2": color('[data-id="tool:bad"] [data-part="tool-exit"]'),
+      "HTTP 200": color('[data-id="tool:f2"] [data-part="fetch-status"]'), "HTTP 301": color('[data-id="tool:f3"] [data-part="fetch-status"]'),
+      "HTTP 404": color('[data-id="tool:f4"] [data-part="fetch-status"]'), "HTTP 503": color('[data-id="tool:f5"] [data-part="fetch-status"]'),
+    }).toEqual({
+      approved: "fg", denied: "fg", canceled: "muted", pending: "fg",
+      "folded approved": "muted", "folded denied": "fg",
+      done: "fg", error: "fg", running: "fg",
+      "exit 0": "fg", "exit 2": "fg",
+      "HTTP 200": "fg", "HTTP 301": "fg", "HTTP 404": "fg", "HTTP 503": "fg",
+    });
   } finally {
+    style.remove();
+  }
+});
+
+// The parts a run, sub-agent, viewer, composer, and image draw, with the attributes their components render.
+test("styles.css writes run, sub-agent, viewer, composer, and image status words in fg or muted", () => {
+  const style = document.createElement("style");
+  style.textContent = `:root { ${Object.entries(SENTINELS).map(([name, rgb]) => `--fulcrum-${name}: ${rgb};`).join(" ")} }` + readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+  document.head.append(style);
+  const host = document.createElement("div");
+  host.innerHTML = [
+    ...["completed", "cancelled", "failed", "disconnected", "unknown"].map((outcome) => `<div data-part="run-end-marker" data-outcome="${outcome}">${outcome}</div>`),
+    `<span data-part="run-status" data-status="unknown">outcome unknown</span>`,
+    ...["running", "done", "error", "canceled", "idle"].map((state) => `<button data-part="sub-agent" data-state="${state}"><span data-part="sub-agent-head"><span data-part="sub-agent-status" id="sub-${state}">${state}</span></span></button>`),
+    `<button data-part="sub-agent" data-state="running" data-urgency="approval"><span data-part="sub-agent-head"><span data-part="sub-agent-status" id="sub-urgent">needs approval</span></span></button>`,
+    `<span data-part="run-urgency" data-urgency="approval">needs approval</span>`,
+    `<span data-part="run-notice" data-tone="error">lost</span>`,
+    `<span data-part="text-viewer-position" data-position="at-bottom">at bottom</span><span data-part="text-viewer-position" data-position="new-output">new output</span>`,
+    `<span data-part="approval-error" role="alert">failed</span>`,
+    `<div data-part="composer"><div data-part="composer-bar"><p data-part="composer-status" data-tone="danger" id="composer-danger"><span data-part="composer-message">failed</span></p><p data-part="composer-status" data-tone="busy" id="composer-busy"><span data-part="composer-message">sending</span></p><button data-part="composer-stop">stop</button></div></div>`,
+    `<figure data-part="image" data-state="error"><div data-part="image-placeholder"><span>image failed</span></div></figure>`,
+    `<div data-part="block-unknown"><div data-part="block-unknown-header"><span data-part="block-label">unsupported block</span></div></div>`,
+    `<button data-part="jump-to-approval">jump to approval</button>`,
+  ].join("");
+  document.body.append(host);
+  try {
+    const color = (selector: string) => word(getComputedStyle(host.querySelector(selector)!).color);
+    expect({
+      ...Object.fromEntries(["completed", "cancelled", "failed", "disconnected", "unknown"].map((outcome) => [`end ${outcome}`, color(`[data-outcome="${outcome}"]`)])),
+      "run unknown": color('[data-part="run-status"]'),
+      ...Object.fromEntries(["running", "done", "error", "canceled", "idle", "urgent"].map((state) => [`sub-agent ${state}`, color(`#sub-${state}`)])),
+      "run urgency": color('[data-part="run-urgency"]'), "run notice error": color('[data-part="run-notice"]'),
+      "viewer at bottom": color('[data-position="at-bottom"]'), "viewer new output": color('[data-position="new-output"]'),
+      "approval error": color('[data-part="approval-error"]'), "composer error": color("#composer-danger"), "composer busy": color("#composer-busy"),
+      "composer stop": color('[data-part="composer-stop"]'), "image error": color('[data-part="image-placeholder"]'),
+      "unsupported block": color('[data-part="block-label"]'), "jump to approval": color('[data-part="jump-to-approval"]'),
+    }).toEqual({
+      "end completed": "fg", "end cancelled": "muted", "end failed": "fg", "end disconnected": "fg", "end unknown": "fg",
+      "run unknown": "fg",
+      "sub-agent running": "fg", "sub-agent done": "fg", "sub-agent error": "fg", "sub-agent canceled": "muted", "sub-agent idle": "fg", "sub-agent urgent": "fg",
+      "run urgency": "fg", "run notice error": "fg",
+      "viewer at bottom": "muted", "viewer new output": "fg",
+      "approval error": "fg", "composer error": "fg", "composer busy": "fg",
+      "composer stop": "fg", "image error": "fg",
+      "unsupported block": "fg", "jump to approval": "fg",
+    });
+  } finally {
+    host.remove();
     style.remove();
   }
 });

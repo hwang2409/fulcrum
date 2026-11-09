@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { TOKEN_TYPES } from "../../highlight/src/types.js";
 import { themes } from "../src/index.js";
 
@@ -8,10 +8,11 @@ test("themes lists every palette in themes.css, in file order", () => {
   expect([...css.matchAll(/^\[data-fulcrum-theme="([^"]+)"\] \{$/gm)].map((match) => match[1])).toEqual([...themes]);
 });
 
-// UI text and syntax (tok-*) colors must reach 4.5:1 on every background they sit on: bg, surface, the 8% diff row
-// tints of styles.css, and for status colors their own 8% marker tint. Syntax and terminal (ansi-*: bg, surface, 3:1) colors keep each palette's official hex where it
-// reaches its ratio. Otherwise the value carries an `/* official #rrggbb ... */` note and is the smallest OKLCH lightness
-// change of it, at the same hue, that reaches the ratio.
+// UI text (fg, muted, accent) and syntax (tok-*) colors must reach 4.5:1 on every background they sit on: bg, surface,
+// and the 8% diff row tints of styles.css. Status colors (ok, warn, danger) are never text, only marks (squares, rails,
+// borders), so they keep a 3.1:1 mark floor on bg. Status, syntax, and terminal (ansi-*: bg, surface, 3:1) colors keep
+// each palette's official hex where it reaches its ratio. Otherwise the value carries an `/* official #rrggbb ... */`
+// note and is the smallest OKLCH lightness change of it, at the same hue, that reaches the ratio.
 const css = readFileSync(new URL("../themes.css", import.meta.url), "utf8");
 const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({
   name: selector!.replace(/\/\*[\s\S]*?\*\//g, "").trim().replace(/\s+/g, " "),
@@ -20,7 +21,8 @@ const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body
   source: Object.fromEntries([...body!.matchAll(/--fulcrum-(ui-[\w-]+):[^;]+;\s*\/\*\s*(tok-[\w-]+) (#[0-9a-f]{6})\b/g)].map(([, name, token, hex]) => [name!, [token!, hex!]])),
 }));
 const palettes = blocks.filter((block) => block.vars.bg);
-const UI = ["fg", "muted", "accent", "ok", "warn", "danger"];
+const UI = ["fg", "muted", "accent"];
+const STATUS = ["ok", "warn", "danger"];
 const ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"].flatMap((name) => [`ansi-${name}`, `ansi-bright-${name}`]);
 // Tool facts are UI text, so they get their own accents, each from one official syntax hue (named in its comment).
 const ACCENTS = ["path", "number", "added", "removed", "pattern", "type"].map((name) => `ui-${name}`);
@@ -64,21 +66,13 @@ function oklch(c: Rgb) {
 
 const styles = readFileSync(new URL("../styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 const rules = [...styles.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector!.trim().replace(/\s+/g, " "), body: body! }));
-// The run-end marker writes ok, warn, and danger on a tint of the same color. The tint is read from styles.css, so the
-// model is the real marker background (its 55% border is not text, so it has no contrast rule).
-const STATUS = ["ok", "warn", "danger"];
-const markerTints = new Set(rules.filter(({ selector }) => selector.startsWith('[data-part="run-end-marker"]')).flatMap(({ body }) =>
-  [...body.matchAll(/background: color-mix\(in srgb, var\(--fulcrum-(?:ok|warn|danger)\) (\d+)%, var\(--fulcrum-(bg|surface)\)\)/g)].map(([, share, under]) => `${share} ${under}`)));
-const [markerShare, markerUnder] = [...markerTints][0]!.split(" ") as [string, "bg" | "surface"];
 function backgrounds(vars: Record<string, string>, key: string): Record<string, Rgb> {
   const bg = color(vars.bg!, vars);
   const surface = color(vars.surface!, vars);
-  const tint = (name: string, under = bg, share = 0.08): Rgb => color(vars[name]!, vars).map((c, i) => c * share + under[i]! * (1 - share)) as Rgb;
+  const tint = (name: string): Rgb => color(vars[name]!, vars).map((c, i) => c * 0.08 + bg[i]! * 0.92) as Rgb;
   const base = { bg, surface };
   if (key.startsWith("ansi-")) return base;
-  const rows = { ...base, "inserted row": tint("tok-inserted"), "deleted row": tint("tok-deleted") };
-  if (!STATUS.includes(key)) return rows;
-  return { ...rows, [`${key} end-marker tint`]: tint(key, { bg, surface }[markerUnder], Number(markerShare) / 100) };
+  return { ...base, "inserted row": tint("tok-inserted"), "deleted row": tint("tok-deleted") };
 }
 // A changed color is the official hex's smallest OKLCH lightness change: just over the ratio (hex rounding allows a
 // little), same hue, no added chroma, so it stays in its palette's family.
@@ -97,52 +91,37 @@ const worst = (rgb: Rgb, on: Record<string, Rgb>) => Math.min(...Object.values(o
 
 test("there are 12 named themes and the OS-dark default, and each defines every text color", () => {
   expect(palettes.length).toBe(13);
-  expect(palettes.flatMap(({ name, vars }) => [...UI, ...ACCENTS, ...TOKENS, ...ANSI].filter((key) => !vars[key]).map((key) => `${name}: --fulcrum-${key}`))).toEqual([]);
+  expect(palettes.flatMap(({ name, vars }) => [...UI, ...STATUS, ...ACCENTS, ...TOKENS, ...ANSI].filter((key) => !vars[key]).map((key) => `${name}: --fulcrum-${key}`))).toEqual([]);
 });
 
-test("the run-end marker uses one tint for ok, warn, and danger", () => {
-  expect([...markerTints]).toHaveLength(1);
-});
-
-// Status text keeps a margin over AA: a value that passes 4.5:1 only by rounding (4.5004) can drop below it under another
-// blend, gamma, or subpixel rendering. Status marks (rails, squares, borders) keep the same margin over 3:1.
-const STATUS_TEXT_FLOOR = 4.6;
-const STATUS_MARK_FLOOR = 3.1;
-
-test("UI text reaches 4.5:1 (status text 4.6:1) on bg, surface, diff rows, and its own end-marker tint in every theme", () => {
+test("UI text reaches 4.5:1 on bg, surface, and the diff rows in every theme", () => {
   const problems: string[] = [];
   for (const { name, vars } of palettes) {
     for (const key of UI) {
-      const min = STATUS.includes(key) ? STATUS_TEXT_FLOOR : 4.5;
       for (const [background, rgb] of Object.entries(backgrounds(vars, key))) {
         const ratio = contrast(color(vars[key]!, vars), rgb);
-        if (ratio < min) problems.push(`${name}: --fulcrum-${key} on ${background} is ${ratio.toFixed(4)}:1, needs ${min}:1`);
+        if (ratio < 4.5) problems.push(`${name}: --fulcrum-${key} on ${background} is ${ratio.toFixed(4)}:1, needs 4.5:1`);
       }
     }
   }
   expect(problems).toEqual([]);
 });
 
-test("ok, warn, and danger are the official hex or its smallest OKLCH lightness change", () => {
+// A mark keeps a margin over the 3:1 non-text minimum, so another blend, gamma, or subpixel rendering cannot drop a
+// value that passes only by rounding. It is measured on bg: every status square is ringed in bg (the halo test below),
+// and rails and borders have the page's bg on their outer side.
+const MARK_FLOOR = 3.1;
+
+test("ok, warn, and danger are marks: 3.1:1 on bg, as the official hex or its smallest OKLCH lightness change to that", () => {
   const problems: string[] = [];
   for (const { name, vars, official } of palettes) {
     for (const key of STATUS) {
       const where = `${name}: --fulcrum-${key} ${vars[key]}`;
       if (!/^#[0-9a-f]{6}$/i.test(vars[key]!)) { problems.push(`${where} is not a palette hex`); continue; }
-      if (official[key]) problems.push(...familyProblems(where, color(vars[key]!, vars), official[key]!, backgrounds(vars, key), STATUS_TEXT_FLOOR));
-    }
-  }
-  expect(problems).toEqual([]);
-});
-
-test("ok, warn, and danger marks (rails, squares, borders) reach 3.1:1 on bg and surface in every theme", () => {
-  const problems: string[] = [];
-  for (const { name, vars } of palettes) {
-    for (const key of STATUS) {
-      for (const background of ["bg", "surface"]) {
-        const ratio = contrast(color(vars[key]!, vars), color(vars[background]!, vars));
-        if (ratio < STATUS_MARK_FLOOR) problems.push(`${name}: --fulcrum-${key} mark on ${background} is ${ratio.toFixed(4)}:1, needs ${STATUS_MARK_FLOOR}:1`);
-      }
+      const on = { bg: color(vars.bg!, vars) };
+      const ratio = worst(color(vars[key]!, vars), on);
+      if (ratio < MARK_FLOOR) problems.push(`${where} mark on bg is ${ratio.toFixed(4)}:1, needs ${MARK_FLOOR}:1`);
+      if (official[key]) problems.push(...familyProblems(where, color(vars[key]!, vars), official[key]!, on, MARK_FLOOR));
     }
   }
   expect(problems).toEqual([]);
@@ -211,6 +190,43 @@ test("every tool fact is colored by a ui-* accent, never a tok-* variable", () =
     return own.filter(({ body }) => body.includes("--fulcrum-tok-") || !body.includes("var(--fulcrum-ui-")).map(({ selector }) => `${selector} is not colored by --fulcrum-ui-*`);
   });
   expect(problems).toEqual([]);
+});
+
+// Every fulcrum stylesheet: the packages' styles.css, themes.css, and the apps' css.
+const ROOT = new URL("../../../", import.meta.url);
+const SHEETS = ["packages", "apps"].flatMap((top) => readdirSync(new URL(top, ROOT), { recursive: true, encoding: "utf8" })
+  .filter((path) => path.endsWith(".css") && !/(^|\/)(node_modules|dist)\//.test(path)).map((path) => `${top}/${path}`)).sort();
+// Each declaration with its file:line. Comments are blanked with their newlines kept, so lines stay true.
+const declarations = SHEETS.flatMap((file) => {
+  const text = readFileSync(new URL(file, ROOT), "utf8").replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "));
+  return [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap((rule) => {
+    const bodyAt = rule.index! + rule[1]!.length + 1;
+    return [...rule[2]!.matchAll(/([\w-]+)\s*:\s*([^;]+)/g)].map((decl) => ({
+      where: `${file}:${text.slice(0, bodyAt + decl.index!).split("\n").length}`,
+      selector: rule[1]!.trim().replace(/\s+/g, " "), body: rule[2]!, property: decl[1]!, value: decl[2]!.trim(),
+    }));
+  });
+});
+// A status tone reaches a rule directly or through a custom property a part sets to it (--mark, --tone, ...).
+const STATUS_VAR = /var\(--fulcrum-(?:ok|warn|danger)\)/;
+const carriers = new Set(declarations.filter(({ property, value }) => property.startsWith("--") && !property.startsWith("--fulcrum-") && STATUS_VAR.test(value)).map(({ property }) => property));
+const toned = (value: string) => STATUS_VAR.test(value) || [...value.matchAll(/var\((--[\w-]+)\)/g)].some(([, name]) => carriers.has(name!));
+
+// ok, warn, and danger reach only 3.1:1 in some themes, so they are never text: the word is fg (or muted) and a mark
+// (square, rail, border) next to it carries the tone.
+test("no fulcrum stylesheet colors text with a status token (ok, warn, danger are marks only)", () => {
+  expect(SHEETS).toContain("packages/react/styles.css");
+  expect(SHEETS).toContain("apps/web/src/app.css");
+  expect(SHEETS).toContain("apps/playground/src/shell.css");
+  expect(declarations.filter(({ property, value }) => (property === "color" || property === "-webkit-text-fill-color") && toned(value))
+    .map(({ where, selector, property, value }) => `${where} ${selector} { ${property}: ${value} }: status tokens are marks only; use fg (or muted) for the word and a mark (square, rail, border) for the tone`)).toEqual([]);
+});
+
+// A status square sits on bg, surface, or a tint. Its 1 px bg ring makes bg the color next to it everywhere, which is
+// what the 3.1:1 mark floor is measured on.
+test("every square painted in a status tone is ringed in bg", () => {
+  expect(declarations.filter(({ property, value, body }) => /^background(-color)?$/.test(property) && /^var\(--[\w-]+\)$/.test(value) && toned(value) && !/(^|;)\s*outline:\s*1px solid var\(--fulcrum-bg\)/.test(body))
+    .map(({ where, selector, value }) => `${where} ${selector} paints ${value} without outline: 1px solid var(--fulcrum-bg)`)).toEqual([]);
 });
 
 test("the OS-dark default is github-dark", () => {
