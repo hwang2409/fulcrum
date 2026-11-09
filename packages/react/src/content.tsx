@@ -217,11 +217,12 @@ export const FileBlock = memo(function FileBlock({ block, onOpen }: ContentBlock
 // Images draw at most 360px tall; a known size reserves its exact box, an unknown one a fixed frame.
 const dimension = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
 type ImageState =
-  | { status: "idle" | "loading" | "blocked" | "error" | "unavailable" }
+  | { status: "idle" | "loading" | "blocked" | "omitted" | "error" | "unavailable" }
   | { status: "ready"; url: string };
 type LazyImage = ImageContentBlock & { source: NonNullable<ImageContentBlock["source"]> };
 
 function imageState(image: ImageContentBlock, lazy: LazyImage | undefined, media: ReturnType<typeof useMedia>, decodeFailures: number): ImageState {
+  if (image.omitted) return { status: "omitted" };
   const url = safeUrl(image.url, "image") ?? (media.state.status === "ready" ? media.state.url : undefined);
   if (!url && (!lazy || !media.available)) return { status: "blocked" };
   if (media.state.status === "error" && (media.state.error as { code?: unknown }).code === "not_available") return { status: "unavailable" };
@@ -258,6 +259,8 @@ function ImageFrame({ box, height, lifecycle, name, width }: { box?: CSSProperti
       </button>;
     case "blocked":
       return <div data-part="image-placeholder"><span>image not shown: unsupported address</span></div>;
+    case "omitted":
+      return <div data-part="image-placeholder" style={box}><span>image not kept in history</span></div>;
     case "unavailable":
       return <div data-part="image-placeholder" style={box}>
         <span>image no longer available</span>

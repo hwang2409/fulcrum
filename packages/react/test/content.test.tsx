@@ -216,6 +216,19 @@ test("images reserve their box, open on click, and refuse unsafe or oversized da
   expect(opened).toEqual([expect.objectContaining({ alt: "a red dot" })]);
 });
 
+test("an omitted history image says it was not kept, while an unsafe address stays unsupported", () => {
+  render([commit([
+    { type: "image", omitted: true, filename: "history.png", width: 640, height: 360 },
+    { type: "image", url: "javascript:alert(1)", filename: "unsafe.png" },
+  ])]);
+  const images = [...container.querySelectorAll<HTMLElement>('[data-part="image"]')];
+  expect(images[0]!.dataset.state).toBe("omitted");
+  expect(images[0]!.textContent).toContain("image not kept in history");
+  expect((images[0]!.querySelector('[data-part="image-placeholder"]') as HTMLElement).style.aspectRatio).toBe("640 / 360");
+  expect(images[0]!.querySelector('[data-action="retry"]')).toBeNull();
+  expect(images[1]!.textContent).toContain("image not shown: unsupported address");
+});
+
 test("without a host callback an image opens in a dialog", () => {
   render([commit([{ type: "image", url: PNG, alt: "dot" }])]);
   act(() => q('[data-part="image-open"]').click());
