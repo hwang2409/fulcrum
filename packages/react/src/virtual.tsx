@@ -27,6 +27,7 @@ type ScrollCoordinator = {
   settledHostEnd: number;
   owned: OwnedScroll | null;
   target: ScrollTarget | null;
+  recoveryPending: boolean;
   touching: boolean;
   generation: number;
 };
@@ -92,6 +93,7 @@ export function useVirtualList<Id extends string>(
     settledHostEnd: 0,
     owned: null,
     target: null,
+    recoveryPending: false,
     touching: false,
     generation: 0,
   });
@@ -140,6 +142,7 @@ export function useVirtualList<Id extends string>(
   }, [engine, geometry]);
 
   const retainTarget = useCallback((result: MutationResult) => {
+    coordinator.current.recoveryPending = result.recoveryPending === true;
     if (result.recoveryPending) return;
     if (result.followedBottom) coordinator.current.target = "end";
     else if (Math.abs(result.jump) >= 0.5) coordinator.current.target = result.scrollTop;
@@ -164,6 +167,7 @@ export function useVirtualList<Id extends string>(
       containerRef.current = null;
       coordinator.current.owned = null;
       coordinator.current.target = null;
+      coordinator.current.recoveryPending = false;
       engine.reset();
     }
     if (appliedOutline.current !== outline) {
@@ -200,6 +204,7 @@ export function useVirtualList<Id extends string>(
       const generation = ++coordinator.current.generation;
       coordinator.current.owned = null;
       coordinator.current.target = null;
+      coordinator.current.recoveryPending = false;
       const priorOverflowAnchor = host.style.overflowAnchor;
       host.style.overflowAnchor = "none";
 
@@ -210,8 +215,10 @@ export function useVirtualList<Id extends string>(
         if (source === "user" && Math.abs(current.hostTop - current.hostEnd) <= 1 && !engine.getSnapshot().pinned) {
           engine.requestFollow();
         }
-        coordinator.current.settledHostTop = current.hostTop;
-        coordinator.current.settledHostEnd = current.hostEnd;
+        if (source !== "observe") {
+          coordinator.current.settledHostTop = current.hostTop;
+          coordinator.current.settledHostEnd = current.hostEnd;
+        }
       };
       const settle = () => {
         const current = geometry(host);
@@ -222,6 +229,14 @@ export function useVirtualList<Id extends string>(
         if (ownedEnd) {
           report("observe");
           return;
+        }
+        if (coordinator.current.recoveryPending) {
+          const transientClamp = Math.max(0, Math.min(coordinator.current.settledHostTop, current.hostEnd));
+          if (Math.abs(current.hostTop - transientClamp) <= 1) {
+            report("observe");
+            return;
+          }
+          coordinator.current.recoveryPending = false;
         }
         coordinator.current.owned = null;
         coordinator.current.target = null;
@@ -259,7 +274,7 @@ export function useVirtualList<Id extends string>(
         if (generation !== coordinator.current.generation) return;
         const token = engine.beforeMutation();
         report("observe");
-        retainTarget(engine.afterMutation(token));
+        retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }));
         applyTarget();
       });
       viewportObserver.observe(host);
@@ -298,6 +313,7 @@ export function useVirtualList<Id extends string>(
         coordinator.current.generation++;
         coordinator.current.owned = null;
         coordinator.current.target = null;
+        coordinator.current.recoveryPending = false;
         coordinator.current.touching = false;
         rowObserver.disconnect();
         viewportObserver.disconnect();

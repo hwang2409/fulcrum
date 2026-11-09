@@ -1655,11 +1655,13 @@ test("useVirtualList ignores a stale outline hint and resets when the outline ow
 });
 
 test.each([
-  ["owned", false, false, false],
-  ["host-owned", true, false, false],
-  ["owned strict mode", false, true, false],
-  ["owned through an empty replay", false, false, true],
-])("same-run replacement keeps an unpinned reader's anchor in %s", (_name, hostOwned, strict, stagedReplay) => {
+  ["owned", false, false, false, "none"],
+  ["host-owned", true, false, false, "none"],
+  ["owned strict mode", false, true, false, "none"],
+  ["owned through an empty replay", false, false, true, "clamp"],
+  ["reader deviation during an empty replay", false, false, true, "reader"],
+  ["physical bottom during an empty replay", false, false, true, "bottom"],
+] as const)("same-run replacement keeps an unpinned reader's anchor in %s", (_name, hostOwned, strict, stagedReplay, recoveryPosition) => {
   const items = Array.from({ length: 1_000 }, (_, index) => committedItem(String(index)));
   const replacementItems = [...items.map((item, index) => index === 500
     ? { ...item, message: message("replacement text that is much longer than the streamed text ".repeat(8)), version: 2 }
@@ -1670,6 +1672,20 @@ test.each([
   const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
+  const OriginalResizeObserver = globalThis.ResizeObserver;
+  const resizeObservers: Array<{ callback: ResizeObserverCallback; observed: Set<Element>; observer: ResizeObserver }> = [];
+  if (stagedReplay) {
+    globalThis.ResizeObserver = class {
+      private readonly record = { callback: (() => {}) as ResizeObserverCallback, observed: new Set<Element>(), observer: this as unknown as ResizeObserver };
+      constructor(callback: ResizeObserverCallback) {
+        this.record.callback = callback;
+        resizeObservers.push(this.record);
+      }
+      observe(element: Element) { this.record.observed.add(element); }
+      unobserve(element: Element) { this.record.observed.delete(element); }
+      disconnect() { this.record.observed.clear(); }
+    } as unknown as typeof ResizeObserver;
+  }
   Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
   Object.defineProperty(HTMLElement.prototype, "scrollTop", {
@@ -1686,20 +1702,29 @@ test.each([
     };
     mount(view(first.store));
     const viewport = hostOwned ? scrollRef.current! : q('[data-part="timeline-scroll"]');
-    viewport.scrollTop = 500 * 72 + 17;
+    const readerIndex = recoveryPosition === "bottom" ? 300 : 500;
+    viewport.scrollTop = readerIndex * 72 + 17;
     act(() => {
       viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
       viewport.dispatchEvent(new Event("scroll"));
     });
-    const anchorId = q('[data-virtual-index="500"]').dataset.virtualId!;
+    const anchorId = q(`[data-virtual-index="${readerIndex}"]`).dataset.virtualId!;
     const offset = Number.parseFloat(q(`[data-virtual-id="${anchorId}"]`).style.transform.slice(11)) - viewport.scrollTop;
 
     if (stagedReplay) second.setHistoryPending(true);
     act(() => root!.render(view(second.store)));
     if (stagedReplay) {
-      let loaded = replacementItems.slice(900);
+      const loadedStart = recoveryPosition === "bottom" ? 600 : 900;
+      let loaded = replacementItems.slice(loadedStart);
       second.replace(loaded, [{ index: 0, deleteCount: 0, items: loaded }]);
-      for (let start = 800; start >= 0; start -= 100) {
+      viewport.scrollTop = viewport.scrollTop;
+      if (recoveryPosition === "reader") viewport.scrollTop -= 100;
+      else if (recoveryPosition === "bottom") viewport.scrollTop = viewport.scrollHeight;
+      act(() => viewport.dispatchEvent(new Event("scroll")));
+      const viewportResize = resizeObservers.find(({ observed }) => observed.has(viewport));
+      expect(viewportResize, "the viewport ResizeObserver must be attached during recovery").toBeDefined();
+      act(() => viewportResize!.callback([], viewportResize!.observer));
+      for (let start = loadedStart - 100; start >= 0; start -= 100) {
         const olderPage = replacementItems.slice(start, start + 100);
         loaded = [...olderPage, ...loaded];
         second.replace(loaded, [{ index: 0, deleteCount: 0, items: olderPage }]);
@@ -1708,16 +1733,26 @@ test.each([
     }
     const nextViewport = hostOwned ? scrollRef.current! : q('[data-part="timeline-scroll"]');
     const nextAnchor = container.querySelector<HTMLElement>(`[data-virtual-id="${anchorId}"]`);
-    expect(nextAnchor, "the replacement must keep the anchor row mounted").not.toBeNull();
-    const nextOffset = Number.parseFloat(nextAnchor!.style.transform.slice(11)) - nextViewport.scrollTop;
-    expect(Math.abs(nextOffset - offset)).toBeLessThanOrEqual(1);
-    expect(nextViewport.scrollTop).toBe(viewport.scrollTop);
-    expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe(stagedReplay ? "0" : "10");
-    expect(q('[data-part="jump-to-latest"]') === null).toBe(stagedReplay);
+    if (recoveryPosition === "reader") {
+      expect(nextAnchor, "a reader deviation must cancel the old anchor recovery").toBeNull();
+      expect(nextViewport.scrollTop).not.toBe(readerIndex * 72 + 17);
+    } else if (recoveryPosition === "bottom") {
+      expect(nextViewport.scrollHeight - nextViewport.clientHeight - nextViewport.scrollTop).toBeLessThanOrEqual(1);
+      expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
+      expect(q('[data-part="jump-to-latest"]')).toBeNull();
+    } else {
+      expect(nextAnchor, "the replacement must keep the anchor row mounted").not.toBeNull();
+      const nextOffset = Number.parseFloat(nextAnchor!.style.transform.slice(11)) - nextViewport.scrollTop;
+      expect(Math.abs(nextOffset - offset)).toBeLessThanOrEqual(1);
+      expect(nextViewport.scrollTop).toBe(viewport.scrollTop);
+      expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe(stagedReplay ? "0" : "10");
+      expect(q('[data-part="jump-to-latest"]') === null).toBe(stagedReplay);
+    }
   } finally {
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
     if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
     if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+    globalThis.ResizeObserver = OriginalResizeObserver;
   }
 });
 
