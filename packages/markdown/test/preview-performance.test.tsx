@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument } from "../src/index.js";
 import { PENDING_INLINE_SUFFIX as PENDING_INLINE_SUFFIX_BUDGET } from "../src/pending-inline.js";
-import { expectSubquadratic } from "../../../test-support/scaling.js";
+import { expectGrowthBelow } from "../../../test-support/scaling.js";
 
 function streamPending(source: string, chunkSize: number) {
   const document = createStreamingDocument();
@@ -48,18 +48,31 @@ test("line classification stays correct at one-character boundaries", () => {
   }
 });
 
-test("continuation preview stays linear as the line grows", () => {
-  const line = "word **b** `c` and more ".repeat(43_000);
-  expectSubquadratic([32_000, 1_024_000], (size) => {
-    const document = createStreamingDocument();
-    document.append("first paragraph\n");
-    return () => {
-      for (let offset = 0; offset < size; offset += 64) {
-        document.append(line.slice(offset, offset + 64));
-        document.render();
-      }
-    };
-  });
+function streamContinuation(line: string, from: number, to: number, document = createStreamingDocument()) {
+  if (from === 0) document.append("first paragraph\n");
+  for (let offset = from; offset < to; offset += 64) {
+    document.append(line.slice(offset, offset + 64));
+    document.render();
+  }
+  return document;
+}
+
+const continuationLine = "word **b** `c` and more ".repeat(87_000);
+
+test("continuation preview copies a bounded amount per delta at any line length", () => {
+  for (const size of [32_000, 1_024_000]) {
+    const { copiedCharacters } = streamContinuation(continuationLine, 0, size).stats;
+    // Each character is copied once as delta and once when it settles, plus at most the provisional suffix per delta.
+    expect(copiedCharacters, `${size} characters`).toBeLessThanOrEqual(2 * size + Math.ceil(size / 64) * PENDING_INLINE_SUFFIX_BUDGET);
+  }
+});
+
+test("continuation preview delta cost stays flat as the line grows", () => {
+  // Times the same 32k of 64-byte deltas after a 32k or 2,048k line: flat ~1x, O(line) work per delta ~64x.
+  expectGrowthBelow([32_000, 2_048_000], (size) => {
+    const document = streamContinuation(continuationLine, 0, size);
+    return () => streamContinuation(continuationLine, size, size + 32_000, document);
+  }, { exponent: 0.25, samples: 3 });
 }, 60_000);
 
 test("frozen blocks retain identity while only the open path is rebuilt", () => {
