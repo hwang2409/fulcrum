@@ -210,6 +210,10 @@ class OpenerScan {
   }
 }
 
+// Inside a code span that may still close, a bracket is code text: it shows raw, and the span is parsed in pieces that
+// could not pair it anyway.
+export const literalBrackets = (source: string) => source.replace(/[[\]]/g, "\\$&");
+
 const plainText = (nodes: readonly Inline[]): string => nodes.map((node) => "value" in node ? node.value
   : "children" in node ? plainText(node.children) : node.type === "image" ? node.alt : "").join("");
 
@@ -322,9 +326,10 @@ export class PendingInline {
   /** Final streaming nodes for the finished line, or undefined when `line` does not extend this line. */
   commit(line: string): Inline[] | undefined {
     if (line.length < this.totalLength || this.openers[0]?.leadingSpace !== undefined) return undefined;
-    // The line end decides an open `<` as text, which the provisional parse still holds back: parse the line again.
+    // The line end decides an open `<`, a last `]`, or a trailing entity as text, which the provisional parse still holds
+    // back: parse the line again.
     const angle = line.lastIndexOf("<");
-    if (this.openers.at(-1)?.kind === "angle" || angle >= 0 && !/[\s>]/.test(line.slice(angle + 1))) return undefined;
+    if (this.openers.at(-1)?.kind === "angle" || angle >= 0 && !/[\s>]/.test(line.slice(angle + 1)) || /(?:\]|&[#A-Za-z0-9]*)$/.test(line.slice(-40))) return undefined;
     let offset = 0;
     for (const chunk of this.chunks) {
       if (!line.startsWith(chunk, offset)) return undefined;
@@ -431,7 +436,7 @@ export class PendingInline {
   }
 
   private codeNode(source: string, closed: boolean): Inline[] {
-    const value = closed ? source : plainText(this.parse(source, true));
+    const value = closed ? source : plainText(this.parse(literalBrackets(source), true));
     return value ? [{ type: "code", value }] : [];
   }
 

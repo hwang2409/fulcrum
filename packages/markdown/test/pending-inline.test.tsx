@@ -134,7 +134,8 @@ test("a late style persists for the rest of the line", () => {
 test("text between a bracket and a trailing closer stays visible on the growing line", () => {
   stream("1. a\n   see map[key] foo] and more", fixed(1));
   stream("see map[key] foo]", fixed(1), (blocks, received) => {
-    if (received >= "see map[key] foo".length) expect(visible(blocks)).toContain("key foo");
+    // The space after `]` decides `[key]` is text, so its brackets show from then on.
+    if (received >= "see map[key] foo".length) expect(visible(blocks)).toContain("map[key] foo");
   });
 });
 

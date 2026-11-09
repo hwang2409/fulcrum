@@ -241,7 +241,8 @@ const startsTable = (paragraph: string, delimiter: string) => {
   return header.includes("|") && tableCells(header).length === tableCells(delimiter).length;
 };
 
-function classifyLeaf(line: string, growing: boolean): PendingClassification {
+/** `inParagraph`: the line continues an open paragraph, which a reference definition cannot interrupt. */
+function classifyLeaf(line: string, growing: boolean, inParagraph = false): PendingClassification {
   let content = stripPendingContainers(line);
   if (!content.trim()) return EMPTY;
   // A task box opens only a list item; anywhere else `[x] ` is text.
@@ -249,19 +250,19 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   const heading = /^#{1,6}[ \t]+/.exec(content);
   if (heading) content = content.slice(heading[0].length);
   const task = item && /^\[([ xX])\][ \t]+/.exec(content);
-  const reference = new ReferenceDefinitionParser();
-  const disposition = reference.append(content.trimStart());
-  const finished = growing ? disposition : reference.finish();
-  // A label still arriving shows as text (its brackets wait in the inline parse); from `]:` on the line is a definition.
-  if (finished.kind === "metadata" || finished.kind === "definition") return EMPTY;
+  if (!inParagraph) {
+    const reference = new ReferenceDefinitionParser();
+    const disposition = reference.append(content.trimStart());
+    const finished = growing ? disposition : reference.finish();
+    // A label still arriving shows as text (its brackets wait in the inline parse); from `]:` on the line is a definition.
+    if (finished.kind === "metadata" || finished.kind === "definition") return EMPTY;
+  }
   if (task) content = content.slice(task[0].length);
   else if (item && /^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
   if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
-  // A growing line of only delimiter-row characters (pipes, colons, dashes) may still become a delimiter row: it waits
-  // until its line ends, like a lone `>`. The anchored test fails on the first prose character.
-  if (/^\s*\|?\s*:?-*:?[ \t]*(?:\|[ \t]*:?-*:?[ \t]*)*\|?\s*$/.test(content))
-    return EMPTY;
-  if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
+  // A line of pipes, colons, and dashes shows as sent: it is text until it ends as a complete delimiter row. A lone `<`
+  // or `]` is text too (an autolink `<` waits in the inline parse).
+  if (/^[ \t]*(?:#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
     return EMPTY;
   if (growing) return { content, kind: "paragraph", offset: line.length - content.length };
   return { content, kind: "paragraph", offset: 0 };
@@ -326,7 +327,7 @@ export class MarkdownLineResolver {
         return FENCE;
       return { content, kind: "fence", offset: cursor.offset };
     }
-    const value = classifyLeaf(line, true);
+    const value = classifyLeaf(line, true, this.pendingContinuesParagraph(line));
     if (line !== this.pendingLine.content) return value;
     if (value.kind !== "paragraph") {
       this.pendingClassification = { length: line.length, value };
@@ -679,17 +680,18 @@ export class MarkdownLineResolver {
     if (this.openLeaf?.kind !== "paragraph") return false;
     if (line === this.pendingLine.content && this.stack.length === 1 && this.pendingLine.settledProseStart) return true;
     const { cursor, unmatched, blank } = this.matchContinuations(line);
-    return !blank && !this.lineStart(cursor, unmatched).startsBlock;
+    return !blank && !this.lineStart(cursor, unmatched, true).startsBlock;
   }
 
   /** The container or block that a line starts after its matched continuation markers. */
-  private lineStart(cursor: Cursor, unmatched: boolean) {
+  /** `growing`: the line may still grow, so a table delimiter row on it is not complete and starts nothing yet. */
+  private lineStart(cursor: Cursor, unmatched: boolean, growing = false) {
     const probe: Cursor = { ...cursor };
     const startsQuote = consumeQuote(probe);
     const marker = startsQuote ? undefined : listMarker(probe);
     const startsContainer = startsQuote || Boolean(marker);
     const startsInterruptingContainer = startsQuote || Boolean(marker && (!marker.ordered || /^1[.)]$/.test(marker.marker) || unmatched && this.stack.length > 1 || this.stack.some((frame) => frame.kind === "list" && frame.ordered)));
-    const startsBlock = startsInterruptingContainer || this.startsLeafBlock(cursor, unmatched);
+    const startsBlock = startsInterruptingContainer || this.startsLeafBlock(cursor, unmatched, growing);
     return { marker, startsContainer, startsBlock };
   }
 
@@ -699,7 +701,7 @@ export class MarkdownLineResolver {
    * before any regex runs: the growing line is checked on every delta, and a whole-line regex would make each
    * continuation line quadratic.
    */
-  private startsLeafBlock(cursor: Cursor, unmatched: boolean) {
+  private startsLeafBlock(cursor: Cursor, unmatched: boolean, growing = false) {
     const unmatchedContent = cursorContent(cursor);
     let first = 0;
     while (unmatchedContent.charCodeAt(first) === 32 || unmatchedContent.charCodeAt(first) === 9) first++;
@@ -707,7 +709,7 @@ export class MarkdownLineResolver {
     if (lead === undefined || !"#`~*-_=|:".includes(lead)) return false;
     const leaf = this.openLeaf;
     if (leaf?.kind === "paragraph" && leaf.tableEligible) {
-      if (!unmatched && "|-:".includes(lead) && isTableDelimiter(unmatchedContent) && startsTable(leaf.content, unmatchedContent)) return true;
+      if (!growing && !unmatched && "|-:".includes(lead) && isTableDelimiter(unmatchedContent) && startsTable(leaf.content, unmatchedContent)) return true;
       if ("=-".includes(lead) && /^ {0,3}(?:=+|-+)\s*$/.test(unmatchedContent)) return true;
     }
     return /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/.test(unmatchedContent);

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
+import { withoutDefinitionLabels, withoutDelimiterCells } from "./accepted-changes.js";
 
 const json = (value: unknown) => JSON.stringify(value, (key, child) => key === "open" ? undefined : child);
 function inlineVisible(nodes: readonly Inline[], includeProvisional = true): string {
@@ -8,8 +9,9 @@ function inlineVisible(nodes: readonly Inline[], includeProvisional = true): str
     : node.type === "image" ? node.alt : node.type === "break" ? "\n"
     : inlineVisible(node.children, includeProvisional)).join("");
 }
+// A delimiter row arriving shows as sent until it completes (accepted-changes.ts).
 function visible(blocks: readonly Block[], includeProvisional = true): string {
-  return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? inlineVisible(block.children, includeProvisional)
+  return blocks.map((block) => block.type === "paragraph" || block.type === "heading" ? withoutDelimiterCells(inlineVisible(block.children, includeProvisional))
     : block.type === "code" ? block.value : block.type === "blockquote" ? visible(block.children, includeProvisional)
     : block.type === "list" ? block.items.map((item) => visible(item.children, includeProvisional)).join("")
     : block.type === "table" ? [...block.header, ...block.rows.flat()].map((cell) => inlineVisible(cell, includeProvisional)).join("") : "").join("").replace(/[\s|]/g, "");
@@ -24,6 +26,7 @@ function provisionalCharacters(blocks: readonly Block[]): number {
       : block.type === "list" ? block.items.reduce((sum, item) => sum + provisionalCharacters(item.children), 0)
       : block.type === "table" ? [...block.header, ...block.rows.flat()].reduce((sum, cell) => sum + inline(cell), 0) : 0), 0);
 }
+
 
 function subsequence(needle: string, haystack: string) {
   const wanted = [...needle];
@@ -88,7 +91,7 @@ test("reviewer 25-family generator preserves visible order and final output with
       maximumShare = Math.max(maximumShare, share);
       maximumCharacters = Math.max(maximumCharacters, provisional);
       expect(provisional, `${current.name}/${plan.name}: provisional budget`).toBeLessThanOrEqual(256);
-      expect(subsequence(previousStable, visible(blocks)), `${current.name}/${plan.name}: ${JSON.stringify(prefix)}: ${JSON.stringify(previousStable)} -> ${JSON.stringify(visible(blocks))}`).toBe(true);
+      expect(subsequence(withoutDefinitionLabels(prefix, previousStable), withoutDefinitionLabels(prefix, visible(blocks))), `${current.name}/${plan.name}: ${JSON.stringify(prefix)}: ${JSON.stringify(previousStable)} -> ${JSON.stringify(visible(blocks))}`).toBe(true);
       previousStable = visible(blocks, false);
     }
     document.finish();

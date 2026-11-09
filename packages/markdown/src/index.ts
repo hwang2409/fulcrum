@@ -3,7 +3,7 @@ import type { Highlight } from "@fulcrum/highlight";
 import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
 import { normalizeReferenceLabel, normalizeReferenceLeafLine, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
-import { PendingInline } from "./pending-inline.js";
+import { literalBrackets, PendingInline } from "./pending-inline.js";
 import { MarkdownLineResolver, tableCells, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
 type MarkdownToken = {
@@ -323,7 +323,7 @@ function bracketMarks(source: string) {
 // brackets only until the character after `]` decides it. Anything but `(` or `[` makes them text at once; after `(` or
 // `[` they, and the destination or label, hide until the link closes or the line ends. A later `[x]: url` definition
 // never makes a bracket wait (if it turns earlier text into a link, that rare change is accepted).
-function withoutOpenLink(source: string) {
+function withoutOpenLink(source: string, growing: boolean) {
   const marks = bracketMarks(source);
   const hidden = new Set<number>();
   const open: number[] = [];
@@ -334,7 +334,8 @@ function withoutOpenLink(source: string) {
     const opener = open.pop();
     if (opener === undefined) continue;
     const after = source.slice(mark + 1);
-    const pending = !after || after[0] === "(" && !closesDestination(after) || after[0] === "[" && !after.includes("]", 1);
+    // A line end decides as any other character does: neither `(` nor `[` may follow on the next line.
+    const pending = !after ? growing : after[0] === "(" && !closesDestination(after) || after[0] === "[" && !after.includes("]", 1);
     if (!pending) continue;
     hidden.add(opener).add(mark);
     if (after) cut = mark + 1;
@@ -410,12 +411,13 @@ type SafeInlineContent = { source: string; openCode?: string };
 function withoutTrailingLookahead(source: string, growing: boolean) {
   const backslashes = /\\+$/.exec(source)?.[0].length ?? 0;
   if (backslashes % 2) return source.slice(0, -1);
-  const entity = growing ? /&(?:#(?:x[0-9a-f]*|[0-9]*)?|[a-z][a-z0-9]*)?$/i.exec(source) : null;
+  // The longest named entity has 31 characters after `&`, a numeric one at most 7 digits or 6 hex digits.
+  const entity = growing ? /&(?:#(?:x[0-9a-f]{0,6}|[0-9]{0,7})?|[a-z][a-z0-9]{0,31})?$/i.exec(source) : null;
   return entity ? source.slice(0, entity.index) : source;
 }
 
 const withoutOpenSyntax = (source: string, growing: boolean) =>
-  withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(growing ? withoutOpenAngle(source) : source)), growing);
+  withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(growing ? withoutOpenAngle(source) : source, growing)), growing);
 
 function safeInlineContent(source: string, growing: boolean): SafeInlineContent {
   source = withoutOpenSyntax(source, growing);
@@ -434,7 +436,7 @@ function parseInline(source: string, streaming: boolean, environment: Environmen
   const nodes = inlineNodes(tokens[0]?.children ?? []);
   // An unclosed span may stay literal, so its preview shows only the text its content renders as markdown.
   if (safe.openCode) {
-    const literal = inlineNodes(markdown.parseInline(withoutOpenSyntax(safe.openCode, growing), environment)[0]?.children ?? []);
+    const literal = inlineNodes(markdown.parseInline(withoutOpenSyntax(literalBrackets(safe.openCode), growing), environment)[0]?.children ?? []);
     nodes.push({ type: "code", value: codeSpanValue(literal.map(inlineText).join("")) });
   }
   return nodes;
@@ -762,6 +764,7 @@ export function createStreamingDocument(): StreamingDocument {
   let openTable: Extract<Block, { type: "table" }> | undefined;
   let previewSource = "";
   let previewBlocks: readonly Block[] | undefined;
+  let viewSource = "";
   let pendingReferenceApply = false;
   let trailingCarriageReturn = false;
   // The growing line's inline nodes and the identity used to reuse them.
@@ -1173,7 +1176,16 @@ export function createStreamingDocument(): StreamingDocument {
       finished = true;
     },
     render() {
-      if (finished || pendingReferenceApply || !resolver.pending.length && !resolver.hasPendingLookahead) return blocks.view;
+      if (finished || pendingReferenceApply) return blocks.view;
+      if (!resolver.pending.length && !resolver.hasPendingLookahead) {
+        // A whole line grows the open blocks in place (a table row, a paragraph line, a list item), so the open path is
+        // copied once per new text: a memoized view sees a new object for each block that changed.
+        if (viewSource !== source) {
+          viewSource = source;
+          blocks.publish(cloneOpenPath(openRoots));
+        }
+        return blocks.view;
+      }
       if (previewBlocks && previewSource === source) return previewBlocks;
       const pending = resolver.pending.content;
       const classification = resolver.classifyPending(pending);

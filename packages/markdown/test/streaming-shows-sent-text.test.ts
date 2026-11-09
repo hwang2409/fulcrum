@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
+import { waits } from "./accepted-changes.js";
 
 // The rule this file locks: streaming never hides text the model already sent. At every streamed prefix, every
 // character of the final committed text whose source character has arrived is visible in the rendered tail, in order.
@@ -8,15 +9,15 @@ import { createStreamingDocument, parseMarkdown, type Block, type Inline } from 
 // the table delimiter row, cell-border pipes of a table, list and quote markers once parsed. Those are absent from the
 // final text, so the check never asks for them. A pipe or a backslash inside prose is text, never markup.
 //
-// Three waits at the growing edge are allowed, and only these three:
-// - a growing line that is still only a block-marker candidate (a lone `>`, `-`, `+`, `*`, `=`, `#` run, a number
-//   that may become `1.`, fence ticks, or only pipes, colons, and dashes: a table delimiter row still arriving, like
-//   `|`, `||`, or `|:-`): it may hide
-//   until its line ends, as a lone `>` or `-` always has (it shows at commit if it stays text);
-// - an inline span opener on the growing line (a backtick, `*`, `_`, `~`, `[`): it may still open code, emphasis, or a
-//   link, so it may hide until its closer arrives or its line ends (the words inside it always show);
-// - a backslash that is the last character sent: the next character decides whether it escapes (and vanishes) or
-//   is text, so showing it could flash a character that disappears.
+// The waits at the growing edge that are allowed, and only these, are named one by one in accepted-changes.ts (`waits`):
+// a block-marker candidate line (a line of pipes, colons, and dashes is not one: `|`, `||`, `|:-` show as sent until a
+// delimiter row is complete), an inline code or emphasis opener, the bracket wait (only `[` and `]` of a possible link
+// span `[...]`, released at the first character after `]` that is not `(` or `[`, bounded by the line end; the text
+// inside always shows), the destination or label after such a `]`, an autolink `<`, a trailing entity, and a trailing
+// backslash. A later `[x]: url` definition never makes a bracket wait.
+//
+// Every frame also hands a memoized view a new object for each block whose content changed: a block grown in place
+// (a whole table row or line arriving in one frame) would stay hidden in a view that skips equal objects.
 const text = (nodes: readonly Inline[]): string => nodes.map((node) =>
   node.type === "text" || node.type === "code" || node.type === "pending-reference" ? node.value
   : node.type === "image" ? node.alt
@@ -30,10 +31,15 @@ const visible = (blocks: readonly Block[]): string => blocks.map((block) =>
   : block.type === "blockquote" ? visible(block.children)
   : block.type === "list" ? block.items.map((item) => visible(item.children)).join("\n") : "").join("\n");
 
-const blockMarkerCandidate = (line: string) => {
-  const rest = line.replace(/^[ \t]*(?:(?:>|[-+*]|\d{1,9}[.)])(?:[ \t]+|$))*/, "");
-  return /^[ \t]*(?:#+|[-+*=_]+|\d{1,9}[.)]?|`+|~+)?[ \t]*$/.test(rest) || /^[ \t|:-]*$/.test(rest);
-};
+/** Every block object in `blocks` with its content, for the in-place-change check. */
+function blockContents(blocks: readonly Block[], into = new Map<Block, string>()) {
+  for (const block of blocks) {
+    into.set(block, JSON.stringify(block));
+    if (block.type === "blockquote") blockContents(block.children, into);
+    if (block.type === "list") for (const item of block.items) blockContents(item.children, into);
+  }
+  return into;
+}
 
 /** The source index each non-space character of `final` came from, matched from the end (so never earlier than real). */
 function sourceIndexes(final: string, source: string) {
@@ -47,28 +53,53 @@ function sourceIndexes(final: string, source: string) {
   return indexes;
 }
 
-function check(source: string, split: number) {
+// Long inputs print only their ends.
+const clip = (value: string) => JSON.stringify(value.length > 160 ? `${value.slice(0, 60)}...${value.slice(-100)}` : value);
+
+/** The position in `owed` of its first character that `shown` (in order, spaces ignored) lacks, or -1. */
+function firstMissing(owed: string, shown: string) {
+  let at = 0;
+  for (const character of shown) if (character === owed[at]) at++;
+  return at < owed.length ? at : -1;
+}
+
+/** Streams `source` in `deltas` and checks the rule at every delta boundary; `identity` adds the in-place-change check. */
+function check(source: string, deltas: readonly string[], identity = false) {
   const final = visible(parseMarkdown(source));
   const indexes = sourceIndexes(final, source);
   const document = createStreamingDocument();
-  for (let start = 0; start < source.length; start += split) {
-    const end = Math.min(start + split, source.length);
-    document.append(source.slice(start, end));
+  let end = 0;
+  let previous = new Map<Block, string>();
+  for (const delta of deltas) {
+    end += delta.length;
+    document.append(delta);
+    const blocks = document.render();
     const lineStart = source.lastIndexOf("\n", end - 1) + 1;
     const growing = source.slice(lineStart, end);
-    const entity = /&(?:#(?:x[0-9a-f]*|[0-9]*)?|[a-z][a-z0-9]*)?$/i.exec(growing);
-    const waits = (at: number) => at >= lineStart && (blockMarkerCandidate(growing) || "`*_~[]".includes(source[at]!)
-      || source[at] === "<" && !/[\s>]/.test(source.slice(at + 1, end))
-      || entity !== null && at >= lineStart + entity.index)
-      || at === end - 1 && source[at] === "\\";
-    const owed = [...final].filter((character, index) => indexes[index]! >= 0 && indexes[index]! < end && !waits(indexes[index]!)).join("");
-    const seen = visible(document.render()).replace(/\s/g, "");
-    let at = 0;
-    for (const character of seen) if (character === owed[at]) at++;
-    // Long lines print only their ends, so the report names the hidden text.
-    const clip = (value: string) => JSON.stringify(value.length > 160 ? `${value.slice(0, 60)}...${value.slice(-100)}` : value);
-    if (at < owed.length) return `prefix ${clip(source.slice(0, end))}: owed ${clip(owed)}, seen ${clip(seen)}, missing from ${clip(owed.slice(at))}`;
+    const allowed = Object.values(waits);
+    const held = (at: number) => at >= lineStart && allowed.some((wait) => wait(growing, at - lineStart));
+    const owedIndexes = indexes.filter((index) => index >= 0 && index < end && !held(index));
+    const owed = owedIndexes.map((index) => source[index]!).join("");
+    const missing = firstMissing(owed, visible(blocks));
+    if (missing >= 0) {
+      const offset = owedIndexes[missing]!;
+      const kind = offset >= lineStart ? "a hidden character no named wait covers" : "a character of an ended line is hidden";
+      return `${kind}: ${JSON.stringify(source[offset])} at offset ${offset} of ${clip(source)}, prefix ${clip(source.slice(0, end))}`;
+    }
+    if (identity) {
+      const current = blockContents(blocks);
+      for (const [block, content] of current) {
+        const before = previous.get(block);
+        if (before !== undefined && before !== content && !(block.type === "code" && block.open))
+          return `prefix ${clip(source.slice(0, end))}: a ${block.type} changed in place (a memoized view keeps showing ${clip(before)})`;
+      }
+      previous = current;
+    }
   }
+  // The stream end ends the last line: nothing of the final text may stay hidden.
+  document.finish();
+  const missing = firstMissing(indexes.filter((index) => index >= 0).map((index) => source[index]!).join(""), visible(document.render()));
+  if (missing >= 0) return `a character is hidden at the stream end: offset ${indexes.filter((index) => index >= 0)[missing]} of ${clip(source)}`;
   return undefined;
 }
 
@@ -113,10 +144,25 @@ const repros = [
   "See <https://example.com/a_b for it",
   "See <https://example.com/a_b> for it",
   "<https://",
+  // brackets that are text show at once; only a possible link span waits, and never its inner text
+  "a] b",
+  "x [] y",
+  "jq '.items[] | x' and more",
+  "arr[0] = 1",
+  "[x] y",
+  "[x](",
+  "[x](url) tail",
+  "[x][ref] tail",
+  "[WARN] disk almost full",
+  "see map[key] foo] and ![alt] text",
+  "Run `" + "jq '.items[] | .name' ".repeat(12) + "` then " + "arr[i] = b[j]; ".repeat(20) + "[docs](https://e.com/x) end",
   // an entity is text until it ends
   "AT&T is here",
   "AT&T\nmore",
   "a &amp; b &#35; c",
+  "AT&Tx is",
+  "x &amp\nmore",
+  "&" + "a".repeat(40) + " tail",
   // lines longer than the growing line's settled-suffix window (PENDING_INLINE_SUFFIX, 128 characters) and than 4 KB
   "Run `" + "a | b ".repeat(200) + "` now",
   "Run `" + "a | b ".repeat(200),
@@ -131,7 +177,7 @@ function corpus(count: number) {
   let seed = 120;
   const next = (n: number) => (seed = (seed * 1103515245 + 12345) % 2147483648) % n;
   const pick = <T,>(items: readonly T[]) => items[next(items.length)]!;
-  const words = ["use", "grep", "foo", "sort", "-u", "a", "b", "x1", "true", "false", "42", "`a | b`", "a < b", "x<y", "<br"];
+  const words = ["use", "grep", "foo", "sort", "-u", "a", "b", "x1", "true", "false", "42", "`a | b`", "a < b", "x<y", "<br", "a[0]", "[x]", "x]", "[ok](u)"];
   const joins = [" ", " ", " | ", "|", " || ", " \\| ", "||", " \\ "];
   const lines = ["| a | b |", "|---|---|", "| :-- | --: |", "| 1 | 2 |", "a | b", "--|--", ""];
   const prefixes = ["", "", "> ", "- ", "  "];
@@ -160,12 +206,19 @@ function corpus(count: number) {
 
 const sources = [...repros, ...corpus(400)];
 
-test(`every streamed prefix shows every character of the final text sent so far (${sources.length} sources, every prefix)`, () => {
-  const failures = sources.map((source) => check(source, 1)).filter(Boolean);
-  expect(failures.slice(0, 8), `${failures.length} of ${sources.length} sources hide sent text`).toEqual([]);
-});
+// Delta plans: one character, 7 characters, one whole line (with its line break) per delta, and three lines per delta.
+// The line plans are how servers that send line-sized deltas, and a store that batches a frame, deliver text.
+const lines = (source: string) => source.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+const plans: Array<[string, (source: string) => string[], boolean]> = [
+  ["every character", (source) => [...source], false],
+  ["7-character deltas", (source) => source.match(/[^]{1,7}/g) ?? [], false],
+  ["one whole line per delta", lines, true],
+  ["three lines per delta", (source) => lines(source).reduce<string[]>((deltas, line, index) => (index % 3 ? deltas[deltas.length - 1] += line : deltas.push(line), deltas), []), true],
+];
 
-test(`the same holds when the text arrives in chunks (${sources.length} sources, 7-character deltas)`, () => {
-  const failures = sources.map((source) => check(source, 7)).filter(Boolean);
-  expect(failures.slice(0, 8), `${failures.length} of ${sources.length} sources hide sent text`).toEqual([]);
-});
+for (const [name, plan, identity] of plans) {
+  test(`every streamed prefix shows every character of the final text sent so far (${sources.length} sources, ${name})`, () => {
+    const failures = sources.map((source) => check(source, plan(source), identity)).filter(Boolean);
+    expect(failures.slice(0, 8), `${failures.length} of ${sources.length} sources hide sent text`).toEqual([]);
+  }, 120_000);
+}
