@@ -11,23 +11,13 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { createRunStore, LazyContentBlock, RunItem, RunState } from "@fulcrum/core";
+import type { LazyContentBlock, RunItem, RunState } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { HighlightContext } from "./highlight.js";
 import { createMediaStore, type LoadMedia, type MediaLease, type MediaState, type MediaStore } from "./media-store.js";
+import { StoreContext, type RunStore } from "./run-store-context.js";
 export type { LoadMedia } from "./media-store.js";
-
-export type RunStore = Pick<
-  ReturnType<typeof createRunStore>,
-  | "getState"
-  | "getItem"
-  | "getOutline"
-  | "getOutlineSnapshot"
-  | "subscribe"
-  | "subscribeOutline"
-> & Partial<Pick<ReturnType<typeof createRunStore>, "getDiagnostics" | "subscribeDiagnostics" | "hasMessageDelivery">>;
-
-const StoreContext = createContext<RunStore | null>(null);
+export type { RunStore } from "./run-store-context.js";
 const RetryContext = createContext<(() => void) | undefined>(undefined);
 const MediaContext = createContext<MediaStore | undefined>(undefined);
 
@@ -79,16 +69,6 @@ export const useRunStore = () => {
 
 const syncedDiagnostics = { ignoredEvents: 0, sanitizedFields: 0, desynced: false } as const;
 const noSubscription = () => () => {};
-const never = () => false;
-/**
- * Whether the run holds a user message with this delivery id (the harness's echo of a sent message, or its history
- * row). False with no id, outside a `RunProvider`, or for a store without `hasMessageDelivery`.
- */
-export const useMessageDelivered = (deliveryId: string | undefined) => {
-  const store = useContext(StoreContext);
-  const read = deliveryId !== undefined && store?.hasMessageDelivery ? () => store.hasMessageDelivery!(deliveryId) : never;
-  return useSyncExternalStore(read === never ? noSubscription : store!.subscribe, read, read);
-};
 
 export const useRunDiagnostics = () => {
   const store = useRunStore();

@@ -1,5 +1,5 @@
-import { useCallback, useId, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { useMessageDelivered } from "./hooks.js";
+import { useCallback, useContext, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from "react";
+import { StoreContext } from "./run-store-context.js";
 
 /** What the user asked for when they submitted: steering a running turn, or a new message. */
 export type ComposerIntent = { readonly steer: boolean };
@@ -47,7 +47,7 @@ const errorText = (error: unknown) => (error instanceof Error ? error.message : 
 export const unsentDraft = (current: string, sent: string) => (current.startsWith(sent) ? current.slice(sent.length) : current);
 
 /** One submit in flight: the text it sent, and whether it already counts as delivered (the draft lost that text). */
-type Send = { sent: string; delivered: boolean };
+type Send = { sent: string; delivered: boolean; deliveryId?: string };
 
 /** Runs a callback as a promise, so a synchronous throw takes the rejection path too. */
 const attempt = (action: () => unknown) => new Promise<unknown>((resolve) => resolve(action()));
@@ -79,7 +79,10 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
   // The submit in flight and its tracked delivery id: the run's echo of that id confirms it before the reply does.
   const inFlightSend = useRef<Send | null>(null);
   const [deliveryId, setDeliveryId] = useState<string>();
-  const echoed = useMessageDelivered(deliveryId);
+  const store = useContext(StoreContext);
+  const hasMessageDelivered = useCallback((delivery: string) => store?.hasMessageDelivery?.(delivery) ?? false, [store]);
+  const readDelivery = deliveryId === undefined ? () => false : () => hasMessageDelivered(deliveryId);
+  const echoed = useSyncExternalStore(deliveryId === undefined || !store ? () => () => {} : store.subscribe, readDelivery, readDelivery);
   const delivered = useCallback((send: Send) => {
     if (send.delivered) return;
     send.delivered = true;
@@ -135,11 +138,18 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
     inFlightSend.current = send;
     setSending(true);
     setError(undefined);
-    const trackDelivery = (id: string) => { if (inFlightSend.current === send && !send.delivered) setDeliveryId(id); };
+    const trackDelivery = (id: string) => {
+      if (inFlightSend.current !== send || send.delivered) return;
+      send.deliveryId = id;
+      setDeliveryId(id);
+    };
     attempt(() => onSubmit(send.sent, { steer }, trackDelivery))
       .then(
         () => delivered(send),
-        (failure: unknown) => { if (!send.delivered) setError({ kind: "submit", text: `could not ${steer ? "steer" : "send"}: ${errorText(failure)}` }); },
+        (failure: unknown) => {
+          if (!send.delivered && send.deliveryId && hasMessageDelivered(send.deliveryId)) delivered(send);
+          if (!send.delivered) setError({ kind: "submit", text: `could not ${steer ? "steer" : "send"}: ${errorText(failure)}` });
+        },
       )
       .finally(() => { inFlight.current.submit = false; inFlightSend.current = null; setDeliveryId(undefined); setSending(false); });
   };

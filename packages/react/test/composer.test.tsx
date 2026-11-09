@@ -346,14 +346,18 @@ test("the echo clears only the sent part; text typed after it stays", async () =
   expect(field().value).toBe("hello again");
 });
 
-test("a reply that fails after the echo is not a failure: the message reached the run", async () => {
+test("a reply that fails in the same batch as the echo is not a failure: the message reached the run", async () => {
   const reply = deferred();
-  const { store, onSubmit, echo } = echoFirst(() => reply.promise);
+  const { store, onSubmit } = echoFirst(() => reply.promise);
   mount(<RunProvider store={store}><Composer state="idle" onSubmit={onSubmit} /></RunProvider>);
   type("hello");
   enter();
-  echo();
-  await act(async () => { reply.reject(new Error("timed out")); await reply.promise.catch(() => {}); });
+  // The reply can reject before React renders the store notification. The current store value still confirms delivery.
+  await act(async () => {
+    store.dispatch({ type: "user_message", text: "hello", mode: "send", delivery_id: "d1" });
+    reply.reject(new Error("timed out"));
+    await reply.promise.catch(() => {});
+  });
   expect(field().value).toBe("");
   expect(status().textContent).toBe("");
   expect(q('[data-part="composer"]')!.dataset.error).toBeUndefined();
