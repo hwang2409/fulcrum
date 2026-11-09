@@ -663,13 +663,24 @@ export async function checkApprovalReason(page: Page, port: number, failures: st
   await page.waitForSelector(`${demo} [data-part=approval-actions] [role=status]`);
   const reason = (await page.textContent(`${demo} [data-part=approval-actions] [role=status]`))!.trim();
   const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Accessibility.enable");
   const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
   const { nodeIds } = await cdp.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: `${demo} [data-part=approval-actions] button` });
   const found: string[] = [];
   for (const nodeId of nodeIds) {
-    const { nodes } = await cdp.send("Accessibility.getPartialAXTree", { nodeId, fetchRelatives: false });
-    const button = nodes.find((node) => node.role?.value === "button");
-    const name = String(button?.name?.value);
+    const { attributes } = await cdp.send("DOM.getAttributes", { nodeId });
+    const actionIndex = attributes.indexOf("data-action");
+    const action = actionIndex < 0 ? "unknown action" : attributes[actionIndex + 1]!;
+    const deadline = Date.now() + 2_000;
+    let button;
+    do {
+      const { nodes } = await cdp.send("Accessibility.getPartialAXTree", { nodeId, fetchRelatives: false });
+      button = nodes.find((node) => node.role?.value === "button");
+      if (button?.description?.value !== undefined) break;
+      await page.waitForTimeout(20);
+    } while (Date.now() < deadline);
+    if (button?.description?.value === undefined) found.push(`${action}: the accessibility tree did not expose a button with a description within 2 s`);
+    const name = String(button?.name?.value ?? action);
     if (button?.description?.value !== reason) found.push(`${name} is described as "${button?.description?.value ?? ""}", expected the reason "${reason}"`);
   }
   await cdp.detach();
