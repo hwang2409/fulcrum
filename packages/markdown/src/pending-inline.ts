@@ -217,7 +217,8 @@ export const literalBrackets = (source: string) => source.replace(/[[\]]/g, "\\$
 const plainText = (nodes: readonly Inline[]): string => nodes.map((node) => "value" in node ? node.value
   : "children" in node ? plainText(node.children) : node.type === "image" ? node.alt : "").join("");
 
-export type InlineParser = (source: string, streaming: boolean) => Inline[];
+/** `growing`: the text may still grow (the default for streaming); a committed line's suffix passes false. */
+export type InlineParser = (source: string, streaming: boolean, growing?: boolean) => Inline[];
 
 
 /** Cuts at a recent space so no construct, escape, or surrogate pair is split between stable chunks. */
@@ -341,7 +342,10 @@ export class PendingInline {
     this.nodes.length -= this.suffixLength;
     this.suffixLength = 0;
     // Reuse the same provisional suffix parser as render; finish() performs the authoritative one-shot parse.
-    const tail = this.suffix();
+    // An ended line shows its unmatched openers: the suffix parses as ended text, and an opener the stable part holds
+    // open sends the line to a full parse, once. The instance is dropped after its commit, so the changes above need no undo.
+    if (this.openers.some((opener) => opener.kind === "emphasis" || opener.kind === "code")) return undefined;
+    const tail = this.suffix(false);
     for (const node of tail) this.nodes.push(node);
     return this.nodes;
   }
@@ -446,7 +450,7 @@ export class PendingInline {
     return this.parse(this.content.slice(from, to), streaming);
   }
 
-  private suffix(): Inline[] {
+  private suffix(growing = true): Inline[] {
     const source = this.content.slice(this.emittedEnd);
     if (!source) return [];
     this.copiedCharacters += source.length;
@@ -455,7 +459,7 @@ export class PendingInline {
     const top = this.openers.at(-1);
     if (top?.kind === "code" || top?.kind === "angle") return this.rawSuffix(source, top);
     const context = suffixContext(top);
-    const nodes = this.parse(context + source, true);
+    const nodes = this.parse(context + source, true, growing);
     const first = nodes[0];
     if (context.startsWith("[") && first && (first.type === "link" && !first.children.length || first.type === "text" && !first.value)) nodes.shift();
     return nodes;

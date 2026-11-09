@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, type Block, type Inline } from "../src/index.js";
+import { withoutEmphasisMarkers } from "./accepted-changes.js";
 
 // Strict ux 6, finding M-A: once a span shows as strong or emphasis, no later frame of the growing line may show
 // it as raw markers again. Each visible character keeps its position and every style it has had.
@@ -11,7 +12,7 @@ function inlineChars(nodes: readonly Inline[], style: string, out: Styled) {
       inlineChars(node.children, style + (node.type === "strong" ? "S" : "E"), out);
     } else if ("children" in node) inlineChars(node.children, style, out);
     else {
-      const value = node.type === "image" ? node.alt : "value" in node ? node.value : "";
+      const value = withoutEmphasisMarkers(node.type === "image" ? node.alt : "value" in node ? node.value : "");
       out.text += value;
       for (let index = 0; index < value.length; index++) out.styles.push(style);
     }

@@ -376,7 +376,14 @@ function lastMarkerIndex(stack: Array<{ marker: string }>, marker: string) {
   return -1;
 }
 
-function withoutOpenEmphasis(source: string) {
+/**
+ * Hides the growing line's unmatched emphasis openers until their closer arrives or the line ends. An ended line shows
+ * its openers: a closer on a later line turns them into emphasis then (a flash the sent-text rule accepts), but sent
+ * text never waits past its line. A lone `~` is text: strikethrough needs `~~`, unless the run ends the line and can grow.
+ */
+function withoutOpenEmphasis(source: string, growing: boolean) {
+  if (!growing) return source;
+  const lineStart = source.lastIndexOf("\n") + 1;
   const codeRanges = closedCodeRanges(source);
   const stack: Array<{ marker: string; index: number }> = [];
   // Runs and code ranges both ascend, so one cursor keeps the scan linear.
@@ -386,17 +393,18 @@ function withoutOpenEmphasis(source: string) {
     while (range < codeRanges.length && codeRanges[range]![1] <= run.index) range++;
     if (range < codeRanges.length && run.index >= codeRanges[range]![0]) continue;
     const marker = run[0];
-    if (source[run.index - 1] === "\\") continue;
+    if (source[run.index - 1] === "\\" || marker === "~" && run.index + 1 < source.length) continue;
     const { canOpen, canClose } = delimiterRun(source, run.index, marker.length);
     const match = canClose ? lastMarkerIndex(stack, marker) : -1;
     if (match >= 0) stack.splice(match, 1);
     // A run at the end can still grow into another run, so it stays hidden.
     else if (canOpen || run.index + marker.length === source.length) stack.push({ marker, index: run.index });
   }
-  if (!stack.length) return source;
+  if (!stack.some(({ index }) => index >= lineStart)) return source;
   const pieces: string[] = [];
   let offset = 0;
   for (const { marker, index } of stack.sort((a, b) => a.index - b.index)) {
+    if (index < lineStart) continue;
     pieces.push(source.slice(offset, index));
     offset = index + marker.length;
   }
@@ -417,12 +425,13 @@ function withoutTrailingLookahead(source: string, growing: boolean) {
 }
 
 const withoutOpenSyntax = (source: string, growing: boolean) =>
-  withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(growing ? withoutOpenAngle(source) : source, growing)), growing);
+  withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(growing ? withoutOpenAngle(source) : source, growing), growing), growing);
 
 function safeInlineContent(source: string, growing: boolean): SafeInlineContent {
   source = withoutOpenSyntax(source, growing);
-  const opener = unmatchedCodeSpan(source);
-  if (!opener) return { source };
+  // Only the growing line's open code span previews as code; an ended line shows its backticks as sent.
+  const opener = growing ? unmatchedCodeSpan(source) : undefined;
+  if (!opener || opener.index < source.lastIndexOf("\n")) return { source };
   let content = source.slice(opener.index + opener.length);
   const trailingTicks = /`+$/.exec(content)?.[0];
   if (trailingTicks && trailingTicks.length < opener.length) content = content.slice(0, -trailingTicks.length);
@@ -1101,8 +1110,8 @@ export function createStreamingDocument(): StreamingDocument {
     }
   };
 
-  const parsePending = (source: string, streaming: boolean) => {
-    return parseInline(source, streaming, environment()).filter((node) => node.type !== "text" || node.value);
+  const parsePending = (source: string, streaming: boolean, growing = streaming) => {
+    return parseInline(source, streaming, environment(), growing).filter((node) => node.type !== "text" || node.value);
   };
 
   const pendingPreview = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean): Inline[] => {
@@ -1110,7 +1119,8 @@ export function createStreamingDocument(): StreamingDocument {
     if (classification.kind !== "paragraph") return [];
     const startsInline = !pendingInline || !pendingInlineMatches(pendingInlineState, classification.offset, continues, resolver.references.size);
     if (startsInline) {
-      // A code span an earlier line left open may close on this line, as the paragraph parse will pair it.
+      // A code span an earlier line left open may close on this line, as the paragraph parse will pair it; the earlier
+      // line itself shows its backticks as sent (an ended line hides nothing).
       const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
       const after = open && openParagraph!.source[open.index + open.length];
       const prefix = continues && openParagraph

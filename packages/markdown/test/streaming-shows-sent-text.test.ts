@@ -56,11 +56,27 @@ function sourceIndexes(final: string, source: string) {
 // Long inputs print only their ends.
 const clip = (value: string) => JSON.stringify(value.length > 160 ? `${value.slice(0, 60)}...${value.slice(-100)}` : value);
 
-/** The position in `owed` of its first character that `shown` (in order, spaces ignored) lacks, or -1. */
+/**
+ * The position in `owed` of a character that `shown` (in order, spaces ignored) lacks, or -1: the first one whose
+ * removal leaves the rest in order, so the report names the hidden character, not a later one the greedy match tripped on.
+ */
 function firstMissing(owed: string, shown: string) {
-  let at = 0;
-  for (const character of shown) if (character === owed[at]) at++;
-  return at < owed.length ? at : -1;
+  const ahead: number[] = []; // ahead[i]: where in `shown` owed[0..i] ends at the earliest
+  for (let at = 0, index = 0; at < owed.length; at++, index++) {
+    while (index < shown.length && shown[index] !== owed[at]) index++;
+    if (index >= shown.length) break;
+    ahead[at] = index;
+  }
+  if (ahead.length === owed.length) return -1;
+  const behind: number[] = []; // behind[i]: where in `shown` owed[i..] starts at the latest
+  for (let at = owed.length - 1, index = shown.length - 1; at >= 0; at--, index--) {
+    while (index >= 0 && shown[index] !== owed[at]) index--;
+    if (index < 0) break;
+    behind[at] = index;
+  }
+  for (let at = 0; at <= ahead.length; at++)
+    if ((at === 0 || ahead[at - 1] !== undefined) && (at + 1 === owed.length || behind[at + 1] !== undefined) && (at === 0 || at + 1 === owed.length || ahead[at - 1]! < behind[at + 1]!)) return at;
+  return ahead.length;
 }
 
 /** Streams `source` in `deltas` and checks the rule at every delta boundary; `identity` adds the in-place-change check. */
@@ -156,6 +172,17 @@ const repros = [
   "[WARN] disk almost full",
   "see map[key] foo] and ![alt] text",
   "Run `" + "jq '.items[] | .name' ".repeat(12) + "` then " + "arr[i] = b[j]; ".repeat(20) + "[docs](https://e.com/x) end",
+  // a lone tilde is text
+  "cd ~/src && ls ~ | wc -l\nnext",
+  // an ended line shows its unmatched emphasis openers
+  "*a b\nmore",
+  "2 * 3 *x\nmore",
+  "a_b *c\nmore",
+  "~~a\nmore",
+  "*a b\nmore* tail",
+  "`a b\nmore",
+  "`a b\nmore` tail",
+  "run `npm test\nthen ``x`` and `y\nz",
   // an entity is text until it ends
   "AT&T is here",
   "AT&T\nmore",

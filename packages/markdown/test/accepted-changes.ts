@@ -14,6 +14,11 @@ export function withoutDefinitionLabels(source: string, text: string) {
   }, text);
 }
 
+// An ended line shows its emphasis markers as sent; the line end's full parse may pair a marker the growing line's
+// provisional parse showed as text, so that marker leaves (the flash the sent-text rule accepts). Style checks compare
+// text without `*` and `_`.
+export const withoutEmphasisMarkers = (text: string) => text.replace(/[*_]/g, "");
+
 // The waits at the growing edge that streaming-shows-sent-text.test.ts allows, one named entry each, so removing one is a
 // one-line change. Each takes the growing line so far (`line`) and a character offset in it, and says whether that
 // character may still be hidden.
@@ -33,8 +38,9 @@ const once = <T,>(compute: (line: string) => T) => {
 const markerLine = once((line) => /^[ \t]*(?:#+|[-+*=_]+|\d{1,9}[.)]?|`+|~+)?[ \t]*$/.test(line.replace(/^[ \t]*(?:(?:>|[-+*]|\d{1,9}[.)])(?:[ \t]+|$))*/, "")));
 const blockMarker: Wait = (line) => markerLine(line);
 
-/** An inline code or emphasis opener: until its closer arrives or its line ends (the words inside always show). */
-const spanOpener: Wait = (line, at) => "`*_~".includes(line[at]!);
+/** An inline code or emphasis opener: until its closer arrives or its line ends (the words inside always show). A lone `~`
+ * is text (strikethrough needs `~~`) unless it ends the line and can still grow into `~~`. */
+const spanOpener: Wait = (line, at) => "`*_".includes(line[at]!) || line[at] === "~" && (line[at - 1] === "~" || line[at + 1] === "~" || at === line.length - 1);
 
 /** The pairs of a possible link span `[...]` on `line`: `[` and `]` offsets, and the offset of a `(` or `[` after `]`. */
 const linkSpans = once((line: string) => {
