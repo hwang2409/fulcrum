@@ -1,0 +1,18 @@
+name: ff-repin
+on:
+  push:
+    branches: ['scratch/ff-*']
+jobs:
+  ff-repin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: 1.4.4 }
+      - run: bun install --frozen-lockfile
+      - run: cd apps/playground && bunx playwright install --with-deps firefox chromium
+      - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
+      - run: cd apps/web && bun scripts/paging-probe.ts
+        env: { RUNS: "5" }
