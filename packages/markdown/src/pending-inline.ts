@@ -156,7 +156,9 @@ class OpenerScan {
     if (position < 0) return index + 1;
     const next = this.source[index + 1];
     if (next !== "(" && next !== "[") {
-      this.resolve(position);
+      // A dry run only asks whether a stable `[` is decided: it stops here without copying the stack above it.
+      if (this.saved && position < this.existing) this.resolved = this.openers[position];
+      else this.resolve(position);
       return index + 1;
     }
     this.keep(position);
