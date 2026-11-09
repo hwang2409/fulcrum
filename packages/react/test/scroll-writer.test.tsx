@@ -13,9 +13,14 @@ const SOURCE = new URL("../src/virtual.tsx", import.meta.url);
 afterAll(() => GlobalRegistrator.unregister());
 
 // Scroll writes outside writeScroll(), by file and the exact statement, each with why it is not a Timeline host write.
-const OTHER_SCROLL_WRITES: Readonly<Record<string, string>> = {
+const OTHER_SCROLL_WRITES: Readonly<Record<string, readonly string[]>> = {
   // The text viewer's "top" control moves its own virtual list; rule (2) reads that host write as reader intent.
-  "tools/text-viewer.tsx": "node.scrollTop = 0",
+  "tools/text-viewer.tsx": ["node.scrollTop = 0"],
+  // Non-virtual mode only (the mode-switch anchor and the approval card): the adapter is detached there (transfer(null)).
+  "parts.tsx": [
+    "container.scrollTop += row.getBoundingClientRect().top - container.getBoundingClientRect().top - modeAnchor.current.offset",
+    "card?.scrollIntoView(",
+  ],
 };
 
 test("timeline scroll writes have one owner", () => {
@@ -23,13 +28,13 @@ test("timeline scroll writes have one owner", () => {
   const sourceRoot = new URL("../src/", import.meta.url);
   for (const file of readdirSync(sourceRoot, { recursive: true }).map(String).filter((name) => /\.tsx?$/.test(name))) {
     const source = readFileSync(new URL(file, sourceRoot), "utf8");
-    const writes = [...source.matchAll(/[\w.\]?)]+\.(?:scrollTop\s*=(?!=)[^;\n]*|scrollTo\s*\(|scrollBy\s*\()/g)];
+    const writes = [...source.matchAll(/[\w.\]?)]+\.(?:scrollTop\s*[-+]?=(?!=)[^;\n]*|scrollTo\s*\(|scrollBy\s*\(|scrollIntoView\s*\()/g)];
     if (file === "virtual.tsx") {
       expect(writes.map(([write]) => write), message).toEqual(["container.scrollTop = value"]);
       const ownerStart = source.indexOf("const writeScroll =");
       const ownerEnd = source.indexOf("\n  };", ownerStart);
       expect(writes[0]!.index! > ownerStart && writes[0]!.index! < ownerEnd, message).toBeTrue();
-    } else expect(writes.map(([write]) => write), `${file}: ${message}`).toEqual(OTHER_SCROLL_WRITES[file] ? [OTHER_SCROLL_WRITES[file]!] : []);
+    } else expect(writes.map(([write]) => write), `${file}: ${message}`).toEqual([...(OTHER_SCROLL_WRITES[file] ?? [])]);
   }
 });
 

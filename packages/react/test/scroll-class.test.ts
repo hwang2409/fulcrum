@@ -50,3 +50,32 @@ test.each(rows.flatMap(([name, change, pinned, unpinned]) => [
   const facts = base(pinned);
   expect(classifyScroll({ ...facts, ...change(facts) })).toBe(expected);
 });
+
+// Round 5: an exact match of our stored write is ours even while reader input is in flight (a wheel lease settling
+// while our anchor correction lands 300 px up must not read as the reader leaving).
+test("lease plus pendingMatch: our write during reader input is our own", () => {
+  expect(classifyScroll({ ...base(false), lease: true, pendingMatch: true, top: 100 })).toBe("own");
+  expect(classifyScroll({ ...base(true), lease: true, pendingMatch: true, top: 700 })).toBe("own");
+});
+
+// Both directions over a grid of moves: our own moves (any write we stored: an end write, a commit clamp we recorded,
+// a resize correction, a floored write) are always "own"; a callback under a reader lease is never "layout" or "own".
+test("property: our own moves never read as the reader; reader moves never read as layout", () => {
+  const moves = [-600, -41, -20, -1, 0, 1, 20, 41, 600];
+  let cases = 0;
+  for (const pinned of [true, false]) for (const move of moves) for (const resize of [0, -3, 120]) for (const growth of [0, 30]) {
+    const facts = base(pinned);
+    const domEnd = facts.domEnd + growth - resize;
+    const shape = {
+      top: Math.max(0, Math.min(domEnd, facts.top - move)), domEnd, scrollHeight: facts.scrollHeight + growth,
+      clientHeight: facts.clientHeight + resize,
+    };
+    for (const lease of [false, true]) {
+      expect(classifyScroll({ ...facts, ...shape, lease, pendingMatch: true }), `own: ${JSON.stringify({ pinned, move, resize, growth, lease })}`).toBe("own");
+      const reader = classifyScroll({ ...facts, ...shape, lease: true, pendingMatch: false });
+      expect(reader === "reader" || reader === "intent", `reader: ${JSON.stringify({ pinned, move, resize, growth, reader })}`).toBe(true);
+      cases++;
+    }
+  }
+  expect(cases).toBe(216);
+});

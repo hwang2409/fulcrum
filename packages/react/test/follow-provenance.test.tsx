@@ -1021,6 +1021,93 @@ describe("timeline scroll provenance", () => {
     }
   });
 
+  // Round 5: a lease settles after two frames with no reader callback. Our own writes are not reader callbacks, so a
+  // pinned stream that writes every frame must not keep one wheel tick's lease alive: the WebKit banner clamp later
+  // (3 px shrink, 41 px up, no input) is still layout and the reader keeps following.
+  test("our own writes never extend a reader lease: after one wheel tick and a pinned stream, the banner clamp is layout", () => {
+    const geometry = installScrollGeometry();
+    const observer = installRowObserver();
+    try {
+      const { append, host, unseen } = mountTimeline();
+      observer.measure(() => 72);
+      act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 })));
+      for (let frame = 0; frame < 6; frame++) {
+        const before = host.scrollTop;
+        append();
+        echo(host, before);
+        observer.measure(() => undefined);
+      }
+      expect(unseen(), "the stream keeps the reader pinned").toBe("0");
+      expect(host.scrollTop, "the stream keeps the reader at the end").toBe(host.scrollHeight - host.clientHeight);
+      geometry.resizeBy(-3);
+      host.scrollTop -= 41; // the browser's clamp (WebKit banner capture), no input
+      act(() => host.dispatchEvent(new Event("scroll")));
+      append();
+      expect(unseen(), "the banner clamp after the stream is layout, not the reader leaving").toBe("0");
+    } finally {
+      observer.restore();
+      geometry.restore();
+    }
+  });
+
+  // Reader moves never read as layout, for every input kind, animated over 4 callbacks or done in 1: a reader who
+  // scrolls down to the end follows again; a reader who scrolls up off the end stops following.
+  const gestureKinds = ["wheel", "keyboard", "touch", "scrollbar"] as const;
+  const gestureRows = gestureKinds.flatMap((kind) => ([1, 4] as const).flatMap((callbacks) =>
+    (["down to the end", "up off the end"] as const).map((direction) => [kind, callbacks, direction] as const)));
+  test.each(gestureRows)("reader %s gesture over %p callback(s), %s", (kind, callbacks, direction) => {
+    const geometry = installScrollGeometry();
+    const observer = installRowObserver();
+    const nextFrame = () => observer.measure(() => undefined);
+    try {
+      const { append, host, unseen } = mountTimeline();
+      observer.measure(() => 72);
+      if (direction === "down to the end") {
+        act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+        moveReader(host, host.scrollHeight - host.clientHeight - 600);
+        act(() => host.dispatchEvent(new Event("scrollend")));
+        nextFrame();
+        append();
+        expect(unseen(), "the reader starts unpinned").toBe("1");
+      }
+      const up = direction === "up off the end";
+      const begin = () => act(() => {
+        if (kind === "wheel") host.dispatchEvent(new WheelEvent("wheel", { deltaY: up ? -100 : 100 }));
+        else if (kind === "keyboard") document.body.dispatchEvent(new KeyboardEvent("keydown", { key: up ? "PageUp" : "End", bubbles: true }));
+        else if (kind === "scrollbar") host.dispatchEvent(new PointerEvent("pointerdown", { clientX: 808, clientY: 300, bubbles: true }));
+        else {
+          const touch = new Event("touchstart", { bubbles: true }) as TouchEvent;
+          Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+          host.dispatchEvent(touch);
+        }
+      });
+      const release = () => act(() => {
+        if (kind === "keyboard") document.body.dispatchEvent(new KeyboardEvent("keyup", { key: up ? "PageUp" : "End", bubbles: true }));
+        else if (kind === "scrollbar") document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        else if (kind === "touch") host.dispatchEvent(new Event("touchend", { bubbles: true }));
+      });
+      const start = host.scrollTop;
+      const end = host.scrollHeight - host.clientHeight;
+      begin();
+      for (let frame = 1; frame <= callbacks; frame++) {
+        moveReader(host, up ? start - 20 * frame * (4 / callbacks) : frame === callbacks ? end : start + (end - start) * frame / (callbacks + 1));
+        if (frame === 1) release(); // the release lands mid-animation; the browser keeps scrolling
+        nextFrame();
+      }
+      if (callbacks === 1) release();
+      if (!up) expect(host.scrollTop, "the gesture ends at the end").toBe(host.scrollHeight - host.clientHeight);
+      append();
+      if (up) expect(unseen(), "a reader who scrolled up off the end stops following").toBe("1");
+      else {
+        expect(unseen(), "a reader who scrolled down to the end follows again").toBe("0");
+        expect(host.scrollTop, "and follows the new row to the new end").toBe(host.scrollHeight - host.clientHeight);
+      }
+    } finally {
+      observer.restore();
+      geometry.restore();
+    }
+  });
+
   // mermaid-check "swap virtual bottom": a new row mounts at its estimate, measures smaller, and our own commit shrinks
   // the DOM, so the browser clamps a pinned reader to the new end with no callback yet. The row then wraps taller
   // before that callback runs: the reader must still be at the end, not read as moving up.

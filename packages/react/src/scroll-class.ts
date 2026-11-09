@@ -43,13 +43,15 @@ export type ScrollFacts = {
 //   change, else intent; a callback with no move (|up| <= 0.5) is layout; anything else is intent, even within the
 //   bottom threshold.
 // Reader input moving up off the end is the reader leaving; other reader input goes to the engine's threshold.
+// Known limit: a host write that lands at the end inside a lease's two-frame settle reads as the reader's (as with touch).
 export function classifyScroll(facts: ScrollFacts): ScrollClass {
   const { top, lastTop, domEnd, priorDomEnd } = facts;
   const slack = Math.min(1, Math.abs(domEnd - priorDomEnd));
   const atEnd = Math.abs(top - priorDomEnd) <= slack + 0.5 || Math.abs(top - domEnd) <= slack + 0.5;
   const up = lastTop - top;
-  if (facts.lease) return up > 0.5 && !atEnd ? "intent" : "reader";
+  // An exact match of our stored write is ours, even while reader input is in flight.
   if (facts.pendingMatch) return "own";
+  if (facts.lease) return up > 0.5 && !atEnd ? "intent" : "reader";
   if (atEnd) return "layout";
   if (up < -0.5) return "intent";
   const resize = Math.abs(facts.clientHeight - facts.viewportSize);

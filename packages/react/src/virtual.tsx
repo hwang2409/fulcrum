@@ -27,94 +27,75 @@ type ScrollLeases = ReturnType<typeof createScrollLeases>;
 
 /**
  * The one owner of reader-input leases for one scroll host: which scroll callbacks the reader caused.
- * Wheel and focus arm a one-shot lease that the next scroll callback consumes (or the next frame expires).
- * Keyboard and scrollbar are held from press to release; touch is held until native scrollend or two quiet frames.
- * Every held lease ends on its release, on window blur, when the document is hidden, and on host detach. Plain state only.
+ * Keyboard, scrollbar, and touch are held from press to release (touch stays held until it settles: a fling still moves).
+ * Every lease then settles by one rule: it ends at native scrollend, or after two frames with no reader scroll callback,
+ * because browsers animate wheel, key, and touch scrolls over several frames and callbacks. Our own writes are not
+ * reader callbacks, so a stream that writes every frame cannot keep a lease alive. Every lease also ends on window
+ * blur, when the document is hidden, and on host detach. Plain state only.
  */
-function createScrollLeases(onTouchSettled: () => void) {
+function createScrollLeases(onSettled: () => void) {
   const held = new Set<HeldLeaseKind>();
-  let armed = false;
-  let armedFrame: number | null = null;
+  let settling = false;
   let touching = false;
-  let touchGeneration = 0;
+  let readerCallbacks = 0;
   let settleFrame: number | null = null;
-  const disarm = () => {
-    armed = false;
-    if (armedFrame != null) cancelAnimationFrame(armedFrame);
-    armedFrame = null;
-  };
-  const arm = () => {
-    disarm();
-    armed = true;
-    armedFrame = requestAnimationFrame(() => {
-      armedFrame = null;
-      armed = false;
-    });
-  };
   const stopSettling = () => {
     if (settleFrame != null) cancelAnimationFrame(settleFrame);
     settleFrame = null;
+    settling = false;
   };
-  const settleTouch = () => {
-    let observedGeneration = touchGeneration;
+  const settle = () => {
+    stopSettling();
+    settling = true;
+    let seen = readerCallbacks;
     let quietFrames = 0;
     const observe = () => {
       settleFrame = null;
-      if (touchGeneration === observedGeneration) quietFrames++;
+      if (readerCallbacks === seen) quietFrames++;
       else {
-        observedGeneration = touchGeneration;
+        seen = readerCallbacks;
         quietFrames = 0;
       }
       if (quietFrames < 2) {
         settleFrame = requestAnimationFrame(observe);
         return;
       }
+      settling = false;
       held.delete("touch");
-      onTouchSettled();
+      onSettled();
     };
     settleFrame = requestAnimationFrame(observe);
   };
   return {
     start(kind: ScrollLeaseKind) {
-      if (kind === "touch") {
-        stopSettling();
-        touching = true;
-      }
+      if (kind === "touch") touching = true;
       if (kind === "keyboard" || kind === "scrollbar" || kind === "touch") held.add(kind);
-      arm();
+      settle();
     },
-    /** Ends a held lease; an end without its start changes nothing. */
+    /** Ends a held lease; an end without its start changes nothing. The release still settles (a fling, the last key repeat). */
     end(kind: HeldLeaseKind) {
       if (!held.has(kind)) return;
-      if (kind === "touch") {
-        touching = false;
-        settleTouch();
-        return;
-      }
-      held.delete(kind);
-      arm(); // the release can still move the host once (key repeat, the last drag frame)
+      if (kind === "touch") touching = false;
+      else held.delete(kind);
+      settle();
     },
-    /** Called once per scroll callback: whether the reader caused it. */
-    consume() {
-      const fromReader = armed || held.size > 0;
-      disarm();
-      if (held.has("touch")) touchGeneration++;
-      return fromReader;
+    /** Called once per scroll callback: whether the reader caused it. Our own write never extends a lease. */
+    consume(ours: boolean) {
+      if (!ours) readerCallbacks++;
+      return settling || held.size > 0;
     },
     held: () => held.size > 0,
     /** Whether reader input is in flight, without consuming it. */
-    active: () => armed || held.size > 0,
+    active: () => settling || held.size > 0,
     touching: () => touching,
     /** The browser reports the scroll gesture finished. */
     scrollEnd() {
-      disarm();
       stopSettling();
       touching = false;
       held.delete("touch");
     },
     /** Window blur, a hidden document, or host detach: no release event will come. */
     release() {
-      disarm();
       stopSettling();
       touching = false;
       held.clear();
@@ -298,10 +279,11 @@ export function useVirtualList<Id extends string>(
         const pending = pendingScroll.current;
         pendingScroll.current = null; // the first callback consumes our write, whether the browser matched it or not
         const top = container.scrollTop;
+        const pendingMatch = pending !== null && (Math.abs(top - pending.value) < 0.5
+          || (typeof pending.target === "number" && Math.abs(top - pending.target) < 0.5));
         const kind = classifyScroll({
-          lease: hostLeases.consume(),
-          pendingMatch: pending !== null && (Math.abs(top - pending.value) < 0.5
-            || (typeof pending.target === "number" && Math.abs(top - pending.target) < 0.5)),
+          lease: hostLeases.consume(pendingMatch),
+          pendingMatch,
           top,
           lastTop: lastScrollTop.current,
           domEnd,
