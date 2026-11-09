@@ -22,18 +22,29 @@ test("rejects quadratic work at the warm-up, before the timed rounds", () => {
 });
 
 test("one stall in the judged warm-up does not fail linear work", () => {
+  // A virtual clock makes this exact on any machine and under any load: each call costs size * 40 ns of clock, so the
+  // clean ratio is exactly the 64x span (8x under the 512x limit), and no real stall can move a sample.
+  const NS_PER_ITEM = 40;
+  const [small, large] = [1_000, 64_000];
+  const samples = 5;
+  const fastFailBound = (large / small) ** 1.5 * 4;
+  // The large call takes 2.56 ms >= the 1 ms sample floor, so its repeat count is 1 and large call 1 is exactly the
+  // first judged warm-up sample (call 0 picks the count). Its stall is 10x the fast-fail bound times a large call.
+  const stall = 10 * fastFailBound * large * NS_PER_ITEM;
+  let clock = 0;
   let largeCalls = 0;
-  expectGrowthBelow([1_000, 64_000], (size) => () => {
-    // Every large call runs at least 2 ms, so its repeat count is always 1 and call 1 is exactly the first judged
-    // warm-up sample (call 0 picks the count). That call's 500 ms stall puts the warm-up ratio far past the fast-fail
-    // bound (64^1.5 x 4 = 2048x) even if the small sample is slowed to 0.2 ms; only the second warm-up keeps it from
-    // failing the test.
-    if (size === 64_000 && largeCalls++ === 1) Bun.sleepSync(500);
-    const floor = size === 64_000 ? Bun.nanoseconds() + 2e6 : 0;
-    do loop(size * 16); while (Bun.nanoseconds() < floor);
-  });
-  // repeat pick, two warm-ups, five rounds
-  expect(largeCalls).toBe(8);
+  const realNanoseconds = Bun.nanoseconds;
+  Bun.nanoseconds = () => clock;
+  try {
+    expectGrowthBelow([small, large], (size) => () => {
+      if (size === large && largeCalls++ === 1) clock += stall;
+      clock += size * NS_PER_ITEM;
+    }, { samples });
+  } finally {
+    Bun.nanoseconds = realNanoseconds;
+  }
+  // repeat pick, two warm-ups (the second only because the first was over the fast-fail bound), the timed rounds
+  expect(largeCalls).toBe(1 + 2 + samples);
 });
 
 test("rejects O(n)-per-step work under the flat exponent", () => {
