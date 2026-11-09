@@ -593,8 +593,55 @@ test("dropped steering is explicit live and compact after reload", () => {
     { type: "delivery_status", delivery_id: "history-only", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
   ].forEach((event) => store.dispatch(event as RunEvent));
   mount(<RunProvider store={store}><Fallback id="user:delivery:dropped-steer" /><Fallback id="notification:1" /></RunProvider>);
-  expect(q('[data-id="user:delivery:dropped-steer"] [data-part="message-content"]').textContent).toBe("this steer must be dropped · not delivered · abort");
+  expect(q('[data-id="user:delivery:dropped-steer"] [data-part="message-content"]').textContent).toBe("this steer must be dropped");
+  expect(q('[data-id="user:delivery:dropped-steer"] [data-part="delivery-note"]').textContent).toBe("not delivered · the run was stopped");
   expect(q('[data-id="notification:1"]').textContent).toBe("steer dropped: abort");
+});
+
+const droppedSteer = (reason?: string): RunEvent => ({ type: "user_message", text: "steer", mode: "steer", delivery_id: "d", delivery_status: "dropped", ...(reason === undefined ? {} : { delivery_reason: reason }) });
+const deliveryNote = (within: HTMLElement) => within.querySelector('[data-id="user:delivery:d"] [data-part="delivery-note"]');
+
+test.each([
+  ["turn_end", "the turn ended first"],
+  ["abort", "the run was stopped"],
+  ["clear", "the pending steers were cleared"],
+  ["disconnect", "the connection was lost"],
+  ["failed", "the turn failed"],
+  ["restart", "the server restarted"],
+])("a steer dropped for %s reads as words, not the token", (reason, words) => {
+  const store = createRunStore(() => {});
+  store.dispatch(droppedSteer(reason));
+  const view = mount(<RunProvider store={store}><Fallback id="user:delivery:d" /></RunProvider>);
+  expect(deliveryNote(view)?.textContent).toBe(`not delivered · ${words}`);
+  expect(view.querySelector('[data-part="message-content"]')?.textContent).toBe("steer");
+});
+
+test("an unknown or missing drop reason says only not delivered", () => {
+  for (const reason of ["quota_exhausted", undefined]) {
+    const store = createRunStore(() => {});
+    store.dispatch(droppedSteer(reason));
+    const view = mount(<RunProvider store={store}><Fallback id="user:delivery:d" /></RunProvider>);
+    expect(deliveryNote(view)?.textContent).toBe("not delivered");
+    if (reason) expect(view.textContent).not.toContain(reason);
+  }
+});
+
+test("renderDeliveryNote replaces the delivery note, and null hides it", () => {
+  const store = createRunStore(() => {});
+  store.dispatch(droppedSteer("turn_end"));
+  store.dispatch({ type: "user_message", text: "delivered", mode: "send", delivery_id: "ok", delivery_status: "delivered" });
+  const seen: string[] = [];
+  const view = mount(<RunProvider store={store}>
+    <Fallback id="user:delivery:d" renderDeliveryNote={(item) => { seen.push(item.id); return <>lost · <button type="button">resend</button></>; }} />
+    <Fallback id="user:delivery:ok" renderDeliveryNote={(item) => { seen.push(item.id); return null; }} />
+  </RunProvider>);
+  expect(deliveryNote(view)?.textContent).toBe("lost · resend");
+  expect(deliveryNote(view)?.querySelector("button")?.textContent).toBe("resend");
+  expect(seen).toEqual(["user:delivery:d", "user:delivery:ok"]);
+  expect(view.querySelector('[data-id="user:delivery:ok"] [data-part="delivery-note"]')).toBeNull();
+  const hidden = mount(<RunProvider store={store}><Fallback id="user:delivery:d" renderDeliveryNote={() => null} /></RunProvider>);
+  expect(deliveryNote(hidden)).toBeNull();
+  expect(hidden.textContent).toBe("> steer");
 });
 
 test("a notification row says what the notification says", () => {
