@@ -222,9 +222,8 @@ type ImageState =
 type LazyImage = ImageContentBlock & { source: NonNullable<ImageContentBlock["source"]> };
 
 function imageState(image: ImageContentBlock, lazy: LazyImage | undefined, media: ReturnType<typeof useMedia>, decodeFailures: number): ImageState {
-  if (image.omitted) return { status: "omitted" };
   const url = safeUrl(image.url, "image") ?? (media.state.status === "ready" ? media.state.url : undefined);
-  if (!url && (!lazy || !media.available)) return { status: "blocked" };
+  if (!url && (!lazy || !media.available)) return { status: image.omitted ? "omitted" : "blocked" };
   if (media.state.status === "error" && (media.state.error as { code?: unknown }).code === "not_available") return { status: "unavailable" };
   if (decodeFailures > 1) return { status: "error" };
   if (url) return { status: "ready", url };
