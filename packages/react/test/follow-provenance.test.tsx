@@ -986,6 +986,41 @@ describe("timeline scroll provenance", () => {
     }
   });
 
+  // Review 4 B1: browsers animate wheel and key scrolls, so one reader gesture reaches the end over several frames and
+  // scroll callbacks. A reader who scrolls all the way down re-pins, however many frames the gesture takes.
+  test.each(["wheel one tick", "End key, keyup after frame 1"] as const)("an animated reader scroll down to the end re-pins (%s)", (gesture) => {
+    const geometry = installScrollGeometry();
+    const observer = installRowObserver();
+    const nextFrame = () => observer.measure(() => undefined);
+    try {
+      const { append, host, jump, unseen } = mountTimeline();
+      observer.measure(() => 72);
+      act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+      moveReader(host, host.scrollHeight - host.clientHeight - 600);
+      act(() => host.dispatchEvent(new Event("scrollend")));
+      nextFrame();
+      append();
+      expect(unseen(), "the reader starts unpinned with one unseen row").toBe("1");
+      const start = host.scrollTop;
+      const distance = host.scrollHeight - host.clientHeight - start;
+      const key = (type: "keydown" | "keyup") => act(() => document.body.dispatchEvent(new KeyboardEvent(type, { key: "End", bubbles: true, cancelable: true })));
+      if (gesture === "wheel one tick") act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 })));
+      else key("keydown");
+      [0.4, 0.75, 0.95, 1].forEach((share, frame) => {
+        moveReader(host, share === 1 ? host.scrollHeight : start + distance * share); // the browser's animation frame
+        if (frame === 0 && gesture !== "wheel one tick") key("keyup");
+        nextFrame();
+      });
+      expect(host.scrollTop, "the gesture ends exactly at the end").toBe(host.scrollHeight - host.clientHeight);
+      append();
+      expect(unseen(), "a reader who scrolled down to the end follows again").toBe("0");
+      expect(jump(), "the jump control leaves once the reader is at the end").toBeNull();
+    } finally {
+      observer.restore();
+      geometry.restore();
+    }
+  });
+
   // mermaid-check "swap virtual bottom": a new row mounts at its estimate, measures smaller, and our own commit shrinks
   // the DOM, so the browser clamps a pinned reader to the new end with no callback yet. The row then wraps taller
   // before that callback runs: the reader must still be at the end, not read as moving up.
