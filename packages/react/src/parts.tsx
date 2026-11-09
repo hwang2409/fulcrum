@@ -13,7 +13,7 @@ import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
 import { Message, ToolResultBlocks } from "./content.js";
 import { UserMessageContent } from "./user-message.js";
-import { NewestRowProvider } from "./newest-row.js";
+import { NewestRowProvider, newestStreamableRow } from "./newest-row.js";
 
 declare global { var __FULCRUM_DEV__: boolean | undefined; }
 
@@ -384,21 +384,55 @@ const fallbackDisplay = (item: RunItem) => {
   return {
     kind: stopped ? "stopped" : item.type,
     state: stopped ? "stopped" : item.type === "error" ? "error" : "done",
-    label: user?.delivery_status === "dropped" ? `${label} · not delivered${user.delivery_reason ? ` · ${user.delivery_reason}` : ""}` : label,
+    label,
     attachments: user?.attachments,
   };
 };
 
+/** A user row whose event is a `user_message`: the item `renderDeliveryNote` receives. */
+export type UserMessageItem = { id: string; type: "user"; event: Extract<RunEvent, { type: "user_message" }> };
+// Words for the closed set of drop reasons zeta sends (DeliveryDropReason). An unknown reason shows no words: a raw
+// token tells the reader nothing.
+const dropReasons: Record<string, string> = {
+  turn_end: "the turn ended first",
+  abort: "the run was stopped",
+  clear: "the pending steers were cleared",
+  disconnect: "the connection was lost",
+  failed: "the turn failed",
+  restart: "the server restarted",
+};
+const defaultDeliveryNote = ({ event }: UserMessageItem): ReactNode => {
+  if (event.delivery_status !== "dropped") return null;
+  const why = event.delivery_reason !== undefined && Object.hasOwn(dropReasons, event.delivery_reason)
+    ? dropReasons[event.delivery_reason]
+    : undefined;
+  const note = why ? `not delivered · ${why}` : "not delivered";
+  return event.text_omitted ? `${note} · text not kept` : note;
+};
+
+export type FallbackProps = ItemProps & {
+  /**
+   * The note under a user row, called for every user message row. Return null to show no note. Omitted, a dropped
+   * message reads "not delivered", plus why when the reason is known. Pass a stable function.
+   */
+  renderDeliveryNote?: (item: UserMessageItem) => ReactNode;
+};
+
 /** Generic part for kinds without a renderer (user, error, unknown, ...). */
-export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
+export const Fallback = memo(function Fallback({ id, className, renderDeliveryNote = defaultDeliveryNote }: FallbackProps) {
   const item = useItem(id);
   if (!item) return null;
   const display = fallbackDisplay(item);
-  const user = item.type === "user" && item.event.type === "user_message";
+  const userEvent = item.type === "user" && item.event.type === "user_message" ? item.event : undefined;
+  const user = userEvent !== undefined;
+  const textOmitted = userEvent?.text_omitted === true;
+  const note = user ? renderDeliveryNote(item as UserMessageItem) : null;
+  if (textOmitted && (note == null || note === false)) return null;
   const content = <>{display.label}{display.attachments?.length ? <ToolResultBlocks id={id} blocks={display.attachments} /> : null}</>;
   return (
-    <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state}>
-      {user ? <UserMessageContent style={pre}>{content}</UserMessageContent> : content}
+    <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state} data-text-omitted={textOmitted ? "" : undefined}>
+      {user && !textOmitted ? <UserMessageContent style={pre}>{content}</UserMessageContent> : user ? null : content}
+      {note == null || note === false ? null : <div data-part="delivery-note">{note}</div>}
     </div>
   );
 });
@@ -706,7 +740,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
     return () => container.removeEventListener("scroll", capture);
   }, [activeScrollRef, enabled, items]);
   // The newest row comes from the outline, not the DOM: a virtual timeline also mounts a row kept for focus after it.
-  const newest = items.at(-1)?.id;
+  const newest = newestStreamableRow(items);
   if (!enabled) {
     return (
       <NewestRowProvider id={newest}><TimelineLayout unseenCount={0} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} ownedScrollRef={ownedScrollRef} hostOwned={scrollRef !== undefined} virtual={false}>

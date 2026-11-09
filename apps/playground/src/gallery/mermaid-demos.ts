@@ -122,6 +122,20 @@ export const mermaidDemos: Demo[] = [
     ];
   }),
   {
+    id: "mermaid-mixed",
+    part: "Mermaid",
+    title: "beside code and a table",
+    description: "A diagram, a code block, and a table in one message: every block reaches the column's edge, where a tool card ends; the prose keeps the cursor's gutter.",
+    events: [commit("mermaid-mixed", `${fence(diagrams[0]![2], diagrams[0]![3])}\n\`\`\`sh\nbun test packages/react\n\`\`\`\n\n| check | result |\n| --- | --- |\n| typecheck | pass |\n`)],
+  },
+  {
+    id: "mermaid-tail",
+    part: "Mermaid",
+    title: "drawn, message still streaming",
+    description: "The fence closed and the diagram drew, but the message has not said more yet: the diagram carries the running rail until the next text.",
+    events: lines("mermaid-tail", fence(diagrams[0]![2], diagrams[0]![3])),
+  },
+  {
     id: "mermaid-live",
     part: "Mermaid",
     title: "live",

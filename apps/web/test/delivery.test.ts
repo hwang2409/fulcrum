@@ -127,7 +127,7 @@ test("a restart snapshot after the drop rebuilds the steer's row from history; i
   lease.release();
 });
 
-test("a restart snapshot between a steer and its turn end loses the live drop's row; zeta is asked once and the steer is resent once", async () => {
+test("a drop after a restart rebuilds one row and resends once without a redundant status poll", async () => {
   jest.useFakeTimers();
   try {
     const { client, calls, emit } = await server((method) => method === "delivery_status" ? { result: { status: "dropped" } } : ok, fullFeatures);
@@ -144,7 +144,9 @@ test("a restart snapshot between a steer and its turn end loses the live drop's 
     jest.advanceTimersByTime(1_000);
     for (let i = 0; i < 20 && !result; i++) await Promise.resolve();
     expect(result).toEqual([]);
-    expect(calls).toEqual([["delivery_status", { delivery_id: "id-2" }], ["send", { text: "survive restart", delivery_id: "id-3" }]]);
+    expect(lease.store.getItem("user:delivery:id-2")).toMatchObject({ event: { text: "", text_omitted: true, delivery_status: "dropped" } });
+    expect(lease.store.getOutline().filter(({ id }) => id === "user:delivery:id-2")).toHaveLength(1);
+    expect(calls).toEqual([["send", { text: "survive restart", delivery_id: "id-3" }]]);
     lease.release();
   } finally {
     jest.useRealTimers();
