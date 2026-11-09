@@ -504,6 +504,8 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="text-viewer-language"] { color: var(--fulcrum-ui-type); font-weight: 700; }
 /* The count is never cut: when a head cannot hold a row, it wraps (styles below keep the usual states on one row). */
 [data-part="text-viewer-count"] { flex: 1 0 auto; white-space: nowrap; }
+/* Reserve the longer label in every follow state, so changing the jump target never moves the control. */
+[data-part="text-viewer-head"] > [data-action^="jump-"] { box-sizing: content-box; min-width: 14ch; text-align: start; }
 /* A narrow head is one row in every follow state, so scrolling never moves the code. The position word yields in every
    state: the jump button says where the view is, and a warn chevron before it says new output arrived below (status
    colors mark, never color text). The chevron's space is kept in every state, so it appears without a shift. Narrower
@@ -513,7 +515,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   [data-part="text-viewer-position"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   [data-part="text-viewer-head"] > [data-action^="jump-"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-inline-end: 6px; }
   /* As wide as its longer label ("bottom"), so "top" and "bottom" share one left edge. */
-  [data-part="text-viewer-head"] > [data-action^="jump-"] { box-sizing: content-box; min-width: calc(6ch + 13px); text-align: start; }
+  [data-part="text-viewer-head"] > [data-action^="jump-"] { min-width: calc(6ch + 13px); }
   [data-part="text-viewer-position"][data-position="new-output"] ~ [data-action="jump-bottom"] { font-weight: 700; }
   [data-part="text-viewer-position"][data-position="new-output"] ~ [data-action="jump-bottom"]::before { box-sizing: border-box; border-right: 2px solid var(--fulcrum-warn); border-bottom: 2px solid var(--fulcrum-warn); transform: translateY(-1px) rotate(45deg); }
 }
