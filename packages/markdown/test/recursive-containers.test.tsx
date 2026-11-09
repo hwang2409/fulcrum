@@ -21,7 +21,8 @@ test("bounds 100 KB quote > list > quote work", () => {
   expect(ratio).toBeLessThanOrEqual(1.2);
 }, 60_000);
 
-test("hides the spaced nested-quote table prefix", () => {
+// A lone pipe is text until a delimiter row completes below it, so it shows as sent.
+test("shows the spaced nested-quote lone pipe as sent", () => {
   const source = [
     "# report 1",
     "",
@@ -31,7 +32,7 @@ test("hides the spaced nested-quote table prefix", () => {
     ">   > |",
   ].join("\n");
   const html = renderToStaticMarkup(<Markdown source={source} streaming />);
-  expect(html).not.toContain("|");
+  expect(html).toContain("|");
 });
 
 const json = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);

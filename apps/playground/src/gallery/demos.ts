@@ -394,12 +394,51 @@ export const demos: Demo[] = [
     live: 90,
   },
   {
+    id: "markdown-table-flip",
+    part: "Message",
+    title: "markdown table, one character at a time",
+    description: "The header and delimiter rows show as sent while they arrive; the delimiter row's line end turns them into a table in one move.",
+    events: [
+      ...[..."Every check passed:\n\n| check name here | result summary text |\n|:-----------|------------:|\n| typecheck | pass |\n"].map((delta): RunEvent => ({ type: "message_delta", message_id: "markdown-table-flip", delta })),
+      { type: "message_commit", message_id: "markdown-table-flip", message: text("assistant", "Every check passed:\n\n| check name here | result summary text |\n|:-----------|------------:|\n| typecheck | pass |\n") },
+    ],
+    live: 30,
+  },
+  {
     id: "markdown-fence-streaming",
     part: "Message",
     title: "code fence, streaming",
-    description: "While the fence is open, the cursor fills the next cell of its newest code line; once the fence closes, it leaves the block for the text after it.",
+    description: "While the fence streams, the cursor fills the next cell of its newest code line; it stays there when the fence closes, so the block never changes height, and moves to the text after it.",
     events: stream("markdown-fence-live", "Run the focused tests first:\n\n```sh\nbun test packages/react\nbun run typecheck\n```\n\nThen push."),
     live: 90,
+  },
+  {
+    id: "message-notification-midstream",
+    part: "Message",
+    title: "a notification lands mid-stream",
+    description: "A background notification and an event the adapter does not know arrive while the text streams: they report on the run, so the message keeps the cursor.",
+    events: (() => {
+      const deltas = stream("notification-midstream", "Reading the files now and summarising each one in turn, more text keeps arriving here.").slice(0, -1);
+      return [...deltas.slice(0, 6), { type: "notification", notification_id: "bg-1", data: { message: "background task finished: bun test packages/react" } }, { type: "unknown", name: "some_future_event", data: {} }, ...deltas.slice(6)];
+    })(),
+  },
+  {
+    id: "message-block-tail",
+    part: "Message",
+    title: "streaming, a block last",
+    description: "The message still streams, and its newest part is a file: with no text line to end, the file carries the live signal, a static accent rail like a running tool's.",
+    events: blockStream("block-tail", ["The bundle report is ready: ", report]).slice(0, -1),
+  },
+  {
+    id: "markdown-large-tail",
+    part: "Message",
+    title: "streaming, a closed large block last",
+    description: "A large fence closed and the message has not said more yet: the code viewer carries the running rail until the next text.",
+    events: [
+      { type: "message_delta", message_id: "markdown-large-tail", delta: "The whole generated table:\n\n```ts\n" },
+      ...Array.from({ length: 60 }, (_, i): RunEvent => ({ type: "message_delta", message_id: "markdown-large-tail", delta: `export const value${i} = compute(${i}, "item-${i}");\n` })),
+      { type: "message_delta", message_id: "markdown-large-tail", delta: "```\n" },
+    ],
   },
   {
     id: "ai-sdk-text-then-tool",

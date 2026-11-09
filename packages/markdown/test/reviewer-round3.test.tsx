@@ -67,11 +67,12 @@ test("preview copy work stays bounded for 10 KB, 100 KB, and 1 MB leaves", () =>
 });
 
 test("a held marker never hides text after the marker settles", () => {
-  const cases = [[">", " hello", "hello"], ["-", " item", "item"], ["1", ". item", "item"], ["#", " heading", "heading"], ["|", " cell |", "cell"], ["[", "label] text", "label text"]] as const;
-  for (const [marker, suffix, expected] of cases) {
+  // A pipe row shows as sent, pipes kept, once it has a cell (table-row-hold.test.tsx).
+  const cases = [[">", " hello", "hello", ""], ["-", " item", "item", ""], ["1", ". item", "item", ""], ["#", " heading", "heading", ""], ["|", " cell |", "| cell |", "|"], ["[", "label] text", "[label] text", ""]] as const;
+  for (const [marker, suffix, expected, alone] of cases) {
     const document = createStreamingDocument();
     document.append(marker);
-    expect(visible(document.render())).toBe("");
+    expect(visible(document.render())).toBe(alone);
     document.append(suffix);
     expect(visible(document.render()).replace(/\s/g, " ").trim()).toBe(expected);
   }
