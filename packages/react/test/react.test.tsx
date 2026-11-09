@@ -354,12 +354,11 @@ test("in virtual mode a row kept mounted for focus never takes the cursor from t
     ]);
     mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
     const host = q('[data-part="timeline-scroll"]');
+    // The browser sends the wheel event before the scroll it causes.
     const scrollTo = (top: number) => {
+      act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: top === 0 ? -100 : 100 })));
       host.scrollTop = top;
-      act(() => {
-        host.dispatchEvent(new WheelEvent("wheel", { deltaY: top === 0 ? -100 : 100 }));
-        host.dispatchEvent(new Event("scroll"));
-      });
+      act(() => host.dispatchEvent(new Event("scroll")));
     };
     scrollTo(0);
     // The reader clicks an older message: its row takes focus.

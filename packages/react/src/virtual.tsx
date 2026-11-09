@@ -27,30 +27,32 @@ type ScrollLeases = ReturnType<typeof createScrollLeases>;
 
 /**
  * The one owner of reader-input leases for one scroll host: which scroll callbacks the reader caused.
- * Keyboard, scrollbar, and touch are held from press to release (touch stays held until it settles: a fling still moves).
- * Every lease then settles by one rule: it ends at native scrollend, or after two frames with no reader scroll callback,
- * because browsers animate wheel, key, and touch scrolls over several frames and callbacks. Our own writes are not
- * reader callbacks, so a stream that writes every frame cannot keep a lease alive. Every lease also ends on window
- * blur, when the document is hidden, and on host detach. Plain state only.
+ * The caller arms a lease only for input that will scroll this host (`willScroll`). An armed lease waits for its first
+ * reader callback, however late the browser starts the animation; an armed lease that never moved ends at the next
+ * input of another kind, at a pointer press, at window blur, when the document is hidden, or at host detach. Once the
+ * scroll moved, the lease ends two frames after the last reader callback and once nothing is held (a key, the
+ * scrollbar, a finger). Native scrollend never ends a lease: Chromium sends it in the middle of a key animation. Our own
+ * writes are not reader callbacks, so a stream that writes every frame cannot keep a lease alive. Plain state only.
  */
 function createScrollLeases(onSettled: () => void) {
   const held = new Set<HeldLeaseKind>();
-  let settling = false;
+  let armed: ScrollLeaseKind | "pointer" | null = null;
+  let moving = false;
   let touching = false;
   let readerCallbacks = 0;
   let settleFrame: number | null = null;
+  const pressed = () => touching || held.has("keyboard") || held.has("scrollbar");
   const stopSettling = () => {
     if (settleFrame != null) cancelAnimationFrame(settleFrame);
     settleFrame = null;
-    settling = false;
   };
   const settle = () => {
     stopSettling();
-    settling = true;
     let seen = readerCallbacks;
     let quietFrames = 0;
     const observe = () => {
       settleFrame = null;
+      if (pressed()) return; // the release settles again
       if (readerCallbacks === seen) quietFrames++;
       else {
         seen = readerCallbacks;
@@ -60,52 +62,80 @@ function createScrollLeases(onSettled: () => void) {
         settleFrame = requestAnimationFrame(observe);
         return;
       }
-      settling = false;
+      moving = false;
       held.delete("touch");
       onSettled();
     };
     settleFrame = requestAnimationFrame(observe);
   };
   return {
+    /** Input that will scroll this host. */
     start(kind: ScrollLeaseKind) {
       if (kind === "touch") touching = true;
       if (kind === "keyboard" || kind === "scrollbar" || kind === "touch") held.add(kind);
-      settle();
+      if (!moving) armed = kind;
     },
-    /** Ends a held lease; an end without its start changes nothing. The release still settles (a fling, the last key repeat). */
+    /** Input that will not scroll this host: it ends an armed lease of another kind that never moved. */
+    input(kind: ScrollLeaseKind | "pointer") {
+      if (!moving && armed !== null && armed !== kind) armed = null;
+    },
+    /** Ends a held lease; an end without its start changes nothing. A moving scroll settles; an unmoved one stays armed. */
     end(kind: HeldLeaseKind) {
       if (!held.has(kind)) return;
       if (kind === "touch") touching = false;
-      else held.delete(kind);
-      settle();
+      if (kind !== "touch" || !moving) held.delete(kind);
+      if (moving) settle();
     },
     /** Called once per scroll callback: whether the reader caused it. Our own write never extends a lease. */
     consume(ours: boolean) {
-      if (!ours) readerCallbacks++;
-      return settling || held.size > 0;
+      const fromReader = armed !== null || moving || held.size > 0;
+      if (fromReader && !ours) {
+        readerCallbacks++;
+        armed = null;
+        moving = true;
+        if (settleFrame == null && !pressed()) settle();
+      }
+      return fromReader;
     },
     held: () => held.size > 0,
     /** Whether reader input is in flight, without consuming it. */
-    active: () => settling || held.size > 0,
+    active: () => armed !== null || moving || held.size > 0,
     touching: () => touching,
-    /** The browser reports the scroll gesture finished. */
-    scrollEnd() {
-      stopSettling();
-      touching = false;
-      held.delete("touch");
-    },
     /** Window blur, a hidden document, or host detach: no release event will come. */
     release() {
       stopSettling();
+      armed = null;
+      moving = false;
       touching = false;
       held.clear();
     },
   };
 }
 
+// The target of the last pointer press in this document: a key with focus on the page body scrolls that target's
+// scroller (the browser rows check this per engine). One record shared by every host.
+let lastPointerTarget: Element | null = null;
+
 // Editable and list widgets handle their own arrow keys; a scroll key typed there never scrolls the timeline.
 const keyOwners = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="listbox"]';
-const scrollKeys = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+const downKeys = new Set(["ArrowDown", "PageDown", "End"]);
+const upKeys = new Set(["ArrowUp", "PageUp", "Home"]);
+
+/**
+ * Whether a vertical scroll that starts at `from` moves `container`: the browser scrolls the nearest ancestor that can
+ * still move that way, so a code block or a nested list that can scroll takes the input, and one at its edge passes it on.
+ */
+function willScroll(container: HTMLElement, from: Element | null, down: boolean) {
+  for (let element = from; element; element = element.parentElement) {
+    const room = down ? element.scrollHeight - element.clientHeight - element.scrollTop : element.scrollTop;
+    if (element === container) return room > 0.5;
+    if (room > 0.5 && element.scrollHeight > element.clientHeight + 0.5) {
+      const { overflowY } = getComputedStyle(element);
+      if (overflowY === "auto" || overflowY === "scroll") return false;
+    }
+  }
+  return false;
+}
 
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
@@ -305,24 +335,28 @@ export function useVirtualList<Id extends string>(
         engine.setViewport({ scrollTop: container.scrollTop, size: container.clientHeight, source: layout ? "observe" : "user" });
       };
       const onWheel = (event: WheelEvent) => {
+        const vertical = Math.abs(event.deltaY) > Math.abs(event.deltaX);
+        if (event.defaultPrevented || !vertical || !willScroll(container, event.target as Element | null, event.deltaY > 0)) return hostLeases.input("wheel");
         hostLeases.start("wheel");
         if (event.deltaY < 0 && engine.getSnapshot().pinned) engine.setFollow(false);
       };
-      // A scroll key counts only when the browser would scroll this host with it: focus in this host outside an
-      // editable or list widget, or no focus at all (the page body). Keys in a composer or another timeline do not.
+      // A scroll key arms only when the browser will scroll this host with it: this host is the nearest scroller that can
+      // move that way from the focused element (the key event's target), outside an editable or list widget. With focus
+      // on the page body, the browser scrolls the scroller of the last pointer press, so the key starts there.
       const onKeyDown = (event: KeyboardEvent) => {
-        if (event.defaultPrevented || !scrollKeys.has(event.key)) return;
-        const target = event.target;
-        const pageLevel = target === document || target === document.body || target === document.documentElement;
-        if (!pageLevel && (!(target instanceof Element) || !container.contains(target) || target.closest(keyOwners))) return;
+        const down = downKeys.has(event.key) || (event.key === " " && !event.shiftKey);
+        const up = upKeys.has(event.key) || (event.key === " " && event.shiftKey);
+        const target = event.target instanceof Element ? event.target : null;
+        const pageLevel = target === null || target === document.body || target === document.documentElement;
+        const from = pageLevel ? lastPointerTarget : target;
+        if (event.defaultPrevented || (!down && !up) || target?.closest(keyOwners) || !willScroll(container, from, down)) return hostLeases.input("keyboard");
         hostLeases.start("keyboard");
-        // A page-level key scrolls at most one scroller: the lease lets that host's scroll callback decide (a move up
-        // off the end is intent, other moves go to the engine threshold), so other pinned timelines keep following.
-        if (!pageLevel && (event.key.endsWith("Up") || event.key === "Home") && engine.getSnapshot().pinned) engine.setFollow(false);
+        if (up && engine.getSnapshot().pinned) engine.setFollow(false);
       };
       // Any key release ends the held key: a still-held key repeats its keydown, and a lost arrow keyup under Cmd still releases.
       const onKeyUp = () => hostLeases.end("keyboard");
       const onPointerDown = (event: PointerEvent) => {
+        lastPointerTarget = event.target instanceof Element ? event.target : null;
         const bounds = container.getBoundingClientRect();
         const vertical = event.clientX >= bounds.left + container.clientWidth && event.clientX <= bounds.right
           && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
@@ -330,6 +364,7 @@ export function useVirtualList<Id extends string>(
           && event.clientX >= bounds.left && event.clientX <= bounds.right;
         // Overlay scrollbars take no gutter, so a press on the host itself (not a row) is a scrollbar press too.
         if (event.target === container || vertical || horizontal) hostLeases.start("scrollbar");
+        else hostLeases.input("pointer");
       };
       const onPointerEnd = () => hostLeases.end("scrollbar");
       let touchY: number | null = null;
@@ -346,10 +381,7 @@ export function useVirtualList<Id extends string>(
         touchY = null;
         hostLeases.end("touch");
       };
-      const onScrollEnd = () => {
-        hostLeases.scrollEnd();
-        finishScroll();
-      };
+      const onScrollEnd = () => finishScroll(); // never ends a lease: Chromium sends scrollend in the middle of a key animation
       const onFocusIn = (event: FocusEvent) => {
         if (event.target instanceof Node && container.contains(event.target)) hostLeases.start("focus");
       };
@@ -366,7 +398,7 @@ export function useVirtualList<Id extends string>(
       container.addEventListener("touchcancel", onTouchEnd, { passive: true });
       document.addEventListener("keydown", onKeyDown);
       document.addEventListener("keyup", onKeyUp);
-      document.addEventListener("pointerdown", onPointerDown, { passive: true });
+      document.addEventListener("pointerdown", onPointerDown, { capture: true, passive: true }); // capture: a row that stops the press still counts
       document.addEventListener("pointerup", onPointerEnd, { passive: true });
       document.addEventListener("pointercancel", onPointerEnd, { passive: true });
       document.addEventListener("focusin", onFocusIn);
@@ -395,7 +427,7 @@ export function useVirtualList<Id extends string>(
         container.removeEventListener("touchcancel", onTouchEnd);
         document.removeEventListener("keydown", onKeyDown);
         document.removeEventListener("keyup", onKeyUp);
-        document.removeEventListener("pointerdown", onPointerDown);
+        document.removeEventListener("pointerdown", onPointerDown, { capture: true });
         document.removeEventListener("pointerup", onPointerEnd);
         document.removeEventListener("pointercancel", onPointerEnd);
         document.removeEventListener("focusin", onFocusIn);
