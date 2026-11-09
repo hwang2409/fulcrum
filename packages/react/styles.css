@@ -498,11 +498,9 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="text-viewer-language"] { color: var(--fulcrum-ui-type); font-weight: 700; }
 /* The count is never cut: when a head cannot hold a row, it wraps (styles below keep the usual states on one row). */
 [data-part="text-viewer-count"] { flex: 1 0 auto; white-space: nowrap; }
-/* A narrow head is one row of the same height in every follow state: "400 lines", "■ streaming", "bottom", "copy".
-   The position word gives up its room in every state, so scrolling never wraps the head and moves the code: the jump
-   button already says where the view is ("top" at the bottom, "bottom" above it), and turns the warn color when new
-   output arrived below. Screen readers keep the position (aria-live) and every button's full aria-label. Narrower
-   still, the count says "ln" for "lines" and the streaming mark stands without its word (screen readers keep both). */
+/* A narrow head is one row in every follow state, so scrolling never moves the code. The position word yields in every
+   state: the jump button says where the view is, in warn when new output arrived below. Narrower still, "ln" stands
+   for "lines" and the streaming mark for its word. Screen readers keep every word and aria-label. */
 @container text-viewer-head (max-width: 560px) {
   [data-part="text-viewer-wide"] { display: none; }
   [data-part="text-viewer-position"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
@@ -1252,8 +1250,7 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   [data-part="approval-actions"] button[data-action="approve"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
   [data-part="message"] { --fulcrum-cursor: CanvasText; --fulcrum-live: Highlight; }
-  /* Live work has one rail color, Highlight: a message's live rail and every running tool, reasoning, or sub-agent
-     rail. CanvasText is also every border and word here, so a CanvasText rail would read as one more border. */
+  /* Live work has one rail color, Highlight: a CanvasText rail would read as one more border. */
   :is([data-part="tool"], [data-part="reasoning"])[data-state="streaming"],
   [data-part="sub-agent"][data-state="running"] { --rail: Highlight; border-left-color: Highlight; }
   [data-part="sub-agent"] { --rail: CanvasText; border-color: CanvasText; }
