@@ -12,7 +12,8 @@ type LinkState = "text" | "dest" | "title" | "close" | "ref";
 // `below`: the nearest bracket and the nearest emphasis opener of each marker below this opener on the stack, so a
 // truncation repairs the stable index in one step. `decided`: a stable `[` whose `]` arrived and decided it as text.
 type Below = { bracket: number; "*": number; "_": number; "~": number };
-type Opener = { index: number; end: number; kind: OpenerKind; marker: string; node: number; state: LinkState; below: Below; hideFrom?: number; quote?: string; leadingSpace?: boolean; decided?: true };
+type BlockedCloser = { index: number; length: number; marker: string };
+type Opener = { index: number; end: number; kind: OpenerKind; marker: string; node: number; state: LinkState; below: Below; hideFrom?: number; quote?: string; leadingSpace?: boolean; decided?: true; blockedClosers?: BlockedCloser[] };
 const NONE_BELOW: Below = { bracket: -1, "*": -1, "_": -1, "~": -1 };
 
 const whitespace = (character: string | undefined) => character !== undefined && /\s/.test(character);
@@ -48,6 +49,8 @@ function suffixContext(opener: Opener | undefined) {
  * opener from an earlier scan, because the text after that opener must be parsed again as one span.
  */
 type StableIndex = { emphasis: Map<string, number>; bracket: number; boundary: number };
+export type DelimiterWorkStats = { delimiterRecords: number; delimiterVisits: number; floorOperations: number; slotReads: number; slotWrites: number; slotShifts: number };
+type MutableDelimiterWorkStats = DelimiterWorkStats;
 
 class OpenerScan {
   resolved?: Opener;
@@ -69,7 +72,7 @@ class OpenerScan {
    * `reveal` shows a stable opener's marker in its slot when a `[` below it is decided as text. A dry run works on a
    * copy of the stable index, so its truncations repair only its own view.
    */
-  constructor(private readonly source: string, private readonly openers: Opener[], private readonly existing: number, dryRun = false, stable?: StableIndex, private readonly reveal?: (opener: Opener) => void) {
+  constructor(private readonly source: string, private readonly openers: Opener[], private readonly existing: number, dryRun = false, stable?: StableIndex, private readonly reveal?: (opener: Opener) => void, private readonly work?: MutableDelimiterWorkStats, private readonly resolveMetadata?: LinkMetadataResolver) {
     this.low = existing;
     if (dryRun) this.saved = new Map();
     this.stable = dryRun && stable ? { ...stable, emphasis: new Map(stable.emphasis) } : stable;
@@ -97,16 +100,38 @@ class OpenerScan {
     return this.resolved;
   }
 
+  private activeBracket(position: number) {
+    while (position >= 0 && this.openers[position]?.decided) position = this.openers[position]!.below.bracket;
+    return position;
+  }
+
   private resolve(position: number) {
     const opener = this.openers[position]!;
     if (position < this.existing && (!this.saved || opener.kind === "emphasis" || opener.kind === "bracket" && opener.state === "text")) this.resolved = opener;
     this.truncate(position);
   }
 
-  /** A stable `[` decided as text: its marker and the hidden markers of the stable openers above it show in their slots. */
+  /** A text-decided bracket stays as a transparent delimiter floor until every opener above it settles. */
   private settleText(position: number) {
-    for (let at = position; at < Math.min(this.existing, this.openers.length); at++) this.reveal?.(this.openers[at]!);
-    this.truncate(position);
+    if (!this.saved && this.work) this.work.floorOperations++;
+    const bracket = this.openers[position]!;
+    for (const candidate of bracket.blockedClosers ?? []) {
+      const closer = delimiterRun(this.source, candidate.index, candidate.length);
+      for (let at = position - 1; at >= 0; at--) {
+        const opener = this.openers[at]!;
+        if (opener.kind !== "emphasis") break;
+        if (opener.marker[0] !== candidate.marker) continue;
+        const opening = delimiterRun(this.source, opener.index, opener.marker.length);
+        const oddMatch = (opening.canClose || closer.canOpen) && (opener.marker.length + candidate.length) % 3 === 0
+          && (opener.marker.length % 3 !== 0 || candidate.length % 3 !== 0);
+        if (!oddMatch) { this.resolve(at); return; }
+      }
+    }
+    this.keep(position);
+    const decided = this.openers[position]!;
+    decided.decided = true;
+    this.reveal?.(decided);
+    if (this.stable?.bracket === position) this.stable.bracket = this.activeBracket(decided.below.bracket);
   }
 
   /** The one way openers leave the stack: the stable index steps to the openers below `length`, never rescans. */
@@ -122,11 +147,12 @@ class OpenerScan {
       const previous = first.below[marker as "*" | "_" | "~"];
       if (previous < 0) stable.emphasis.delete(marker); else stable.emphasis.set(marker, previous);
     }
-    if (stable.bracket >= length) stable.bracket = first.below.bracket;
+    if (stable.bracket >= length) stable.bracket = this.activeBracket(first.below.bracket);
     stable.boundary = length;
   }
 
   private push(index: number, end: number, kind: OpenerKind) {
+    if (!this.saved && this.work && kind === "bracket") this.work.floorOperations++;
     this.openers.push({ index, end, kind, marker: this.source.slice(index, end), node: -1, state: "text", below: belowTop(this.openers) });
     return end;
   }
@@ -171,6 +197,16 @@ class OpenerScan {
         }
         return index + length;
       }
+      if (!this.saved) {
+        const boundary = this.stable?.boundary ?? 0;
+        let floor = -1;
+        for (let at = this.openers.length - 1; at >= boundary; at--) {
+          const opener = this.openers[at]!;
+          if (opener.kind === "bracket" && !opener.decided) { floor = at; break; }
+        }
+        if (floor < 0) floor = this.stable?.bracket ?? -1;
+        if (floor >= 0) (this.openers[floor]!.blockedClosers ??= []).push({ index, length, marker: this.source[index]! });
+      }
     }
     if (canOpen) this.push(index, index + length, "emphasis");
     return index + length;
@@ -181,7 +217,7 @@ class OpenerScan {
     const boundary = this.stable?.boundary ?? 0;
     for (let position = this.openers.length - 1; position >= boundary; position--) {
       const opener = this.openers[position]!;
-      if (opener.kind === "bracket") return -1;
+      if (opener.kind === "bracket" && !opener.decided) return -1;
       if (opener.marker[0] === marker) return position;
     }
     const indexed = this.stable?.emphasis.get(marker) ?? -1;
@@ -192,18 +228,22 @@ class OpenerScan {
     // Only the new openers are walked; below them the stable index names the nearest bracket.
     const boundary = this.stable?.boundary ?? 0;
     let position = this.openers.length - 1;
-    while (position >= boundary && this.openers[position]!.kind !== "bracket") position--;
-    if (position < boundary) position = this.stable?.bracket ?? -1;
+    while (position >= boundary && (this.openers[position]!.kind !== "bracket" || this.openers[position]!.decided)) position--;
+    if (position < boundary) position = this.activeBracket(this.stable?.bracket ?? -1);
     if (position < 0) return index + 1;
     const next = this.source[index + 1];
     if (next !== "(" && next !== "[") {
+      const bracket = this.openers[position]!;
+      if (this.resolveMetadata?.({ kind: "reference", image: bracket.marker === "![", form: "shortcut", label: this.source.slice(bracket.end, index) })) {
+        this.resolve(position);
+        return index + 1;
+      }
       // A dry run only asks whether a stable `[` is decided: it stops here without copying the stack above it.
       if (this.saved && position < this.existing) {
         this.resolved = this.openers[position];
         this.decidedAt = position;
       }
-      else if (position < this.existing) this.settleText(position);
-      else this.resolve(position);
+      else this.settleText(position);
       return index + 1;
     }
     // The opener changes state in place: a dry run keeps its original first.
@@ -240,10 +280,16 @@ class OpenerScan {
     if (character === "\\" && opener.state !== "close") return index + 2;
     const top = this.openers.length - 1;
     if (opener.state === "dest") {
-      if (character === ")") this.resolve(top);
-      else if (whitespace(character)) opener.state = "title";
+      if (character === ")") {
+        this.resolveMetadata?.({ kind: "inline", image: opener.marker === "![", tail: this.source.slice(opener.hideFrom! + 1, index + 1) });
+        this.resolve(top);
+      } else if (whitespace(character)) opener.state = "title";
     } else if (opener.state === "ref") {
-      if (character === "]" || character === "[") this.resolve(top);
+      if (character === "]") {
+        const label = this.source.slice(opener.hideFrom! + 2, index);
+        this.resolveMetadata?.({ kind: "reference", image: opener.marker === "![", form: label ? "full" : "collapsed", label: label || this.source.slice(opener.end, opener.hideFrom) });
+        this.resolve(top);
+      } else if (character === "[") this.resolve(top);
     } else if (opener.state === "close") {
       if (!whitespace(character)) this.resolve(top);
     } else this.title(character, opener, top);
@@ -267,6 +313,10 @@ const plainText = (nodes: readonly Inline[]): string => nodes.map((node) => "val
 
 /** `growing`: the text may still grow (the default for streaming); a committed line's suffix passes false. */
 export type InlineParser = (source: string, streaming: boolean, growing?: boolean) => Inline[];
+export type LinkMetadataResolver = (request:
+  | { kind: "inline"; image: boolean; tail: string }
+  | { kind: "reference"; image: boolean; form: "full" | "collapsed" | "shortcut"; label: string }
+) => { href?: string; title?: string; consumed: number } | undefined;
 
 
 /** Cuts at a recent space so no construct, escape, or surrogate pair is split between stable chunks. */
@@ -299,18 +349,40 @@ export class PendingInline {
   copiedCharacters = 0;
   private readonly openers: Opener[] = [];
   private readonly stableIndex: StableIndex = { emphasis: new Map(), bracket: -1, boundary: 0 };
+  private readonly work: MutableDelimiterWorkStats = { delimiterRecords: 0, delimiterVisits: 0, floorOperations: 0, slotReads: 0, slotWrites: 0, slotShifts: 0 };
   private indexedOpeners = 0;
   private suffixLength = 0;
   private totalLength = 0;
+  private delimiterTail = "";
+  private tildeOdd = false;
+
+  private recordDelimiterSource(delta: string) {
+    for (const character of delta) {
+      if (character === "*" || character === "_") {
+        this.work.delimiterRecords++;
+        this.work.delimiterVisits++;
+      } else if (character === "~") {
+        if (this.delimiterTail !== "~") this.tildeOdd = false;
+        this.tildeOdd = !this.tildeOdd;
+        if (!this.tildeOdd) {
+          this.work.delimiterRecords++;
+          this.work.delimiterVisits++;
+        }
+      } else this.tildeOdd = false;
+      this.delimiterTail = character;
+    }
+  }
   private readonly chunks: string[] = [];
   private readonly prefixLength: number;
 
   get length() { return this.totalLength; }
+  get delimiterStats(): DelimiterWorkStats { return { ...this.work }; }
 
   constructor(
     private readonly parse: InlineParser,
     private readonly openCode?: { marker: string; leadingSpace: boolean },
     prefix: readonly Inline[] = [],
+    private readonly resolveMetadata?: LinkMetadataResolver,
   ) {
     this.nodes = prefix.slice();
     this.prefixLength = this.nodes.length;
@@ -328,6 +400,8 @@ export class PendingInline {
     this.emittedEnd = 0;
     this.suffixLength = 0;
     this.totalLength = 0;
+    this.delimiterTail = "";
+    this.tildeOdd = false;
     this.chunks.length = 0;
     if (this.openCode) this.openers.push({ index: 0, end: 0, kind: "code", node: this.prefixLength, state: "text", below: NONE_BELOW, ...this.openCode });
   }
@@ -344,6 +418,7 @@ export class PendingInline {
   }
 
   append(delta: string): Inline[] {
+    this.recordDelimiterSource(delta);
     this.content += delta;
     this.totalLength += delta.length;
     const lastChunk = this.chunks.length - 1;
@@ -402,12 +477,7 @@ export class PendingInline {
    */
   private decideStable(ended: boolean) {
     for (;;) {
-      const { cut, bracket } = this.pastStableCloser(ended);
-      if (bracket !== undefined) for (let at = bracket; at < this.openers.length; at++) {
-        const opener = this.openers[at]!;
-        this.reveal(opener);
-        opener.decided = true;
-      }
+      const { cut } = this.pastStableCloser(ended);
       if (cut <= this.emittedEnd) return;
       const previous = this.emittedEnd;
       this.emitStable(cut);
@@ -416,8 +486,12 @@ export class PendingInline {
   }
 
   private readonly reveal = (opener: Opener) => {
+    this.work.slotReads++;
     const slot = opener.node >= 0 ? this.nodes[opener.node] : undefined;
-    if (slot?.type === "text") slot.value = opener.marker;
+    if (slot?.type === "text") {
+      slot.value = opener.marker;
+      this.work.slotWrites++;
+    }
   };
 
   private emitStable(cut: number) {
@@ -430,9 +504,9 @@ export class PendingInline {
       for (; this.indexedOpeners < existing; this.indexedOpeners++) {
         const opener = this.openers[this.indexedOpeners]!;
         if (opener.kind === "emphasis") this.stableIndex.emphasis.set(opener.marker[0]!, this.indexedOpeners);
-        if (opener.kind === "bracket") this.stableIndex.bracket = this.indexedOpeners;
+        if (opener.kind === "bracket" && !opener.decided) this.stableIndex.bracket = this.indexedOpeners;
       }
-      const scan = new OpenerScan(this.content, this.openers, existing, false, this.stableIndex, this.reveal);
+      const scan = new OpenerScan(this.content, this.openers, existing, false, this.stableIndex, this.reveal, this.work, this.resolveMetadata);
       let resolved = scan.run(from, cut);
       // The suffix parse already showed an autolink `<` that meets a space, so the cut moves past that end and
       // resolves it now instead of hiding the `<` until a later cut.
@@ -445,7 +519,7 @@ export class PendingInline {
         for (; this.indexedOpeners < this.openers.length; this.indexedOpeners++) {
           const opener = this.openers[this.indexedOpeners]!;
           if (opener.kind === "emphasis") this.stableIndex.emphasis.set(opener.marker[0]!, this.indexedOpeners);
-          if (opener.kind === "bracket") this.stableIndex.bracket = this.indexedOpeners;
+          if (opener.kind === "bracket" && !opener.decided) this.stableIndex.bracket = this.indexedOpeners;
         }
         this.stableIndex.boundary = this.openers.length;
         this.emitSegments(from, cut, scan.low);
@@ -473,7 +547,8 @@ export class PendingInline {
       const opener = this.openers[position]!;
       this.emitText(start, opener.index, owner);
       opener.node = this.nodes.length;
-      this.nodes.push({ type: "text", value: "" });
+      this.nodes.push({ type: "text", value: opener.decided ? opener.marker : "" });
+      this.work.slotWrites++;
       start = opener.end;
       owner = opener;
     }
@@ -540,7 +615,7 @@ export class PendingInline {
    */
   private pastStableCloser(ended: boolean): { cut: number; bracket?: number } {
     if (!this.openers.length) return { cut: -1 };
-    const scan = new OpenerScan(this.content, this.openers, this.openers.length, true, this.stableIndex);
+    const scan = new OpenerScan(this.content, this.openers, this.openers.length, true, this.stableIndex, undefined, this.work, this.resolveMetadata);
     const resolved = scan.run(this.emittedEnd, this.content.length);
     scan.restore();
     if (resolved?.kind !== "emphasis" && resolved?.kind !== "bracket") return { cut: -1 };
@@ -608,3 +683,138 @@ export class PendingInline {
     return nodes;
   }
 }
+
+export const unmatchedCodeSpan = (source: string) => {
+  let opener: { index: number; length: number } | undefined;
+  for (const run of source.matchAll(/`+/g)) {
+    if (run.index === undefined) continue;
+    let escapes = 0;
+    for (let index = run.index - 1; index >= 0 && source[index] === "\\"; index--) escapes++;
+    if (escapes % 2) continue;
+    if (!opener) opener = { index: run.index, length: run[0].length };
+    else if (opener.length === run[0].length) opener = undefined;
+  }
+  return opener;
+};
+
+const escaped = (source: string, index: number) => {
+  let escapes = 0;
+  for (let at = index - 1; at >= 0 && source[at] === "\\"; at--) escapes++;
+  return escapes % 2 === 1;
+};
+
+// Unescaped `[` and `]` outside code spans, including a span that may still close: code binds tighter than brackets.
+function bracketMarks(source: string) {
+  const marks: number[] = [];
+  const code = closedCodeRanges(source);
+  const end = unmatchedCodeSpan(source)?.index ?? source.length;
+  let range = 0;
+  for (let index = 0; index < end; index++) {
+    while (range < code.length && code[range]![1] <= index) range++;
+    if (range < code.length && index >= code[range]![0]) index = code[range]![1] - 1;
+    else if (source[index] === "\\") index++;
+    else if (source[index] === "[" || source[index] === "]") marks.push(index);
+  }
+  return marks;
+}
+
+// The one bracket wait (the text inside `[...]` always shows): an open `[` hides, and a closed `[...]` hides its two
+// brackets only until the character after `]` decides it. Anything but `(` or `[` makes them text at once; after `(` or
+// `[` they, and the destination or label, hide until the link closes or the line ends. A later `[x]: url` definition
+// never makes a bracket wait (if it turns earlier text into a link, that rare change is accepted). Only the growing
+// line waits: CommonMark lets a link span lines, but a line end shows what it holds (a link that closes on a later line
+// takes its brackets back then, an accepted change).
+function projectOpenLinks(source: string, growing: boolean) {
+  if (!growing) return source;
+  const lineStart = source.lastIndexOf("\n") + 1;
+  const marks = bracketMarks(source).filter((mark) => mark >= lineStart);
+  const hidden = new Set<number>();
+  const open: number[] = [];
+  let cut = source.length;
+  for (const mark of marks) {
+    if (mark >= cut) break;
+    if (source[mark] === "[") { open.push(mark); continue; }
+    const opener = open.pop();
+    if (opener === undefined) continue;
+    const after = source.slice(mark + 1);
+    // A line end decides as any other character does: neither `(` nor `[` may follow on the next line.
+    const pending = !after ? growing : after[0] === "(" && !closesDestination(after) || after[0] === "[" && !after.includes("]", 1);
+    if (!pending) continue;
+    hidden.add(opener).add(mark);
+    if (after) cut = mark + 1;
+  }
+  for (const opener of open) hidden.add(opener);
+  if (!hidden.size && cut === source.length) return source;
+  let result = "";
+  for (let index = 0; index < cut; index++) if (!hidden.has(index)) result += source[index];
+  return result;
+}
+
+// Whether `(destination…` reaches its balancing `)`.
+function closesDestination(destination: string) {
+  let depth = 0;
+  for (const character of destination) {
+    if (character === "(") depth++;
+    else if (character === ")" && --depth === 0) return true;
+  }
+  return false;
+}
+
+function closedCodeRanges(source: string) {
+  const ranges: Array<[number, number]> = [];
+  let opener: { index: number; length: number } | undefined;
+  for (const run of source.matchAll(/`+/g)) {
+    if (run.index === undefined) continue;
+    if (!opener) opener = { index: run.index, length: run[0].length };
+    else if (opener.length === run[0].length) {
+      ranges.push([opener.index, run.index + run[0].length]);
+      opener = undefined;
+    }
+  }
+  return ranges;
+}
+
+function lastMarkerIndex(stack: Array<{ marker: string }>, marker: string) {
+  for (let index = stack.length - 1; index >= 0; index--) if (stack[index]!.marker === marker) return index;
+  return -1;
+}
+
+/**
+ * Hides the growing line's unmatched emphasis openers until their closer arrives or the line ends. An ended line shows
+ * its openers: a closer on a later line turns them into emphasis then (a flash the sent-text rule accepts), but sent
+ * text never waits past its line. A lone `~` is text: strikethrough needs `~~`, unless the run ends the line and can grow.
+ */
+function projectOpenEmphasis(source: string, growing: boolean) {
+  if (!growing) return source;
+  const lineStart = source.lastIndexOf("\n") + 1;
+  const codeRanges = closedCodeRanges(source);
+  const stack: Array<{ marker: string; index: number }> = [];
+  // Runs and code ranges both ascend, so one cursor keeps the scan linear.
+  let range = 0;
+  for (const run of source.matchAll(/(?:\*+|_+|~+)/g)) {
+    if (run.index === undefined) continue;
+    while (range < codeRanges.length && codeRanges[range]![1] <= run.index) range++;
+    if (range < codeRanges.length && run.index >= codeRanges[range]![0]) continue;
+    const marker = run[0];
+    if (source[run.index - 1] === "\\" || marker === "~" && run.index + 1 < source.length) continue;
+    const { canOpen, canClose } = delimiterRun(source, run.index, marker.length);
+    const match = canClose ? lastMarkerIndex(stack, marker) : -1;
+    if (match >= 0) stack.splice(match, 1);
+    // A run at the end can still grow into another run, so it stays hidden.
+    else if (canOpen || run.index + marker.length === source.length) stack.push({ marker, index: run.index });
+  }
+  if (!stack.some(({ index }) => index >= lineStart)) return source;
+  const pieces: string[] = [];
+  let offset = 0;
+  for (const { marker, index } of stack.sort((a, b) => a.index - b.index)) {
+    if (index < lineStart) continue;
+    pieces.push(source.slice(offset, index));
+    offset = index + marker.length;
+  }
+  pieces.push(source.slice(offset));
+  return pieces.join("");
+}
+
+
+export const provisionalDelimiterSource = (source: string, growing: boolean) =>
+  projectOpenEmphasis(projectOpenLinks(source, growing), growing);

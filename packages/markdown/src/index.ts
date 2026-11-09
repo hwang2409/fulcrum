@@ -1,9 +1,8 @@
 import { safeUrl } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
-import { delimiterRun } from "./delimiters.js";
 import MarkdownIt from "./vendor/markdown-it.mjs";
 import { normalizeReferenceLabel, normalizeReferenceLeafLine, ReferenceDefinitionParser, type ReferenceDisposition } from "./reference-definition.js";
-import { literalBrackets, PendingInline } from "./pending-inline.js";
+import { literalBrackets, PendingInline, provisionalDelimiterSource, unmatchedCodeSpan, type DelimiterWorkStats, type LinkMetadataResolver } from "./pending-inline.js";
 import { MarkdownLineResolver, pendingMarkerLine, tableCells, type LineResolution, type OpenedContainer, type ReferenceDefinition } from "./resolver.js";
 
 type MarkdownToken = {
@@ -274,19 +273,6 @@ export function parseMarkdown(source: string): Block[] {
   return parseDetailed(source).map(({ block }) => block);
 }
 
-const unmatchedCodeSpan = (source: string) => {
-  let opener: { index: number; length: number } | undefined;
-  for (const run of source.matchAll(/`+/g)) {
-    if (run.index === undefined) continue;
-    let escapes = 0;
-    for (let index = run.index - 1; index >= 0 && source[index] === "\\"; index--) escapes++;
-    if (escapes % 2) continue;
-    if (!opener) opener = { index: run.index, length: run[0].length };
-    else if (opener.length === run[0].length) opener = undefined;
-  }
-  return opener;
-};
-
 // An open span's edge spaces hide: the closer may strip them, and a space that shows must never disappear.
 const codeSpanValue = (value: string) => value.replace(/\n/g, " ").replace(/^ | $/g, "");
 
@@ -296,124 +282,6 @@ function tailCode(blocks: Block[]): Extract<Block, { type: "code" }> | undefined
   if (last?.type === "list") return tailCode(last.items.at(-1)?.children ?? []);
   if (last?.type === "blockquote") return tailCode(last.children);
   return undefined;
-}
-
-const escaped = (source: string, index: number) => {
-  let escapes = 0;
-  for (let at = index - 1; at >= 0 && source[at] === "\\"; at--) escapes++;
-  return escapes % 2 === 1;
-};
-
-// Unescaped `[` and `]` outside code spans, including a span that may still close: code binds tighter than brackets.
-function bracketMarks(source: string) {
-  const marks: number[] = [];
-  const code = closedCodeRanges(source);
-  const end = unmatchedCodeSpan(source)?.index ?? source.length;
-  let range = 0;
-  for (let index = 0; index < end; index++) {
-    while (range < code.length && code[range]![1] <= index) range++;
-    if (range < code.length && index >= code[range]![0]) index = code[range]![1] - 1;
-    else if (source[index] === "\\") index++;
-    else if (source[index] === "[" || source[index] === "]") marks.push(index);
-  }
-  return marks;
-}
-
-// The one bracket wait (the text inside `[...]` always shows): an open `[` hides, and a closed `[...]` hides its two
-// brackets only until the character after `]` decides it. Anything but `(` or `[` makes them text at once; after `(` or
-// `[` they, and the destination or label, hide until the link closes or the line ends. A later `[x]: url` definition
-// never makes a bracket wait (if it turns earlier text into a link, that rare change is accepted). Only the growing
-// line waits: CommonMark lets a link span lines, but a line end shows what it holds (a link that closes on a later line
-// takes its brackets back then, an accepted change).
-function withoutOpenLink(source: string, growing: boolean) {
-  if (!growing) return source;
-  const lineStart = source.lastIndexOf("\n") + 1;
-  const marks = bracketMarks(source).filter((mark) => mark >= lineStart);
-  const hidden = new Set<number>();
-  const open: number[] = [];
-  let cut = source.length;
-  for (const mark of marks) {
-    if (mark >= cut) break;
-    if (source[mark] === "[") { open.push(mark); continue; }
-    const opener = open.pop();
-    if (opener === undefined) continue;
-    const after = source.slice(mark + 1);
-    // A line end decides as any other character does: neither `(` nor `[` may follow on the next line.
-    const pending = !after ? growing : after[0] === "(" && !closesDestination(after) || after[0] === "[" && !after.includes("]", 1);
-    if (!pending) continue;
-    hidden.add(opener).add(mark);
-    if (after) cut = mark + 1;
-  }
-  for (const opener of open) hidden.add(opener);
-  if (!hidden.size && cut === source.length) return source;
-  let result = "";
-  for (let index = 0; index < cut; index++) if (!hidden.has(index)) result += source[index];
-  return result;
-}
-
-// Whether `(destination…` reaches its balancing `)`.
-function closesDestination(destination: string) {
-  let depth = 0;
-  for (const character of destination) {
-    if (character === "(") depth++;
-    else if (character === ")" && --depth === 0) return true;
-  }
-  return false;
-}
-
-function closedCodeRanges(source: string) {
-  const ranges: Array<[number, number]> = [];
-  let opener: { index: number; length: number } | undefined;
-  for (const run of source.matchAll(/`+/g)) {
-    if (run.index === undefined) continue;
-    if (!opener) opener = { index: run.index, length: run[0].length };
-    else if (opener.length === run[0].length) {
-      ranges.push([opener.index, run.index + run[0].length]);
-      opener = undefined;
-    }
-  }
-  return ranges;
-}
-
-function lastMarkerIndex(stack: Array<{ marker: string }>, marker: string) {
-  for (let index = stack.length - 1; index >= 0; index--) if (stack[index]!.marker === marker) return index;
-  return -1;
-}
-
-/**
- * Hides the growing line's unmatched emphasis openers until their closer arrives or the line ends. An ended line shows
- * its openers: a closer on a later line turns them into emphasis then (a flash the sent-text rule accepts), but sent
- * text never waits past its line. A lone `~` is text: strikethrough needs `~~`, unless the run ends the line and can grow.
- */
-function withoutOpenEmphasis(source: string, growing: boolean) {
-  if (!growing) return source;
-  const lineStart = source.lastIndexOf("\n") + 1;
-  const codeRanges = closedCodeRanges(source);
-  const stack: Array<{ marker: string; index: number }> = [];
-  // Runs and code ranges both ascend, so one cursor keeps the scan linear.
-  let range = 0;
-  for (const run of source.matchAll(/(?:\*+|_+|~+)/g)) {
-    if (run.index === undefined) continue;
-    while (range < codeRanges.length && codeRanges[range]![1] <= run.index) range++;
-    if (range < codeRanges.length && run.index >= codeRanges[range]![0]) continue;
-    const marker = run[0];
-    if (source[run.index - 1] === "\\" || marker === "~" && run.index + 1 < source.length) continue;
-    const { canOpen, canClose } = delimiterRun(source, run.index, marker.length);
-    const match = canClose ? lastMarkerIndex(stack, marker) : -1;
-    if (match >= 0) stack.splice(match, 1);
-    // A run at the end can still grow into another run, so it stays hidden.
-    else if (canOpen || run.index + marker.length === source.length) stack.push({ marker, index: run.index });
-  }
-  if (!stack.some(({ index }) => index >= lineStart)) return source;
-  const pieces: string[] = [];
-  let offset = 0;
-  for (const { marker, index } of stack.sort((a, b) => a.index - b.index)) {
-    if (index < lineStart) continue;
-    pieces.push(source.slice(offset, index));
-    offset = index + marker.length;
-  }
-  pieces.push(source.slice(offset));
-  return pieces.join("");
 }
 
 type SafeInlineContent = { source: string; openCode?: string };
@@ -431,7 +299,7 @@ function withoutTrailingLookahead(source: string, growing: boolean) {
 }
 
 const withoutOpenSyntax = (source: string, growing: boolean) =>
-  withoutTrailingLookahead(withoutOpenEmphasis(withoutOpenLink(growing ? withoutOpenAngle(source) : source, growing), growing), growing);
+  withoutTrailingLookahead(provisionalDelimiterSource(growing ? withoutOpenAngle(source) : source, growing), growing);
 
 function safeInlineContent(source: string, growing: boolean): SafeInlineContent {
   source = withoutOpenSyntax(source, growing);
@@ -471,7 +339,7 @@ function inspectReferenceLine(line: string) {
 
 export interface StreamingDocument {
   readonly source: string;
-  readonly stats: { readonly frozenParses: number; readonly tailParses: number; readonly scannedCharacters: number; readonly previewScannedCharacters: number; readonly copiedCharacters: number };
+  readonly stats: { readonly frozenParses: number; readonly tailParses: number; readonly scannedCharacters: number; readonly previewScannedCharacters: number; readonly copiedCharacters: number; readonly delimiterRecords: number; readonly delimiterVisits: number; readonly floorOperations: number; readonly slotReads: number; readonly slotWrites: number; readonly slotShifts: number };
   append(delta: string): void;
   finish(): void;
   /**
@@ -754,6 +622,7 @@ export function createStreamingDocument(): StreamingDocument {
   let scannedCharacters = 0;
   let previewScannedCharacters = 0;
   let copiedCharacters = 0;
+  const delimiterStats: DelimiterWorkStats = { delimiterRecords: 0, delimiterVisits: 0, floorOperations: 0, slotReads: 0, slotWrites: 0, slotShifts: 0 };
   const resolver = new MarkdownLineResolver();
   const blocks = new BlockBuffer();
   let openRoots: Block[] = [];
@@ -1107,6 +976,18 @@ export function createStreamingDocument(): StreamingDocument {
   const parsePending = (source: string, streaming: boolean, growing = streaming) => {
     return parseInline(source, streaming, environment(), growing).filter((node) => node.type !== "text" || node.value);
   };
+  const resolveLinkMetadata: LinkMetadataResolver = (request) => {
+    const current = environment();
+    if (request.kind === "reference") {
+      const reference = current.references?.[normalizeReferenceLabel(request.label)];
+      return reference && { href: safeUrl(reference.href, request.image ? "image" : undefined), title: reference.title || undefined, consumed: 0 };
+    }
+    const synthetic = `${request.image ? "!" : ""}[]${request.tail}`;
+    const children = (markdown.parseInline(synthetic, current)[0]?.children ?? []) as MarkdownToken[];
+    const token = request.image ? children.find((child) => child.type === "image") : children.find((child) => child.type === "link_open");
+    if (!token) return undefined;
+    return { href: safeUrl(attr(token, request.image ? "src" : "href"), request.image ? "image" : undefined), title: attr(token, "title"), consumed: request.tail.length };
+  };
 
   const pendingPreview = (classification: Readonly<ReturnType<MarkdownLineResolver["classifyPending"]>>, continues: boolean): Inline[] => {
     const line = resolver.pending.content;
@@ -1124,6 +1005,7 @@ export function createStreamingDocument(): StreamingDocument {
         parsePending,
         open && { marker: "`".repeat(open.length), leadingSpace: after === undefined || /\s/.test(after) },
         prefix,
+        resolveLinkMetadata,
       );
       pendingInlineState = {
         offset: classification.offset,
@@ -1134,6 +1016,7 @@ export function createStreamingDocument(): StreamingDocument {
     }
     const inline = pendingInline!;
     const copied = inline.copiedCharacters;
+    const delimiterBefore = inline.delimiterStats;
     const state = pendingInlineState!;
     const lineLength = line.length - state.offset;
     previewScannedCharacters += lineLength - state.lineLength;
@@ -1141,6 +1024,8 @@ export function createStreamingDocument(): StreamingDocument {
     else inline.append(line.slice(state.offset + state.lineLength));
     state.lineLength = lineLength;
     copiedCharacters += inline.copiedCharacters - copied;
+    const delimiterAfter = inline.delimiterStats;
+    for (const key of Object.keys(delimiterStats) as Array<keyof DelimiterWorkStats>) delimiterStats[key] += delimiterAfter[key] - delimiterBefore[key];
     return inline.nodes;
   };
 
@@ -1154,7 +1039,7 @@ export function createStreamingDocument(): StreamingDocument {
 
   return {
     get source() { return source; },
-    get stats() { return { frozenParses, tailParses, scannedCharacters, previewScannedCharacters, copiedCharacters }; },
+    get stats() { return { frozenParses, tailParses, scannedCharacters, previewScannedCharacters, copiedCharacters, ...delimiterStats }; },
     append(delta) {
       if (finished || !delta) return;
       const normalized = normalizeDelta(delta);
