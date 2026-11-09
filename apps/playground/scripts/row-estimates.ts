@@ -1,14 +1,44 @@
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 const root = new URL("..", import.meta.url).pathname, port = Number(process.env.PREPEND_PORT ?? 4177);
-const preview = spawn("bun", ["x", "vite", "preview", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: root, stdio: "ignore" });
-process.on("exit", () => preview.kill("SIGTERM")); const browser = await chromium.launch();
+let preview: ReturnType<typeof spawn> | undefined;
+process.on("exit", () => preview?.kill("SIGTERM"));
+const frameDeadlineMs = 10_000;
+let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
+  preview = spawn("bun", ["x", "vite", "preview", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: root, stdio: "ignore" });
+  browser = await chromium.launch();
   for (let i = 0; i < 100; i++) { if (await fetch(`http://127.0.0.1:${port}/prepend.html`).then((r) => r.ok, () => false)) break; if (i === 99) throw new Error("vite preview did not start"); await Bun.sleep(100); }
+  const byWidth = new Map<number, { kind: string; mean: number }[]>();
   for (const [width, height] of [[390, 844], [1024, 768]] as const) {
-    const page = await browser.newPage({ viewport: { width, height } }); await page.goto(`http://127.0.0.1:${port}/prepend.html?virtualDebug=1`); await page.waitForSelector("[data-virtual-id]");
-    const table = await page.evaluate(async () => { const w = window as any, scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!, engine = w.__fulcrumVirtual; for (let y = 0; y <= scroll.scrollHeight; y += scroll.clientHeight / 2) { scroll.scrollTop = y; await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))); } await new Promise<void>((r) => requestAnimationFrame(() => r())); const kinds = new Map(w.__prepend.outline().map((o: any) => [o.id, o.kind])), values: Record<string, number[]> = {}; for (const [id, size] of engine.snapshotCache().sizes) (values[kinds.get(id) ?? "unknown"] ??= []).push(size); return Object.entries(values).map(([kind, xs]) => ({ kind, n: xs.length, min: Math.min(...xs), median: xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)], mean: xs.reduce((a, b) => a + b, 0) / xs.length, max: Math.max(...xs) })); });
-    console.log(`width ${width}`); console.table(table); await page.close();
+    const page = await browser.newPage({ viewport: { width, height } });
+    try {
+      await page.goto(`http://127.0.0.1:${port}/prepend.html?virtualDebug=1`); await page.waitForSelector("[data-virtual-id]");
+      const table = await Promise.race([
+        page.evaluate(async (deadlineMs) => {
+          const deadline = new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out waiting for row-estimate frames")), deadlineMs));
+          return Promise.race([(async () => {
+            const w = window as any, scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!, engine = w.__fulcrumVirtual;
+            for (let y = 0; y <= scroll.scrollHeight; y += scroll.clientHeight / 2) { scroll.scrollTop = y; await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))); }
+            await new Promise<void>((r) => requestAnimationFrame(() => r()));
+            const kinds = new Map(w.__prepend.outline().map((o: any) => [o.id, o.kind])), values: Record<string, number[]> = {};
+            for (const [id, size] of engine.snapshotCache().sizes) (values[kinds.get(id) ?? "unknown"] ??= []).push(size);
+            return Object.entries(values).map(([kind, xs]) => ({ kind, n: xs.length, min: Math.min(...xs), median: xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)], mean: xs.reduce((a, b) => a + b, 0) / xs.length, max: Math.max(...xs) }));
+          })(), deadline]);
+        }, frameDeadlineMs),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`waiting for ${width}px row-estimate frames`)), frameDeadlineMs)),
+      ]);
+      byWidth.set(width, table);
+      console.log(`width ${width}`); console.table(table);
+    } finally { await page.close(); }
   }
-} catch (error) { console.log(`row-estimates setup failure: ${error instanceof Error ? error.message : String(error)}`); } finally { await browser.close(); }
+  const kinds = [...new Set([...byWidth.values()].flatMap((rows) => rows.map((row) => row.kind)))].sort();
+  console.log("proposed seeds (round(mean of the 390 mean and the 1024 mean) per kind):");
+  for (const kind of kinds) {
+    const mean390 = byWidth.get(390)!.find((row) => row.kind === kind)?.mean;
+    const mean1024 = byWidth.get(1024)!.find((row) => row.kind === kind)?.mean;
+    if (mean390 !== undefined && mean1024 !== undefined) console.log(`${kind}: ${Math.round((mean390 + mean1024) / 2)}`);
+  }
+} catch (error) { console.log(`row-estimates setup failure: ${error instanceof Error ? error.message : String(error)}`); }
+finally { await browser?.close(); preview?.kill("SIGTERM"); }
 process.exit(0);

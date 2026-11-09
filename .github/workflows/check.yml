@@ -79,8 +79,8 @@ jobs:
       - name: prepend and row-estimate report
         continue-on-error: true
         run: |
-          bun run --cwd apps/playground prepend-check
-          bun run --cwd apps/playground row-estimates
+          bun run --cwd apps/playground prepend-check || true
+          bun run --cwd apps/playground row-estimates || true
       - run: bun run --cwd apps/playground highlight:fallback
       # The runner's CPU is about half as fast as a developer laptop (the 440 kB markdown parse in this gate: 22 ms here,
       # 10-12 ms there, both at 4x), so 2x here is about the laptop's 4x.

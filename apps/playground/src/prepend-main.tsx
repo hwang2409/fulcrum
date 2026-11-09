@@ -21,7 +21,10 @@ const turn = (n: number): Json[] => {
   return [{ id: p + "u", role: "user", content: [text(`measure frame ${n}`)], tool_result: null }, { id: p + "a", role: "assistant", content: [text(`frame ${n} took ${n % 7 + 3} ms; content visibility skipped ${n * 3} rows.`)], tool_result: null }];
 };
 const rows = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => turn(from + i)).flat();
-const fixtureFiles = import.meta.glob<string>("../../../packages/zeta/test/fixtures/*.jsonl", { query: "?raw", import: "default", eager: true });
+const fixtureFiles = {
+  ...import.meta.glob<string>("../../../packages/zeta/test/fixtures/*.jsonl", { query: "?raw", import: "default", eager: true }),
+  ...import.meta.glob<string>("../../../packages/ai-sdk/test/fixtures/playground.jsonl", { query: "?raw", import: "default", eager: true }),
+};
 const fixtureEvents = Object.values(fixtureFiles).flatMap((source) => source.split("\n").filter(Boolean).flatMap((line) => { try { return fromZetaEvent((JSON.parse(line) as { params: EventParams }).params); } catch { return []; } }));
 const total = 90;
 const older = 15;
