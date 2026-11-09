@@ -24,9 +24,10 @@ export async function checkStreams(browser: Browser, port: number): Promise<stri
     let lines = 0;
     const tick = () => {
       const message = document.querySelector<HTMLElement>("#markdown-streaming [data-part=message]");
-      // Whitespace is layout, and a pipe is table syntax: a streaming row shows its pipes until its delimiter row makes
-      // them cell borders.
-      const length = message?.innerText.replace(/[\s|]/g, "").length ?? 0;
+      // Whitespace is layout, and the rest is markup that shows as sent until it is decided: a pipe and a delimiter
+      // cell (`---:`) until a delimiter row makes a table, a backtick an ended line showed until a later line closes its
+      // code span. Words, and hyphens inside them, still count.
+      const length = message?.innerText.replace(/(?<!\w)[-:]+(?!\w)/g, "").replace(/[\s|`]/g, "").length ?? 0;
       // A loop restart empties the store: the text drops to a small fraction. Any other drop is lost text.
       if (length < last && length >= last * 0.3) target.__drops.push(`${last} -> ${length}: ${JSON.stringify(message!.innerText.slice(-60))}`);
       last = length;
