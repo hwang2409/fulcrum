@@ -84,7 +84,7 @@ The web app marks an outcome only when a session was running at an `output_overf
 
 The client calls host code at the places below. A throwing listener never reaches the socket loop, the recovery loop, or another listener: every other listener still runs, the frame's remaining events and the next frame are still handled, and pending requests still settle. Its error goes to the host's error sink exactly once: `reportError`, or `console.error` where it does not exist, the same sink as the core store. A sink that throws is dropped, since there is nowhere left to report it. Tests: `packages/zeta/test/host-calls.test.ts`.
 
-In `client.ts`, host code runs only through `call()` (one host call) and `deliver()` (every listener of a set), plus the "outside" rows below, each marked `// host code: outside`. `packages/zeta/test/host-calls-guard.test.ts` reads `client.ts` and `packages/core/src/store.ts` and fails on any other host call, with a message that names the owner to use.
+In `client.ts`, host code runs only through `call()` (one host call) and `deliver()` (every listener of a set), plus the "outside" rows below, each marked `// host code: outside` with its row name. `packages/zeta/test/host-calls-guard.test.ts` parses `client.ts` and `packages/core/src/store.ts` and fails on any call whose callee is not a function declared in the file, a sibling module's function, or a short list of platform functions, unless it runs inside an owner or sits on a marked line. The failure names the owner to use. A function read from a Set, a Map, a parameter, or `options` counts as host code whatever its name, so the client's own resolvers held in a Map carry the marker too.
 
 | callback | status |
 | --- | --- |
@@ -92,10 +92,12 @@ In `client.ts`, host code runs only through `call()` (one host call) and `delive
 | `onClose` listeners | covered by `deliver()` |
 | `closeError`, the third argument of `createClient` | covered by `call()`; on a throw the client still closes, with the default "transport closed" error |
 | store listeners reached through the client's `dispatch` (live events, adapter errors, replayed history), `resync`, and `resyncFailed` | covered by `call()`: with a synchronous scheduler these store entries rethrow a listener's error (core rule 4). A resync that delivered still ends recovery, and a failed recovery still rejects `retrySession` with the load failure |
-| settling pending requests and host command close waiters | not host code: the client's own promise resolvers; the caller's reactions run later, as microtasks |
-| abort listeners on a request signal, a retry delay, and the close signal | not host code: the client's own handlers; they only settle the client's promises |
+| client functions held as values: pending request resolvers and `settle` callbacks, host command close waiters, the recovery wake, the content reader, and the request that a busy retry repeats | outside: the client's own functions, which the guard sees only as values. A resolver cannot throw, and the caller's reactions run later, as microtasks; the reader and the repeated request reject to their caller |
+| abort listeners on a retry delay and the close signal | not host code: the client's own handlers; they only settle the client's promises |
+| request signal: a host `requestOptions.signal` | outside: the client reads its `.aborted` getter and calls its `addEventListener` and `removeEventListener`. A throw goes to the caller of `request()`: synchronously from the first `.aborted` check, and as a rejection from inside the request's promise. A throw from `removeEventListener` when a busy-retry delay ends is reported by the platform, and that retry stays waiting |
 | `hostCommands(sessionId)` | outside: inside a `try` and `.catch`; a throw or rejection becomes `host_command_supplier_failed`, and its value is never logged |
-| `load(signal)` of `replay` | outside: in `replay`, a throw rejects `replay`; in recovery, a throw is a load failure that backs off and retries |
+| `load(signal)` of `replay` | outside: in `replay`, a throw rejects `replay`; in recovery, a throw is a load failure that backs off and retries. The client aborts its own `signal` on eviction and close; a host listener on that signal cannot make `abort()` throw, because the platform reports the listener's error itself |
 | `scheduler` | outside: the client passes it to its core stores (core rule 9) |
-| transport `send`, `close`, `onMessage`, `onClose`, `ready` | outside: calls into the host's transport, not deliveries; a `send` throw rejects that request, and the others throw or reject to the code that called them |
+| store dispose: `dispose()` of an evicted store | outside: core `dispose` calls no listener; it only sends an error it kept to the guarded sink (core rule 11) |
+| transport: `send`, `close`, `onMessage`, `onClose`, `ready` | outside: calls into the host's transport, not deliveries; a `send` throw rejects that request, and the others throw or reject to the code that called them |
 | `console.warn` when host commands are not offered | outside: runs once in `hello`; a throw rejects `hello` |

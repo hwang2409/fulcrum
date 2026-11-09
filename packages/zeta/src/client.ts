@@ -103,7 +103,7 @@ const advanceContent = (chunk: ContentChunk, state: ContentAssembly) => {
 async function readContentChunks(handle: string, cap: number, read: (offset: number) => Promise<unknown>) {
   const state: ContentAssembly = { offset: 0, chunks: [] };
   while (true) {
-    const { chunk, bytes } = validatedChunk(await read(state.offset), handle, state, cap);
+    const { chunk, bytes } = validatedChunk(await read(state.offset), handle, state, cap); // host code: outside; the client's own function, held as a value (README row "client functions held as values")
     state.chunks.push(bytes);
     if (chunk.eof) return finishContent(chunk, state);
     advanceContent(chunk, state);
@@ -141,7 +141,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     recovery.canceled = true;
     recovery.controller?.abort();
     if (recovery.timer) clearTimeout(recovery.timer);
-    recovery.wake?.();
+    recovery.wake?.(); // host code: outside; the client's own function, held as a value
     recoveries.delete(session);
   };
   const cancelLoad = (session: string) => {
@@ -174,7 +174,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const deliver = <T>(listeners: ReadonlySet<(value: T) => void>, value: T) => {
     for (const listener of listeners) call(() => listener(value));
   };
-  const store = createRunStore(scheduler);
+  const store = createRunStore(scheduler); // host code: outside; hands the scheduler to the store (README row "scheduler")
   let evictionCount = 0;
   const evict = (id: string) => {
     cancelRecovery(id);
@@ -188,7 +188,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!value) return false;
     stores.delete(id);
     holders.delete(id);
-    value.dispose();
+    value.dispose(); // host code: outside; core dispose calls no listener (README row "store dispose")
     evictionCount++;
     return true;
   };
@@ -246,7 +246,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const createSession = (session: string) => {
     let value!: SessionStore;
-    value = createRunStore(scheduler, { onError: () => { void resyncSession(session, value).catch(() => {}); } });
+    value = createRunStore(scheduler, { onError: () => { void resyncSession(session, value).catch(() => {}); } }); // host code: outside; README row "scheduler"
     stores.set(session, value);
     holders.set(session, 0);
     return value;
@@ -351,7 +351,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const request = pending.get(id); if (!request) return;
     pending.delete(id); if (request.timer) clearTimeout(request.timer);
     deliveryIdentity.settle(id);
-    callback(request);
+    callback(request); // host code: outside; the client's own function, held as a value
   };
   const handleEvent = (message: TransportMessage) => {
     if (!message.params || typeof message.params !== "object") return call(() => store.dispatch(adapterError("event params are invalid")));
@@ -378,13 +378,13 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
         closeReason = { kind: "output_overflow", message: message.error.message, role };
       }
       const error = Object.assign(new Error(message.error.message), message.error);
-      pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
+      pending.forEach((_, id) => settle(id, (request) => request.reject(error))); // host code: outside; the client's own function, held as a value
       return;
     }
     if (typeof message.id !== "number" || !pending.has(message.id)) return;
-    settle(message.id, (item) => message.error ? item.reject(Object.assign(new Error(message.error.message), message.error)) : item.resolve(message.result));
+    settle(message.id, (item) => message.error ? item.reject(Object.assign(new Error(message.error.message), message.error)) : item.resolve(message.result)); // host code: outside; the client's own function, held as a value
   };
-  transport.onMessage((text) => {
+  transport.onMessage((text) => { // host code: outside; README row "transport"
     if (text.length > maxFrame || (text.length > maxFrame / 3 && encoder.encode(text).byteLength > maxFrame)) return call(() => store.dispatch(adapterError(`frame exceeds ${maxFrame} bytes`)));
     let value: unknown;
     try { value = JSON.parse(text); } catch { return call(() => store.dispatch(adapterError("frame is not valid JSON"))); }
@@ -408,15 +408,15 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     closed = true;
     closedError = error;
     deliveryIdentity.close();
-    pending.forEach((_, id) => settle(id, (request) => request.reject(error)));
+    pending.forEach((_, id) => settle(id, (request) => request.reject(error))); // host code: outside; the client's own function, held as a value
     closeAbort.abort(error);
-    closeWaiters.forEach((reject) => reject(error));
+    closeWaiters.forEach((reject) => reject(error)); // host code: outside; the client's own function, held as a value
     closeWaiters.clear();
     attachmentGates.clear();
     cancelLoads();
     deliver(closeListeners, error);
   };
-  transport.onClose?.((code) => { closeClient(code); });
+  transport.onClose?.((code) => { closeClient(code); }); // host code: outside; README row "transport"
   /** Calls `listener` once when the transport closes, with the same error that rejected pending requests. */
   const onClose = (listener: (error: unknown) => void) => { closeListeners.add(listener); return () => { closeListeners.delete(listener); }; };
   /** Delivers valid host-level session grant changes until the returned function unsubscribes. */
@@ -431,7 +431,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (requestOptions.signal?.aborted) return Promise.reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
     return new Promise<unknown>((resolve, reject) => {
       const id = nextId++;
-      const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" })));
+      const abort = () => settle(id, (item) => item.reject(Object.assign(new Error("request aborted"), { name: "AbortError" }))); // host code: outside; the client's own function, held as a value
       const item: Pending = { resolve, reject };
       pending.set(id, item);
       deliveryIdentity.track(id, {
@@ -441,19 +441,19 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
         text: params.text,
         deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined,
       });
-      if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true });
-      if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs);
-      try { transport.send(JSON.stringify({ jsonrpc: "2.0", id, method, params })); }
-      catch (error) { settle(id, (entry) => entry.reject(error)); }
+      if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true }); // host code: outside; README row "request signal"
+      if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs); // host code: outside; the client's own function, held as a value
+      try { transport.send(JSON.stringify({ jsonrpc: "2.0", id, method, params })); } // host code: outside; README row "transport"
+      catch (error) { settle(id, (entry) => entry.reject(error)); } // host code: outside; the client's own function, held as a value
     });
   };
   const hostCommandsEnabled = () => options.hostCommands !== undefined && options.hostCommands !== null && negotiatedFeatures.includes("session_host_commands");
   const retryDelay = (delay: number, ...signals: AbortSignal[]) => new Promise<void>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const aborts = signals.map((signal) => [signal, () => abort(signal)] as const);
+    const listeners = signals.map((signal) => [signal, () => abort(signal)] as const);
     const cleanup = () => {
       if (timer) clearTimeout(timer);
-      aborts.forEach(([signal, onAbort]) => signal.removeEventListener("abort", onAbort));
+      listeners.forEach(([signal, listener]) => signal.removeEventListener("abort", listener)); // host code: outside; README row "request signal"
     };
     const abort = (signal: AbortSignal) => {
       cleanup();
@@ -462,12 +462,12 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const alreadyAborted = signals.find((signal) => signal.aborted);
     if (alreadyAborted) return abort(alreadyAborted);
     timer = setTimeout(() => { cleanup(); resolve(); }, delay);
-    aborts.forEach(([signal, onAbort]) => signal.addEventListener("abort", onAbort, { once: true }));
+    listeners.forEach(([signal, listener]) => signal.addEventListener("abort", listener, { once: true })); // host code: outside; README row "request signal"
   });
   const retryBusy = async (request: () => Promise<unknown>, requestOptions: RequestOptions) => {
     for (const delay of [0, 250, 500, 1_000]) {
       if (delay) await retryDelay(delay, ...(requestOptions.signal ? [requestOptions.signal] : []), closeAbort.signal);
-      try { return await request(); }
+      try { return await request(); } // host code: outside; the client's own function, held as a value
       catch (error) {
         if ((error as { code?: unknown })?.code !== -32004 || delay === 1_000) throw error;
       }
@@ -549,7 +549,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const requested = new Set(requestedFeatures ?? []);
     const features = [...new Set([...(requestedFeatures ?? []), ...(requested.has("delivery_id") ? ["send_images_delivery_id"] : []), ...(options.hostCommands ? ["session_host_commands"] : []), "served_turn_end"])];
     const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", role, ...(features ? { features } : {}) }) as Promise<HelloResult>;
-    return (transport.ready ? transport.ready.then(send) : send()).then((result) => {
+    return (transport.ready ? transport.ready.then(send) : send()).then((result) => { // host code: outside; README row "transport"
       handshaken = true;
       negotiatedProtocol = typeof result.protocol_version === "string" ? result.protocol_version : "1.0";
       const features = result.capabilities?.features;
@@ -572,7 +572,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return await readContentChunks(handle, cap, (offset) => request("content_read", { handle, offset }, { signal: options.signal }));
     } catch (error) { return contentReadError(error); }
   };
-  return { store, stores, forSession, servedTurn: (sessionId: string) => servedTurns.get(sessionId), replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, onSessionGrantsChanged, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { closeClient(); transport.close(); } };
+  return { store, stores, forSession, servedTurn: (sessionId: string) => servedTurns.get(sessionId), replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, onSessionGrantsChanged, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { closeClient(); transport.close(); } }; // host code: outside; README row "transport"
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler, options?: ClientOptions) { return createClient(transport, scheduler, undefined, options); }

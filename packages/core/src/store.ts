@@ -27,8 +27,8 @@ export type OutlineSnapshot = { readonly items: readonly OutlineItem[]; readonly
 
 const defaultScheduler: Scheduler = (callback) =>
   typeof requestAnimationFrame === "function"
-    ? requestAnimationFrame(callback)
-    : queueMicrotask(callback);
+    ? requestAnimationFrame(callback) // host code: outside; the default scheduler hands the store's job to the platform (README rule 9)
+    : queueMicrotask(callback); // host code: outside; the default scheduler hands the store's job to the platform (README rule 9)
 
 type OpenSplice = { index: number; deleteCount: number; items: OutlineItem[] };
 // Adds `edits` after `base` without changing base's splices (a published snapshot holds them): inserts that continue
