@@ -100,9 +100,10 @@ const append = <T>(target: T[], source: readonly T[]) => {
 const resyncOutlineChange = (prior: readonly OutlineItem[], pending: boolean, next: readonly OutlineItem[]) =>
   pending || prior.length !== next.length || prior.some((item, index) => item.id !== next[index]?.id);
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
-  if (options.runId === "") throw new RangeError("runId must be non-empty");
   // host code: read once here, so a getter on `options` cannot run (or throw) during a later flush.
   const onError = options.onError;
+  const runId = options.runId;
+  if (runId === "") throw new RangeError("runId must be non-empty");
   let entities = new Map<string, RunItem>();
   let messageAliases = new Map<string, string>();
   let current: RunState = structuredClone(initialState);
@@ -345,7 +346,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   }
 
   const store = {
-    get runId() { return options.runId; },
+    get runId() { return runId; },
     getState() {
       if (!notifying) flush(), flushPrepend();
       return current;

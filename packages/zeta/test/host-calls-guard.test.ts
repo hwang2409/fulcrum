@@ -25,7 +25,7 @@ const root = new URL("../../../", import.meta.url).pathname;
 // conversion (`String(value)`, `JSON.stringify`) can still run a host value's getters or toString; the guard does not
 // see that, so core keeps those reads in errorMessage() and its README table.
 const platformGlobals = new Set([
-  "Math", "JSON", "Object", "Array", "Map", "Set", "Promise", "Number", "String", "Error", "setTimeout",
+  "Math", "JSON", "Object", "Array", "Map", "Set", "Promise", "Number", "String", "Error", "RangeError", "setTimeout",
   "clearTimeout", "AbortController", "structuredClone", "TextEncoder", "atob", "Uint8Array", "ArrayBuffer", "Blob",
 ]);
 const platformTypes = new Set(["Array", "ReadonlyArray", "Map", "Set", "Promise", "PromiseConstructor", "String", "AbortController", "TextEncoder"]);
