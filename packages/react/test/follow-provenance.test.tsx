@@ -1086,13 +1086,15 @@ describe("timeline scroll provenance", () => {
   // One public-hook table covers browser motion as a sequence of callbacks, not a frame cadence. Repeated keydown rows
   // also prove that a held key accumulates reach and keeps it when keyup precedes the last viewport of motion.
   const motionRows = [
-    { name: "End, consecutive callbacks", key: "End", repeats: 1, quietFrames: 0, distance: 600 },
-    { name: "End, two quiet frames between callbacks", key: "End", repeats: 1, quietFrames: 2, distance: 600 },
-    { name: "PageDown, five quiet frames between callbacks", key: "PageDown", repeats: 1, quietFrames: 5, distance: 600 },
-    { name: "smooth wheel, two quiet frames between callbacks", key: null, repeats: 1, quietFrames: 2, distance: 500 },
-    { name: "held PageDown repeat keeps three-page reach after early keyup", key: "PageDown", repeats: 3, quietFrames: 2, distance: 1_500 },
+    { name: "End, consecutive callbacks", key: "End", repeats: 1, repeatPhase: "armed", quietFrames: 0, distance: 600 },
+    { name: "End, two quiet frames between callbacks", key: "End", repeats: 1, repeatPhase: "armed", quietFrames: 2, distance: 600 },
+    { name: "PageDown, five quiet frames between callbacks", key: "PageDown", repeats: 1, repeatPhase: "armed", quietFrames: 5, distance: 600 },
+    { name: "smooth wheel, two quiet frames between callbacks", key: null, repeats: 1, repeatPhase: "armed", quietFrames: 2, distance: 500 },
+    { name: "armed PageDown repeats keep three-page reach after early keyup", key: "PageDown", repeats: 3, repeatPhase: "armed", quietFrames: 2, distance: 1_500 },
+    { name: "held moving PageDown repeats extend reach before keyup", key: "PageDown", repeats: 3, repeatPhase: "held", quietFrames: 2, distance: 1_500 },
+    { name: "released moving PageDown repeats extend retained reach", key: "PageDown", repeats: 3, repeatPhase: "moving", quietFrames: 2, distance: 1_500 },
   ] as const;
-  test.each(motionRows)("motion continuation: $name", ({ key, repeats, quietFrames, distance }) => {
+  test.each(motionRows)("motion continuation: $name", ({ key, repeats, repeatPhase, quietFrames, distance }) => {
     const geometry = installScrollGeometry();
     const observer = installRowObserver();
     const nextFrame = () => observer.measure(() => undefined);
@@ -1108,16 +1110,22 @@ describe("timeline scroll provenance", () => {
       const start = host.scrollTop;
       const end = host.scrollHeight - host.clientHeight;
       const remaining = end - start;
-      const sendKey = (type: "keydown" | "keyup") => act(() => document.body.dispatchEvent(new KeyboardEvent(type, { key: key!, bubbles: true, cancelable: true })));
+      const sendKey = (type: "keydown" | "keyup") => act(() => host.dispatchEvent(new KeyboardEvent(type, { key: key!, bubbles: true, cancelable: true })));
       if (key) {
         clickRow();
-        for (let repeat = 0; repeat < repeats; repeat++) sendKey("keydown");
+        const starts = repeatPhase === "armed" ? repeats : 1;
+        for (let repeat = 0; repeat < starts; repeat++) sendKey("keydown");
       } else act(() => host.dispatchEvent(new WheelEvent("wheel", { deltaY: 600 })));
       [0.2, 0.45, 0.7, 1].forEach((share, callback) => {
         moveReader(host, share === 1 ? host.scrollHeight : start + remaining * share);
         if (callback === 0 && key) {
+          if (repeatPhase === "held") for (let repeat = 1; repeat < repeats; repeat++) sendKey("keydown");
           expect(end - host.scrollTop, "keyup occurs while the end is more than one viewport away").toBeGreaterThan(key === "PageDown" && repeats > 1 ? host.clientHeight : 0);
           sendKey("keyup");
+          if (repeatPhase === "moving") for (let repeat = 1; repeat < repeats; repeat++) {
+            sendKey("keydown");
+            sendKey("keyup");
+          }
         }
         for (let frame = 0; frame < quietFrames; frame++) nextFrame();
       });
