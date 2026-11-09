@@ -44,7 +44,7 @@ class OpenerScan {
   /** In a dry run: the existing openers it changed or removed, by position, so `restore` can put them back. */
   private readonly saved?: Map<number, Opener>;
 
-  /** A dry run stops only at an existing emphasis opener, and `restore` undoes its changes to the existing openers. */
+  /** A dry run stops only at an existing emphasis opener or a `[` decided as text, and `restore` undoes its changes to the existing openers. */
   constructor(private readonly source: string, private readonly openers: Opener[], private readonly existing: number, dryRun = false, private readonly stable?: StableIndex) {
     if (dryRun) this.saved = new Map();
   }
@@ -72,7 +72,8 @@ class OpenerScan {
   }
 
   private resolve(position: number) {
-    if (position < this.existing && (!this.saved || this.openers[position]!.kind === "emphasis")) this.resolved = this.openers[position];
+    const opener = this.openers[position]!;
+    if (position < this.existing && (!this.saved || opener.kind === "emphasis" || opener.kind === "bracket" && opener.state === "text")) this.resolved = opener;
     this.keep(position);
     this.openers.length = position;
     if (this.stable && !this.saved && position < this.existing) {
@@ -209,16 +210,6 @@ class OpenerScan {
   }
 }
 
-// Whether a bracket on the growing line is a link, a reference, or text depends on text that has not arrived, and
-// the line is parsed in pieces that see different parts of it, so its literal brackets show once it is committed.
-function hideBrackets(nodes: Inline[]) {
-  for (const node of nodes) {
-    if ("children" in node) hideBrackets(node.children);
-    else if (node.type === "text") node.value = node.value.replace(/[[\]]/g, "");
-  }
-  return nodes;
-}
-
 const plainText = (nodes: readonly Inline[]): string => nodes.map((node) => "value" in node ? node.value
   : "children" in node ? plainText(node.children) : node.type === "image" ? node.alt : "").join("");
 
@@ -310,12 +301,12 @@ export class PendingInline {
     const cut = cutPoint(this.content, this.content.length - PENDING_INLINE_SUFFIX);
     if (cut > this.emittedEnd) this.emitStable(cut);
     let closed;
-    while ((closed = this.pastStableEmphasis()) > this.emittedEnd) {
+    while ((closed = this.pastStableCloser()) > this.emittedEnd) {
       const previous = this.emittedEnd;
       this.emitStable(closed);
       if (this.emittedEnd <= previous) break;
     }
-    const suffix = hideBrackets(this.suffix());
+    const suffix = this.suffix();
     // Blanks at the end of the growing line may still sit before a cell pipe.
     const last = suffix.at(-1);
     if (last?.type === "text") last.value = last.value.replace(/[ \t]+$/, "");
@@ -331,6 +322,9 @@ export class PendingInline {
   /** Final streaming nodes for the finished line, or undefined when `line` does not extend this line. */
   commit(line: string): Inline[] | undefined {
     if (line.length < this.totalLength || this.openers[0]?.leadingSpace !== undefined) return undefined;
+    // The line end decides an open `<` as text, which the provisional parse still holds back: parse the line again.
+    const angle = line.lastIndexOf("<");
+    if (this.openers.at(-1)?.kind === "angle" || angle >= 0 && !/[\s>]/.test(line.slice(angle + 1))) return undefined;
     let offset = 0;
     for (const chunk of this.chunks) {
       if (!line.startsWith(chunk, offset)) return undefined;
@@ -417,13 +411,13 @@ export class PendingInline {
       if (owner.leadingSpace === undefined && from === owner.end && this.content[from] === " " && this.stripsEdgeSpace(owner, closer)) from++;
       nodes = this.codeText(from, end, closer >= 0);
     } else nodes = owner?.kind === "angle" ? this.rawText(from, end) : this.parseText(from, end, false);
-    for (const node of hideBrackets(nodes)) this.nodes.push(node);
+    for (const node of nodes) this.nodes.push(node);
   }
 
   private rawText(from: number, to: number): Inline[] {
     if (from >= to) return [];
     this.copiedCharacters += to - from;
-    return [{ type: "text", value: this.content.slice(from, to).replace(/\|/g, "") }];
+    return [{ type: "text", value: this.content.slice(from, to) }];
   }
 
   /**
@@ -437,7 +431,7 @@ export class PendingInline {
   }
 
   private codeNode(source: string, closed: boolean): Inline[] {
-    const value = (closed ? source : plainText(this.parse(source, true)).replace(/[[\]]/g, "")).replace(/\|/g, "");
+    const value = closed ? source : plainText(this.parse(source, true));
     return value ? [{ type: "code", value }] : [];
   }
 
@@ -463,28 +457,32 @@ export class PendingInline {
   }
 
   /**
-   * The first safe cut past the closer of a stable emphasis opener, or -1. The suffix parses without the stable
-   * opener, so its closer would show as a raw marker over a span that already showed styled.
+   * The first safe cut past the closer of a stable emphasis opener, or past the character that decides a stable `[...]`
+   * is text, or -1. The suffix parses without the stable opener, so an emphasis closer would show as a raw marker over a
+   * span that already showed styled, and a bracket decided as text would show its `[` at the suffix start, not where it is.
    */
-  private pastStableEmphasis() {
+  private pastStableCloser() {
     if (!this.openers.length) return -1;
     const scan = new OpenerScan(this.content, this.openers, this.openers.length, true, this.stableIndex);
     const resolved = scan.run(this.emittedEnd, this.content.length);
     scan.restore();
     // A closer run at the end of the line may still grow.
-    if (resolved?.kind !== "emphasis" || scan.stoppedAt >= this.content.length) return -1;
+    if (resolved?.kind !== "emphasis" && resolved?.kind !== "bracket" || scan.stoppedAt >= this.content.length) return -1;
     let cut = scan.stoppedAt;
     while (unsafeCut(this.content, cut)) if (++cut >= this.content.length) return -1;
     return cut;
   }
 
-  /** The first cut after the space past the `>` or space that ends the innermost open `<`, or -1 while it is open. */
+  /** The first cut past the space, or past the space after the `>`, that ends the innermost open `<`; -1 while it is open. */
   private pastAngle(cut: number) {
     if (this.openers.at(-1)?.kind !== "angle") return -1;
     const terminator = /[>\s]/g;
     terminator.lastIndex = cut;
     const end = terminator.exec(this.content)?.index ?? -1;
-    const space = end < 0 ? -1 : this.content.indexOf(" ", end + 1);
+    if (end < 0) return -1;
+    // A space decides the `<` as text at once, so the cut moves just past it and the `<` shows with it.
+    if (this.content[end] !== ">" && !unsafeCut(this.content, end + 1)) return end + 1;
+    const space = this.content.indexOf(" ", end + 1);
     return space < 0 ? -1 : space + 1;
   }
 
@@ -525,7 +523,7 @@ export class PendingInline {
       if (top.leadingSpace === undefined && from === top.end && this.content[from] === " ") from++;
     }
     const body = source.slice(from - this.emittedEnd, to - this.emittedEnd);
-    const nodes: Inline[] = top.kind === "code" ? this.codeNode(body, end >= 0) : body ? [{ type: "text", value: body.replace(/\|/g, "") }] : [];
+    const nodes: Inline[] = top.kind === "code" ? this.codeNode(body, end >= 0) : body ? [{ type: "text", value: body }] : [];
     if (end >= 0) for (const node of this.parse(source.slice(end + closer), true)) nodes.push(node);
     return nodes;
   }

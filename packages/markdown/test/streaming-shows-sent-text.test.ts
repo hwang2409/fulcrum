@@ -56,13 +56,18 @@ function check(source: string, split: number) {
     document.append(source.slice(start, end));
     const lineStart = source.lastIndexOf("\n", end - 1) + 1;
     const growing = source.slice(lineStart, end);
-    const waits = (at: number) => at >= lineStart && (blockMarkerCandidate(growing) || "`*_~[".includes(source[at]!))
+    const entity = /&(?:#(?:x[0-9a-f]*|[0-9]*)?|[a-z][a-z0-9]*)?$/i.exec(growing);
+    const waits = (at: number) => at >= lineStart && (blockMarkerCandidate(growing) || "`*_~[]".includes(source[at]!)
+      || source[at] === "<" && !/[\s>]/.test(source.slice(at + 1, end))
+      || entity !== null && at >= lineStart + entity.index)
       || at === end - 1 && source[at] === "\\";
     const owed = [...final].filter((character, index) => indexes[index]! >= 0 && indexes[index]! < end && !waits(indexes[index]!)).join("");
     const seen = visible(document.render()).replace(/\s/g, "");
     let at = 0;
     for (const character of seen) if (character === owed[at]) at++;
-    if (at < owed.length) return `prefix ${JSON.stringify(source.slice(0, end))}: owed ${JSON.stringify(owed)}, seen ${JSON.stringify(seen)}, missing from ${JSON.stringify(owed.slice(at))}`;
+    // Long lines print only their ends, so the report names the hidden text.
+    const clip = (value: string) => JSON.stringify(value.length > 160 ? `${value.slice(0, 60)}...${value.slice(-100)}` : value);
+    if (at < owed.length) return `prefix ${clip(source.slice(0, end))}: owed ${clip(owed)}, seen ${clip(seen)}, missing from ${clip(owed.slice(at))}`;
   }
   return undefined;
 }
@@ -101,6 +106,24 @@ const repros = [
   "> Intro\n>\n> | a | b |\n> |---|---|\n> | 1 | 2 |",
   "- item\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n- next",
   "| a | b | c |\n|---|---|\n| 1 | 2 |",
+  // an angle bracket is text until it closes an autolink
+  "Check a < b and x<y here",
+  "Line one<br",
+  "Line one<br and more",
+  "See <https://example.com/a_b for it",
+  "See <https://example.com/a_b> for it",
+  "<https://",
+  // an entity is text until it ends
+  "AT&T is here",
+  "AT&T\nmore",
+  "a &amp; b &#35; c",
+  // lines longer than the growing line's settled-suffix window (PENDING_INLINE_SUFFIX, 128 characters) and than 4 KB
+  "Run `" + "a | b ".repeat(200) + "` now",
+  "Run `" + "a | b ".repeat(200),
+  "kubectl get pods -o json | jq '.items[] | .metadata.name' | sort | uniq -c | sort -rn | head -n 20 | awk '{print $2}' | xargs -n1 kubectl describe pod | grep -i error",
+  "see <" + "a|b".repeat(400) + " x",
+  "| " + Array.from({ length: 700 }, (_, index) => `c${index}`).join(" | ") + " |",
+  "Intro\n\n| a | b |\n|---|---|\n| " + "x | y ".repeat(120) + "|",
 ];
 
 // Random pipe text: words, every kind of pipe, rows, delimiter rows, and container markers, joined into lines.
@@ -108,15 +131,22 @@ function corpus(count: number) {
   let seed = 120;
   const next = (n: number) => (seed = (seed * 1103515245 + 12345) % 2147483648) % n;
   const pick = <T,>(items: readonly T[]) => items[next(items.length)]!;
-  const words = ["use", "grep", "foo", "sort", "-u", "a", "b", "x1", "true", "false", "42", "`a | b`"];
+  const words = ["use", "grep", "foo", "sort", "-u", "a", "b", "x1", "true", "false", "42", "`a | b`", "a < b", "x<y", "<br"];
   const joins = [" ", " ", " | ", "|", " || ", " \\| ", "||", " \\ "];
   const lines = ["| a | b |", "|---|---|", "| :-- | --: |", "| 1 | 2 |", "a | b", "--|--", ""];
   const prefixes = ["", "", "> ", "- ", "  "];
+  // A line this long crosses the growing line's settled-suffix window (PENDING_INLINE_SUFFIX).
+  const long = () => {
+    let value = pick(words);
+    for (let word = 40 + next(40); word > 0; word--) value += pick(joins) + pick(words);
+    return value;
+  };
   const sources: string[] = [];
   for (let index = 0; index < count; index++) {
     const out: string[] = [];
     for (let line = 1 + next(6); line > 0; line--) {
       if (next(3) === 0) out.push(pick(prefixes) + pick(lines));
+      else if (next(4) === 0) out.push(pick(prefixes) + (next(4) === 0 ? "| " : "") + long());
       else {
         let value = pick(words);
         for (let word = next(5); word > 0; word--) value += pick(joins) + pick(words);

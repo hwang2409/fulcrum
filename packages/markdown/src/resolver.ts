@@ -244,15 +244,18 @@ const startsTable = (paragraph: string, delimiter: string) => {
 function classifyLeaf(line: string, growing: boolean): PendingClassification {
   let content = stripPendingContainers(line);
   if (!content.trim()) return EMPTY;
+  // A task box opens only a list item; anywhere else `[x] ` is text.
+  const item = /(?:[-+*]|\d{1,9}[.)])[ \t]+$/.test(line.slice(0, line.length - content.length));
   const heading = /^#{1,6}[ \t]+/.exec(content);
   if (heading) content = content.slice(heading[0].length);
-  const task = /^\[([ xX])\][ \t]+/.exec(content);
+  const task = item && /^\[([ xX])\][ \t]+/.exec(content);
   const reference = new ReferenceDefinitionParser();
   const disposition = reference.append(content.trimStart());
   const finished = growing ? disposition : reference.finish();
-  if (finished.kind === "candidate" || finished.kind === "metadata" || finished.kind === "definition") return EMPTY;
+  // A label still arriving shows as text (its brackets wait in the inline parse); from `]:` on the line is a definition.
+  if (finished.kind === "metadata" || finished.kind === "definition") return EMPTY;
   if (task) content = content.slice(task[0].length);
-  else if (/^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
+  else if (item && /^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
   if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
   // A growing line of only delimiter-row characters (pipes, colons, dashes) may still become a delimiter row: it waits
   // until its line ends, like a lone `>`. The anchored test fails on the first prose character.
@@ -261,9 +264,6 @@ function classifyLeaf(line: string, growing: boolean): PendingClassification {
   if (/^[ \t]*(?:[|<\]]|#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})[ \t]*$/.test(content))
     return EMPTY;
   if (growing) return { content, kind: "paragraph", offset: line.length - content.length };
-  // An open `[` may still close on a later line.
-  const openBracket = content.lastIndexOf("[");
-  if (openBracket > content.lastIndexOf("]")) content = content.slice(0, openBracket);
   return { content, kind: "paragraph", offset: 0 };
 }
 
