@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument } from "../src/index.js";
 import { PENDING_INLINE_SUFFIX as PENDING_INLINE_SUFFIX_BUDGET } from "../src/pending-inline.js";
+import { expectSubquadratic } from "../../../test-support/scaling.js";
 
 function streamPending(source: string, chunkSize: number) {
   const document = createStreamingDocument();
@@ -48,26 +49,18 @@ test("line classification stays correct at one-character boundaries", () => {
 });
 
 test("continuation preview stays linear as the line grows", () => {
-  const measure = () => {
+  const line = "word **b** `c` and more ".repeat(43_000);
+  expectSubquadratic([32_000, 1_024_000], (size) => {
     const document = createStreamingDocument();
-    const line = "word **b** `c` and more ".repeat(16_000);
     document.append("first paragraph\n");
-    const start = Number(process.hrtime.bigint()) / 1e6;
-    const times: number[] = [];
-    for (let offset = 0; offset < 384_000; offset += 64) {
-      document.append(line.slice(offset, offset + 64));
-      document.render();
-      if (offset + 64 === 96_000 || offset + 64 === 192_000 || offset + 64 === 384_000)
-        times.push(Number(process.hrtime.bigint()) / 1e6 - start);
-    }
-    return times as [number, number, number];
-  };
-  measure();
-  const samples = Array.from({ length: 7 }, measure);
-  const median = (values: number[]) => values.sort((a, b) => a - b)[3]!;
-  expect(median(samples.map(([small, medium]) => medium / small))).toBeLessThanOrEqual(2.3);
-  expect(median(samples.map(([, medium, large]) => large / medium))).toBeLessThanOrEqual(2.3);
-}, 30_000);
+    return () => {
+      for (let offset = 0; offset < size; offset += 64) {
+        document.append(line.slice(offset, offset + 64));
+        document.render();
+      }
+    };
+  });
+}, 60_000);
 
 test("frozen blocks retain identity while only the open path is rebuilt", () => {
   const document = createStreamingDocument();

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { parseMarkdown } from "../src/index.js";
 import { ReferenceDefinitionParser } from "../src/reference-definition.js";
 import { MarkdownLineResolver } from "../src/resolver.js";
+import { expectSubquadratic } from "../../../test-support/scaling.js";
 
 const source = (label: string, suffix = "") => `[${label}]: /url${suffix}\n\nUse [${label}].`;
 const resolve = (input: string) => {
@@ -55,22 +56,12 @@ test("a container can start a definition after interrupting a rejected candidate
 });
 
 test("open destinations and titles scale linearly", () => {
-  const sizes = [10_000, 20_000, 40_000, 80_000];
-  const measure = (prefix: string, size: number) => {
-    const start = Bun.nanoseconds();
-    for (let run = 0; run < 20; run++) {
-      const parser = new ReferenceDefinitionParser();
-      parser.append(prefix);
-      for (let index = 0; index < size; index++) parser.append("a");
-    }
-    return Bun.nanoseconds() - start;
-  };
-
-  for (const prefix of ["[destination]: <", "[title]: /url \""]) {
-    measure(prefix, sizes.at(-1)!);
-    const samples = Array.from({ length: 7 }, () => sizes.map((size) => measure(prefix, size)));
-    const fastest = sizes.map((_, index) => Math.min(...samples.map((times) => times[index]!)));
-    for (let index = 1; index < sizes.length; index++)
-      expect(fastest[index]! / fastest[index - 1]!).toBeLessThanOrEqual(2.3);
-  }
+  for (const prefix of ["[destination]: <", "[title]: /url \""])
+    expectSubquadratic([1_000, 32_000], (size) => () => {
+      for (let run = 0; run < 20; run++) {
+        const parser = new ReferenceDefinitionParser();
+        parser.append(prefix);
+        for (let index = 0; index < size; index++) parser.append("a");
+      }
+    });
 }, 30_000);
