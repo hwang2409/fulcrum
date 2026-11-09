@@ -53,11 +53,18 @@ test("two row growths before measurement keep a pinned reader at the physical en
     await Bun.sleep(60);
     host.scrollTop = physicalHeight;
     act(() => host.dispatchEvent(new Event("scroll")));
+    const viewport = observers.find(({ observed }) => observed.has(host))!;
+    act(() => viewport.report([{ target: host }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+    await Bun.sleep(60);
+    physicalHeight -= 100;
+    host.scrollTop = host.scrollTop;
+    act(() => host.dispatchEvent(new Event("scroll")));
     const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")))!;
     const target = [...rows.observed].find((element) => element.hasAttribute("data-virtual-id"))!;
     for (const height of [100, 200]) {
       physicalHeight += 100;
       act(() => rows.report([{ target, borderBoxSize: [{ blockSize: height, inlineSize: 800 }], contentRect: { height } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+      if (height === 100) act(() => host.dispatchEvent(new Event("scroll")));
     }
     expect(physicalHeight - host.clientHeight - host.scrollTop).toBeLessThanOrEqual(4);
   } finally {
