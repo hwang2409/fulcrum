@@ -953,15 +953,15 @@ async function checkComposerKeyKeepsFollow(page: Page, engine: string) {
 }
 
 // Host writes (as gamma's jump and focus code does), not reader input: after the run grows past the mounted window
-// below an unpinned reader, a host move near or to the new end must mount rows under the viewport. Reaching the end
-// this way does not resume follow (RCA F1), so the jump control stays.
+// below an unpinned reader, a host move near or to the new end must mount rows under the viewport. A settled position
+// at the end resumes follow; a position 10 px above the end does not.
 async function hostWriteAfterGrowth(page: Page, engine: string, row: string) {
   const appends = 80;
   for (let index = 0; index < appends; index++) {
     fake.emit({ event: "user_message", session_id: LONG, text: `host write growth ${engine} ${index}`, mode: "send", attachments: [], delivery_id: `host-write-${engine}-${index}` });
   }
   await waitNamed(page.locator(`[data-part="jump-to-latest"][data-unseen-count="${appends + 1}"]`), `${row}: jump control with unseen=${appends + 1} did not appear after the growth`, 10_000);
-  for (const [label, offset] of [["host write 10 px above the end", 10], ["host write to scrollHeight (F1)", null]] as const) {
+  for (const [label, offset] of [["host write 10 px above the end", 10], ["host write to scrollHeight", null]] as const) {
     const result = await page.evaluate(async (offset) => {
       const scroll = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
       scroll.scrollTop = offset === null ? scroll.scrollHeight : scroll.scrollHeight - scroll.clientHeight - offset;
@@ -980,10 +980,16 @@ async function hostWriteAfterGrowth(page: Page, engine: string, row: string) {
       };
     }, offset);
     if (result.rows === 0) throw new Error(`${row}: ${label} left the viewport blank (gap ${result.gap.toFixed(3)} px, follow ${result.following})`);
-    if (result.following !== false || result.unseen !== String(appends + 1)) {
-      throw new Error(`${row}: ${label} changed follow intent (follow ${result.following}, jump control unseen ${result.unseen}, expected ${appends + 1})`);
+    const follows = offset === null;
+    const expectedUnseen = follows ? null : String(appends + 1);
+    if (result.following !== follows || result.unseen !== expectedUnseen) {
+      throw new Error(`${row}: ${label} set follow ${result.following} with unseen ${result.unseen}; expected follow ${follows} with unseen ${expectedUnseen}`);
     }
   }
+  fake.emit({ event: "user_message", session_id: LONG, text: `host write followed ${engine}`, mode: "send", attachments: [], delivery_id: `host-write-followed-${engine}` });
+  await waitNamed(page.locator('[data-part="timeline"] [data-kind="user"]', { hasText: `host write followed ${engine}` }), `${row}: the append after the end write did not mount`, 5_000);
+  await waitAtBottom(page, `${row}: the append after the end write did not stay at the bottom`);
+  if (await page.locator('[data-part="jump-to-latest"]').count()) throw new Error(`${row}: the append after the end write showed the jump control`);
 }
 
 async function reconnectAnchorScenario(page: Page, engine: string) {
