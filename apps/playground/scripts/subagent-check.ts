@@ -13,7 +13,8 @@ import type { Browser, Page } from "playwright";
 const ROW = 56;
 const GAP = 12;
 
-// Runs in the page: run-bar text at 4.5:1 and state marks at 3:1, compositing backgrounds up to an opaque one.
+// Runs in the page: run-bar text at 4.5:1 and state marks at 3:1 against the color next to them (their bg ring, or the
+// background composited up to an opaque one).
 function barContrast() {
   const pixel = new OffscreenCanvas(1, 1).getContext("2d", { willReadFrequently: true })!;
   const rgba = (color: string) => {
@@ -43,8 +44,12 @@ function barContrast() {
     const value = ratio(getComputedStyle(node).color, backgroundOf(node));
     if (value < 4.5) problems.push(`run bar text "${text.textContent!.trim()}" is ${value.toFixed(2)}:1, needs 4.5:1`);
   }
+  // A mark ringed in a solid outline (styles.css rings each one in bg) is measured against its ring, the color next to it.
   for (const mark of bar.querySelectorAll('[data-part="run-state"]')) {
-    const value = ratio(getComputedStyle(mark).backgroundColor, backgroundOf(mark.parentElement));
+    const style = getComputedStyle(mark);
+    const under = backgroundOf(mark.parentElement);
+    const ringed = style.outlineStyle === "solid" && parseFloat(style.outlineWidth) >= 1 && parseFloat(style.outlineOffset) >= 0;
+    const value = ratio(style.backgroundColor, ringed ? over(rgba(style.outlineColor), under) : under);
     if (value < 3) problems.push(`run bar state mark (${(mark as HTMLElement).dataset.state}) is ${value.toFixed(2)}:1, needs 3:1`);
   }
   if (!bar.querySelector('[data-part="run-urgency"]')) problems.push("run bar shows no waiting badge for the grandchild's pending approval");
