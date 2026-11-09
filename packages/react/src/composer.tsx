@@ -10,7 +10,8 @@ type ComposerCallbacks = {
    * never called again while its promise is pending, and never with a blank draft.
    *
    * When the harness echoes sent messages into the run with a delivery id, call `trackDelivery(id)` with this send's
-   * id (at any time before the promise settles). The send then counts as delivered at its first confirmation: the
+   * id (at any time before the promise settles). Only the first call for an attempt is used. The send then counts as
+   * delivered at its first confirmation: the
    * promise resolving, or a user message with that id in the `RunProvider` store, whichever comes first. A rejection
    * after the echo is ignored, since the message reached the run. Without `trackDelivery`, only the promise counts.
    */
@@ -141,7 +142,7 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
     setSending(true);
     setError(undefined);
     const trackDelivery = (id: string) => {
-      if (inFlightSend.current !== send || send.delivered) return;
+      if (inFlightSend.current !== send || send.delivered || send.deliveryId !== undefined) return;
       send.deliveryId = id;
       setDeliveryId(id);
     };

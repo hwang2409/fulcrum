@@ -331,6 +331,23 @@ test("the echo of the sent message clears the draft before the send reply; Enter
   expect(status().textContent).toBe("");
 });
 
+test("only the first delivery id tracked for an attempt can confirm it", async () => {
+  const reply = deferred();
+  const store = createRunStore((flush) => flush());
+  const onSubmit: ComposerProps["onSubmit"] = (_text, _intent, trackDelivery) => {
+    trackDelivery("real-id");
+    trackDelivery("stale-id");
+    return reply.promise;
+  };
+  mount(<RunProvider store={store}><Composer state="idle" onSubmit={onSubmit} /></RunProvider>);
+  type("hello");
+  enter();
+  await settle();
+  act(() => store.dispatch({ type: "user_message", text: "hello", mode: "send", delivery_id: "real-id" }));
+  expect(field().value).toBe("");
+  await act(async () => { reply.resolve(); await reply.promise; });
+});
+
 test("the echo clears only the sent part; text typed after it stays", async () => {
   const reply = deferred();
   const { store, onSubmit, echo } = echoFirst(() => reply.promise);
@@ -346,18 +363,25 @@ test("the echo clears only the sent part; text typed after it stays", async () =
   expect(field().value).toBe("hello again");
 });
 
-test("a reply that fails in the same batch as the echo is not a failure: the message reached the run", async () => {
+test("a reply that fails before the echo notification flushes is not a failure: the message reached the run", async () => {
   const reply = deferred();
-  const { store, onSubmit } = echoFirst(() => reply.promise);
+  let flush: (() => void) | undefined;
+  const store = createRunStore((job) => { flush = job; });
+  const onSubmit: ComposerProps["onSubmit"] = (_text, _intent, trackDelivery) => {
+    trackDelivery("d1");
+    return reply.promise;
+  };
   mount(<RunProvider store={store}><Composer state="idle" onSubmit={onSubmit} /></RunProvider>);
   type("hello");
   enter();
-  // The reply can reject before React renders the store notification. The current store value still confirms delivery.
+  await settle();
+  // The reply rejects while React still has not seen the scheduled store notification.
   await act(async () => {
     store.dispatch({ type: "user_message", text: "hello", mode: "send", delivery_id: "d1" });
     reply.reject(new Error("timed out"));
     await reply.promise.catch(() => {});
   });
+  act(() => flush?.());
   expect(field().value).toBe("");
   expect(status().textContent).toBe("");
   expect(q('[data-part="composer"]')!.dataset.error).toBeUndefined();
