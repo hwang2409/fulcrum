@@ -118,8 +118,8 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
         if (message.id && store?.hasMessageDelivery(message.id)) unsettled = null;
         throw error;
       }
-      unsettled = null;
       if (delivered.result.accepted === false) throw refusal(delivered.result);
+      unsettled = null;
       reconcileAccepted(message, delivered.used, delivered.result);
     },
     /** Stops the running turn (zeta's default session-scope abort); `turnEnded` then knows the user ended it. */

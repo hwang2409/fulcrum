@@ -274,7 +274,7 @@ test("negotiated turn end without a drop event asks zeta once and does not resen
   }
 });
 
-test("a dropped steer is an error and the retry gets a fresh id; an evicted id reports its outcome", async () => {
+test("a dropped steer is an error and its retry keeps the saved id; an evicted id reports its outcome", async () => {
   let reply: Reply = { result: { accepted: false, duplicate: true, status: "dropped" } };
   const { client, calls } = await server(() => reply);
   const delivery = createDelivery(ids());
@@ -283,7 +283,7 @@ test("a dropped steer is an error and the retry gets a fresh id; an evicted id r
   await delivery.submit(client, "steer me", true);
   reply = { error: { code: -32010, message: "evicted", data: { outcome: "dropped" } } };
   await expect(delivery.submit(client, "again", true)).rejects.toThrow("dropped");
-  expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-2", "id-3"]);
+  expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-1", "id-2"]);
 });
 
 test("a steer the turn dropped at its end is resent as a new message, in order; delivered ones are not", async () => {
