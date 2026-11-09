@@ -175,10 +175,16 @@ export type RunEvent =
   /** Adds a whole block (a source, a file, an image) to the streaming message, after what it has so far. */
   | { type: "message_block"; message_id?: string; block: ContentBlock }
   | { type: "retry" }
+  /**
+   * Commits a whole message; it is no longer live. A commit for a message the run already has, streaming or committed,
+   * replaces its message in place: the row keeps its position and its version rises. Committing a message other than
+   * the streaming one ends the streaming message.
+   */
   | { type: "message_commit"; message_id?: string; message: Message }
   /**
-   * Starts a tool row. On a call the run already has, it restarts that row in place: output, result, and error state
-   * clear, `view` becomes this event's view, and an approval decision stays. Adapters use it to replace output.
+   * Starts a tool row and defines its call. On a call the run already has, it restarts that row in place: output,
+   * result, and error state clear, `view` becomes this event's view, and an approval decision stays. To replace only
+   * the output, send `tool_output` with `replace`.
    */
   | { type: "tool_start"; tool_call: ToolCall; view?: ToolView; data?: Record<string, unknown> }
   | { type: "tool_input"; tool_call: ToolCall; input: string; view?: ToolView; data?: Record<string, unknown> }
