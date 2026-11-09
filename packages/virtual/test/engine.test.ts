@@ -383,6 +383,14 @@ describe("bottom and scroll semantics", () => {
     expect(virtual.scrollToId("row-2")).toBe(20);
     expect(virtual.getSnapshot().programmatic).toBe(true);
   });
+  test.each([[3, true], [5, false]] as const)("scrollToId %d px from the bottom sets follow to %s", (gap, following) => {
+    const virtual = createVirtualizer({ estimateSize: () => 100 });
+    virtual.setOutline(items([100, 100]).outline);
+    virtual.setLoaded("all");
+    virtual.setViewport({ scrollTop: 0, size: 10, source: "observe" });
+    virtual.scrollToId("row-1", gap - 90);
+    expect(virtual.getSnapshot().pinned).toBe(following);
+  });
   test("deferred corrections accumulate until scroll end", () => {
     const virtual = engine([10, 10, 10], 10, 12);
     const first = virtual.beforeMutation();

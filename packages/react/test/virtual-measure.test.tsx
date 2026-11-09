@@ -97,7 +97,10 @@ test("a pinned late row measurement re-applies the bottom after the browser shif
     const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")));
     expect(rows).toBeDefined();
     const target = [...rows!.observed][0]!;
-    act(() => rows!.report([{ target, borderBoxSize: [{ blockSize: 72, inlineSize: 800 }], contentRect: { height: 72 } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+    const timeline = container.querySelector<HTMLElement>('[data-part="timeline"]')!;
+    const heightBefore = Number.parseFloat(timeline.style.height);
+    act(() => rows!.report([{ target, borderBoxSize: [{ blockSize: 120, inlineSize: 800 }], contentRect: { height: 120 } }] as unknown as ResizeObserverEntry[], {} as ResizeObserver));
+    expect(Number.parseFloat(timeline.style.height), "the ResizeObserver delivery must commit the measured extent before the next frame").toBeGreaterThan(heightBefore);
     act(() => { for (const frame of frames.splice(0)) frame(0); });
     expect(scrollHeight - 600 - scrollTop).toBeLessThanOrEqual(0.5);
   } finally {
@@ -138,10 +141,9 @@ test("a row resize reported just before a resync replaces its id is not measured
     expect(rows).toBeDefined();
     const entries = [...rows!.observed].map((target) => ({ target, borderBoxSize: [{ blockSize: 41, inlineSize: 800 }], contentRect: { height: 41 } }));
     act(() => rows!.report(entries as unknown as ResizeObserverEntry[], {} as ResizeObserver));
-    // A history rebuild (a reconnect, a page that renumbers ids) commits before the frame that flushes the resize.
+    // The delivery is complete before a history rebuild can replace the measured ids; no deferred frame remains.
     act(() => store.resync(commits("b", 201)));
-    expect(frames.length).toBe(1);
-    expect(() => act(() => { for (const frame of frames.splice(0)) frame(0); })).not.toThrow();
+    expect(frames.length).toBe(0);
     expect(container.querySelector('[data-virtual-id^="message:b-"]')).not.toBeNull();
   } finally {
     act(() => root.unmount());

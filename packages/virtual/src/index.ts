@@ -726,7 +726,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       if (index === undefined) throw new Error("cannot scroll to an id outside the outline");
       // Follow mode is set before the viewport notifies, so subscribers never read a stale `pinned`.
       const next = clampScroll(layout.prefix(index) - viewportOffset);
-      pinned = maxScroll() - next < 0.5;
+      pinned = maxScroll() - next <= bottomThreshold;
       if (pinned) unseenIds.clear();
       setViewport({ scrollTop: next, size: viewportSize, source: "programmatic" });
       log("scroll-to-id", { index, scrollTop });

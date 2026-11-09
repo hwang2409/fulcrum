@@ -70,15 +70,17 @@ export function useVirtualList<Id extends string>(
   const appliedResetKey = useRef(options.resetKey);
   const resetPending = appliedResetKey.current !== options.resetKey;
   const debug = typeof window !== "undefined" && location.search.includes("virtualDebug=1");
-  if (debug) (window as typeof window & { __fulcrumVirtual?: typeof engine }).__fulcrumVirtual = engine;
+  if (debug) (window as typeof window & { __fulcrumVirtual?: unknown }).__fulcrumVirtual = {
+    getSnapshot: engine.getSnapshot,
+    getActions: engine.getActions,
+    scrollToEngineEnd: engine.scrollToEnd,
+  };
   const containerRef = useRef<HTMLElement | null>(null);
   const timelineElement = useRef<HTMLElement | null>(null);
   const rows = useRef(new Map<Id, HTMLElement>());
   const rowCallbacks = useRef(new Map<Id, RefCallback<HTMLElement>>());
   const rowIds = useRef(new WeakMap<Element, Id>());
   const observerRef = useRef<ResizeObserver | null>(null);
-  const pendingEntries = useRef(new Map<Id, number>());
-  const resizeFrame = useRef<number | null>(null);
   const historyPending = useRef(options.historyPending === true);
   historyPending.current = options.historyPending === true;
   const initial = useRef(true);
@@ -141,7 +143,7 @@ export function useVirtualList<Id extends string>(
 
   const retainTarget = useCallback((result: MutationResult, token?: MutationToken<Id>) => {
     if (result.recoveryPending) {
-      recoveryToken.current = token ?? recoveryToken.current;
+      recoveryToken.current ??= token ?? null;
       return;
     }
     recoveryToken.current = null;
@@ -225,7 +227,6 @@ export function useVirtualList<Id extends string>(
           ? Math.abs(current.hostTop - owned.hostReadBack) <= 1 && Math.abs(current.hostEnd - owned.hostEnd) <= 1
           : owned !== null && Math.abs(current.engineTop - owned.engineReadBack) <= 1;
         if (ownedEnd) {
-          coordinator.current.owned = null;
           report("observe");
           return;
         }
@@ -237,23 +238,26 @@ export function useVirtualList<Id extends string>(
       const attachedSnapshot = engine.getSnapshot();
       writeScroll(attachedSnapshot.pinned ? "end" : attachedSnapshot.scrollTop);
 
-      const flushMeasurements = () => {
-        resizeFrame.current = null;
-        if (generation !== coordinator.current.generation || pendingEntries.current.size === 0) return;
-        const token = engine.beforeMutation();
-        for (const [id, size] of pendingEntries.current) engine.measure(id, size);
-        pendingEntries.current.clear();
-        retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }), token);
-        applyTarget();
-      };
       const rowObserver = new ResizeObserver((entries) => {
         if (generation !== coordinator.current.generation || entries.length === 0) return;
-        for (const entry of entries) {
-          const id = rowIds.current.get(entry.target);
-          if (id !== undefined) pendingEntries.current.set(id, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
+        const current = geometry(host);
+        const owned = coordinator.current.owned;
+        if (owned && Math.abs(current.hostTop - owned.hostReadBack) > engine.bottomThreshold) {
+          coordinator.current.owned = null;
+          coordinator.current.target = null;
+          report("user");
         }
-        if (resizeFrame.current === null) resizeFrame.current = requestAnimationFrame(flushMeasurements);
-        if (engine.getSnapshot().pinned) writeScroll("end", false);
+        const measurements = entries.flatMap((entry) => {
+          const id = rowIds.current.get(entry.target);
+          return id !== undefined && rows.current.get(id) === entry.target
+            ? [[id, entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height] as const]
+            : [];
+        });
+        if (measurements.length === 0) return;
+        const token = engine.beforeMutation();
+        for (const [id, size] of measurements) engine.measure(id, size);
+        retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }), token);
+        applyTarget();
       });
       observerRef.current = rowObserver;
       for (const row of rows.current.values()) rowObserver.observe(row);
@@ -302,9 +306,6 @@ export function useVirtualList<Id extends string>(
         coordinator.current.owned = null;
         coordinator.current.target = null;
         coordinator.current.touching = false;
-        if (resizeFrame.current !== null) cancelAnimationFrame(resizeFrame.current);
-        resizeFrame.current = null;
-        pendingEntries.current.clear();
         rowObserver.disconnect();
         viewportObserver.disconnect();
         siblingObserver.disconnect();
@@ -347,10 +348,7 @@ export function useVirtualList<Id extends string>(
         rows.current.set(id, element);
         rowIds.current.set(element, id);
         observerRef.current?.observe(element);
-      } else {
-        rows.current.delete(id);
-        pendingEntries.current.delete(id);
-      }
+      } else rows.current.delete(id);
     };
     rowCallbacks.current.set(id, callback);
     return callback;

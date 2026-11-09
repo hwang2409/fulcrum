@@ -412,12 +412,17 @@ async function reconnectSnapshotScenario(page: Page, fake: Awaited<ReturnType<ty
 
 async function growPinnedRow(page: Page) {
   const scroll = page.locator('[data-part="timeline-scroll"]');
-  await page.evaluate(() => {
-    const engine = (window as typeof window & { __fulcrumVirtual?: { scrollToEnd(): number } }).__fulcrumVirtual;
-    if (!engine) throw new Error("no virtualizer debug handle");
-    document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!.scrollTop = engine.scrollToEnd();
-  });
+  await scroll.evaluate((element) => { element.scrollTop = element.scrollHeight; });
   await settle(page);
+  const ready = await page.evaluate(() => {
+    const host = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+    return {
+      pinned: (window as typeof window & { __fulcrumVirtual?: VirtualDebug }).__fulcrumVirtual?.getSnapshot().pinned,
+      gap: host.scrollHeight - host.clientHeight - host.scrollTop,
+      jump: document.querySelector('[data-part="jump-to-latest"]') !== null,
+    };
+  });
+  if (!ready.pinned || ready.gap > 4 || ready.jump) throw new Error(`growth setup did not enter follow: pinned=${ready.pinned}, gap=${Math.round(ready.gap)}, jump=${ready.jump}`);
   const row = page.locator('[data-part="timeline"] [data-virtual-id]').last();
   const before = await row.boundingBox();
   if (!before) throw new Error("no measured row");

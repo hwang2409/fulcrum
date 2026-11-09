@@ -204,6 +204,23 @@ describe("timeline scroll position", () => {
     }
   });
 
+  test("a same-frame reader move beats a pinned row measurement", () => {
+    const geometry = installScrollGeometry();
+    const observer = installRowObserver();
+    try {
+      const { append, host, unseen } = mountTimeline();
+      const moved = host.scrollTop - 300;
+      host.scrollTop = moved;
+      observer.measure((id) => id.endsWith("299") ? 200 : undefined, false);
+      expect(host.scrollTop, "the row measurement must not override the reader's newer position").toBe(moved);
+      append();
+      expect(unseen()).toBe("1");
+    } finally {
+      observer.restore();
+      geometry.restore();
+    }
+  });
+
   test("a pinned append uses one end transaction", () => {
     const geometry = installScrollGeometry();
     try {

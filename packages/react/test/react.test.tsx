@@ -1669,9 +1669,13 @@ test.each([
     if (stagedReplay) second.setHistoryPending(true);
     act(() => root!.render(view(second.store)));
     if (stagedReplay) {
-      const firstPage = replacementItems.slice(0, 900);
-      second.replace(firstPage, [{ index: 0, deleteCount: 0, items: firstPage }]);
-      second.replace(replacementItems, [{ index: firstPage.length, deleteCount: 0, items: replacementItems.slice(firstPage.length) }]);
+      let loaded = replacementItems.slice(900);
+      second.replace(loaded, [{ index: 0, deleteCount: 0, items: loaded }]);
+      for (let start = 800; start >= 0; start -= 100) {
+        const olderPage = replacementItems.slice(start, start + 100);
+        loaded = [...olderPage, ...loaded];
+        second.replace(loaded, [{ index: 0, deleteCount: 0, items: olderPage }]);
+      }
       second.setHistoryPending(false);
     }
     const nextViewport = hostOwned ? scrollRef.current! : q('[data-part="timeline-scroll"]');
@@ -1680,8 +1684,8 @@ test.each([
     const nextOffset = Number.parseFloat(nextAnchor!.style.transform.slice(11)) - nextViewport.scrollTop;
     expect(Math.abs(nextOffset - offset)).toBeLessThanOrEqual(1);
     expect(nextViewport.scrollTop).toBe(viewport.scrollTop);
-    expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe(stagedReplay ? "110" : "10");
-    expect(q('[data-part="jump-to-latest"]')).toBeTruthy();
+    expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe(stagedReplay ? "0" : "10");
+    expect(q('[data-part="jump-to-latest"]') === null).toBe(stagedReplay);
   } finally {
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
     if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
