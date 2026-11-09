@@ -63,8 +63,12 @@ button:active:not(:disabled) { transform: scale(0.97); }
 .badge[data-tone="busy"], .state[data-status="running"] { --tone: var(--fulcrum-accent); }
 .badge[data-tone="warn"], .state[data-status="approval"], .state[data-status="unknown"] { --tone: var(--fulcrum-warn); }
 .badge[data-tone="danger"] { --tone: var(--fulcrum-danger); }
-/* The bg ring makes bg the color next to the mark on the badge's tint, as in styles.css. */
-.badge::before, .state::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--tone); outline: 1px solid var(--fulcrum-bg); }
+/* The status mark, as in styles.css: a 7 px square in --tone, ringed in bg so bg is the color next to it on the badge's
+   tint. Under forced colors it stays a filled CanvasText square on a Canvas ring (a hollow one would read as canceled). */
+.badge::before, .state::before, .undelivered::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--tone); outline: 1px solid var(--fulcrum-bg); }
+@media (forced-colors: active) {
+  .badge::before, .state::before, .undelivered::before, .list-head h2::before { forced-color-adjust: none; background: CanvasText; outline-color: Canvas; }
+}
 .badge[data-tone="busy"]::before, .state[data-status="running"]::before { animation: pulse 1s infinite alternate; }
 .run-meta .state[data-status="approval"] { font-weight: 700; }
 
@@ -172,8 +176,9 @@ button:active:not(:disabled) { transform: scale(0.97); }
 /* A steer that a stop dropped: the row stays, struck through, with a danger rail and a note (fg, after a danger square)
    that says why. */
 .run-scroll [data-kind="user"]:has(+ .undelivered) { border-left-color: var(--fulcrum-danger); color: var(--fulcrum-muted); text-decoration: line-through; text-decoration-color: var(--fulcrum-danger); }
-.undelivered { --tone: var(--fulcrum-danger); margin: 4px 0 0; padding-left: 14px; color: var(--fulcrum-fg); font-size: 12px; font-weight: 700; }
-.undelivered::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; vertical-align: 1px; background: var(--tone); outline: 1px solid var(--fulcrum-bg); }
+/* The square and its gap (15 px) hang in the start padding: wrapped lines start under the words. */
+.undelivered { --tone: var(--fulcrum-danger); margin: 4px 0 0; padding-left: 29px; text-indent: -15px; color: var(--fulcrum-fg); font-size: 12px; font-weight: 700; }
+.undelivered::before { display: inline-block; margin-right: 8px; vertical-align: 1px; }
 
 /* Notices and empty states. */
 .panel { width: min(64ch, calc(100% - 48px)); margin: max(32px, 12dvh) auto 32px; padding: 20px 24px; border: 1px solid var(--fulcrum-border); border-left: var(--rail) solid var(--fulcrum-muted); }

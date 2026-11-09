@@ -1129,6 +1129,9 @@ ul[data-part="md-list"] { list-style: "- "; }
 [data-part="composer-status"][data-tone="busy"] { --mark: var(--fulcrum-accent); color: var(--fulcrum-fg); }
 [data-part="composer-status"][data-tone="danger"] { --mark: var(--fulcrum-danger); color: var(--fulcrum-fg); font-weight: 700; }
 [data-part="composer-message"]::before { display: inline-block; margin: 0 8px 0 1px; vertical-align: 1px; transform: none; }
+/* The square and its gap (16 px) hang in the status's start padding, so a host that lets a long error wrap gets lines
+   2+ under the words, not under the square. */
+[data-part="composer-status"][data-tone] { padding-left: 16px; text-indent: -16px; }
 [data-part="composer-status"][data-tone="busy"] > [data-part="composer-message"]::before { animation: fulcrum-pulse 0.6s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
 [data-part="composer"] button {
   flex: none;

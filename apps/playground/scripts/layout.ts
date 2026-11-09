@@ -35,6 +35,7 @@ import { checkStreams } from "./stream-check.js";
 import { checkCards } from "./cards-check.js";
 import { checkUx } from "./ux-check.js";
 import { checkSubAgents } from "./subagent-check.js";
+import { checkStatusMarks } from "./status-check.js";
 import { checkWarmBodies } from "./warm-check.js";
 import { checkLineTokens } from "./token-check.js";
 import { fastestAppendRatio, median, ratio, recordUnthrottledViewerFailures, recordViewerScalingFailures, recordViewerTimingFailures, viewerRatioBudget, type Calibration, type ScalingCheck, type ScalingPair, type ViewerCheck, type ViewerSample, type ViewerTiming } from "./viewer-verdict.js";
@@ -649,6 +650,7 @@ try {
   failures.push(...await checkStreams(browser, port));
   failures.push(...await checkCards(browser, port));
   failures.push(...await checkUx(browser, port));
+  failures.push(...await checkStatusMarks(browser, port));
   const replay = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await replay.addInitScript(() => {
     const request = window.requestAnimationFrame.bind(window);

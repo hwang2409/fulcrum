@@ -192,13 +192,17 @@ test("every tool fact is colored by a ui-* accent, never a tok-* variable", () =
   expect(problems).toEqual([]);
 });
 
-// Every fulcrum stylesheet: the packages' styles.css, themes.css, and the apps' css.
+// Every fulcrum stylesheet (the packages' css, themes.css, the apps' css) and every package and app source file, whose
+// template strings and inline style objects can also carry css.
 const ROOT = new URL("../../../", import.meta.url);
-const SHEETS = ["packages", "apps"].flatMap((top) => readdirSync(new URL(top, ROOT), { recursive: true, encoding: "utf8" })
-  .filter((path) => path.endsWith(".css") && !/(^|\/)(node_modules|dist)\//.test(path)).map((path) => `${top}/${path}`)).sort();
+const files = (top: string, keep: (path: string) => boolean) => readdirSync(new URL(top, ROOT), { recursive: true, encoding: "utf8" })
+  .filter((path) => keep(path) && !/(^|\/)(node_modules|dist)\//.test(path)).map((path) => `${top}/${path}`);
+const SHEETS = ["packages", "apps"].flatMap((top) => files(top, (path) => path.endsWith(".css"))).sort();
+const SOURCES = ["packages", "apps"].flatMap((top) => files(top, (path) => /^[^/]+\/src\/.*\.tsx?$/.test(path))).sort();
+type Declaration = { where: string; selector: string; body: string; property: string; value: string };
 // Each declaration with its file:line. Comments are blanked with their newlines kept, so lines stay true.
-const declarations = SHEETS.flatMap((file) => {
-  const text = readFileSync(new URL(file, ROOT), "utf8").replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "));
+function cssDeclarations(file: string, text: string): Declaration[] {
+  text = text.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "));
   return [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap((rule) => {
     const bodyAt = rule.index! + rule[1]!.length + 1;
     return [...rule[2]!.matchAll(/([\w-]+)\s*:\s*([^;]+)/g)].map((decl) => ({
@@ -206,20 +210,69 @@ const declarations = SHEETS.flatMap((file) => {
       selector: rule[1]!.trim().replace(/\s+/g, " "), body: rule[2]!, property: decl[1]!, value: decl[2]!.trim(),
     }));
   });
-});
-// A status tone reaches a rule directly or through a custom property a part sets to it (--mark, --tone, ...).
-const STATUS_VAR = /var\(--fulcrum-(?:ok|warn|danger)\)/;
-const carriers = new Set(declarations.filter(({ property, value }) => property.startsWith("--") && !property.startsWith("--fulcrum-") && STATUS_VAR.test(value)).map(({ property }) => property));
-const toned = (value: string) => STATUS_VAR.test(value) || [...value.matchAll(/var\((--[\w-]+)\)/g)].some(([, name]) => carriers.has(name!));
+}
+// In source: `prop: value` in css template strings, `prop: "value"` in style objects (camelCase or quoted kebab), and
+// `style.prop = value` / `setProperty("prop", value)`, wherever the value names a custom property.
+const kebab = (name: string) => name.replace(/^["']|["']$/g, "").replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).replace(/^webkit-/, "-webkit-");
+function sourceDeclarations(file: string, text: string): Declaration[] {
+  const at = (index: number) => `${file}:${text.slice(0, index).split("\n").length}`;
+  return [
+    ...[...text.matchAll(/(--[\w-]+|"[\w-]+"|'[\w-]+'|\b[a-zA-Z][\w]*)\s*:\s*["'`]?([^"'`;,}\n]*var\(--[\w-]+\)[^"'`;,}\n]*)/g)].map((m) => ({ where: at(m.index!), property: kebab(m[1]!), value: m[2]!.trim() })),
+    ...[...text.matchAll(/\.style\.(\w+)\s*=\s*["'`]([^"'`]*var\(--[\w-]+\)[^"'`]*)/g)].map((m) => ({ where: at(m.index!), property: kebab(m[1]!), value: m[2]! })),
+    ...[...text.matchAll(/setProperty\(\s*["'`]([\w-]+)["'`]\s*,\s*["'`]([^"'`]*var\(--[\w-]+\)[^"'`]*)/g)].map((m) => ({ where: at(m.index!), property: m[1]!, value: m[2]! })),
+  ].map((decl) => ({ ...decl, selector: "(source)", body: "" }));
+}
+const declarations = [...SHEETS.flatMap((file) => cssDeclarations(file, readFileSync(new URL(file, ROOT), "utf8"))), ...SOURCES.flatMap((file) => sourceDeclarations(file, readFileSync(new URL(file, ROOT), "utf8")))];
+// A custom property is a status tone when any value it is ever set to reaches ok, warn, or danger, through any chain of
+// aliases (--fulcrum-error: var(--fulcrum-danger), --mark: var(--fulcrum-error), ...). shortcut: one global set, not
+// per-element cascade, so a property set to a status tone anywhere is a tone everywhere; that only errs strict.
+function statusCarriers(decls: { property: string; value: string }[]) {
+  const tones = new Set(["--fulcrum-ok", "--fulcrum-warn", "--fulcrum-danger"]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const { property, value } of decls) {
+      if (!property.startsWith("--") || tones.has(property)) continue;
+      if ([...value.matchAll(/var\(\s*(--[\w-]+)/g)].some(([, name]) => tones.has(name!))) tones.add(property), (grew = true);
+    }
+  }
+  return tones;
+}
+const toneSet = (decls: { property: string; value: string }[]) => {
+  const tones = statusCarriers(decls);
+  return (value: string) => [...value.matchAll(/var\(\s*(--[\w-]+)/g)].some(([, name]) => tones.has(name!));
+};
+const toned = toneSet(declarations);
+// Text paint: color, the WebKit fill that overrides it, and fill (svg text).
+const TEXT = new Set(["color", "-webkit-text-fill-color", "fill"]);
+const textProblems = (decls: Declaration[], isToned = toneSet(decls)) => decls.filter(({ property, value }) => TEXT.has(property) && isToned(value))
+  .map(({ where, selector, property, value }) => `${where} ${selector} { ${property}: ${value} }: status tokens are marks only; use fg (or muted) for the word and a mark (square, rail, border) for the tone`);
 
 // ok, warn, and danger reach only 3.1:1 in some themes, so they are never text: the word is fg (or muted) and a mark
-// (square, rail, border) next to it carries the tone.
-test("no fulcrum stylesheet colors text with a status token (ok, warn, danger are marks only)", () => {
-  expect(SHEETS).toContain("packages/react/styles.css");
-  expect(SHEETS).toContain("apps/web/src/app.css");
-  expect(SHEETS).toContain("apps/playground/src/shell.css");
-  expect(declarations.filter(({ property, value }) => (property === "color" || property === "-webkit-text-fill-color") && toned(value))
-    .map(({ where, selector, property, value }) => `${where} ${selector} { ${property}: ${value} }: status tokens are marks only; use fg (or muted) for the word and a mark (square, rail, border) for the tone`)).toEqual([]);
+// (square, rail, border) next to it carries the tone. currentColor inheritance is checked rendered, in every theme, by
+// apps/playground/scripts/status-check.ts.
+test("no fulcrum stylesheet or source colors text with a status token (ok, warn, danger are marks only)", () => {
+  expect(SHEETS).toEqual(expect.arrayContaining(["packages/react/styles.css", "packages/mermaid/styles.css", "apps/web/src/app.css", "apps/playground/src/shell.css"]));
+  expect(SOURCES).toEqual(expect.arrayContaining(["packages/react/src/composer.tsx", "packages/mermaid/src/render.ts", "apps/web/src/app.tsx"]));
+  expect(textProblems(declarations)).toEqual([]);
+});
+
+// The scan must see every route a status color takes to text, or it passes by missing them.
+test("the status text scan catches aliases, chains, text fill, and inline styles", () => {
+  const sheet = cssDeclarations("plant.css", `
+    :root { --fulcrum-error: var(--fulcrum-danger); --a: var(--fulcrum-warn); --b: var(--a); --calm: var(--fulcrum-muted); }
+    .alias { color: var(--fulcrum-error); }
+    .chain { color: color-mix(in srgb, var(--b) 80%, black); }
+    .fill { -webkit-text-fill-color: var(--fulcrum-ok); }
+    text { fill: var(--b); }
+    .fine { color: var(--calm); border-color: var(--fulcrum-error); }`);
+  const source = sourceDeclarations("plant.tsx", `
+    const a = <p style={{ color: "var(--fulcrum-danger)" }} />;
+    const b = <p style={{ WebkitTextFillColor: \`var(--fulcrum-warn)\` }} />;
+    node.style.color = "var(--fulcrum-ok)";
+    node.style.setProperty("color", "var(--fulcrum-error)");
+    const css = \`.x { color: var(--b); }\`;
+    const fine = <p style={{ color: "var(--fulcrum-fg)", borderColor: "var(--fulcrum-danger)" }} />;`);
+  expect(textProblems([...sheet, ...source]).map((problem) => problem.split(" ")[0]).sort()).toEqual(["plant.css:3", "plant.css:4", "plant.css:5", "plant.css:6", "plant.tsx:2", "plant.tsx:3", "plant.tsx:4", "plant.tsx:5", "plant.tsx:6"]);
 });
 
 // A status square sits on bg, surface, or a tint. Its 1 px bg ring makes bg the color next to it everywhere, which is
@@ -227,6 +280,43 @@ test("no fulcrum stylesheet colors text with a status token (ok, warn, danger ar
 test("every square painted in a status tone is ringed in bg", () => {
   expect(declarations.filter(({ property, value, body }) => /^background(-color)?$/.test(property) && /^var\(--[\w-]+\)$/.test(value) && toned(value) && !/(^|;)\s*outline:\s*1px solid var\(--fulcrum-bg\)/.test(body))
     .map(({ where, selector, value }) => `${where} ${selector} paints ${value} without outline: 1px solid var(--fulcrum-bg)`)).toEqual([]);
+});
+
+// Forced colors (Windows high contrast) repaint every background as Canvas, so a filled mark vanishes, or turns hollow
+// on its ring, which reads as canceled. Every rule that draws a filled 7 px mark repeats each of its selectors in a
+// forced-colors block that opts out (forced-color-adjust: none) and fills it with a system color. Rendered in Chromium's
+// forced-colors emulation by apps/playground/scripts/status-check.ts.
+const SYSTEM = /^(CanvasText|Highlight|HighlightText|ButtonText|LinkText|GrayText|Mark|AccentColor)$/;
+const topLevel = (selectors: string) => {
+  const parts: string[] = [];
+  let depth = 0, start = 0;
+  for (let i = 0; i < selectors.length; i++) {
+    if ("([".includes(selectors[i]!)) depth++;
+    else if (")]".includes(selectors[i]!)) depth--;
+    else if (selectors[i] === "," && !depth) parts.push(selectors.slice(start, i)), (start = i + 1);
+  }
+  return [...parts, selectors.slice(start)].map((part) => part.trim().replace(/\s+/g, " "));
+};
+function forcedMarkProblems(file: string, text: string): string[] {
+  text = text.replace(/\/\*[\s\S]*?\*\//g, "");
+  const forced: string[] = [];
+  for (let at = text.search(/@media \(forced-colors: active\) \{/); at >= 0; at = text.search(/@media \(forced-colors: active\) \{/)) {
+    let end = text.indexOf("{", at) + 1;
+    for (let depth = 1; depth; end++) depth += text[end] === "{" ? 1 : text[end] === "}" ? -1 : 0;
+    forced.push(text.slice(text.indexOf("{", at) + 1, end - 1));
+    text = text.slice(0, at) + text.slice(end);
+  }
+  const rules = (css: string) => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selectors: topLevel(selector!), body: body! }));
+  const covered = new Set(rules(forced.join("\n")).filter(({ body }) => /forced-color-adjust:\s*none/.test(body) && SYSTEM.test(/(?:^|;)\s*background(?:-color)?:\s*([^;]+)/.exec(body)?.[1]?.trim() ?? "")).flatMap(({ selectors }) => selectors));
+  return rules(text).filter(({ body }) => /(^|;)\s*width:\s*7px/.test(body) && /(^|;)\s*height:\s*7px/.test(body) && /(^|;)\s*background(-color)?:/.test(body))
+    .flatMap(({ selectors }) => selectors.filter((selector) => !covered.has(selector)).map((selector) => `${file}: ${selector.slice(0, 120)} draws a filled mark with no forced-colors rule (forced-color-adjust: none; background: CanvasText)`));
+}
+test("every filled mark keeps its fill in forced colors", () => {
+  expect(SHEETS.flatMap((file) => forcedMarkProblems(file, readFileSync(new URL(file, ROOT), "utf8")))).toEqual([]);
+  // The scan sees a mark with no forced rule, and one whose forced rule leaves the fill to the browser.
+  expect(forcedMarkProblems("plant.css", `.a::before { width: 7px; height: 7px; background: var(--tone); }
+    .b::before, :where(.c, .d)::before { width: 7px; height: 7px; background: var(--tone); }
+    @media (forced-colors: active) { .b::before { background: CanvasText; } :where(.c, .d)::before { forced-color-adjust: none; background: CanvasText; } }`).map((problem) => problem.split(" draws")[0])).toEqual(["plant.css: .a::before", "plant.css: .b::before"]);
 });
 
 test("the OS-dark default is github-dark", () => {

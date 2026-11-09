@@ -78,6 +78,7 @@ code { font: inherit; color: var(--fulcrum-fg); }
 /* The status bar is surface; the bg ring keeps the mark measured on bg, as in styles.css. */
 .mode::before { content: ""; width: 7px; height: 7px; background: var(--mark); outline: 1px solid var(--fulcrum-bg); }
 .mode[data-state="streaming"]::before { animation: shell-pulse 1s infinite alternate; }
+@media (forced-colors: active) { .mode::before { forced-color-adjust: none; background: CanvasText; outline-color: Canvas; } }
 .mode span { color: var(--fulcrum-muted); font-weight: 400; }
 
 /* Owned Timeline mode needs a definite-height host; host-owned mode keeps the scroll element explicit. */
