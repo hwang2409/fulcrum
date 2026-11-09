@@ -3,7 +3,7 @@ import type { RunItem } from "./events.js";
 /**
  * The newest full text read on one stream, and its chain's compaction state: `boundary` is the last compacted chunk,
  * `run` the chunks and characters read since it, `rebuilt` the text's length at the last rebuild. One per chain, so
- * held older versions never each pin a full copy (only the chunk of each rebuild holds one; see read).
+ * held older versions never each pin a full copy.
  */
 type Cache = { chunk?: Chunk; text: string; boundary?: Chunk; runChunks: number; runChars: number; rebuilt: number };
 
@@ -64,12 +64,11 @@ function compact(cache: Cache, previous: Chunk): void {
  * run, not one per append. The previous read's chunk, never the newest: a renderer takes its next tail from it.
  *
  * Rebuild: each read's text is a rope (engine concatenation) node over the previous read's text, so the cached text
- * holds one node per read. Once the text has grown by 1/REBUILD_GROWTH since the last rebuild, the read compacts the
- * whole chain instead: the previous read's chunk takes the whole text as one flat string and ends the chain, and the
- * text restarts from it. The node chain and the chunks behind it are then free (except for held snapshots), so the cache
- * holds one node per read since the last rebuild, which added at most 1/REBUILD_GROWTH of the text, and the rebuilds
- * copy at most REBUILD_GROWTH + 1 characters per added one. Held snapshots pin one full string per rebuild at most:
- * their sizes grow geometrically, so all of them together are at most REBUILD_GROWTH + 1 times the text.
+ * holds one node per read. Once the text has grown by 1/REBUILD_GROWTH since the last rebuild, the read replaces the
+ * cached text with one flat copy, and the node chain behind it is free. So the cache holds one node per read since the
+ * last rebuild, which added at most 1/REBUILD_GROWTH of the text, and the rebuilds copy at most REBUILD_GROWTH + 1
+ * characters per added one. Only the cache holds the copy, never a chunk: held snapshots keep their own chains, so
+ * holding every snapshot retains what it would without the rebuild.
  */
 function read(chunk: Chunk): string {
   const { cache } = chunk;
@@ -95,15 +94,12 @@ function read(chunk: Chunk): string {
     cache.rebuilt = chunk.length;
     return added;
   }
+  if (cache.runChunks > RUN_CHUNKS || cache.runChars > RUN_CHARS) compact(cache, previous);
   if (chunk.length - cache.rebuilt > cache.rebuilt / REBUILD_GROWTH) {
-    cache.boundary = undefined;
-    compact(cache, previous);
-    cache.text = previous.value + added;
-    cache.rebuilt = previous.length;
-  } else {
-    if (cache.runChunks > RUN_CHUNKS || cache.runChars > RUN_CHARS) compact(cache, previous);
-    cache.text += added;
-  }
+    // join, not `+`: it returns one flat string, so the rope nodes of the reads since the last rebuild are free.
+    cache.text = [cache.text, added].join("");
+    cache.rebuilt = chunk.length;
+  } else cache.text += added;
   cache.chunk = chunk;
   cache.runChunks += values.length;
   cache.runChars += chars;

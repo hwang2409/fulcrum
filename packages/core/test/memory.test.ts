@@ -90,16 +90,32 @@ test("held stream versions that were each read do not each pin a full string", (
   expect(retained).toBeLessThan(finalTextBytes * 3 + 8_000_000);
 }, 30_000);
 
+// Runs rope-probe.ts in a child process: a heap snapshot leaves JSC slower for the rest of the process.
+type Probe = { ropesPerAppend: number; joinedPerChar: number; stringBytesPerChar: number };
+function probe(...args: (string | number)[]): Probe {
+  const child = Bun.spawnSync([process.execPath, new URL("./rope-probe.ts", import.meta.url).pathname, ...args.map(String)], { timeout: 60_000 });
+  if (child.exitCode !== 0) throw new Error(`rope probe failed: ${child.stderr.toString()}`);
+  return JSON.parse(child.stdout.toString()) as Probe;
+}
+
 // Each read's text is a rope node over the previous read's text; a cache that only extends keeps one node per read for
 // the stream's life (20 B each in V8). The rebuild keeps those of the reads since the last 1/8 of growth: with equal
 // appends from empty, at most 1/9 per append. Counted in a heap snapshot (child process), not by heap totals.
 test.each([[4_000, 100], [20_000, 20]])("a stream read after each of %i appends of %i characters keeps few rope nodes", (appends, size) => {
-  const probe = Bun.spawnSync([process.execPath, new URL("./rope-probe.ts", import.meta.url).pathname, String(appends), String(size)], { timeout: 60_000 });
-  if (probe.exitCode !== 0) throw new Error(`rope probe failed: ${probe.stderr.toString()}`);
-  const { ropesPerAppend, joinedPerChar } = JSON.parse(probe.stdout.toString()) as { ropesPerAppend: number; joinedPerChar: number };
+  const { ropesPerAppend, joinedPerChar } = probe(appends, size);
   console.log(`${appends}x${size}: ${ropesPerAppend.toFixed(4)} rope nodes per append, ${joinedPerChar.toFixed(2)} characters joined per added one`);
   // Without the rebuild: 1. With it: at most 1/9; the limit sits at their geometric middle.
   expect(ropesPerAppend).toBeLessThanOrEqual(1 / 3);
   // A read joins its new text (1), a run compaction its run (1), and the rebuilds at most 9 per added character.
   expect(joinedPerChar).toBeLessThanOrEqual(11);
+}, 60_000);
+
+// #99's renderer, at 2 MB, measured per byte of text so no constant hides a cost that scales with it: holding every
+// read snapshot keeps the chunks and run joins (about 3.2 bytes of strings per byte of text). A rebuild whose flat copy
+// a chunk keeps adds one full copy per rebuild that any held snapshot reaches (about 11.4).
+test("holding every read snapshot of a 2 MB stream keeps strings in proportion to its text", () => {
+  const { stringBytesPerChar } = probe(20_000, 100, "held");
+  console.log(`held 20000x100: ${stringBytesPerChar.toFixed(2)} string bytes per character`);
+  // The limit sits near the geometric middle of the two.
+  expect(stringBytesPerChar).toBeLessThanOrEqual(6);
 }, 60_000);
