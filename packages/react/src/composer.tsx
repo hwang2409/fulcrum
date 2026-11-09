@@ -11,9 +11,10 @@ type ComposerCallbacks = {
    *
    * When the harness echoes sent messages into the run with a delivery id, call `trackDelivery(id)` with this send's
    * id (at any time before the promise settles). Only the first call for an attempt is used. The send then counts as
-   * delivered at its first confirmation: the
-   * promise resolving, or a user message with that id in the `RunProvider` store, whichever comes first. A rejection
-   * after the echo is ignored, since the message reached the run. Without `trackDelivery`, only the promise counts.
+   * delivered at its first confirmation: the promise resolving, or a user message with that id in the `RunProvider`
+   * store, whichever comes first. After a rejection, it watches for a late matching message until the user edits,
+   * starts the next send, or unmounts. A late confirmation clears the old error and clears the sent text only when it
+   * is still unchanged. Without `trackDelivery`, only the promise counts.
    */
   onSubmit(text: string, intent: ComposerIntent, trackDelivery: (deliveryId: string) => void): Promise<unknown>;
   /** Stops the running turn. Shown only while a turn runs. A returned promise drives the pending and error states. */
@@ -66,9 +67,10 @@ const statusLine = ({ sending, stopping, error, steer, state }: Pending) => ({
  * The message box under a run. Keyboard: Enter submits, Shift+Enter adds a newline, and Enter never submits during
  * IME composition. The draft clears at the send's first confirmation (`onSubmit` resolves, or the run shows the
  * message's delivery id from `trackDelivery`), once, and only the part that was sent: text the user appended while it
- * was in flight stays exactly as typed, and a draft they rewrote stays whole (`unsentDraft`). A send without either
- * keeps the draft, so the host's retry of the same text can reuse its delivery id. The field is never disabled, so
- * focus and typing survive every state.
+ * was in flight stays exactly as typed, and a draft they rewrote stays whole (`unsentDraft`). A rejected tracked send
+ * keeps watching until its echo, the next send, an edit, or unmount; an edit retires its error because that draft is a
+ * new message. Without confirmation, the unchanged draft stays so the host can retry with the same delivery id. The
+ * field is never disabled, so focus and typing survive every state.
  */
 export function Composer({ state, reason, onSubmit, onStop, label = "message", placeholder, defaultValue = "", className }: ComposerProps) {
   const id = useId();
@@ -90,6 +92,9 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
     if (send.delivered) return;
     send.delivered = true;
     setText((current) => unsentDraft(current, send.sent));
+    setError((current) => (current?.kind === "submit" ? undefined : current));
+    if (inFlightSend.current === send) inFlightSend.current = null;
+    setDeliveryId(undefined);
   }, []);
   // A layout effect, so the cleared draft paints in the same frame as the echoed row.
   useLayoutEffect(() => {
@@ -137,6 +142,8 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
   const submit = () => {
     if (inFlight.current.submit || !text.trim() || state === "running") return;
     inFlight.current.submit = true;
+    inFlightSend.current = null;
+    setDeliveryId(undefined);
     const send: Send = { sent: text, delivered: false };
     inFlightSend.current = send;
     setSending(true);
@@ -154,7 +161,14 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
           if (!send.delivered) setError({ kind: "submit", text: `could not ${steer ? "steer" : "send"}: ${errorText(failure)}` });
         },
       )
-      .finally(() => { inFlight.current.submit = false; inFlightSend.current = null; setDeliveryId(undefined); setSending(false); });
+      .finally(() => {
+        inFlight.current.submit = false;
+        if (inFlightSend.current === send && (!send.deliveryId || send.delivered)) {
+          inFlightSend.current = null;
+          setDeliveryId(undefined);
+        }
+        setSending(false);
+      });
   };
   const stop = () => {
     if (inFlight.current.stop || !onStop) return;
@@ -197,7 +211,14 @@ export function Composer({ state, reason, onSubmit, onStop, label = "message", p
           placeholder={placeholder}
           aria-label={label}
           aria-describedby={`${id}-hint ${id}-message`}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => {
+            if (!inFlight.current.submit && inFlightSend.current) {
+              inFlightSend.current = null;
+              setDeliveryId(undefined);
+              setError((current) => (current?.kind === "submit" ? undefined : current));
+            }
+            setText(event.target.value);
+          }}
           onKeyDown={onKeyDown}
         />
       </div>

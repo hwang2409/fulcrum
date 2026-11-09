@@ -387,7 +387,7 @@ test("a reply that fails before the echo notification flushes is not a failure: 
   expect(q('[data-part="composer"]')!.dataset.error).toBeUndefined();
 });
 
-test("with no echo, a failed send keeps the draft for a retry, and an echo after the failure changes nothing", async () => {
+test("a matching echo after an unknown reply confirms the send and spends its tracked attempt", async () => {
   const { store, seen, onSubmit, echo } = echoFirst(() => Promise.reject(new Error("socket closed")));
   mount(<RunProvider store={store}><Composer state="idle" onSubmit={onSubmit} /></RunProvider>);
   type("hello");
@@ -396,8 +396,23 @@ test("with no echo, a failed send keeps the draft for a retry, and an echo after
   expect(field().value).toBe("hello");
   expect(status().textContent).toBe("could not send: socket closed");
   echo();
-  expect(field().value).toBe("hello");
+  expect(field().value).toBe("");
+  expect(status().textContent).toBe("");
+  expect(q('[data-part="composer"]')!.dataset.error).toBeUndefined();
   expect(seen).toEqual(["hello"]);
+});
+
+test("editing after an unknown reply keeps the new draft and retires the old send error", async () => {
+  const { store, onSubmit, echo } = echoFirst(() => Promise.reject(new Error("socket closed")));
+  mount(<RunProvider store={store}><Composer state="idle" onSubmit={onSubmit} /></RunProvider>);
+  type("hello");
+  enter();
+  await settle();
+  type("edited message");
+  echo();
+  expect(field().value).toBe("edited message");
+  expect(status().textContent).toBe("");
+  expect(q('[data-part="composer"]')!.dataset.error).toBeUndefined();
 });
 
 test("an id the run already has (a retry whose first attempt landed) clears the draft at once", async () => {

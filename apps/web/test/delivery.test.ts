@@ -1,6 +1,6 @@
 import { expect, jest, test } from "bun:test";
 import { createClient, fromZetaHistory, type Transport } from "@fulcrum/zeta";
-import { createDelivery, stopTurn } from "../src/delivery";
+import { createDelivery, stopTurn, visibleDeliveryNotice } from "../src/delivery";
 import { composerMethods } from "../scripts/fake-zeta";
 
 type Reply = { result?: unknown; error?: { code: number; message: string; data?: unknown } };
@@ -84,6 +84,25 @@ test("a retry of the same text after a failure reuses its id; the next message a
   await delivery.submit(client, "hello", false);
   await delivery.submit(client, "hello", false);
   expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-1", "id-2"]);
+});
+
+test("a later live delivery outcome retires an older not-confirmed note", () => {
+  expect(visibleDeliveryNotice("unknown", undefined)).toBe("unknown");
+  expect(visibleDeliveryNotice("unknown", "delivered")).toBeUndefined();
+  expect(visibleDeliveryNotice("unknown", "dropped")).toBeUndefined();
+});
+
+test("a late echo after an unknown reply spends the saved id before the same text is sent again", async () => {
+  let fail = true;
+  const { client, calls, emit } = await server(() => fail ? { error: { code: -32000, message: "reply lost" } } : ok, fullFeatures, false);
+  const lease = client.forSession("s");
+  const delivery = createDelivery(ids(), undefined, lease.store);
+  await expect(delivery.submit(client, "hello", false)).rejects.toThrow("reply lost");
+  emit({ event: "user_message", session_id: "s", text: "hello", mode: "send", attachments: [], delivery_id: "id-1" });
+  fail = false;
+  await delivery.submit(client, "hello", false);
+  expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-2"]);
+  lease.release();
 });
 
 test("submit names its delivery id to the composer; a failure after zeta's echo spends the id, so the same text later is a new message", async () => {

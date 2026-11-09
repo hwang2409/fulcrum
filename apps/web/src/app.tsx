@@ -5,7 +5,7 @@ import { Approval, Code, Composer, deliveryNoteText, Fallback, HighlightContext,
 import { ContentReadError, type SessionStore, type ZetaClient } from "@fulcrum/zeta";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { createConnection, serveCommand, type Connection, type ConnectionState } from "./connection";
-import { createDelivery, type DeliveryNotice } from "./delivery";
+import { createDelivery, visibleDeliveryNotice, type DeliveryNotice } from "./delivery";
 import { ago, createSessions, sessionPresentation, sessionTitle, topLevel, type OpenRun, type SessionMeta, type Sessions, type SessionsState } from "./session";
 import { ThemePicker, useTheme } from "./theme";
 
@@ -28,7 +28,7 @@ const Undelivered = createContext<ReadonlyMap<string, DeliveryNotice["outcome"]>
 function UserRow({ id }: { id: string }) {
   const delivery = useItemSelector(id, (item) => (item?.type === "user" && item.event.type === "user_message" ? { intent: item.event.intent, status: item.event.delivery_status } : undefined));
   const undelivered = useContext(Undelivered);
-  const outcome = delivery?.status !== "dropped" && delivery?.intent !== undefined ? undelivered.get(delivery.intent) : undefined;
+  const outcome = delivery?.intent === undefined ? undefined : visibleDeliveryNotice(undelivered.get(delivery.intent), delivery.status);
   return (
     <>
       <Fallback id={id} />

@@ -12,6 +12,9 @@ type Accepted = { accepted?: boolean; status?: string };
 type DeliveryOutcome = "delivered" | "dropped" | "unknown";
 export type DeliveryNotice = { intent: string; outcome: Exclude<DeliveryOutcome, "delivered"> };
 
+/** A live row outcome is newer than a query-derived warning, so the warning no longer applies. */
+export const visibleDeliveryNotice = (outcome: DeliveryNotice["outcome"] | undefined, liveStatus: string | undefined) => liveStatus === undefined ? outcome : undefined;
+
 /** Zeta's closed delivery outcomes. A newer or malformed value is unconfirmed, never accepted. */
 const deliveryOutcome = (value: unknown): DeliveryOutcome => value === "delivered" || value === "dropped" ? value : "unknown";
 
@@ -114,6 +117,8 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
   return {
     /** `trackDelivery` gets the attempt's delivery id, so the composer can clear its draft at zeta's echo of it. */
     async submit(client: ZetaClient, text: string, steer: boolean, trackDelivery?: (deliveryId: string) => void) {
+      // A reply can fail before the echo arrives. The echo is authoritative and spends that saved attempt.
+      if (unsettled?.id && store?.hasMessageDelivery(unsettled.id)) unsettled = null;
       const message = unsettled?.text === text ? unsettled : fresh(client, text);
       unsettled = message;
       if (message.id) trackDelivery?.(message.id);
