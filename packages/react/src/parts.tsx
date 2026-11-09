@@ -400,7 +400,9 @@ const dropReasons: Record<string, string> = {
 };
 const defaultDeliveryNote = ({ event }: UserMessageItem): ReactNode => {
   if (event.delivery_status !== "dropped") return null;
-  const why = event.delivery_reason !== undefined && Object.hasOwn(dropReasons, event.delivery_reason) ? dropReasons[event.delivery_reason] : undefined;
+  const why = event.delivery_reason !== undefined && Object.hasOwn(dropReasons, event.delivery_reason)
+    ? dropReasons[event.delivery_reason]
+    : undefined;
   return why ? `not delivered · ${why}` : "not delivered";
 };
 
