@@ -1,3 +1,7 @@
+// Host code runs only through call() (listeners, onError), sink() (the error report), and errorMessage() (a thrown
+// value's text), plus the "outside" rows of the README table: scheduler(job), and reading host-given events (inside a
+// reduction's try, or the argument copy at the top of resync and prepend). See packages/core/README.md, "Notification
+// contract"; a new host call gets a table row and a test. Every site is marked "host code" so one grep finds them all.
 import type { RunEvent, RunItem } from "./events.js";
 import {
   initialState,
@@ -68,7 +72,6 @@ export interface StoreDiagnostics {
   readonly reason?: string;
   readonly resyncError?: string;
 }
-const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 const structurallyEqual = (left: unknown, right: unknown): boolean => {
   if (Object.is(left, right)) return true;
@@ -95,6 +98,8 @@ const append = <T>(target: T[], source: readonly T[]) => {
 const resyncOutlineChange = (prior: readonly OutlineItem[], pending: boolean, next: readonly OutlineItem[]) =>
   pending || prior.length !== next.length || prior.some((item, index) => item.id !== next[index]?.id);
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
+  // host code: read once here, so a getter on `options` cannot run (or throw) during a later flush.
+  const onError = options.onError;
   let entities = new Map<string, RunItem>();
   let messageAliases = new Map<string, string>();
   let current: RunState = structuredClone(initialState);
@@ -122,10 +127,48 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   let outlineSnapshot: OutlineSnapshot = { items: current.outline, change: null };
   const changedItems = new Set<string>();
   let edits: OutlineSplice[] = [];
+  // The host's error report. A sink that throws (a fail-on-console test setup, a mocked reportError) is host code too:
+  // its own throw is dropped, since there is nowhere left to report it, so it cannot cut delivery short.
+  const sink = (error: unknown) => {
+    try {
+      if (typeof reportError === "function") reportError(error);
+      else console.error(error);
+    } catch {}
+  };
+  // host code: a thrown or host-given value's text runs its `message` getter, toString, or Proxy traps. Callers set
+  // the desync state before calling it, and an unreadable value becomes a fixed reason, so it never throws.
+  const errorMessage = (error: unknown): string => {
+    try {
+      const message: unknown = error instanceof Error ? error.message : error;
+      return typeof message === "string" ? message : String(message);
+    } catch {
+      return "unreadable error";
+    }
+  };
+  // The one delivery owner for every listener and host callback: the rules live in packages/core/README.md, section
+  // "Notification contract"; keep them in sync.
+  // host code: every listener and onError call goes through here.
+  const call = (listener: Listener) => {
+    try {
+      listener();
+    } catch (error) {
+      // The first error is rethrown after delivery; later ones go to the sink so none vanish.
+      if (!failure) failure = { error };
+      else sink(error);
+    }
+  };
+  // Rethrows the first listener error once delivery is over: never inside a pass (it would cut a listener short) and
+  // never mid-entry (it would skip the entry's own bookkeeping), so every entry calls it last. Reads never call it.
+  const report = () => {
+    if (!failure || notifying || running) return;
+    const { error } = failure;
+    failure = undefined;
+    throw error;
+  };
   const setDiagnostics = (next: StoreDiagnostics) => {
     if (diagnostics.ignoredEvents === next.ignoredEvents && diagnostics.sanitizedFields === next.sanitizedFields && diagnostics.desynced === next.desynced && diagnostics.reason === next.reason && diagnostics.resyncError === next.resyncError) return;
     diagnostics = next;
-    diagnosticsListeners.forEach((listener) => listener());
+    diagnosticsListeners.forEach(call);
   };
   const refuseDesynced = () => { if (desynced) throw new Error("store is desynced"); };
 
@@ -137,6 +180,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     const beforeOutline = current.outline;
     let next: RunState;
     const accepted = historyOpen ? [] as RunEvent[] : undefined;
+    // host code: getters and proxies on events run inside this try; a throw is a reduction failure.
     try {
       next = reduceAllWithEntities(current, events, {
         get: (id) => entities.get(id),
@@ -153,7 +197,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       changedItems.clear();
       flushing = false;
       setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
-      options.onError?.(error);
+      if (onError) call(() => onError(error));
       return false;
     }
     if (disposed) {
@@ -188,7 +232,10 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     const nextEntities = new Map<string, RunItem>();
     const nextAliases = new Map<string, string>();
     const nextLog: RunEvent[] = [];
+    const changed: string[] = [];
     let next: RunState;
+    // host code: getters and proxies on events run inside this try, and so does the identity check, which reads item
+    // fields that came from events; a throw is a reduction failure.
     try {
       next = reduceAllWithEntities(structuredClone(initialState), [...older, ...acceptedLog], {
         get: (id) => nextEntities.get(id),
@@ -198,17 +245,18 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
         getMessageAlias: (key) => nextAliases.get(key),
         setMessageAlias: (key, id) => nextAliases.set(key, id),
       }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, (event) => nextLog.push(event));
+      for (const [id, item] of nextEntities) {
+        const prior = entities.get(id);
+        if (prior && structurallyEqual(prior, item)) nextEntities.set(id, prior);
+        else changed.push(id);
+      }
     } catch (error) {
       desynced = true;
       setDiagnostics({ ignoredEvents, sanitizedFields, desynced: true, reason: errorMessage(error) });
-      options.onError?.(error);
+      if (onError) call(() => onError(error));
       return false;
     }
-    for (const [id, item] of nextEntities) {
-      const prior = entities.get(id);
-      if (prior && structurallyEqual(prior, item)) nextEntities.set(id, prior);
-      else changedItems.add(id);
-    }
+    for (const id of changed) changedItems.add(id);
     for (const id of entities.keys()) if (!nextEntities.has(id)) changedItems.add(id);
     const prefix = outlineSuffixLength(beforeOutline, next.outline);
     if (prefix >= 0) next.outline = [...next.outline.slice(0, prefix), ...beforeOutline];
@@ -227,32 +275,6 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     setDiagnostics({ ignoredEvents, sanitizedFields, desynced: false });
     return true;
   };
-  const call = (listener: Listener) => {
-    try {
-      listener();
-    } catch (error) {
-      // The first error is rethrown after delivery; later ones go to the host's error report so none vanish.
-      if (!failure) failure = { error };
-      else if (typeof reportError === "function") reportError(error);
-      else console.error(error);
-    }
-  };
-  // Rethrows the first listener error once delivery is over: never inside a pass (it would cut a listener short) and
-  // never mid-entry (it would skip the entry's own bookkeeping), so every entry calls it last.
-  const report = () => {
-    if (!failure || notifying || running) return;
-    const { error } = failure;
-    failure = undefined;
-    throw error;
-  };
-  /**
-   * The delivery contract, for global, outline, and keyed listeners alike:
-   * - A pass delivers a snapshot: every pending flag and set is taken and cleared before any listener runs.
-   * - Every listener in the snapshot runs, even if an earlier one throws; the first error is rethrown after delivery,
- *   later ones go to `reportError` (or `console.error` where there is none).
-   * - Whatever a listener starts (a resync, a history page, a dispatch whose scheduler job ran during the pass) is
-   *   delivered by the next pass, right after this one, never nested in it and never spun on.
-   */
   const notify = () => {
     if (!stateChanged || desynced || notifying) return;
     stateChanged = false;
@@ -272,26 +294,33 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     if (stateChanged || flushDeferred) flushDeferred = false, flush(), flushPrepend(), notify();
   };
 
+  const job = () => {
+    queued = false;
+    if (running) return;
+    // A job run during a pass (a synchronous scheduler) cannot flush yet: the pass's tail does it.
+    if (notifying) return void (flushDeferred = true);
+    running = true;
+    try {
+      do {
+        flush();
+        flushPrepend();
+        notify();
+      } while ((pending.length > 0 || pendingOlderPages.length > 0) && !disposed && !desynced);
+    } finally {
+      running = false;
+    }
+    report();
+  };
   const scheduleFlush = () => {
     if (queued) return;
     queued = true;
-    scheduler(() => {
+    try {
+      scheduler(job); // host code: outside; its throw reaches the caller (README rule 9)
+    } catch (error) {
+      // The host refused the job: nothing is queued, so the next dispatch must schedule again.
       queued = false;
-      if (running) return;
-      // A job run during a pass (a synchronous scheduler) cannot flush yet: the pass's tail does it.
-      if (notifying) return void (flushDeferred = true);
-      running = true;
-      try {
-        do {
-          flush();
-          flushPrepend();
-          notify();
-        } while ((pending.length > 0 || pendingOlderPages.length > 0) && !disposed && !desynced);
-      } finally {
-        running = false;
-      }
-      report();
-    });
+      throw error;
+    }
   };
 
   function subscribe(listener: Listener): () => void;
@@ -330,7 +359,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     },
     hasMessageDelivery(deliveryId: string) {
       if (!notifying) flush(), flushPrepend();
-      return messageAliases.has(`delivery:${deliveryId}`);
+      // host code: only a string id is formatted, so a non-string argument's toString or Symbol.toPrimitive never runs.
+      return typeof deliveryId === "string" && messageAliases.has(`delivery:${deliveryId}`);
     },
     getDiagnostics(): StoreDiagnostics { return diagnostics; },
     subscribeDiagnostics(listener: Listener) {
@@ -340,6 +370,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     resyncFailed(error: unknown) {
       if (!desynced || disposed) return;
       setDiagnostics({ ...diagnostics, resyncError: errorMessage(error) });
+      report();
     },
     /**
      * Replaces all state with `events`. Outline subscribers run only if they would miss something (a pending change or
@@ -348,11 +379,13 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
      */
     resync(events: readonly RunEvent[]) {
       if (disposed) throw new Error("store is disposed");
+      // host code: iterating the argument; a throwing iterator reaches the caller before any state change.
+      const replay = [...events];
       const prior = current.outline;
       const pendingOutline = outlineChanged;
       // Pending keyed notifications stay; every prior row is replaced (or removed), so its listener runs too.
       entities.forEach((_, id) => changedItems.add(id));
-      pending = [];
+      pending = replay;
       pendingOlderPages = [];
       entities.clear();
       messageAliases.clear();
@@ -363,7 +396,6 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       outlineChanged = false;
       desynced = false;
       acceptedLog = [];
-      append(pending, events);
       // Inside a notification the flush waits for notify's next pass, so the rows are not known yet: notify then.
       const flushed = flush();
       stateChanged = true;
@@ -405,9 +437,11 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       if (disposed) throw new Error("store is disposed");
       refuseDesynced();
       if (!historyOpen) throw new Error("prepend requires an open history window");
+      // host code: iterating the argument; a throwing iterator reaches the caller before any state change.
+      const page = [...events];
       flush();
       notify();
-      pendingOlderPages.push([...events]);
+      pendingOlderPages.push(page);
       scheduleFlush();
       report();
     },
@@ -439,6 +473,10 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       diagnosticsListeners.clear();
       changedItems.clear();
       edits = [];
+      // Inside a scheduler job or a listener pass, the kept error stays and that entry rethrows it. Anywhere else (a
+      // read flushed it, or a diagnostics listener of an entry outside a job) it goes to the sink once and no entry
+      // rethrows it: nothing may rethrow after dispose.
+      if (failure && !notifying && !running) sink(failure.error), failure = undefined;
       desynced = false;
       diagnostics = { ignoredEvents, sanitizedFields, desynced: false };
       stateChanged = false;
