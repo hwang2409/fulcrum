@@ -167,8 +167,8 @@ console.log(`rich line commit growth 100k -> 1 MB: ${commitRatio.toFixed(1)}x (l
 if (commitRatio > 25 || commits[2]![1] > 500) failed = true;
 
 // A continuation preview must append its delta and bounded provisional suffix without copying or scanning the whole
-// line. Seven adjacent 96k/192k/384k measurements make each doubling ratio local to the same runner conditions.
-// Clean medians are about 2.0x; the 2.3x limit leaves pause margin while a whole-line scan per delta approaches 4x.
+// line. This only reports the doubling ratios (clean is about 2.0x); the gate is the 32x-span subquadratic test in
+// packages/markdown/test/preview-performance.test.tsx, because a 2.3x doubling limit flaked on shared runners.
 const continuationTimes = () => {
   const line = "word **b** `c` and more ".repeat(16_000);
   const document = createStreamingDocument();
@@ -191,6 +191,5 @@ const continuationRatios = [
   median(continuationSamples.map(([small, medium]) => medium / small)),
   median(continuationSamples.map(([, medium, large]) => large / medium)),
 ];
-console.log(`64 B  continuation line 96k -> 192k -> 384k: ${continuationMedians.map((time) => time.toFixed(0)).join(" -> ")} ms; doubling ${continuationRatios.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")} (limit 2.30x, median of 7 pairs)`);
-if (continuationRatios.some((ratio) => ratio > 2.3)) failed = true;
+console.log(`64 B  continuation line 96k -> 192k -> 384k: ${continuationMedians.map((time) => time.toFixed(0)).join(" -> ")} ms; doubling ${continuationRatios.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")} (median of 7 pairs)`);
 if (failed) process.exit(1);
