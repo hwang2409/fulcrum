@@ -10,15 +10,21 @@ type Chunk = {
   readonly cache: Cache;
 };
 
-const chunks = new WeakMap<object, Chunk>();
+type MessageItem = Extract<RunItem, { type: "message" }>;
+type ToolItem = Extract<RunItem, { type: "tool" }>;
+/** The streamed fields: a message's `text`, a tool's `output`. A new stream (on any row) adds a member and a chain map. */
+type Field = "text" | "output";
 
-const chunkFor = (item: object, value: () => string): Chunk | undefined => {
-  const chunk = chunks.get(item);
+// One chain per (row, field), so a row with two streams keeps them apart.
+const chunks: Record<Field, WeakMap<object, Chunk>> = { text: new WeakMap(), output: new WeakMap() };
+
+const chunkFor = (item: object, field: Field, value: () => string): Chunk | undefined => {
+  const chunk = chunks[field].get(item);
   if (chunk) return chunk;
   const materialized = value();
   if (!materialized) return undefined;
   const first: Chunk = { value: materialized, length: materialized.length, cache: { chunk: undefined, text: "" } };
-  chunks.set(item, first); // so streamTail can continue from a row whose text was a plain string
+  chunks[field].set(item, first); // so streamTail can continue from a row whose text was a plain string
   return first;
 };
 
@@ -46,11 +52,11 @@ function read(chunk: Chunk): string {
 export function appendText<T extends object>(
   item: T,
   previous: object | undefined,
-  field: "text" | "output",
+  field: Field,
   prior: () => string,
   delta: string,
 ): T {
-  const base = previous ? chunkFor(previous, prior) : undefined;
+  const base = previous ? chunkFor(previous, field, prior) : undefined;
   const chunk: Chunk = {
     previous: base,
     value: delta,
@@ -61,21 +67,24 @@ export function appendText<T extends object>(
     enumerable: true,
     get: () => read(chunk),
   });
-  chunks.set(item, chunk);
+  chunks[field].set(item, chunk);
   return item;
 }
 
 /**
- * The text appended to a row's stream since `previous`, an earlier snapshot of the same row: `item`'s text is exactly
- * `previous`'s text followed by the result. A row has one stream, decided by its type: a message's `text`
- * (`message_delta` of kind text or assistant) or a tool's `output` (`tool_output`; `tool_end` keeps it). Other deltas
- * (reasoning, blocks) and `tool_input` (the whole call each time) are not streams. Undefined when `item` does not
- * continue `previous`'s stream: a replace, a restarted tool, a resync or history reload, an older snapshot, a row that
- * never streamed. Costs the chunks appended since `previous`; it never reads or compares the whole text.
+ * The text appended to a row's streamed `field` since `previous`, an earlier snapshot of the same row: `item`'s field
+ * is exactly `previous`'s followed by the result. The streamed fields are a message's `text` (`message_delta` of kind
+ * text or assistant) and a tool's `output` (`tool_output`; `tool_end` keeps it). A message's reasoning and other
+ * content blocks are not addressable: each delta copies the block into a new `message.content`, so there is no chain to
+ * take a tail from; making one a stream adds a field here. Undefined when `item` does not continue `previous`'s
+ * stream: a replace, a restarted tool, a resync or history reload, an older snapshot, a row that never streamed.
+ * Costs the chunks appended since `previous`; it never reads or compares the whole text.
  */
-export function streamTail(previous: RunItem | undefined, item: RunItem): string | undefined {
-  const base = previous && chunks.get(previous);
-  const chunk = chunks.get(item);
+export function streamTail(previous: MessageItem | undefined, item: MessageItem, field: "text"): string | undefined;
+export function streamTail(previous: ToolItem | undefined, item: ToolItem, field: "output"): string | undefined;
+export function streamTail(previous: RunItem | undefined, item: RunItem, field: Field): string | undefined {
+  const base = previous && chunks[field].get(previous);
+  const chunk = chunks[field].get(item);
   // A different cache is a different stream: only appendText from a prior row shares its cache.
   if (!base || !chunk || chunk.cache !== base.cache) return undefined;
   const values: string[] = [];

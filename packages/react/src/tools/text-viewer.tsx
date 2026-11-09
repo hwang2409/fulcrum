@@ -178,6 +178,8 @@ export function segmentText(text: string, estimatedLines: number, size = SEGMENT
 /** The viewer's segments with each one's text: `sealed[i]` for every segment but the last, `open` for the last. */
 type Segmented = { text: string; segments: TextSegment[]; sealed: string[]; open: string };
 
+const segmentTextAt = ({ sealed, open }: Segmented, index: number) => sealed[index] ?? open;
+
 /**
  * Text in fixed-size segments. A known append (`grown`, or with `appendOnly` a text that extends the previous one,
  * checked in full) extends the last segment from the tail and builds only newly reached segments; the old segments
@@ -345,7 +347,7 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
   // A text row is one segment: it draws from the segment's own text, never from a slice of the whole text.
   const ranges = list.snapshot.rows.map((row) => {
     const last = row.index === segments.length - 1;
-    const slice = texts ? texts.sealed[row.index] ?? texts.open : "";
+    const slice = texts ? segmentTextAt(texts, row.index) : "";
     return { start: segments[row.index]!.start, end: segments[row.index + 1]?.start ?? (rows ? rows.count : text.length), done: done || !last, slice };
   });
   const whole = useWholeTokens(rows ? "" : text, metrics.lines, format, id, done, rows ? [] : ranges.map(({ start, end, done, slice }) => styledBlock(slice, start, end, format, id, done, start)), seed);

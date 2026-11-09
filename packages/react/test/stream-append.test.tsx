@@ -61,7 +61,7 @@ function spyStrings(min: number) {
         const caller = new Error().stack!.split("\n")[2]!.trim();
         // React's development build reads changed props to log renders; the production build does not.
         if (!caller.includes("react-dom-client.development")) {
-          const site = `${kind} ${name} in ${caller.replace(/^at /, "").replace(/ \(.*\/(src|test)\//, " (").replace(/:\d+\)$/, ")")}`;
+          const site = `${kind} ${name} in ${caller.replace(/^at /, "").replace(/ \(.*\/(src|test)\//, " (").replace(/(:\d+)+\)$/, ")")}`;
           sites[site] = (sites[site] ?? 0) + 1;
           chars += this.length;
         }
@@ -75,7 +75,8 @@ function spyStrings(min: number) {
 const big = (lines: number) => "x\n".repeat(lines);
 const red = (lines: number) => "\u001b[31mx\u001b[0m\n".repeat(lines);
 
-// Appends `appends` deltas to an open output viewer over `text`; returns the spied full-length work of those appends.
+// Appends `appends` deltas to an output over `text`, then ends the tool; returns the spied full-length work of the
+// appends, and of the end separately.
 function appendWork(text: string, appends: number, delta: (index: number) => string, open = true) {
   const store = createRunStore((job) => job());
   store.dispatch(start("a"));
@@ -90,24 +91,33 @@ function appendWork(text: string, appends: number, delta: (index: number) => str
     spy.restore();
   }
   const work = spy.result();
+  const endSpy = spyStrings(10_000);
+  try {
+    act(() => store.dispatch(end("a")));
+  } finally {
+    endSpy.restore();
+  }
+  expect(card("a").dataset.state).toBe("done");
   act(() => root?.unmount());
   root = undefined;
   container.remove();
-  return work;
+  return { ...work, end: endSpy.result().sites };
 }
 
 const plainTail = (index: number) => `\npaired tail ${index}`;
 const ansiTail = (index: number) => `\u001b[32mgreen ${index}\u001b[0m\n`;
+// The end's only full read is JSON detection of the finished plain output, once (ANSI output is never JSON).
 const paths = [
-  { name: "plain output", small: big(31_250), large: big(1_000_000), delta: plainTail },
-  { name: "ANSI output", small: red(6_250), large: red(200_000), delta: ansiTail },
+  { name: "plain output", small: big(31_250), large: big(1_000_000), delta: plainTail, end: { "read trimStart in jsonText (tools/json.ts)": 1 } },
+  { name: "ANSI output", small: red(6_250), large: red(200_000), delta: ansiTail, end: {} },
 ];
 
-for (const { name, large, delta } of paths) for (const open of [true, false]) test(`an append to a large ${name} in the ${open ? "open viewer" : "closed preview"} does no full-length compare or read (exact, by hook)`, () => {
+for (const { name, large, delta, end: atEnd } of paths) for (const open of [true, false]) test(`an append to a large ${name} in the ${open ? "open viewer" : "closed preview"} does no full-length compare or read (exact, by hook)`, () => {
   const work = appendWork(large, 10, delta, open);
-  console.log(`${name}: ${work.chars} chars of full-length work over 10 appends`, work.sites);
+  console.log(`${name}: ${work.chars} chars of full-length work over 10 appends`, work.sites, "at the end", work.end);
   // An entry names the hook and string method that touched the whole text on an append; there must be none.
   expect(work.sites).toEqual({});
+  expect(work.end).toEqual(atEnd);
 });
 
 for (const { name, small, large, delta } of paths) for (const open of [true, false]) test(`per-append work for the ${name} in the ${open ? "open viewer" : "closed preview"} is flat in its length (32x span)`, () => {
@@ -146,7 +156,9 @@ const cases: Case[] = [
 // Each step's display after every event equals a fresh render of the same events (the full path): small (inline),
 // and large in the open viewer and in the closed preview (both incremental).
 const modes = [["inline", ""], ["open viewer", big(60_000)], ["closed preview", big(60_000)]] as const;
-const display = (id: string) => [shown(id), count(id) || (card(id).querySelector('[data-action="open-viewer"]')?.textContent ?? "")];
+// The shown text, its count, and each styled run as `class:text`, so ANSI spans are compared too, not only the text.
+const styled = (id: string) => [...card(id).querySelectorAll('[data-part="text-viewer-row"] span[class], [data-part="tool-output"] span[class]')].map((span) => `${span.className}:${span.textContent}`).join("|");
+const display = (id: string) => [shown(id), count(id) || (card(id).querySelector('[data-action="open-viewer"]')?.textContent ?? ""), styled(id)];
 function show(mode: string) {
   if (mode === "open viewer") return openViewer("a");
   const details = card("a");

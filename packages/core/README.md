@@ -36,7 +36,11 @@ A `user_message` can carry `intent`, the client id for the user's request. A lat
 
 ## streamed text
 
-A row has at most one stream, decided by its type: a message's `text` (`message_delta` of kind `text` or `assistant`) or a tool's `output` (`tool_output`). Reasoning and other block deltas, and `tool_input` (the whole call each time), are not streams. `streamTail(previous, item)` takes two snapshots of the same row and returns the text appended between them: `item`'s text is exactly `previous`'s text followed by the result. It returns `undefined` when `item` does not continue `previous`'s stream: a `replace: true` output, a restarted tool, a resync or history reload, an older snapshot, or a row that never streamed. Then read the text whole. It costs the chunks appended since `previous` and never reads or compares the whole text, so a view of a multi-megabyte output can extend itself from the tail. `tool_end` keeps the output's stream, so the tail across it is `""`.
+Two row fields grow by appends: a message's `text` (`message_delta` of kind `text` or `assistant`) and a tool's `output` (`tool_output`). `streamTail(previous, item, field)` takes two snapshots of the same row and returns the text appended to `field` between them: `item`'s field is exactly `previous`'s followed by the result. The overloads tie the field to the row: `streamTail(previous, item, "text")` for messages, `streamTail(previous, item, "output")` for tools. Each field keeps its own chain.
+
+It returns `undefined` when `item` does not continue `previous`'s stream: a `replace: true` output, a restarted tool, a resync or history reload, an older snapshot, or a row that never streamed. Then read the text whole. It costs the chunks appended since `previous` and never reads or compares the whole text, so a view of a multi-megabyte output can extend itself from the tail. `tool_end` keeps the output's stream, so the tail across it is `""`.
+
+A message's reasoning and other content blocks are not addressable: each delta copies its block into a new `message.content`, so there is no chain to take a tail from. Making one a stream adds a field to `streamTail`.
 
 ## tool views
 

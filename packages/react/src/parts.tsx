@@ -159,7 +159,7 @@ function useGrownOutput(tool: ToolItem | undefined, streamed: string | undefined
   const prior = seen.current;
   const stream = tool !== undefined && output === streamed;
   seen.current = stream ? { tool, output } : {};
-  const tail = stream && prior.output !== undefined ? streamTail(prior.tool, tool) : undefined;
+  const tail = stream && prior.output !== undefined ? streamTail(prior.tool, tool, "output") : undefined;
   return tail === undefined ? null : { text: output, previous: prior.output!, tail };
 }
 
