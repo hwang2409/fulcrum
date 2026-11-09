@@ -24,16 +24,25 @@ const withMargin = (noOpMax: Record<number, CalibratedBudget>) => Object.fromEnt
 // slowdown is owned by the paired ratios (+25 ms candidate: open task 1.70x and up); this ceiling owns common slowdowns
 // (+40 ms on head and base: open 1.70x and up, append 2.24x and up).
 export const pairedCalibratedBudgets = withMargin({ 390: { openMs: 0.79, appendMs: 1.35 }, 1440: { openMs: 0.82, appendMs: 1.31 } });
-// Unthrottled single, lines, and read opens, and single and lines appends. Samples: no-op runs 42492135444 a1-a5 and the
-// head run 42523133025, plus every proof run cell its mutation does not touch (TIMING_GATE_SLOWDOWN_MS adds work only to
-// the read fixture; the +40 ms common proofs slow only the A/B pairs; the append CPU proofs touch only appends):
-// 42507931601 and 42509897759 single/lines, 42507933006 and 42509899837 all, 42513755996 and 42510070983 opens.
-// Maxima: open 1.04x @ 390 (single, 42509897759, fast runner), 0.91x @ 1440 (single, 42509897759 and 42510070983);
-// append 0.73x at both widths (42507931601). Lowest recorded mutations: open 3.76x (read, 42507931601), append 4.31x
-// (lines @ 1440, 42513755996). Read append is not judged here: it is bimodal unthrottled (12-13 ms in the same frame or
-// ~25 ms in the next), and the 4x-throttled read checks above (paired append ratio, calibrated ceiling) measure the same
-// append with 4x the CPU cost.
-const unthrottledCalibratedBudgets = withMargin({ 390: { openMs: 1.04, appendMs: 0.73 }, 1440: { openMs: 0.91, appendMs: 0.73 } });
+// Unthrottled single, lines, and read opens. Samples: no-op runs 42492135444 a1-a5 and the head run 42523133025, plus
+// every proof run cell its mutation does not touch (TIMING_GATE_SLOWDOWN_MS adds work only to the read fixture; the
+// +40 ms common proofs slow only the A/B pairs): 42507931601 and 42509897759 single/lines, 42507933006 and 42509899837
+// all, 42513755996 and 42510070983 opens. Maxima: 1.04x @ 390 (single, 42509897759, fast runner), 0.91x @ 1440 (single,
+// 42509897759 and 42510070983). Lowest recorded mutation: 3.76x (read, 42507931601).
+const unthrottledOpenBudgets: Record<number, number> = { 390: 1.04 * calibratedMargin, 1440: 0.91 * calibratedMargin };
+// Unthrottled single and lines appends: the fastest of the 5 appends over the fastest of the 5 calibrations. A page's
+// append can switch to about 2x its cost (~5.5 -> ~12 ms) at a random append and stay there for the rest of the page;
+// three such appends out of five made the median fail (#118: [6.8, 6.5, 13.2, 13.0, 12.9] over 10.3 ms = 1.25x). The
+// fastest sample skips that state, and the fastest calibration skips runner time landing in the fixed work.
+// Samples: runs 42543048265 and 42543855004, 20 jobs on 5 CPU models, n=20 per cell, each with +0, +5, and +10 ms of
+// CPU work per append. No-op maxima: 0.658x @ 390 (single), 0.638x @ 1440 (single). Lowest +10 ms: 1.533x @ 390, 1.303x
+// @ 1440, so 1.66x and 1.46x over the budgets. +5 ms failed 80/80 too, but its lowest (0.90x @ 1440) sits only 1.01x
+// over the budget, so this ceiling guards +10 ms per append (about 2x the append), not +5.
+// Trade-off: min hides a regression that hits only some appends. The deterministic compare/copy counter (#127) owns
+// O(n)-per-append work, and the 4x-throttled A/B check judges a median, so a regression on most appends still shows there.
+// Read append is not judged here: it is bimodal unthrottled (12-13 ms in the same frame or ~25 ms in the next), and the
+// 4x-throttled read checks above measure the same append with 4x the CPU cost.
+const unthrottledAppendBudgets: Record<number, number> = { 390: 0.658 * calibratedMargin, 1440: 0.638 * calibratedMargin };
 
 export const ratio = (candidate: number, baseline: number) => candidate / Math.max(baseline, 0.001);
 export const median = (values: number[]) => [...values].sort((left, right) => left - right)[values.length >> 1]!;
@@ -43,9 +52,15 @@ function recordCalibratedFailure(failures: string[], name: string, candidate: nu
   if (normalized > budget) failures.push(`${name}: calibrated ceiling, candidate ${candidate.toFixed(1)} ms / calibration ${calibration.median.toFixed(1)} ms = ${normalized.toFixed(2)}x is over ${budget.toFixed(2)}x`);
 }
 
-export function recordUnthrottledViewerFailures(measured: { fixture: string; width: number; openMs: number; appendMs: number; calibration: Calibration }, failures: string[]) {
-  for (const field of ["openMs", "appendMs"] as const) if (field === "openMs" || measured.fixture !== "read")
-    recordCalibratedFailure(failures, `viewer ${measured.fixture} @ ${measured.width} ${field === "openMs" ? "open" : "append"}`, measured[field], measured.calibration, unthrottledCalibratedBudgets[measured.width]![field]);
+export const fastestAppendRatio = (appendSamples: number[], calibration: Calibration) => ratio(Math.min(...appendSamples), Math.min(...calibration.samples));
+
+export function recordUnthrottledViewerFailures(measured: { fixture: string; width: number; openMs: number; appendSamples: number[]; calibration: Calibration }, failures: string[]) {
+  const name = `viewer ${measured.fixture} @ ${measured.width}`;
+  recordCalibratedFailure(failures, `${name} open`, measured.openMs, measured.calibration, unthrottledOpenBudgets[measured.width]!);
+  if (measured.fixture === "read") return;
+  const normalized = fastestAppendRatio(measured.appendSamples, measured.calibration);
+  const budget = unthrottledAppendBudgets[measured.width]!;
+  if (normalized > budget) failures.push(`${name} append: calibrated ceiling, fastest append ${Math.min(...measured.appendSamples).toFixed(3)} ms / fastest calibration ${Math.min(...measured.calibration.samples).toFixed(3)} ms = ${normalized.toFixed(3)}x is over ${budget.toFixed(3)}x`);
 }
 
 export function recordViewerTimingFailures(check: ViewerCheck, width: number, failures: string[]) {
