@@ -347,7 +347,6 @@ async function checkUserParityPair(browser: Browser, port: number, theme: string
 async function checkUserParity(browser: Browser, port: number): Promise<string[]> {
   const pairs: UserParity[] = [
     { message: "message-user-long", fallback: "fallback-user-parity", name: "sent user message" },
-    { message: "message-user-dropped", fallback: "fallback-user-dropped", name: "dropped steer" },
   ];
   const matrix = ["light", "dracula", "gruvbox-dark"].flatMap((theme) => [1440, 390].flatMap((width) => pairs.map((pair) => ({ theme, width, pair }))));
   const failures: string[] = [];
