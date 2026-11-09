@@ -359,7 +359,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     },
     hasMessageDelivery(deliveryId: string) {
       if (!notifying) flush(), flushPrepend();
-      return messageAliases.has(`delivery:${deliveryId}`);
+      // host code: only a string id is formatted, so a non-string argument's toString or Symbol.toPrimitive never runs.
+      return typeof deliveryId === "string" && messageAliases.has(`delivery:${deliveryId}`);
     },
     getDiagnostics(): StoreDiagnostics { return diagnostics; },
     subscribeDiagnostics(listener: Listener) {

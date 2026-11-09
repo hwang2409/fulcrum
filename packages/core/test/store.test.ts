@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { createRunStore, type OutlineSnapshot, type RunEvent } from "../src/index.js";
+import { createRunStore, type OutlineSnapshot, type RunEvent, type RunStore, type StoreDiagnostics } from "../src/index.js";
 import { seededRandom } from "./fuzz.js";
 
 const message = (text: string) => ({
@@ -660,19 +660,34 @@ const throwingType = (thrown: () => unknown) =>
 const unreadable = [
   { name: "a null-prototype object", thrown: () => Object.create(null) as unknown },
   { name: "an Error whose message getter throws", thrown: () => Object.defineProperty(new Error("x"), "message", { get() { throw new Error("message getter"); } }) },
+  { name: "a Proxy whose every trap throws", thrown: () => new Proxy({}, new Proxy({}, { get() { return () => { throw new Error("trap"); }; } })) },
+  { name: "a revoked Proxy", thrown: () => { const { proxy, revoke } = Proxy.revocable({}, {}); revoke(); return proxy; } },
+  { name: "a Symbol.toPrimitive that throws", thrown: () => ({ [Symbol.toPrimitive]() { throw new Error("primitive"); } }) },
 ];
 test.each(unreadable)("an unreadable thrown value: reads never throw, diagnostics say desynced, and onError runs once: $name", ({ thrown }) => {
   const jobs: Array<() => void> = [];
   const errors: unknown[] = [];
-  const store = createRunStore((job) => jobs.push(job), { onError: (error) => errors.push(error) });
+  const seen: StoreDiagnostics[] = [];
+  const store: RunStore = createRunStore((job) => jobs.push(job), { onError: (error) => { errors.push(error); seen.push(store.getDiagnostics()); } });
   const value = thrown();
   store.dispatch(throwingType(() => value));
   expect(() => store.getState()).not.toThrow();
   expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "unreadable error" });
-  expect(errors).toEqual([value]);
+  expect(seen).toEqual([store.getDiagnostics()]); // onError runs after the desync is published
+  expect(errors.length).toBe(1);
+  expect(errors[0]).toBe(value);
   expect(jobs.shift()!).not.toThrow();
   expect(() => store.resyncFailed(value)).not.toThrow();
   expect(store.getDiagnostics().resyncError).toBe("unreadable error");
+});
+
+test("hasMessageDelivery formats only a string id: a non-string argument runs no host code", () => {
+  const store = createRunStore((job) => job());
+  let ran = 0;
+  const hostile = { toString() { ran++; return "a"; }, [Symbol.toPrimitive]() { ran++; return "a"; } };
+  expect(store.hasMessageDelivery(hostile as unknown as string)).toBe(false);
+  expect(store.hasMessageDelivery(Symbol("s") as unknown as string)).toBe(false);
+  expect(ran).toBe(0);
 });
 
 test("options.onError is read once, at creation: a getter cannot throw from a read", () => {

@@ -42,6 +42,7 @@ Every place the store runs host code, and where it stands. In `store.ts` host co
 | `scheduler(job)` | outside: it schedules work, it does not deliver it; its throw reaches the caller of `dispatch` or `prepend` and leaves no flag set; the event stays queued and the next dispatch's job or a read delivers it; do not dispatch it again (rule 9) |
 | getters or proxies on a dispatched event or history page | outside: they run only inside the reduction's `try`, which includes the prepend identity check that compares item fields taken from events; a throw is a reduction failure, handled by desync and `onError`, not a listener error (rule 6) |
 | iterating the `events` argument of `resync` and `prepend` | outside: arguments are plain data (typed `RunEvent[]`); the store copies them first, so a throwing iterator propagates to the caller of `resync` or `prepend` before any state change. Test: "a throwing events iterator: %s throws to its caller and changes nothing" |
+| formatting the `deliveryId` argument of `hasMessageDelivery` | guarded: only a string id is formatted; any other value returns `false` without running its `toString` or `Symbol.toPrimitive`. Test: "hasMessageDelivery formats only a string id: a non-string argument runs no host code" |
 | unsubscribe functions | call no host code |
 | `dispose` | calls no listener; only the guarded error sink, for an error no entry will rethrow (rule 11) |
 
