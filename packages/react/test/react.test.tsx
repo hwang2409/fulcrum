@@ -2196,3 +2196,197 @@ test("after a keyboard decision, focus lands on the next approval's row, never o
   expect(active.getAttribute("data-action")).toBeNull();
   expect(active.getAttribute("data-id")).toBe("approval:r2");
 });
+
+
+test.each([
+  ["owned", false, "prefix", -7],
+  ["owned", false, "suffix", -7],
+  ["host-owned", true, "prefix", -7],
+  ["host-owned", true, "suffix", -7],
+  ["owned", false, "prefix", 20],
+  ["owned", false, "suffix", 20],
+  ["host-owned", true, "prefix", 20],
+  ["host-owned", true, "suffix", 20],
+] as const)("%s sibling ResizeObserver keeps follow for a %s resize of %d px", (_shape, hostOwned, side, delta) => {
+  const items = Array.from({ length: 300 }, (_, index) => committedItem(`sibling-${index}`));
+  const timeline = timelineStore(items);
+  const positions = new WeakMap<HTMLElement, number>();
+  const ends = new WeakMap<HTMLElement, number>();
+  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+  const OriginalResizeObserver = globalThis.ResizeObserver;
+  const OriginalMutationObserver = globalThis.MutationObserver;
+  const resizeObservers: Array<{ callback: ResizeObserverCallback; observed: Set<Element> }> = [];
+  const mutationObservers: Array<{ callback: MutationCallback; observed: Set<Node> }> = [];
+  globalThis.ResizeObserver = class {
+    private readonly entry = { callback: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+    constructor(callback: ResizeObserverCallback) { this.entry.callback = callback; resizeObservers.push(this.entry); }
+    observe(element: Element) { this.entry.observed.add(element); }
+    unobserve(element: Element) { this.entry.observed.delete(element); }
+    disconnect() { this.entry.observed.clear(); }
+  } as unknown as typeof ResizeObserver;
+  globalThis.MutationObserver = class {
+    private readonly entry = { callback: (() => {}) as MutationCallback, observed: new Set<Node>() };
+    constructor(callback: MutationCallback) { this.entry.callback = callback; mutationObservers.push(this.entry); }
+    observe(node: Node) { this.entry.observed.add(node); }
+    disconnect() { this.entry.observed.clear(); }
+    takeRecords() { return []; }
+  } as unknown as typeof MutationObserver;
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100 });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get() {
+      const host = this as HTMLElement;
+      const timelineHeight = Number.parseFloat(host.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0");
+      return (ends.get(host) ?? Math.max(0, timelineHeight - 100)) + 100;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, (ends.get(this as HTMLElement) ?? 1_100)))); },
+  });
+  try {
+    const hostRef = { current: null as HTMLElement | null };
+    const prefix = <div data-testid="prefix" />;
+    const suffix = <div data-testid="suffix" />;
+    const list = <RunProvider store={timeline.store}><Timeline virtual {...(hostOwned ? { scrollRef: hostRef, renderJumpToLatest: (control: ReactNode) => <aside>{control}</aside> } : {})} /></RunProvider>;
+    mount(hostOwned ? <div ref={hostRef}>{prefix}{list}{suffix}</div> : list);
+    const host = hostOwned ? hostRef.current! : q('[data-part="timeline-scroll"]');
+    const initialEnd = Number.parseFloat(q<HTMLElement>('[data-part="timeline"]').style.height) - 100;
+    ends.set(host, initialEnd);
+    host.scrollTop = initialEnd;
+    act(() => host.dispatchEvent(new Event("scroll")));
+    let sibling = hostOwned ? q(`[data-testid="${side}"]`) : document.createElement("div");
+    if (!hostOwned) {
+      sibling.dataset.testid = side;
+      if (side === "prefix") host.prepend(sibling); else host.append(sibling);
+      const mutation = mutationObservers.find(({ observed }) => observed.has(host))!;
+      act(() => mutation.callback([], {} as MutationObserver));
+    }
+    const siblingResize = resizeObservers.find(({ observed }) => observed.has(sibling))!;
+    if (delta < 0) {
+      host.scrollTop = initialEnd - 10;
+      act(() => host.dispatchEvent(new Event("scroll")));
+    }
+    ends.set(host, initialEnd + delta);
+    act(() => siblingResize.callback([], {} as ResizeObserver));
+    expect(q('[data-part="timeline"]').getAttribute("data-unseen-count"), "the sibling resize must preserve or restore follow").toBe("0");
+    expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
+    expect(host.scrollTop).toBe(delta < 0 ? initialEnd - 10 : initialEnd + delta);
+
+    const added = committedItem("sibling-next");
+    ends.set(host, initialEnd + 44 + delta);
+    timeline.replace([...items, added], [{ index: items.length, deleteCount: 0, items: [added] }]);
+    expect(host.scrollTop, "the append after sibling layout must land at the physical end").toBe(initialEnd + 44 + delta);
+  } finally {
+    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
+    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
+    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollTop;
+    globalThis.ResizeObserver = OriginalResizeObserver;
+    globalThis.MutationObserver = OriginalMutationObserver;
+  }
+});
+
+test("virtual paint gutters keep focused edge outlines inside the clipped container", () => {
+  const { store } = setup(Array.from({ length: 201 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: `gutter-${index}`,
+    message: message(`gutter-${index}`),
+  })));
+  mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
+  const timeline = q('[data-part="timeline"]');
+  expect(timeline.style.overflowBlock).toBe("clip");
+  expect(timeline.style.paddingBlock).toBe("var(--fulcrum-virtual-gutter, 8px)");
+  const gutter = Number.parseFloat(timeline.style.paddingBlock.match(/, (\d+)px/)?.[1] ?? "0");
+  expect(gutter, "the gutter must exceed a 4 px outline and offset").toBeGreaterThan(4);
+});
+
+type LayoutGeometryCase = {
+  name: string;
+  before: { clientHeight: number; top: number; bottom: number; end: number };
+  after: { clientHeight: number; top: number; bottom: number; end: number; pinnedTop?: number };
+};
+const layoutGeometryCases: LayoutGeometryCase[] = [
+  { name: "clientHeight", before: { clientHeight: 600, top: 0, bottom: 600, end: 43_426 }, after: { clientHeight: 590, top: 0, bottom: 600, end: 43_436 } },
+  { name: "host top", before: { clientHeight: 600, top: 0, bottom: 600, end: 43_426 }, after: { clientHeight: 600, top: 10, bottom: 600, end: 43_426 } },
+  { name: "host bottom", before: { clientHeight: 600, top: 0, bottom: 600, end: 43_426 }, after: { clientHeight: 600, top: 0, bottom: 610, end: 43_426 } },
+  { name: "webkit top and bottom", before: { clientHeight: 678, top: 56, bottom: 734.3125, end: 43_348 }, after: { clientHeight: 675, top: 103, bottom: 778, end: 43_351, pinnedTop: 43_307 } },
+];
+const layoutReaderMoves = [["none", 0], ["threshold", 3], ["reader", 10]] as const;
+
+test.each(layoutGeometryCases.flatMap((geometryCase) => layoutReaderMoves.flatMap(([moveName, move]) => ([true, false] as const).map((pinned) => ({
+  name: `${geometryCase.name} / ${moveName} / ${pinned ? "pinned" : "unpinned"}`,
+  geometryCase,
+  move,
+  pinned,
+}))))) (
+  "host geometry transaction: $name",
+  ({ geometryCase, move, pinned }) => {
+    const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
+    const rect = HTMLElement.prototype.getBoundingClientRect;
+    const OriginalResizeObserver = globalThis.ResizeObserver;
+    let state = geometryCase.before;
+    let position = pinned ? state.end : Math.min(500, state.end - 100);
+    class LayoutResizeObserver implements ResizeObserver {
+      constructor(_callback: ResizeObserverCallback) {}
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    globalThis.ResizeObserver = LayoutResizeObserver;
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { return this.hasAttribute("data-part") ? state.clientHeight : 0; } });
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return this.hasAttribute("data-part") ? state.end + state.clientHeight : 0; } });
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return this.hasAttribute("data-part") ? position : 0; }, set(value: number) { if (this.hasAttribute("data-part")) position = Math.max(0, Math.min(value, state.end)); } });
+    HTMLElement.prototype.getBoundingClientRect = function () {
+      if (this.getAttribute("data-part") === "timeline-scroll") return { x: 0, y: state.top, top: state.top, bottom: state.bottom, left: 0, right: 800, width: 800, height: state.bottom - state.top, toJSON() {} };
+      if (this.getAttribute("data-part") === "timeline") return { x: 0, y: state.top + 18 - position, top: state.top + 18 - position, bottom: state.bottom + 18 - position, left: 0, right: 800, width: 800, height: state.bottom - state.top, toJSON() {} };
+      return rect.call(this);
+    };
+    try {
+      const items = Array.from({ length: 611 }, (_, index) => committedItem(`layout-${index}`));
+      const timeline = timelineStore(items);
+      const view = (followRequest: number) => <RunProvider store={timeline.store}><Timeline virtual followRequest={followRequest} /></RunProvider>;
+      mount(view(0));
+      act(() => root!.render(view(1)));
+      const host = q('[data-part="timeline-scroll"]');
+      position = pinned ? state.end : Math.min(500, state.end - 100);
+      act(() => host.dispatchEvent(new Event("scroll")));
+      const oldPosition = position;
+      const bottomDelta = geometryCase.after.bottom - geometryCase.before.bottom;
+      state = geometryCase.after;
+      const expectedLayoutTop = Math.max(0, Math.min(oldPosition - bottomDelta, state.end));
+      position = geometryCase.after.pinnedTop !== undefined && pinned && move <= 4
+        ? geometryCase.after.pinnedTop
+        : Math.max(0, Math.min(expectedLayoutTop - move, state.end));
+      act(() => host.dispatchEvent(new Event("scroll")));
+      if (pinned && move <= 4) {
+        expect(position, "layout-only movement must restore the physical end").toBe(state.end);
+        expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
+      } else expect(position, "reader or unpinned layout must stay away from the physical end").toBeLessThan(state.end - 4);
+      const settled = position;
+      const added = committedItem(`layout-next-${move}-${pinned}`);
+      state = { ...state, end: state.end + 44 };
+      timeline.replace([...items, added], [{ index: items.length, deleteCount: 0, items: [added] }]);
+      if (pinned && move <= 4) {
+        expect(position, "a pinned layout transaction must keep the next append at the physical end").toBe(state.end);
+        expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
+      } else {
+        expect(position, "the next append must not move an unpinned reader").toBe(settled);
+        expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("1");
+      }
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = rect;
+      if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+      if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
+      if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollTop;
+      globalThis.ResizeObserver = OriginalResizeObserver;
+    }
+  },
+);

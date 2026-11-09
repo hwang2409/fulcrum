@@ -21,10 +21,12 @@ import {
 const isIOSWebKit = () => navigator.userAgent.includes("iP");
 const defaultVirtualGutter = 8;
 type ScrollTarget = "end" | number;
-type OwnedScroll = { requested: ScrollTarget; hostReadBack: number; engineReadBack: number; hostEnd: number };
+type HostGeometry = { clientHeight: number; rectTop: number; rectBottom: number };
+type OwnedScroll = { requested: ScrollTarget; hostReadBack: number; engineReadBack: number; hostEnd: number; geometry: HostGeometry };
 type ScrollCoordinator = {
   settledHostTop: number;
   settledHostEnd: number;
+  geometry: HostGeometry | null;
   owned: OwnedScroll | null;
   target: ScrollTarget | null;
   recoveryPending: boolean;
@@ -91,6 +93,7 @@ export function useVirtualList<Id extends string>(
   const coordinator = useRef<ScrollCoordinator>({
     settledHostTop: 0,
     settledHostEnd: 0,
+    geometry: null,
     owned: null,
     target: null,
     recoveryPending: false,
@@ -103,7 +106,8 @@ export function useVirtualList<Id extends string>(
   const geometry = useCallback((host: HTMLElement) => {
     const timeline = timelineElement.current;
     const timelineTop = timeline?.getBoundingClientRect().top ?? 0;
-    const hostTopInViewport = host.getBoundingClientRect().top;
+    const hostRect = host.getBoundingClientRect();
+    const hostTopInViewport = hostRect.top;
     const measuredPrefix = timelineTop - hostTopInViewport - host.clientTop + host.scrollTop;
     // happy-dom has no layout and returns zero for both rects; a direct child then has no host prefix.
     const prefix = timeline && timelineTop === 0 && hostTopInViewport === 0 ? 0 : measuredPrefix;
@@ -112,7 +116,14 @@ export function useVirtualList<Id extends string>(
     const measuredEnd = Math.max(0, host.scrollHeight - host.clientHeight);
     const noLayoutEnd = timeline ? prefix + engine.getSnapshot().totalSize + 2 * defaultVirtualGutter - host.clientHeight : 0;
     const hostEnd = measuredEnd === 0 && noLayoutEnd > 0 ? noLayoutEnd : measuredEnd;
-    return { prefix, gutter, hostTop, hostEnd, engineTop: Math.max(0, hostTop - prefix - gutter) };
+    return {
+      prefix,
+      gutter,
+      hostTop,
+      hostEnd,
+      engineTop: Math.max(0, hostTop - prefix - gutter),
+      hostGeometry: { clientHeight: host.clientHeight, rectTop: hostRect.top, rectBottom: hostRect.bottom },
+    };
   }, []);
 
   const writeScroll = useCallback((target: ScrollTarget, syncEngine = true) => {
@@ -131,9 +142,11 @@ export function useVirtualList<Id extends string>(
       hostReadBack: after.hostTop,
       engineReadBack: after.engineTop,
       hostEnd: after.hostEnd,
+      geometry: after.hostGeometry,
     };
     coordinator.current.settledHostTop = after.hostTop;
     coordinator.current.settledHostEnd = after.hostEnd;
+    coordinator.current.geometry = after.hostGeometry;
     const size = Math.max(0, host.clientHeight - after.gutter);
     const snapshot = engine.getSnapshot();
     if (syncEngine && (Math.abs(snapshot.scrollTop - after.engineTop) >= 0.5 || snapshot.viewportSize !== size)) {
@@ -208,13 +221,14 @@ export function useVirtualList<Id extends string>(
       const priorOverflowAnchor = host.style.overflowAnchor;
       host.style.overflowAnchor = "none";
 
-      const report = (source: ScrollSource) => {
+      type Geometry = ReturnType<typeof geometry>;
+      const report = (source: ScrollSource, current = geometry(host)) => {
         if (generation !== coordinator.current.generation) return;
-        const current = geometry(host);
-        engine.setViewport({ scrollTop: current.engineTop, size: Math.max(0, host.clientHeight - current.gutter), source });
-        if (source === "user" && Math.abs(current.hostTop - current.hostEnd) <= 1 && !engine.getSnapshot().pinned) {
+        engine.setViewport({ scrollTop: current.engineTop, size: Math.max(0, current.hostGeometry.clientHeight - current.gutter), source });
+        if (source === "user" && Math.abs(current.hostTop - current.hostEnd) <= engine.bottomThreshold && !engine.getSnapshot().pinned) {
           engine.requestFollow();
         }
+        coordinator.current.geometry = current.hostGeometry;
         if (source !== "observe") {
           coordinator.current.settledHostTop = current.hostTop;
           coordinator.current.settledHostEnd = current.hostEnd;
@@ -222,39 +236,56 @@ export function useVirtualList<Id extends string>(
       };
       const settle = () => {
         const current = geometry(host);
-        const engineSnapshot = engine.getSnapshot();
-        const viewportSize = Math.max(0, host.clientHeight - current.gutter);
-        if (engineSnapshot.pinned && Math.abs(engineSnapshot.viewportSize - viewportSize) >= 0.5) {
-          const owned = coordinator.current.owned;
-          const readerMoved = owned === null || Math.abs(current.hostTop - owned.hostReadBack) > 4;
-          viewportTransaction(false);
+        const owned = coordinator.current.owned;
+        const priorGeometry = owned?.geometry ?? coordinator.current.geometry;
+        const geometryChanged = priorGeometry !== null && (
+          Math.abs(current.hostGeometry.clientHeight - priorGeometry.clientHeight) >= 0.5
+          || Math.abs(current.hostGeometry.rectTop - priorGeometry.rectTop) >= 0.5
+          || Math.abs(current.hostGeometry.rectBottom - priorGeometry.rectBottom) >= 0.5
+        );
+        coordinator.current.geometry = current.hostGeometry;
+        if (geometryChanged) {
+          const wasPinned = engine.getSnapshot().pinned;
+          const expectedHostTop = coordinator.current.recoveryPending
+            ? Math.max(0, Math.min(coordinator.current.settledHostTop, current.hostEnd))
+            : owned
+              ? Math.max(0, Math.min(owned.hostReadBack - (current.hostGeometry.rectBottom - priorGeometry.rectBottom), current.hostEnd))
+              : current.hostTop;
+          const layout: Geometry = {
+            ...current,
+            hostTop: expectedHostTop,
+            engineTop: Math.max(0, expectedHostTop - current.prefix - current.gutter),
+          };
+          const readerMoved = owned === null || Math.abs(current.hostTop - expectedHostTop) > engine.bottomThreshold;
+          viewportTransaction(false, layout);
           if (readerMoved) {
             coordinator.current.target = null;
-            report("user");
-          } else {
-            applyTarget();
+            report("user", current);
+          } else if (coordinator.current.recoveryPending) {
+            writeScroll(expectedHostTop);
+          } else if (wasPinned) {
+            writeScroll("end");
           }
           return;
         }
-        const owned = coordinator.current.owned;
         const ownedEnd = owned?.requested === "end"
           ? Math.abs(current.hostTop - owned.hostReadBack) <= 1 && Math.abs(current.hostEnd - owned.hostEnd) <= 1
           : owned !== null && Math.abs(current.engineTop - owned.engineReadBack) <= 1;
         if (ownedEnd) {
-          report("observe");
+          report("observe", current);
           return;
         }
         if (coordinator.current.recoveryPending) {
           const transientClamp = Math.max(0, Math.min(coordinator.current.settledHostTop, current.hostEnd));
           if (Math.abs(current.hostTop - transientClamp) <= 1) {
-            report("observe");
+            report("observe", current);
             return;
           }
           coordinator.current.recoveryPending = false;
         }
         coordinator.current.owned = null;
         coordinator.current.target = null;
-        report("user");
+        report("user", current);
       };
 
       const attachedSnapshot = engine.getSnapshot();
@@ -284,10 +315,10 @@ export function useVirtualList<Id extends string>(
       observerRef.current = rowObserver;
       for (const row of rows.current.values()) rowObserver.observe(row);
 
-      const viewportTransaction = (apply = true) => {
+      const viewportTransaction = (apply = true, current?: Geometry) => {
         if (generation !== coordinator.current.generation) return;
         const token = engine.beforeMutation();
-        report("observe");
+        report("observe", current);
         retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }));
         if (apply) applyTarget();
       };
@@ -326,6 +357,7 @@ export function useVirtualList<Id extends string>(
 
       const release = () => {
         coordinator.current.generation++;
+        coordinator.current.geometry = null;
         coordinator.current.owned = null;
         coordinator.current.target = null;
         coordinator.current.recoveryPending = false;
