@@ -569,7 +569,7 @@ export class PendingInline {
       this.emitText(start, opener.index, owner);
       if (opener.kind !== "emphasis" || opener.marker.length > 2 || opener.marker[0] === "~" && opener.marker.length !== 2) this.publicationValid = false;
       opener.node = this.nodes.length;
-      opener.slot = this.publish({ type: "text", value: opener.decided ? opener.marker : "" }, owner);
+      opener.slot = this.publish({ type: "text", value: opener.decided ? opener.marker : "" }, owner, true);
       start = opener.end;
       owner = opener;
     }
@@ -587,7 +587,11 @@ export class PendingInline {
     for (const node of nodes) this.publish(node, owner);
   }
 
-  private publish(node: Inline, owner: Opener | undefined) {
+  private publish(node: Inline, owner: Opener | undefined, structural = false) {
+    if (!structural && owner === undefined && !this.publication.length) {
+      this.nodes.push(node);
+      return -1;
+    }
     const slot = this.publication.length;
     const root = this.nodes.length;
     this.nodes.push(node);
