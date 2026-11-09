@@ -38,6 +38,18 @@ const chunkFor = (item: object, field: Field, value: () => string): Chunk | unde
   return first;
 };
 
+// Joins the run read since the last compaction into `previous` (the previous read's chunk) and links it straight to
+// the last compacted chunk; its text is unchanged. See read.
+function compact(cache: Cache, previous: Chunk): void {
+  const run: string[] = [];
+  for (let at: Chunk | undefined = previous; at && at !== cache.boundary; at = at.previous) run.push(at.value);
+  previous.value = run.reverse().join("");
+  previous.previous = cache.boundary;
+  cache.boundary = previous;
+  cache.runChunks = 0;
+  cache.runChars = 0;
+}
+
 /**
  * A frame read joins only the chunks after the stream's last read, so reading every frame costs the new text, not the
  * whole chain. The text is the previous read's string plus the new text (engines extend that string cheaply, even
@@ -72,15 +84,7 @@ function read(chunk: Chunk): string {
     cache.runChars = 0;
     return text;
   }
-  if (cache.runChunks > RUN_CHUNKS || cache.runChars > RUN_CHARS) {
-    const run: string[] = [];
-    for (let at: Chunk | undefined = previous; at && at !== cache.boundary; at = at.previous) run.push(at.value);
-    previous.value = run.reverse().join("");
-    previous.previous = cache.boundary;
-    cache.boundary = previous;
-    cache.runChunks = 0;
-    cache.runChars = 0;
-  }
+  if (cache.runChunks > RUN_CHUNKS || cache.runChars > RUN_CHARS) compact(cache, previous);
   cache.runChunks += values.length;
   cache.runChars += chars;
   return text;

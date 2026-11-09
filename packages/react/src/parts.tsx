@@ -1,5 +1,6 @@
 import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type ReactNode, type RefObject } from "react";
-import { streamTail, type ApprovalDecision, type OutlineChange, type RunEvent, type RunItem } from "@fulcrum/core";
+import type { ApprovalDecision, OutlineChange, RunEvent, RunItem } from "@fulcrum/core";
+import { streamTail } from "@fulcrum/core/internal";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { HighlightContext, Tokens, useTokens } from "./highlight.js";

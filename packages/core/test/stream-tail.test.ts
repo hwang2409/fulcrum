@@ -1,5 +1,6 @@
 import { expect, test, setDefaultTimeout } from "bun:test";
-import { createRunStore, streamTail, type RunEvent, type RunItem } from "../src/index.js";
+import { createRunStore, type RunEvent, type RunItem } from "../src/index.js";
+import { streamTail } from "../src/internal.js";
 // These tests count work over megabyte texts; on a loaded machine one can take several seconds (no timing is asserted).
 setDefaultTimeout(60_000);
 

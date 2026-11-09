@@ -5,7 +5,8 @@ GlobalRegistrator.register();
 import { afterAll, afterEach, expect, test, setDefaultTimeout } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
+import { createRunStore, type RunEvent, type RunItem, type ToolView } from "@fulcrum/core";
+import { streamTail } from "@fulcrum/core/internal";
 import { RunProvider, ToolCall } from "../src/index.js";
 // These tests count work over megabyte texts; on a loaded machine one can take several seconds (no timing is asserted).
 setDefaultTimeout(60_000);
@@ -357,4 +358,21 @@ test.if(inChild)(`${RETENTION} (child)`, () => {
   // 40,000 characters in 2,000-character segments: 20 segments, each a record and its list entry (0.1 per append); a
   // record per append is 1. Strings are only logged: other strings' churn moves their count either way.
   expect(per("segments")).toBeLessThanOrEqual(0.25);
+});
+
+test("streamTail through @fulcrum/core/internal reads the chains the public @fulcrum/core reducer builds", () => {
+  // One stream.js behind both entries: a second copy would have empty chain maps and give undefined here.
+  type Tool = Extract<RunItem, { type: "tool" }>;
+  type Message = Extract<RunItem, { type: "message" }>;
+  const store = createRunStore((job) => job());
+  const call = { id: "shared", name: "bash", arguments: {} };
+  store.dispatch({ type: "tool_start", tool_call: call });
+  store.dispatch({ type: "tool_output", tool_call: call, output: "a" });
+  store.dispatch({ type: "message_delta", message_id: "shared", delta: "x" });
+  const tool = store.getItem("tool:shared") as Tool;
+  const message = store.getItem("message:shared") as Message;
+  store.dispatch({ type: "tool_output", tool_call: call, output: "bc" });
+  store.dispatch({ type: "message_delta", message_id: "shared", delta: "yz" });
+  expect(streamTail(tool, store.getItem("tool:shared") as Tool, "output")).toBe("bc");
+  expect(streamTail(message, store.getItem("message:shared") as Message, "text")).toBe("yz");
 });

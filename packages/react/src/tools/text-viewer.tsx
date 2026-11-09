@@ -198,7 +198,7 @@ function useSegments(text: string, appendOnly: boolean, estimatedLines: number, 
     let { segments, sealed } = prior;
     let open = prior.open + tail;
     let start = segments.at(-1)!.start;
-    // shortcut: an append that seals a segment copies the segment arrays (O(n / SEGMENT_CHARS) references), because
+    // shortcut (timeline lane): an append that seals a segment copies the segment arrays (O(n / SEGMENT_CHARS) references), because
     // useVirtualList (virtual.tsx) applies an outline only when its identity changes (`appliedOutline.current !==
     // outline`). The 1-line fix there: also apply when `options.outlineUpdate` is new; then push here in place.
     if (open.length > size) {

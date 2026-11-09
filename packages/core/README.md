@@ -68,14 +68,6 @@ A `user_message` can carry `intent`, the client id for the user's request. A lat
 
 `tool_start` on a known call restarts its row in place: output, result, and error clear, the view becomes the event's `view`, an approval decision stays, the row keeps its position.
 
-## streamed text
-
-Two row fields grow by appends: a message's `text` (`message_delta` of kind `text` or `assistant`) and a tool's `output` (`tool_output`). `streamTail(previous, item, field)` takes two snapshots of the same row and returns the text appended to `field` between them: `item`'s field is exactly `previous`'s followed by the result. The overloads tie the field to the row: `streamTail(previous, item, "text")` for messages, `streamTail(previous, item, "output")` for tools. Each field keeps its own chain.
-
-It returns `undefined` when `item` does not continue `previous`'s stream: a `replace: true` output, a restarted tool, a resync or history reload, an older snapshot, a row that never streamed, or a `previous` from before the field's previous read (a long stream compacts what lies behind its previous read). Then read the text whole. A renderer that reads the field of each snapshot it draws, and takes the next tail from the last one, always gets a tail. It costs the chunks appended since `previous` and never reads or compares the whole text, so a view of a multi-megabyte output can extend itself from the tail. `tool_end` keeps the output's stream, so the tail across it is `""`.
-
-A message's reasoning and other content blocks are not addressable: each delta copies its block into a new `message.content`, so there is no chain to take a tail from. Making one a stream adds a field to `streamTail`.
-
 ## tool views
 
 Use `defineToolMap()` to map harness tool arguments to agent-neutral views. See [using another harness](../../docs/other-harnesses.md) for schemas, examples, and approval decisions.
