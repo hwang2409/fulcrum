@@ -27,8 +27,8 @@ export type OutlineSnapshot = { readonly items: readonly OutlineItem[]; readonly
 
 const defaultScheduler: Scheduler = (callback) =>
   typeof requestAnimationFrame === "function"
-    ? requestAnimationFrame(callback)
-    : queueMicrotask(callback);
+    ? requestAnimationFrame(callback) // host code: outside; README row "scheduler(job)"
+    : queueMicrotask(callback); // host code: outside; README row "scheduler(job)"
 
 type OpenSplice = { index: number; deleteCount: number; items: OutlineItem[] };
 // Adds `edits` after `base` without changing base's splices (a published snapshot holds them): inserts that continue
@@ -151,7 +151,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
   // The one delivery owner for every listener and host callback: the rules live in packages/core/README.md, section
   // "Notification contract"; keep them in sync.
   // host code: every listener and onError call goes through here.
-  const call = (listener: Listener) => {
+  // The return type refuses an async function: code after its first await would run outside this try.
+  const call = <T>(listener: () => T extends PromiseLike<unknown> ? never : T) => {
     try {
       listener();
     } catch (error) {
@@ -318,7 +319,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     if (queued) return;
     queued = true;
     try {
-      scheduler(job); // host code: outside; its throw reaches the caller (README rule 9)
+      scheduler(job); // host code: outside; README row "scheduler(job)"
     } catch (error) {
       // The host refused the job: nothing is queued, so the next dispatch must schedule again.
       queued = false;
