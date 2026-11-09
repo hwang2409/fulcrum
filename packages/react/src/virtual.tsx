@@ -38,7 +38,7 @@ type ScrollLeases = ReturnType<typeof createScrollLeases>;
  */
 function createScrollLeases(onSettled: () => void) {
   const held = new Set<HeldLeaseKind>();
-  let armed: ScrollLeaseKind | "pointer" | null = null;
+  let armed: ScrollLeaseKind | null = null;
   let moving = false;
   let touching = false;
   let swiped = false;
