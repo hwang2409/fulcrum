@@ -215,11 +215,38 @@ const turnData = (data: Record<string, unknown>) => {
   return data;
 };
 
+const childHoldDateFormatter = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
+const childHoldDeadline = (value: unknown) => {
+  if (typeof value !== "string") return undefined;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return undefined;
+  try {
+    // Use a fixed, readable UTC date/time so the default copy is stable across hosts.
+    return childHoldDateFormatter.format(date);
+  } catch {
+    return undefined;
+  }
+};
+
+const childHoldNotification = (data: Record<string, unknown>): RunEvent => {
+  const description = string(data.description, "data.description");
+  const reason = string(data.reason, "data.reason");
+  const cause = reason === "rate_limit" ? "provider rate limit" : reason === "subscription_limit" ? "subscription limit" : reason;
+  const deadline = childHoldDeadline(data.until);
+  const { account: _account, text: _text, ...safe } = data;
+  return {
+    type: "notification",
+    notification_id: optionalString(data.notification_id, "data.notification_id"),
+    data: { ...safe, text: `child ${description} waits for a ${cause}${deadline ? ` until ${deadline}` : ""}` },
+  };
+};
+
 const childNotification = (name: string, data: Record<string, unknown>): RunEvent | undefined => {
   const kind = name === "sub_agent_receipt" || name === "notification_by_kind"
     ? string(data.kind ?? "agent_completion", "data.kind")
     : name;
   switch (kind) {
+    case "child_hold": return childHoldNotification(data);
     case "agent_completion": {
       const [status, urgency] = completionStatus(data);
       return subAgent(data, status, urgency);
@@ -451,7 +478,10 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>, resent: Set<un
     }
   } else {
     const notification = optionalObject(row.notification ?? undefined, "history row notification");
-    events.push({ type: "notification", notification_id: optionalString(notification?.notification_id, "notification.notification_id"), data: { ...notification, role, text: text(content) } });
+    const event = notification?.kind === "child_hold"
+      ? childHoldNotification(notification)
+      : { type: "notification" as const, notification_id: optionalString(notification?.notification_id, "notification.notification_id"), data: { ...notification, role, text: text(content) } };
+    events.push(event);
   }
   const failed = optionalObject(row.failed_turn ?? undefined, "failed_turn");
   if (failed) events.push({ type: "error", error: { code: string(failed.code, "failed_turn.code"), message: string(failed.message, "failed_turn.message") } });
