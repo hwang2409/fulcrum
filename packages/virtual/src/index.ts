@@ -95,6 +95,7 @@ export type Virtualizer<Id extends string = string> = {
   setFollow(follow: boolean): void;
   beforeMutation(options?: { mode?: "anchor" | "shift" }): MutationToken<Id>;
   afterMutation(token: MutationToken<Id>, options?: { deferCorrection?: boolean; recoveryComplete?: boolean }): MutationResult;
+  completeRecovery(): MutationResult | null;
   flushPendingCorrection(notify?: boolean, releaseOwnership?: boolean): MutationResult;
   scrollToId(id: Id, viewportOffset?: number): number;
   scrollToEnd(): number;
@@ -485,7 +486,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     correctionEvent = isCorrection;
     programmatic = viewport.source === "programmatic" || isCorrection;
     const settled = viewport.source !== "observe" && !isCorrection;
-    if (settled && layout.length > 0) {
+    if (settled && layout.length > 0 && (missingAnchor === null || viewport.source === "user")) {
       missingAnchor = null;
       recoveryOutline = null;
       const distance = layout.total - scrollTop - viewportSize;
@@ -498,7 +499,7 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
     changed();
   };
 
-  return {
+  const api: Virtualizer<Id> = {
     bottomThreshold,
     reset() {
       layout = new Sequence<Id>();
@@ -647,10 +648,11 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       changed();
     },
     beforeMutation(mutationOptions) {
-      const anchor = captureAnchor();
-      const mode = mutationOptions?.mode ?? "anchor";
-      log("anchor", { index: anchor?.index ?? null, offset: anchor?.offset ?? null, pinned });
-      return { anchor, pinned, mode, distanceFromEnd: layout.total - effectiveScrollTop() };
+      const recovering = missingAnchor !== null && recoveryOutline !== null;
+      const anchor = missingAnchor ?? captureAnchor();
+      const mode = recovering ? "anchor" : mutationOptions?.mode ?? "anchor";
+      log("anchor", { index: anchor?.index ?? null, offset: anchor?.offset ?? null, pinned: recovering ? false : pinned });
+      return { anchor, pinned: recovering ? false : pinned, mode, distanceFromEnd: layout.total - effectiveScrollTop() };
     },
     afterMutation(token, mutationOptions) {
       const actualBefore = scrollTop;
@@ -705,6 +707,10 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       log("correction", { correction, appliedCorrection, pendingJump, followedBottom, scrollTop });
       changed();
       return { scrollTop, correction, appliedCorrection, jump, pendingJump, followedBottom, recoveryPending: false };
+    },
+    completeRecovery() {
+      if (missingAnchor === null || recoveryOutline === null) return null;
+      return api.afterMutation(api.beforeMutation(), { recoveryComplete: true });
     },
     flushPendingCorrection(notify = true, releaseOwnership = false) {
       const before = scrollTop;
@@ -793,4 +799,5 @@ export function createVirtualizer<Id extends string = string>(options: VirtualOp
       listeners.clear();
     },
   };
+  return api;
 }

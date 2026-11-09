@@ -220,6 +220,22 @@ describe("anchoring", () => {
     virtual.afterMutation(token);
     expect(virtual.getSnapshot().scrollTop).toBe(22);
   });
+  test("a later progressive page cannot replace a held reader anchor", () => {
+    const virtual = engine([10, 10, 10, 10, 10], 10, 12);
+    const outline = items([10, 10, 10, 10, 10]).outline;
+    const original = { ...virtual.beforeMutation(), anchor: { id: "row-2", index: 2, offset: 8 } };
+    virtual.setOutline(outline.slice(3));
+    expect(virtual.afterMutation(original, { recoveryComplete: false }).recoveryPending).toBe(true);
+
+    virtual.setViewport({ scrollTop: 0, size: 10, source: "programmatic" });
+    const laterPage = virtual.beforeMutation();
+    virtual.setOutline([outline[1]!, outline[3]!, outline[4]!]);
+    expect(virtual.afterMutation(laterPage, { recoveryComplete: false }).recoveryPending).toBe(true);
+
+    const restored = virtual.beforeMutation();
+    virtual.setOutline(outline);
+    expect(virtual.afterMutation(restored, { recoveryComplete: true })).toMatchObject({ recoveryPending: false, scrollTop: 12 });
+  });
   test("progressive recovery waits for completion before using the nearest surviving row", () => {
     const virtual = engine([10, 10, 10, 10], 10, 12);
     const token = { ...virtual.beforeMutation(), anchor: { id: "row-2", index: 2, offset: 8 } };

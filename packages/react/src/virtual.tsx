@@ -10,7 +10,6 @@ import {
   createVirtualizer,
   formatVirtualDebug,
   type MutationResult,
-  type MutationToken,
   type OutlineItem,
   type OutlineUpdate,
   type ScrollSource,
@@ -88,7 +87,6 @@ export function useVirtualList<Id extends string>(
   const attachment = useRef<HTMLElement | null>(null);
   const releaseCurrent = useRef<(() => void) | null>(null);
   const transferCurrent = useRef<((next: HTMLElement | null) => void) | null>(null);
-  const recoveryToken = useRef<MutationToken<Id> | null>(null);
   const coordinator = useRef<ScrollCoordinator>({
     settledHostTop: 0,
     settledHostEnd: 0,
@@ -141,12 +139,8 @@ export function useVirtualList<Id extends string>(
     }
   }, [engine, geometry]);
 
-  const retainTarget = useCallback((result: MutationResult, token?: MutationToken<Id>) => {
-    if (result.recoveryPending) {
-      recoveryToken.current ??= token ?? null;
-      return;
-    }
-    recoveryToken.current = null;
+  const retainTarget = useCallback((result: MutationResult) => {
+    if (result.recoveryPending) return;
     if (result.followedBottom) coordinator.current.target = "end";
     else if (Math.abs(result.jump) >= 0.5) coordinator.current.target = result.scrollTop;
   }, []);
@@ -170,7 +164,6 @@ export function useVirtualList<Id extends string>(
       containerRef.current = null;
       coordinator.current.owned = null;
       coordinator.current.target = null;
-      recoveryToken.current = null;
       engine.reset();
     }
     if (appliedOutline.current !== outline) {
@@ -184,11 +177,11 @@ export function useVirtualList<Id extends string>(
         if (options.enabled !== false && engine.getSnapshot().pinned) coordinator.current.target = "end";
       } else {
         const result = engine.afterMutation(token, { recoveryComplete: options.historyPending !== true });
-        if (options.enabled !== false) retainTarget(result, token);
-        else if (result.recoveryPending) recoveryToken.current = token;
+        if (options.enabled !== false) retainTarget(result);
       }
-    } else if (recoveryToken.current && options.historyPending !== true) {
-      retainTarget(engine.afterMutation(recoveryToken.current, { recoveryComplete: true }));
+    } else if (options.historyPending !== true) {
+      const result = engine.completeRecovery();
+      if (result && options.enabled !== false) retainTarget(result);
     }
   }, [engine, outline, options.enabled, options.historyPending, options.invalidateMeasurements, options.outlineUpdate, options.resetKey, resetPending, retainTarget]);
 
@@ -256,7 +249,7 @@ export function useVirtualList<Id extends string>(
         if (measurements.length === 0) return;
         const token = engine.beforeMutation();
         for (const [id, size] of measurements) engine.measure(id, size);
-        retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }), token);
+        retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }));
         applyTarget();
       });
       observerRef.current = rowObserver;
