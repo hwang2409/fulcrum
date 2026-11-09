@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { runAdapterConformance, type AdapterFixture } from "@fulcrum/adapter-test";
-import { createRunStore } from "@fulcrum/core";
-import { jsonSchema, simulateReadableStream, stepCountIs, streamText, tool, type UIMessageChunk } from "ai";
+import { createRunStore, type RunEvent, type RunItem } from "@fulcrum/core";
+import { jsonSchema, readUIMessageStream, simulateReadableStream, stepCountIs, streamText, tool, type UIMessage, type UIMessageChunk } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
-import { createAiSdkAdapter, decodeAiSdkEntityId, encodeAiSdkEntityId, type AiSdkEntityIdentity } from "../src/index.js";
+import { createAiSdkAdapter, decodeAiSdkEntityId, decodeAiSdkMessage, encodeAiSdkEntityId, respondToApproval, type AiSdkApprovalResponse, type AiSdkEntityIdentity } from "../src/index.js";
 
 const fixtures = readFileSync(new URL("./fixtures/conformance.jsonl", import.meta.url), "utf8")
   .trim().split("\n").map((line) => JSON.parse(line) as AdapterFixture);
@@ -14,17 +14,32 @@ test("AI SDK UI message stream conforms to generic run events", () => {
     name: "ai-sdk",
     fixtures,
     capabilities: { approval: true, reasoning: true, reset: false, usage: true },
-    create: (streamKey) => {
-      const adapter = createAiSdkAdapter({ streamKey });
-      return { decode: (value) => adapter.decode((value as { part: unknown }).part) };
+    // A session row is a chunk of one of its streams (`stream`, default the session; a stream's first row carries the
+    // messages its request sent; a hand-written stream with no request has none), or an event the host dispatched.
+    create: (sessionId) => {
+      const adapters = new Map<string, ReturnType<typeof createAiSdkAdapter>>();
+      return {
+        decode: (value) => {
+          const row = value as { stream?: string; originalMessages?: unknown[]; part?: unknown; event?: RunEvent };
+          if (row.event) return [row.event];
+          const streamKey = row.stream ?? sessionId;
+          const adapter = adapters.get(streamKey) ?? createAiSdkAdapter({ streamKey, originalMessages: row.originalMessages ?? [] });
+          adapters.set(streamKey, adapter);
+          return adapter.decode(row.part);
+        },
+      };
     },
   })).toEqual([]);
+});
+
+test("an adapter needs the messages its request sent: without them a continuation would overwrite the text before its tool", () => {
+  expect(() => createAiSdkAdapter({ streamKey: "k" } as never)).toThrow("options.originalMessages must be an array");
 });
 
 test("writer-only source and file streams commit content with a stable synthetic id", () => {
   const parts = fixtures.filter((fixture) => fixture.sessionId === "writer-assets").map((fixture) => fixture.part);
   const decode = () => {
-    const adapter = createAiSdkAdapter({ streamKey: "writer-assets" });
+    const adapter = createAiSdkAdapter({ streamKey: "writer-assets", originalMessages: [] });
     return parts.flatMap((part) => adapter.decode(part));
   };
   const first = decode().find((event) => event.type === "message_commit");
@@ -42,7 +57,7 @@ test("two writer-only streams keep distinct replay-stable messages in one run", 
     { type: "finish", finishReason: "stop" },
   ];
   const decode = (streamKey: string, marker: string) => {
-    const adapter = createAiSdkAdapter({ streamKey });
+    const adapter = createAiSdkAdapter({ streamKey, originalMessages: [] });
     return parts(marker).flatMap((part) => adapter.decode(part));
   };
   const first = [decode("request-alpha", "first"), decode("request-beta", "second")];
@@ -63,7 +78,7 @@ test("two writer-only streams keep distinct replay-stable messages in one run", 
 
 test("scopes part, tool, and approval ids to their stream", () => {
   const ids = (streamKey: string) => {
-    const adapter = createAiSdkAdapter({ streamKey });
+    const adapter = createAiSdkAdapter({ streamKey, originalMessages: [] });
     adapter.decode({ type: "text-start", id: "same" });
     const message = adapter.decode({ type: "text-delta", id: "same", delta: "x" });
     const tool = adapter.decode({ type: "tool-input-available", toolCallId: "same", toolName: "deploy", input: {} });
@@ -90,6 +105,7 @@ test("entity id encoding is injective and reversible", () => {
     for (const value of values) identities.push({ source: "wire", kind, id: value });
     for (const streamKey of values.filter((value) => value.trim())) identities.push({ source: "synthetic", kind, streamKey, counter: 1 }, { source: "synthetic", kind, streamKey, counter: 2 });
   }
+  for (const messageId of values) identities.push({ source: "message", kind: "message", messageId, counter: 1 }, { source: "message", kind: "message", messageId, counter: 2 });
   const encoded = identities.map(encodeAiSdkEntityId);
   expect(new Set(encoded).size).toBe(new Set(identities.map((identity) => JSON.stringify(identity))).size);
   expect(encoded.map(decodeAiSdkEntityId)).toEqual(identities);
@@ -118,7 +134,7 @@ test("pinned AI SDK accepts blank strings in every adapter-read wire field", () 
     ["lifecycle messageId", { type: "start", messageId: "" }],
   ];
   for (const [name, part] of cases) {
-    const adapter = createAiSdkAdapter({ streamKey: `blank-${name}` });
+    const adapter = createAiSdkAdapter({ streamKey: `blank-${name}`, originalMessages: [] });
     if (part.type === "text-delta") adapter.decode({ type: "text-start", id: part.id });
     if (part.type === "reasoning-delta") adapter.decode({ type: "reasoning-start", id: part.id });
     if (part.type === "tool-input-delta") adapter.decode({ type: "tool-input-start", toolCallId: part.toolCallId, toolName: "tool" });
@@ -127,7 +143,7 @@ test("pinned AI SDK accepts blank strings in every adapter-read wire field", () 
 });
 
 test("blank text and source ids preserve streamed content and sources", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "blank-content" });
+  const adapter = createAiSdkAdapter({ streamKey: "blank-content", originalMessages: [] });
   const events = [
     { type: "text-start", id: "" },
     { type: "text-delta", id: "", delta: "kept" },
@@ -146,14 +162,14 @@ test("blank text and source ids preserve streamed content and sources", () => {
 
 test("pinned AI SDK writer ids round trip to their original wire ids", () => {
   const decodeFixture = (sessionId: string) => {
-    const adapter = createAiSdkAdapter({ streamKey: sessionId });
+    const adapter = createAiSdkAdapter({ streamKey: sessionId, originalMessages: [] });
     return fixtures.filter((fixture) => fixture.sessionId === sessionId).flatMap((fixture) => adapter.decode(fixture.part));
   };
   const message = decodeFixture("text").find((event) => event.type === "message_commit");
   const tool = decodeFixture("tool").find((event) => event.type === "tool_start");
   const approval = decodeFixture("approval").find((event) => event.type === "approval_request");
-  // A UI message spans steps and approval continuations, so its fulcrum messages are stream-keyed; each keeps the wire id.
-  expect(message?.type === "message_commit" ? decodeAiSdkEntityId(message.message_id!) : undefined).toEqual({ source: "synthetic", kind: "message", streamKey: "text", counter: 1 });
+  // A UI message spans steps and approval continuations, so its fulcrum messages are its numbered segments; each keeps the wire id.
+  expect(message?.type === "message_commit" ? decodeAiSdkEntityId(message.message_id!) : undefined).toEqual({ source: "message", kind: "message", messageId: "message-1", counter: 1 });
   expect(message?.type === "message_commit" ? message.message.metadata : undefined).toEqual({ wireId: "message-1" });
   expect(tool?.type === "tool_start" ? decodeAiSdkEntityId(tool.tool_call.id) : undefined).toEqual({ source: "wire", kind: "tool", id: "call-1" });
   expect(tool?.type === "tool_start" ? tool.tool_call.meta : undefined).toMatchObject({ wireId: "call-1" });
@@ -174,7 +190,7 @@ test("pinned AI SDK emits blank message ids without losing identity", async () =
     const result = streamText({ model, prompt: "fixture" });
     const parts: UIMessageChunk[] = [];
     for await (const part of result.toUIMessageStream({ generateMessageId: () => messageId })) parts.push(part);
-    const adapter = createAiSdkAdapter({ streamKey: "blank-message" });
+    const adapter = createAiSdkAdapter({ streamKey: "blank-message", originalMessages: [] });
     const commit = parts.flatMap((part) => adapter.decode(part)).find((event) => event.type === "message_commit");
     expect(commit?.type === "message_commit" ? commit.message.metadata : undefined).toEqual({ wireId: messageId });
   }
@@ -191,24 +207,27 @@ test("pinned AI SDK preserves blank text and source part ids", async () => {
   });
   const parts: UIMessageChunk[] = [];
   for await (const part of streamText({ model, prompt: "fixture" }).toUIMessageStream()) parts.push(part);
-  const adapter = createAiSdkAdapter({ streamKey: "blank-parts" });
+  const adapter = createAiSdkAdapter({ streamKey: "blank-parts", originalMessages: [] });
   const events = parts.flatMap((part) => adapter.decode(part));
   expect(events.some((event) => event.type === "error" && event.error.code === "adapter_invalid_payload")).toBe(false);
 });
 
-test("blank tool and approval ids survive adapter and outbound decoding", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "blank-tool" });
+test("blank tool and approval ids survive adapter and outbound decoding", async () => {
+  const adapter = createAiSdkAdapter({ streamKey: "blank-tool", originalMessages: [] });
   const [tool] = adapter.decode({ type: "tool-input-available", toolCallId: "", toolName: "deploy", input: {} });
   const [approval] = adapter.decode({ type: "tool-approval-request", toolCallId: "", approvalId: "" });
   expect(tool?.type === "tool_start" ? decodeAiSdkEntityId(tool.tool_call.id) : undefined).toEqual({ source: "wire", kind: "tool", id: "" });
   expect(approval?.type === "approval_request" ? decodeAiSdkEntityId(approval.request_id) : undefined).toEqual({ source: "wire", kind: "approval", id: "" });
   expect(approval?.type === "approval_request" ? approval.tool_call.meta : undefined).toMatchObject({ wireId: "", approvalId: "" });
-  const approvalEnd = adapter.decode({ type: "tool-output-denied", toolCallId: "" }).find((event) => event.type === "approval_end");
-  expect(approvalEnd?.type === "approval_end" ? decodeAiSdkEntityId(approvalEnd.request_id) : undefined).toEqual({ source: "wire", kind: "approval", id: "" });
+  const chat = recordingChat();
+  const ended: RunEvent[] = [];
+  await respondToApproval({ chat, dispatch: (event) => ended.push(event) }, { requestId: approval?.type === "approval_request" ? approval.request_id : "", approved: true });
+  expect(chat.responses).toEqual([{ id: "", approved: true }]);
+  expect(ended[0]?.type === "approval_end" ? decodeAiSdkEntityId(ended[0].request_id) : undefined).toEqual({ source: "wire", kind: "approval", id: "" });
 });
 
 test("malformed parts never throw", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "malformed" });
+  const adapter = createAiSdkAdapter({ streamKey: "malformed", originalMessages: [] });
   for (const value of [null, [], {}, { type: 1 }, { type: "tool-input-start" }]) {
     expect(() => adapter.decode(value)).not.toThrow();
     expect(adapter.decode(value)[0]?.type).toBe("error");
@@ -216,21 +235,23 @@ test("malformed parts never throw", () => {
 });
 
 test("text-encoded tool input remains available to generic tool views", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "test" });
+  const adapter = createAiSdkAdapter({ streamKey: "test", originalMessages: [] });
   adapter.decode({ type: "tool-input-start", toolCallId: "raw", toolName: "code", inputEncoding: "text" });
   const [event] = adapter.decode({ type: "tool-input-available", toolCallId: "raw", toolName: "code", input: "console.log(1)" });
   expect(event?.type === "tool_start" ? event.tool_call.arguments : undefined).toEqual({ input: "console.log(1)" });
 });
 
-test("preliminary tool output keeps the tool active", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "test" });
+test("preliminary tool output keeps the tool active; every output replaces the last", () => {
+  const adapter = createAiSdkAdapter({ streamKey: "test", originalMessages: [] });
   adapter.decode({ type: "tool-input-available", toolCallId: "tool", toolName: "search", input: {} });
-  expect(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "first", preliminary: true }).map(({ type }) => type)).toEqual(["tool_output"]);
-  expect(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "final" }).map(({ type }) => type)).toEqual(["tool_start", "tool_output", "tool_end"]);
+  const shape = (events: ReturnType<typeof adapter.decode>) => events.map((event) => event.type === "tool_output" ? `tool_output replace:${event.replace}` : event.type);
+  expect(shape(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "first", preliminary: true }))).toEqual(["tool_output replace:true"]);
+  expect(shape(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "second", preliminary: true }))).toEqual(["tool_output replace:true"]);
+  expect(shape(adapter.decode({ type: "tool-output-available", toolCallId: "tool", output: "final" }))).toEqual(["tool_output replace:true", "tool_end"]);
 });
 
 test("commits source and file parts without losing their typed fields", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "test" });
+  const adapter = createAiSdkAdapter({ streamKey: "test", originalMessages: [] });
   adapter.decode({ type: "start", messageId: "assets" });
   adapter.decode({ type: "source-url", sourceId: "source-1", url: "https://example.com", title: "Example", providerMetadata: { mock: { rank: 1 } } });
   adapter.decode({ type: "source-document", sourceId: "source-2", mediaType: "application/pdf", title: "Guide", filename: "guide.pdf" });
@@ -244,7 +265,7 @@ test("commits source and file parts without losing their typed fields", () => {
 });
 
 test("reasoning, sources, files, and text stream into one message in their order, and the commit keeps it", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "order" });
+  const adapter = createAiSdkAdapter({ streamKey: "order", originalMessages: [] });
   const store = createRunStore((flush) => flush());
   const parts = [
     { type: "start", messageId: "order" },
@@ -272,7 +293,7 @@ test("reasoning, sources, files, and text stream into one message in their order
 });
 
 test("preserves block and tool protocol metadata in generic meta bags", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "test" });
+  const adapter = createAiSdkAdapter({ streamKey: "test", originalMessages: [] });
   adapter.decode({ type: "start", messageId: "meta" });
   adapter.decode({ type: "text-start", id: "text", providerMetadata: { mock: { trace: "t" } } });
   adapter.decode({ type: "text-delta", id: "text", delta: "hello", providerMetadata: { mock: { trace: "delta" } } });
@@ -283,7 +304,7 @@ test("preserves block and tool protocol metadata in generic meta bags", () => {
 });
 
 test("empty text and reasoning deltas are no-ops", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "empty-delta" });
+  const adapter = createAiSdkAdapter({ streamKey: "empty-delta", originalMessages: [] });
   adapter.decode({ type: "start", messageId: "m" });
   adapter.decode({ type: "text-start", id: "t" });
   adapter.decode({ type: "reasoning-start", id: "r" });
@@ -293,13 +314,13 @@ test("empty text and reasoning deltas are no-ops", () => {
 });
 
 test("a blank tool name keeps the wire value and later names update the call", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "blank-name" });
+  const adapter = createAiSdkAdapter({ streamKey: "blank-name", originalMessages: [] });
   const [start] = adapter.decode({ type: "tool-input-start", toolCallId: "c", toolName: "" });
   expect(start?.type === "tool_start" ? start.tool_call.name : undefined).toBe("");
   const [available] = adapter.decode({ type: "tool-input-available", toolCallId: "c", toolName: " ", input: {} });
   expect(available?.type === "tool_start" ? available.tool_call.name : undefined).toBe(" ");
   // a placeholder from an approval request gets its blank wire name later (truthiness regression).
-  const late = createAiSdkAdapter({ streamKey: "late-name" });
+  const late = createAiSdkAdapter({ streamKey: "late-name", originalMessages: [] });
   const [request] = late.decode({ type: "tool-approval-request", toolCallId: "p", approvalId: "a" });
   const placeholder = request?.type === "approval_request" ? request.tool_call.name : undefined;
   expect(placeholder).not.toBe("");
@@ -308,28 +329,59 @@ test("a blank tool name keeps the wire value and later names update the call", (
 });
 
 test("an empty tool input delta is a no-op", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "empty-input" });
+  const adapter = createAiSdkAdapter({ streamKey: "empty-input", originalMessages: [] });
   adapter.decode({ type: "tool-input-start", toolCallId: "c", toolName: "bash" });
   expect(adapter.decode({ type: "tool-input-delta", toolCallId: "c", inputTextDelta: "" })).toEqual([]);
   expect(adapter.decode({ type: "tool-input-delta", toolCallId: "c", inputTextDelta: 3 })[0]?.type).toBe("error");
 });
 
 test("tool part titles are validated as wire strings", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "title" });
+  const adapter = createAiSdkAdapter({ streamKey: "title", originalMessages: [] });
   const [blank] = adapter.decode({ type: "tool-input-start", toolCallId: "a", toolName: "x", title: "" });
   expect(blank?.type === "tool_start" ? blank.tool_call.meta : undefined).toMatchObject({ title: "" });
   expect(adapter.decode({ type: "tool-input-start", toolCallId: "b", toolName: "x", title: 5 })[0]?.type).toBe("error");
 });
 
-test("an approval ends with fulcrum's decision: denied by tool-output-denied, approved once the tool returns", () => {
-  const ends = (parts: Record<string, unknown>[]) => {
-    const adapter = createAiSdkAdapter({ streamKey: "decisions" });
-    return parts.flatMap((part) => adapter.decode(part)).filter((event) => event.type === "approval_end");
-  };
-  const pinned = fixtures.filter((fixture) => fixture.sessionId === "approval").map((fixture) => fixture.part);
-  expect(ends(pinned)).toMatchObject([{ decision: "deny" }]);
-  const asked = pinned.filter((part) => part.type !== "tool-output-denied");
-  expect(ends([...asked, { type: "tool-output-available", toolCallId: "call-approval", output: { ok: true } }])).toMatchObject([{ decision: "approve" }]);
+// A chat whose last message asks for these approvals, and records what the SDK was told, or refuses.
+const pendingMessages = (ids: string[]) => [{ parts: ids.map((id) => ({ type: "tool-deploy", state: "approval-requested", approval: { id } })) }];
+const recordingChat = (fail?: Error, pending = ["a", "approval-1", ""]) => {
+  const responses: AiSdkApprovalResponse[] = [];
+  return { responses, messages: pendingMessages(pending), addToolApprovalResponse: async (response: AiSdkApprovalResponse) => { if (fail) throw fail; responses.push(response); } };
+};
+
+test("no chunk ends an approval: the decision is the host's, and respondToApproval ends the request the adapter opened", async () => {
+  const adapter = createAiSdkAdapter({ streamKey: "decisions", originalMessages: [] });
+  const pinned = fixtures.filter((fixture) => fixture.scenario === "approval" && fixture.part !== undefined).map((fixture) => fixture.part);
+  const continuations = [{ type: "tool-output-available", toolCallId: "call-approval", output: { ok: true } }, { type: "tool-output-denied", toolCallId: "call-approval" }, { type: "tool-output-error", toolCallId: "call-approval", errorText: "x" }];
+  const events = [...pinned, ...continuations].flatMap((part) => adapter.decode(part));
+  expect(events.filter((event) => event.type === "approval_end")).toEqual([]);
+  const request = events.find((event) => event.type === "approval_request");
+  const requestId = request?.type === "approval_request" ? request.request_id : "";
+  const chat = recordingChat();
+  const dispatched: RunEvent[] = [];
+  await respondToApproval({ chat, dispatch: (event) => dispatched.push(event) }, { requestId, approved: false, reason: "not today" });
+  expect(chat.responses).toEqual([{ id: "approval-1", approved: false, reason: "not today" }]);
+  expect(dispatched).toEqual([{ type: "approval_end", request_id: requestId, decision: "deny", data: { reason: "not today" } }]);
+});
+
+test("respondToApproval ends the card only after the SDK records the decision", async () => {
+  const dispatched: RunEvent[] = [];
+  const dispatch = (event: RunEvent) => dispatched.push(event);
+  // The SDK refuses: nothing is dispatched and the promise rejects with a message an Approval card can show (the SDK's
+  // error is the cause), so the card offers its buttons again.
+  const refused = new Error("no chat message");
+  await expect(respondToApproval({ chat: recordingChat(refused), dispatch }, { requestId: "w:approval:a", approved: true })).rejects.toMatchObject({ message: "the decision could not be saved, try again", cause: refused });
+  // Not an approval id: the SDK is never called.
+  for (const requestId of ["w:tool:a", "s:approval:k:1", "nonsense"]) {
+    const chat = recordingChat();
+    await expect(respondToApproval({ chat, dispatch }, { requestId, approved: true })).rejects.toThrow();
+    expect(chat.responses).toEqual([]);
+  }
+  await expect(respondToApproval({ chat: recordingChat(), dispatch }, { requestId: "w:approval:a", approved: "yes" as never })).rejects.toThrow("approved");
+  expect(dispatched).toEqual([]);
+  // A synchronous chat (the SDK's type allows void) works the same.
+  await respondToApproval({ chat: { messages: pendingMessages(["a"]), addToolApprovalResponse: () => {} }, dispatch }, { requestId: "w:approval:a", approved: true });
+  expect(dispatched).toEqual([{ type: "approval_end", request_id: "w:approval:a", decision: "approve" }]);
 });
 
 // What a reader sees: every row in timeline order, a message as its text and a tool as its name and output.
@@ -367,13 +419,13 @@ test("a multi-step run reads text, tool, text in order: each step's text after a
   const parts = await multiStepParts(() => "README.md\napps");
   expect(parts.map(({ type }) => type)).toContain("start-step");
   const play = () => {
-    const adapter = createAiSdkAdapter({ streamKey: "multi" });
+    const adapter = createAiSdkAdapter({ streamKey: "multi", originalMessages: [] });
     const store = createRunStore((flush) => flush());
     const events = [];
     for (const part of parts) for (const event of adapter.decode(part)) { events.push(event); store.dispatch(event); }
     return { store, events };
   };
-  const midway = createAiSdkAdapter({ streamKey: "multi" });
+  const midway = createAiSdkAdapter({ streamKey: "multi", originalMessages: [] });
   const live = createRunStore((flush) => flush());
   for (const part of parts.slice(0, parts.findIndex((part) => part.type === "text-delta" && part.delta === "The project has ") + 1)) midway.decode(part).forEach(live.dispatch);
   // While step 2 streams, its text is the last row and the only live one; step 1's message is done above the tool.
@@ -389,12 +441,12 @@ test("a multi-step run reads text, tool, text in order: each step's text after a
     "reasoning:two folders|text:The project has two folders.",
   ]);
   const ids = events.filter((event) => event.type === "message_commit").map((event) => event.message_id);
-  expect(ids).toEqual(["s:message:multi:1", "s:message:multi:2"]);
+  expect(ids).toEqual(["m:message:multi:1", "m:message:multi:2"]);
   expect(play().events).toEqual(events);
 });
 
 test("a late delta for a block that began before a tool streams into the current message, never restarting the done one", () => {
-  const adapter = createAiSdkAdapter({ streamKey: "late" });
+  const adapter = createAiSdkAdapter({ streamKey: "late", originalMessages: [] });
   const store = createRunStore((flush) => flush());
   for (const part of [
     { type: "start", messageId: "late" },
@@ -411,7 +463,7 @@ test("a late delta for a block that began before a tool streams into the current
 test("preliminary tool outputs replace each other, and the final output shows once", async () => {
   const parts = await multiStepParts(async function* () { yield "scanning"; yield "README.md"; yield "README.md\napps"; });
   expect(parts.filter((part) => part.type === "tool-output-available").map((part) => "preliminary" in part && part.preliminary)).toEqual([true, true, true, false]);
-  const adapter = createAiSdkAdapter({ streamKey: "preliminary" });
+  const adapter = createAiSdkAdapter({ streamKey: "preliminary", originalMessages: [] });
   const store = createRunStore((flush) => flush());
   const outputs: string[] = [];
   for (const part of parts) {
@@ -419,4 +471,42 @@ test("preliminary tool outputs replace each other, and the final output shows on
     if (part.type === "tool-output-available") outputs.push(rendered(store)[1]!);
   }
   expect(outputs).toEqual(["tool shell: scanning (live)", "tool shell: README.md (live)", "tool shell: README.md\napps (live)", "tool shell: README.md\napps"]);
+});
+
+// A reload rebuilds what the live stream built: the persisted message (ai's own readUIMessageStream) decodes to the
+// same rows as the stream, for text and assets, reasoning, provider tools, and tool errors.
+test.each(["text", "reasoning", "tool", "tool-error"])("decodeAiSdkMessage(%s) rebuilds the live rows", async (sessionId) => {
+  const parts = fixtures.filter((fixture) => fixture.sessionId === sessionId).map((fixture) => fixture.part as UIMessageChunk);
+  let persisted: UIMessage | undefined;
+  for await (const message of readUIMessageStream({ stream: simulateReadableStream({ chunks: parts, chunkDelayInMs: null }) })) persisted = message;
+  const snapshot = (events: RunEvent[]) => {
+    const store = createRunStore((flush) => flush());
+    for (const event of events) store.dispatch(event);
+    return store.getOutline().map(({ id }) => {
+      const { version: _, ...item } = store.getItem(id) as RunItem & { version?: number };
+      return item;
+    });
+  };
+  const adapter = createAiSdkAdapter({ streamKey: sessionId, originalMessages: [] });
+  const live = snapshot(parts.flatMap((part) => adapter.decode(part)));
+  expect(live.length).toBeGreaterThan(0);
+  expect(snapshot(decodeAiSdkMessage({ ...persisted, role: "assistant" }))).toEqual(live);
+});
+
+test("decodeAiSdkMessage keeps input errors, streaming input, data parts, and refuses what is not an assistant message", () => {
+  const decode = (message: unknown) => decodeAiSdkMessage(message);
+  const codes = (events: RunEvent[]) => events.filter((event) => event.type === "error").map((event) => event.type === "error" ? event.error.code : "");
+  for (const message of [null, { id: "u", role: "user", parts: [] }, { id: "m", role: "assistant" }, { role: "assistant", parts: [] }]) expect(codes(decode(message))).toEqual(["adapter_invalid_payload"]);
+  const events = decode({ id: "m", role: "assistant", parts: [
+    { type: "dynamic-tool", toolName: "shell", toolCallId: "bad", state: "output-error", rawInput: "{oops", errorText: "invalid json" },
+    { type: "tool-search", toolCallId: "typing", state: "input-streaming", input: { q: "fu" } },
+    { type: "tool-search", toolCallId: "odd", state: "teleported", input: {} },
+    7,
+    { type: "data-weather", id: "w1", data: { temperature: 72 } },
+  ] });
+  expect(codes(events)).toEqual(["adapter_invalid_payload", "adapter_invalid_payload"]);
+  expect(events.find((event) => event.type === "tool_end")).toMatchObject({ tool_call: { name: "shell", arguments: { input: "{oops" }, meta: { dynamic: true } }, tool_result: { content: "invalid json", is_error: true } });
+  expect(events.find((event) => event.type === "tool_input")).toMatchObject({ tool_call: { id: "w:tool:typing", name: "search" }, input: "{\"q\":\"fu\"}" });
+  expect(events.find((event) => event.type === "unknown")).toMatchObject({ name: "data-weather", data: { id: "w1", data: { temperature: 72 } } });
+  expect(events.at(-1)?.type).toBe("run_end");
 });

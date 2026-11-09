@@ -33,9 +33,17 @@ const aiSdkFiles = import.meta.glob<string>("../../../packages/ai-sdk/test/fixtu
   eager: true,
 });
 const aiSdkFixtures = Object.fromEntries(
+  // A recorded host session: each stream's chunks under its stream key (one adapter each, given the messages its
+  // request sent), and the events the host dispatched between them (respondToApproval's approval_end).
   Object.entries(aiSdkFiles).map(([path, text]) => {
-    const adapter = createAiSdkAdapter({ streamKey: path.split("/").pop()! });
-    return [path.split("/").pop()!, text.split("\n").filter(Boolean).flatMap((line) => adapter.decode(JSON.parse(line)))];
+    const adapters = new Map<string, ReturnType<typeof createAiSdkAdapter>>();
+    const decode = ({ stream, originalMessages, part, event }: { stream?: string; originalMessages?: unknown[]; part?: unknown; event?: RunEvent }) => {
+      if (event) return [event];
+      const adapter = adapters.get(stream!) ?? createAiSdkAdapter({ streamKey: stream!, originalMessages: originalMessages! });
+      adapters.set(stream!, adapter);
+      return adapter.decode(part);
+    };
+    return [path.split("/").pop()!, text.split("\n").filter(Boolean).flatMap((line) => decode(JSON.parse(line)))];
   }),
 );
 const demoFixtures: Record<string, RunEvent[]> = {
