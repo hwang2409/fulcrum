@@ -403,7 +403,8 @@ const defaultDeliveryNote = ({ event }: UserMessageItem): ReactNode => {
   const why = event.delivery_reason !== undefined && Object.hasOwn(dropReasons, event.delivery_reason)
     ? dropReasons[event.delivery_reason]
     : undefined;
-  return why ? `not delivered · ${why}` : "not delivered";
+  const note = why ? `not delivered · ${why}` : "not delivered";
+  return event.text_omitted ? `${note} · text not kept` : note;
 };
 
 export type FallbackProps = ItemProps & {
@@ -419,12 +420,15 @@ export const Fallback = memo(function Fallback({ id, className, renderDeliveryNo
   const item = useItem(id);
   if (!item) return null;
   const display = fallbackDisplay(item);
-  const user = item.type === "user" && item.event.type === "user_message";
+  const userEvent = item.type === "user" && item.event.type === "user_message" ? item.event : undefined;
+  const user = userEvent !== undefined;
+  const textOmitted = userEvent?.text_omitted === true;
   const note = user ? renderDeliveryNote(item as UserMessageItem) : null;
+  if (textOmitted && (note == null || note === false)) return null;
   const content = <>{display.label}{display.attachments?.length ? <ToolResultBlocks id={id} blocks={display.attachments} /> : null}</>;
   return (
-    <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state}>
-      {user ? <UserMessageContent style={pre}>{content}</UserMessageContent> : content}
+    <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state} data-text-omitted={textOmitted ? "" : undefined}>
+      {user && !textOmitted ? <UserMessageContent style={pre}>{content}</UserMessageContent> : user ? null : content}
       {note == null || note === false ? null : <div data-part="delivery-note">{note}</div>}
     </div>
   );

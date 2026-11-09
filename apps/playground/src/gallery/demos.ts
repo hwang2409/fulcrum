@@ -1023,10 +1023,9 @@ export const demos: Demo[] = [
   {
     id: "fallback-user-dropped",
     part: "Fallback",
-    title: "dropped steer",
-    description: "A dropped steer keeps the shared user layout; a delivery note under it says why, in words.",
+    title: "dropped steer, text not kept",
+    description: "A text-less dropped steer is still a user row; its note says why and that the text was not kept.",
     events: [
-      { type: "user_message", text: userParityText, mode: "steer", delivery_id: "gallery-dropped" },
       { type: "delivery_status", delivery_id: "gallery-dropped", method: "steer", status: "dropped", content: "steer dropped: turn_end", reason: "turn_end" },
     ],
   },
@@ -1044,9 +1043,8 @@ export const demos: Demo[] = [
     id: "fallback-user-dropped-host",
     part: "Fallback",
     title: "dropped steer, host note",
-    description: "renderDeliveryNote: the host replaces the note with its own words and a resend button.",
+    description: "renderDeliveryNote: the host replaces a text-less drop note with its own words and a resend button.",
     events: [
-      { type: "user_message", text: "Also run the auth tests.", mode: "steer", delivery_id: "gallery-dropped-host" },
       { type: "delivery_status", delivery_id: "gallery-dropped-host", method: "steer", status: "dropped", content: "steer dropped: turn_end", reason: "turn_end" },
     ],
     hostDeliveryNote: true,

@@ -215,18 +215,20 @@ test("a drop the user's stop caused stays not delivered, even when the same text
     .toEqual([{ text: "cancel this", status: "dropped" }, { text: "cancel this", status: undefined }]);
 });
 
-test("a legacy dropped row without a reason keeps its compact status row", () => {
-  expect(historyUsers([dropRow("id-2", "steer dropped")])).toEqual({ users: [], notices: 1 });
+test("a legacy dropped row without a reason becomes a text-omitted user row", () => {
+  expect(historyUsers([dropRow("id-2", "steer dropped")])).toEqual({ users: [{ text: "", status: "dropped" }], notices: 0 });
 });
 
-test("legacy dropped-steer history keeps its compact status row without inventing text", async () => {
+test("legacy dropped-steer history becomes a text-omitted user row without exposing raw text", async () => {
   const fixture = await Bun.file(new URL("./fixtures/history-steer-delivery.json", import.meta.url)).json();
   const store = createRunStore((flush) => flush());
   for (const event of fromZetaHistory(fixture.dropped.historyRows)) store.dispatch(event);
-  const notices = store.getOutline().filter((item) => item.kind === "notification").map(({ id }) => store.getItem(id));
-  expect(notices).toHaveLength(1);
-  expect(notices[0]).toMatchObject({ event: { data: { type: "delivery_status", status: "dropped", content: "steer dropped: abort", reason: "abort" } } });
-  expect(store.getOutline().map(({ id }) => store.getItem(id)).some((item) => item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === "dropped-steer")).toBe(false);
+  expect(store.getOutline().filter((item) => item.kind === "notification")).toHaveLength(0);
+  expect(store.getItem("user:delivery:dropped-steer")).toMatchObject({
+    type: "user",
+    event: { text: "", text_omitted: true, delivery_status: "dropped", delivery_reason: "abort" },
+  });
+  expect(JSON.stringify(store.getOutline().map(({ id }) => store.getItem(id)))).not.toContain("steer dropped");
 });
 
 test("real delivered-steer history joins its user row without an extra status row", async () => {

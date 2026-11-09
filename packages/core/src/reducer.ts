@@ -132,7 +132,7 @@ export const eventSchemas = {
   approval_request: { request_id: required(string), tool_call: required(toolCall, toolCallFields), view: optional(object), delegated: required(boolean), state: optional(oneOf("reconnecting", "resolving")), status: optional(string), disabled_reason: optional(string) },
   approval_end: { request_id: required(string), decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
   usage: { usage: required(usage) },
-  user_message: { text: required(string), mode: required(string), attachments: optional(array), message_id: optional(string), delivery_id: optional(string), intent: optional(string), delivery_status: optional(oneOf("delivered", "dropped")), delivery_reason: optional(string) },
+  user_message: { text: required(string), mode: required(string), attachments: optional(array), message_id: optional(string), delivery_id: optional(string), intent: optional(string), text_omitted: optional(oneOf(true)), delivery_status: optional(oneOf("delivered", "dropped")), delivery_reason: optional(string) },
   error: { error: required(error, { code: required(string), message: required(string) }) },
   delivery_status: { delivery_id: required(string), method: required(string), status: required(oneOf("delivered", "dropped")), content: required(string), reason: optional(string) },
   history_truncated: { text: required(string) },
@@ -247,7 +247,11 @@ const reduceUserMessage = (
     (intentId && entities.getMessageAlias(intentId)) ||
     (intentId && entities.get(intentId) ? intentId : undefined) ||
     intentId || deliveryItemId || messageId || `user:${next.nextId++}`;
-  if (entities.get(id)) setItem({ id, type: "user", event });
+  const prior = entities.get(id);
+  if (prior?.type === "user" && prior.event.type === "user_message" && prior.event.text_omitted) {
+    const { text_omitted: _, ...kept } = prior.event;
+    setItem({ id, type: "user", event: { ...kept, ...event } });
+  } else if (prior) setItem({ id, type: "user", event });
   else appendItem({ id, type: "user", event });
   if (deliveryId) entities.setMessageAlias(deliveryId, id);
   if (intentId) entities.setMessageAlias(intentId, id);
@@ -618,8 +622,15 @@ export function reduceAllWithEntities(
         if (prior?.type === "user" && prior.event.type === "user_message") {
           setItem({ ...prior, event: { ...prior.event, delivery_status: event.status, ...(event.reason ? { delivery_reason: event.reason } : {}) } });
         } else if (event.status === "dropped") {
-          const notificationId = `notification:${next.nextId++}`;
-          appendItem({ id: notificationId, type: "notification", event: { type: "notification", data: event } });
+          reduceUserMessage(next, {
+            type: "user_message",
+            text: "",
+            text_omitted: true,
+            mode: event.method,
+            delivery_id: event.delivery_id,
+            delivery_status: "dropped",
+            ...(event.reason ? { delivery_reason: event.reason } : {}),
+          }, entities, appendItem, setItem);
         }
         break;
       }

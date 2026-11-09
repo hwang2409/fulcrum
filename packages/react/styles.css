@@ -187,6 +187,9 @@
 [data-part="message-content"] { min-width: 0; text-wrap: pretty; }
 /* A user row's delivery note sits under its text, in the content column. */
 [data-part="item"][data-kind="user"] > [data-part="delivery-note"] { grid-column: 2; margin-top: 4px; color: var(--fulcrum-danger); font-size: 12px; font-weight: 400; }
+/* With no kept text there is no empty message surface: the note is the whole row. */
+[data-part="item"][data-kind="user"][data-text-omitted] { display: block; padding: 0; border: 0; background: transparent; }
+[data-part="item"][data-kind="user"][data-text-omitted] > [data-part="delivery-note"] { margin-top: 0; }
 /* A leading table contributes its first row's baseline instead of its scroll box's fallback baseline. */
 [data-part="message-content"] > [data-part="md-table"]:first-child { display: table; }
 /* An image has no text baseline, so its decorative prompt belongs at the frame's top edge. */
