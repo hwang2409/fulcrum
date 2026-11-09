@@ -68,8 +68,10 @@ test("continuation preview copies a bounded amount per delta at any line length"
 });
 
 test("continuation preview delta cost stays flat as the line grows", () => {
-  // Times the next 128k of 64-byte deltas on a 32k or an 8,192k line. Measured: clean 0.94-1.19x; a whole-line
-  // `lastIndexOf` per delta 19-24x. The limit 256^0.28 = 4.7 is near their geometric middle, ~4x from each side.
+  // Times the next 128k of 64-byte deltas on a 32k or an 8,192k line. The size argument spans 256x, so the limit is
+  // 256^0.28 = 4.7, but the line lengths the deltas see span only ~86x: the small line restarts every sample and grows
+  // 32k -> 160k during its window (mean ~96k), while the large one stays near 8,200k. Measured: clean 0.94-1.19x;
+  // a whole-line `lastIndexOf` per delta 19-24x. The limit is near their geometric middle, ~4x from each side.
   // A long window (~50 ms) keeps one scheduler stall a small part of a sample. The large line is built once and
   // each sample continues it; a line is rebuilt only after it doubles, so the small one restarts every sample.
   const window = 128_000;
