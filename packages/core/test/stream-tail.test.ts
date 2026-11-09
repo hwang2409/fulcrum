@@ -125,7 +125,7 @@ test("streamTail walks exactly the chunks since the previous snapshot, whatever 
   expect(work(200_000, 0)).toBe(0);
 });
 
-test("across many compactions, every held snapshot reads its own text and each next tail is its delta", () => {
+test("across many compactions and rebuilds, every held snapshot reads its own text and each next tail is its delta", () => {
   const store = run();
   const held: ToolItem[] = [];
   let expected = "";
@@ -141,6 +141,13 @@ test("across many compactions, every held snapshot reads its own text and each n
     held.push(item);
     texts.push(expected);
   }
-  // Snapshots from inside compacted runs: their own chains still give their text.
+  // Snapshots from inside compacted runs and from before rebuilds: their own chains still give their text.
   held.forEach((item, index) => expect(item.output).toBe(texts[index]!));
+  // From any older snapshot, a tail is the exact appended text or undefined (the full path), never a wrong text.
+  for (let from = 0; from < held.length; from += 7) {
+    for (let to = from; to < held.length; to += 5) {
+      const tail = streamTail(held[from], held[to]!, "output");
+      if (tail !== undefined) expect(tail).toBe(texts[to]!.slice(texts[from]!.length));
+    }
+  }
 });
