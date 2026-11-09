@@ -682,7 +682,6 @@ const seamShape = (events: readonly Record<string, any>[], split: number) => {
 
 test("prepend equals whole-log reduction at every page seam shape", () => {
   const shapeSeeds = new Map<string, number>();
-  let exhaustiveSeeds = 0;
   // `queued` holds every page for one frame, so they reach the store as one coalesced prepend (#98).
   const expectSplits = (events: RunEvent[], splits: readonly number[], expectedView: ReturnType<typeof prependView>, label: string, queued = false) => {
     const frames: Array<() => void> = [];
@@ -700,7 +699,6 @@ test("prepend equals whole-log reduction at every page seam shape", () => {
     const expectedView = prependView(expected);
     const shapes = new Set(Array.from({ length: events.length + 1 }, (_, split) => seamShape(events, split)));
     if ([...shapes].some((shape) => (shapeSeeds.get(shape) ?? 0) < SHAPE_SEEDS)) {
-      exhaustiveSeeds++;
       for (const shape of shapes) shapeSeeds.set(shape, (shapeSeeds.get(shape) ?? 0) + 1);
       for (let split = 0; split <= events.length; split++) expectSplits(events, [split], expectedView, `seed ${seed}`);
     } else {
@@ -711,10 +709,21 @@ test("prepend equals whole-log reduction at every page seam shape", () => {
     expectSplits(events, [second, first], expectedView, `seed ${seed}`);
     expectSplits(events, [second, first], expectedView, `seed ${seed}`, true);
   }
-  // Every shape these seeds produce, each seen in at least SHAPE_SEEDS seeds that ran all their splits.
-  expect(shapeSeeds.size).toBeGreaterThan(130);
-  expect([...shapeSeeds.values()].every((seeds) => seeds >= SHAPE_SEEDS)).toBe(true);
-  expect(exhaustiveSeeds).toBeGreaterThan(100);
+  // Every shape these seeds produce, each seen in at least SHAPE_SEEDS seeds that ran all their splits. The count and the
+  // named sub-variant shapes catch a generator that silently lost one; when the generator changes on purpose, update both.
+  const requiredShapes = [
+    "delta:text>delta:text:inside",
+    "delta:reasoning>delta:reasoning:inside",
+    "delta:text>message_commit:inside",
+    "tool_start>tool_input:inside",
+    "tool_input>tool_end:inside",
+    "approval_request>approval_end:approve:inside",
+    "approval_request>approval_end:deny:inside",
+    "sub_agent:running>sub_agent:done:inside",
+  ];
+  expect(requiredShapes.filter((shape) => !shapeSeeds.has(shape)), "missing seam shapes").toEqual([]);
+  expect(shapeSeeds.size, "seam shape count").toBe(138);
+  expect([...shapeSeeds].filter(([, seeds]) => seeds < SHAPE_SEEDS), "shapes in too few seeds").toEqual([]);
 });
 
 test("prepend inserts older rows without resetting or replacing the live tail", () => {
