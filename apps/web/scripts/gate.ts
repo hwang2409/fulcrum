@@ -310,8 +310,8 @@ const assertReconnectBottomFixture = (
   if (!Number.isInteger(sample.engineTotal)) {
     throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} engine total is not integral (${JSON.stringify(fixture)})`);
   }
-  if (sample.scrollHeight - sample.engineTotal !== 2 || sample.domEnd - sample.engineEnd !== 2) {
-    throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} fixture did not add exactly 2 px beyond the engine (${JSON.stringify(fixture)})`);
+  if (sample.scrollHeight - sample.engineTotal !== 18 || sample.domEnd - sample.engineEnd !== 18) {
+    throw new Error(`${engine} reconnect-bottom run ${run}: ${phase} fixture did not add the 16 px virtual gutter plus its 2 px probe (${JSON.stringify(fixture)})`);
   }
 };
 
@@ -666,7 +666,7 @@ async function reconnectBottomIteration(page: Page, engine: string, run: number)
     assertionReached = true;
     assertionGap = final.gap;
     console.log(`reconnect-bottom ${JSON.stringify(diagnostic)}`);
-    if (Math.abs(final.domEnd - final.engineEnd - 2) > 0.01) {
+    if (Math.abs(final.domEnd - final.engineEnd - 18) > 0.01) {
       throw new Error(`${engine} reconnect-bottom run ${run}: final DOM/engine disagreement is ${(final.domEnd - final.engineEnd).toFixed(3)} px`);
     }
     if (!final.pinned || await page.locator('[data-part="jump-to-latest"]').count()) {
