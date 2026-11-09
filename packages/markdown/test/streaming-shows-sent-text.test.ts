@@ -55,6 +55,13 @@ function sourceIndexes(final: string, source: string) {
   return indexes;
 }
 
+/** The position in `shown` of the first character that is not part of an in-order match in `sent`, or -1. */
+function unexplained(shown: string, sent: string) {
+  let at = 0;
+  for (let index = 0; index < sent.length && at < shown.length; index++) if (sent[index] === shown[at]) at++;
+  return at < shown.length ? at : -1;
+}
+
 // Long inputs print only their ends.
 const clip = (value: string) => JSON.stringify(value.length > 160 ? `${value.slice(0, 60)}...${value.slice(-100)}` : value);
 
@@ -112,7 +119,12 @@ function check(source: string, deltas: readonly string[], identity = false, ever
       || (at >= lineStart ? allowed.some((wait) => wait(growing, at - lineStart, before)) : lineEndBackslash(sent, at, growing));
     const owedIndexes = indexes.filter((index) => index >= 0 && index < end && !held(index));
     const owed = owedIndexes.map((index) => source[index]!).join("");
-    const missing = firstMissing(owed, visible(blocks));
+    const shown = visible(blocks);
+    // The reverse direction: everything shown is sent text, in order (owed ⊆ shown ⊆ sent), so no character shows
+    // before the text that precedes it in the source, and no stand-in character shows at all.
+    const extra = unexplained(shown.replace(/\s+/g, ""), sent.replace(/\s+/g, ""));
+    if (extra >= 0) return `a shown character the sent text does not explain at that place: ${JSON.stringify(shown.replace(/\s+/g, "")[extra])} (shown character ${extra}) of ${clip(source)}, prefix ${clip(sent)}`;
+    const missing = firstMissing(owed, shown);
     if (missing >= 0) {
       const offset = owedIndexes[missing]!;
       const kind = offset >= lineStart ? "a hidden character no named wait covers" : "a character of an ended line is hidden";
@@ -198,6 +210,10 @@ const repros = [
   "- see [a](x then\n  more",
   "> see [a][r\n> more",
   "Run `" + "jq '.items[] | .name' ".repeat(12) + "` then " + "arr[i] = b[j]; ".repeat(20) + "[docs](https://e.com/x) end",
+  // a `[` whose label is longer than the settled-suffix window shows at its own place, also when its `]`, the next
+  // character, and the line end arrive in one delta
+  "Note [this applies to every package in the workspace, including the ones that are only built for tests and never published to the registry at all, and the docs].\n",
+  "see [note " + "word text ".repeat(200) + "] done and some more words\nnext",
   // a lone tilde is text
   "cd ~/src && ls ~ | wc -l\nnext",
   // an ended line shows its unmatched emphasis openers
