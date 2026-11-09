@@ -56,6 +56,27 @@ Migration: before, `Timeline` scrolled its outer element; now owned mode scrolls
 
 When a host accepts a local send or steer, increment `followRequest` on `Timeline` to follow that message to the bottom even if the reader was previously scrolled up. Do not bump it for replayed history or remote user messages; those are new content and must preserve the reader's position.
 
+## sub-agent navigation
+
+`RunNavigator` makes an available sub-agent row one button that opens its child run. A custom transcript shell can provide the same generic behavior without using `RunNavigator`:
+
+```tsx
+import { RunProvider, SubAgentNavigationProvider, Timeline } from "@fulcrum/react";
+
+const navigation = {
+  open: (childRunId: string) => openChildRun(childRunId),
+  unavailable: (childRunId: string) => childRunUnavailableReason(childRunId),
+};
+
+<SubAgentNavigationProvider value={navigation}>
+  <RunProvider store={store}>
+    <Timeline />
+  </RunProvider>
+</SubAgentNavigationProvider>;
+```
+
+Return a reason from `unavailable` to keep the row non-interactive and show that reason. Without this provider, the row stays non-interactive and shows `details unavailable`.
+
 ## hooks, parts, and content
 
 - hooks: `useRun(selector)` (return a primitive or a reference from state), `useTimeline()` (stable ordered `{ id, kind }` entries), `useItem(id)`, and `useItemSelector(id, selector)`. They use `useSyncExternalStore`, so a text delta re-renders only the item that changed.

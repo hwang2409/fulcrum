@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type RunSource, type SubAgentEvent } from "@fulcrum/core";
-import { Approval, RunNavigator, RunProvider, subAgentRow, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunNavigatorProps } from "../src/index.js";
+import { Approval, RunNavigator, RunProvider, SubAgentNavigationProvider, subAgentRow, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunNavigatorProps } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 
@@ -93,6 +93,32 @@ test("the default timeline renders a sub-agent row with its facts, and with no n
   expect(q('[data-part="sub-agent-status"]').textContent).toBe("done");
   expect(q('[data-part="sub-agent-meta"]').textContent).toBe("2m 14s · 7 tools");
   expect(q('[data-part="sub-agent-activity"]').textContent).toBe("$ bun test");
+});
+
+test("the public navigation provider makes a standalone row one button and preserves unavailable reasons", () => {
+  const { store } = storeOf([child("exact-child", { task: "inspect the run" })]);
+  const opened: string[] = [];
+  const render = (navigation: { open(runId: string): void; unavailable(runId: string): string | undefined } | null, provide = true) => (
+    provide
+      ? <SubAgentNavigationProvider value={navigation}><RunProvider store={store}><Timeline virtual={false} /></RunProvider></SubAgentNavigationProvider>
+      : <RunProvider store={store}><Timeline virtual={false} /></RunProvider>
+  );
+
+  mount(render({ open: (runId) => opened.push(runId), unavailable: () => undefined }));
+  const row = q('[data-part="sub-agent"]');
+  expect(row.tagName).toBe("BUTTON");
+  expect(row.querySelector("button, a, input, select, textarea")).toBeNull();
+  act(() => row.click());
+  expect(opened).toEqual(["exact-child"]);
+
+  act(() => root!.render(render({ open: (runId) => opened.push(runId), unavailable: () => "history is not ready" })));
+  expect(q('[data-part="sub-agent"]').tagName).toBe("DIV");
+  expect(q('[data-part="sub-agent-reason"]').textContent).toBe("history is not ready");
+  expect(opened).toEqual(["exact-child"]);
+
+  act(() => root!.render(render(null, false)));
+  expect(q('[data-part="sub-agent"]').tagName).toBe("DIV");
+  expect(q('[data-part="sub-agent-reason"]').textContent).toBe("details unavailable");
 });
 
 test("subAgentRow derives the badge, text, accessible name, and drill-in from the item alone", () => {

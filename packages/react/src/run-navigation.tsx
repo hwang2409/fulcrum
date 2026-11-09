@@ -3,7 +3,7 @@ import type { RunLease, RunSource, SubAgentStatus } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { RunProvider, type RunStore } from "./hooks.js";
 import { Timeline, type Renderers, type TimelineViewport } from "./parts.js";
-import { SubAgentContext, subAgentLabel, subAgentStatusText, type SubAgentNavigation } from "./sub-agent.js";
+import { SubAgentNavigationProvider, subAgentLabel, subAgentStatusText, type SubAgentNavigation } from "./sub-agent.js";
 
 /** One run on the open path. The root has the `runId` the host gave it, if any. */
 export type RunLocation = { readonly runId?: string; readonly label: string };
@@ -289,7 +289,7 @@ export function RunNavigator({ store, source, path, onPathChange, runId, label =
       </div>
       <div data-part="run-scroll">
         <RunNavigationContext.Provider value={context}>
-          <SubAgentContext.Provider value={navigation}>
+          <SubAgentNavigationProvider value={navigation}>
             <RunProvider store={stores.at(-1)!} highlight={highlight}>
               <Timeline
                 renderers={renderers}
@@ -299,7 +299,7 @@ export function RunNavigator({ store, source, path, onPathChange, runId, label =
                 onViewport={(next) => { viewport.set(viewKey, next); }}
               />
             </RunProvider>
-          </SubAgentContext.Provider>
+          </SubAgentNavigationProvider>
         </RunNavigationContext.Provider>
       </div>
     </div>

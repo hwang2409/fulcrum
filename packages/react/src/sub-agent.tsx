@@ -1,4 +1,4 @@
-import { createContext, memo, useCallback, useContext, useRef, useSyncExternalStore } from "react";
+import { createContext, memo, useCallback, useContext, useRef, useSyncExternalStore, type ReactNode } from "react";
 import type { RunItem, SubAgentStatus } from "@fulcrum/core";
 import { useItem } from "./hooks.js";
 import { boundText, MAX_SUMMARY_CHARS } from "./tools/common.js";
@@ -11,7 +11,15 @@ export type SubAgentNavigation = {
   /** Why this child cannot open, or undefined when it can. */
   unavailable(runId: string): string | undefined;
 };
-export const SubAgentContext = createContext<SubAgentNavigation | null>(null);
+const SubAgentContext = createContext<SubAgentNavigation | null>(null);
+
+/** Supplies child-run navigation to standalone sub-agent rows in a custom shell. */
+export function SubAgentNavigationProvider({ value, children }: {
+  readonly value: SubAgentNavigation | null;
+  readonly children: ReactNode;
+}): ReactNode {
+  return <SubAgentContext.Provider value={value}>{children}</SubAgentContext.Provider>;
+}
 
 export const subAgentStatusText: Record<SubAgentStatus, string> = {
   running: "running",
