@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
-import { expectSubquadratic } from "../../../test-support/scaling.js";
+import { expectGrowthBelow } from "../../../test-support/scaling.js";
 import { withoutDefinitionLabels } from "./accepted-changes.js";
 
 const splits = [1, 2, 3, 7, 20, 1000];
@@ -85,7 +85,7 @@ test("a closed paragraph shows reference brackets until a later definition remov
 
 test("committing a long rich line is linear in its length", () => {
   const unit = "plain **strong** and *emphasis* with `code`. ";
-  expectSubquadratic([31_250, 1_000_000], (length) => {
+  expectGrowthBelow([31_250, 1_000_000], (length) => {
     const document = createStreamingDocument();
     document.append(unit.repeat(Math.ceil(length / unit.length)).slice(0, length));
     document.render();
@@ -93,7 +93,7 @@ test("committing a long rich line is linear in its length", () => {
       document.append("\n");
       document.render();
     };
-  }, 3);
+  }, { samples: 3 });
 }, 60_000);
 
 test("an escaped bracket pair never shows a backslash that later disappears", () => {

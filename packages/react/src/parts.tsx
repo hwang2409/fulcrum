@@ -1,9 +1,10 @@
 import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type ReactNode, type RefObject } from "react";
 import type { ApprovalDecision, OutlineChange, RunEvent, RunItem } from "@fulcrum/core";
+import { streamTail } from "@fulcrum/core/internal";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { HighlightContext, Tokens, useTokens } from "./highlight.js";
-import { boundText, duration, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
+import { boundText, duration, GrownText, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
 import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
 import { Notification, notificationText } from "./notification.js";
@@ -142,7 +143,7 @@ const openByDefault = (item: ToolItem | undefined, output: string) =>
 const denied = (item: ToolItem) => item.approval?.type === "approval_end" && item.approval.decision === "deny";
 
 // Streamed output, then the final result when it adds something (an error message, a cancel reason).
-const toolOutput = ({ output, result }: ToolItem) => {
+const toolOutput = ({ output, result }: Pick<ToolItem, "output" | "result">) => {
   const content = result?.content ?? "";
   if (!content || output.includes(content)) return output;
   return output ? `${output}${output.endsWith("\n") ? "" : "\n"}${content}` : content;
@@ -150,21 +151,37 @@ const toolOutput = ({ output, result }: ToolItem) => {
 const toolState = (item: ToolItem): ItemState =>
   item.canceled ? "canceled" : item.is_error ? "error" : item.active ? "streaming" : "done";
 
+/**
+ * How the row's output grew since this card's previous render (core streamTail), while the shown output is the row's
+ * stream itself; the body's Output extends its view from the tail.
+ */
+function useGrownOutput(tool: ToolItem | undefined, streamed: string | undefined, output: string) {
+  const seen = useRef<{ tool?: ToolItem; output?: string }>({});
+  const prior = seen.current;
+  const stream = tool !== undefined && output === streamed;
+  seen.current = stream ? { tool, output } : {};
+  const tail = stream && prior.output !== undefined ? streamTail(prior.tool, tool, "output") : undefined;
+  return tail === undefined ? null : { text: output, previous: prior.output!, tail };
+}
+
 export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = ToolBody }: ItemProps & ToolViewProps) {
   const item = useItem(id);
   const tool = item?.type === "tool" ? item : undefined;
-  const [open, setOpen] = useState(() => openByDefault(tool, tool ? toolOutput(tool) : ""));
+  // One read of the streamed output: a result that adds to it makes a different (longer) string.
+  const streamed = tool?.output;
+  const output = tool ? toolOutput({ output: streamed!, result: tool.result }) : "";
+  const grown = useGrownOutput(tool, streamed, output);
+  const [open, setOpen] = useState(() => openByDefault(tool, output));
   const [bodyMounted, setBodyMounted] = useState(open);
   const highlight = useContext(HighlightContext);
   const summaryRef = useRef<HTMLElement>(null);
   // The body mounts on first open (never-opened cards cost nothing on first paint); its data warms before that, so
   // the first open paints colored. Only the default body is known to warm; a custom body renders as it is.
   const warm = useWarm(summaryRef, tool && highlight && !bodyMounted && Body === ToolBody
-    ? () => warmToolBody({ item: tool, output: toolOutput(tool), state: toolState(tool) }, highlight)
+    ? () => warmToolBody({ item: tool, output, state: toolState(tool) }, highlight)
     : undefined, tool);
   if (!tool) return null;
   const state = toolState(tool);
-  const output = toolOutput(tool);
   return (
     <details
       className={className}
@@ -185,7 +202,7 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
         <Header item={tool} state={state} summary={summary} />
       </summary>
       {bodyMounted ? <div data-part="tool-body">
-        <Body item={tool} output={output} state={state} />
+        <GrownText.Provider value={grown}><Body item={tool} output={output} state={state} /></GrownText.Provider>
         {tool.result?.blocks?.length ? <ToolResultBlocks id={id} blocks={tool.result.blocks} /> : null}
       </div> : null}
     </details>

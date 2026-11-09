@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { parseMarkdown } from "../src/index.js";
 import { ReferenceDefinitionParser } from "../src/reference-definition.js";
 import { MarkdownLineResolver } from "../src/resolver.js";
-import { expectSubquadratic } from "../../../test-support/scaling.js";
+import { expectGrowthBelow } from "../../../test-support/scaling.js";
 
 const source = (label: string, suffix = "") => `[${label}]: /url${suffix}\n\nUse [${label}].`;
 const resolve = (input: string) => {
@@ -57,7 +57,7 @@ test("a container can start a definition after interrupting a rejected candidate
 
 test("open destinations and titles scale linearly", () => {
   for (const prefix of ["[destination]: <", "[title]: /url \""])
-    expectSubquadratic([1_000, 32_000], (size) => () => {
+    expectGrowthBelow([1_000, 32_000], (size) => () => {
       for (let run = 0; run < 20; run++) {
         const parser = new ReferenceDefinitionParser();
         parser.append(prefix);
