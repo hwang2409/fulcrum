@@ -2,7 +2,7 @@ import "./fonts.css";
 import "@fulcrum/react/styles.css";
 import "@fulcrum/react/themes.css";
 import "@fulcrum/highlight/styles.css";
-import { Profiler } from "react";
+import { Profiler, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore } from "@fulcrum/core";
 import { createHighlighter } from "@fulcrum/highlight";
@@ -37,4 +37,5 @@ const w = window as any;
 w.__commits = 0;
 w.__prepend = { prepend() { const from = Math.max(0, loadedFrom - older); store.prepend(fromZetaHistory(rows(from, loadedFrom))); loadedFrom = from; }, outline: () => store.getOutline(), item: (id: string) => store.getItem(id) };
 const pad = innerWidth < 600 ? 16 : 24;
-createRoot(document.getElementById("root")!).render(<div style={{ height: "100vh", padding: `0 ${pad}px`, boxSizing: "border-box", display: "flex", flexDirection: "column" }}><div style={{ flex: 1, minHeight: 0, maxWidth: 880, width: "100%", margin: "0 auto" }}><RunProvider store={store}><Profiler id="prepend" onRender={() => { w.__commits++; }}><Timeline renderers={renderers} virtual /></Profiler></RunProvider></div></div>);
+function CommitProbe() { const [tick, setTick] = useState(0); w.__bumpCommit = () => setTick((value: number) => value + 1); return <span hidden>{tick}</span>; }
+createRoot(document.getElementById("root")!).render(<div style={{ height: "100vh", padding: `0 ${pad}px`, boxSizing: "border-box", display: "flex", flexDirection: "column" }}><div style={{ flex: 1, minHeight: 0, maxWidth: 880, width: "100%", margin: "0 auto" }}><RunProvider store={store}><Profiler id="prepend" onRender={() => { w.__commits++; }}><CommitProbe /><Timeline renderers={renderers} virtual /></Profiler></RunProvider></div></div>);
