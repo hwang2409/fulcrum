@@ -90,6 +90,13 @@ const backslash: Wait = (line, at) => at === line.length - 1 && line[at] === "\\
 
 export const waits: Record<string, Wait> = { blockMarker, spanOpener, bracket, linkTail, angle, entity, backslash };
 
+/**
+ * The one wait on an ended line, part of the backslash wait: a backslash that ends the line the stream just ended (its
+ * newline is the last character sent). The next character decides a hard break, which drops it, or text.
+ */
+export const lineEndBackslash = (sent: string, at: number) => at === sent.length - 2 && sent[at] === "\\" && sent.endsWith("\n")
+  && (/\\+\n$/.exec(sent)![0].length - 1) % 2 === 1;
+
 // A line of pipes, colons, and dashes shows as sent while it arrives, and leaves when it completes a delimiter row (the
 // one flip the table rule allows). Order checks drop every line of only pipes, colons, and dashes, with its line break,
 // on both sides.

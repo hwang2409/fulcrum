@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
-import { waits } from "./accepted-changes.js";
+import { lineEndBackslash, waits } from "./accepted-changes.js";
 
 // The rule this file locks: streaming never hides text the model already sent. At every streamed prefix, every
 // character of the final committed text whose source character has arrived is visible in the rendered tail, in order.
@@ -14,7 +14,9 @@ import { waits } from "./accepted-changes.js";
 // delimiter row is complete), an inline code or emphasis opener, the bracket wait (only `[` and `]` of a possible link
 // span `[...]`, released at the first character after `]` that is not `(` or `[`, bounded by the line end; the text
 // inside always shows), the destination or label after such a `]`, an autolink `<`, a trailing entity, and a trailing
-// backslash. A later `[x]: url` definition never makes a bracket wait.
+// backslash. A later `[x]: url` definition never makes a bracket wait. When a line ends, nothing on it is hidden, with
+// one exception named there too (`lineEndBackslash`): a backslash that ends the line, until the next character decides
+// a hard break or text. Any other hidden character fails, named with its offset and the input.
 //
 // Every frame also hands a memoized view a new object for each block whose content changed: a block grown in place
 // (a whole table row or line arriving in one frame) would stay hidden in a view that skips equal objects.
@@ -93,7 +95,8 @@ function check(source: string, deltas: readonly string[], identity = false) {
     const lineStart = source.lastIndexOf("\n", end - 1) + 1;
     const growing = source.slice(lineStart, end);
     const allowed = Object.values(waits);
-    const held = (at: number) => at >= lineStart && allowed.some((wait) => wait(growing, at - lineStart));
+    const sent = source.slice(0, end);
+    const held = (at: number) => at >= lineStart ? allowed.some((wait) => wait(growing, at - lineStart)) : lineEndBackslash(sent, at);
     const owedIndexes = indexes.filter((index) => index >= 0 && index < end && !held(index));
     const owed = owedIndexes.map((index) => source[index]!).join("");
     const missing = firstMissing(owed, visible(blocks));
@@ -181,6 +184,10 @@ const repros = [
   "~~a\nmore",
   "*a b\nmore* tail",
   "`a b\nmore",
+  // a backslash that ends a line shows; the next line makes it a hard break
+  "a\\\n\nb",
+  "a\\\nb",
+  "> a\\\n> b",
   "`a b\nmore` tail",
   "run `npm test\nthen ``x`` and `y\nz",
   // an entity is text until it ends

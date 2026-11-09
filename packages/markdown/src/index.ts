@@ -415,12 +415,14 @@ function withoutOpenEmphasis(source: string, growing: boolean) {
 type SafeInlineContent = { source: string; openCode?: string };
 
 // This is the only entry point for rendering unfinished inline markdown. An open `<` and a trailing entity wait only
-// on a growing line (`growing`): neither continues past a line end, so on an ended line they are decided text.
+// on a growing line (`growing`): neither continues past a line end, so on an ended line they are decided text. A last
+// backslash waits one character on any line: after a line end, that character decides a hard break or text.
 function withoutTrailingLookahead(source: string, growing: boolean) {
   const backslashes = /\\+$/.exec(source)?.[0].length ?? 0;
   if (backslashes % 2) return source.slice(0, -1);
+  if (!growing) return source;
   // The longest named entity has 31 characters after `&`, a numeric one at most 7 digits or 6 hex digits.
-  const entity = growing ? /&(?:#(?:x[0-9a-f]{0,6}|[0-9]{0,7})?|[a-z][a-z0-9]{0,31})?$/i.exec(source) : null;
+  const entity = /&(?:#(?:x[0-9a-f]{0,6}|[0-9]{0,7})?|[a-z][a-z0-9]{0,31})?$/i.exec(source);
   return entity ? source.slice(0, entity.index) : source;
 }
 
@@ -867,7 +869,6 @@ export function createStreamingDocument(): StreamingDocument {
       const inspected = inspectReferenceLine(inlineSource);
       if (inspected.metadata && inspected.disposition.kind !== "definition") inlineSource = inlineSource.replace("[", "\\[");
     }
-    if (streaming && inlineSource.endsWith("\\")) inlineSource = inlineSource.slice(0, -1);
     record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
       ? parseInline(inlineSource, streaming, environment(), false)
       : [{ type: "text", value: inlineSource }];
