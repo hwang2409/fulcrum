@@ -393,6 +393,17 @@ export const demos: Demo[] = [
     live: 90,
   },
   {
+    id: "markdown-table-flip",
+    part: "Message",
+    title: "markdown table, one character at a time",
+    description: "The header and delimiter rows show as sent while they arrive; the delimiter row's line end turns them into a table in one move.",
+    events: [
+      ...[..."Every check passed:\n\n| check name here | result summary text |\n|:-----------|------------:|\n| typecheck | pass |\n"].map((delta): RunEvent => ({ type: "message_delta", message_id: "markdown-table-flip", delta })),
+      { type: "message_commit", message_id: "markdown-table-flip", message: text("assistant", "Every check passed:\n\n| check name here | result summary text |\n|:-----------|------------:|\n| typecheck | pass |\n") },
+    ],
+    live: 30,
+  },
+  {
     id: "markdown-fence-streaming",
     part: "Message",
     title: "code fence, streaming",

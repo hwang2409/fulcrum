@@ -245,6 +245,13 @@ function readViewerHead() {
       const style = getComputedStyle(jump, "::before");
       return { width: parseFloat(style.width) || 0, filled: !/^(?:transparent|rgba\(0, 0, 0, 0\))$/.test(style.backgroundColor), fill: style.backgroundColor, textColor: getComputedStyle(jump).color };
     })(),
+    // Each status word's text color, and the two text colors it may use: the head's muted and the code's fg (status
+    // colors mark, never color text).
+    words: [...head.querySelectorAll<HTMLElement>("[data-part=text-viewer-position], [data-part=text-viewer-status]")]
+      .filter((word) => word.getBoundingClientRect().width > 1)
+      .map((word) => ({ word: word.textContent ?? "", text: getComputedStyle(word).color })),
+    textColors: [getComputedStyle(head).color, getComputedStyle(viewer).color],
+    jumpLeft: head.querySelector("[data-action^=jump-]")?.getBoundingClientRect().left ?? 0,
   };
 }
 
@@ -294,6 +301,12 @@ export async function checkViewerFollowHead(page: Page, port: number, failures: 
       failures.push(`${at}: with new output below, the head shows neither the position word nor the jump button's warn square`);
     if (fresh?.mark?.filled && fresh.mark.textColor === fresh.mark.fill)
       failures.push(`${at}: the jump button's text turns ${fresh.mark.textColor} on new output (status colors mark, never color text)`);
+    for (const state of states) for (const { word, text } of state.words)
+      if (!state.textColors.includes(text))
+        failures.push(`${at}: the status word "${word}" is colored ${text} (status colors mark, never color text)`);
+    const lefts = states.map(({ jumpLeft }) => jumpLeft);
+    if (width <= 560 && Math.max(...lefts) - Math.min(...lefts) > 0.5)
+      failures.push(`${at}: the jump button's left edge moves ${(Math.max(...lefts) - Math.min(...lefts)).toFixed(1)} px between its labels`);
     for (const state of states) {
       if (width >= 300 && state.wraps) failures.push(`${at}: the viewer head wraps onto a second row when ${state.position}`);
       if (first && (Math.abs(state.height - first.height) > 0.5 || Math.abs(state.top - first.top) > 0.5 || Math.abs(state.viewerTop - first.viewerTop) > 0.5))
@@ -523,6 +536,67 @@ async function checkCursorSteps(browser: Browser, port: number, failures: string
   if (failures.length === before) console.log(`ok   cursor steps: 200 ticks of ${ids.join(", ")}: one cursor at most, in the open fence, in it once closed, then after it, none on text a running tool follows, and the fence never shrinks; the ai-sdk messages stream with one cursor, then commit above the running tool`);
 }
 
+// Runs in the page. The table-flip demo's message: its bottom (the content below moves with it), its text end, its
+// line boxes (a paragraph's lines, a table's rows), and whether the table exists.
+function readTableFlip() {
+  const message = document.querySelector<HTMLElement>("#markdown-table-flip [data-part=message]");
+  if (!message) return undefined;
+  let lines = 0;
+  for (const paragraph of message.querySelectorAll("p")) {
+    const range = document.createRange();
+    range.selectNodeContents(paragraph);
+    lines += new Set([...range.getClientRects()].filter((rect) => rect.width > 0).map((rect) => Math.round(rect.top))).size;
+  }
+  const table = message.querySelector("table");
+  return { bottom: message.getBoundingClientRect().bottom, text: (message.textContent ?? "").slice(-30), lines, rows: table?.querySelectorAll("tr").length ?? 0, table: !!table, state: message.dataset.state };
+}
+
+// The raw header row flipping to a table on the delimiter row moves the content below at most once, at every width.
+// Text that arrives may wrap and add a line (never-hide outranks that move: the partial delimiter row shows as sent);
+// every other move must be in the same frame as an arriving character (the demo sends one per 30 ms tick) that adds a
+// line or a row.
+export async function checkTableFlip(browser: Browser, port: number, failures: string[]) {
+  const before = failures.length;
+  for (const width of [280, 390, 1440]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "no-preference" });
+    const start = new Date("2026-01-01T00:00:00Z");
+    await page.clock.install({ time: start });
+    await page.clock.pauseAt(new Date(start.getTime() + 1));
+    await page.goto(`http://127.0.0.1:${port}/gallery.html#markdown-table-flip`);
+    await page.waitForSelector("#markdown-table-flip", { state: "attached", timeout: 10_000 });
+    // Load every font face before the stream starts: the first character would request the message font, and its
+    // fallback line height is not a move a reader sees once the font is cached.
+    await page.evaluate(() => Promise.all([...document.fonts].map((face) => face.load())));
+    await page.locator("#markdown-table-flip").scrollIntoViewIfNeeded();
+    const at = `markdown-table-flip @ ${width}`;
+    let prior: NonNullable<ReturnType<typeof readTableFlip>> | undefined;
+    const flips: number[] = [];
+    let streamed = false;
+    let tabled = false;
+    for (let step = 0; step < 200; step++) {
+      await page.clock.runFor(30);
+      const state = await page.evaluate(readTableFlip);
+      if (!state) continue;
+      if (state.state === "streaming") streamed = true;
+      if (state.state === "streaming" && state.table) tabled = true;
+      if (state.state !== "streaming") { if (streamed) break; prior = undefined; continue; }
+      // The window is the table: from the header row's first character to the commit.
+      if (!state.table && !state.text.includes("|")) { prior = undefined; continue; }
+      if (prior && Math.abs(state.bottom - prior.bottom) > 0.5) {
+        const moved = `${(state.bottom - prior.bottom).toFixed(1)} px at step ${step}`;
+        if (state.table && !prior.table) flips.push(state.bottom - prior.bottom);
+        else if (!(state.lines > prior.lines || state.rows > prior.rows))
+          failures.push(`${at}: the content below moves ${moved} with no arriving character that adds a line (${prior.lines} -> ${state.lines} lines, ${prior.rows} -> ${state.rows} rows, text ${JSON.stringify(state.text)})`);
+      }
+      prior = state;
+    }
+    await page.close();
+    if (!streamed || !tabled) failures.push(`${at}: the demo never streamed into a table (the demo changed?)`);
+    else if (flips.length > 1) failures.push(`${at}: the flip to a table moves the content below ${flips.length} times (${flips.map((px) => px.toFixed(1)).join(", ")} px)`);
+  }
+  if (failures.length === before) console.log("ok   table flip: at 280, 390, and 1440 the delimiter row's flip moves the content below at most once; every other move is an arriving character's wrap");
+}
+
 // Every part stays still under reduced motion even outside a Timeline or Composer: the gallery's rows (paused in their
 // in-progress states) and composers, copied into a plain container, animate nowhere once reduced motion is on, and
 // some did with it off, so the check sees real animations. A host widget that uses data-part for its own anatomy
@@ -576,6 +650,7 @@ export async function checkCards(browser: Browser, port: number): Promise<string
   await checkStreamingCursor(page, port, failures);
   await checkViewerFollowHead(page, port, failures);
   await checkCursorSteps(browser, port, failures);
+  await checkTableFlip(browser, port, failures);
   await checkStandaloneMotion(page, port, failures);
   await page.goto(`http://127.0.0.1:${port}/gallery.html#tools-done`);
   await page.waitForSelector("#tools-done [data-part=tool-body]");
