@@ -40,6 +40,9 @@ const widths = [390, 768, 1024, 1440];
 const touchWidth = 860; // the gallery's touch breakpoint
 const port = Number(process.env.LAYOUT_PORT ?? 4174); // override when another checkout already serves 4174
 const baseRoot = process.env.LAYOUT_BASE_ROOT;
+// Unset runs the whole gate; CI splits it into two parallel jobs: "themes" (the theme sweep only) and "checks" (the rest).
+const layoutPart = process.env.LAYOUT_PART;
+if (layoutPart !== undefined && layoutPart !== "themes" && layoutPart !== "checks") throw new Error(`LAYOUT_PART must be themes or checks, got ${layoutPart}`);
 const basePort = Number(process.env.LAYOUT_BASE_PORT ?? port + 1);
 const candidateUrl = `http://127.0.0.1:${port}`;
 const baseUrl = baseRoot ? `http://127.0.0.1:${basePort}` : undefined;
@@ -537,6 +540,77 @@ async function checkStructuredViewer(page: Page, fixture: "edit" | "search") {
   ];
 }
 
+// Every theme at every width, plus the other playground pages: about 9 of the gate's 12-18 min on CI.
+async function checkThemeSweep(browser: Awaited<ReturnType<typeof chromium.launch>>): Promise<string[]> {
+  const failures: string[] = [];
+  let themes: string[] = [];
+  for (const width of widths) {
+    const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
+    if (!themes.length) {
+      await page.goto(`http://127.0.0.1:${port}/gallery.html`);
+      // The picker lists every theme in the shipped themes.css.
+      themes = await page.$$eval("#theme option", (options) => options.map((option) => (option as HTMLOptionElement).value).filter((value) => value !== "auto"));
+      if (themes.length < 12) throw new Error(`expected at least 12 themes in the picker, found ${themes.length}`);
+    }
+    for (const theme of themes) {
+      await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}`);
+      await page.waitForSelector('[data-part="tool"]');
+      // Code highlighting arrives after the highlighter loads; without this wait the text audit sees almost no syntax
+      // spans. Wait for the first keyword span, then for the span count to hold still for 1 s.
+      const highlighted = await page.waitForSelector('[data-part="timeline"] .tok-keyword', { timeout: 30_000 }).then(() => true, () => false);
+      if (!highlighted) failures.push(`${theme} @ ${width}: no .tok-keyword span after 30 s; syntax highlighting did not arrive`);
+      for (let last = -1, still = 0, i = 0; still < 4 && i < 80; i++) {
+        const spans = await page.locator('[data-part="timeline"] [class*="tok-"]').count();
+        still = spans === last ? still + 1 : 0;
+        last = spans;
+        await page.waitForTimeout(250);
+      }
+      // Names the widest element that pokes past the viewport, so a failure points at its cause.
+      const result = await page.evaluate(() => {
+        const viewport = innerWidth;
+        let culprit = "";
+        let right = viewport;
+        for (const node of document.querySelectorAll<HTMLElement>("body *")) {
+          const edge = node.getBoundingClientRect().right;
+          if (edge > right + 0.5) [right, culprit] = [edge, `${node.tagName.toLowerCase()}.${node.className || node.getAttribute("data-part") || ""}`];
+        }
+        return { scroll: document.documentElement.scrollWidth, viewport, culprit, right: Math.round(right) };
+      });
+      const line = `${theme} @ ${width}: scrollWidth ${result.scroll}, innerWidth ${result.viewport}`;
+      if (result.scroll > result.viewport) failures.push(`${line} (widest: ${result.culprit} to ${result.right}px)`);
+      else console.log(`ok   ${line}`);
+      const minHeight = width <= touchWidth ? 44 : 36;
+      for (const problem of await page.evaluate(pageProblems, minHeight)) failures.push(`${theme} @ ${width}: ${problem}`);
+      // Each load starts a cold highlighter, so this also checks a grammar's first lines.
+      const plain = await checkLineTokens(page);
+      for (const problem of plain) failures.push(`${theme} @ ${width}: ${problem}`);
+      if (!plain.length) console.log(`ok   ${theme} @ ${width}: every highlighted box matches its line fixture`);
+      // Control styling does not depend on the palette: one light and one dark theme at each width.
+      if (theme === "github-light" || theme === "gruvbox-dark") for (const problem of await checkControls(page)) failures.push(`${theme} @ ${width}: ${problem}`);
+    }
+    // The other playground pages share one shell: no sideways scroll, and every control is named and big enough to hit.
+    for (const path of ["/", "/virtual.html", "/highlight.html"]) {
+      await page.goto(`http://127.0.0.1:${port}${path}`);
+      await page.waitForSelector(".toolbar");
+      const problems = await page.evaluate((minHeight) => {
+        const found: string[] = [];
+        if (document.documentElement.scrollWidth > innerWidth) found.push(`scrollWidth ${document.documentElement.scrollWidth} > ${innerWidth}`);
+        for (const control of document.querySelectorAll<HTMLInputElement>(".shell-bar a, .shell-bar select, .toolbar :is(button, select, input)")) {
+          const name = control.getAttribute("aria-label") || [...(control.labels ?? [])].map((label) => label.textContent).join("") || control.textContent;
+          const label = `${control.tagName.toLowerCase()} "${name?.trim().slice(0, 24)}"`;
+          if (!name?.trim()) found.push(`${control.tagName.toLowerCase()} has no accessible name`);
+          if (control.getBoundingClientRect().height < minHeight) found.push(`${label} is ${Math.round(control.getBoundingClientRect().height)} px tall, needs ${minHeight} px`);
+        }
+        return found;
+      }, width <= touchWidth ? 44 : 36);
+      for (const problem of problems) failures.push(`${path} @ ${width}: ${problem}`);
+      if (!problems.length) console.log(`ok   ${path} @ ${width}`);
+    }
+    await page.close();
+  }
+  return failures;
+}
+
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 const failures: string[] = [];
 try {
@@ -553,9 +627,12 @@ try {
     }
   }
   browser = await chromium.launch();
-  if (process.env.VIEWER_TIMING_ONLY) {
-    for (const width of [390, 1440]) recordViewerTimingFailures(await checkViewerTiming(browser, width), width, failures);
-    recordViewerScaling(await checkViewerScaling(browser), failures);
+  if (process.env.VIEWER_TIMING_ONLY || layoutPart === "themes") {
+    if (layoutPart === "themes") failures.push(...await checkThemeSweep(browser));
+    else {
+      for (const width of [390, 1440]) recordViewerTimingFailures(await checkViewerTiming(browser, width), width, failures);
+      recordViewerScaling(await checkViewerScaling(browser), failures);
+    }
     await browser.close();
     browser = undefined;
     for (const child of previews) child.kill("SIGTERM");
@@ -649,71 +726,7 @@ try {
   else console.log("ok   static idle scheduled 0 rAF callbacks over 500 ms");
   await replay.close();
 
-  let themes: string[] = [];
-  for (const width of widths) {
-    const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });
-    if (!themes.length) {
-      await page.goto(`http://127.0.0.1:${port}/gallery.html`);
-      // The picker lists every theme in the shipped themes.css.
-      themes = await page.$$eval("#theme option", (options) => options.map((option) => (option as HTMLOptionElement).value).filter((value) => value !== "auto"));
-      if (themes.length < 12) throw new Error(`expected at least 12 themes in the picker, found ${themes.length}`);
-    }
-    for (const theme of themes) {
-      await page.goto(`http://127.0.0.1:${port}/gallery.html?theme=${theme}`);
-      await page.waitForSelector('[data-part="tool"]');
-      // Code highlighting arrives after the highlighter loads; without this wait the text audit sees almost no syntax
-      // spans. Wait for the first keyword span, then for the span count to hold still for 1 s.
-      const highlighted = await page.waitForSelector('[data-part="timeline"] .tok-keyword', { timeout: 30_000 }).then(() => true, () => false);
-      if (!highlighted) failures.push(`${theme} @ ${width}: no .tok-keyword span after 30 s; syntax highlighting did not arrive`);
-      for (let last = -1, still = 0, i = 0; still < 4 && i < 80; i++) {
-        const spans = await page.locator('[data-part="timeline"] [class*="tok-"]').count();
-        still = spans === last ? still + 1 : 0;
-        last = spans;
-        await page.waitForTimeout(250);
-      }
-      // Names the widest element that pokes past the viewport, so a failure points at its cause.
-      const result = await page.evaluate(() => {
-        const viewport = innerWidth;
-        let culprit = "";
-        let right = viewport;
-        for (const node of document.querySelectorAll<HTMLElement>("body *")) {
-          const edge = node.getBoundingClientRect().right;
-          if (edge > right + 0.5) [right, culprit] = [edge, `${node.tagName.toLowerCase()}.${node.className || node.getAttribute("data-part") || ""}`];
-        }
-        return { scroll: document.documentElement.scrollWidth, viewport, culprit, right: Math.round(right) };
-      });
-      const line = `${theme} @ ${width}: scrollWidth ${result.scroll}, innerWidth ${result.viewport}`;
-      if (result.scroll > result.viewport) failures.push(`${line} (widest: ${result.culprit} to ${result.right}px)`);
-      else console.log(`ok   ${line}`);
-      const minHeight = width <= touchWidth ? 44 : 36;
-      for (const problem of await page.evaluate(pageProblems, minHeight)) failures.push(`${theme} @ ${width}: ${problem}`);
-      // Each load starts a cold highlighter, so this also checks a grammar's first lines.
-      const plain = await checkLineTokens(page);
-      for (const problem of plain) failures.push(`${theme} @ ${width}: ${problem}`);
-      if (!plain.length) console.log(`ok   ${theme} @ ${width}: every highlighted box matches its line fixture`);
-      // Control styling does not depend on the palette: one light and one dark theme at each width.
-      if (theme === "github-light" || theme === "gruvbox-dark") for (const problem of await checkControls(page)) failures.push(`${theme} @ ${width}: ${problem}`);
-    }
-    // The other playground pages share one shell: no sideways scroll, and every control is named and big enough to hit.
-    for (const path of ["/", "/virtual.html", "/highlight.html"]) {
-      await page.goto(`http://127.0.0.1:${port}${path}`);
-      await page.waitForSelector(".toolbar");
-      const problems = await page.evaluate((minHeight) => {
-        const found: string[] = [];
-        if (document.documentElement.scrollWidth > innerWidth) found.push(`scrollWidth ${document.documentElement.scrollWidth} > ${innerWidth}`);
-        for (const control of document.querySelectorAll<HTMLInputElement>(".shell-bar a, .shell-bar select, .toolbar :is(button, select, input)")) {
-          const name = control.getAttribute("aria-label") || [...(control.labels ?? [])].map((label) => label.textContent).join("") || control.textContent;
-          const label = `${control.tagName.toLowerCase()} "${name?.trim().slice(0, 24)}"`;
-          if (!name?.trim()) found.push(`${control.tagName.toLowerCase()} has no accessible name`);
-          if (control.getBoundingClientRect().height < minHeight) found.push(`${label} is ${Math.round(control.getBoundingClientRect().height)} px tall, needs ${minHeight} px`);
-        }
-        return found;
-      }, width <= touchWidth ? 44 : 36);
-      for (const problem of problems) failures.push(`${path} @ ${width}: ${problem}`);
-      if (!problems.length) console.log(`ok   ${path} @ ${width}`);
-    }
-    await page.close();
-  }
+  if (layoutPart !== "checks") failures.push(...await checkThemeSweep(browser));
   for (const width of [390, 1440]) {
     for (const fixture of ["single", "lines", "read"] as const) {
       const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: "reduce" });

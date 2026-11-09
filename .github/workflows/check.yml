@@ -3,20 +3,26 @@ on: [push, pull_request]
 concurrency:
   group: check-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
+# The parts run in parallel. `check` at the end is the one name that means "every part passed".
+# Each part's limit is about 1.5x its slowest expected run, so a hang fails at a named step instead of holding the runner.
 jobs:
-  check:
+  unit:
     runs-on: ubuntu-latest
-    # About 2x the slowest recent green run (29.9 min), so a hang fails at a named step instead of holding the runner.
-    timeout-minutes: 60
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - &checkout
+        uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: oven-sh/setup-bun@v2
+      - &setup-bun
+        uses: oven-sh/setup-bun@v2
         with: { bun-version: 1.4.4 }
-      - run: bun install --frozen-lockfile
-      - id: highlight-recipes
+      - &install
+        run: bun install --frozen-lockfile
+      - &highlight-recipes-hash
+        id: highlight-recipes
         run: echo "hash=$(bun packages/highlight/src/generate.ts --hash)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
+      - &highlight-recipes-cache
+        uses: actions/cache@v4
         with:
           path: |
             packages/highlight/.grammar-entries
@@ -45,11 +51,63 @@ jobs:
       - run: bun run check:highlight-consumer
       - run: bun run check:notices
       - run: bun run check:pack-consumer
-      - run: cd apps/playground && bunx playwright install --with-deps chromium webkit
-      - run: bun run --cwd apps/playground highlight:recipes
+
+  playground:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - *checkout
+      - *setup-bun
+      - *install
+      - *highlight-recipes-hash
+      - *highlight-recipes-cache
+      - &playwright
+        run: cd apps/playground && bunx playwright install --with-deps chromium webkit
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground smoke
-      - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
+      - &build-playground
+        run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
       - run: bun run check:mermaid-bundle
+      # Needs packages/highlight/dist, which the build above makes (it used to come from typecheck in the single job).
+      - run: bun run --cwd apps/playground highlight:recipes
+      - run: bun run --cwd apps/playground mermaid
+      - run: bun run --cwd apps/playground fold-check
+        env: { FOLD_ROWS: 50000 }
+      - run: bun run --cwd apps/playground highlight:fallback
+      # The runner's CPU is about half as fast as a developer laptop (the 440 kB markdown parse in this gate: 22 ms here,
+      # 10-12 ms there, both at 4x), so 2x here is about the laptop's 4x.
+      # Normal is about 30 s; the page deadline is 4 min, plus 2 min for diagnostics and bounded cleanup.
+      - name: large-blocks
+        timeout-minutes: 6
+        run: bun run --cwd apps/playground large-blocks
+        env: { CPU_THROTTLE: 2 }
+
+  # The layout gate is 12-18 min, too long for one job: the theme sweep runs here, everything else in layout-checks.
+  layout-themes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - *checkout
+      - *setup-bun
+      - *install
+      - *highlight-recipes-hash
+      - *highlight-recipes-cache
+      - *playwright
+      - *build-playground
+      - run: bun run --cwd apps/playground layout
+        env: { LAYOUT_PART: themes }
+
+  # Viewer timing compares this head with the base build in the same job, on the same runner.
+  layout-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - *checkout
+      - *setup-bun
+      - *install
+      - *highlight-recipes-hash
+      - *highlight-recipes-cache
+      - *playwright
+      - *build-playground
       - name: build base playground for viewer timing
         env:
           BASE_DIR: ${{ github.workspace }}/../fulcrum-layout-base
@@ -67,21 +125,37 @@ jobs:
           bun run --cwd apps/playground build
       - run: bun run --cwd apps/playground layout
         env:
+          LAYOUT_PART: checks
           LAYOUT_BASE_ROOT: ${{ github.workspace }}/../fulcrum-layout-base/apps/playground
-      - run: bun run --cwd apps/playground mermaid
-      - run: bun run --cwd apps/playground fold-check
-        env: { FOLD_ROWS: 50000 }
-      - run: bun run --cwd apps/playground highlight:fallback
-      # The runner's CPU is about half as fast as a developer laptop (the 440 kB markdown parse in this gate: 22 ms here,
-      # 10-12 ms there, both at 4x), so 2x here is about the laptop's 4x.
-      # Normal is about 30 s; the page deadline is 4 min, plus 2 min for diagnostics and bounded cleanup.
-      - name: large-blocks
-        timeout-minutes: 6
-        run: bun run --cwd apps/playground large-blocks
-        env: { CPU_THROTTLE: 2 }
+
+  web-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - *checkout
+      - *setup-bun
+      - *install
+      - *highlight-recipes-hash
+      - *highlight-recipes-cache
+      - *playwright
+      - *build-playground
       - run: cd apps/web && bun run gate
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fulcrum-web-gate
           path: apps/web/gate-artifacts/
+
+  # A plain `needs:` would mark this job skipped when a part fails, and tools read skipped as not failed.
+  # So it always runs and fails unless every part succeeded (cancelled and skipped count as failed).
+  check:
+    if: always()
+    needs: [unit, playground, layout-themes, layout-checks, web-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: every part passed
+        env: { NEEDS: "${{ toJSON(needs) }}" }
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' > /dev/null
