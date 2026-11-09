@@ -5,7 +5,8 @@ GlobalRegistrator.register();
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Composer, type ComposerProps } from "../src/index.js";
+import { createRunStore } from "@fulcrum/core";
+import { Composer, RunProvider, type ComposerProps } from "../src/index.js";
 import { unsentDraft } from "../src/composer.js";
 
 afterAll(() => GlobalRegistrator.unregister());
@@ -293,4 +294,92 @@ test("when the composer goes read-only while stop has focus, focus moves to the 
   act(() => stop()!.focus());
   render(<Composer state="read-only" reason="reconnecting" onSubmit={() => Promise.resolve()} />);
   expect(document.activeElement).toBe(q('[data-part="composer"]'));
+});
+
+/** A host whose send reply waits while the run already shows zeta's echo of the message (the user_message with its delivery id). */
+function echoFirst(result: () => Promise<unknown>) {
+  const store = createRunStore((flush) => flush());
+  const seen: string[] = [];
+  const onSubmit: ComposerProps["onSubmit"] = (text, _intent, trackDelivery) => {
+    seen.push(text);
+    trackDelivery?.("d1");
+    return result();
+  };
+  const echo = () => act(() => store.dispatch({ type: "user_message", text: seen[0]!, mode: "send", delivery_id: "d1" }));
+  return { store, seen, onSubmit, echo };
+}
+
+test("the echo of the sent message clears the draft before the send reply; Enter in the gap sends nothing", async () => {
+  const reply = deferred();
+  const { store, seen, onSubmit, echo } = echoFirst(() => reply.promise);
+  mount(<RunProvider store={store}><Composer state="idle" onSubmit={onSubmit} /></RunProvider>);
+  type("hello");
+  enter();
+  await settle();
+  expect(field().value).toBe("hello");
+  echo();
+  expect(field().value).toBe("");
+  // Between the echo and the reply: Enter (even with new text typed) never sends a second time.
+  enter();
+  type("next");
+  enter();
+  await settle();
+  expect(seen).toEqual(["hello"]);
+  await act(async () => { reply.resolve(); await reply.promise; });
+  // The reply clears nothing more: the new draft stays whole.
+  expect(field().value).toBe("next");
+  expect(status().textContent).toBe("");
+});
+
+test("the echo clears only the sent part; text typed after it stays", async () => {
+  const reply = deferred();
+  const { store, onSubmit, echo } = echoFirst(() => reply.promise);
+  mount(<RunProvider store={store}><Composer state="idle" onSubmit={onSubmit} /></RunProvider>);
+  type("hello");
+  enter();
+  type("hello\nmore");
+  echo();
+  expect(field().value).toBe("\nmore");
+  // A draft that again starts with the sent text is not cut a second time when the reply comes.
+  type("hello again");
+  await act(async () => { reply.resolve(); await reply.promise; });
+  expect(field().value).toBe("hello again");
+});
+
+test("a reply that fails after the echo is not a failure: the message reached the run", async () => {
+  const reply = deferred();
+  const { store, onSubmit, echo } = echoFirst(() => reply.promise);
+  mount(<RunProvider store={store}><Composer state="idle" onSubmit={onSubmit} /></RunProvider>);
+  type("hello");
+  enter();
+  echo();
+  await act(async () => { reply.reject(new Error("timed out")); await reply.promise.catch(() => {}); });
+  expect(field().value).toBe("");
+  expect(status().textContent).toBe("");
+  expect(q('[data-part="composer"]')!.dataset.error).toBeUndefined();
+});
+
+test("with no echo, a failed send keeps the draft for a retry, and an echo after the failure changes nothing", async () => {
+  const { store, seen, onSubmit, echo } = echoFirst(() => Promise.reject(new Error("socket closed")));
+  mount(<RunProvider store={store}><Composer state="idle" onSubmit={onSubmit} /></RunProvider>);
+  type("hello");
+  enter();
+  await settle();
+  expect(field().value).toBe("hello");
+  expect(status().textContent).toBe("could not send: socket closed");
+  echo();
+  expect(field().value).toBe("hello");
+  expect(seen).toEqual(["hello"]);
+});
+
+test("an id the run already has (a retry whose first attempt landed) clears the draft at once", async () => {
+  const reply = deferred();
+  const { store, onSubmit } = echoFirst(() => reply.promise);
+  store.dispatch({ type: "user_message", text: "hello", mode: "send", delivery_id: "d1" });
+  mount(<RunProvider store={store}><Composer state="idle" onSubmit={onSubmit} /></RunProvider>);
+  type("hello");
+  enter();
+  await settle();
+  expect(field().value).toBe("");
+  await act(async () => { reply.resolve(); await reply.promise; });
 });
