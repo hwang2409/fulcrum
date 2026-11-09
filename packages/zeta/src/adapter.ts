@@ -214,11 +214,25 @@ const turnData = (data: Record<string, unknown>) => {
   return data;
 };
 
+const childHoldNotification = (data: Record<string, unknown>): RunEvent => {
+  const description = string(data.description, "data.description");
+  const until = string(data.until, "data.until");
+  const reason = string(data.reason, "data.reason");
+  const cause = reason === "rate_limit" ? "provider rate limit" : reason === "subscription_limit" ? "subscription limit" : reason;
+  const { account: _account, text: _text, ...safe } = data;
+  return {
+    type: "notification",
+    notification_id: optionalString(data.notification_id, "data.notification_id"),
+    data: { ...safe, text: `child ${description} waits for a ${cause} until ${until}` },
+  };
+};
+
 const childNotification = (name: string, data: Record<string, unknown>): RunEvent | undefined => {
   const kind = name === "sub_agent_receipt" || name === "notification_by_kind"
     ? string(data.kind ?? "agent_completion", "data.kind")
     : name;
   switch (kind) {
+    case "child_hold": return childHoldNotification(data);
     case "agent_completion": {
       const [status, urgency] = completionStatus(data);
       return subAgent(data, status, urgency);
@@ -347,6 +361,7 @@ export function fromZetaEvent(value: unknown): RunEvent[] {
           ? [subAgent(data, "running", undefined, "agent_instance_id")]
           : [{ type: "notification", notification_id: optionalString(data.notification_id, "data.notification_id"), data: { ...data } }];
       }
+      case "child_hold":
       case "sub_agent_receipt":
       case "notification_by_kind":
       case "task_exit_notification":
@@ -445,7 +460,10 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>, resent: Set<un
     }
   } else {
     const notification = optionalObject(row.notification ?? undefined, "history row notification");
-    events.push({ type: "notification", notification_id: optionalString(notification?.notification_id, "notification.notification_id"), data: { ...notification, role, text: text(content) } });
+    const event = notification?.kind === "child_hold"
+      ? childHoldNotification(notification)
+      : { type: "notification" as const, notification_id: optionalString(notification?.notification_id, "notification.notification_id"), data: { ...notification, role, text: text(content) } };
+    events.push(event);
   }
   const failed = optionalObject(row.failed_turn ?? undefined, "failed_turn");
   if (failed) events.push({ type: "error", error: { code: string(failed.code, "failed_turn.code"), message: string(failed.message, "failed_turn.message") } });

@@ -64,6 +64,40 @@ test("history and live approval events share one reducer item", () => {
   expect(store.getOutline()).toEqual([{ id: "approval:r1", kind: "approval" }]);
 });
 
+test("child holds use the same readable notification in live and history", () => {
+  // Frame shape from zeta 1bef23e0 src/zeta/agent/conversation_channel.py:336-353 and event_contract.py:93-110.
+  const data = {
+    notification_id: "hold-1",
+    origin: "notification",
+    kind: "child_hold",
+    child_instance_id: "child-1",
+    child_session_path: "/tmp/child",
+    description: "worker",
+    status: "held",
+    reason: "rate_limit",
+    until: "2030-01-02T03:04:05+00:00",
+    provider: "anthropic",
+    account: "secret-account",
+    retry_after: 1234,
+    text: "child child-1 is held by a provider rate limit on secret-account until 2030-01-02T03:04:05+00:00.",
+  };
+  const live = fromZetaEvent({ event: "child_hold", session_id: "parent", data });
+  const history = fromZetaHistory([{ id: "hold-1", role: "system", content: [{ type: "text", text: data.text }], tool_result: null, notification: data }]);
+  expect(live).toEqual(history);
+  const liveStore = createRunStore((flush) => flush());
+  const historyStore = createRunStore((flush) => flush());
+  for (const event of live) liveStore.dispatch(event);
+  for (const event of history) historyStore.dispatch(event);
+  expect(liveStore.getState()).toEqual(historyStore.getState());
+  const item = liveStore.getItem(liveStore.getOutline()[0]!.id);
+  expect(item).toMatchObject({ event: { type: "notification", data: { kind: "child_hold", text: "child worker waits for a provider rate limit until 2030-01-02T03:04:05+00:00" } } });
+  expect(JSON.stringify(item)).not.toContain("secret-account");
+});
+
+test("legacy child hold receipts remain notifications", () => {
+  expect(fromZetaEvent({ event: "sub_agent_receipt", data: { ...{ kind: "child_hold", notification_id: "hold-1" }, description: "worker", reason: "rate_limit", until: "2030-01-02T03:04:05+00:00", text: "held" } })[0]).toMatchObject({ type: "notification", data: { kind: "child_hold" } });
+});
+
 test("one invalid row becomes an error and the rest still map", () => {
   const events = fromZetaHistory([{ id: "x", role: "assistant", content: "nope" }, rows[0]]);
   expect(events.map((event) => event.type)).toEqual(["error", "user_message"]);
