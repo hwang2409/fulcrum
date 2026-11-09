@@ -295,3 +295,27 @@ test("a resync to a different history starts the text over, then appends to the 
   openViewer("a");
   expect([shown("a"), count("a")]).toEqual(seen);
 });
+
+// A long-lived open viewer keeps only what the appends added: after warm-up, retained heap over 200 appends of 100
+// characters stays within a small multiple of the added text. Before stream tails, each append left a full-text
+// sized copy alive (about 2 MB per append on a 1,000,000-line output in Chromium).
+test("a long-lived open viewer retains about the text its appends add, not a copy of the whole text", () => {
+  const { heapSize } = require("bun:jsc") as { heapSize: () => number };
+  const store = createRunStore((job) => job());
+  store.dispatch(start("a"));
+  store.dispatch(out("a", big(1_000_000)));
+  mount(store, ["a"]);
+  openViewer("a");
+  const tail = `\n${"p".repeat(99)}`;
+  let index = 0;
+  const appendSome = (count: number) => { for (const end = index + count; index < end; index++) act(() => store.dispatch(out("a", tail))); };
+  appendSome(100);
+  Bun.gc(true);
+  const before = heapSize();
+  appendSome(200);
+  Bun.gc(true);
+  const growth = heapSize() - before;
+  console.log(`retained over 200 appends of 100 characters: ${(growth / 1024).toFixed(0)} KiB`);
+  // 20,000 characters added. A copy of the 2,000,000-character text is 2 MB (one-byte) or 4 MB; even one copy fails.
+  expect(growth).toBeLessThan(1024 * 1024);
+});
