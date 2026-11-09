@@ -104,13 +104,19 @@ test("the run-end marker uses one tint for ok, warn, and danger", () => {
   expect([...markerTints]).toHaveLength(1);
 });
 
-test("UI text reaches 4.5:1 on bg, surface, diff rows, and its own end-marker tint in every theme", () => {
+// Status text keeps a margin over AA: a value that passes 4.5:1 only by rounding (4.5004) can drop below it under another
+// blend, gamma, or subpixel rendering. Status marks (rails, squares, borders) keep the same margin over 3:1.
+const STATUS_TEXT_FLOOR = 4.6;
+const STATUS_MARK_FLOOR = 3.1;
+
+test("UI text reaches 4.5:1 (status text 4.6:1) on bg, surface, diff rows, and its own end-marker tint in every theme", () => {
   const problems: string[] = [];
   for (const { name, vars } of palettes) {
     for (const key of UI) {
+      const min = STATUS.includes(key) ? STATUS_TEXT_FLOOR : 4.5;
       for (const [background, rgb] of Object.entries(backgrounds(vars, key))) {
         const ratio = contrast(color(vars[key]!, vars), rgb);
-        if (ratio < 4.5) problems.push(`${name}: --fulcrum-${key} on ${background} is ${ratio.toFixed(3)}:1`);
+        if (ratio < min) problems.push(`${name}: --fulcrum-${key} on ${background} is ${ratio.toFixed(4)}:1, needs ${min}:1`);
       }
     }
   }
@@ -123,7 +129,20 @@ test("ok, warn, and danger are the official hex or its smallest OKLCH lightness 
     for (const key of STATUS) {
       const where = `${name}: --fulcrum-${key} ${vars[key]}`;
       if (!/^#[0-9a-f]{6}$/i.test(vars[key]!)) { problems.push(`${where} is not a palette hex`); continue; }
-      if (official[key]) problems.push(...familyProblems(where, color(vars[key]!, vars), official[key]!, backgrounds(vars, key), 4.5));
+      if (official[key]) problems.push(...familyProblems(where, color(vars[key]!, vars), official[key]!, backgrounds(vars, key), STATUS_TEXT_FLOOR));
+    }
+  }
+  expect(problems).toEqual([]);
+});
+
+test("ok, warn, and danger marks (rails, squares, borders) reach 3.1:1 on bg and surface in every theme", () => {
+  const problems: string[] = [];
+  for (const { name, vars } of palettes) {
+    for (const key of STATUS) {
+      for (const background of ["bg", "surface"]) {
+        const ratio = contrast(color(vars[key]!, vars), color(vars[background]!, vars));
+        if (ratio < STATUS_MARK_FLOOR) problems.push(`${name}: --fulcrum-${key} mark on ${background} is ${ratio.toFixed(4)}:1, needs ${STATUS_MARK_FLOOR}:1`);
+      }
     }
   }
   expect(problems).toEqual([]);
