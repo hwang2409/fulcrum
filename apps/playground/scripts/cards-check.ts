@@ -237,6 +237,14 @@ function readViewerHead() {
     top: box.top + scrollY,
     viewerTop: viewer.getBoundingClientRect().top + scrollY,
     wraps: Math.max(...boxes.map((item) => item.top)) >= Math.min(...boxes.map((item) => item.bottom)),
+    // How the head says "new output": the position word when it shows, else the jump button's warn square.
+    positionShown: (head.querySelector("[data-part=text-viewer-position]")?.getBoundingClientRect().width ?? 0) > 1,
+    mark: (() => {
+      const jump = head.querySelector("[data-action=jump-bottom]");
+      if (!jump) return undefined;
+      const style = getComputedStyle(jump, "::before");
+      return { width: parseFloat(style.width) || 0, filled: !/^(?:transparent|rgba\(0, 0, 0, 0\))$/.test(style.backgroundColor), fill: style.backgroundColor, textColor: getComputedStyle(jump).color };
+    })(),
   };
 }
 
@@ -271,7 +279,7 @@ export async function checkViewerFollowHead(page: Page, port: number, failures: 
       position.textContent = "new output";
     }, scope);
     await read();
-    const jump = (target: string) => page.locator(`${scope} [data-action=jump-${target}]`).click({ timeout: 2_000 }).catch(() => {});
+    const jump = (target: string) => page.locator(`${scope} [data-action=jump-${target}]`).click({ timeout: 2_000 });
     await jump("bottom");
     await jump("top");
     await read(); // at top
@@ -281,6 +289,11 @@ export async function checkViewerFollowHead(page: Page, port: number, failures: 
     if (states.length !== 5) failures.push(`${at}: no streaming viewer head in every follow state (${states.length} of 5)`);
     const [first] = states;
     if (first && new Set(states.map(({ position }) => position)).size < 3) failures.push(`${at}: the follow states did not change the position (${states.map(({ position }) => position).join(", ")})`);
+    const fresh = states.find(({ position }) => position === "new output");
+    if (fresh && !fresh.positionShown && !(fresh.mark && fresh.mark.filled && fresh.mark.width >= 6))
+      failures.push(`${at}: with new output below, the head shows neither the position word nor the jump button's warn square`);
+    if (fresh?.mark?.filled && fresh.mark.textColor === fresh.mark.fill)
+      failures.push(`${at}: the jump button's text turns ${fresh.mark.textColor} on new output (status colors mark, never color text)`);
     for (const state of states) {
       if (width >= 300 && state.wraps) failures.push(`${at}: the viewer head wraps onto a second row when ${state.position}`);
       if (first && (Math.abs(state.height - first.height) > 0.5 || Math.abs(state.top - first.top) > 0.5 || Math.abs(state.viewerTop - first.viewerTop) > 0.5))
