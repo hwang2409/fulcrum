@@ -108,6 +108,7 @@ const trace = { type: "file", kind: "file", url: "data:application/json;base64,e
 const chart = { type: "image", url: CHART_PNG, mediaType: "image/png", alt: "bundle size per entry, in kB", width: 640, height: 360, size: 2_940 };
 const unsized = { type: "image", url: CHART_PNG, mediaType: "image/png", filename: "chart.png" };
 const blocked = { type: "image", url: "data:image/svg+xml;base64,PHN2Zy8+", filename: "logo.svg" };
+const omitted = { type: "image", omitted: true, filename: "history.png", width: 640, height: 360 };
 const custom = { type: "chart-spec", spec: { mark: "bar", encoding: { x: "entry", y: "kB" } }, rows: 7 };
 const contentPieces: Piece[] = [thinking, "The browser bundle imports `node:path` through `constants.ts`. ", docs, issue, "Here is the size of each entry after the fix:\n\n", chart, report, "Move the alias into the config's server block."];
 
@@ -635,8 +636,8 @@ export const demos: Demo[] = [
     id: "image-done",
     part: "ImageBlock",
     title: "images, done",
-    description: "A known size reserves its exact shape; an unknown size gets a fixed frame; an unsafe address (an inline svg) is not drawn. Click an image to open it.",
-    events: committed("image-done", [chart, unsized, blocked]),
+    description: "A known size reserves its exact shape; an unknown size gets a fixed frame; an image omitted from history says so; an unsafe address (an inline svg) is not drawn. Click an image to open it.",
+    events: committed("image-done", [chart, unsized, omitted, blocked]),
   },
   {
     id: "tool-images",
