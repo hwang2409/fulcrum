@@ -355,6 +355,8 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
    it is muted; a denial is the news, so it is fg and bold. */
 [data-part="tool-approval"] { color: var(--fulcrum-muted); }
 [data-part="tool-approval"][data-decision="deny"] { color: var(--fulcrum-fg); font-weight: 700; }
+/* A denied call never ran: "denied" is its whole status, so its mark is danger whatever the card's state. */
+[data-part="tool-status"]:has(> [data-part="tool-approval"][data-decision="deny"])::before { background: var(--fulcrum-danger); outline: 1px solid var(--fulcrum-bg); outline-offset: 0; }
 [data-part="approval"][data-state="pending"],
 [data-part="approval"][data-state="submitting"],
 [data-part="approval"][data-state="reconnecting"],
@@ -1225,6 +1227,7 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-state="canceled"] > [data-part="tool-header"] > [data-part="tool-status"]::before,
   [data-part="sub-agent"][data-state="canceled"] [data-part="sub-agent-status"]::before,
   [data-part="run-end-marker"][data-outcome="cancelled"]::before { background: none; outline-color: CanvasText; }
+  [data-part="tool-status"]:has(> [data-part="tool-approval"][data-decision="deny"])::before { background: CanvasText; outline-color: Canvas; }
   [data-part="composer"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="composer"] button { border-color: ButtonText; }
   [data-part="composer-submit"]:not([aria-disabled="true"]) { forced-color-adjust: none; background: Highlight; color: HighlightText; }
