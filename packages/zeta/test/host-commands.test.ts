@@ -110,20 +110,80 @@ test("settled host command suppliers release close waiters", async () => {
   expect(fake.sent).toHaveLength(10_001);
 });
 
-test("a session send waits for its slow resume attachment", async () => {
+// Zeta 6f29fc4b docs/serve-protocol.md:404-419 and src/zeta/server/handlers/lifecycle.py:60-82.
+test("a full-id send waits for its prefix resume attachment", async () => {
+  const fake = fakeTransport();
+  const client = createClient(fake.transport, undefined, undefined, { hostCommands: () => [command()] });
+  await hello(fake, client);
+
+  const resuming = client.request("resume", { session_id: "abcd" });
+  await Bun.sleep(0);
+  const resume = fake.sent.at(-1)!;
+  const sending = client.request("send", { session_id: "abcdef12-full", text: "hello" });
+  expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "resume"]);
+
+  fake.reply(resume, { session: { session_id: "abcdef12-full" } });
+  await resuming;
+  await Bun.sleep(0);
+  expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "resume", "send"]);
+  fake.reply(fake.sent.at(-1)!, { accepted: true });
+  await sending;
+});
+
+test("host-binding recovery after a prefix resume uses its canonical session id", async () => {
+  const suppliedFor: Array<string | null> = [];
+  const fake = fakeTransport();
+  const client = createClient(fake.transport, undefined, undefined, { hostCommands: (sessionId) => {
+    suppliedFor.push(sessionId);
+    return [command()];
+  } });
+  await hello(fake, client);
+
+  const resuming = client.request("resume", { session_id: "abcd" });
+  await Bun.sleep(0);
+  fake.reply(fake.sent.at(-1)!, { session: { session_id: "abcdef12-full" } });
+  await resuming;
+
+  const sending = client.request("send", { session_id: "abcd", text: "hello", delivery_id: "d-one" });
+  const firstSend = fake.sent.at(-1)!;
+  fake.fail(firstSend, -32003, { code: "host_binding_required" });
+  await Bun.sleep(0);
+  expect(fake.sent.at(-1)).toMatchObject({ method: "resume", params: { session_id: "abcdef12-full" } });
+  expect(suppliedFor).toEqual(["abcd", "abcdef12-full"]);
+  fake.reply(fake.sent.at(-1)!, { session: { session_id: "abcdef12-full" } });
+  await Bun.sleep(0);
+  fake.reply(fake.sent.at(-1)!, { accepted: true });
+  await sending;
+});
+
+test("an ambiguous prefix keeps Zeta's structured error and is not retried", async () => {
+  const fake = fakeTransport();
+  const client = createClient(fake.transport, undefined, undefined, { hostCommands: () => [command()] });
+  await hello(fake, client);
+
+  const resuming = client.request("resume", { session_id: "abcd" });
+  await Bun.sleep(0);
+  const data = { code: "session_id_ambiguous", session_id: "abcd", candidates: ["abcdef12", "abcd9876"] };
+  fake.fail(fake.sent.at(-1)!, -32602, data);
+
+  expect(await resuming.catch((error: unknown) => error)).toMatchObject({ code: -32602, data });
+  expect(fake.sent.filter(({ method }) => method === "resume")).toHaveLength(1);
+});
+
+test("a full-id send still waits for its full-id resume attachment", async () => {
   const supplied = deferred<HostCommand[]>();
   const fake = fakeTransport();
   const client = createClient(fake.transport, undefined, undefined, { hostCommands: () => supplied.promise });
   await hello(fake, client);
 
-  const resuming = client.request("resume", { session_id: "s-one" });
-  const sending = client.request("send", { session_id: "s-one", text: "hello" });
+  const resuming = client.request("resume", { session_id: "abcdef12-full" });
+  const sending = client.request("send", { session_id: "abcdef12-full", text: "hello" });
   expect(fake.sent.map(({ method }) => method)).toEqual(["hello"]);
 
   supplied.resolve([command()]);
   await Bun.sleep(0);
   expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "resume"]);
-  fake.reply(fake.sent.at(-1)!, { session: { session_id: "s-one" } });
+  fake.reply(fake.sent.at(-1)!, { session: { session_id: "abcdef12-full" } });
   await resuming;
   await Bun.sleep(0);
   expect(fake.sent.map(({ method }) => method)).toEqual(["hello", "resume", "send"]);

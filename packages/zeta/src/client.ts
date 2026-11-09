@@ -397,6 +397,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const closeListeners = new Set<(error: unknown) => void>();
   const closeWaiters = new Set<(error: unknown) => void>();
   const attachmentGates = new Map<string, Promise<unknown>>();
+  const canonicalSessionIds = new Map<string, string>();
   const closeAbort = new AbortController();
   let closed = false;
   let closedError: unknown;
@@ -414,6 +415,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     closeWaiters.forEach((reject) => reject(error)); // host code: outside; README row "client functions held as values"
     closeWaiters.clear();
     attachmentGates.clear();
+    canonicalSessionIds.clear();
     cancelLoads();
     deliver(closeListeners, error);
   };
@@ -498,30 +500,52 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     try {
       return await rawRequest(method, { ...params, host_commands: commands }, requestOptions);
     } catch (error) {
+      const rpc = error as { code?: unknown; data?: { code?: unknown } };
+      if (rpc.code === -32602 && rpc.data?.code === "session_id_ambiguous") throw error;
       throw redactHostCommandFailure("host_command_request_failed", error);
+    }
+  };
+  const resumedSessionId = (result: unknown) => {
+    const session = result && typeof result === "object" ? (result as { session?: unknown }).session : undefined;
+    return session && typeof session === "object" && typeof (session as { session_id?: unknown }).session_id === "string"
+      ? (session as { session_id: string }).session_id
+      : undefined;
+  };
+  const attachmentGate = (sessionId: string) => {
+    const canonicalId = canonicalSessionIds.get(sessionId) ?? sessionId;
+    const direct = attachmentGates.get(canonicalId);
+    if (direct) return direct;
+    for (const [pendingId, gate] of attachmentGates) {
+      if (canonicalId.startsWith(pendingId)) return gate;
     }
   };
   const attach = (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
     const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
     if (sessionId === null) return performAttachWithRetry(method, params, requestOptions);
-    const previous = attachmentGates.get(sessionId);
+    const previous = attachmentGate(sessionId);
     const operation = previous?.catch(() => {}).then(() => performAttachWithRetry(method, params, requestOptions))
       ?? performAttachWithRetry(method, params, requestOptions);
-    const gate = operation;
+    let canonicalId = sessionId;
+    const gate = operation.then((result) => {
+      canonicalId = resumedSessionId(result) ?? sessionId;
+      if (canonicalId !== sessionId) canonicalSessionIds.set(sessionId, canonicalId);
+      attachmentGates.set(canonicalId, gate);
+      return result;
+    });
     attachmentGates.set(sessionId, gate);
     const clear = () => {
-      if (attachmentGates.get(sessionId) === gate) {
-        attachmentGates.delete(sessionId);
-      }
+      if (attachmentGates.get(sessionId) === gate) attachmentGates.delete(sessionId);
+      if (attachmentGates.get(canonicalId) === gate) attachmentGates.delete(canonicalId);
     };
     gate.then(clear, clear);
     return gate;
   };
   const recoverHostBinding = async (method: string, params: Record<string, unknown>, requestOptions: RequestOptions, error: unknown) => {
-    const sessionId = typeof params.session_id === "string" ? params.session_id : null;
-    if (!sessionId || typeof params.delivery_id !== "string") throw redactHostCommandFailure("host_binding_recovery_failed", error);
+    const requestedSessionId = typeof params.session_id === "string" ? params.session_id : null;
+    if (!requestedSessionId || typeof params.delivery_id !== "string") throw redactHostCommandFailure("host_binding_recovery_failed", error);
+    const sessionId = canonicalSessionIds.get(requestedSessionId) ?? requestedSessionId;
     try {
-      await (attachmentGates.get(sessionId) ?? attach("resume", { session_id: sessionId }, requestOptions));
+      await (attachmentGate(sessionId) ?? attach("resume", { session_id: sessionId }, requestOptions));
     } catch (recoveryError) {
       if (recoveryError === closedError || recoveryError instanceof HostCommandError) throw recoveryError;
       throw redactHostCommandFailure("host_binding_recovery_failed", recoveryError);
@@ -541,7 +565,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       if (hostCommandsEnabled()) return attach(method, params, requestOptions);
       return retryBusy(() => rawRequest(method, params, requestOptions), requestOptions);
     }
-    const gate = ["send", "send_images", "steer"].includes(method) ? attachmentGates.get(params.session_id as string) : undefined;
+    const gate = ["send", "send_images", "steer"].includes(method) && typeof params.session_id === "string" ? attachmentGate(params.session_id) : undefined;
     const result = gate ? gate.then(() => rawRequest(method, params, requestOptions)) : rawRequest(method, params, requestOptions);
     if (!hostCommandsEnabled() || (method !== "send" && method !== "send_images")) return result;
     return result.catch((error) => isHostBindingRequired(error) ? recoverHostBinding(method, params, requestOptions, error) : Promise.reject(error));
