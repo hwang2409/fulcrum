@@ -44,6 +44,8 @@ export type LazyContentBlock = ContentBlock & { source: LazyContentSource };
 /** An image. `width` and `height` (pixels) let the renderer reserve its exact shape before it loads. `size` is in bytes. */
 export interface ImageContentBlock extends ContentBlock {
   type: "image";
+  /** The host did not keep the image bytes. */
+  omitted?: true;
   url?: string;
   source?: LazyContentSource;
   mediaType?: string;
