@@ -6,6 +6,7 @@ const page = (file: string) => fileURLToPath(new URL(file, import.meta.url));
 
 const prependProfilingBuild = {
   name: "prepend-profiling-build",
+  apply: "build" as const,
   resolveId(source: string) {
     return source === "prepend-react-dom-client" ? "\0prepend-react-dom-client" : null;
   },
