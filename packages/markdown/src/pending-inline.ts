@@ -61,8 +61,9 @@ class OpenerScan {
   /** Where the last run stopped: just after the closer of `resolved`, when there is one. */
   stoppedAt = -1;
 
-  /** In a dry run: the existing openers it changed or removed, by position, so `restore` can put them back. */
+  /** In a dry run: the existing opener slots it changed or removed, so `restore` can put them back. */
   private readonly saved?: Map<number, Opener>;
+  private readonly initial: ReadonlySet<Opener>;
 
   /** A dry run stops only at an existing emphasis opener or a `[` decided as text, and `restore` undoes its changes to the existing openers. */
   /**
@@ -71,6 +72,7 @@ class OpenerScan {
    */
   constructor(private readonly source: string, private readonly openers: Opener[], private readonly existing: number, dryRun = false, stable?: StableIndex, private readonly reveal?: (opener: Opener) => void) {
     this.low = existing;
+    this.initial = new Set(openers.slice(0, existing));
     if (dryRun) this.saved = new Map();
     this.stable = dryRun && stable ? { ...stable, emphasis: new Map(stable.emphasis) } : stable;
   }
@@ -83,10 +85,11 @@ class OpenerScan {
   /** Keeps existing openers from `from` on, before they change or leave the stack. */
   private keep(from: number) {
     if (!this.saved) return;
-    for (let position = from; position < Math.min(this.existing, this.openers.length); position++) {
-      if (this.saved.has(position)) continue;
-      this.saved.set(position, this.openers[position]!);
-      this.openers[position] = { ...this.openers[position]! };
+    for (let position = from; position < this.openers.length; position++) {
+      const opener = this.openers[position]!;
+      if (!this.initial.has(opener) || this.saved.has(position)) continue;
+      this.saved.set(position, opener);
+      this.openers[position] = { ...opener };
     }
   }
 
@@ -99,13 +102,16 @@ class OpenerScan {
 
   private resolve(position: number) {
     const opener = this.openers[position]!;
-    if (position < this.existing && (!this.saved || opener.kind === "emphasis" || opener.kind === "bracket" && opener.state === "text")) this.resolved = opener;
+    if (this.initial.has(opener) && (!this.saved || opener.kind === "emphasis" || opener.kind === "bracket" && opener.state === "text")) this.resolved = opener;
     this.truncate(position);
   }
 
   /** A stable `[` decided as text: its marker and the hidden markers of the stable openers above it show in their slots. */
   private settleText(position: number) {
-    for (let at = position; at < Math.min(this.existing, this.openers.length); at++) this.reveal?.(this.openers[at]!);
+    for (let at = position; at < this.openers.length; at++) {
+      const opener = this.openers[at]!;
+      if (this.initial.has(opener)) this.reveal?.(opener);
+    }
     this.truncate(position);
   }
 
@@ -198,11 +204,11 @@ class OpenerScan {
     const next = this.source[index + 1];
     if (next !== "(" && next !== "[") {
       // A dry run only asks whether a stable `[` is decided: it stops here without copying the stack above it.
-      if (this.saved && position < this.existing) {
+      if (this.saved && this.initial.has(this.openers[position]!)) {
         this.resolved = this.openers[position];
         this.decidedAt = position;
       }
-      else if (position < this.existing) this.settleText(position);
+      else if (this.initial.has(this.openers[position]!)) this.settleText(position);
       else this.resolve(position);
       return index + 1;
     }
