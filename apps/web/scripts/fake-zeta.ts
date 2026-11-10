@@ -11,7 +11,7 @@ import type { ServerWebSocket } from "bun";
 import { validateHostCommands } from "@fulcrum/zeta";
 
 type Json = Record<string, unknown>;
-export type Mode = "ok" | "busy" | "busy-once" | "incompatible" | "slow" | "slow-catalog" | "broken-session" | "overflow" | "overflow-silent";
+export type Mode = "ok" | "busy" | "busy-once" | "incompatible" | "slow" | "slow-catalog" | "broken-session" | "overflow" | "overflow-silent" | "approval-persistence-failed";
 export type HistoryMode = "new" | "old";
 export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
@@ -590,6 +590,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           return decide(method);
         }
         if ((method === "send" || method === "send_images") && active && hostBindingRequired.has(active)) return reply({ error: { code: -32003, message: "host binding required", data: { code: "host_binding_required" } } });
+        if ((method === "send" || method === "send_images" || method === "steer") && mode === "approval-persistence-failed")
+          return reply({ error: { code: -32000, message: "approval persistence failed", data: { code: "approval_persistence_failed" } } });
         const handled = composer.handle(method, params, active, send);
         // The echo is already out: the delay opens the window where the echoed row and the unsent draft both show.
         if (handled && method === "send" && sendReplyDelay > 0) await wait(sendReplyDelay);

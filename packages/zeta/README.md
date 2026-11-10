@@ -6,6 +6,8 @@
 
 `MODEL_INPUT_IDS_FEATURE` is the feature name to request during the hello handshake. `parseSlashList` and `parseSlashRun` validate server results without throwing; malformed command rows are dropped and malformed result discriminators return `{ kind: "malformed" }`. `parseModelInput(value)` validates either the opaque-id or expanded-text `model_input` shape and returns `null` for malformed data; pass `{ requireInputId: true }` as its second argument to require the opaque-id shape used by prepared input.
 
+Session mutations and deliveries reject with `ApprovalPersistenceError` when zeta cannot persist approval state. Test `error.kind === "approval_persistence_failed"`; the `kind` discriminator is the supported check because `instanceof` can fail when an application loads two copies of the package. Clients should keep the draft and ask the user to restart `zeta serve`.
+
 `CommandClient.features` is required. `runSlashCommand` fails closed when `model_input_ids` was not negotiated: it sends no `slash_run` request and returns `{ kind: "unavailable", feature: "model_input_ids" }`. This prevents an older server from returning the resolved hidden prompt as text. `listSlashCommands` remains available because `slash_list` returns catalog metadata, not model input. `sendModelInput` sends an opaque input ID returned by a negotiated server.
 
 ## path completion
