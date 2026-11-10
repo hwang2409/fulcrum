@@ -222,4 +222,42 @@ const continuationRatios = [
   median(continuationSamples.map(([, medium, large]) => large / medium)),
 ];
 console.log(`64 B  continuation line 96k -> 192k -> 384k: ${continuationMedians.map((time) => time.toFixed(0)).join(" -> ")} ms; doubling ${continuationRatios.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")} (median of 7 pairs)`);
+
+const longLineSizes = [50_000, 100_000, 200_000] as const;
+const jsonUnit = '{"time":"2026-11-09T12:34:56.789Z","level":"info","agent":"worker","event":{"kind":"tool_result","ok":true,"items":[1,2,3,4]}}';
+const logUnit = "2026-11-09T12:34:56.789Z INFO worker tool completed duration_ms=12 output_bytes=4096 ";
+const longLineCases = [
+  ["single-line JSON", jsonUnit],
+  ["single-line log", logUnit],
+] as const;
+const longLineChunkSizes = [32, 1] as const;
+const percentile = (sorted: readonly number[], fraction: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))]!;
+for (const chunkSize of longLineChunkSizes) for (const [name, unit] of longLineCases) {
+  const totals: number[] = [];
+  for (const size of longLineSizes) {
+    const source = unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+    const durations: number[] = [];
+    const trialTotals: number[] = [];
+    for (let trial = 0; trial < 3; trial++) {
+      const document = createStreamingDocument();
+      const start = performance.now();
+      for (let offset = 0; offset < source.length; offset += chunkSize) {
+        const frameStart = performance.now();
+        document.append(source.slice(offset, offset + chunkSize));
+        document.render();
+        durations.push(performance.now() - frameStart);
+      }
+      trialTotals.push(performance.now() - start);
+    }
+    totals.push(median(trialTotals));
+    durations.sort((left, right) => left - right);
+    console.log(`${String(chunkSize).padStart(2)} B  ${name.padEnd(18)} ${String(size / 1000).padStart(3)}k total ${totals.at(-1)!.toFixed(1)} ms  p50 ${percentile(durations, 0.5).toFixed(3)} ms  p95 ${percentile(durations, 0.95).toFixed(3)} ms  max ${durations.at(-1)!.toFixed(3)} ms`);
+  }
+  const growth = totals.slice(1).map((time, index) => time / totals[index]!);
+  console.log(`${String(chunkSize).padStart(2)} B  ${name.padEnd(18)} growth ${growth.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")} per doubling`);
+  if (growth.some((ratio) => ratio > 2.2)) {
+    console.error(`FAIL ${chunkSize} B ${name} growth exceeded 2.20x`);
+    failed = true;
+  }
+}
 if (failed) process.exit(1);
