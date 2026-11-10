@@ -11,6 +11,7 @@ import {
   validateHostCommands,
   type HostCommandSupplier,
 } from "./host-commands.js";
+import { call, deliver } from "./host.js";
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -153,28 +154,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     for (const session of activeLoads.keys()) cancelLoad(session);
   };
   // Host code runs only through call() and deliver() (listeners, the closeError callback, and store entries that can
-  // rethrow a store listener's error), plus sink() and the lines marked "host code: outside", one per "outside" row of
+  // rethrow a store listener's error), plus the lines marked "host code: outside", one per "outside" row of
   // packages/zeta/README.md, "listener contract". test/host-calls-guard.test.ts fails on any other host call.
-  // sink() is the host's error report, the same as the core store's: reportError, or console.error where it does not
-  // exist. A sink that throws is dropped, since there is nowhere left to report it.
-  const sink = (error: unknown) => {
-    try {
-      if (typeof reportError === "function") reportError(error);
-      else console.error(error);
-    } catch {}
-  };
-  // host code: a host error goes to sink() once and never reaches the socket loop, the recovery loop, or another listener.
-  // The return type refuses an async function: code after its first await would run outside this try.
-  const call = <T>(run: () => T extends PromiseLike<unknown> ? never : T) => {
-    try {
-      run();
-    } catch (error) {
-      sink(error);
-    }
-  };
-  const deliver = <T>(listeners: ReadonlySet<(value: T) => void>, value: T) => {
-    for (const listener of listeners) call(() => listener(value));
-  };
   const store = createRunStore(scheduler); // host code: outside; README row "scheduler"
   let evictionCount = 0;
   const evict = (id: string) => {

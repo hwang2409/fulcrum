@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import {
   childRunHistoryUnavailable,
   openChildRun,
@@ -110,6 +110,24 @@ test("one pair shares its in-flight store and progress while equal child ids und
   first.lease.release();
   second.lease.release();
   other.lease.release();
+});
+
+test("isolates a throwing progress listener from other holders", async () => {
+  const reported = spyOn(globalThis, "reportError").mockImplementation(() => {});
+  try {
+    const received: unknown[] = [];
+    const fake = client(["child_run_history"], () => page([row("u-new", "new")], null));
+    const [first, second] = await Promise.all([
+      openChildRun(fake.value, key, { onProgress: () => { throw new Error("listener boom"); } }),
+      openChildRun(fake.value, key, { onProgress: (progress) => received.push(progress) }),
+    ]);
+    expect(received).toEqual([{ messages: 1, complete: true, restart: 0 }]);
+    await Promise.all([first.complete, second.complete]);
+    first.lease.release();
+    second.lease.release();
+  } finally {
+    reported.mockRestore();
+  }
 });
 
 test("a stale child snapshot replaces prior rows through the shared pager", async () => {

@@ -2,6 +2,7 @@ import { createRunStore } from "@fulcrum/core";
 import { fromZetaHistory } from "./adapter.js";
 import { BackwardHistoryError, openBackwardHistory, type BackwardHistoryCursor } from "./backward-history.js";
 import type { RequestOptions, SessionLease, ZetaClient } from "./client.js";
+import { call } from "./host.js";
 
 export const CHILD_RUNS_FEATURE = "child_runs" as const;
 export const CHILD_RUN_HISTORY_FEATURE = "child_run_history" as const;
@@ -273,7 +274,7 @@ function createChildHistoryEntry(
           if (snapshot.cause === "older") store.prepend(events);
           else store.resync(events);
           const progress = { messages: snapshot.rows.length, complete: snapshot.complete, restart: snapshot.restart };
-          for (const listener of entry.progress) listener(progress);
+          for (const listener of entry.progress) call(() => listener(progress));
         },
       });
       const complete = opened.complete.then(() => undefined, mappedHistoryError).finally(() => store.endHistory());

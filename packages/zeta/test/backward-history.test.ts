@@ -46,8 +46,10 @@ test("rejects a malformed continuation before publishing its rows", async () => 
   expect(snapshots).toEqual([["new"]]);
 });
 
-test("rejects malformed first pages and non-decreasing continuation cursors", async () => {
+test("rejects malformed first pages and outside-input cursors", async () => {
   await expect(openBackwardHistory(async () => ({ messages: "not an array", next_before: null, history_validator: validator })))
+    .rejects.toThrow("backward history response is invalid");
+  await expect(openBackwardHistory(async () => page(["negative"], -1)))
     .rejects.toThrow("backward history response is invalid");
   const opened = await openBackwardHistory(async ({ before }) => before === null ? page(["new"], 1) : page(["wrong"], 1));
   await expect(opened.complete).rejects.toThrow("backward history response is invalid");
