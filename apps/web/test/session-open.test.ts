@@ -251,8 +251,10 @@ test("a reconnect during a backward walk aborts the old walk and opens a fresh s
   const oldOpen = await openSession(first.client, "s", undefined, abort.signal);
   expect(first.calls.some(([method, params]) => method === "session_history" && params.before === null)).toBe(true);
   while (!olderStarted) await new Promise((resolve) => setTimeout(resolve, 0));
-  abort.abort();
-  await expect(oldOpen.complete).rejects.toThrow("request aborted");
+  const reason = Object.assign(new Error("closed"), { name: "AbortError" });
+  abort.abort(reason);
+  await expect(oldOpen.complete).rejects.toBe(reason);
+  expect(reason.name).toBe("AbortError");
 
   const second = await server((method, params) => {
     if (method === "status") return idleStatus;

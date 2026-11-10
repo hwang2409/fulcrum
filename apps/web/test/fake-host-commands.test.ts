@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connectZeta } from "@fulcrum/zeta";
+import { createSessions, openSession } from "../src/session";
 import { startFakeZeta } from "../scripts/fake-zeta";
 
 async function credentials(fake: Awaited<ReturnType<typeof startFakeZeta>>) {
@@ -152,8 +153,80 @@ test("fake zeta resolves unique session prefixes and reports ambiguous candidate
     await expect(client.request("resume", { session_id: "s-rec" })).resolves.toMatchObject({ session: { session_id: "s-reconnect" } });
     await expect(client.request("resume", { session_id: "s-ma" })).rejects.toMatchObject({
       code: -32602,
-      data: { code: "session_id_ambiguous", session_id: "s-ma", candidates: ["s-markdown", "s-many"] },
+      message: "session id 's-ma' is ambiguous; matches: s-many, s-markdo; please provide more characters",
+      data: { code: "session_id_ambiguous", session_id: "s-ma", candidates: ["s-many", "s-markdo"] },
     });
+    await expect(client.request("resume", { session_id: "s" })).rejects.toMatchObject({ code: -32602, message: "session id prefix must be at least 4 characters" });
+    await expect(client.request("resume", { session_id: "missing" })).rejects.toMatchObject({ code: -32602, message: "session not found", data: { code: "session_not_found", session_id: "missing" } });
+    client.close();
+  } finally {
+    await fake.close();
+  }
+});
+
+test("short ambiguous candidates select a full id through the session opener", async () => {
+  const fake = await startFakeZeta({ origins: [], live: false, ambiguousPrefix: true });
+  try {
+    const connection = await credentials(fake);
+    const client = await connectZeta({ url: connection.url, token: connection.token });
+    await expect(client.request("resume", { session_id: "abcd" })).rejects.toMatchObject({
+      data: { code: "session_id_ambiguous", candidates: ["abcd1111", "abcd2222"] },
+    });
+    const selected: string[] = [];
+    const source = { client, state: { phase: "connected" }, subscribe: () => () => undefined };
+    const sessions = createSessions(source, { onSelect: (id) => selected.push(id) });
+    sessions.select("abcd");
+    for (let i = 0; i < 100 && !["failed", "open"].includes(sessions.state.transition.kind); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(sessions.state.transition.kind).toBe("failed");
+    expect(sessions.state.transition.kind === "failed" ? sessions.state.transition.error.candidates : []).toEqual(["abcd1111", "abcd2222"]);
+    sessions.select("abcd1111");
+    for (let i = 0; i < 100 && sessions.state.transition.kind !== "open"; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(sessions.state.transition.kind).toBe("open");
+    expect(sessions.state.transition.kind === "open" ? sessions.state.transition.run.id : "").toBe("abcd1111-full");
+    expect(selected).toContain("abcd1111-full");
+    expect(fake.requests.filter(({ method }) => method === "resume").map(({ params }) => params)).toEqual([{ session_id: "abcd" }, { session_id: "abcd" }, { session_id: "abcd1111" }]);
+    const historyRequests = fake.requests.filter(({ method }) => method === "session_history" || method === "session_history_backward");
+    expect(historyRequests.length).toBeGreaterThan(0);
+    expect(historyRequests.every(({ params }) => params.session_id === "abcd1111-full")).toBe(true);
+    expect(sessions.state.transition.kind).not.toBe("failed");
+    sessions.dispose();
+    client.close();
+  } finally {
+    await fake.close();
+  }
+});
+
+test("fake zeta caps ambiguous candidates after sorting", async () => {
+  const ids = Array.from({ length: 9 }, (_, index) => `zzzz${String(index).padStart(2, "0")}-full`);
+  const fake = await startFakeZeta({ origins: [], live: false, ambiguousPrefix: true, ambiguousSessionIds: ids });
+  try {
+    const connection = await credentials(fake);
+    const client = await connectZeta({ url: connection.url, token: connection.token });
+    await expect(client.request("resume", { session_id: "zzzz" })).rejects.toMatchObject({
+      code: -32602,
+      message: "session id 'zzzz' is ambiguous; matches: zzzz00-f, zzzz01-f, zzzz02-f, zzzz03-f, zzzz04-f, zzzz05-f, zzzz06-f, zzzz07-f, …; please provide more characters",
+      data: { code: "session_id_ambiguous", session_id: "zzzz", candidates: ["zzzz00-f", "zzzz01-f", "zzzz02-f", "zzzz03-f", "zzzz04-f", "zzzz05-f", "zzzz06-f", "zzzz07-f"] },
+    });
+    client.close();
+  } finally {
+    await fake.close();
+  }
+});
+
+test("duplicate ambiguous candidates ask for a longer id", async () => {
+  const fake = await startFakeZeta({ origins: [], live: false, ambiguousPrefix: true, ambiguousSessionIds: ["abcdefgh-one", "abcdefgh-two"] });
+  try {
+    const connection = await credentials(fake);
+    const client = await connectZeta({ url: connection.url, token: connection.token });
+    const sessions = createSessions({ client, state: { phase: "connected" }, subscribe: () => () => undefined });
+    sessions.select("abcd");
+    for (let i = 0; i < 100 && sessions.state.transition.kind !== "failed"; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(sessions.state.transition.kind).toBe("failed");
+    if (sessions.state.transition.kind === "failed") {
+      expect(sessions.state.transition.error.candidates).toBeUndefined();
+      expect(sessions.state.transition.error.message).toContain("type a longer session id");
+    }
+    sessions.dispose();
     client.close();
   } finally {
     await fake.close();
