@@ -473,9 +473,9 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>, resent: Set<un
     }
   } else {
     const notification = optionalObject(row.notification ?? undefined, "history row notification");
-    const event = notification?.kind === "child_hold"
-      ? childHoldNotification(notification)
-      : { type: "notification" as const, notification_id: optionalString(notification?.notification_id, "notification.notification_id"), data: { ...notification, role, text: text(content) } };
+    const data = notification === undefined ? {} : notification.notification_id === undefined ? { notification_id: id, ...notification } : notification;
+    const event = childNotification("notification_by_kind", data) ??
+      { type: "notification" as const, notification_id: optionalString(data.notification_id, "notification.notification_id"), data: { ...data, role, text: text(content) } };
     events.push(event);
   }
   const failed = optionalObject(row.failed_turn ?? undefined, "failed_turn");
