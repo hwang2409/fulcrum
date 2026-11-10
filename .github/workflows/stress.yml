@@ -18,8 +18,8 @@ on:
 jobs:
   stress:
     runs-on: ubuntu-latest
-    # 10, not 8: a core PR's a/b runs the slow base core (PR #99 took 5m54s, 25% margin at 8).
-    timeout-minutes: 10
+    # 15: run 42741838914/129584516015 cancelled at 9m59s after all steps passed; apt took 4m54s (21.9 MB at 78.7 kB/s), normal run ~5m46s.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -31,7 +31,9 @@ jobs:
       - run: bunx tsc -b
       - run: bun run --cwd packages/highlight build
       - run: bun run --cwd apps/playground build
+      # 8: a slow mirror should fail at the named browser-install step, not cancel the whole job.
       - run: cd apps/playground && bunx playwright install --with-deps chromium
+        timeout-minutes: 8
       - name: build merge-base for paired comparison
         env:
           BASE_DIR: ${{ github.workspace }}/../fulcrum-stress-base
