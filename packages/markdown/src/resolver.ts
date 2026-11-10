@@ -249,6 +249,11 @@ const markerOnly = (content: string) => /^[ \t]*(?:#+|[+*=_-]+|\d{1,9}[.)]?|`{1,
 /** The growing line is blank or only block markers so far (after its container markers): it decides nothing yet. */
 export const pendingMarkerLine = (line: string) => markerOnly(stripPendingContainers(line));
 
+const startsFence = (content: string) => {
+  const fence = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(content);
+  return Boolean(fence && (fence[1]![0] !== "`" || !fence[2]!.includes("`")));
+};
+
 /** `inParagraph`: the line continues an open paragraph, which a reference definition cannot interrupt. */
 function classifyLeaf(line: string, growing: boolean, inParagraph = false): PendingClassification {
   let content = stripPendingContainers(line);
@@ -267,7 +272,7 @@ function classifyLeaf(line: string, growing: boolean, inParagraph = false): Pend
   }
   if (task) content = content.slice(task[0].length);
   else if (item && /^\[[ xX]?\]?[ \t]*$/.test(content)) return EMPTY;
-  if (/^[ \t]*(?:`{3,}|~{3,})/.test(content)) return FENCE;
+  if (startsFence(content)) return FENCE;
   if (markerOnly(content)) return EMPTY;
   if (growing) return { content, kind: "paragraph", offset: line.length - content.length };
   return { content, kind: "paragraph", offset: 0 };
@@ -717,7 +722,8 @@ export class MarkdownLineResolver {
       if (!growing && !unmatched && "|-:".includes(lead) && isTableDelimiter(unmatchedContent) && startsTable(leaf.content, unmatchedContent)) return true;
       if ("=-".includes(lead) && /^ {0,3}(?:=+|-+)\s*$/.test(unmatchedContent)) return true;
     }
-    return /^ {0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/.test(unmatchedContent);
+    return startsFence(unmatchedContent)
+      || /^ {0,3}(?:#{1,6}(?:\s|$)|(?:\*\s*){3,}$|(?:-\s*){3,}$|(?:_\s*){3,}$)/.test(unmatchedContent);
   }
 
   private matchContinuations(line: string) {
