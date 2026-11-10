@@ -311,13 +311,6 @@ const unmatchedCodeSpan = (source: string) => {
 
 const plainResolvedCodeSuffix = /^[\p{L}\p{N} ]*$/u;
 
-function resolveCodeSuffix(state: ResolvedCodeSuffix, suffix: string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
-  if (plainResolvedCodeSuffix.test(suffix)) return appendResolvedCodeSuffix(state, suffix, () => suffix, parse);
-  // First reveal provisional syntax exactly as the complete parse does; later deltas may resolve it.
-  state.nodes = [...state.prefix, ...parse(suffix, true, false)];
-  return suffix.length;
-}
-
 function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, source: () => string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
   if (state.pending) {
     const copied = state.pending.copiedCharacters;
@@ -331,8 +324,13 @@ function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, sour
     else if (delta) state.nodes.push({ type: "text", value: delta });
     return delta.length;
   }
+  const suffix = source();
+  if (unmatchedCodeSpan(suffix)) {
+    state.nodes = [...state.prefix, ...parse(suffix, true, false)];
+    return suffix.length;
+  }
   state.pending = new PendingInline(parse, undefined, state.prefix);
-  state.pending.append(source());
+  state.pending.append(suffix);
   state.nodes = state.pending.nodes;
   return state.pending.copiedCharacters;
 }
@@ -1240,7 +1238,7 @@ export function createStreamingDocument(): StreamingDocument {
         state.resolvedSuffix = { prefix, start: end, nodes: prefix.slice() };
         const suffix = resolvedLine.slice(end);
         previewScannedCharacters += suffix.length;
-        copiedCharacters += resolveCodeSuffix(state.resolvedSuffix, suffix, parsePending);
+        copiedCharacters += appendResolvedCodeSuffix(state.resolvedSuffix, suffix, () => suffix, parsePending);
         resolvedNow = true;
       }
     }
