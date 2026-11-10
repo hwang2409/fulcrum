@@ -65,20 +65,26 @@ const rows = [
   `, "globalThis.document.Symbol(readyState)"],
   ["react-marker-replace", `(document as any)._reactListeningReview = false;`, "globalThis.document._reactListeningReview"],
   ["affects-cache-replace", `replaceDocumentSymbol("affectsCache", ["leak"]);`, "globalThis.document.Symbol(affectsCache)"],
+  ["affects-cache-shaped-replace", `appendDocumentCacheResult("affectsCache");`, "globalThis.document.Symbol(affectsCache)"],
   ["affects-computed-style-cache-replace", `replaceDocumentSymbol("affectsComputedStyleCache", ["leak"]);`, "globalThis.document.Symbol(affectsComputedStyleCache)"],
+  ["affects-computed-style-cache-shaped-replace", `appendDocumentCacheResult("affectsComputedStyleCache");`, "globalThis.document.Symbol(affectsComputedStyleCache)"],
   ["node-timing-replace", `Object.defineProperty(Performance.prototype, "nodeTiming", { configurable: true, value: 123, writable: true });`, "Performance.prototype.nodeTiming"],
   ["prototype-method-replace", `
     Object.defineProperty(Array.prototype, "map", { configurable: true, writable: true, value() { return []; } });
   `, "Array.prototype.map"],
+  ["object-static-replace", `Object.keys = (() => []) as typeof Object.keys;`, "Object.keys"],
+  ["reflect-static-replace", `Reflect.ownKeys = (() => []) as typeof Reflect.ownKeys;`, "Reflect.ownKeys"],
+  ["math-static-replace", `Math.max = (() => 0) as typeof Math.max;`, "Math.max"],
+  ["json-static-replace", `JSON.parse = (() => null) as typeof JSON.parse;`, "JSON.parse"],
   ["restored", `(globalThis as any).__guard_slot = 1; (globalThis as any).__guard_slot = 0;`, null],
   ["local-window-fixture", `const window = { value: 0 }; window.value = 1;`, null],
 ] as const;
 
-test("the public DOM shim alarm catches leaked runtime forms and names the exact property", () => {
-  const directory = mkdtempSync(join(import.meta.dir, "../packages/react/test/.dom-shim-cases-"));
-  try {
-    for (const [name, mutation, expected] of rows) {
-      const path = join(directory, `${name}.test.ts`);
+for (const [name, mutation, expected] of rows) {
+  test(`the public DOM shim alarm handles ${name} and names the exact property`, () => {
+    const directory = mkdtempSync(join(import.meta.dir, "../packages/react/test/.dom-shim-cases-"));
+    const path = join(directory, `${name}.test.ts`);
+    try {
       writeFileSync(path, `
 import { afterAll, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -92,6 +98,15 @@ function replaceDocumentSymbol(description: string, value: unknown) {
   for (const key of Reflect.ownKeys(document)) {
     if (typeof key !== "symbol" || key.description !== description) continue;
     Object.defineProperty(document, key, { ...Object.getOwnPropertyDescriptor(document, key), value });
+    return;
+  }
+  throw new Error(description + " symbol missing");
+}
+function appendDocumentCacheResult(description: string) {
+  for (const key of Reflect.ownKeys(document)) {
+    if (typeof key !== "symbol" || key.description !== description) continue;
+    const before = (document as any)[key] as unknown[];
+    replaceDocumentSymbol(description, [...before, { result: null }]);
     return;
   }
   throw new Error(description + " symbol missing");
@@ -110,8 +125,8 @@ test(${JSON.stringify(name)}, () => { ${mutation} });
         expect(`${name} exit=${result.exitCode}`).toBe(`${name} exit=0`);
         expect(output).not.toContain("leaked DOM shim");
       }
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
     }
-  } finally {
-    rmSync(directory, { force: true, recursive: true });
-  }
-}, 20_000);
+  }, 20_000);
+}
