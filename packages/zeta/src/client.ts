@@ -40,6 +40,25 @@ const adapterError = (message: string) => ({ type: "error" as const, error: { co
 const encoder = new TextEncoder();
 const RESYNC_BACKOFF_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 export const MAX_CONTENT_BYTES = 32 * 1024 * 1024;
+export class ApprovalPersistenceError extends Error {
+  readonly name = "ApprovalPersistenceError";
+  readonly kind = "approval_persistence_failed" as const;
+  readonly code = -32000 as const;
+  readonly data = { code: this.kind } as const;
+  constructor(message: string, readonly cause: unknown) { super(message, { cause }); }
+}
+const approvalPersistenceMethods = new Set([
+  "send", "send_images", "steer",
+  "approve", "deny", "abort", "rename_session", "repair_transcript", "switch_branch", "fork_message",
+  "set_settings", "set_compaction", "slash_run", "set_turn_context", "clear_steering", "revoke_session_grants",
+]);
+const typeApprovalPersistenceError = (error: unknown): never => {
+  const rpc = error as { code?: unknown; data?: { code?: unknown }; message?: unknown };
+  if (rpc.code === -32000 && rpc.data?.code === "approval_persistence_failed")
+    throw new ApprovalPersistenceError(typeof rpc.message === "string" ? rpc.message : "approval persistence failed", error);
+  throw error;
+};
+
 export type ContentReadErrorKind = "not_available" | "not_negotiated" | "invalid_request" | "invalid_response" | "too_large";
 export class ContentReadError extends Error {
   readonly name = "ContentReadError";
@@ -596,8 +615,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     }
     const gate = ["send", "send_images", "steer"].includes(method) && typeof params.session_id === "string" ? attachmentIdentity.gate(params.session_id) : undefined;
     const result = gate ? gate.then(() => rawRequest(method, params, requestOptions)) : rawRequest(method, params, requestOptions);
-    if (!hostCommandsEnabled() || (method !== "send" && method !== "send_images")) return result;
-    return result.catch((error) => isHostBindingRequired(error) ? recoverHostBinding(method, params, requestOptions, error) : Promise.reject(error));
+    const recovered = !hostCommandsEnabled() || (method !== "send" && method !== "send_images")
+      ? result
+      : result.catch((error) => isHostBindingRequired(error) ? recoverHostBinding(method, params, requestOptions, error) : Promise.reject(error));
+    return approvalPersistenceMethods.has(method) ? recovered.catch(typeApprovalPersistenceError) : recovered;
   };
   const hello = (requestedFeatures?: string[], role: "controller" | "observer" = "controller"): Promise<HelloResult> => {
     const requested = new Set(requestedFeatures ?? []);
