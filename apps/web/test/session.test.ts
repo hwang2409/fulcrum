@@ -91,6 +91,18 @@ const kinds = (state: ReturnType<typeof createSessions>["state"]) => {
   const store = sessionPresentation(state.transition).open!.lease.store;
   return store.getOutline().map(({ kind }) => kind);
 };
+const retryOpen = (view: Sessions, id: string) => {
+  const retry = (view as Sessions & { retry?: (sessionId: string) => void }).retry;
+  if (retry) retry(id);
+  else view.select(id);
+};
+const messageTexts = (view: Sessions) => {
+  const store = present(view).open!.lease.store;
+  return store.getOutline().flatMap(({ id }) => {
+    const item = store.getItem(id);
+    return item?.type === "message" ? item.message.content.flatMap((block) => block.type === "text" ? [block.text] : []) : [];
+  });
+};
 
 test("titles, times, and the top-level list", () => {
   expect(sessions.map(sessionTitle)).toEqual(["alpha", "fix the build", "untitled session"]);
@@ -588,6 +600,62 @@ test("a failed later page keeps its first-page approval and exposes the error", 
   await tick();
   expect(present(view).open?.lease.store.getItem("approval:held")).toMatchObject({ type: "approval" });
   expect(present(view).openError?.message).toBe("older history failed");
+});
+
+test("retrying a failed history open starts fresh while selecting the healthy run stays deduplicated", async () => {
+  let opens = 0;
+  const fake = await server(handlers("b", {
+    status: () => ({ session: meta("b", "x"), state: "idle", pending_approvals: [] }),
+    session_history: (params) => {
+      if (params.offset === 0) {
+        opens++;
+        return { messages: [{ id: `open-${opens}`, role: "assistant", content: [{ type: "text", text: `open ${opens}` }], tool_result: null }], next_offset: opens === 1 ? 1 : null };
+      }
+      throw { code: -32000, message: "history completion failed" };
+    },
+  }));
+  const view = createSessions(source(fake.client));
+  await waitFor(() => present(view).openError?.message === "history completion failed", "initial history failure did not surface");
+
+  retryOpen(view, "b");
+  await waitFor(() => present(view).open?.history.complete === true, "retry did not complete");
+  expect(opens, "try again must start one fresh history open").toBe(2);
+  expect(messageTexts(view)).toEqual(["open 2"]);
+
+  view.select("b");
+  await tick();
+  expect(opens, "selecting the healthy open session must remain deduplicated").toBe(2);
+  view.dispose();
+});
+
+test("the last of two quick history retries wins and ignores the earlier late reply", async () => {
+  let opens = 0;
+  let releaseEarlier!: () => void;
+  const earlier = new Promise<unknown>((resolve) => { releaseEarlier = () => resolve({ messages: [{ id: "superseded", role: "assistant", content: [{ type: "text", text: "superseded" }], tool_result: null }], next_offset: null }); });
+  const fake = await server(handlers("b", {
+    status: () => ({ session: meta("b", "x"), state: "idle", pending_approvals: [] }),
+    session_history: (params) => {
+      if (params.offset !== 0) throw { code: -32000, message: "history completion failed" };
+      opens++;
+      if (opens === 1) return { messages: [], next_offset: 1 };
+      if (opens === 2) return earlier;
+      return { messages: [{ id: "latest", role: "assistant", content: [{ type: "text", text: "latest" }], tool_result: null }], next_offset: null };
+    },
+  }));
+  const view = createSessions(source(fake.client));
+  await waitFor(() => present(view).openError?.message === "history completion failed", "initial history failure did not surface");
+
+  retryOpen(view, "b");
+  await waitFor(() => opens === 2, "first retry did not start");
+  retryOpen(view, "b");
+  await waitFor(() => present(view).open?.history.complete === true, "last retry did not complete");
+  expect(opens, "each click must start exactly one fresh open").toBe(3);
+  expect(messageTexts(view)).toEqual(["latest"]);
+
+  releaseEarlier();
+  await tick();
+  expect(messageTexts(view), "the superseded retry's late reply must be ignored").toEqual(["latest"]);
+  view.dispose();
 });
 
 test("selecting another session resumes it, releases the old one, and reports progress", async () => {
