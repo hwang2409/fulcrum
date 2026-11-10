@@ -56,10 +56,12 @@ function spyStrings(min: number, arrayMin = 256) {
   const sites: Record<string, number> = {};
   let chars = 0;
   const proto = String.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
-  const originals = [...COMPARES, ...READS].map((name) => [name, proto[name]!] as const);
-  for (const [name, original] of originals) {
+  const restoreSpies: Array<() => void> = [];
+  let counting = true;
+  for (const name of [...COMPARES, ...READS]) {
+    const original = proto[name]!;
     const kind = (COMPARES as readonly string[]).includes(name) ? "compare" : "read";
-    proto[name] = function (this: string, ...args: unknown[]) {
+    const spy = function (this: string, ...args: unknown[]) {
       if (this.length >= min) {
         const caller = new Error().stack!.split("\n")[2]!.trim();
         // React's development build reads changed props to log renders; the production build does not.
@@ -71,15 +73,17 @@ function spyStrings(min: number, arrayMin = 256) {
       }
       return original.apply(this, args);
     };
+    Object.defineProperty(spy, "name", { value: "" });
+    restoreSpies.push(shimProperty(proto, name, { configurable: true, writable: true, value: spy }));
   }
   // Arrays too: a step that copies or visits an array of every segment or row (the segment index, the virtual list's
   // rows, sizes, or offsets) costs O(n) per append. Counted when the array has at least `arrayMin` entries.
   const arrayProto = Array.prototype as unknown as Record<PropertyKey, (...args: unknown[]) => unknown>;
-  const arrayOriginals = ARRAY_METHODS.map((name) => [name, arrayProto[name]!] as const);
   let elements = 0;
   const arraySites: Record<string, number> = {};
-  for (const [name, original] of arrayOriginals) {
-    arrayProto[name] = function (this: unknown[], ...args: unknown[]) {
+  for (const name of ARRAY_METHODS) {
+    const original = arrayProto[name]!;
+    const spy = function (this: unknown[], ...args: unknown[]) {
       // slice copies only its result; every other method here visits (or copies) the whole array.
       if (counting && (name === "slice" ? sliceLength(this.length, args) : this.length) >= arrayMin) {
         counting = false; // the stack read below must not count itself
@@ -94,14 +98,14 @@ function spyStrings(min: number, arrayMin = 256) {
       }
       return original.apply(this, args);
     };
+    Object.defineProperty(spy, "name", { value: "" });
+    restoreSpies.push(shimProperty(arrayProto, name, { configurable: true, writable: true, value: spy }));
   }
-  let counting = true;
   return {
     result: () => ({ sites, chars, arraySites, elements }),
     restore: () => {
       counting = false;
-      for (const [name, original] of originals) proto[name] = original;
-      for (const [name, original] of arrayOriginals) arrayProto[name] = original;
+      for (let index = restoreSpies.length - 1; index >= 0; index--) restoreSpies[index]!();
     },
   };
 }
