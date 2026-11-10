@@ -55,6 +55,51 @@ for (const source of [
   expect(document.render(), "streaming tree matches the complete parse").toEqual(parseMarkdown(source));
 });
 
+function randomLineChunks(source: string, seed: number) {
+  let state = seed >>> 0;
+  const chunks: string[] = [];
+  let offset = 0;
+  while (offset < source.length) {
+    const newline = source.indexOf("\n", offset);
+    const boundary = newline < 0 ? source.length : newline + 1;
+    while (offset < boundary) {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+      const end = Math.min(boundary, offset + 1 + state % 5);
+      chunks.push(source.slice(offset, end));
+      offset = end;
+    }
+  }
+  return chunks;
+}
+
+test("escaped backtick runs stream like the complete parse", () => {
+  const cases: Array<[name: string, source: string]> = [];
+  for (let count = 0; count <= 4; count++) {
+    const backslashes = "\\".repeat(count);
+    cases.push(
+      [`outside owner, ${count} backslashes`, `plain\n\n${backslashes}\`open\` tail${count % 2 ? "`" : ""}`],
+      [`inside multiline owner, ${count} backslashes`, `\`owner\n${backslashes}\`still\`tail${count % 2 ? "" : "`"}`],
+    );
+  }
+
+  for (const [name, source] of cases) for (const [split, chunks] of [
+    ["one character", [...source]],
+    ...[1, 2, 3, 4].map((seed) => [`random ${seed}`, randomLineChunks(source, seed)] as const),
+  ] as const) {
+    const document = createStreamingDocument();
+    const checkpoint = source.slice(0, source.indexOf("\n") + 1);
+    let streamed = "";
+    for (const chunk of chunks) {
+      document.append(chunk);
+      streamed += chunk;
+      document.render();
+      if (streamed === checkpoint)
+        expect(document.render(), `${name}, ${split}, committed ${JSON.stringify(streamed)}`).toEqual(parseMarkdown(streamed));
+    }
+    expect(document.render(), `${name}, ${split}, final tree`).toEqual(parseMarkdown(source));
+  }
+});
+
 test("a resolved multiline code owner is never scanned again", () => {
   const document = createStreamingDocument();
   document.append("`owner\n`x");

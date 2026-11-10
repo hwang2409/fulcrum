@@ -290,13 +290,17 @@ export function parseMarkdown(source: string): Block[] {
   return parseDetailed(source).map(({ block }) => block);
 }
 
+const escaped = (source: string, index: number) => {
+  let escapes = 0;
+  for (let at = index - 1; at >= 0 && source[at] === "\\"; at--) escapes++;
+  return escapes % 2 === 1;
+};
+
 const unmatchedCodeSpan = (source: string) => {
   let opener: { index: number; length: number } | undefined;
   for (const run of source.matchAll(/`+/g)) {
     if (run.index === undefined) continue;
-    let escapes = 0;
-    for (let index = run.index - 1; index >= 0 && source[index] === "\\"; index--) escapes++;
-    if (escapes % 2) continue;
+    if (escaped(source, run.index)) continue;
     if (!opener) opener = { index: run.index, length: run[0].length };
     else if (opener.length === run[0].length) opener = undefined;
   }
@@ -312,6 +316,7 @@ function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, sour
   if (/^[\p{L}\p{N} ]*$/u.test(delta)) {
     const last = state.nodes.at(-1);
     if (last?.type === "text" && state.nodes.length > state.prefix.length) last.value += delta;
+    else if (last?.type === "text" && delta) state.nodes[state.nodes.length - 1] = { type: "text", value: last.value + delta };
     else if (delta) state.nodes.push({ type: "text", value: delta });
     return delta.length;
   }
@@ -333,7 +338,7 @@ function scanExactCodeCloser(scanner: ExactCodeCloserScanner, source: string, ma
         continue;
       }
       scanned++;
-      if (scanner.run.length === markerLength) {
+      if (scanner.run.length === markerLength && !escaped(source, scanner.run.start)) {
         scanner.resolvedEnd = scanner.run.start + scanner.run.length;
         break;
       }
@@ -348,7 +353,7 @@ function scanExactCodeCloser(scanner: ExactCodeCloserScanner, source: string, ma
     scanned++;
   }
   if (scanner.resolvedEnd === undefined && scanner.run && scanner.position === source.length
-    && scanner.run.length === markerLength && scanner.run.start > priorLength)
+    && scanner.run.length === markerLength && scanner.run.start > priorLength && !escaped(source, scanner.run.start))
     scanner.resolvedEnd = scanner.position;
   return scanned;
 }
@@ -363,12 +368,6 @@ function tailCode(blocks: Block[]): Extract<Block, { type: "code" }> | undefined
   if (last?.type === "blockquote") return tailCode(last.children);
   return undefined;
 }
-
-const escaped = (source: string, index: number) => {
-  let escapes = 0;
-  for (let at = index - 1; at >= 0 && source[at] === "\\"; at--) escapes++;
-  return escapes % 2 === 1;
-};
 
 // Unescaped `[` and `]` outside code spans, including a span that may still close: code binds tighter than brackets.
 function bracketMarks(source: string) {
