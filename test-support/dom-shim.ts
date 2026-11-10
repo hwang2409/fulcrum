@@ -96,12 +96,15 @@ const snapshotTargets = (): TargetSnapshot[] => {
     for (let index = 0; index < names.length; index += 1) {
       const name = names[index]!;
       const descriptor = getOwnPropertyDescriptor(root, name);
-      if (!descriptor || !("value" in descriptor) || typeof descriptor.value !== "function") continue;
+      if (!descriptor || !("value" in descriptor)) continue;
+      const value = objectValue(descriptor.value);
+      if (!value) continue;
+      const prefix = owner === "globalThis" ? "" : `${owner}.`;
+      const valueOwner = `${prefix}${propertyName(name)}`;
+      add(value, valueOwner);
+      if (typeof descriptor.value !== "function") continue;
       const prototype = getOwnPropertyDescriptor(descriptor.value, "prototype");
-      if (prototype && "value" in prototype) {
-        const prefix = owner === "globalThis" ? "" : `${owner}.`;
-        add(prototype.value, `${prefix}${propertyName(name)}.prototype`);
-      }
+      if (prototype && "value" in prototype) add(prototype.value, `${valueOwner}.prototype`);
     }
   }
 
@@ -163,32 +166,65 @@ const isCacheResult = (value: unknown) => {
     && result.set === undefined;
 };
 
+type LifecyclePredicate = (before?: PropertyDescriptor, after?: PropertyDescriptor) => boolean;
+
+const clearsCache = (before: PropertyDescriptor | undefined, after: PropertyDescriptor | undefined, requiresEntry: boolean) => {
+  if (!before || !after || !sameDescriptorExceptValue(before, after) || !isArray(before.value) || !isArray(after.value)) return false;
+  if (before.value === after.value || after.value.length !== 0 || (requiresEntry && before.value.length === 0)) return false;
+  for (let index = 0; index < before.value.length; index += 1) if (!isCacheResult(cacheEntryResult(before.value[index]))) return false;
+  return true;
+};
+
+// Bun returns a fresh supportedEntryTypes array each time its descriptor is read.
+const sameSupportedEntryTypes: LifecyclePredicate = (before, after) =>
+  !!before
+  && !!after
+  && sameDescriptorExceptValue(before, after)
+  && isArray(before.value)
+  && isArray(after.value)
+  && before.value.length === 3
+  && after.value.length === 3
+  && before.value[0] === "mark"
+  && before.value[1] === "measure"
+  && before.value[2] === "resource"
+  && after.value[0] === "mark"
+  && after.value[1] === "measure"
+  && after.value[2] === "resource";
+
+const lifecycleTransitions: Record<string, LifecyclePredicate> = {
+  "document.Symbol(readyState)": (before, after) =>
+    !!before && !!after && sameDescriptorExceptValue(before, after) && before.value === "interactive" && after.value === "complete",
+  "document.Symbol(affectsCache)": (before, after) => clearsCache(before, after, true),
+  "document.Symbol(affectsComputedStyleCache)": (before, after) => clearsCache(before, after, false),
+  "document._reactListening*": (before, after) =>
+    !before
+    && after?.configurable === true
+    && after.enumerable === true
+    && after.writable === true
+    && after.value === true
+    && after.get === undefined
+    && after.set === undefined,
+  "PerformanceObserver.supportedEntryTypes": sameSupportedEntryTypes,
+  "PerformanceObserver[[Prototype:1]].supportedEntryTypes": sameSupportedEntryTypes,
+};
+
+const lifecycleKey = (snapshot: TargetSnapshot, name: PropertyKey): string | undefined => {
+  if (name === "supportedEntryTypes" && (snapshot.owner === "PerformanceObserver" || snapshot.owner === "PerformanceObserver[[Prototype:1]]")) {
+    return `${snapshot.owner}.supportedEntryTypes`;
+  }
+  if (!stringEndsWith(snapshot.owner, ".document") && snapshot.owner !== "document") return undefined;
+  if (typeof name === "symbol") return `document.Symbol(${symbolDescription(name)})`;
+  if (stringStartsWith(name, "_reactListening")) return "document._reactListening*";
+};
+
 const isExpectedLifecycleChange = (
   snapshot: TargetSnapshot,
   name: PropertyKey,
   before: PropertyDescriptor | undefined,
   after: PropertyDescriptor | undefined,
 ) => {
-  if (!stringEndsWith(snapshot.owner, ".document") && snapshot.owner !== "document") return false;
-  if (typeof name === "symbol" && symbolDescription(name) === "readyState" && before && after) {
-    return sameDescriptorExceptValue(before, after) && before.value === "interactive" && after.value === "complete";
-  }
-  const description = typeof name === "symbol" ? symbolDescription(name) : undefined;
-  if ((description === "affectsCache" || description === "affectsComputedStyleCache") && before && after) {
-    if (!sameDescriptorExceptValue(before, after) || !isArray(before.value) || !isArray(after.value) || before.value.length === after.value.length) return false;
-    for (let index = 0; index < before.value.length; index += 1) if (!isCacheResult(cacheEntryResult(before.value[index]))) return false;
-    for (let index = 0; index < after.value.length; index += 1) if (!isCacheResult(cacheEntryResult(after.value[index]))) return false;
-    return true;
-  }
-  if (typeof name === "string" && stringStartsWith(name, "_reactListening") && !before && after) {
-    return after.configurable === true
-      && after.enumerable === true
-      && after.writable === true
-      && after.value === true
-      && after.get === undefined
-      && after.set === undefined;
-  }
-  return false;
+  const key = lifecycleKey(snapshot, name);
+  return key ? lifecycleTransitions[key]?.(before, after) === true : false;
 };
 
 const changedProperty = (snapshot: TargetSnapshot): PropertyKey | "[[Prototype]]" | undefined => {
