@@ -3,6 +3,8 @@ GlobalRegistrator.register({ url: "http://localhost:3000/gallery.html" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type RunSource, type SubAgentEvent } from "@fulcrum/core";
@@ -57,17 +59,14 @@ function fakeSource(runs: Record<string, ReturnType<typeof storeOf>>) {
 
 // happy-dom has no layout: every box is 600 px tall and scrolls the virtual timeline's estimated height.
 function fakeLayout() {
-  const keys = ["clientHeight", "scrollHeight", "scrollTop"] as const;
-  const saved = keys.map((key) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, key));
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restore.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restore.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } }));
+  restore.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.min(value, Math.max(0, (this as HTMLElement).scrollHeight - (this as HTMLElement).clientHeight))); },
-  });
-  restore.push(() => keys.forEach((key, index) => saved[index] && Object.defineProperty(HTMLElement.prototype, key, saved[index]!)));
+  }));
 }
 const frames = async (count = 3) => { for (let i = 0; i < count; i++) await act(() => new Promise((resolve) => setTimeout(resolve, 20))); };
 const userScroll = (scroller: HTMLElement, top: number) => act(() => {

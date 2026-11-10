@@ -3,6 +3,8 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, MAX_URL_CHARS, type ContentBlock, type RunEvent } from "@fulcrum/core";
@@ -26,10 +28,12 @@ function setup(events: RunEvent[]) {
 
 let root: Root | undefined;
 let container: HTMLElement;
+const restoreShims: Array<() => void> = [];
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
+  restoreShims.splice(0).reverse().forEach((restore) => restore());
 });
 function mount(node: ReactNode) {
   container = document.createElement("div");
@@ -261,7 +265,7 @@ test("base64 never reaches labels, titles, data attributes, or error text", () =
 test("an unknown block keeps its data: its type, then its json on request, copyable", async () => {
   const block = { type: "custom-chart", series: [1, 2, 3] };
   const copies: string[] = [];
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { copies.push(text); } } });
+  restoreShims.push(shimProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { copies.push(text); } } }));
   render([commit([block, { type: "constructor" }])]);
   const rows = [...container.querySelectorAll('[data-part="block-unknown"]')];
   expect(rows.map((row) => row.querySelector('[data-part="block-type"]')!.textContent)).toEqual(["custom-chart", "constructor"]);

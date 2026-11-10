@@ -3,6 +3,8 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, expect, test } from "bun:test";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
@@ -14,38 +16,23 @@ const commits = (prefix: string, count: number): RunEvent[] => Array.from({ leng
   { type: "message_commit", message_id: `${prefix}-${index}`, message: { role: "assistant", content: [{ type: "text", text: `${prefix}-${index}` }] } }
 ));
 
-const restoreProperty = (target: object, key: PropertyKey, descriptor?: PropertyDescriptor) => {
-  if (descriptor) Object.defineProperty(target, key, descriptor);
-  else Reflect.deleteProperty(target, key);
-};
-
 test("two row growths before measurement keep a pinned reader at the physical end", async () => {
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
   const frames: FrameRequestCallback[] = [];
-  const saved = {
-    ResizeObserver: Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver"),
-    requestAnimationFrame: Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame"),
-    cancelAnimationFrame: Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame"),
-  };
-  const dimensions = {
-    clientHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight"),
-    scrollHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight"),
-    scrollTop: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop"),
-  };
   const positions = new WeakMap<HTMLElement, number>();
   let physicalHeight = 0;
-  globalThis.ResizeObserver = class {
+  const restoreResizeObserver = shimGlobal("ResizeObserver", class {
     private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
     constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
     observe(element: Element) { this.entry.observed.add(element); }
     unobserve(element: Element) { this.entry.observed.delete(element); }
     disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  globalThis.requestAnimationFrame = (callback) => frames.push(callback);
-  globalThis.cancelAnimationFrame = () => {};
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => physicalHeight });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  } as unknown as typeof ResizeObserver);
+  const restoreRequestFrame = shimGlobal("requestAnimationFrame", (callback) => frames.push(callback));
+  const restoreCancelFrame = shimGlobal("cancelAnimationFrame", () => {});
+  const restoreClientHeight = shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  const restoreScrollHeight = shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => physicalHeight });
+  const restoreScrollTop = shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
@@ -90,10 +77,12 @@ test("two row growths before measurement keep a pinned reader at the physical en
   } finally {
     act(() => root.unmount());
     container.remove();
-    restoreProperty(globalThis, "ResizeObserver", saved.ResizeObserver);
-    restoreProperty(globalThis, "requestAnimationFrame", saved.requestAnimationFrame);
-    restoreProperty(globalThis, "cancelAnimationFrame", saved.cancelAnimationFrame);
-    for (const [key, descriptor] of Object.entries(dimensions)) restoreProperty(HTMLElement.prototype, key, descriptor);
+    restoreScrollTop();
+    restoreScrollHeight();
+    restoreClientHeight();
+    restoreCancelFrame();
+    restoreRequestFrame();
+    restoreResizeObserver();
   }
 });
 
@@ -102,22 +91,16 @@ test("a row resize reported just before a resync replaces its id is not measured
   // Timeline has two observers (rows and the viewport); keep each one's callback and targets.
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
   const frames: FrameRequestCallback[] = [];
-  const saved = {
-    ResizeObserver: Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver"),
-    requestAnimationFrame: Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame"),
-    cancelAnimationFrame: Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame"),
-  };
-  globalThis.ResizeObserver = class {
+  const restoreResizeObserver = shimGlobal("ResizeObserver", class {
     private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
     constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
     observe(element: Element) { this.entry.observed.add(element); }
     unobserve(element: Element) { this.entry.observed.delete(element); }
     disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  globalThis.requestAnimationFrame = (callback) => frames.push(callback);
-  globalThis.cancelAnimationFrame = () => {};
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  } as unknown as typeof ResizeObserver);
+  const restoreRequestFrame = shimGlobal("requestAnimationFrame", (callback) => frames.push(callback));
+  const restoreCancelFrame = shimGlobal("cancelAnimationFrame", () => {});
+  const restoreClientHeight = shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -137,9 +120,9 @@ test("a row resize reported just before a resync replaces its id is not measured
   } finally {
     act(() => root.unmount());
     container.remove();
-    restoreProperty(globalThis, "ResizeObserver", saved.ResizeObserver);
-    restoreProperty(globalThis, "requestAnimationFrame", saved.requestAnimationFrame);
-    restoreProperty(globalThis, "cancelAnimationFrame", saved.cancelAnimationFrame);
-    restoreProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    restoreClientHeight();
+    restoreCancelFrame();
+    restoreRequestFrame();
+    restoreResizeObserver();
   }
 });

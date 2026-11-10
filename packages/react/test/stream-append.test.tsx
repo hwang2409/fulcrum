@@ -2,7 +2,9 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import { afterAll, afterEach, expect, test, setDefaultTimeout } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test, setDefaultTimeout } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type RunItem, type ToolView } from "@fulcrum/core";
@@ -12,18 +14,16 @@ import { RunProvider, ToolCall } from "../src/index.js";
 setDefaultTimeout(60_000);
 
 // A 600 px viewport, so the virtual viewer mounts rows (happy-dom has no layout).
-const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-afterAll(() => {
-  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-  GlobalRegistrator.unregister();
-});
+afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
 let container: HTMLElement;
+let restoreClientHeight: (() => void) | undefined;
+beforeEach(() => { restoreClientHeight = shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }); });
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
+  restoreClientHeight?.();
 });
 
 const call = (id: string) => ({ id, name: "bash", arguments: { command: "log" } });

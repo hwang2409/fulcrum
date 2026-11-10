@@ -3,6 +3,8 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act } from "react";
 import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
 import type { Highlight, HighlightContext, Token } from "@fulcrum/highlight";
@@ -12,10 +14,12 @@ import { Code, HighlightContext as HighlightProvider, RunProvider, ToolCall } fr
 afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
 let container: HTMLElement;
+const restoreShims: Array<() => void> = [];
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
+  restoreShims.splice(0).reverse().forEach((restore) => restore());
 });
 
 type Call = { code: string; language: string | undefined; context?: HighlightContext };
@@ -110,7 +114,7 @@ test("collapsed output does no JSON or highlight work in its first render", () =
 
 test("shell output renders ANSI colors as themed spans and copies plain text", async () => {
   const copied: string[] = [];
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
+  restoreShims.push(shimProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } }));
   render(done("ansi", "bash", { kind: "shell", command: "bun run build" }, "\x1b[1m\x1b[31merror\x1b[39m\x1b[22m: failed\n\x1b[2K\x1b[32mok\x1b[0m\n"), ["tool:ansi"]);
   const output = q('[data-part="tool-output"]');
   expect(output.textContent).toBe("error: failed\nok\n");
@@ -139,8 +143,7 @@ test("search highlights each file by its language and marks the match", () => {
 });
 
 test("the large viewer highlights only its mounted rows, never the whole text", () => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 320 });
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 320 }));
   const { highlight, calls } = fakeHighlighter();
   const line = "export const value = 1; // padding padding padding padding\n";
   const text = line.repeat(Math.ceil(2_000_000 / line.length));
@@ -158,7 +161,6 @@ test("the large viewer highlights only its mounted rows, never the whole text", 
   expect(highlighted).toBeLessThan(text.length / 4);
   expect(viewerCalls.every((call) => call.code.length <= 2_000)).toBe(true);
   expect(q('[data-part="text-viewer-head"]').textContent).toContain(`${(text.length / line.length).toLocaleString("en-US")} lines`);
-  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
 });
 
 function openCard() {
@@ -172,11 +174,10 @@ function openCard() {
 
 // Opens the large viewer of the rendered card with a 320 px viewport.
 function openViewer() {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 320 });
+  const restoreClientHeight = shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 320 });
   openCard();
   act(() => q('[data-action="open-viewer"]').click());
-  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+  restoreClientHeight();
   return q('[data-part="text-viewer"]');
 }
 
