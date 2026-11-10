@@ -1,4 +1,5 @@
 import { createStreamingDocument } from "../packages/markdown/src/index.js";
+import { PendingInline } from "../packages/markdown/src/pending-inline.js";
 
 const targetBytes = 100_000;
 const deltaSizes = [1, 20, 200];
@@ -78,6 +79,19 @@ const cases = [
   ["quote list quote", deepQuoteListQuote.repeat(Math.ceil(targetBytes / deepQuoteListQuote.length)).slice(0, targetBytes)],
   ["nested table", nestedTable.repeat(Math.ceil(targetBytes / nestedTable.length)).slice(0, targetBytes)],
 ] as const;
+
+// shortcut: this report measures the parked nested-emphasis limit; upgrade when persistent slot publication lands.
+const nestedValidEmphasis = (depth: number) => `${"*a ".repeat(depth)}z${" b*".repeat(depth)}`;
+const nestedEmphasisTotal = (depth: number) => {
+  const source = nestedValidEmphasis(depth);
+  const samples = Array.from({ length: 5 }, () => {
+    const pending = new PendingInline((text) => text ? [{ type: "text", value: text }] : []);
+    const start = performance.now();
+    for (const character of source) pending.append(character);
+    return performance.now() - start;
+  });
+  return median(samples);
+};
 
 proveGateSensitivity();
 console.log(`markdown stream benchmark: ${targetBytes} bytes`);
@@ -198,6 +212,10 @@ const continuationTimes = () => {
 continuationTimes(); // discarded warm-up
 const continuationSamples = Array.from({ length: 7 }, continuationTimes);
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
+const nestedEmphasisTimes = [1_000, 2_000].map((depth) => nestedEmphasisTotal(depth));
+console.log(`KNOWN LIMIT nested valid emphasis depth 1k: total ${nestedEmphasisTimes[0]!.toFixed(0)} ms; doubling ratio n/a (median of 5, 1-character chunks)`);
+console.log(`KNOWN LIMIT nested valid emphasis depth 2k: total ${nestedEmphasisTimes[1]!.toFixed(0)} ms; doubling ratio ${(nestedEmphasisTimes[1]! / nestedEmphasisTimes[0]!).toFixed(2)}x (median of 5, 1-character chunks)`);
+// Known quadratic limit. The persistent delimiter-owner design is parked at ~/.zeta/scratch/fulcrum/f2a-state-machine-plan.md (PR #147 closed; backup/f2-gate1-tests).
 const continuationMedians = [0, 1, 2].map((index) => median(continuationSamples.map((sample) => sample[index]!)));
 const continuationRatios = [
   median(continuationSamples.map(([small, medium]) => medium / small)),
