@@ -967,7 +967,7 @@ export function createStreamingDocument(): StreamingDocument {
       const inspected = inspectReferenceLine(inlineSource);
       if (inspected.metadata && inspected.disposition.kind !== "definition") inlineSource = inlineSource.replace("[", "\\[");
     }
-    record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
+    record.block.children = /[\\[*_~`<!&]/.test(inlineSource) || (markdown as any).linkify.pretest(inlineSource)
       ? parseInline(inlineSource, streaming, environment(), false)
       : [{ type: "text", value: inlineSource }];
     registerReferences(record);

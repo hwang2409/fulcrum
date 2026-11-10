@@ -47,6 +47,15 @@ test("a closed paragraph keeps literal pipes and asterisks before finish", () =>
   }
 });
 
+test("a closed paragraph linkifies gfm autolinks before finish", () => {
+  for (const value of ["https://example.com/a", "www.example.com/a", "foo@example.com"]) {
+    const source = `open ${value} now\n\nnext paragraph`;
+    const document = createStreamingDocument();
+    document.append(source);
+    expect(document.render()[0], value).toEqual(parseMarkdown(source)[0]);
+  }
+});
+
 test("a paragraph closed by a block start or a container keeps its literal characters", () => {
   for (const source of ["use a | b and 2 * 3 here\n# heading\n", "- use a | b and 2 * 3 here\n\n  next\n", "> use a | b and 2 * 3 here\n\nnext\n"]) {
     for (const split of splits)
