@@ -1661,6 +1661,10 @@ test.each([
   ["owned through an empty replay", false, false, true, "clamp"],
   ["reader deviation during an empty replay", false, false, true, "reader"],
   ["physical bottom during an empty replay", false, false, true, "bottom"],
+  ["open recovery with a client-height change", false, false, true, "geometry-client"],
+  ["open recovery with a host-top shift", false, false, true, "geometry-top"],
+  ["open recovery with a host-bottom shift", false, false, true, "geometry-bottom"],
+  ["open recovery with the WebKit host-box shift", false, false, true, "geometry-webkit"],
 ] as const)("same-run replacement keeps an unpinned reader's anchor in %s", (_name, hostOwned, strict, stagedReplay, recoveryPosition) => {
   const items = Array.from({ length: 1_000 }, (_, index) => committedItem(String(index)));
   const replacementItems = [...items.map((item, index) => index === 500
@@ -1672,6 +1676,8 @@ test.each([
   const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
+  let hostGeometry = { clientHeight: 600, top: 0, bottom: 600 };
+  const rect = HTMLElement.prototype.getBoundingClientRect;
   const OriginalResizeObserver = globalThis.ResizeObserver;
   const resizeObservers: Array<{ callback: ResizeObserverCallback; observed: Set<Element>; observer: ResizeObserver }> = [];
   if (stagedReplay) {
@@ -1686,13 +1692,21 @@ test.each([
       disconnect() { this.record.observed.clear(); }
     } as unknown as typeof ResizeObserver;
   }
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => hostGeometry.clientHeight });
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
   Object.defineProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
   });
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    if (this.getAttribute("data-part") === "timeline-scroll") return { x: 0, y: hostGeometry.top, top: hostGeometry.top, bottom: hostGeometry.bottom, left: 0, right: 800, width: 800, height: hostGeometry.bottom - hostGeometry.top, toJSON() {} };
+    if (this.getAttribute("data-part") === "timeline") {
+      const top = hostGeometry.top - (this.parentElement?.scrollTop ?? 0);
+      return { x: 0, y: top, top, bottom: top + Number.parseFloat(this.style.height || "0"), left: 0, right: 800, width: 800, height: Number.parseFloat(this.style.height || "0"), toJSON() {} };
+    }
+    return rect.call(this);
+  };
   try {
     const scrollRef = { current: null as HTMLElement | null };
     const view = (store: RunStore) => {
@@ -1720,6 +1734,17 @@ test.each([
       viewport.scrollTop = viewport.scrollTop;
       if (recoveryPosition === "reader") viewport.scrollTop -= 100;
       else if (recoveryPosition === "bottom") viewport.scrollTop = viewport.scrollHeight;
+      else if (recoveryPosition.startsWith("geometry-")) {
+        const priorBottom = hostGeometry.bottom;
+        hostGeometry = recoveryPosition === "geometry-client"
+          ? { clientHeight: 590, top: 0, bottom: 600 }
+          : recoveryPosition === "geometry-top"
+            ? { clientHeight: 600, top: 10, bottom: 600 }
+            : recoveryPosition === "geometry-bottom"
+              ? { clientHeight: 600, top: 0, bottom: 610 }
+              : { clientHeight: 597, top: 47, bottom: 643.6875 };
+        viewport.scrollTop -= hostGeometry.bottom - priorBottom;
+      }
       act(() => viewport.dispatchEvent(new Event("scroll")));
       const viewportResize = resizeObservers.find(({ observed }) => observed.has(viewport));
       expect(viewportResize, "the viewport ResizeObserver must be attached during recovery").toBeDefined();
@@ -1752,6 +1777,7 @@ test.each([
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
     if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
     if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
+    HTMLElement.prototype.getBoundingClientRect = rect;
     globalThis.ResizeObserver = OriginalResizeObserver;
   }
 });

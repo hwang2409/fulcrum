@@ -246,23 +246,26 @@ export function useVirtualList<Id extends string>(
         coordinator.current.geometry = current.hostGeometry;
         if (geometryChanged) {
           const wasPinned = engine.getSnapshot().pinned;
+          const recoveryTarget = Math.max(0, Math.min(coordinator.current.settledHostTop, current.hostEnd));
+          const bottomShift = current.hostGeometry.rectBottom - priorGeometry.rectBottom;
           const expectedHostTop = coordinator.current.recoveryPending
-            ? Math.max(0, Math.min(coordinator.current.settledHostTop, current.hostEnd))
+            ? Math.max(0, Math.min(recoveryTarget - bottomShift, current.hostEnd))
             : owned
-              ? Math.max(0, Math.min(owned.hostReadBack - (current.hostGeometry.rectBottom - priorGeometry.rectBottom), current.hostEnd))
+              ? Math.max(0, Math.min(owned.hostReadBack - bottomShift, current.hostEnd))
               : current.hostTop;
           const layout: Geometry = {
             ...current,
             hostTop: expectedHostTop,
             engineTop: Math.max(0, expectedHostTop - current.prefix - current.gutter),
           };
-          const readerMoved = owned === null || Math.abs(current.hostTop - expectedHostTop) > engine.bottomThreshold;
+          const readerMoved = (!coordinator.current.recoveryPending && owned === null)
+            || Math.abs(current.hostTop - expectedHostTop) > engine.bottomThreshold;
           viewportTransaction(false, layout);
           if (readerMoved) {
             coordinator.current.target = null;
             report("user", current);
           } else if (coordinator.current.recoveryPending) {
-            writeScroll(expectedHostTop);
+            writeScroll(recoveryTarget);
           } else if (wasPinned) {
             writeScroll("end");
           }
