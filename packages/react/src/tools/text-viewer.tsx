@@ -357,14 +357,20 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
   const whole = useWholeTokens(rows ? "" : text, metrics.lines, format, id, done, rows ? [] : ranges.map(({ start, end, done, slice }) => styledBlock(slice, start, end, format, id, done, start)), seed);
   useLayoutEffect(() => {
     const grew = text.length > seenLength.current;
-    const host = scrollRef.current;
-    const becameReady = !initialSizeReady.current && list.snapshot.totalSize > 0
-      && host !== null && host.scrollHeight > host.clientHeight;
-    if (becameReady) initialSizeReady.current = true;
-    if (follow && following.current && (grew || becameReady)) list.scrollToEnd();
+    if (follow && following.current && grew) list.scrollToEnd();
     else if (grew) setNewOutput(true);
     seenLength.current = text.length;
-  }, [follow, text, list.scrollToEnd, list.snapshot.totalSize]);
+  }, [follow, text, list.scrollToEnd]);
+  useLayoutEffect(() => {
+    if (initialSizeReady.current || list.snapshot.totalSize <= 0) return;
+    const frame = requestAnimationFrame(() => {
+      const host = scrollRef.current;
+      if (!host || host.scrollHeight <= host.clientHeight) return;
+      initialSizeReady.current = true;
+      if (follow && following.current) list.scrollToEnd();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [follow, list.scrollToEnd, list.snapshot.totalSize]);
   // Opened by a control that unmounts (the closed preview's "open all"): focus moves to the viewer, not to the page.
   useLayoutEffect(() => { if (focus) scrollRef.current?.focus({ preventScroll: true }); }, []);
   const onScroll = (node: HTMLDivElement) => {
