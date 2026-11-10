@@ -29,6 +29,7 @@ const seeded = [
   meta(ACTIVE, 2, { name: "fix the flaky reconnect test in packages/zeta" }),
   meta("s-themes", 45, { first_message_preview: "check every theme's muted text against 4.5:1 on the surface color" }),
   meta(LONG, 60 * 5, { first_message_preview: "profile the virtual timeline with 400 rows of history" }),
+  meta(MANY, 60 * 6, { first_message_preview: "inspect a session with many pages of history" }),
   meta("s-child", 3, { parent_session_id: ACTIVE, first_message_preview: "worker: run the zeta tests" }),
   meta("s-markdown", 60 * 26, { name: "streaming markdown: nested lists in block quotes", model: "gpt-5.1-codex" }),
   meta("s-docs", 60 * 24 * 3, { first_message_preview: "write the quickstart for @fulcrum/react" }),
@@ -283,8 +284,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   if (manyPages > 0) histories[MANY] = Array.from({ length: manyPages * 8 }, (_, index) => ({ id: `many-${index}`, role: index % 2 ? "assistant" : "user", content: [text(`many-page row ${index}`)], tool_result: null }));
   if (largePages > 0) histories[LARGE] = Array.from({ length: largePages * 128 }, (_, index) => ({ id: `large-${index}`, role: index % 2 ? "assistant" : "user", content: [text(`large-page row ${index}`)], tool_result: null }));
   let sessions = [
-    ...seeded,
-    ...(manyPages > 0 ? [meta(MANY, 1, { name: `${manyPages.toLocaleString("en")} small pages of history` })] : []),
+    ...seeded.map((session) => session.session_id === MANY && manyPages > 0 ? { ...session, updated_at: at(1), name: `${manyPages.toLocaleString("en")} small pages of history` } : session),
     ...(largePages > 0 ? [meta(LARGE, 1, { name: `${largePages.toLocaleString("en")} large pages of history` })] : []),
   ];
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
@@ -496,8 +496,14 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if (method === "resume") {
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
-          if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
-          active = String(params.session_id);
+          const requested = String(params.session_id);
+          const candidates = requested.length >= 4 ? sessions.map((session) => String(session.session_id)).filter((sessionId) => sessionId.startsWith(requested)).slice(0, 8) : [];
+          const sessionId = sessions.some((session) => session.session_id === requested) ? requested : candidates.length === 1 ? candidates[0]! : null;
+          if (!sessionId) return reply({ error: candidates.length > 1
+            ? { code: -32602, message: "session id prefix is ambiguous", data: { code: "session_id_ambiguous", session_id: requested, candidates } }
+            : { code: -32602, message: "session not found", data: { code: "session_not_found", session_id: requested } } });
+          if (running && sessionId !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
+          active = sessionId;
           applyHostBinding(active, binding?.commands);
           delayedOpen = false;
           return reply({ result: { session: sessions.find((session) => session.session_id === active) } });

@@ -302,7 +302,13 @@ function OpeningPanel({ view }: { view: SessionsState }) {
 function FailurePanel({ view, sessions }: { view: SessionsState; sessions: Sessions }) {
   const failure = sessionPresentation(view.transition).openError!;
   const running = view.server?.id && view.server.id !== failure.id ? view.server.id : null;
-  if (!failure.busy) return <Panel title="could not open this session" tone="danger"><p className="mono">{failure.message}</p><div className="actions"><button type="button" className="primary" onClick={() => sessions.select(failure.id)}>try again</button></div></Panel>;
+  if (!failure.busy) return (
+    <Panel title="could not open this session" tone="danger">
+      <p className="mono">{failure.message}</p>
+      {failure.candidates?.length ? <div className="actions">{failure.candidates.map((id) => <button key={id} type="button" className="ghost" onClick={() => sessions.select(id)}>{id}</button>)}</div> : null}
+      <div className="actions"><button type="button" className="primary" onClick={() => sessions.select(failure.id)}>try again</button></div>
+    </Panel>
+  );
   return (
     <Panel title="zeta is busy with another session" tone="warn">
       <p>zeta serve opens a session only when no turn runs. wait for the running turn to end, or open the running session.</p>
