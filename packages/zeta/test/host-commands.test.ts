@@ -120,6 +120,7 @@ type AttachmentCase = {
     fake: ReturnType<typeof fakeTransport>;
     client: ReturnType<typeof createClient>;
     supplied: ReturnType<typeof deferred<HostCommand[]>>[];
+    supplierIds: string[];
   }): Promise<void>;
 };
 
@@ -240,8 +241,8 @@ const attachmentCases: AttachmentCase[] = [
   },
   {
     name: "abort while waiting for the previous gate",
-    expectedWire: ["resume:abcd:1", "resume:abcdef12-full:3"],
-    expectedSuppliers: ["abcd", "abcdef12-full", "abcdef12-full"],
+    expectedWire: ["resume:abcd:1", "send:abcdef12-full:-"],
+    expectedSuppliers: ["abcd"],
     deferSuppliers: true,
     async run({ fake, client, supplied }) {
       const first = client.request("resume", { session_id: "abcd" });
@@ -250,16 +251,46 @@ const attachmentCases: AttachmentCase[] = [
       const controller = new AbortController();
       const aborted = client.request("resume", { session_id: "abcdef12-full" }, { signal: controller.signal });
       controller.abort();
+      const outcome = await Promise.race([aborted.catch((error) => error), Bun.sleep(50).then(() => "timed out")]);
+      expect(outcome).not.toBe("timed out");
+      expect(outcome).toMatchObject({ name: "AbortError" });
+      expect(supplied).toHaveLength(1);
+      const sending = client.request("send", { session_id: "abcdef12-full", text: "hello" });
+      expect(fake.sent.filter(({ method }) => method === "send")).toHaveLength(0);
       replyResume(fake, "abcdef12-full");
       await first;
       await Bun.sleep(0);
+      const sends = fake.sent.filter(({ method }) => method === "send");
+      expect(sends).toHaveLength(1);
+      fake.reply(sends[0]!, { accepted: true });
+      await sending;
+    },
+  },
+  {
+    name: "canceling the middle of two queued waiters preserves the last",
+    expectedWire: ["resume:abcd:1", "resume:abcdef12-full:2"],
+    expectedSuppliers: ["abcd", "abcdef12-full"],
+    deferSuppliers: true,
+    async run({ fake, client, supplied, supplierIds }) {
+      const first = client.request("resume", { session_id: "abcd" });
+      supplied[0]!.resolve([command({ FOO: "1" })]);
+      await Bun.sleep(0);
+      const controller = new AbortController();
+      const middle = client.request("resume", { session_id: "abcde" }, { signal: controller.signal });
+      const last = client.request("resume", { session_id: "abcdef12-full" });
+      controller.abort();
+      const outcome = await Promise.race([middle.catch((error) => error), Bun.sleep(50).then(() => "timed out")]);
+      expect(outcome).not.toBe("timed out");
+      expect(outcome).toMatchObject({ name: "AbortError" });
+      expect(supplierIds).toEqual(["abcd"]);
+      replyResume(fake, "abcdef12-full");
+      await first;
+      await Bun.sleep(0);
+      expect(supplierIds).toEqual(["abcd", "abcdef12-full"]);
       supplied[1]!.resolve([command({ FOO: "2" })]);
-      await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
-      const final = client.request("resume", { session_id: "abcdef12-full" });
-      supplied[2]!.resolve([command({ FOO: "3" })]);
       await Bun.sleep(0);
       replyResume(fake, "abcdef12-full");
-      await final;
+      await last;
     },
   },
   {
@@ -346,7 +377,7 @@ test.each(attachmentCases)("attachment identity: $name", async ({ expectedWire, 
   } });
   await hello(fake, client);
 
-  await run({ fake, client, supplied });
+  await run({ fake, client, supplied, supplierIds });
 
   const wire = fake.sent.slice(1).map(({ method, params }) => {
     const commands = params.host_commands as HostCommand[] | undefined;

@@ -408,23 +408,53 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
         if (id.startsWith(activeId) || activeId.startsWith(id)) return activeGate;
       }
     };
-    const track = (sessionId: string, operation: Promise<unknown>, previous?: Promise<unknown>) => {
-      const inherited = previous ? [...gates].filter(([, activeGate]) => activeGate === previous).map(([id]) => id) : [];
-      const current = operation.then((result) => {
-        const canonicalId = resumedSessionId(result) ?? sessionId;
+    const run = (sessionId: string, signal: AbortSignal | undefined, operation: () => Promise<unknown>) => {
+      const previous = gate(sessionId);
+      let canceled = signal?.aborted ?? false;
+      let started = previous === undefined;
+      let abort: (() => void) | undefined;
+      const start = () => operation(); // host code: outside; README row "hostCommands(sessionId)"
+      const wait = previous?.catch(() => {}).then(() => {
+        if (canceled) return;
+        started = true;
+        return start();
+      }) ?? start();
+      const completion = wait.then((value) => {
+        if (!started) return value;
+        const canonicalId = resumedSessionId(value) ?? sessionId;
         aliases.set(sessionId, canonicalId);
         aliases.set(canonicalId, canonicalId);
-        if (!gates.has(canonicalId) || gates.get(canonicalId) === current) gates.set(canonicalId, current);
-        return result;
+        return value;
       });
-      for (const id of [...inherited, sessionId]) gates.set(id, current);
+      const aborted = signal && new Promise<never>((_, reject) => {
+        abort = () => {
+          canceled = true;
+          reject(signal.reason ?? Object.assign(new Error("request aborted"), { name: "AbortError" }));
+        };
+        if (signal.aborted) {
+          canceled = true;
+          reject(signal.reason ?? Object.assign(new Error("request aborted"), { name: "AbortError" }));
+        } else signal.addEventListener("abort", abort, { once: true }); // host code: outside; README row "request signal"
+      });
+      const result = aborted ? Promise.race([completion, aborted]).finally(() => {
+        signal?.removeEventListener("abort", abort!); // host code: outside; README row "request signal"
+      }) : completion;
+      const inherited = previous ? [...gates].filter(([, activeGate]) => activeGate === previous).map(([id]) => id) : [];
+      for (const id of [...inherited, sessionId]) gates.set(id, completion);
       const clear = () => {
-        for (const [id, activeGate] of gates) if (activeGate === current) gates.delete(id);
+        for (const [id, activeGate] of gates) {
+          if (activeGate !== completion) continue;
+          if (!previous || started || !canceled) gates.delete(id);
+          else {
+            gates.set(id, previous);
+            previous.then(() => { if (gates.get(id) === previous) gates.delete(id); }, () => { if (gates.get(id) === previous) gates.delete(id); });
+          }
+        }
       };
-      current.then(clear, clear);
-      return current;
+      result.then(clear, clear);
+      return result;
     };
-    return { canonical, clear: () => { aliases.clear(); gates.clear(); }, gate, track };
+    return { canonical, clear: () => { aliases.clear(); gates.clear(); }, gate, run };
   })();
   const closeAbort = new AbortController();
   let closed = false;
@@ -505,6 +535,27 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const performAttachWithRetry = (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) =>
     retryBusy(() => performAttach(method, params, requestOptions), requestOptions);
+  const waitForHostCommands = (supply: Promise<unknown>, signal: AbortSignal | undefined) => {
+    let rejectClosed!: (error: unknown) => void;
+    const closeWait = new Promise<never>((_, reject) => {
+      rejectClosed = reject;
+      closeWaiters.add(reject);
+    });
+    let abort: (() => void) | undefined;
+    const abortWait = signal && new Promise<never>((_, reject) => {
+      abort = () => reject(signal.reason ?? Object.assign(new Error("request aborted"), { name: "AbortError" }));
+      if (signal.aborted) reject(signal.reason ?? Object.assign(new Error("request aborted"), { name: "AbortError" }));
+      else signal.addEventListener("abort", abort, { once: true }); // host code: outside; README row "request signal"
+    });
+    return Promise.race([supply, closeWait, ...(abortWait ? [abortWait] : [])]).finally(() => {
+      closeWaiters.delete(rejectClosed);
+      if (abort) signal?.removeEventListener("abort", abort); // host code: outside; README row "request signal"
+    });
+  };
+  const preservesAttachError = (error: unknown) => {
+    const rpc = error as { code?: unknown; data?: { code?: unknown }; name?: unknown };
+    return rpc.name === "AbortError" || (rpc.code === -32602 && (rpc.data?.code === "session_id_ambiguous" || rpc.data?.code === "session_not_found"));
+  };
   const performAttach = async (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
     const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
     if (closed) throw closedError;
@@ -516,29 +567,13 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     } catch {
       supply = Promise.reject(new HostCommandError("host_command_supplier_failed", "host command supplier failed"));
     }
-    let rejectClosed!: (error: unknown) => void;
-    const closeWait = new Promise<never>((_, reject) => {
-      rejectClosed = reject;
-      closeWaiters.add(reject);
-    });
-    const signal = requestOptions.signal;
-    let abort: (() => void) | undefined;
-    const abortWait = signal && new Promise<never>((_, reject) => {
-      abort = () => reject(signal.reason ?? Object.assign(new Error("request aborted"), { name: "AbortError" }));
-      if (signal.aborted) reject(signal.reason ?? Object.assign(new Error("request aborted"), { name: "AbortError" }));
-      else signal.addEventListener("abort", abort, { once: true }); // host code: outside; README row "request signal"
-    });
-    const supplied = await Promise.race([supply, closeWait, ...(abortWait ? [abortWait] : [])]).finally(() => {
-      closeWaiters.delete(rejectClosed);
-      if (abort) signal?.removeEventListener("abort", abort); // host code: outside; README row "request signal"
-    });
+    const supplied = await waitForHostCommands(supply, requestOptions.signal);
     if (closed) throw closedError;
     const commands = validateHostCommands(supplied);
     try {
       return await rawRequest(method, { ...params, host_commands: commands }, requestOptions);
     } catch (error) {
-      const rpc = error as { code?: unknown; data?: { code?: unknown }; name?: unknown };
-      if (rpc.name === "AbortError" || (rpc.code === -32602 && (rpc.data?.code === "session_id_ambiguous" || rpc.data?.code === "session_not_found"))) throw error;
+      if (preservesAttachError(error)) throw error;
       throw redactHostCommandFailure("host_command_request_failed", error);
     }
   };
@@ -551,10 +586,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const attach = (method: "new_session" | "resume", params: Record<string, unknown>, requestOptions: RequestOptions) => {
     const sessionId = method === "resume" && typeof params.session_id === "string" ? params.session_id : null;
     if (sessionId === null) return performAttachWithRetry(method, params, requestOptions);
-    const previous = attachmentIdentity.gate(sessionId);
-    const operation = previous?.catch(() => {}).then(() => performAttachWithRetry(method, params, requestOptions))
-      ?? performAttachWithRetry(method, params, requestOptions);
-    return attachmentIdentity.track(sessionId, operation, previous);
+    return attachmentIdentity.run(sessionId, requestOptions.signal, () => performAttachWithRetry(method, params, requestOptions));
   };
   const recoverHostBinding = async (method: string, params: Record<string, unknown>, requestOptions: RequestOptions, error: unknown) => {
     const requestedSessionId = typeof params.session_id === "string" ? params.session_id : null;
