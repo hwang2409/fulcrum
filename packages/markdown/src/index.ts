@@ -296,16 +296,24 @@ const escaped = (source: string, index: number) => {
   return escapes % 2 === 1;
 };
 
+const codeRunIsDelimiter = (source: string, index: number, context: "opener" | "closer") =>
+  context === "closer" || !escaped(source, index);
+
 const unmatchedCodeSpan = (source: string) => {
   let opener: { index: number; length: number } | undefined;
   for (const run of source.matchAll(/`+/g)) {
-    if (run.index === undefined) continue;
-    if (escaped(source, run.index)) continue;
+    if (run.index === undefined || !codeRunIsDelimiter(source, run.index, opener ? "closer" : "opener")) continue;
     if (!opener) opener = { index: run.index, length: run[0].length };
     else if (opener.length === run[0].length) opener = undefined;
   }
   return opener;
 };
+
+function resolveCodeSuffix(state: ResolvedCodeSuffix, suffix: string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
+  // First reveal the suffix exactly as the complete parse does; later deltas may make its syntax provisional again.
+  state.nodes = [...state.prefix, ...parse(suffix, true, false)];
+  return suffix.length;
+}
 
 function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, source: () => string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
   if (state.pending) {
@@ -338,7 +346,7 @@ function scanExactCodeCloser(scanner: ExactCodeCloserScanner, source: string, ma
         continue;
       }
       scanned++;
-      if (scanner.run.length === markerLength && !escaped(source, scanner.run.start)) {
+      if (scanner.run.length === markerLength && codeRunIsDelimiter(source, scanner.run.start, "closer")) {
         scanner.resolvedEnd = scanner.run.start + scanner.run.length;
         break;
       }
@@ -353,7 +361,8 @@ function scanExactCodeCloser(scanner: ExactCodeCloserScanner, source: string, ma
     scanned++;
   }
   if (scanner.resolvedEnd === undefined && scanner.run && scanner.position === source.length
-    && scanner.run.length === markerLength && scanner.run.start > priorLength && !escaped(source, scanner.run.start))
+    && scanner.run.length === markerLength && scanner.run.start > priorLength
+    && codeRunIsDelimiter(source, scanner.run.start, "closer"))
     scanner.resolvedEnd = scanner.position;
   return scanned;
 }
@@ -1228,7 +1237,7 @@ export function createStreamingDocument(): StreamingDocument {
         state.resolvedSuffix = { prefix, start: end, nodes: prefix.slice() };
         const suffix = resolvedLine.slice(end);
         previewScannedCharacters += suffix.length;
-        copiedCharacters += appendResolvedCodeSuffix(state.resolvedSuffix, suffix, () => suffix, parsePending);
+        copiedCharacters += resolveCodeSuffix(state.resolvedSuffix, suffix, parsePending);
         resolvedNow = true;
       }
     }
