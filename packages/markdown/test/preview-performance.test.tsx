@@ -44,13 +44,12 @@ test("pending preview work scales with delta at depth 50", () => {
 
 test("long single-line previews scan only appended text", () => {
   const sources = [
-    '{"time":"2026-11-09T12:34:56.789Z","level":"info","event":{"kind":"tool_result","ok":true}}',
-    "2026-11-09T12:34:56.789Z INFO worker tool completed duration_ms=12 output_bytes=4096 ",
+    `{"time":"2026-11-09T12:34:56.789Z","level":"info","output":"${"x".repeat(19_938)}"}`,
+    "2026-11-09T12:34:56.789Z INFO worker tool completed duration_ms=12 output_bytes=4096 ".repeat(250).slice(0, 20_000),
   ];
-  for (const unit of sources) {
-    const source = unit.repeat(Math.ceil(20_000 / unit.length)).slice(0, 20_000);
+  for (const source of sources) {
     const document = streamPending(source, 1);
-    expect(document.stats.previewScannedCharacters, unit[0]).toBeLessThanOrEqual(2 * source.length);
+    expect(document.stats.previewScannedCharacters, source[0]).toBeLessThanOrEqual(2 * source.length);
   }
 });
 
