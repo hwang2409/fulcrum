@@ -32,7 +32,7 @@ test("timeline scroll writes have one owner", () => {
     if (file === "virtual.tsx") {
       expect(writes.map(([write]) => write), message).toEqual(["host.scrollTop = desiredHostTop"]);
       const ownerStart = source.indexOf("const writeScroll =");
-      const ownerEnd = source.indexOf("\n  }, [engine, geometry]);", ownerStart);
+      const ownerEnd = source.indexOf("\n  }, [engine, geometry, sampleOf]);", ownerStart);
       expect(writes[0]!.index! > ownerStart && writes[0]!.index! < ownerEnd, message).toBeTrue();
     } else expect(writes.map(([write]) => write), `${file}: ${message}`).toEqual([...(OTHER_SCROLL_WRITES[file] ?? [])]);
   }
@@ -40,7 +40,7 @@ test("timeline scroll writes have one owner", () => {
 
 test("timeline position owner has no cause classifier or settlement timer", () => {
   const source = readFileSync(SOURCE, "utf8");
-  expect(source).toContain("const onScroll = () => settle();");
+  expect(source).toContain('const onScroll = () => settle("scroll");');
   for (const forbidden of [
     "classifyScroll", "createScrollLeases", "willScroll", "lastPointerTarget", "HostFlow",
     "quietFrames", "settleFrame", "setTimeout", "scrollend",
@@ -168,6 +168,7 @@ test.each(scenarios)("timeline routes $name through the DOM-aware scroll writer"
     globalThis.cancelAnimationFrame = saved.caf;
     for (const [name, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
     }
   }
 });

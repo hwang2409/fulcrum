@@ -146,9 +146,10 @@ export function useVirtualList<Id extends string>(
     if (!host) return;
     const before = geometry(host);
     const logicalEnd = before.prefix + engine.getSnapshot().totalSize + 2 * defaultVirtualGutter - host.clientHeight;
-    host.scrollTop = target === "end"
+    const desiredHostTop = target === "end"
       ? Math.max(before.hostEnd, logicalEnd)
       : before.prefix + before.gutter + target;
+    host.scrollTop = desiredHostTop;
     const after = geometry(host);
     const decision = decideSettle(coordinator.current.settle, {
       kind: "owner-write",
