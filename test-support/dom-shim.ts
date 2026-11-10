@@ -168,11 +168,17 @@ const isCacheResult = (value: unknown) => {
 
 type LifecyclePredicate = (before?: PropertyDescriptor, after?: PropertyDescriptor) => boolean;
 
-const clearsCache = (before: PropertyDescriptor | undefined, after: PropertyDescriptor | undefined, requiresEntry: boolean) => {
+const changesCache = (before: PropertyDescriptor | undefined, after: PropertyDescriptor | undefined) => {
   if (!before || !after || !sameDescriptorExceptValue(before, after) || !isArray(before.value) || !isArray(after.value)) return false;
-  if (before.value === after.value || after.value.length !== 0 || (requiresEntry && before.value.length === 0)) return false;
+  if (before.value === after.value || before.value.length === after.value.length) return false;
   for (let index = 0; index < before.value.length; index += 1) if (!isCacheResult(cacheEntryResult(before.value[index]))) return false;
-  return true;
+  let hasLiveResult = false;
+  for (let index = 0; index < after.value.length; index += 1) {
+    const result = cacheEntryResult(after.value[index]);
+    if (!isCacheResult(result)) return false;
+    if (result !== null) hasLiveResult = true;
+  }
+  return after.value.length === 0 ? before.value.length > 0 : hasLiveResult;
 };
 
 // Bun returns a fresh supportedEntryTypes array each time its descriptor is read.
@@ -194,8 +200,8 @@ const sameSupportedEntryTypes: LifecyclePredicate = (before, after) =>
 const lifecycleTransitions: Record<string, LifecyclePredicate> = {
   "document.Symbol(readyState)": (before, after) =>
     !!before && !!after && sameDescriptorExceptValue(before, after) && before.value === "interactive" && after.value === "complete",
-  "document.Symbol(affectsCache)": (before, after) => clearsCache(before, after, true),
-  "document.Symbol(affectsComputedStyleCache)": (before, after) => clearsCache(before, after, false),
+  "document.Symbol(affectsCache)": changesCache,
+  "document.Symbol(affectsComputedStyleCache)": changesCache,
   "document._reactListening*": (before, after) =>
     !before
     && after?.configurable === true
