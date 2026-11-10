@@ -1737,13 +1737,14 @@ test.each([
       else if (recoveryPosition.startsWith("geometry-")) {
         const priorBottom = hostGeometry.bottom;
         hostGeometry = recoveryPosition === "geometry-client"
-          ? { clientHeight: 590, top: 0, bottom: 600 }
+          ? { clientHeight: 597, top: 0, bottom: 600 }
           : recoveryPosition === "geometry-top"
             ? { clientHeight: 600, top: 10, bottom: 600 }
             : recoveryPosition === "geometry-bottom"
-              ? { clientHeight: 600, top: 0, bottom: 610 }
-              : { clientHeight: 597, top: 47, bottom: 643.6875 };
-        viewport.scrollTop -= hostGeometry.bottom - priorBottom;
+              ? { clientHeight: 600, top: 0, bottom: 603 }
+              : { clientHeight: 597, top: 41, bottom: 641 };
+        if (recoveryPosition === "geometry-webkit") viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight - 2.6875;
+        else viewport.scrollTop -= hostGeometry.bottom - priorBottom;
       }
       act(() => viewport.dispatchEvent(new Event("scroll")));
       const viewportResize = resizeObservers.find(({ observed }) => observed.has(viewport));

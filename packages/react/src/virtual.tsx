@@ -17,22 +17,26 @@ import {
   type VirtualCache,
   type VirtualSnapshot,
 } from "@fulcrum/virtual";
+import {
+  decideSettle,
+  type HostSample,
+  type ScrollTarget,
+  type SettleDecision,
+  type SettleState,
+} from "./settle.js";
 
-const isIOSWebKit = () => navigator.userAgent.includes("iP");
 const defaultVirtualGutter = 8;
-type ScrollTarget = "end" | number;
-type HostGeometry = { clientHeight: number; rectTop: number; rectBottom: number };
-type OwnedScroll = { requested: ScrollTarget; hostReadBack: number; engineReadBack: number; hostEnd: number; geometry: HostGeometry };
-type ScrollCoordinator = {
-  settledHostTop: number;
-  settledHostEnd: number;
-  geometry: HostGeometry | null;
-  owned: OwnedScroll | null;
-  target: ScrollTarget | null;
-  recoveryPending: boolean;
-  touching: boolean;
-  generation: number;
+const emptySample: HostSample = { top: 0, end: 0, clientHeight: 0, rectTop: 0, rectBottom: 0, engineTop: 0 };
+const isPureAppend = <Id extends string>(update: OutlineUpdate<Id> | null | undefined) => {
+  if (!update || update.splices.length === 0) return false;
+  let length = update.from.length;
+  for (const splice of update.splices) {
+    if (splice.index !== length || splice.deleteCount !== 0) return false;
+    length += splice.items.length;
+  }
+  return true;
 };
+type ScrollCoordinator = { settle: SettleState; generation: number };
 
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
@@ -90,14 +94,17 @@ export function useVirtualList<Id extends string>(
   const attachment = useRef<HTMLElement | null>(null);
   const releaseCurrent = useRef<(() => void) | null>(null);
   const transferCurrent = useRef<((next: HTMLElement | null) => void) | null>(null);
+  const settleLayoutCurrent = useRef<(() => void) | null>(null);
   const coordinator = useRef<ScrollCoordinator>({
-    settledHostTop: 0,
-    settledHostEnd: 0,
-    geometry: null,
-    owned: null,
-    target: null,
-    recoveryPending: false,
-    touching: false,
+    settle: {
+      owner: null,
+      recovery: null,
+      pinned: true,
+      settled: emptySample,
+      historyPending: options.historyPending === true,
+      writeBlockedByTouch: false,
+      deferred: null,
+    },
     generation: 0,
   });
 
@@ -126,48 +133,56 @@ export function useVirtualList<Id extends string>(
     };
   }, []);
 
+  const sampleOf = useCallback((current: ReturnType<typeof geometry>): HostSample => ({
+    top: current.hostTop,
+    end: current.hostEnd,
+    clientHeight: current.hostGeometry.clientHeight,
+    rectTop: current.hostGeometry.rectTop,
+    rectBottom: current.hostGeometry.rectBottom,
+    engineTop: current.engineTop,
+  }), []);
+
   const writeScroll = useCallback((target: ScrollTarget, syncEngine = true) => {
     const host = containerRef.current;
     if (!host) return;
     const before = geometry(host);
     const logicalEnd = before.prefix + engine.getSnapshot().totalSize + 2 * defaultVirtualGutter - host.clientHeight;
-    const desiredHostTop = target === "end"
+    host.scrollTop = target === "end"
       ? Math.max(before.hostEnd, logicalEnd)
       : before.prefix + before.gutter + target;
-    host.scrollTop = desiredHostTop;
     const after = geometry(host);
-    if (Math.abs(after.hostTop - desiredHostTop) > 1) coordinator.current.target = target;
-    coordinator.current.owned = {
-      requested: target,
-      hostReadBack: after.hostTop,
-      engineReadBack: after.engineTop,
-      hostEnd: after.hostEnd,
-      geometry: after.hostGeometry,
-    };
-    coordinator.current.settledHostTop = after.hostTop;
-    coordinator.current.settledHostEnd = after.hostEnd;
-    coordinator.current.geometry = after.hostGeometry;
+    const decision = decideSettle(coordinator.current.settle, {
+      kind: "owner-write",
+      target,
+      before: sampleOf(before),
+      sample: sampleOf(after),
+    });
+    coordinator.current.settle = decision.next;
     const size = Math.max(0, host.clientHeight - after.gutter);
     const snapshot = engine.getSnapshot();
     if (syncEngine && (Math.abs(snapshot.scrollTop - after.engineTop) >= 0.5 || snapshot.viewportSize !== size)) {
       engine.setViewport({ scrollTop: after.engineTop, size, source: "programmatic" });
     }
-  }, [engine, geometry]);
+  }, [engine, geometry, sampleOf]);
 
-  const retainTarget = useCallback((result: MutationResult) => {
-    coordinator.current.recoveryPending = result.recoveryPending === true;
-    if (result.recoveryPending) return;
-    if (result.followedBottom) coordinator.current.target = "end";
-    else if (Math.abs(result.jump) >= 0.5) coordinator.current.target = result.scrollTop;
-  }, []);
-
-  const applyTarget = useCallback(() => {
-    const target = coordinator.current.target;
-    if (target === null) return;
-    if (coordinator.current.touching && isIOSWebKit() && typeof target === "number") return;
-    coordinator.current.target = null;
-    writeScroll(target);
-  }, [writeScroll]);
+  const finishMutation = useCallback((result: MutationResult) => {
+    const host = containerRef.current;
+    if (!host) return;
+    const current = sampleOf(geometry(host));
+    let decision: SettleDecision;
+    const recoveryWasOpen = coordinator.current.settle.recovery !== null;
+    if (result.recoveryPending) {
+      if (coordinator.current.settle.recovery !== null) return;
+      decision = decideSettle(coordinator.current.settle, { kind: "recovery-open", sample: current, target: null });
+    } else {
+      const target: ScrollTarget = result.followedBottom ? "end" : result.scrollTop;
+      decision = decideSettle(coordinator.current.settle, { kind: "recovery-complete", sample: current, target });
+    }
+    coordinator.current.settle = decision.next;
+    if (decision.write !== null && (recoveryWasOpen || result.followedBottom || Math.abs(result.jump) >= 0.5)) {
+      writeScroll(decision.write);
+    }
+  }, [geometry, sampleOf, writeScroll]);
 
   useLayoutEffect(() => {
     if (resetPending) {
@@ -178,9 +193,7 @@ export function useVirtualList<Id extends string>(
       attachment.current = null;
       releaseCurrent.current = null;
       containerRef.current = null;
-      coordinator.current.owned = null;
-      coordinator.current.target = null;
-      coordinator.current.recoveryPending = false;
+      coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "reset" }).next;
       engine.reset();
     }
     if (appliedOutline.current !== outline) {
@@ -191,16 +204,23 @@ export function useVirtualList<Id extends string>(
       engine.setLoaded("all");
       if (initial.current) {
         initial.current = false;
-        if (options.enabled !== false && engine.getSnapshot().pinned) coordinator.current.target = "end";
+        coordinator.current.settle = { ...coordinator.current.settle, pinned: engine.getSnapshot().pinned };
       } else {
         const result = engine.afterMutation(token, { recoveryComplete: options.historyPending !== true });
-        if (options.enabled !== false) retainTarget(result);
+        if (options.enabled !== false) {
+          const detachedAppend = isPureAppend(options.outlineUpdate)
+            && !coordinator.current.settle.pinned
+            && coordinator.current.settle.recovery === null
+            && coordinator.current.settle.deferred === null;
+          if (detachedAppend) coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "commit-append", sample: null }).next;
+          else finishMutation(result);
+        }
       }
     } else if (options.historyPending !== true) {
       const result = engine.completeRecovery();
-      if (result && options.enabled !== false) retainTarget(result);
+      if (result && options.enabled !== false) finishMutation(result);
     }
-  }, [engine, outline, options.enabled, options.historyPending, options.invalidateMeasurements, options.outlineUpdate, options.resetKey, resetPending, retainTarget]);
+  }, [engine, finishMutation, outline, options.enabled, options.historyPending, options.invalidateMeasurements, options.outlineUpdate, options.resetKey, resetPending]);
 
   useLayoutEffect(() => {
     const transfer = (next: HTMLElement | null) => {
@@ -215,80 +235,28 @@ export function useVirtualList<Id extends string>(
       const host = next;
       containerRef.current = host;
       const generation = ++coordinator.current.generation;
-      coordinator.current.owned = null;
-      coordinator.current.target = null;
-      coordinator.current.recoveryPending = false;
+      coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "reset" }).next;
       const priorOverflowAnchor = host.style.overflowAnchor;
       host.style.overflowAnchor = "none";
 
       type Geometry = ReturnType<typeof geometry>;
-      const report = (source: ScrollSource, current = geometry(host)) => {
+      let lastLayoutSample = sampleOf(geometry(host));
+      const applyDecision = (decision: SettleDecision, current: Geometry) => {
         if (generation !== coordinator.current.generation) return;
-        engine.setViewport({ scrollTop: current.engineTop, size: Math.max(0, current.hostGeometry.clientHeight - current.gutter), source });
-        if (source === "user" && Math.abs(current.hostTop - current.hostEnd) <= engine.bottomThreshold && !engine.getSnapshot().pinned) {
-          engine.requestFollow();
+        coordinator.current.settle = decision.next;
+        if (decision.report !== null) {
+          engine.setViewport({
+            scrollTop: current.engineTop,
+            size: Math.max(0, current.hostGeometry.clientHeight - current.gutter),
+            source: decision.report,
+          });
+          if (decision.report === "user" && decision.next.pinned && !engine.getSnapshot().pinned) engine.requestFollow();
         }
-        coordinator.current.geometry = current.hostGeometry;
-        if (source !== "observe") {
-          coordinator.current.settledHostTop = current.hostTop;
-          coordinator.current.settledHostEnd = current.hostEnd;
-        }
+        if (decision.write !== null) writeScroll(decision.write);
       };
-      const settle = () => {
-        const current = geometry(host);
-        const owned = coordinator.current.owned;
-        const priorGeometry = owned?.geometry ?? coordinator.current.geometry;
-        const geometryChanged = priorGeometry !== null && (
-          Math.abs(current.hostGeometry.clientHeight - priorGeometry.clientHeight) >= 0.5
-          || Math.abs(current.hostGeometry.rectTop - priorGeometry.rectTop) >= 0.5
-          || Math.abs(current.hostGeometry.rectBottom - priorGeometry.rectBottom) >= 0.5
-        );
-        coordinator.current.geometry = current.hostGeometry;
-        if (geometryChanged) {
-          const wasPinned = engine.getSnapshot().pinned;
-          const recoveryTarget = Math.max(0, Math.min(coordinator.current.settledHostTop, current.hostEnd));
-          const bottomShift = current.hostGeometry.rectBottom - priorGeometry.rectBottom;
-          const expectedHostTop = coordinator.current.recoveryPending
-            ? Math.max(0, Math.min(recoveryTarget - bottomShift, current.hostEnd))
-            : owned
-              ? Math.max(0, Math.min(owned.hostReadBack - bottomShift, current.hostEnd))
-              : current.hostTop;
-          const layout: Geometry = {
-            ...current,
-            hostTop: expectedHostTop,
-            engineTop: Math.max(0, expectedHostTop - current.prefix - current.gutter),
-          };
-          const readerMoved = (!coordinator.current.recoveryPending && owned === null)
-            || Math.abs(current.hostTop - expectedHostTop) > engine.bottomThreshold;
-          viewportTransaction(false, layout);
-          if (readerMoved) {
-            coordinator.current.target = null;
-            report("user", current);
-          } else if (coordinator.current.recoveryPending) {
-            writeScroll(recoveryTarget);
-          } else if (wasPinned) {
-            writeScroll("end");
-          }
-          return;
-        }
-        const ownedEnd = owned?.requested === "end"
-          ? Math.abs(current.hostTop - owned.hostReadBack) <= 1 && Math.abs(current.hostEnd - owned.hostEnd) <= 1
-          : owned !== null && Math.abs(current.engineTop - owned.engineReadBack) <= 1;
-        if (ownedEnd) {
-          report("observe", current);
-          return;
-        }
-        if (coordinator.current.recoveryPending) {
-          const transientClamp = Math.max(0, Math.min(coordinator.current.settledHostTop, current.hostEnd));
-          if (Math.abs(current.hostTop - transientClamp) <= 1) {
-            report("observe", current);
-            return;
-          }
-          coordinator.current.recoveryPending = false;
-        }
-        coordinator.current.owned = null;
-        coordinator.current.target = null;
-        report("user", current);
+      const settle = (kind: "scroll" | "viewport" | "rows" | "siblings" | "commit-layout", current = geometry(host)) => {
+        lastLayoutSample = sampleOf(current);
+        applyDecision(decideSettle(coordinator.current.settle, { kind, sample: lastLayoutSample }), current);
       };
 
       const attachedSnapshot = engine.getSnapshot();
@@ -297,12 +265,7 @@ export function useVirtualList<Id extends string>(
       const rowObserver = new ResizeObserver((entries) => {
         if (generation !== coordinator.current.generation || entries.length === 0) return;
         const current = geometry(host);
-        const owned = coordinator.current.owned;
-        if (owned && Math.abs(current.hostTop - owned.hostReadBack) > engine.bottomThreshold) {
-          coordinator.current.owned = null;
-          coordinator.current.target = null;
-          report("user");
-        }
+        settle("rows", current);
         const measurements = entries.flatMap((entry) => {
           const id = rowIds.current.get(entry.target);
           return id !== undefined && rows.current.get(id) === entry.target
@@ -312,28 +275,23 @@ export function useVirtualList<Id extends string>(
         if (measurements.length === 0) return;
         const token = engine.beforeMutation();
         for (const [id, size] of measurements) engine.measure(id, size);
-        retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }));
-        applyTarget();
+        finishMutation(engine.afterMutation(token, { recoveryComplete: !historyPending.current }));
       });
       observerRef.current = rowObserver;
       for (const row of rows.current.values()) rowObserver.observe(row);
 
-      const viewportTransaction = (apply = true, current?: Geometry) => {
+      const viewportTransaction = (current = geometry(host)) => {
         if (generation !== coordinator.current.generation) return;
         const token = engine.beforeMutation();
-        report("observe", current);
-        retainTarget(engine.afterMutation(token, { recoveryComplete: !historyPending.current }));
-        if (apply) applyTarget();
+        settle("viewport", current);
+        finishMutation(engine.afterMutation(token, { recoveryComplete: !historyPending.current }));
       };
       const viewportObserver = new ResizeObserver(() => viewportTransaction());
       viewportObserver.observe(host);
 
       const siblingObserver = new ResizeObserver(() => {
         if (generation !== coordinator.current.generation) return;
-        const beforePinned = engine.getSnapshot().pinned;
-        const current = geometry(host);
-        if (beforePinned && current.hostEnd > coordinator.current.settledHostEnd + 0.5) writeScroll("end");
-        else settle();
+        settle("siblings");
       });
       const observedSiblings = new Set<Element>();
       const observeSiblings = () => {
@@ -347,11 +305,13 @@ export function useVirtualList<Id extends string>(
       const siblingMutations = new MutationObserver(observeSiblings);
       siblingMutations.observe(host, { childList: true });
 
-      const onScroll = () => settle();
-      const onTouchStart = () => { coordinator.current.touching = true; };
+      const onScroll = () => settle("scroll");
+      const onTouchStart = () => {
+        coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "touch-start" }).next;
+      };
       const onTouchEnd = () => {
-        coordinator.current.touching = false;
-        applyTarget();
+        const current = geometry(host);
+        applyDecision(decideSettle(coordinator.current.settle, { kind: "touch-end", sample: sampleOf(current) }), current);
       };
       host.addEventListener("scroll", onScroll, { passive: true });
       host.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -360,16 +320,13 @@ export function useVirtualList<Id extends string>(
 
       const release = () => {
         coordinator.current.generation++;
-        coordinator.current.geometry = null;
-        coordinator.current.owned = null;
-        coordinator.current.target = null;
-        coordinator.current.recoveryPending = false;
-        coordinator.current.touching = false;
+        coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "reset" }).next;
         rowObserver.disconnect();
         viewportObserver.disconnect();
         siblingObserver.disconnect();
         siblingMutations.disconnect();
         observerRef.current = null;
+        settleLayoutCurrent.current = null;
         host.removeEventListener("scroll", onScroll);
         host.removeEventListener("touchstart", onTouchStart);
         host.removeEventListener("touchend", onTouchEnd);
@@ -379,6 +336,17 @@ export function useVirtualList<Id extends string>(
       };
       attachment.current = host;
       releaseCurrent.current = release;
+      settleLayoutCurrent.current = () => {
+        const current = geometry(host);
+        const sample = sampleOf(current);
+        if (
+          Math.abs(sample.end - lastLayoutSample.end) < 0.5
+          && Math.abs(sample.clientHeight - lastLayoutSample.clientHeight) < 0.5
+          && Math.abs(sample.rectTop - lastLayoutSample.rectTop) < 0.5
+          && Math.abs(sample.rectBottom - lastLayoutSample.rectBottom) < 0.5
+        ) return;
+        settle("commit-layout", current);
+      };
     };
     transferCurrent.current = transfer;
     transfer(options.enabled === false || typeof ResizeObserver === "undefined"
@@ -392,7 +360,10 @@ export function useVirtualList<Id extends string>(
     containerRef.current = null;
   }, []);
 
-  useLayoutEffect(() => applyTarget(), [applyTarget, snapshot]);
+  useLayoutEffect(() => {
+    const state = coordinator.current.settle;
+    if (state.pinned || state.owner !== null) settleLayoutCurrent.current?.();
+  }, [snapshot]);
   useLayoutEffect(() => () => engine.destroy(), [engine]);
 
   const timelineRef = useCallback((element: HTMLElement | null) => { timelineElement.current = element; }, []);
