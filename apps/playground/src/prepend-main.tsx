@@ -1,0 +1,44 @@
+import "./fonts.css";
+import "@fulcrum/react/styles.css";
+import "@fulcrum/react/themes.css";
+import "@fulcrum/highlight/styles.css";
+import { Profiler, useLayoutEffect, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { createRunStore } from "@fulcrum/core";
+import { createHighlighter } from "@fulcrum/highlight";
+import { Markdown, type MarkdownProps } from "@fulcrum/markdown/react";
+import { Message, RunProvider, Timeline, type Renderers } from "@fulcrum/react";
+import { fromZetaEvent, fromZetaHistory, type EventParams } from "@fulcrum/zeta";
+
+type Json = Record<string, any>;
+const text = (value: string) => ({ type: "text", text: value });
+const toolUse = (id: string, name: string, args: Json) => ({ type: "tool_use", tool_call: { id, name, arguments: args, arguments_truncated: false } });
+const result = (id: string, content: string, extra: Json = {}) => ({ tool_call_id: id, content, is_error: false, content_blocks: [], structured_content: null, structured_content_truncated: null, ...extra });
+const turn = (n: number): Json[] => {
+  const p = `${n}-`;
+  if (n % 3 === 0) return [{ id: p + "u", role: "user", content: [text("find and fix the reconnect race in the client")], tool_result: null }, { id: p + "a", role: "assistant", content: [text("I will inspect the test and explain the fix."), toolUse(p + "c", "read", { path: "packages/zeta/test/rpc.test.ts" })], tool_result: null }, { id: p + "r", role: "tool_result", content: [text("")], tool_result: result(p + "c", "test output and source code") }, { id: p + "f", role: "assistant", content: [text("The close path rejects pending requests before notifying listeners.\n\n```ts\nrejectPending();\n```\n")], tool_result: null }];
+  if (n % 3 === 1) return [{ id: p + "u", role: "user", content: [text("check every theme against the contrast target")], tool_result: null }, { id: p + "a", role: "assistant", content: [text("All themes pass.\n\n| theme | ratio |\n| --- | --- |\n| dark | 5.9 |\n| light | 4.6 |")], tool_result: null }, { id: p + "f", role: "assistant", content: [text("No change is needed.")], tool_result: null }];
+  return [{ id: p + "u", role: "user", content: [text(`measure frame ${n}`)], tool_result: null }, { id: p + "a", role: "assistant", content: [text(`frame ${n} took ${n % 7 + 3} ms; content visibility skipped ${n * 3} rows.`)], tool_result: null }];
+};
+const rows = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => turn(from + i)).flat();
+const fixtureFiles = {
+  ...import.meta.glob<string>("../../../packages/zeta/test/fixtures/*.jsonl", { query: "?raw", import: "default", eager: true }),
+  ...import.meta.glob<string>("../../../packages/ai-sdk/test/fixtures/playground.jsonl", { query: "?raw", import: "default", eager: true }),
+};
+const fixtureEvents = Object.values(fixtureFiles).flatMap((source) => source.split("\n").filter(Boolean).flatMap((line) => { try { return fromZetaEvent((JSON.parse(line) as { params: EventParams }).params); } catch { return []; } }));
+const total = 90;
+const older = 15;
+const store = createRunStore();
+store.beginHistory();
+store.resync(fromZetaHistory(rows(total - 60, total)));
+for (const event of fixtureEvents.slice(0, 120)) store.dispatch(event);
+let loadedFrom = total - 60;
+const highlight = createHighlighter();
+const RichMarkdown = (props: MarkdownProps) => <Markdown {...props} highlight={highlight} />;
+const renderers: Renderers = { message: ({ id }) => <Message id={id} markdown={RichMarkdown} /> };
+const w = window as any;
+w.__commits = 0;
+w.__prepend = { prepend() { const from = Math.max(0, loadedFrom - older); store.prepend(fromZetaHistory(rows(from, loadedFrom))); loadedFrom = from; }, outline: () => store.getOutline(), item: (id: string) => store.getItem(id) };
+const pad = innerWidth < 600 ? 16 : 24;
+function CommitProbe() { const [tick, setTick] = useState(0); useLayoutEffect(() => { w.__probeCommits = (w.__probeCommits ?? 0) + 1; }); w.__bumpCommit = () => setTick((value: number) => value + 1); return <span hidden>{tick}</span>; }
+createRoot(document.getElementById("root")!).render(<div style={{ height: "100vh", padding: `0 ${pad}px`, boxSizing: "border-box", display: "flex", flexDirection: "column" }}><div style={{ flex: 1, minHeight: 0, maxWidth: 880, width: "100%", margin: "0 auto" }}><RunProvider store={store}><Profiler id="prepend" onRender={() => { w.__commits++; }}><CommitProbe /><Timeline renderers={renderers} virtual /></Profiler></RunProvider></div></div>);
