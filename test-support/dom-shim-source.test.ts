@@ -24,103 +24,17 @@ const unwrap = (node: ts.Expression): ts.Expression => {
 
 const isAssignment = (kind: ts.SyntaxKind) => kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
 
-const protectedBindings = (source: ts.SourceFile, checker: ts.TypeChecker) => {
-  const bindings = new Set<ts.Symbol>();
-  const symbol = (node: ts.Identifier) => checker.getSymbolAtLocation(node);
-  const protect = (node: ts.Identifier) => {
-    const binding = symbol(node);
-    if (!binding || bindings.has(binding)) return false;
-    bindings.add(binding);
-    return true;
-  };
+const rawDomShimLine = (source: ts.SourceFile, checker: ts.TypeChecker) => {
+  const isUnbound = (node: ts.Identifier) => !checker.getSymbolAtLocation(node);
   const isProtected = (node: ts.Expression): boolean => {
     node = unwrap(node);
-    if (ts.isIdentifier(node)) return globalTargets.has(node.text) || bindings.has(symbol(node)!);
+    if (ts.isIdentifier(node)) return globalTargets.has(node.text) && isUnbound(node);
     const owner = propertyOwner(node);
-    return !!owner && (propertyName(node) === "prototype" && ts.isIdentifier(unwrap(owner)) || isProtected(owner));
+    return !!owner && (
+      propertyName(node) === "prototype" && ts.isIdentifier(unwrap(owner))
+      || isProtected(owner)
+    );
   };
-  const protectAll = (node: ts.Node): boolean => {
-    if (ts.isIdentifier(node)) return protect(node);
-    let changed = false;
-    ts.forEachChild(node, (child) => { changed = protectAll(child) || changed; });
-    return changed;
-  };
-  const objectValue = (value: ts.Expression, name: string): ts.Expression | undefined => {
-    value = unwrap(value);
-    if (!ts.isObjectLiteralExpression(value)) return;
-    for (const property of value.properties) {
-      if (ts.isPropertyAssignment(property) && propertyNameFromNode(property.name) === name) return property.initializer;
-      if (ts.isShorthandPropertyAssignment(property) && property.name.text === name) return property.name;
-    }
-  };
-  const propertyNameFromNode = (node: ts.PropertyName) => {
-    if (ts.isIdentifier(node) || ts.isStringLiteralLike(node) || ts.isNumericLiteral(node)) return node.text;
-  };
-  const protectTarget = (target: ts.Node, value: ts.Expression): boolean => {
-    if (ts.isExpression(target)) target = unwrap(target);
-    if (ts.isIdentifier(target)) return isProtected(value) && protect(target);
-    if (ts.isBindingElement(target)) return protectTarget(target.name, value);
-    if (ts.isArrayBindingPattern(target) || ts.isArrayLiteralExpression(target)) {
-      const values = ts.isArrayLiteralExpression(unwrap(value)) ? unwrap(value).elements : undefined;
-      let changed = false;
-      target.elements.forEach((element, index) => {
-        if (ts.isOmittedExpression(element)) return;
-        const selected = values?.[index];
-        if (selected && ts.isExpression(selected)) changed = protectTarget(element, selected) || changed;
-        else if (isProtected(value)) changed = protectAll(element) || changed;
-      });
-      return changed;
-    }
-    if (ts.isObjectBindingPattern(target) || ts.isObjectLiteralExpression(target)) {
-      let changed = false;
-      for (const element of target.elements ?? target.properties) {
-        if (ts.isSpreadAssignment(element) || ts.isSpreadElement(element)) {
-          if (isProtected(value)) changed = protectAll(element.expression) || changed;
-          continue;
-        }
-        const name = ts.isBindingElement(element)
-          ? propertyNameFromNode(element.propertyName ?? element.name as ts.PropertyName)
-          : ts.isShorthandPropertyAssignment(element) || ts.isPropertyAssignment(element)
-            ? propertyNameFromNode(element.name)
-            : undefined;
-        const destination = ts.isBindingElement(element) ? element.name
-          : ts.isShorthandPropertyAssignment(element) ? element.name
-          : ts.isPropertyAssignment(element) ? element.initializer
-          : undefined;
-        if (!destination || !name) continue;
-        const selected = objectValue(value, name);
-        if (selected) changed = protectTarget(destination, selected) || changed;
-        else if (isProtected(value) || name === "prototype" && ts.isIdentifier(unwrap(value))) {
-          changed = protectAll(destination) || changed;
-        }
-      }
-      return changed;
-    }
-    return false;
-  };
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const visit = (node: ts.Node): void => {
-      if (ts.isVariableDeclaration(node) && node.initializer) changed = protectTarget(node.name, node.initializer) || changed;
-      else if (ts.isBinaryExpression(node) && isAssignment(node.operatorToken.kind)) {
-        changed = protectTarget(node.left, node.right) || changed;
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-  }
-  return { bindings, isProtected };
-};
-
-// React reads this runner configuration globally; it is not a browser API shim.
-const isReactTestConfiguration = (node: ts.Expression) => propertyName(unwrap(node)) === "IS_REACT_ACT_ENVIRONMENT";
-// Assigning the URL hash drives real navigation behavior; it does not replace a browser API.
-const isBrowserInteraction = (node: ts.Expression, isProtected: (node: ts.Expression) => boolean) => propertyName(unwrap(node)) === "hash"
-  && isProtected(propertyOwner(unwrap(node)) ?? node);
-
-const rawDomShimLine = (source: ts.SourceFile, checker: ts.TypeChecker) => {
-  const { isProtected } = protectedBindings(source, checker);
   const mutatesProtectedTarget = (node: ts.Expression) => {
     const owner = propertyOwner(unwrap(node));
     return !!owner && isProtected(owner);
@@ -132,7 +46,7 @@ const rawDomShimLine = (source: ts.SourceFile, checker: ts.TypeChecker) => {
       const owner = propertyOwner(unwrap(node.expression));
       const method = propertyName(unwrap(node.expression));
       const unwrappedOwner = owner && unwrap(owner);
-      const mutator = unwrappedOwner && ts.isIdentifier(unwrappedOwner) && (
+      const mutator = unwrappedOwner && ts.isIdentifier(unwrappedOwner) && isUnbound(unwrappedOwner) && (
         (unwrappedOwner.text === "Object" && ["defineProperty", "defineProperties", "assign", "setPrototypeOf"].includes(method ?? ""))
         || (unwrappedOwner.text === "Reflect" && ["defineProperty", "set", "setPrototypeOf", "deleteProperty"].includes(method ?? ""))
       );
@@ -140,8 +54,11 @@ const rawDomShimLine = (source: ts.SourceFile, checker: ts.TypeChecker) => {
     } else if (ts.isBinaryExpression(node)
       && isAssignment(node.operatorToken.kind)
       && mutatesProtectedTarget(node.left as ts.Expression)
-      && !isReactTestConfiguration(node.left as ts.Expression)
-      && !isBrowserInteraction(node.left as ts.Expression, isProtected)) found = node;
+      // React reads this runner configuration globally; it is not a browser API shim.
+      && propertyName(unwrap(node.left as ts.Expression)) !== "IS_REACT_ACT_ENVIRONMENT"
+      // Assigning the URL hash drives real navigation behavior; it does not replace a browser API.
+      && !(propertyName(unwrap(node.left as ts.Expression)) === "hash"
+        && isProtected(propertyOwner(unwrap(node.left as ts.Expression)) ?? node.left as ts.Expression))) found = node;
     else if (ts.isDeleteExpression(node) && mutatesProtectedTarget(node.expression)) found = node;
     ts.forEachChild(node, visit);
   };
@@ -162,6 +79,9 @@ test("test DOM shims use the shared helper and register its alarm", async () => 
     if (line) failures.push(`${relative(root, path)}:${line} uses a raw DOM shim; use test-support/dom-shim.ts`);
     if (text.includes("test-support/dom-shim") && !text.includes("domShimAlarm(import.meta.path)")) {
       failures.push(`${relative(root, path)} imports the DOM shim helper without domShimAlarm(import.meta.path)`);
+    }
+    if (text.includes("@happy-dom/global-registrator") && !text.includes("domShimAlarm(import.meta.path)")) {
+      failures.push(`${relative(root, path)} uses happy-dom globals without domShimAlarm(import.meta.path)`);
     }
   }
   expect(failures).toEqual([]);
