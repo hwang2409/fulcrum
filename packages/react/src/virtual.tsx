@@ -36,7 +36,7 @@ const isPureAppend = <Id extends string>(update: OutlineUpdate<Id> | null | unde
   }
   return true;
 };
-type ScrollCoordinator = { settle: SettleState; generation: number };
+type ScrollCoordinator = { settle: SettleState };
 
 export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   scrollRef?: RefObject<HTMLElement | null>;
@@ -105,7 +105,6 @@ export function useVirtualList<Id extends string>(
       writeBlockedByTouch: false,
       deferred: null,
     },
-    generation: 0,
   });
 
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot, engine.getSnapshot);
@@ -234,7 +233,6 @@ export function useVirtualList<Id extends string>(
       if (!next) return;
       const host = next;
       containerRef.current = host;
-      const generation = ++coordinator.current.generation;
       coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "reset" }).next;
       const priorOverflowAnchor = host.style.overflowAnchor;
       host.style.overflowAnchor = "none";
@@ -242,7 +240,6 @@ export function useVirtualList<Id extends string>(
       type Geometry = ReturnType<typeof geometry>;
       let lastLayoutSample = sampleOf(geometry(host));
       const applyDecision = (decision: SettleDecision, current: Geometry) => {
-        if (generation !== coordinator.current.generation) return;
         coordinator.current.settle = decision.next;
         if (decision.report !== null) {
           engine.setViewport({
@@ -263,7 +260,7 @@ export function useVirtualList<Id extends string>(
       writeScroll(attachedSnapshot.pinned ? "end" : attachedSnapshot.scrollTop);
 
       const rowObserver = new ResizeObserver((entries) => {
-        if (generation !== coordinator.current.generation || entries.length === 0) return;
+        if (entries.length === 0) return;
         const current = geometry(host);
         settle("rows", current);
         const measurements = entries.flatMap((entry) => {
@@ -281,7 +278,6 @@ export function useVirtualList<Id extends string>(
       for (const row of rows.current.values()) rowObserver.observe(row);
 
       const viewportTransaction = (current = geometry(host)) => {
-        if (generation !== coordinator.current.generation) return;
         const token = engine.beforeMutation();
         settle("viewport", current);
         finishMutation(engine.afterMutation(token, { recoveryComplete: !historyPending.current }));
@@ -290,7 +286,6 @@ export function useVirtualList<Id extends string>(
       viewportObserver.observe(host);
 
       const siblingObserver = new ResizeObserver(() => {
-        if (generation !== coordinator.current.generation) return;
         settle("siblings");
       });
       const observedSiblings = new Set<Element>();
@@ -319,7 +314,6 @@ export function useVirtualList<Id extends string>(
       host.addEventListener("touchcancel", onTouchEnd, { passive: true });
 
       const release = () => {
-        coordinator.current.generation++;
         coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "reset" }).next;
         rowObserver.disconnect();
         viewportObserver.disconnect();
