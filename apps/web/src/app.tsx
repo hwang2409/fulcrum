@@ -6,7 +6,7 @@ import { ContentReadError, type SessionStore, type ZetaClient } from "@fulcrum/z
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { createConnection, serveCommand, type Connection, type ConnectionState } from "./connection";
 import { createDelivery, visibleDeliveryNotice, type DeliveryNotice } from "./delivery";
-import { ago, createSessions, sessionPresentation, sessionTitle, topLevel, type OpenRun, type SessionMeta, type Sessions, type SessionsState } from "./session";
+import { ago, createSessions, sessionPresentation, sessionTitle, topLevel, type OpenFailure, type OpenRun, type SessionMeta, type Sessions, type SessionsState } from "./session";
 import { ThemePicker, useTheme } from "./theme";
 
 const highlight = createHighlighter();
@@ -273,6 +273,15 @@ function sessionName(view: SessionsState, id: string) {
   return session ? sessionTitle(session) : "session";
 }
 
+function OpenFailureDetails({ failure, sessions, prefix = "" }: { failure: OpenFailure; sessions: Sessions; prefix?: string }) {
+  return (
+    <>
+      <span className="mono">{prefix}{failure.message}</span>
+      {failure.candidates?.length ? <div className="actions">{failure.candidates.map((id) => <button key={id} type="button" className="ghost" onClick={() => sessions.select(id)}>{id}</button>)}</div> : null}
+    </>
+  );
+}
+
 function OpenRunBody({ state, view, connection, sessions, opener, focusComposer }: {
   state: ConnectionState; view: SessionsState; connection: Connection; sessions: Sessions; opener: React.RefObject<Element | null>; focusComposer: React.RefObject<boolean>;
 }) {
@@ -288,7 +297,7 @@ function OpenRunBody({ state, view, connection, sessions, opener, focusComposer 
       {!replacing && !open.history.complete ? <p className="note" data-tone="busy" role="status">loading session history… {open.history.messages.toLocaleString("en")} loaded</p> : null}
       {!replacing && open.history.incomplete ? <p className="note" data-tone="warn" role="status">history incomplete: the server repeated a page cursor</p> : null}
       {!replacing && open.syncing ? <p className="note" data-tone="busy" role="status">live updates paused while this session is busy; it will catch up</p> : null}
-      {failed ? <div className="note" data-tone="danger" role="alert"><span>could not open {sessionName(view, failed.id)}: {failed.message}</span> <button type="button" className="ghost" onClick={() => sessions.dismissOpenError()}>dismiss</button> <button type="button" className="ghost" onClick={() => sessions.select(failed.id)}>try again</button></div> : null}
+      {failed ? <div className="note" data-tone="danger" role="alert"><OpenFailureDetails failure={failed} sessions={sessions} prefix={`could not open ${sessionName(view, failed.id)}: `} /> <button type="button" className="ghost" onClick={() => sessions.dismissOpenError()}>dismiss</button> <button type="button" className="ghost" onClick={() => sessions.select(failed.id)}>try again</button></div> : null}
       <Run client={offline ? null : connection.client} sessions={sessions} open={open} opener={opener} focusComposer={focusComposer} readOnly={Boolean(replacing || (failed && !failed.restored))} ready={open.id === present.selected && !present.opening} />
     </>
   );
@@ -302,7 +311,12 @@ function OpeningPanel({ view }: { view: SessionsState }) {
 function FailurePanel({ view, sessions }: { view: SessionsState; sessions: Sessions }) {
   const failure = sessionPresentation(view.transition).openError!;
   const running = view.server?.id && view.server.id !== failure.id ? view.server.id : null;
-  if (!failure.busy) return <Panel title="could not open this session" tone="danger"><p className="mono">{failure.message}</p><div className="actions"><button type="button" className="primary" onClick={() => sessions.select(failure.id)}>try again</button></div></Panel>;
+  if (!failure.busy) return (
+    <Panel title="could not open this session" tone="danger">
+      <OpenFailureDetails failure={failure} sessions={sessions} />
+      <div className="actions"><button type="button" className="primary" onClick={() => sessions.select(failure.id)}>try again</button></div>
+    </Panel>
+  );
   return (
     <Panel title="zeta is busy with another session" tone="warn">
       <p>zeta serve opens a session only when no turn runs. wait for the running turn to end, or open the running session.</p>

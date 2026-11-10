@@ -267,7 +267,7 @@ const historyGroups = (rows: Json[]) => {
   return groups;
 };
 
-export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, serialDelays, overflowSilentCloseDelayMs = 0 }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; serialDelays?: Readonly<Record<string, number | readonly number[]>>; overflowSilentCloseDelayMs?: number }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, ambiguousPrefix = false, serialDelays, overflowSilentCloseDelayMs = 0 }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; ambiguousPrefix?: boolean; serialDelays?: Readonly<Record<string, number | readonly number[]>>; overflowSilentCloseDelayMs?: number }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
@@ -284,7 +284,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   if (largePages > 0) histories[LARGE] = Array.from({ length: largePages * 128 }, (_, index) => ({ id: `large-${index}`, role: index % 2 ? "assistant" : "user", content: [text(`large-page row ${index}`)], tool_result: null }));
   let sessions = [
     ...seeded,
-    ...(manyPages > 0 ? [meta(MANY, 1, { name: `${manyPages.toLocaleString("en")} small pages of history` })] : []),
+    ...(manyPages > 0 || ambiguousPrefix ? [meta(MANY, manyPages > 0 ? 1 : 60 * 6, manyPages > 0 ? { name: `${manyPages.toLocaleString("en")} small pages of history` } : { first_message_preview: "inspect an ambiguous session prefix" })] : []),
     ...(largePages > 0 ? [meta(LARGE, 1, { name: `${largePages.toLocaleString("en")} large pages of history` })] : []),
   ];
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
@@ -496,8 +496,14 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if (method === "resume") {
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
-          if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
-          active = String(params.session_id);
+          const requested = String(params.session_id);
+          const candidates = requested.length >= 4 ? sessions.map((session) => String(session.session_id)).filter((sessionId) => sessionId.startsWith(requested)).slice(0, 8) : [];
+          const sessionId = sessions.some((session) => session.session_id === requested) ? requested : candidates.length === 1 ? candidates[0]! : null;
+          if (!sessionId) return reply({ error: candidates.length > 1
+            ? { code: -32602, message: "session id prefix is ambiguous", data: { code: "session_id_ambiguous", session_id: requested, candidates } }
+            : { code: -32602, message: "session not found", data: { code: "session_not_found", session_id: requested } } });
+          if (running && sessionId !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
+          active = sessionId;
           applyHostBinding(active, binding?.commands);
           delayedOpen = false;
           return reply({ result: { session: sessions.find((session) => session.session_id === active) } });
