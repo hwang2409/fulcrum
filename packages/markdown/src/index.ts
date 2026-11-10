@@ -1221,14 +1221,14 @@ export function createStreamingDocument(): StreamingDocument {
       };
     }
     const state = pendingInlineState!;
-    const currentLine = line.slice(state.offset);
-    const lineLength = currentLine.length;
+    const lineLength = line.length - state.offset;
+    const delta = line.slice(state.offset + state.lineLength);
     let resolvedNow = false;
     const closer = state.closer;
     if (state.openCode && closer && closer.resolvedEnd === undefined) {
       const resolvedLine = resolver.pendingLeafContent;
       previewScannedCharacters += resolvedLine.length;
-      const priorLength = resolvedLine.length - (currentLine.length - state.lineLength);
+      const priorLength = resolvedLine.length - delta.length;
       previewScannedCharacters += scanExactCodeCloser(closer, resolvedLine, state.openCode.length, priorLength);
       if (closer.resolvedEnd !== undefined) {
         const end = closer.resolvedEnd;
@@ -1242,12 +1242,12 @@ export function createStreamingDocument(): StreamingDocument {
         resolvedNow = true;
       }
     }
-    previewScannedCharacters += lineLength - state.lineLength;
+    previewScannedCharacters += delta.length;
     if (state.resolvedSuffix) {
       if (!resolvedNow) {
         copiedCharacters += appendResolvedCodeSuffix(
           state.resolvedSuffix,
-          currentLine.slice(state.lineLength),
+          delta,
           () => {
             const resolvedLine = resolver.pendingLeafContent;
             previewScannedCharacters += resolvedLine.length;
@@ -1263,8 +1263,8 @@ export function createStreamingDocument(): StreamingDocument {
     }
     const inline = pendingInline!;
     const copied = inline.copiedCharacters;
-    if (startsInline) inline.extend(currentLine);
-    else inline.append(currentLine.slice(state.lineLength));
+    if (startsInline) inline.extend(delta);
+    else inline.append(delta);
     state.lineLength = lineLength;
     copiedCharacters += inline.copiedCharacters - copied;
     return inline.nodes;
@@ -1280,7 +1280,7 @@ export function createStreamingDocument(): StreamingDocument {
 
   return {
     get source() { return source; },
-    get stats() { return { frozenParses, tailParses, scannedCharacters, previewScannedCharacters, copiedCharacters }; },
+    get stats() { return { frozenParses, tailParses, scannedCharacters, previewScannedCharacters: previewScannedCharacters + resolver.pendingClassificationScanned, copiedCharacters }; },
     append(delta) {
       if (finished || !delta) return;
       const normalized = normalizeDelta(delta);

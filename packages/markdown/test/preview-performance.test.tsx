@@ -1,7 +1,25 @@
 import { expect, test } from "bun:test";
-import { createStreamingDocument } from "../src/index.js";
+import { createStreamingDocument, parseMarkdown } from "../src/index.js";
 import { PENDING_INLINE_SUFFIX as PENDING_INLINE_SUFFIX_BUDGET } from "../src/pending-inline.js";
 import { expectGrowthBelow } from "../../../test-support/scaling.js";
+import { shimProperty } from "../../../test-support/dom-shim.js";
+
+function canonicalTree(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const merged: unknown[] = [];
+    for (const item of value.map(canonicalTree)) {
+      const prior = merged.at(-1);
+      if (prior && item && typeof prior === "object" && typeof item === "object"
+        && "type" in prior && prior.type === "text" && "type" in item && item.type === "text"
+        && "value" in prior && typeof prior.value === "string" && "value" in item && typeof item.value === "string")
+        prior.value += item.value;
+      else merged.push(item);
+    }
+    return merged;
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, canonicalTree(child)]));
+}
 
 function streamPending(source: string, chunkSize: number) {
   const document = createStreamingDocument();
@@ -19,10 +37,77 @@ test("pending preview work scales with delta at depth 50", () => {
   const small = streamPending(smallSource, 16_384);
   const large = streamPending(largeSource, 16_384);
 
-  expect(small.stats.previewScannedCharacters).toBeLessThanOrEqual(smallSource.length + Math.ceil(smallSource.length / 16_384) * PENDING_INLINE_SUFFIX_BUDGET);
-  expect(large.stats.previewScannedCharacters).toBeLessThanOrEqual(largeSource.length + Math.ceil(largeSource.length / 16_384) * PENDING_INLINE_SUFFIX_BUDGET);
+  expect(small.stats.previewScannedCharacters).toBeLessThanOrEqual(2 * smallSource.length + Math.ceil(smallSource.length / 16_384) * PENDING_INLINE_SUFFIX_BUDGET);
+  expect(large.stats.previewScannedCharacters).toBeLessThanOrEqual(2 * largeSource.length + Math.ceil(largeSource.length / 16_384) * PENDING_INLINE_SUFFIX_BUDGET);
   expect(large.stats.previewScannedCharacters / small.stats.previewScannedCharacters).toBeLessThan(10.1);
   expect(large.render()[0]?.type).toBe("paragraph");
+});
+
+function previewStringWork(source: string, chunkSize: number) {
+  const slice = String.prototype.slice;
+  const substring = String.prototype.substring;
+  let work = 0;
+  let measuring = false;
+  const restoreSlice = shimProperty(String.prototype, "slice", {
+    ...Object.getOwnPropertyDescriptor(String.prototype, "slice"),
+    value: function (...args: Parameters<typeof slice>) {
+      const result = slice.apply(this, args);
+      if (measuring) work += result.length;
+      return result;
+    },
+  });
+  const restoreSubstring = shimProperty(String.prototype, "substring", {
+    ...Object.getOwnPropertyDescriptor(String.prototype, "substring"),
+    value: function (...args: Parameters<typeof substring>) {
+      const result = substring.apply(this, args);
+      if (measuring) work += result.length;
+      return result;
+    },
+  });
+  try {
+    const document = createStreamingDocument();
+    for (let offset = 0; offset < source.length; offset += chunkSize) {
+      document.append(slice.call(source, offset, offset + chunkSize));
+      measuring = true;
+      document.render();
+      measuring = false;
+    }
+    return work;
+  } finally {
+    restoreSubstring();
+    restoreSlice();
+  }
+}
+
+test("long single-line preview string work stays linear", () => {
+  const prefix = `{"time":"2026-11-09T12:34:56.789Z","level":"info","output":"`;
+  const source = (length: number) => prefix + "x".repeat(length - prefix.length - 2) + `"}`;
+  for (const chunkSize of [1, 32]) {
+    const smallWork = previewStringWork(source(50_000), chunkSize);
+    const largeWork = previewStringWork(source(100_000), chunkSize);
+    expect(largeWork / smallWork, `${chunkSize}-character chunks: ${smallWork} -> ${largeWork} characters`).toBeLessThan(2.2);
+  }
+});
+
+test("long-line randomized chunks match complete parses at checkpoints", () => {
+  const unit = "agent output remains plain while the long line streams in random chunks ";
+  const source = unit.repeat(Math.ceil(200_000 / unit.length)).slice(0, 200_000);
+  const document = createStreamingDocument();
+  let seed = 0x5eed;
+  let checkpoint = 10_000;
+  for (let offset = 0; offset < source.length;) {
+    seed = Math.imul(seed, 1_664_525) + 1_013_904_223 | 0;
+    const end = Math.min(source.length, offset + 16 + (seed >>> 0) % 49);
+    document.append(source.slice(offset, end));
+    const rendered = document.render();
+    if (end >= checkpoint) {
+      expect(canonicalTree(rendered), `checkpoint ${end}`).toEqual(canonicalTree(parseMarkdown(source.slice(0, end))));
+      checkpoint += 10_000;
+    }
+    offset = end;
+  }
+  document.finish();
+  expect(JSON.stringify(document.render()), "final").toBe(JSON.stringify(parseMarkdown(source)));
 });
 
 test("line classification stays correct at one-character boundaries", () => {
