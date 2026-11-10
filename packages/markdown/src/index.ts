@@ -303,7 +303,7 @@ const unmatchedCodeSpan = (source: string) => {
   return opener;
 };
 
-function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, source: string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
+function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, source: () => string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
   if (state.pending) {
     const copied = state.pending.copiedCharacters;
     state.pending.append(delta);
@@ -316,7 +316,7 @@ function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, sour
     return delta.length;
   }
   state.pending = new PendingInline(parse, undefined, state.prefix);
-  state.pending.append(source);
+  state.pending.append(source());
   state.nodes = state.pending.nodes;
   return state.pending.copiedCharacters;
 }
@@ -1218,24 +1218,34 @@ export function createStreamingDocument(): StreamingDocument {
     const closer = state.closer;
     if (state.openCode && closer && closer.resolvedEnd === undefined) {
       const resolvedLine = resolver.pendingLeafContent;
+      previewScannedCharacters += resolvedLine.length;
       const priorLength = resolvedLine.length - (currentLine.length - state.lineLength);
       previewScannedCharacters += scanExactCodeCloser(closer, resolvedLine, state.openCode.length, priorLength);
       if (closer.resolvedEnd !== undefined) {
         const end = closer.resolvedEnd;
-        const prefix = parsePending(`${state.openCode.source}\n${resolvedLine.slice(0, end)}`, true, true);
+        const resolvedPrefix = resolvedLine.slice(0, end);
+        previewScannedCharacters += resolvedPrefix.length;
+        const prefix = parsePending(`${state.openCode.source}\n${resolvedPrefix}`, true, true);
         state.resolvedSuffix = { prefix, start: end, nodes: prefix.slice() };
-        copiedCharacters += appendResolvedCodeSuffix(state.resolvedSuffix, resolvedLine.slice(end), resolvedLine.slice(end), parsePending);
+        const suffix = resolvedLine.slice(end);
+        previewScannedCharacters += suffix.length;
+        copiedCharacters += appendResolvedCodeSuffix(state.resolvedSuffix, suffix, () => suffix, parsePending);
         resolvedNow = true;
       }
     }
     previewScannedCharacters += lineLength - state.lineLength;
     if (state.resolvedSuffix) {
       if (!resolvedNow) {
-        const resolvedLine = resolver.pendingLeafContent;
         copiedCharacters += appendResolvedCodeSuffix(
           state.resolvedSuffix,
           currentLine.slice(state.lineLength),
-          resolvedLine.slice(state.resolvedSuffix.start),
+          () => {
+            const resolvedLine = resolver.pendingLeafContent;
+            previewScannedCharacters += resolvedLine.length;
+            const suffix = resolvedLine.slice(state.resolvedSuffix!.start);
+            previewScannedCharacters += suffix.length;
+            return suffix;
+          },
           parsePending,
         );
       }
