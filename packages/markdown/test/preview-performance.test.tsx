@@ -42,14 +42,43 @@ test("pending preview work scales with delta at depth 50", () => {
   expect(large.render()[0]?.type).toBe("paragraph");
 });
 
-test("long single-line previews scan only appended text", () => {
-  const sources = [
-    `{"time":"2026-11-09T12:34:56.789Z","level":"info","output":"${"x".repeat(19_938)}"}`,
-    "2026-11-09T12:34:56.789Z INFO worker tool completed duration_ms=12 output_bytes=4096 ".repeat(250).slice(0, 20_000),
-  ];
-  for (const source of sources) {
-    const document = streamPending(source, 1);
-    expect(document.stats.previewScannedCharacters, source[0]).toBeLessThanOrEqual(2 * source.length);
+function previewStringWork(source: string, chunkSize: number) {
+  const slice = String.prototype.slice;
+  const substring = String.prototype.substring;
+  let work = 0;
+  let measuring = false;
+  String.prototype.slice = function (...args) {
+    const result = slice.apply(this, args);
+    if (measuring) work += result.length;
+    return result;
+  };
+  String.prototype.substring = function (...args) {
+    const result = substring.apply(this, args);
+    if (measuring) work += result.length;
+    return result;
+  };
+  try {
+    const document = createStreamingDocument();
+    for (let offset = 0; offset < source.length; offset += chunkSize) {
+      document.append(slice.call(source, offset, offset + chunkSize));
+      measuring = true;
+      document.render();
+      measuring = false;
+    }
+    return work;
+  } finally {
+    String.prototype.slice = slice;
+    String.prototype.substring = substring;
+  }
+}
+
+test("long single-line preview string work stays linear", () => {
+  const prefix = `{"time":"2026-11-09T12:34:56.789Z","level":"info","output":"`;
+  const source = (length: number) => prefix + "x".repeat(length - prefix.length - 2) + `"}`;
+  for (const chunkSize of [1, 32]) {
+    const smallWork = previewStringWork(source(50_000), chunkSize);
+    const largeWork = previewStringWork(source(100_000), chunkSize);
+    expect(largeWork / smallWork, `${chunkSize}-character chunks: ${smallWork} -> ${largeWork} characters`).toBeLessThan(2.2);
   }
 });
 
