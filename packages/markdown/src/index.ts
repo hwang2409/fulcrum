@@ -1215,12 +1215,13 @@ export function createStreamingDocument(): StreamingDocument {
     const currentLine = line.slice(state.offset);
     const lineLength = currentLine.length;
     let resolvedNow = false;
-    if (state.openCode && state.closer?.resolvedEnd === undefined) {
+    const closer = state.closer;
+    if (state.openCode && closer && closer.resolvedEnd === undefined) {
       const resolvedLine = resolver.pendingLeafContent;
       const priorLength = resolvedLine.length - (currentLine.length - state.lineLength);
-      previewScannedCharacters += scanExactCodeCloser(state.closer, resolvedLine, state.openCode.length, priorLength);
-      if (state.closer.resolvedEnd !== undefined) {
-        const end = state.closer.resolvedEnd;
+      previewScannedCharacters += scanExactCodeCloser(closer, resolvedLine, state.openCode.length, priorLength);
+      if (closer.resolvedEnd !== undefined) {
+        const end = closer.resolvedEnd;
         const prefix = parsePending(`${state.openCode.source}\n${resolvedLine.slice(0, end)}`, true, true);
         state.resolvedSuffix = { prefix, start: end, nodes: prefix.slice() };
         copiedCharacters += appendResolvedCodeSuffix(state.resolvedSuffix, resolvedLine.slice(end), resolvedLine.slice(end), parsePending);
