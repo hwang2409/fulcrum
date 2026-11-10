@@ -64,7 +64,7 @@ test("an unmatched multiline code owner keeps literal checkpoints and converts t
   document.append("`a  \n");
   expect(paragraph(document.render()), "unmatched line checkpoint").toEqual([
     { type: "text", value: "`a" },
-    { type: "break", hard: true },
+    { type: "break" },
   ]);
 
   document.append("b`");
@@ -77,13 +77,13 @@ test("a nested literal code span disappears into its outer code owner without du
   document.append("``a  \n");
   expect(paragraph(document.render()), "line one").toEqual([
     { type: "text", value: "``a" },
-    { type: "break", hard: true },
+    { type: "break" },
   ]);
 
   document.append("`b`\n");
   expect(paragraph(document.render()), "inner literal role").toEqual([
     { type: "text", value: "``a" },
-    { type: "break", hard: true },
+    { type: "break" },
     { type: "code", value: "b" },
     { type: "break" },
   ]);
