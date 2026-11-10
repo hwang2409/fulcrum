@@ -1204,7 +1204,7 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
       get() { return positions.get(this as HTMLElement) ?? 0; },
       set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
     }));
-    HTMLElement.prototype.addEventListener = function(type, listener, options) {
+    const restoreAdd = shimProperty(HTMLElement.prototype, "addEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
       if (this.dataset.testid && listener) {
         const byType = listeners.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
         const entries = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
@@ -1213,11 +1213,11 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
         listeners.set(this, byType);
       }
       add.call(this, type, listener, options);
-    };
-    HTMLElement.prototype.removeEventListener = function(type, listener, options) {
+    } });
+    const restoreRemove = shimProperty(HTMLElement.prototype, "removeEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
       if (listener) listeners.get(this)?.get(type)?.delete(listener);
       remove.call(this, type, listener, options);
-    };
+    } });
     restoreShims.push(shimGlobal("ResizeObserver", MatrixResizeObserver));
     const listenerCount = () => [...listeners.values()].flatMap((types) => [...types.values()]).reduce((sum, entries) => sum + entries.size, 0);
     const viewportAnchor = (host: HTMLElement, scrollTop = host.scrollTop) => {
@@ -1331,8 +1331,8 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
       act(() => jump.click());
       expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
     } finally {
-      HTMLElement.prototype.addEventListener = add;
-      HTMLElement.prototype.removeEventListener = remove;
+      restoreRemove();
+      restoreAdd();
     }
   },
 );
@@ -1504,7 +1504,7 @@ test("100 host swaps release every adapter listener and observer", () => {
     observe() {}
     unobserve() {}
   }
-  HTMLElement.prototype.addEventListener = function(type, listener, options) {
+  const restoreAdd = shimProperty(HTMLElement.prototype, "addEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
     if (this.dataset.testid && listener) {
       const byType = added.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
       const listeners = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
@@ -1513,11 +1513,11 @@ test("100 host swaps release every adapter listener and observer", () => {
       added.set(this, byType);
     }
     add.call(this, type, listener, options);
-  };
-  HTMLElement.prototype.removeEventListener = function(type, listener, options) {
+  } });
+  const restoreRemove = shimProperty(HTMLElement.prototype, "removeEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
     if (listener) added.get(this)?.get(type)?.delete(listener);
     remove.call(this, type, listener, options);
-  };
+  } });
   restoreShims.push(shimGlobal("ResizeObserver", CountingResizeObserver));
   try {
     const { view } = hostAttachmentHarness();
@@ -1530,8 +1530,8 @@ test("100 host swaps release every adapter listener and observer", () => {
     expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(0);
     expect(activeObservers).toBe(0);
   } finally {
-    HTMLElement.prototype.addEventListener = add;
-    HTMLElement.prototype.removeEventListener = remove;
+    restoreRemove();
+    restoreAdd();
   }
 });
 
@@ -1541,7 +1541,7 @@ test("10k-row commits do no layout work when the scroll element is unchanged", (
   restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { layoutReads++; return 600; } }));
   restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { layoutReads++; return 200_000; } }));
   restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { layoutReads++; return 0; }, set() {} }));
-  HTMLElement.prototype.getBoundingClientRect = function() { layoutReads++; return rect.call(this); };
+  const restoreRect = shimProperty(HTMLElement.prototype, "getBoundingClientRect", { configurable: true, writable: true, value: function(this: HTMLElement) { layoutReads++; return rect.call(this); } });
   try {
     const timeline = timelineStore(Array.from({ length: 10_000 }, (_, index) => committedItem(String(index))));
     const view = (commit: number) => <div data-commit={commit}><RunProvider store={timeline.store}><Timeline virtual /></RunProvider></div>;
@@ -1550,7 +1550,7 @@ test("10k-row commits do no layout work when the scroll element is unchanged", (
     for (let index = 1; index <= 100; index++) act(() => root!.render(view(index)));
     expect(layoutReads).toBe(0);
   } finally {
-    HTMLElement.prototype.getBoundingClientRect = rect;
+    restoreRect();
   }
 });
 

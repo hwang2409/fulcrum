@@ -21,6 +21,7 @@ const ownerName = (target: object) => {
   if (typeof Node !== "undefined" && target === Node.prototype) return "Node.prototype";
   if (typeof Navigator !== "undefined" && target === Navigator.prototype) return "Navigator.prototype";
   if (typeof Window !== "undefined" && target === Window.prototype) return "Window.prototype";
+  if (typeof document !== "undefined" && target === document) return "document";
   if (typeof navigator !== "undefined" && target === navigator) return "navigator";
   if (typeof performance !== "undefined" && target === performance) return "performance";
   return target.constructor?.name ?? "object";
@@ -28,13 +29,14 @@ const ownerName = (target: object) => {
 
 const watchedTargets = (): Array<[object, string, readonly PropertyKey[]]> => {
   const targets: Array<[object, string, readonly PropertyKey[]]> = [
-    [globalThis, "globalThis", ["ResizeObserver", "requestAnimationFrame", "cancelAnimationFrame", "matchMedia", "Worker", "reportError"]],
+    [globalThis, "globalThis", ["ResizeObserver", "requestAnimationFrame", "cancelAnimationFrame", "matchMedia", "IntersectionObserver", "MutationObserver", "getComputedStyle", "Worker", "reportError"]],
   ];
-  if (typeof HTMLElement !== "undefined") targets.push([HTMLElement.prototype, "HTMLElement.prototype", ["clientHeight", "scrollHeight", "scrollTop", "offsetHeight"]]);
+  if (typeof HTMLElement !== "undefined") targets.push([HTMLElement.prototype, "HTMLElement.prototype", ["clientHeight", "scrollHeight", "scrollTop", "offsetHeight", "addEventListener", "removeEventListener", "getBoundingClientRect"]]);
   if (typeof Element !== "undefined") targets.push([Element.prototype, "Element.prototype", ["getBoundingClientRect"]]);
   if (typeof Node !== "undefined") targets.push([Node.prototype, "Node.prototype", []]);
   if (typeof Navigator !== "undefined") targets.push([Navigator.prototype, "Navigator.prototype", ["userAgent"]]);
   if (typeof Window !== "undefined") targets.push([Window.prototype, "Window.prototype", ["matchMedia"]]);
+  if (typeof document !== "undefined") targets.push([document, "document", ["hidden"]]);
   if (typeof navigator !== "undefined") targets.push([navigator, "navigator", ["clipboard"]]);
   if (typeof performance !== "undefined") targets.push([performance, "performance", ["now"]]);
   return targets;

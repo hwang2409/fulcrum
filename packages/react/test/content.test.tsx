@@ -3,7 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 domShimAlarm(import.meta.path);
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -302,20 +302,19 @@ test("a tool result's image blocks show under its output, and the card opens for
 });
 
 test("omitted lazy images load only near the viewport, keep their reserved box, and revoke object urls", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
   const savedCreate = URL.createObjectURL;
   const savedRevoke = URL.revokeObjectURL;
   let seen: IntersectionObserverCallback | undefined;
   const revoked: string[] = [];
   let loads = 0;
-  globalThis.IntersectionObserver = class {
+  const restoreObserver = shimGlobal("IntersectionObserver", class {
     constructor(callback: IntersectionObserverCallback) { seen = callback; }
     observe() {}
     disconnect() {}
     unobserve() {}
     takeRecords() { return []; }
     root = null; rootMargin = "400px 0px"; thresholds = [0];
-  } as unknown as typeof IntersectionObserver;
+  } as unknown as typeof IntersectionObserver);
   URL.createObjectURL = () => "blob:lazy-image";
   URL.revokeObjectURL = (url) => { revoked.push(url); };
   try {
@@ -334,15 +333,14 @@ test("omitted lazy images load only near the viewport, keep their reserved box, 
     await Promise.resolve();
     expect(revoked).toEqual(["blob:lazy-image"]);
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
     URL.createObjectURL = savedCreate;
     URL.revokeObjectURL = savedRevoke;
   }
 });
 
 test("retry replaces a shared failed image load for every mounted lease", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
-  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   let calls = 0;
   const { store } = setup([
     { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "shared-failure" } }] } },
@@ -360,13 +358,12 @@ test("retry replaces a shared failed image load for every mounted lease", async 
     expect(calls).toBe(2);
     expect(container.querySelectorAll("img")).toHaveLength(2);
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
   }
 });
 
 test("simultaneous retries replace a failed generation only once", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
-  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const recovered = deferredBlob();
   let calls = 0;
   const { store } = setup([
@@ -390,7 +387,7 @@ test("simultaneous retries replace a failed generation only once", async () => {
     await act(async () => { recovered.resolve(new Blob(["ok"])); await Promise.resolve(); await Promise.resolve(); });
     expect(container.querySelectorAll("img")).toHaveLength(2);
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
   }
 });
 
@@ -407,8 +404,7 @@ test("a plain-url image shows an error after two decode failures and retry recov
 });
 
 test("a lazy image shows an error after two decode failures and retry recovers", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
-  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   let calls = 0;
   try {
     render([commit([{ type: "image", source: { kind: "lazy", key: "bad-blob" } }])], {
@@ -428,15 +424,14 @@ test("a lazy image shows an error after two decode failures and retry recovers",
     expect(q('[data-part="image"]').dataset.state).toBe("ready");
     expect(q("img")).toBeTruthy();
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
   }
 });
 
 test("a sibling decode retry keeps an open full view visible through a slow replacement", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
   const savedCreate = URL.createObjectURL;
   const savedRevoke = URL.revokeObjectURL;
-  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const replacement = deferredBlob();
   const revoked: string[] = [];
   let calls = 0;
@@ -459,17 +454,16 @@ test("a sibling decode retry keeps an open full view visible through a slow repl
     await act(async () => { replacement.resolve(new Blob(["second"])); await Promise.resolve(); await Promise.resolve(); });
     expect(q('[data-part="image-dialog"] img').getAttribute("src")).toBe("blob:generation-2");
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
     URL.createObjectURL = savedCreate;
     URL.revokeObjectURL = savedRevoke;
   }
 });
 
 test("a replaced image url is revoked once after the last lease commits the new url", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
   const savedCreate = URL.createObjectURL;
   const savedRevoke = URL.revokeObjectURL;
-  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const replacement = deferredBlob();
   const revoked: string[] = [];
   const renderedAtRevoke: number[] = [];
@@ -491,17 +485,16 @@ test("a replaced image url is revoked once after the last lease commits the new 
     expect(revoked).toEqual([oldUrl]);
     expect(renderedAtRevoke).toEqual([0]);
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
     URL.createObjectURL = savedCreate;
     URL.revokeObjectURL = savedRevoke;
   }
 });
 
 test("a failed replacement keeps good sibling leases on the old url", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
   const savedCreate = URL.createObjectURL;
   const savedRevoke = URL.revokeObjectURL;
-  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const replacement = deferredBlob();
   const revoked: string[] = [];
   let calls = 0;
@@ -520,17 +513,16 @@ test("a failed replacement keeps good sibling leases on the old url", async () =
     expect(container.querySelectorAll('[data-action="retry"]')).toHaveLength(1);
     expect(revoked).toEqual([]);
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
     URL.createObjectURL = savedCreate;
     URL.revokeObjectURL = savedRevoke;
   }
 });
 
 test("100 image retries neither revoke a rendered url nor leak generations", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
   const savedCreate = URL.createObjectURL;
   const savedRevoke = URL.revokeObjectURL;
-  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const revoked: string[] = [];
   let revokedWhileRendered = 0;
   let created = 0;
@@ -560,15 +552,14 @@ test("100 image retries neither revoke a rendered url nor leak generations", asy
     expect(revoked).toHaveLength(created);
     expect(new Set(revoked).size).toBe(created);
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
     URL.createObjectURL = savedCreate;
     URL.revokeObjectURL = savedRevoke;
   }
 });
 
 test("a missing lazy image says it is no longer available and can retry", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
-  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   let attempts = 0;
   try {
     render([commit([{ type: "image", filename: "gone.png", source: { kind: "lazy", key: "gone" } }])], {
@@ -580,7 +571,7 @@ test("a missing lazy image says it is no longer available and can retry", async 
     await act(async () => { q('[data-action="retry"]').click(); await Promise.resolve(); });
     expect(attempts).toBe(2);
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
   }
 });
 
@@ -603,13 +594,12 @@ const deferredBlob = () => {
 };
 
 test("1,000 mounted images and an open full view keep valid urls, then released urls stay bounded", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
   const savedCreate = URL.createObjectURL;
   const savedRevoke = URL.revokeObjectURL;
   const observed: Observed[] = [];
   const revoked: string[] = [];
   let next = 0;
-  globalThis.IntersectionObserver = installObservers(observed);
+  const restoreObserver = shimGlobal("IntersectionObserver", installObservers(observed));
   URL.createObjectURL = () => `blob:${next++}`;
   URL.revokeObjectURL = (url) => { revoked.push(url); };
   try {
@@ -627,17 +617,16 @@ test("1,000 mounted images and an open full view keep valid urls, then released 
     expect(revoked).not.toContain("blob:0");
     expect(new Set(revoked).size).toBe(967);
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
     URL.createObjectURL = savedCreate;
     URL.revokeObjectURL = savedRevoke;
   }
 });
 
 test("a pending image read aborts after it leaves the preload margin", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
   const observed: Observed[] = [];
   let aborted = false;
-  globalThis.IntersectionObserver = installObservers(observed);
+  const restoreObserver = shimGlobal("IntersectionObserver", installObservers(observed));
   try {
     render([commit([{ type: "image", source: { kind: "lazy", key: "pending" } }])], {
       loadMedia: (_block, signal) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => {
@@ -650,13 +639,12 @@ test("a pending image read aborts after it leaves the preload margin", async () 
     expect(aborted).toBe(true);
     expect(q('[data-part="image"]').dataset.state).toBe("idle");
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
   }
 });
 
 test("one subscriber can unmount while another keeps the shared read alive", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
-  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const pending = deferredBlob();
   let aborted = false;
   const { store } = setup([
@@ -677,16 +665,15 @@ test("one subscriber can unmount while another keeps the shared read alive", asy
     expect(aborted).toBe(false);
     expect(q("img").getAttribute("src")).toStartWith("blob:");
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
   }
 });
 
 test("a late subscriber joins the in-flight read after the first subscriber leaves", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
   const observed: Observed[] = [];
   const pending = deferredBlob();
   let loads = 0;
-  globalThis.IntersectionObserver = installObservers(observed);
+  const restoreObserver = shimGlobal("IntersectionObserver", installObservers(observed));
   try {
     const { send } = render([commit([{ type: "image", source: { kind: "lazy", key: "same" } }])], {
       loadMedia: () => { loads++; return pending.promise; },
@@ -704,13 +691,12 @@ test("a late subscriber joins the in-flight read after the first subscriber leav
     expect(loads).toBe(1);
     expect(container.querySelectorAll("img")).toHaveLength(1);
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
   }
 });
 
 test("changing loaders aborts the old generation and does not reuse its blob", async () => {
-  const savedObserver = globalThis.IntersectionObserver;
-  globalThis.IntersectionObserver = undefined as unknown as typeof IntersectionObserver;
+  const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const first = deferredBlob();
   let oldAborted = false;
   let loads = 0;
@@ -730,6 +716,6 @@ test("changing loaders aborts the old generation and does not reuse its blob", a
     expect(loads).toBe(2);
     expect(q("img")).not.toBeNull();
   } finally {
-    globalThis.IntersectionObserver = savedObserver;
+    restoreObserver();
   }
 });

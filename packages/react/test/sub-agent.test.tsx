@@ -3,7 +3,7 @@ GlobalRegistrator.register({ url: "http://localhost:3000/gallery.html" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 domShimAlarm(import.meta.path);
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -126,14 +126,13 @@ test("subAgentRow derives the badge, text, accessible name, and drill-in from th
 // IntersectionObserver as the browser reports it, driven by the test; and the 1 s intervals that are running.
 function fakeVisibility() {
   const observers = new Set<{ callback: IntersectionObserverCallback; targets: Set<Element> }>();
-  const saved = globalThis.IntersectionObserver;
-  globalThis.IntersectionObserver = class {
+  const restoreObserver = shimGlobal("IntersectionObserver", class {
     entry = { callback: (() => {}) as IntersectionObserverCallback, targets: new Set<Element>() };
     constructor(callback: IntersectionObserverCallback) { this.entry.callback = callback; observers.add(this.entry); }
     observe(target: Element) { this.entry.targets.add(target); }
     unobserve(target: Element) { this.entry.targets.delete(target); }
     disconnect() { this.entry.targets.clear(); observers.delete(this.entry); }
-  } as unknown as typeof IntersectionObserver;
+  } as unknown as typeof IntersectionObserver);
   const timers = new Set<unknown>();
   const [setTimer, clearTimer] = [globalThis.setInterval, globalThis.clearInterval];
   globalThis.setInterval = ((run: () => void, ms?: number) => {
@@ -143,12 +142,12 @@ function fakeVisibility() {
   }) as typeof setInterval;
   globalThis.clearInterval = ((timer: ReturnType<typeof setInterval>) => { timers.delete(timer); clearTimer(timer); }) as typeof clearInterval;
   let hidden = false;
-  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  const restoreHidden = shimProperty(document, "hidden", { configurable: true, get: () => hidden });
   restore.push(() => {
-    globalThis.IntersectionObserver = saved;
+    restoreHidden();
     globalThis.setInterval = setTimer;
     globalThis.clearInterval = clearTimer;
-    delete (document as { hidden?: boolean }).hidden;
+    restoreObserver();
   });
   return {
     timers: () => timers.size,

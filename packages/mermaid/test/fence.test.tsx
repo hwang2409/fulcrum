@@ -1,6 +1,10 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
 import { afterAll, beforeEach, expect, mock, test } from "bun:test";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+let restoreObserver: (() => void) | undefined;
+afterAll(() => restoreObserver?.());
+domShimAlarm(import.meta.path);
 
 type Rendered = { svg: SVGSVGElement; label: string } | { error: string };
 const calls: Array<{ code: string; host: Element }> = [];
@@ -30,13 +34,13 @@ afterAll(() => GlobalRegistrator.unregister());
 
 // Every box is in view at once (happy-dom has no layout), and idle comes after a macrotask.
 const observed: Element[] = [];
-globalThis.IntersectionObserver = class {
+restoreObserver = shimGlobal("IntersectionObserver", class {
   constructor(private callback: IntersectionObserverCallback) {}
   observe(target: Element) { observed.push(target); queueMicrotask(() => this.callback([{ isIntersecting: true, target } as IntersectionObserverEntry], this as unknown as IntersectionObserver)); }
   disconnect() {}
   unobserve() {}
   takeRecords() { return []; }
-} as unknown as typeof IntersectionObserver;
+} as unknown as typeof IntersectionObserver);
 
 const fences = { mermaid: MermaidFence };
 const settle = async () => { for (let i = 0; i < 6; i++) await act(() => new Promise((resolve) => setTimeout(resolve, 20))); };
