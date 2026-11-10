@@ -309,8 +309,10 @@ const unmatchedCodeSpan = (source: string) => {
   return opener;
 };
 
+const plainResolvedCodeSuffix = /^[\p{L}\p{N} ]*$/u;
+
 function resolveCodeSuffix(state: ResolvedCodeSuffix, suffix: string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
-  if (/^[\p{L}\p{N} ]*$/u.test(suffix)) return appendResolvedCodeSuffix(state, suffix, () => suffix, parse);
+  if (plainResolvedCodeSuffix.test(suffix)) return appendResolvedCodeSuffix(state, suffix, () => suffix, parse);
   // First reveal provisional syntax exactly as the complete parse does; later deltas may resolve it.
   state.nodes = [...state.prefix, ...parse(suffix, true, false)];
   return suffix.length;
@@ -322,7 +324,7 @@ function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, sour
     state.pending.append(delta);
     return state.pending.copiedCharacters - copied;
   }
-  if (/^[\p{L}\p{N} ]*$/u.test(delta)) {
+  if (plainResolvedCodeSuffix.test(delta)) {
     const last = state.nodes.at(-1);
     if (last?.type === "text" && state.nodes.length > state.prefix.length) last.value += delta;
     else if (last?.type === "text" && delta) state.nodes[state.nodes.length - 1] = { type: "text", value: last.value + delta };
