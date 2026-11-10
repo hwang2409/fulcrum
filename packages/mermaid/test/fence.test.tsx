@@ -3,7 +3,8 @@ GlobalRegistrator.register();
 import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
 let restoreObserver: (() => void) | undefined;
-afterAll(() => restoreObserver?.());
+let restoreActEnvironment: (() => void) | undefined;
+afterAll(() => { restoreObserver?.(); restoreActEnvironment?.(); });
 domShimAlarm(import.meta.path);
 
 type Rendered = { svg: SVGSVGElement; label: string } | { error: string };
@@ -29,7 +30,7 @@ const { act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { Markdown } = await import("@fulcrum/markdown/react");
 const { MermaidFence } = await import("../src/index.tsx");
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+restoreActEnvironment = shimGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 afterAll(() => GlobalRegistrator.unregister());
 
 // Every box is in view at once (happy-dom has no layout), and idle comes after a macrotask.

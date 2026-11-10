@@ -27,30 +27,9 @@ const ownerName = (target: object) => {
   return target.constructor?.name ?? "object";
 };
 
-const watchedTargets = (): Array<[object, string, readonly PropertyKey[]]> => {
-  const targets: Array<[object, string, readonly PropertyKey[]]> = [
-    [globalThis, "globalThis", ["ResizeObserver", "requestAnimationFrame", "cancelAnimationFrame", "matchMedia", "IntersectionObserver", "MutationObserver", "getComputedStyle", "Worker", "reportError"]],
-  ];
-  if (typeof HTMLElement !== "undefined") targets.push([HTMLElement.prototype, "HTMLElement.prototype", ["clientHeight", "scrollHeight", "scrollTop", "offsetHeight", "addEventListener", "removeEventListener", "getBoundingClientRect"]]);
-  if (typeof Element !== "undefined") targets.push([Element.prototype, "Element.prototype", ["getBoundingClientRect"]]);
-  if (typeof Node !== "undefined") targets.push([Node.prototype, "Node.prototype", []]);
-  if (typeof Navigator !== "undefined") targets.push([Navigator.prototype, "Navigator.prototype", ["userAgent"]]);
-  if (typeof Window !== "undefined") targets.push([Window.prototype, "Window.prototype", ["matchMedia"]]);
-  if (typeof document !== "undefined") targets.push([document, "document", ["hidden"]]);
-  if (typeof navigator !== "undefined") targets.push([navigator, "navigator", ["clipboard"]]);
-  if (typeof performance !== "undefined") targets.push([performance, "performance", ["now"]]);
-  return targets;
-};
-
 export function domShimAlarm(file: string): void {
   if (alarms.has(file)) throw new Error(`${file} registered the DOM shim alarm twice`);
-  const snapshot = watchedTargets().flatMap(([target, owner, names]) => names.map((name) => ({
-    target,
-    owner,
-    name,
-    descriptor: Object.getOwnPropertyDescriptor(target, name),
-  })));
-  const alarm = { shims: new Set<TrackedShim>(), snapshot };
+  const alarm = { shims: new Set<TrackedShim>(), snapshot: [] as Snapshot[] };
   alarms.set(file, alarm);
 
   const check = () => {
@@ -70,7 +49,11 @@ export function shimProperty(target: object, name: PropertyKey, descriptor?: Pro
   const alarm = alarms.get(file);
   if (!alarm) throw new Error(`${file} used shimProperty without domShimAlarm(import.meta.path)`);
   const previous = Object.getOwnPropertyDescriptor(target, name);
-  const shim: TrackedShim = { owner: ownerName(target), name };
+  const owner = ownerName(target);
+  if (!alarm.snapshot.some((entry) => entry.target === target && entry.name === name)) {
+    alarm.snapshot.push({ target, owner, name, descriptor: previous });
+  }
+  const shim: TrackedShim = { owner, name };
   alarm.shims.add(shim);
   if (descriptor) Object.defineProperty(target, name, descriptor);
   else Reflect.deleteProperty(target, name);
@@ -84,7 +67,9 @@ export function shimProperty(target: object, name: PropertyKey, descriptor?: Pro
   };
 }
 
-export function shimGlobal<K extends keyof typeof globalThis>(name: K, value: (typeof globalThis)[K]): Restore {
+export function shimGlobal<K extends keyof typeof globalThis>(name: K, value: (typeof globalThis)[K]): Restore;
+export function shimGlobal(name: PropertyKey, value: unknown): Restore;
+export function shimGlobal(name: PropertyKey, value: unknown): Restore {
   const previous = Object.getOwnPropertyDescriptor(globalThis, name);
   return shimProperty(globalThis, name, previous && "value" in previous
     ? { ...previous, value }

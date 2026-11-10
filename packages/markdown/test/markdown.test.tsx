@@ -1,4 +1,6 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import type { Highlight, HighlightContext, Token } from "@fulcrum/highlight";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -14,6 +16,17 @@ import { withoutDelimiterCells } from "./accepted-changes.js";
 import corpus from "./fixtures/agent-corpus.json";
 
 const json = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
+let restoreBrowser: (() => void) | undefined;
+const installBrowser = (browser: Window) => {
+  restoreBrowser?.();
+  const restores = [
+    shimGlobal("window", browser),
+    shimGlobal("document", browser.document),
+    shimGlobal("IS_REACT_ACT_ENVIRONMENT", true),
+  ];
+  restoreBrowser = () => { for (const restore of restores.reverse()) restore(); };
+};
+afterEach(() => { restoreBrowser?.(); restoreBrowser = undefined; });
 const window = new Window();
 const visibleText = (source: string, streaming = false, includeProvisional = true) => {
   const element = window.document.createElement("div");
@@ -478,7 +491,7 @@ test("later reference definitions update frozen blocks and react when committed"
   expect(json(document.render())).toBe(json(parseMarkdown(`${first}${definition}\nnext block\n`)));
 
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const host = browser.document.createElement("div");
   const root = createRoot(host);
   act(() => root.render(<Markdown source={first} streaming />));
@@ -495,7 +508,7 @@ test("later reference definitions update frozen blocks and react when committed"
 test("renders a real typescript fence with the shared highlighter", async () => {
   const { createHighlighter } = await import("../../highlight/dist/index.js");
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   const highlight = createHighlighter();
@@ -509,7 +522,7 @@ test("renders a real typescript fence with the shared highlighter", async () => 
 
 test("a stale streaming highlight cannot replace the done result", async () => {
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   const pending: Array<(tokens: Token[]) => void> = [];
@@ -530,7 +543,7 @@ test("a stale streaming highlight cannot replace the done result", async () => {
 
 test("a closing fence never shows fewer characters than the source while its done colors are pending", async () => {
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   // Streaming answers at once (the incremental path); the done answer waits for the worker.
@@ -568,7 +581,7 @@ test("highlighter uses the shared cumulative source contract", async () => {
 
 test("a code block repaints when the highlighter updates its tokens", async () => {
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   let tokens: Token[] = [{ text: "const a = 1;\n" }];
@@ -588,7 +601,7 @@ test("a code block repaints when the highlighter updates its tokens", async () =
 
 test("a streamed code block shows plain text first, then the colored update, through the streaming resolver", async () => {
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   const colored = new Set<string>();
@@ -622,7 +635,7 @@ test("a streamed code block shows plain text first, then the colored update, thr
 
 test("an open fence keeps updating when every delta ends at a newline", async () => {
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   let source = "```ts\n";

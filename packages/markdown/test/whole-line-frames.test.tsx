@@ -1,9 +1,14 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown } from "../src/react.js";
+
+let restoreBrowser: (() => void) | undefined;
+afterEach(() => { restoreBrowser?.(); restoreBrowser = undefined; });
 
 // A frame that ends exactly at a line break (a server that sends whole lines, or a store that batches a frame) must show
 // that line in a live view as it does in a fresh one: a table row, a list item, or a quote line that grew its block in
@@ -25,7 +30,8 @@ const plans: Array<[string, (source: string) => string[]]> = [
 
 test("a line that ends with its frame shows at once in a live view", async () => {
   const window = new Window();
-  Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const restores = [shimGlobal("window", window), shimGlobal("document", window.document), shimGlobal("IS_REACT_ACT_ENVIRONMENT", true)];
+  restoreBrowser = () => { for (const restore of restores.reverse()) restore(); };
   const text = (html: string) => {
     const element = window.document.createElement("div");
     element.innerHTML = html;

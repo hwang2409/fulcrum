@@ -8,14 +8,17 @@ const { createHighlighter } = await import("../dist/index.js");
 // Unit tests never depend on how fast this machine is: the clock stands still unless a test moves it, so no line is ever
 // over the time limit by chance. Only a real worker (its own clock) runs on real time.
 let restoreFrozenClock = () => {};
-afterAll(() => { directHighlighter.dispose(); restoreFrozenClock(); });
+afterAll(() => { directHighlighter.dispose(); restoreTokenizer(); restoreFrozenClock(); });
 domShimAlarm(import.meta.path);
 restoreFrozenClock = shimProperty(performance, "now", { configurable: true, value: () => 0 });
 const { TokenizerRuntime, regexFromRecipe } = await import("../dist/runtime.js");
 // Every tokenize call on this (the main) thread. The page's thread must never tokenize: a test asserts this stays 0.
 let mainThreadTokenizes = 0;
 const tokenizeOnMainThread = TokenizerRuntime.prototype.tokenize;
-TokenizerRuntime.prototype.tokenize = function (...args: Parameters<typeof tokenizeOnMainThread>) { mainThreadTokenizes++; return tokenizeOnMainThread.apply(this, args); };
+const restoreTokenizer = shimProperty(TokenizerRuntime.prototype, "tokenize", {
+  ...Object.getOwnPropertyDescriptor(TokenizerRuntime.prototype, "tokenize"),
+  value: function (...args: Parameters<typeof tokenizeOnMainThread>) { mainThreadTokenizes++; return tokenizeOnMainThread.apply(this, args); },
+});
 // Tests that drive a runtime directly count their own calls; the shared highlighter runs a real worker.
 const directHighlighter = createHighlighter();
 
@@ -288,7 +291,10 @@ describe("incremental tokenization", () => {
   test("warm-up exec-warms every grammar regex so no scanner does a cold first exec", async () => {
     const execd = new Set<string>();
     const originalExec = RegExp.prototype.exec;
-    RegExp.prototype.exec = function (this: RegExp, input: string) { execd.add(this.source); return originalExec.call(this, input); };
+    const restoreExec = shimProperty(RegExp.prototype, "exec", {
+      ...Object.getOwnPropertyDescriptor(RegExp.prototype, "exec"),
+      value: function (this: RegExp, input: string) { execd.add(this.source); return originalExec.call(this, input); },
+    });
     try {
       for (const language of ["typescript", "cpp"]) {
         execd.clear();
@@ -301,7 +307,7 @@ describe("incremental tokenization", () => {
         expect(coldPlain.map((r) => r.source)).toEqual([]); // none would be a cold first exec inside a scanner
         runtime.dispose();
       }
-    } finally { RegExp.prototype.exec = originalExec; }
+    } finally { restoreExec(); }
   }, 60_000);
 
   test("a warmed grammar tokenizes a document the same way twice", async () => {

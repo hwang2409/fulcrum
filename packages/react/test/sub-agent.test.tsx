@@ -135,18 +135,21 @@ function fakeVisibility() {
   } as unknown as typeof IntersectionObserver);
   const timers = new Set<unknown>();
   const [setTimer, clearTimer] = [globalThis.setInterval, globalThis.clearInterval];
-  globalThis.setInterval = ((run: () => void, ms?: number) => {
+  const restoreSetTimer = shimGlobal("setInterval", ((run: () => void, ms?: number) => {
     const timer = setTimer(run, ms);
     if (ms === 1_000) timers.add(timer);
     return timer;
-  }) as typeof setInterval;
-  globalThis.clearInterval = ((timer: ReturnType<typeof setInterval>) => { timers.delete(timer); clearTimer(timer); }) as typeof clearInterval;
+  }) as typeof setInterval);
+  const restoreClearTimer = shimGlobal("clearInterval", ((timer: ReturnType<typeof setInterval>) => {
+    timers.delete(timer);
+    clearTimer(timer);
+  }) as typeof clearInterval);
   let hidden = false;
   const restoreHidden = shimProperty(document, "hidden", { configurable: true, get: () => hidden });
   restore.push(() => {
     restoreHidden();
-    globalThis.setInterval = setTimer;
-    globalThis.clearInterval = clearTimer;
+    restoreClearTimer();
+    restoreSetTimer();
     restoreObserver();
   });
   return {

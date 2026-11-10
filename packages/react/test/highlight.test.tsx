@@ -216,10 +216,16 @@ test("segmenting a 2M-character line with no newline stays linear", async () => 
   // lastIndexOf has no lower bound, so it would rescan the whole text per segment.
   const original = { charCodeAt: String.prototype.charCodeAt, lastIndexOf: String.prototype.lastIndexOf };
   const calls = { charCodeAt: 0, lastIndexOf: 0 };
-  String.prototype.charCodeAt = function (this: string, index: number) { calls.charCodeAt++; return original.charCodeAt.call(this, index); };
-  String.prototype.lastIndexOf = function (this: string, ...args: [string, number?]) { calls.lastIndexOf++; return original.lastIndexOf.apply(this, args); };
+  const restoreCharCodeAt = shimProperty(String.prototype, "charCodeAt", {
+    ...Object.getOwnPropertyDescriptor(String.prototype, "charCodeAt"),
+    value: function (this: string, index: number) { calls.charCodeAt++; return original.charCodeAt.call(this, index); },
+  });
+  const restoreLastIndexOf = shimProperty(String.prototype, "lastIndexOf", {
+    ...Object.getOwnPropertyDescriptor(String.prototype, "lastIndexOf"),
+    value: function (this: string, ...args: [string, number?]) { calls.lastIndexOf++; return original.lastIndexOf.apply(this, args); },
+  });
   let segments;
-  try { segments = segmentText(text, 1); } finally { Object.assign(String.prototype, original); }
+  try { segments = segmentText(text, 1); } finally { restoreLastIndexOf(); restoreCharCodeAt(); }
   expect(segments).toHaveLength(1_000);
   expect(calls.charCodeAt).toBeLessThanOrEqual(text.length);
   expect(calls.lastIndexOf).toBe(0);

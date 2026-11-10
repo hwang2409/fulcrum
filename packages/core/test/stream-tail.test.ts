@@ -1,4 +1,6 @@
 import { expect, test, setDefaultTimeout } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { createRunStore, type RunEvent, type RunItem } from "../src/index.js";
 import { streamTail } from "../src/internal.js";
 // These tests count work over megabyte texts; on a loaded machine one can take several seconds (no timing is asserted).
@@ -93,14 +95,17 @@ test("a message's text is its stream; a reasoning delta in between is a content 
 function walked(run: () => unknown) {
   const push = Array.prototype.push;
   let count = 0;
-  Array.prototype.push = function (this: unknown[], ...items: unknown[]) {
-    count += items.length;
-    return push.apply(this, items);
-  };
+  const restorePush = shimProperty(Array.prototype, "push", {
+    ...Object.getOwnPropertyDescriptor(Array.prototype, "push"),
+    value: function (this: unknown[], ...items: unknown[]) {
+      count += items.length;
+      return push.apply(this, items);
+    },
+  });
   try {
     run();
   } finally {
-    Array.prototype.push = push;
+    restorePush();
   }
   return count;
 }
