@@ -410,7 +410,6 @@ test("in virtual mode a row kept mounted for focus never takes the cursor from t
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
   }));
-  try {
     const { store, send } = setup([
       ...Array.from({ length: 300 }, (_, index): RunEvent => ({ type: "message_commit", message_id: String(index), message: message(String(index)) })),
       { type: "message_delta", message_id: "live", delta: "streaming" },
@@ -435,8 +434,6 @@ test("in virtual mode a row kept mounted for focus never takes the cursor from t
     expect(latest()).toEqual(["message:live"]);
     send({ type: "message_delta", message_id: "live", delta: " more" });
     expect(latest()).toEqual(["message:live"]);
-  } finally {
-  }
 });
 
 test("useRun applies a changed selector without a store update", () => {
@@ -1381,7 +1378,6 @@ test("follow, pinning, jump control, and bounded mounts survive every scroll-hos
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
   }));
-  try {
     const { append, view } = hostAttachmentHarness();
     let followRequest = 0;
     let target: "inner" | "outer" | "replacement" = "inner";
@@ -1428,8 +1424,6 @@ test("follow, pinning, jump control, and bounded mounts survive every scroll-hos
     target = "outer";
     render();
     exercise(attachedHost(target));
-  } finally {
-  }
 });
 
 test.each([
@@ -1445,7 +1439,6 @@ test.each([
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
   }));
-  try {
     const { append, prepend, view } = hostAttachmentHarness();
     let followRequest = 0;
     mount(view("inner", false, followRequest));
@@ -1479,8 +1472,6 @@ test.each([
     expect(jump).toBeTruthy();
     act(() => jump.click());
     expect(outer.scrollTop).toBe(outer.scrollHeight - outer.clientHeight);
-  } finally {
-  }
 });
 
 test("100 host swaps own the exact adapter listeners and release all of them", () => {
@@ -1664,7 +1655,6 @@ test.each([
     }
     return rect.call(this);
   } }));
-  try {
     const scrollRef = { current: null as HTMLElement | null };
     const view = (store: RunStore) => {
       const timeline = <RunProvider store={store}><Timeline {...(stagedReplay ? {} : { virtual: true })} {...(hostOwned ? { scrollRef, renderJumpToLatest: (control: ReactNode) => <aside>{control}</aside> } : {})} /></RunProvider>;
@@ -1731,8 +1721,6 @@ test.each([
       expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe(stagedReplay ? "0" : "10");
       expect(q('[data-part="jump-to-latest"]') === null).toBe(stagedReplay);
     }
-  } finally {
-  }
 });
 
 test("same-run replacement keeps a pinned reader at bottom while a different run starts at bottom", () => {
@@ -1744,7 +1732,6 @@ test("same-run replacement keeps a pinned reader at bottom while a different run
   restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } }));
   restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); } }));
   const view = (store: RunStore) => <RunProvider store={store}><Timeline virtual /></RunProvider>;
-  try {
     mount(view(source.store));
     let viewport = q('[data-part="timeline-scroll"]');
     expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
@@ -1758,8 +1745,6 @@ test("same-run replacement keeps a pinned reader at bottom while a different run
     viewport = q('[data-part="timeline-scroll"]');
     expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
     expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
-  } finally {
-  }
 });
 
 test("a pinned reader keeps following when a reconnect banner leaves and the browser clamps its scroll", () => {
@@ -1896,7 +1881,6 @@ test("the unconstrained-height diagnostic checks layout only once while rows str
   restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 100_001 }));
   restoreShims.push(shimGlobal("requestAnimationFrame", (callback) => (frames.push(callback), frames.length)));
   restoreShims.push(shimGlobal("cancelAnimationFrame", () => {}));
-  try {
     let items = Array.from({ length: 201 }, (_, index) => committedItem(String(index)));
     const timeline = timelineStore(items);
     mount(<RunProvider store={timeline.store}><Timeline virtual /></RunProvider>);
@@ -1908,8 +1892,6 @@ test("the unconstrained-height diagnostic checks layout only once while rows str
     timeline.replace(items = [...items, added], [{ index: 201, deleteCount: 0, items: [added] }]);
     expect(container.querySelectorAll("[data-virtual-id]")).toHaveLength(202);
     expect(frames).toHaveLength(0);
-  } finally {
-  }
 });
 
 const waitForAnnouncement = () => act(async () => {
@@ -2047,7 +2029,6 @@ test("with a pending approval, the timeline's first tab stop jumps to it and foc
 test("virtual Timeline shows the folded tool card live when an approval folds in place across batches", () => {
   const { store, send } = setup([{ type: "user_message", text: "read it", mode: "normal" }]);
   restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
-  try {
     mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
     const rows = () => [...container.querySelectorAll("[data-virtual-id]")].map((row) => row.getAttribute("data-virtual-id"));
     const read = { id: "read-1", name: "read", arguments: { path: "README.md" } };
@@ -2058,8 +2039,6 @@ test("virtual Timeline shows the folded tool card live when an approval folds in
     send({ type: "tool_end", tool_call: read, tool_result: { tool_call_id: "read-1", content: "# fulcrum", is_error: false } });
     expect(rows()).toEqual(["user:1", "tool:read-1"]);
     expect(store.getOutline().map(({ id }) => id)).toEqual(rows());
-  } finally {
-  }
 });
 
 test("an approved call that folds into its tool row is still announced when it finishes", async () => {
@@ -2189,7 +2168,6 @@ test.each([
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, (ends.get(this as HTMLElement) ?? 1_100)))); },
   }));
-  try {
     const hostRef = { current: null as HTMLElement | null };
     const prefix = <div data-testid="prefix" />;
     const suffix = <div data-testid="suffix" />;
@@ -2222,8 +2200,6 @@ test.each([
     ends.set(host, initialEnd + 44 + delta);
     timeline.replace([...items, added], [{ index: items.length, deleteCount: 0, items: [added] }]);
     expect(host.scrollTop, "the append after sibling layout must land at the physical end").toBe(initialEnd + 44 + delta);
-  } finally {
-  }
 });
 
 test("virtual paint gutters keep focused edge outlines inside the clipped container", () => {
@@ -2279,7 +2255,6 @@ test.each(layoutGeometryCases.flatMap((geometryCase) => layoutReaderMoves.flatMa
       if (this.getAttribute("data-part") === "timeline") return { x: 0, y: state.top + 18 - position, top: state.top + 18 - position, bottom: state.bottom + 18 - position, left: 0, right: 800, width: 800, height: state.bottom - state.top, toJSON() {} };
       return rect.call(this);
     } }));
-    try {
       const items = Array.from({ length: 611 }, (_, index) => committedItem(`layout-${index}`));
       const timeline = timelineStore(items);
       const view = (followRequest: number) => <RunProvider store={timeline.store}><Timeline virtual followRequest={followRequest} /></RunProvider>;
@@ -2311,7 +2286,5 @@ test.each(layoutGeometryCases.flatMap((geometryCase) => layoutReaderMoves.flatMa
         expect(position, "the next append must not move an unpinned reader").toBe(settled);
         expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("1");
       }
-    } finally {
-        }
   },
 );
