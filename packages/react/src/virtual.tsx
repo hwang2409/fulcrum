@@ -49,6 +49,8 @@ export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   invalidateMeasurements?: readonly Id[];
   /** True while a progressive history replacement can still restore a missing anchor. */
   historyPending?: boolean;
+  /** Whether a newly created list starts by following its end. Defaults to true. */
+  initialFollow?: boolean;
 };
 
 export type VirtualListState<Id extends string> = {
@@ -71,7 +73,10 @@ export function useVirtualList<Id extends string>(
   options: VirtualListOptions<Id>,
 ): VirtualListState<Id> {
   const engineRef = useRef<ReturnType<typeof createVirtualizer<Id>>>(undefined);
-  if (!engineRef.current) engineRef.current = createVirtualizer(options);
+  if (!engineRef.current) {
+    engineRef.current = createVirtualizer(options);
+    if (options.initialFollow === false) engineRef.current.setFollow(false);
+  }
   const engine = engineRef.current;
   const appliedResetKey = useRef(options.resetKey);
   const resetPending = appliedResetKey.current !== options.resetKey;
@@ -99,7 +104,7 @@ export function useVirtualList<Id extends string>(
     settle: {
       owner: null,
       recovery: null,
-      pinned: true,
+      pinned: options.initialFollow !== false,
       lastObserved: emptySample,
       historyPending: options.historyPending === true,
       writeBlockedByTouch: false,
@@ -314,7 +319,12 @@ export function useVirtualList<Id extends string>(
       host.addEventListener("touchcancel", onTouchEnd, { passive: true });
 
       const attachedSnapshot = engine.getSnapshot();
-      writeScroll(attachedSnapshot.pinned ? "end" : attachedSnapshot.scrollTop);
+      if (attachedSnapshot.pinned) writeScroll("end");
+      else if (attachedSnapshot.scrollTop !== host.scrollTop) writeScroll(attachedSnapshot.scrollTop);
+      else {
+        const current = geometry(host);
+        engine.setViewport({ scrollTop: current.engineTop, size: Math.max(0, host.clientHeight - current.gutter), source: "programmatic" });
+      }
 
       const release = () => {
         coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "reset" }).next;

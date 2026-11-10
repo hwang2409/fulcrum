@@ -347,6 +347,7 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
     scrollRef,
     enabled: true,
     outlineUpdate: update,
+    initialFollow: follow,
   });
   // A text row is one segment: it draws from the segment's own text, never from a slice of the whole text.
   const ranges = list.snapshot.rows.map((row) => {

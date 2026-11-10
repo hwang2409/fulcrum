@@ -166,7 +166,13 @@ test("a colored cold-grammar result stays colored on the next streamed append", 
 });
 
 test("a streaming fence over the limits follows its newest line", () => {
-  mount(<Markdown id="m" source={"```cpp\n" + line.repeat(300)} streaming highlight={highlight} />);
+  const open = "```cpp\n" + line.repeat(300);
+  mount(<Markdown id="m" source={open} streaming highlight={highlight} />);
+  const viewer = container.querySelector<HTMLElement>('[data-part="text-viewer"]')!;
+  expect(viewer.scrollTop, "a viewer that is live at mount must start following").toBeGreaterThan(0);
+  expect(container.querySelector('[data-part="text-viewer-position"]')!.textContent).toBe("at bottom");
+  act(() => root!.render(<Markdown id="m" source={open + "```\n"} streaming highlight={highlight} />));
+  expect(viewer.scrollTop, "finishing at the bottom must preserve follow").toBeGreaterThan(0);
   expect(container.querySelector('[data-part="text-viewer-position"]')!.textContent).toBe("at bottom");
 });
 
@@ -244,4 +250,12 @@ test("a block over 10,000 lines (the highlighter answers it plain) keeps its ran
   mount(<Markdown id="m" source={"```json\n" + short + "```\n"} highlight={plainOver} />);
   await act(async () => {});
   expect(container.querySelector('[data-part="text-viewer-row"] .tok-keyword')).not.toBeNull();
+});
+
+test("a finished large fence opens at the top with its first row mounted", () => {
+  const first = "int first_marker = 1;\n";
+  mount(<Markdown id="finished" source={"```cpp\n" + first + large + "```\n"} highlight={highlight} />);
+  const viewer = container.querySelector<HTMLElement>('[data-part="text-viewer"]')!;
+  expect(viewer.scrollTop, "a finished viewer must not inherit the virtual engine's initial follow state").toBe(0);
+  expect(viewer.querySelector('[data-part="text-viewer-row"]')?.textContent, "the first row must be mounted for browser find").toContain(first.trim());
 });
