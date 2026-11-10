@@ -287,6 +287,14 @@ test("touch movement wins over an owned end write when the row observer arrives 
 test("host removal invalidates stale ResizeObserver completion", () => {
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
   const saved = globalThis.ResizeObserver;
+  const savedMutation = globalThis.MutationObserver;
+  const mutations: MutationCallback[] = [];
+  globalThis.MutationObserver = class {
+    constructor(callback: MutationCallback) { mutations.push(callback); }
+    observe() {}
+    disconnect() {}
+    takeRecords() { return []; }
+  } as unknown as typeof MutationObserver;
   globalThis.ResizeObserver = class {
     private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
     constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
@@ -319,6 +327,8 @@ test("host removal invalidates stale ResizeObserver completion", () => {
     const viewport = observers.find(({ observed }) => observed.has(host))!;
     const sibling = observers.find(({ observed }) => [...observed].some((element) => element.getAttribute("data-testid") === "old-sibling"))!;
     const target = [...rows.observed][0]!;
+    const oldMutation = mutations[0]!;
+    expect(oldMutation, "the old host must have a MutationObserver callback to invalidate").toBeDefined();
     act(() => root.render(view("new")));
     const newHost = container.querySelector<HTMLElement>('[data-testid="new-stale-host"]')!;
     expect(ref.current).toBe(newHost);
@@ -330,6 +340,8 @@ test("host removal invalidates stale ResizeObserver completion", () => {
       host.dispatchEvent(new Event("touchend"));
     });
     expect(newHost.scrollTop, "stale input callbacks must not move the replacement host").toBe(newTop);
+    act(() => oldMutation([], {} as MutationObserver));
+    expect(newHost.scrollTop, "a stale mutation completion must not move the replacement host").toBe(newTop);
     act(() => sibling.report([], {} as ResizeObserver));
     expect(host.scrollTop, "a stale sibling completion must not write the removed host").toBe(1_000);
     expect(newHost.scrollTop, "a stale sibling completion must not write the replacement host").toBe(newTop);
@@ -345,6 +357,7 @@ test("host removal invalidates stale ResizeObserver completion", () => {
     act(() => root.unmount());
     container.remove();
     globalThis.ResizeObserver = saved;
+    globalThis.MutationObserver = savedMutation;
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
     if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
     if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollTop;
