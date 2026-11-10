@@ -322,6 +322,8 @@ test("host removal invalidates stale ResizeObserver completion", () => {
     const newTop = newHost.scrollTop;
     host.scrollTop = 1_000;
     Object.defineProperty(host, "scrollHeight", { configurable: true, get: () => 50_000 });
+    act(() => host.dispatchEvent(new Event("scroll")));
+    expect(newHost.scrollTop, "a stale scroll callback must not move the replacement host").toBe(newTop);
     act(() => sibling.report([], {} as ResizeObserver));
     expect(host.scrollTop, "a stale sibling completion must not write the removed host").toBe(1_000);
     expect(newHost.scrollTop, "a stale sibling completion must not write the replacement host").toBe(newTop);
@@ -332,6 +334,7 @@ test("host removal invalidates stale ResizeObserver completion", () => {
     expect(host.scrollTop, "a stale row completion must not write the removed host").toBe(detachedTop);
     act(() => store.dispatch(commits("stale-next", 1)[0]!));
     expect(newHost.scrollTop, "stale completions must not cancel follow on the replacement host").toBeGreaterThan(newTop);
+    expect(container.querySelector('[data-part="jump-to-latest"]'), "stale completions must not detach the replacement host").toBeNull();
   } finally {
     act(() => root.unmount());
     container.remove();
