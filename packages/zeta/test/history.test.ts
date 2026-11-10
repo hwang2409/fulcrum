@@ -129,10 +129,38 @@ test("child progress history follows the same reducer sequence as live", () => {
   expect(reducedState(history)).toEqual(reducedState(live));
 });
 
-test("unknown notification kinds remain generic live and in history", () => {
-  const data = { notification_id: "unknown-1", kind: "future_child_notice", text: "future notice" };
+test("non-child system history rows keep the generic notification mapping", () => {
+  // Valid system rows without child data come from zeta origin/main
+  // src/zeta/server/handlers/history_projection.py:362-380, :408-425, and :523-528.
+  const cases = [
+    {
+      name: "transcript recovery",
+      row: { id: "recovery-1", role: "system", content: [{ type: "text", text: "recovered transcript" }], tool_result: null, transcript_recovery: { quarantine_id: "quarantine-1" } },
+      data: { role: "system", text: "recovered transcript" },
+    },
+    {
+      name: "system message",
+      row: { id: "system-1", role: "system", content: [{ type: "text", text: "system note" }], tool_result: null },
+      data: { role: "system", text: "system note" },
+    },
+    {
+      name: "unknown notification kind",
+      row: notificationHistoryRow("unknown-1", { kind: "future_child_notice", text: "future notice" }),
+      data: { kind: "future_child_notice", role: "system", text: "future notice" },
+    },
+    {
+      name: "notification without a kind",
+      row: notificationHistoryRow("kindless-1", { text: "kindless notice" }),
+      data: { role: "system", text: "kindless notice" },
+    },
+  ];
+
+  for (const { name, row, data } of cases) {
+    expect(fromZetaHistory([row]), name).toEqual([{ type: "notification", notification_id: undefined, data }]);
+  }
+
+  const data = { notification_id: "unknown-live", kind: "future_child_notice", text: "future notice" };
   expect(fromZetaEvent({ event: "sub_agent_receipt", data })[0]).toMatchObject({ type: "notification" });
-  expect(fromZetaHistory([notificationHistoryRow("unknown-1", data)])[0]).toMatchObject({ type: "notification" });
 });
 
 test("child holds use the same readable notification in live and history", () => {
