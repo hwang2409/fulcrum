@@ -21,14 +21,14 @@ test("the public DOM shim alarm catches leaked runtime forms", () => {
   window.value = 1;
   expect(window.value).toBe(1);
 
-  const directory = mkdtempSync(join(import.meta.dir, ".dom-shim-cases-"));
+  const directory = mkdtempSync(join(import.meta.dir, "../packages/react/test/.dom-shim-cases-"));
   try {
     for (const [name, mutation, fails] of rows) {
       const path = join(directory, `${name}.test.ts`);
       writeFileSync(path, `
 import { afterAll, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { domShimAlarm } from "../dom-shim.js";
+import { domShimAlarm } from "../../../../test-support/dom-shim.js";
 
 GlobalRegistrator.register();
 Object.defineProperty(globalThis, "__guard_slot", { configurable: true, value: 0, writable: true });
