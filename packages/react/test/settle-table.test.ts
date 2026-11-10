@@ -115,11 +115,31 @@ describe("decideSettle", () => {
     expect(decideSettle(echo.next, { kind: "commit-append", sample: null }).write).toBeNull();
   });
 
+  test("a short page at its physical end keeps open recovery", () => {
+    const short = { ...basis, top: 0, end: 0, engineTop: 0 };
+    const decision = decideSettle(state({ recovery: { basis, target: null } }), { kind: "scroll", sample: short });
+    expect(decision.report).toBe("observe");
+    expect(decision.recovery).toBe("keep");
+    expect(decision.next.recovery).not.toBeNull();
+  });
+
   test("the exact WebKit 41 px clamp stays in the open transaction", () => {
     const now = { ...basis, top: 59, rectTop: 41, rectBottom: 641, engineTop: 51 };
     const decision = decideSettle(state({ pinned: true, owner: { target: "end", readBack: basis } }), { kind: "viewport", sample: now });
     expect(decision.report).toBe("observe");
     expect(decision.write).toBe("end");
+  });
+
+  test("a deferred numeric correction applies, cancels, and resets", () => {
+    const complete = decideSettle(state({ writeBlockedByTouch: true }), { kind: "recovery-complete", sample: basis, target: 92 });
+    expect(complete.write).toBeNull();
+    expect(complete.next.deferred?.target).toBe(92);
+    expect(decideSettle(complete.next, { kind: "touch-end", sample: basis }).write).toBe(92);
+    const moved = { ...basis, top: 120, engineTop: 112 };
+    const canceled = decideSettle(complete.next, { kind: "touch-end", sample: moved });
+    expect(canceled.report).toBe("user");
+    expect(canceled.next.deferred).toBeNull();
+    expect(decideSettle(complete.next, { kind: "reset" }).next.deferred).toBeNull();
   });
 
   test("every open state has a callback-independent terminal transition", () => {
