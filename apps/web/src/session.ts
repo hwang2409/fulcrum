@@ -374,6 +374,31 @@ async function openForwardSession(
 }
 
 type EndOutcomeFactory = (id: string) => EndOutcome;
+type ResumeFailure =
+  | { kind: "ambiguous"; requested: string; candidates: string[] }
+  | { kind: "not_found"; requested: string }
+  | { kind: "other"; requested: string; error: unknown };
+
+const resumeFailure = (requested: string, error: unknown): ResumeFailure => {
+  const rpc = error as { data?: { code?: unknown; session_id?: unknown; candidates?: unknown } } | null;
+  const failedId = typeof rpc?.data?.session_id === "string" ? rpc.data.session_id : requested;
+  if (rpc?.data?.code === "session_id_ambiguous") {
+    const candidates = Array.isArray(rpc.data.candidates) ? rpc.data.candidates.filter((candidate): candidate is string => typeof candidate === "string").slice(0, 8) : [];
+    return { kind: "ambiguous", requested: failedId, candidates };
+  }
+  if (rpc?.data?.code === "session_not_found") return { kind: "not_found", requested: failedId };
+  return { kind: "other", requested, error };
+};
+
+/** The only resume owner: it canonicalizes successful ids and preserves structured failures for every caller. */
+async function resumeSession(client: ZetaClient, requested: string, signal?: AbortSignal): Promise<{ id: string; session: SessionMeta | null }> {
+  try {
+    const resumed = await client.request("resume", { session_id: requested }, { timeoutMs: 30_000, signal }) as { session?: SessionMeta };
+    return { id: resumed.session?.session_id ?? requested, session: resumed.session ?? null };
+  } catch (error) {
+    throw resumeFailure(requested, error);
+  }
+}
 
 /** Attaches first so every replay, history request, and local run key uses zeta's canonical session id. */
 export async function openSession(
@@ -389,9 +414,9 @@ export async function openSession(
   let id = requestedId;
   let status = before;
   if (before.session?.session_id !== requestedId) {
-    const resumed = await client.request("resume", { session_id: requestedId }, { timeoutMs: 30_000, signal }) as { session?: SessionMeta };
-    id = resumed.session?.session_id ?? requestedId;
-    status = before.session?.session_id === id ? before : { session: resumed.session ?? null, state: "idle", pending_approvals: [] };
+    const resumed = await resumeSession(client, requestedId, signal);
+    id = resumed.id;
+    status = before.session?.session_id === id ? before : { session: resumed.session, state: "idle", pending_approvals: [] };
   }
   const outcome = endOutcome(id);
   return client.features.includes("session_history_backward")
@@ -475,16 +500,17 @@ export type SessionsState = {
 type Source = { readonly client: ZetaClient | null; readonly state: { readonly phase: string }; subscribe(listener: () => void): () => void };
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const isResumeFailure = (error: unknown): error is ResumeFailure => {
+  const kind = (error as { kind?: unknown } | null)?.kind;
+  return kind === "ambiguous" || kind === "not_found" || kind === "other";
+};
 const openFailure = (id: string, error: unknown, restored = false): OpenFailure => {
-  const rpc = error as { data?: { code?: unknown; session_id?: unknown; candidates?: unknown } } | null;
-  const sessionId = typeof rpc?.data?.session_id === "string" ? rpc.data.session_id : id;
   const suffix = restored ? { restored: true as const } : {};
-  if (rpc?.data?.code === "session_id_ambiguous") {
-    const candidates = Array.isArray(rpc.data.candidates) ? rpc.data.candidates.filter((candidate): candidate is string => typeof candidate === "string").slice(0, 8) : [];
-    return { id, message: `more than one session matches “${sessionId}”. choose a full session id:`, busy: false, candidates, ...suffix };
+  if (isResumeFailure(error)) {
+    if (error.kind === "ambiguous") return { id: error.requested, message: `more than one session matches “${error.requested}”. choose a full session id:`, busy: false, candidates: error.candidates, ...suffix };
+    if (error.kind === "not_found") return { id: error.requested, message: `session “${error.requested}” was not found.`, busy: false, ...suffix };
+    return { id: error.requested, message: message(error.error), busy: isBusyError(error.error), ...suffix };
   }
-  if (rpc?.data?.code === "session_not_found")
-    return { id, message: `session “${sessionId}” was not found.`, busy: false, ...suffix };
   return { id, message: message(error), busy: isBusyError(error), ...suffix };
 };
 
@@ -634,14 +660,23 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     } catch (error) {
       if (mine !== openGeneration || !live(target)) return;
       let restoredId: string | null = null;
+      let restoreError: unknown;
       if (previousId) {
         try {
-          const resumed = await target.request("resume", { session_id: previousId }, { timeoutMs: 30_000 }) as { session?: SessionMeta };
-          restoredId = resumed.session?.session_id ?? previousId;
-        } catch { /* keep the retained run read-only with an explicit reopen action */ }
+          restoredId = (await resumeSession(target, previousId, abort.signal)).id;
+        } catch (failure) {
+          restoreError = failure;
+        }
       }
       if (mine !== openGeneration || !live(target)) return;
-      if (restoredId) onSelect?.(restoredId);
+      if (restoreError) {
+        transition({ type: "failed", id: previousId!, error: openFailure(previousId!, restoreError) });
+        return;
+      }
+      if (restoredId) {
+        onSelect?.(restoredId);
+        if (previous && previous.id !== restoredId) transition({ type: "updated", run: { ...previous, id: restoredId } });
+      }
       transition({ type: "failed", id, error: openFailure(id, error, restoredId !== null) });
     }
   };

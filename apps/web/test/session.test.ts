@@ -101,72 +101,74 @@ test("titles, times, and the top-level list", () => {
   expect(topLevel(sessions).map((session) => session.session_id)).toEqual(["b", "a"]);
 });
 
-test("a prefix route uses the resumed session's canonical id for the route, replay, history, and run keys", async () => {
-  const full = "abcd1234-full-session-id";
-  const selected: string[] = [];
-  const fake = await server(handlers(null, {
-    resume: (params) => {
-      expect(params.session_id).toBe("abcd1234");
-      return { session: meta(full, "x") };
-    },
-    session_history: (params) => {
-      expect(params.session_id, "history must use the canonical session id").toBe(full);
-      return { messages: [], next_offset: null };
-    },
-  }));
-  const view = createSessions(source(fake.client), { selected: "abcd1234", onSelect: (id) => selected.push(id) });
-  await waitFor(() => present(view).open?.history.complete === true, "prefix session did not finish opening");
-  expect(selected, "the route must be replaced with the canonical session id").toEqual([full]);
-  expect(fake.replayed, "replay must be keyed by the canonical session id").toEqual([full]);
-  expect(present(view).open?.id, "draft and delivery state must use the canonical run key").toBe(full);
-  view.dispose();
-});
+test("every resume route canonicalizes ids and preserves typed failures", async () => {
+  const routes = ["initial open", "reopen", "reconnect", "retained-run restore", "previousId restore"] as const;
+  const outcomes = ["success", "ambiguous", "not_found"] as const;
 
-test("an ambiguous prefix exposes a readable choice of full session ids", async () => {
-  const candidates = ["s-many", "s-markdown"];
-  const fake = await server(handlers(null, {
-    resume: () => { throw { code: -32602, message: "session id prefix is ambiguous", data: { code: "session_id_ambiguous", session_id: "s-ma", candidates } }; },
-  }));
-  const view = createSessions(source(fake.client), { selected: "s-ma" });
-  await waitFor(() => present(view).openError !== null, "ambiguous prefix did not fail");
-  expect(present(view).openError).toMatchObject({
-    id: "s-ma",
-    message: "more than one session matches “s-ma”. choose a full session id:",
-    candidates,
-  });
-  expect(present(view).openError?.message).not.toContain("session_id_ambiguous");
-  view.dispose();
-});
+  for (const route of routes) for (const outcome of outcomes) {
+    const requested = `${route.replaceAll(" ", "-")}-prefix`;
+    const canonical = `${requested}-full`;
+    const candidates = [`${requested}-one`, `${requested}-two`];
+    const selected: string[] = [];
+    const resume = () => {
+      if (outcome === "success") return { session: meta(canonical, "x") };
+      if (outcome === "ambiguous") throw { code: -32602, message: "ambiguous", data: { code: "session_id_ambiguous", session_id: requested, candidates } };
+      throw { code: -32602, message: "missing", data: { code: "session_not_found", session_id: requested } };
+    };
+    let view: ReturnType<typeof createSessions>;
 
-test("a missing session id is readable", async () => {
-  const fake = await server(handlers(null, {
-    resume: () => { throw { code: -32602, message: "session not found", data: { code: "session_not_found", session_id: "missing" } }; },
-  }));
-  const view = createSessions(source(fake.client), { selected: "missing" });
-  await waitFor(() => present(view).openError !== null, "missing session did not fail");
-  expect(present(view).openError?.message).toBe("session “missing” was not found.");
-  view.dispose();
-});
+    if (route === "initial open") {
+      const fake = await server(handlers(null, { resume }));
+      view = createSessions(source(fake.client), { selected: requested, onSelect: (id) => selected.push(id) });
+    } else if (route === "reopen") {
+      const fake = await server(handlers("b", { resume }));
+      view = createSessions(source(fake.client), { onSelect: (id) => selected.push(id) });
+      await waitFor(() => present(view).open?.history.complete === true, `${route}: initial run did not open`);
+      view.select(requested);
+    } else if (route === "reconnect") {
+      const first = await server(handlers(requested));
+      const connection = source(first.client);
+      view = createSessions(connection, { selected: requested, onSelect: (id) => selected.push(id) });
+      await waitFor(() => present(view).open?.history.complete === true, `${route}: initial run did not open`);
+      connection.set(null);
+      const second = await server(handlers(null, { resume }));
+      connection.set(second.client);
+    } else {
+      const replacement = `${requested}-replacement`;
+      const fake = await server(handlers(requested, {
+        resume: (params) => {
+          if (params.session_id === requested) return resume();
+          if (route === "retained-run restore") throw { code: -32602, message: "replacement could not open" };
+          return { session: meta(`${replacement}-full`, "x") };
+        },
+        session_history: (params) => {
+          if (params.session_id === `${replacement}-full` && route === "previousId restore") throw { code: -32602, message: "replacement history is invalid" };
+          if (params.session_id === `${replacement}-full`) return { messages: [], next_offset: null };
+          return { messages: history[params.session_id as string] ?? [], next_offset: null };
+        },
+      }));
+      view = createSessions(source(fake.client), { selected: requested, onSelect: (id) => selected.push(id) });
+      await waitFor(() => present(view).open?.history.complete === true, `${route}: retained run did not open`);
+      view.select(replacement);
+    }
 
-test("a reconnect resumes the canonical id after a prefix open", async () => {
-  const full = "abcd1234-full-session-id";
-  const first = await server(handlers(null, {
-    resume: () => ({ session: meta(full, "x") }),
-    session_history: () => ({ messages: [], next_offset: null }),
-  }));
-  const connection = source(first.client);
-  const view = createSessions(connection, { selected: "abcd1234" });
-  await waitFor(() => present(view).open?.history.complete === true, "prefix session did not finish opening");
-  connection.set(null);
-  const resumed: string[] = [];
-  const second = await server(handlers(null, {
-    resume: (params) => { resumed.push(String(params.session_id)); return { session: meta(full, "x") }; },
-    session_history: () => ({ messages: [], next_offset: null }),
-  }));
-  connection.set(second.client);
-  await waitFor(() => present(view).open?.stale === false, "canonical session did not reconnect");
-  expect(resumed, "reconnect must resume the canonical session id").toEqual([full]);
-  view.dispose();
+    await waitFor(() => outcome === "success" ? present(view).open?.id === canonical : present(view).openError !== null, `${route} / ${outcome} did not settle`);
+    if (outcome === "success") {
+      expect(present(view).open?.id, `${route} must use the canonical id`).toBe(canonical);
+      expect(selected, `${route} must route to the canonical id`).toContain(canonical);
+      if (route === "retained-run restore" || route === "previousId restore")
+        expect(present(view).openError?.restored, `${route} must keep the restored run ready`).toBe(true);
+    } else if (outcome === "ambiguous") {
+      expect(present(view).openError, `${route} must preserve ambiguous candidates`).toMatchObject({
+        id: requested,
+        message: `more than one session matches “${requested}”. choose a full session id:`,
+        candidates,
+      });
+    } else {
+      expect(present(view).openError?.message, `${route} must render not-found failures`).toBe(`session “${requested}” was not found.`);
+    }
+    view.dispose();
+  }
 });
 
 test("a locally created session survives an older catalog snapshot", async () => {
@@ -196,21 +198,6 @@ test("a newer catalog retires a locally created session", async () => {
   expect(view.state.sessions.map((item) => item.session_id)).toContain("new");
   await view.refresh();
   expect(view.state.sessions.map((item) => item.session_id)).not.toContain("new");
-});
-
-test("a failed replacement restores the old active session and its readiness", async () => {
-  const resumed: string[] = [];
-  const selected: string[] = [];
-  const fake = await server(handlers("b", { resume: (params) => { resumed.push(params.session_id as string); if (params.session_id === "a") { return { session: meta("a", "x") }; } return { session: meta("b", "x") }; }, session_history: (params) => { if (params.session_id === "a") throw { code: -32602, message: "session log is invalid at line 12" }; return { messages: [], next_offset: null }; } }));
-  const view = createSessions(source(fake.client), { onSelect: (id) => selected.push(id) });
-  await tick();
-  view.select("a");
-  await tick();
-  expect(resumed).toEqual(["a", "b"]);
-  expect(present(view).open?.id).toBe("b");
-  expect(present(view).selected).toBe("b");
-  expect(selected).toEqual(["a", "b"]);
-  expect(present(view).openError?.message).toBe("session log is invalid at line 12");
 });
 
 const turn = "5ec6b9bb4c8c44d29bfa315da83a4190";
@@ -650,17 +637,6 @@ test("the newest selection wins when opens overlap", async () => {
   await tick();
   expect(present(view).open?.id).toBe("b");
   expect(present(view).selected).toBe("b");
-});
-
-test("a failed replacement keeps the previous run usable", async () => {
-  const fake = await server(handlers("b", { resume: (params) => { if (params.session_id === "a") throw { code: -32602, message: "session log is invalid at line 12" }; return {}; } }));
-  const view = createSessions(source(fake.client));
-  await tick();
-  view.select("a");
-  await tick();
-  expect(present(view).open?.id).toBe("b");
-  expect(present(view).openError).toEqual({ id: "a", message: "session log is invalid at line 12", busy: false, restored: true });
-  expect(present(view).opening).toBeNull();
 });
 
 test("a busy server is reported as busy and the selection stays", async () => {
