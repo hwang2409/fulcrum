@@ -331,6 +331,7 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
   const [place, setPlace] = useState<Place>(follow ? "bottom" : "top");
   const [newOutput, setNewOutput] = useState(false);
   const seenLength = useRef(text.length);
+  const initialSizeReady = useRef(false);
   // useSegments either extends its array (a copy whose old segments are the same objects) or builds a new one: an
   // extension is one splice after the prior segments.
   const prior = useRef<TextSegment[]>([]);
@@ -355,10 +356,15 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
   });
   const whole = useWholeTokens(rows ? "" : text, metrics.lines, format, id, done, rows ? [] : ranges.map(({ start, end, done, slice }) => styledBlock(slice, start, end, format, id, done, start)), seed);
   useLayoutEffect(() => {
-    if (follow && following.current) list.scrollToEnd();
-    else if (text.length > seenLength.current) setNewOutput(true);
+    const grew = text.length > seenLength.current;
+    const host = scrollRef.current;
+    const becameReady = !initialSizeReady.current && list.snapshot.totalSize > 0
+      && host !== null && host.scrollHeight > host.clientHeight;
+    if (becameReady) initialSizeReady.current = true;
+    if (follow && following.current && (grew || becameReady)) list.scrollToEnd();
+    else if (grew) setNewOutput(true);
     seenLength.current = text.length;
-  }, [follow, text, list.scrollToEnd]);
+  }, [follow, text, list.scrollToEnd, list.snapshot.totalSize]);
   // Opened by a control that unmounts (the closed preview's "open all"): focus moves to the viewer, not to the page.
   useLayoutEffect(() => { if (focus) scrollRef.current?.focus({ preventScroll: true }); }, []);
   const onScroll = (node: HTMLDivElement) => {
