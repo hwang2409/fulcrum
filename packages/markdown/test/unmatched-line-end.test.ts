@@ -30,13 +30,42 @@ for (const [name, opener] of [
     const source = `prefix ${opener}a${suffix}`;
     const document = createStreamingDocument();
     document.append(source);
-    expect(document.render()).toEqual([{
-      type: "paragraph",
-      children: [
-        { type: "text", value: `prefix ${opener}a` },
-        ...ending === "two trailing spaces" ? [{ type: "break" as const }] : [],
-      ],
-      tight: undefined,
-    }]);
+    const continuation = "a";
+    const expected = parseMarkdown(source + continuation);
+    const children = expected[0]?.type === "paragraph" ? expected[0].children : [];
+    const sentinel = children.at(-1);
+    if (sentinel?.type === "text") {
+      sentinel.value = sentinel.value.slice(0, -continuation.length).replace(/\n$/, "");
+      if (!sentinel.value) children.pop();
+    }
+    expect(document.render()).toEqual(expected);
   });
 }
+
+for (const source of [
+  "`a\n``x`tail",
+  "``a\n`x``tail",
+  "`a\n```x`tail",
+]) test(`a multiline code owner ignores different-length runs in ${JSON.stringify(source)}`, () => {
+  const document = createStreamingDocument();
+  for (const character of source) {
+    document.append(character);
+    document.render();
+  }
+  expect(document.render(), "streaming tree matches the complete parse").toEqual(parseMarkdown(source));
+});
+
+test("a resolved multiline code owner is never scanned again", () => {
+  const document = createStreamingDocument();
+  document.append("`owner\n`x");
+  document.render();
+  const before = document.stats.previewScannedCharacters;
+
+  const suffix = "tail".repeat(100);
+  for (const character of suffix) {
+    document.append(character);
+    document.render();
+  }
+
+  expect(document.stats.previewScannedCharacters - before, "only the appended suffix is scanned").toBe(suffix.length);
+});
