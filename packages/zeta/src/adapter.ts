@@ -241,8 +241,6 @@ const childHoldNotification = (data: Record<string, unknown>): RunEvent => {
   };
 };
 
-const childNotificationKinds: ReadonlySet<unknown> = new Set(["child_hold", "child_idle", "child_question", "child_question_withdrawn", "agent_completion"]);
-
 const childNotification = (name: string, data: Record<string, unknown>): RunEvent | undefined => {
   const kind = name === "sub_agent_receipt" || name === "notification_by_kind"
     ? string(data.kind ?? "agent_completion", "data.kind")
@@ -475,7 +473,9 @@ const historyRow = (value: unknown, calls: Map<string, ToolCall>, resent: Set<un
     }
   } else {
     const notification = optionalObject(row.notification ?? undefined, "history row notification");
-    const child = notification && childNotificationKinds.has(notification.kind) ? childNotification("notification_by_kind", notification.notification_id === undefined ? { notification_id: id, ...notification } : notification) : undefined;
+    const child = notification && typeof notification.kind === "string"
+      ? childNotification(notification.kind, notification.notification_id === undefined ? { notification_id: id, ...notification } : notification)
+      : undefined;
     const event = child ??
       { type: "notification" as const, notification_id: optionalString(notification?.notification_id, "notification.notification_id"), data: { ...notification, role, text: text(content) } };
     events.push(event);
