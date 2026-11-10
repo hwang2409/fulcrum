@@ -509,7 +509,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
               const shown = candidates.join(", ") + (matches.length > 8 ? ", …" : "");
               return reply({ error: { code: -32602, message: `session id '${requested}' is ambiguous; matches: ${shown}; please provide more characters`, data: { code: "session_id_ambiguous", session_id: requested, candidates } } });
             }
-            return reply({ error: { code: -32602, message: "session not found", data: { code: "session_not_found", session_id: requested } } });
+            return reply({ error: { code: -32602, message: `session ${requested} was not found`, data: { code: "session_not_found", session_id: requested } } });
           }
           if (running && sessionId !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = sessionId;

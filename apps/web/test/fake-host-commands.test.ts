@@ -164,7 +164,7 @@ test("fake zeta resolves unique session prefixes and reports ambiguous candidate
       data: { code: "session_id_ambiguous", session_id: "s-ma", candidates: ["s-many", "s-markdo"] },
     });
     await expectWireError(client.request("resume", { session_id: "s" }), { code: -32602, message: "session id prefix must be at least 4 characters" });
-    await expectWireError(client.request("resume", { session_id: "missing" }), { code: -32602, message: "session not found", data: { code: "session_not_found", session_id: "missing" } });
+    await expectWireError(client.request("resume", { session_id: "missing" }), { code: -32602, message: "session missing was not found", data: { code: "session_not_found", session_id: "missing" } });
     client.close();
   } finally {
     await fake.close();
