@@ -285,6 +285,10 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let sessions = [
     ...seeded,
     ...(manyPages > 0 || ambiguousPrefix ? [meta(MANY, manyPages > 0 ? 1 : 60 * 6, manyPages > 0 ? { name: `${manyPages.toLocaleString("en")} small pages of history` } : { first_message_preview: "inspect an ambiguous session prefix" })] : []),
+    ...(ambiguousPrefix ? [
+      meta("abcd1111-full", 60 * 6, { first_message_preview: "inspect an ambiguous session prefix" }),
+      meta("abcd2222-full", 60 * 7, { first_message_preview: "inspect another ambiguous session prefix" }),
+    ] : []),
     ...(largePages > 0 ? [meta(LARGE, 1, { name: `${largePages.toLocaleString("en")} large pages of history` })] : []),
   ];
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
@@ -497,8 +501,9 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         if (method === "resume") {
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
           const requested = String(params.session_id);
-          const candidates = requested.length >= 4 ? sessions.map((session) => String(session.session_id)).filter((sessionId) => sessionId.startsWith(requested)).slice(0, 8) : [];
-          const sessionId = sessions.some((session) => session.session_id === requested) ? requested : candidates.length === 1 ? candidates[0]! : null;
+          const matches = requested.length >= 4 ? sessions.map((session) => String(session.session_id)).filter((sessionId) => sessionId.startsWith(requested)).slice(0, 8) : [];
+          const candidates = matches.map((sessionId) => sessionId.slice(0, 8));
+          const sessionId = sessions.some((session) => session.session_id === requested) ? requested : matches.length === 1 ? matches[0]! : null;
           if (!sessionId) return reply({ error: candidates.length > 1
             ? { code: -32602, message: "session id prefix is ambiguous", data: { code: "session_id_ambiguous", session_id: requested, candidates } }
             : { code: -32602, message: "session not found", data: { code: "session_not_found", session_id: requested } } });

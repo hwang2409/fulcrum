@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connectZeta } from "@fulcrum/zeta";
+import { openSession } from "../src/session";
 import { startFakeZeta } from "../scripts/fake-zeta";
 
 async function credentials(fake: Awaited<ReturnType<typeof startFakeZeta>>) {
@@ -152,8 +153,26 @@ test("fake zeta resolves unique session prefixes and reports ambiguous candidate
     await expect(client.request("resume", { session_id: "s-rec" })).resolves.toMatchObject({ session: { session_id: "s-reconnect" } });
     await expect(client.request("resume", { session_id: "s-ma" })).rejects.toMatchObject({
       code: -32602,
-      data: { code: "session_id_ambiguous", session_id: "s-ma", candidates: ["s-markdown", "s-many"] },
+      data: { code: "session_id_ambiguous", session_id: "s-ma", candidates: ["s-markdo", "s-many"] },
     });
+    client.close();
+  } finally {
+    await fake.close();
+  }
+});
+
+test("short ambiguous candidates select a full id through the session opener", async () => {
+  const fake = await startFakeZeta({ origins: [], live: false, ambiguousPrefix: true });
+  try {
+    const connection = await credentials(fake);
+    const client = await connectZeta({ url: connection.url, token: connection.token });
+    await expect(client.request("resume", { session_id: "abcd" })).rejects.toMatchObject({
+      data: { code: "session_id_ambiguous", candidates: ["abcd1111", "abcd2222"] },
+    });
+    const opened = await openSession(client, "abcd1111", undefined, undefined, { session: null, state: "idle", pending_approvals: [] });
+    await opened.complete;
+    expect(opened.id).toBe("abcd1111-full");
+    opened.lease.release();
     client.close();
   } finally {
     await fake.close();
