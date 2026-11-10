@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { shimGlobal } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot } from "react-dom/client";

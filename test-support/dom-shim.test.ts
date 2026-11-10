@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { shimGlobal, shimProperty } from "./dom-shim.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { domShimAlarm, shimGlobal, shimProperty } from "./dom-shim.js";
+domShimAlarm(import.meta.path);
 
 test("restores exact own descriptors", () => {
   const getter = () => 1;
@@ -42,3 +45,73 @@ test("shimGlobal restores the original descriptor", () => {
   restore();
   expect(Object.hasOwn(globalThis, name)).toBe(false);
 });
+
+const rows = [
+  ["alias", `const root = globalThis as any; root.__guard_slot = 1;`, "globalThis.__guard_slot"],
+  ["direct", `(globalThis as any).__guard_slot = 1;`, "globalThis.__guard_slot"],
+  ["parameter-default-alias", `((root: any = globalThis) => { root.__guard_slot = 1; })();`, "globalThis.__guard_slot"],
+  ["computed-name", `(globalThis as any)["__guard_slot"] = 1;`, "globalThis.__guard_slot"],
+  ["reflect", `Reflect.defineProperty(globalThis, "__guard_slot", { configurable: true, value: 1, writable: true });`, "globalThis.__guard_slot"],
+  ["delete", `Reflect.deleteProperty(globalThis, "__guard_slot");`, "globalThis.__guard_slot"],
+  ["set-prototype-of", `Object.setPrototypeOf((globalThis as any).__GuardConstructor.prototype, null);`, "__GuardConstructor.prototype.[[Prototype]]"],
+  ["added-global", `(globalThis as any).__guard_added = 1;`, "globalThis.__guard_added"],
+  ["ready-state-wrong-transition", `
+    let readyState: symbol | undefined;
+    for (const key of Reflect.ownKeys(document)) if (typeof key === "symbol" && key.description === "readyState") readyState = key;
+    if (!readyState) throw new Error("readyState symbol missing");
+    const descriptor = Object.getOwnPropertyDescriptor(document, readyState)!;
+    Object.defineProperty(document, readyState, { ...descriptor, value: "loading" });
+    if (document.readyState !== "loading") throw new Error("readyState mutation did not apply");
+  `, "globalThis.document.Symbol(readyState)"],
+  ["react-marker-replace", `(document as any)._reactListeningReview = false;`, "globalThis.document._reactListeningReview"],
+  ["affects-cache-replace", `replaceDocumentSymbol("affectsCache", ["leak"]);`, "globalThis.document.Symbol(affectsCache)"],
+  ["affects-computed-style-cache-replace", `replaceDocumentSymbol("affectsComputedStyleCache", ["leak"]);`, "globalThis.document.Symbol(affectsComputedStyleCache)"],
+  ["node-timing-replace", `Object.defineProperty(Performance.prototype, "nodeTiming", { configurable: true, value: 123, writable: true });`, "Performance.prototype.nodeTiming"],
+  ["prototype-method-replace", `
+    Object.defineProperty(Array.prototype, "map", { configurable: true, writable: true, value() { return []; } });
+  `, "Array.prototype.map"],
+  ["restored", `(globalThis as any).__guard_slot = 1; (globalThis as any).__guard_slot = 0;`, null],
+  ["local-window-fixture", `const window = { value: 0 }; window.value = 1;`, null],
+] as const;
+
+test("the public DOM shim alarm catches leaked runtime forms and names the exact property", () => {
+  const directory = mkdtempSync(join(import.meta.dir, "../packages/react/test/.dom-shim-cases-"));
+  try {
+    for (const [name, mutation, expected] of rows) {
+      const path = join(directory, `${name}.test.ts`);
+      writeFileSync(path, `
+import { afterAll, test } from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { domShimAlarm } from "../../../../test-support/dom-shim.js";
+
+GlobalRegistrator.register();
+Object.defineProperty(globalThis, "__guard_slot", { configurable: true, value: 0, writable: true });
+Object.defineProperty(globalThis, "__GuardConstructor", { configurable: true, value: function GuardConstructor() {} });
+Object.defineProperty(document, "_reactListeningReview", { configurable: true, enumerable: true, value: true, writable: true });
+function replaceDocumentSymbol(description: string, value: unknown) {
+  for (const key of Reflect.ownKeys(document)) {
+    if (typeof key !== "symbol" || key.description !== description) continue;
+    Object.defineProperty(document, key, { ...Object.getOwnPropertyDescriptor(document, key), value });
+    return;
+  }
+  throw new Error(description + " symbol missing");
+}
+domShimAlarm(import.meta.path);
+afterAll(() => GlobalRegistrator.unregister());
+
+test(${JSON.stringify(name)}, () => { ${mutation} });
+`);
+      const result = Bun.spawnSync({ cmd: [process.execPath, "test", path], stdout: "pipe", stderr: "pipe" });
+      const output = new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
+      if (expected) {
+        expect(`${name} exit=${result.exitCode}`).toBe(`${name} exit=1`);
+        expect(output).toContain(`${basename(path)} leaked DOM shim ${expected}`);
+      } else {
+        expect(`${name} exit=${result.exitCode}`).toBe(`${name} exit=0`);
+        expect(output).not.toContain("leaked DOM shim");
+      }
+    }
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}, 20_000);

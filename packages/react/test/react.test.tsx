@@ -3,7 +3,8 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { readdirSync, readFileSync } from "node:fs";
 import { act, Profiler, StrictMode, useState, type ComponentType, type ReactNode } from "react";
 import * as FulcrumReact from "../src/index.js";
