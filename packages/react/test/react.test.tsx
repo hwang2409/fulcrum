@@ -13,6 +13,7 @@ import { Markdown } from "../../markdown/src/react.js";
 import {
   announcementForItem,
   Approval,
+  Composer,
   Message,
   RunProvider,
   Timeline,
@@ -207,6 +208,106 @@ test("Message can opt user messages into markdown", () => {
     </RunProvider>,
   );
   expect(q('[data-part="md-strong"]').textContent).toBe("strong");
+});
+
+test("a markdown failure falls back to that message and retries changed content", () => {
+  const reports: unknown[][] = [];
+  restoreShims.push(shimProperty(console, "error", { configurable: true, value: (...args: unknown[]) => reports.push(args) }));
+  const BrokenMarkdown: ComponentType<{ source: string }> = ({ source }) => {
+    if (source === "broken **markdown**") throw new Error("parser failed");
+    return <strong data-part="test-markdown">{source}</strong>;
+  };
+  const { store, send } = setup([
+    { type: "message_commit", message_id: "before", message: message("before") },
+    { type: "message_commit", message_id: "broken", message: message("broken **markdown**") },
+    { type: "message_commit", message_id: "after", message: message("after") },
+  ]);
+  try {
+    mount(<RunProvider store={store}><Timeline virtual={false} renderers={{ message: ({ id }) => <Message id={id} markdown={BrokenMarkdown} /> }} /></RunProvider>);
+  } catch {}
+
+  expect([...container.querySelectorAll('[data-part="message"]')].map((row) => row.textContent)).toEqual(["before", "broken **markdown**", "after"]);
+  expect(q('[data-id="message:broken"] [data-markdown-fallback]').textContent).toBe("broken **markdown**");
+  expect(reports.filter(([message]) => message === "Markdown could not render message:broken.")).toHaveLength(1);
+
+  send({ type: "message_commit", message_id: "broken", message: message("fixed **markdown**") });
+  expect(q('[data-id="message:broken"] [data-part="test-markdown"]').textContent).toBe("fixed **markdown**");
+  expect(container.querySelector('[data-id="message:broken"] [data-markdown-fallback]')).toBeNull();
+});
+
+test("a failing non-virtual row keeps its siblings and composer mounted", () => {
+  restoreShims.push(shimProperty(console, "error", { configurable: true, value: () => {} }));
+  const BrokenRow = ({ id }: { id: string }) => {
+    if (id === "message:broken") throw new Error("row failed");
+    return <Message id={id} />;
+  };
+  const { store } = setup([
+    { type: "message_commit", message_id: "before", message: message("before") },
+    { type: "message_commit", message_id: "broken", message: message("broken") },
+    { type: "message_commit", message_id: "after", message: message("after") },
+  ]);
+  try {
+    mount(<RunProvider store={store}><Timeline virtual={false} renderers={{ message: BrokenRow }} /><Composer state="idle" onSubmit={() => {}} /></RunProvider>);
+  } catch {}
+
+  expect([...container.querySelectorAll('[data-part="message"]')].map((row) => row.textContent)).toEqual(["before", "after"]);
+  expect(q('[data-row-error="message:broken"]').textContent).toBe("this item could not be shown · message:broken");
+  expect(q('[data-part="composer"]')).toBeTruthy();
+});
+
+test("a failing virtual row is measured, keeps its siblings, and retries when its item changes", () => {
+  const reports: unknown[][] = [];
+  restoreShims.push(shimProperty(console, "error", { configurable: true, value: (...args: unknown[]) => reports.push(args) }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") }));
+  const positions = new WeakMap<HTMLElement, number>();
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, value); },
+  }));
+  const frames: FrameRequestCallback[] = [];
+  restoreShims.push(shimGlobal("requestAnimationFrame", ((callback: FrameRequestCallback) => (frames.push(callback), frames.length)) as typeof requestAnimationFrame));
+  restoreShims.push(shimGlobal("cancelAnimationFrame", (() => {}) as typeof cancelAnimationFrame));
+  const rowObservers: Array<{ callback: ResizeObserverCallback; element: Element }> = [];
+  class MeasuringResizeObserver implements ResizeObserver {
+    constructor(private callback: ResizeObserverCallback) {}
+    disconnect() {}
+    observe(element: Element) {
+      if (element instanceof HTMLElement && element.dataset.virtualId) rowObservers.push({ callback: this.callback, element });
+    }
+    unobserve() {}
+  }
+  restoreShims.push(shimGlobal("ResizeObserver", MeasuringResizeObserver));
+  const ThrowingRow = ({ id }: { id: string }) => {
+    const item = useItem(id);
+    if (item?.type === "message" && item.message.content[0]?.text === "broken") throw new Error("row failed");
+    return <Message id={id} />;
+  };
+  const { store, send } = setup([
+    { type: "message_commit", message_id: "before", message: message("before") },
+    { type: "message_commit", message_id: "broken", message: message("broken") },
+    { type: "message_commit", message_id: "after", message: message("after") },
+  ]);
+  try {
+    mount(<RunProvider store={store}><Timeline virtual renderers={{ message: ThrowingRow }} /></RunProvider>);
+  } catch {}
+
+  expect(q('[data-row-error="message:broken"]').textContent).toBe("this item could not be shown · message:broken");
+  expect(q('[data-virtual-id="message:before"] [data-part="message"]').textContent).toBe("before");
+  expect(q('[data-virtual-id="message:after"] [data-part="message"]').textContent).toBe("after");
+  const failedRow = q('[data-virtual-id="message:broken"]');
+  const observer = rowObservers.find(({ element }) => element === failedRow)!;
+  act(() => {
+    observer.callback([{ target: failedRow, borderBoxSize: [{ blockSize: 44 }] } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+    while (frames.length) frames.shift()!(performance.now());
+  });
+  expect(Number.parseFloat(q('[data-part="timeline"]').style.height)).toBe(188);
+  expect(reports.filter(([message]) => message === "Timeline could not render message:broken.")).toHaveLength(1);
+
+  send({ type: "message_commit", message_id: "broken", message: message("recovered") });
+  expect(q('[data-virtual-id="message:broken"] [data-part="message"]').textContent).toBe("recovered");
+  expect(container.querySelector('[data-row-error="message:broken"]')).toBeNull();
 });
 
 test("a timeline row uses one keyed subscription and ignores output deltas", () => {
