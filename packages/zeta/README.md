@@ -8,6 +8,12 @@
 
 `CommandClient.features` is required. `runSlashCommand` fails closed when `model_input_ids` was not negotiated: it sends no `slash_run` request and returns `{ kind: "unavailable", feature: "model_input_ids" }`. This prevents an older server from returning the resolved hidden prompt as text. `listSlashCommands` remains available because `slash_list` returns catalog metadata, not model input. `sendModelInput` sends an opaque input ID returned by a negotiated server.
 
+## path completion
+
+`PATH_COMPLETION_FEATURE` is the `path_completion` hello feature. `completePath(client, sessionId, textBeforeCursor, options?)` sends at most one `path_complete` request and never retries. A missing feature returns `unavailable` without sending; an empty session ID, unpaired UTF-16 surrogate, or input larger than 4,096 UTF-8 bytes returns `malformed` without sending. Request aborts reject with `AbortError`, including a signal that was already aborted.
+
+Successful calls return `entries`; each entry preserves the server's insertion text, display text, and file or directory kind. Its non-positive `startPosition` is converted from Zeta's Unicode code-point offset to a UTF-16 code-unit offset, ready for JavaScript slicing. Observer access returns `observer`; `-32601` returns `unavailable`; `-32602` and malformed response envelopes or rows return `malformed`. Other request errors reject unchanged.
+
 ## session grants
 
 `SESSION_GRANTS_FEATURE` is the feature name to request during the hello handshake. `parseSessionGrants`, `parseRevokeSessionGrants`, and `parseSessionGrantsChanged` validate session-grant snapshots and events without throwing; malformed string rows are dropped. `getSessionGrants(client)` reads the active connection's approval policy. `revokeSessionGrant(client, grant)` removes one exact grant, and `clearSessionGrants(client)` removes all session grants. `isSessionGrantError` recognizes the three session-grant error data codes from zeta.
