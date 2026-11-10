@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
 import { PendingInline } from "../src/pending-inline.js";
+import { expectSinglePublicationLocation } from "./publication-reachability.js";
 
 // Gates for the pending-line rule: a character the user has seen never disappears, a raw marker may
 // later become a style, and only the fixed suffix may be provisional.
@@ -51,6 +52,7 @@ function stream(source: string, sizes: (step: number) => number, onFrame?: (bloc
     document.append(source.slice(offset, offset + size));
     offset = Math.min(source.length, offset + size);
     const blocks = document.render();
+    expectSinglePublicationLocation(blocks, `offset ${offset}`);
     const current = visible(blocks);
     if (!subsequence(unmarked(previous), unmarked(current))) throw new Error(`text vanished at ${offset}: ${lostAt(unmarked(previous), unmarked(current))}`);
     if (checkFinal && !subsequence(unmarked(visible(blocks, false)), unmarked(final))) throw new Error(`stable text not in final at ${offset} in ${JSON.stringify(source.slice(0, offset + 40))}: ${JSON.stringify(visible(blocks, false).slice(-120))}`);

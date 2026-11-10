@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown, type Block, type Inline } from "../src/index.js";
 import { PendingInline } from "../src/pending-inline.js";
+import { expectSinglePublicationLocation } from "./publication-reachability.js";
 
 const inlineText = (nodes: readonly Inline[]): string => nodes.map((node) =>
   node.type === "text" || node.type === "code" ? node.value
@@ -34,7 +35,9 @@ test("plain intervals are owned before a later opener", () => {
   const document = createStreamingDocument();
   for (let offset = 0; offset < source.length; offset++) {
     document.append(source[offset]!);
-    const ids = [...inlineText(paragraph(document.render())).matchAll(/q(\d+)z/g)].map((match) => Number(match[1]));
+    const frame = document.render();
+    expectSinglePublicationLocation(frame, `seed-7 offset ${offset + 1}`);
+    const ids = [...inlineText(paragraph(frame)).matchAll(/q(\d+)z/g)].map((match) => Number(match[1]));
     expect(ids.every((id, index) => index === 0 || id > ids[index - 1]!), `offset ${offset + 1}: ${ids.join(",")}`).toBe(true);
     if (offset + 1 >= 220 && source.slice(0, offset + 1).includes("q27z")) expect(ids, `q27z at offset ${offset + 1}`).toContain(27);
   }
@@ -62,12 +65,14 @@ test("live view does not parse or scan owned source", () => {
 test("an unmatched multiline code owner keeps literal checkpoints and converts the same tail", () => {
   const document = createStreamingDocument();
   document.append("`a  \n");
+  expectSinglePublicationLocation(document.render(), "unmatched line checkpoint");
   expect(paragraph(document.render()), "unmatched line checkpoint").toEqual([
     { type: "text", value: "`a" },
     { type: "break" },
   ]);
 
   document.append("b`");
+  expectSinglePublicationLocation(document.render(), "matching closer");
   expect(paragraph(document.render()), "matching closer converts the owner").toEqual([{ type: "code", value: "a   b" }]);
   expect(document.render()).toEqual(parseMarkdown("`a  \nb`"));
 });
@@ -75,12 +80,14 @@ test("an unmatched multiline code owner keeps literal checkpoints and converts t
 test("a nested literal code span disappears into its outer code owner without duplication", () => {
   const document = createStreamingDocument();
   document.append("``a  \n");
+  expectSinglePublicationLocation(document.render(), "outer code line one");
   expect(paragraph(document.render()), "line one").toEqual([
     { type: "text", value: "``a" },
     { type: "break" },
   ]);
 
   document.append("`b`\n");
+  expectSinglePublicationLocation(document.render(), "outer code line two");
   expect(paragraph(document.render()), "inner literal role").toEqual([
     { type: "text", value: "``a" },
     { type: "break" },
@@ -89,6 +96,7 @@ test("a nested literal code span disappears into its outer code owner without du
   ]);
 
   document.append("  c``");
+  expectSinglePublicationLocation(document.render(), "outer code close");
   expect(paragraph(document.render()), "outer conversion").toEqual([{ type: "code", value: "a   `b`   c" }]);
   expect(document.render()).toEqual(parseMarkdown("``a  \n`b`\n  c``"));
 });
