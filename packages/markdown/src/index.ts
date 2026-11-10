@@ -1302,7 +1302,8 @@ export function createStreamingDocument(): StreamingDocument {
         // that continues the paragraph makes it a hard break; any other line closes the paragraph, so it is text now.
         if (openParagraph && !continuesParagraph && !pendingMarkerLine(pending) && /(?<!\\)(?:\\\\)*\\$/.test(openParagraph.source)) {
           const paragraph = tailParagraph(overlay)!;
-          paragraph.children = [...paragraph.children, { type: "text", value: "\\" }];
+          const children = paragraph.children.at(-1)?.type === "break" ? paragraph.children.slice(0, -1) : paragraph.children;
+          paragraph.children = [...children, { type: "text", value: "\\" }];
         }
         // Every growing line shows as sent: as the open table's next row, or as paragraph text inside the containers it
         // continues. A pipe in it is text until a delimiter row ends below it (the resolver's one table rule).
