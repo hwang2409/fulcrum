@@ -86,19 +86,26 @@ test("resolves at newest establishment and completes one oldest-first backfill",
   opened.lease.release();
 });
 
-test("one pair shares its in-flight store while equal child ids under different owners do not", async () => {
+test("one pair shares its in-flight store and progress while equal child ids under different owners do not", async () => {
   let requests = 0;
   const fake = client(["child_run_history"], ({ params }) => {
     requests++;
     return page([row(`u-${params?.session_id}`, String(params?.session_id))], null);
   });
+  const firstProgress: unknown[] = [];
+  const secondProgress: unknown[] = [];
 
-  const [first, second] = await Promise.all([openChildRun(fake.value, key), openChildRun(fake.value, key)]);
+  const [first, second] = await Promise.all([
+    openChildRun(fake.value, key, { onProgress: (progress) => firstProgress.push(progress) }),
+    openChildRun(fake.value, key, { onProgress: (progress) => secondProgress.push(progress) }),
+  ]);
   const other = await openChildRun(fake.value, { sessionId: "other", runId: key.runId });
 
   expect(requests).toBe(2);
   expect(first.lease.store).toBe(second.lease.store);
   expect(other.lease.store).not.toBe(first.lease.store);
+  expect(firstProgress).toEqual([{ messages: 1, complete: true, restart: 0 }]);
+  expect(secondProgress).toEqual(firstProgress);
   await Promise.all([first.complete, second.complete, other.complete]);
   first.lease.release();
   second.lease.release();

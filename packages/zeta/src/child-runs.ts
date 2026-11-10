@@ -193,6 +193,7 @@ export function sendChildRun(
 type ChildHistoryEntry = {
   readonly store: ReturnType<typeof createRunStore>;
   readonly controller: AbortController;
+  readonly progress: Set<(progress: ChildRunHistoryProgress) => void>;
   holders: number;
   opening: Promise<Omit<OpenChildRunResult, "lease">>;
 };
@@ -228,15 +229,28 @@ function entryMap(client: ZetaClient, sessionId: string) {
   return runs;
 }
 
+function deleteChildHistoryEntry(
+  client: ZetaClient,
+  key: ChildRunKey,
+  entry: ChildHistoryEntry,
+  runs: Map<string, ChildHistoryEntry>,
+) {
+  if (runs.get(key.runId) !== entry) return;
+  runs.delete(key.runId);
+  if (runs.size > 0) return;
+  const owners = childHistory.get(client);
+  owners?.delete(key.sessionId);
+  if (owners?.size === 0) childHistory.delete(client);
+}
+
 function createChildHistoryEntry(
   client: ZetaClient,
   key: ChildRunKey,
-  options: Pick<OpenChildRunOptions, "onProgress">,
   runs: Map<string, ChildHistoryEntry>,
 ): ChildHistoryEntry {
   const store = createRunStore();
   const controller = new AbortController();
-  const entry: ChildHistoryEntry = { store, controller, holders: 0, opening: undefined as never };
+  const entry: ChildHistoryEntry = { store, controller, progress: new Set(), holders: 0, opening: undefined as never };
   store.beginHistory();
   entry.opening = (async () => {
     const request = async (cursor: BackwardHistoryCursor, signal: AbortSignal) => {
@@ -248,7 +262,7 @@ function createChildHistoryEntry(
           ...(cursor.historyValidator ? { history_validator: cursor.historyValidator } : {}),
         }, { signal });
       } catch (error) {
-        mappedHistoryError(error);
+        return mappedHistoryError(error);
       }
     };
     try {
@@ -258,19 +272,20 @@ function createChildHistoryEntry(
           const events = fromZetaHistory(snapshot.cause === "older" ? snapshot.pageRows : snapshot.rows);
           if (snapshot.cause === "older") store.prepend(events);
           else store.resync(events);
-          options.onProgress?.({ messages: snapshot.rows.length, complete: snapshot.complete, restart: snapshot.restart });
+          const progress = { messages: snapshot.rows.length, complete: snapshot.complete, restart: snapshot.restart };
+          for (const listener of entry.progress) listener(progress);
         },
       });
       const complete = opened.complete.then(() => undefined, mappedHistoryError).finally(() => store.endHistory());
       return { complete };
     } catch (error) {
       store.endHistory();
-      mappedHistoryError(error);
+      return mappedHistoryError(error);
     }
   })();
   entry.opening.catch(() => {
     if (entry.holders === 0 && runs.get(key.runId) === entry) {
-      runs.delete(key.runId);
+      deleteChildHistoryEntry(client, key, entry, runs);
       store.dispose();
     }
   });
@@ -288,16 +303,19 @@ export async function openChildRun(
   if (options.signal?.aborted) throw abortReason(options.signal);
 
   const runs = entryMap(client, key.sessionId);
-  const entry = runs.get(key.runId) ?? createChildHistoryEntry(client, key, options, runs);
+  const entry = runs.get(key.runId) ?? createChildHistoryEntry(client, key, runs);
   runs.set(key.runId, entry);
+  const progress = options.onProgress ? (value: ChildRunHistoryProgress) => options.onProgress!(value) : undefined;
+  if (progress) entry.progress.add(progress);
   entry.holders++;
   let released = false;
   const release = () => {
     if (released) return;
     released = true;
+    if (progress) entry.progress.delete(progress);
     entry.holders--;
     if (entry.holders !== 0 || runs.get(key.runId) !== entry) return;
-    runs.delete(key.runId);
+    deleteChildHistoryEntry(client, key, entry, runs);
     entry.controller.abort();
     entry.store.dispose();
   };
