@@ -63,10 +63,13 @@ const snapshotTargets = (): TargetSnapshot[] => {
 };
 
 const isExpectedLifecycleProperty = (snapshot: TargetSnapshot, name: PropertyKey) => {
+  // node:perf_hooks installs these Bun-owned descriptors lazily; they are not test shims.
+  if (snapshot.owner.endsWith(".Performance.prototype")
+    && ["nodeTiming", "timerify", "eventLoopUtilization"].includes(String(name))) return true;
   if (!snapshot.owner.endsWith(".document")) return false;
   // happy-dom and React change these internal document-state slots during normal work; they are not shim surfaces.
   return typeof name === "symbol"
-    ? name.description === "readyState" || name.description === "affectsCache"
+    ? ["readyState", "affectsCache", "affectsComputedStyleCache"].includes(name.description ?? "")
     : name.startsWith("_reactListening");
 };
 
