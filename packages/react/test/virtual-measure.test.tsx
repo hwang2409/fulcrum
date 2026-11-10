@@ -3,6 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, expect, test } from "bun:test";
+import { shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
@@ -14,38 +15,23 @@ const commits = (prefix: string, count: number): RunEvent[] => Array.from({ leng
   { type: "message_commit", message_id: `${prefix}-${index}`, message: { role: "assistant", content: [{ type: "text", text: `${prefix}-${index}` }] } }
 ));
 
-const restoreProperty = (target: object, key: PropertyKey, descriptor?: PropertyDescriptor) => {
-  if (descriptor) Object.defineProperty(target, key, descriptor);
-  else Reflect.deleteProperty(target, key);
-};
-
 test("two row growths before measurement keep a pinned reader at the physical end", async () => {
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
   const frames: FrameRequestCallback[] = [];
-  const saved = {
-    ResizeObserver: Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver"),
-    requestAnimationFrame: Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame"),
-    cancelAnimationFrame: Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame"),
-  };
-  const dimensions = {
-    clientHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight"),
-    scrollHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight"),
-    scrollTop: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop"),
-  };
   const positions = new WeakMap<HTMLElement, number>();
   let physicalHeight = 0;
-  globalThis.ResizeObserver = class {
+  const restoreResizeObserver = shimGlobal("ResizeObserver", class {
     private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
     constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
     observe(element: Element) { this.entry.observed.add(element); }
     unobserve(element: Element) { this.entry.observed.delete(element); }
     disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  globalThis.requestAnimationFrame = (callback) => frames.push(callback);
-  globalThis.cancelAnimationFrame = () => {};
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => physicalHeight });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  } as unknown as typeof ResizeObserver);
+  const restoreRequestFrame = shimGlobal("requestAnimationFrame", (callback) => frames.push(callback));
+  const restoreCancelFrame = shimGlobal("cancelAnimationFrame", () => {});
+  const restoreClientHeight = shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  const restoreScrollHeight = shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => physicalHeight });
+  const restoreScrollTop = shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
@@ -78,8 +64,9 @@ test("two row growths before measurement keep a pinned reader at the physical en
     expect(physicalHeight - host.clientHeight - host.scrollTop).toBeLessThanOrEqual(4);
 
     const wheel = new Event("wheel");
-    Object.defineProperty(wheel, "deltaY", { value: -100 });
+    const restoreDeltaY = shimProperty(wheel, "deltaY", { value: -100 });
     act(() => host.dispatchEvent(wheel));
+    restoreDeltaY();
     host.scrollTop = physicalHeight - host.clientHeight - 120;
     act(() => host.dispatchEvent(new Event("scroll")));
     act(() => store.dispatch(commits("detached", 1)[0]!));
@@ -90,28 +77,30 @@ test("two row growths before measurement keep a pinned reader at the physical en
   } finally {
     act(() => root.unmount());
     container.remove();
-    restoreProperty(globalThis, "ResizeObserver", saved.ResizeObserver);
-    restoreProperty(globalThis, "requestAnimationFrame", saved.requestAnimationFrame);
-    restoreProperty(globalThis, "cancelAnimationFrame", saved.cancelAnimationFrame);
-    for (const [key, descriptor] of Object.entries(dimensions)) restoreProperty(HTMLElement.prototype, key, descriptor);
+    restoreScrollTop();
+    restoreScrollHeight();
+    restoreClientHeight();
+    restoreCancelFrame();
+    restoreRequestFrame();
+    restoreResizeObserver();
   }
 });
 
 test("same-run replay drops the cached height of a changed streamed row", () => {
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
   const frames: FrameRequestCallback[] = [];
-  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
-  globalThis.ResizeObserver = class {
-    private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
-    constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
-    observe(element: Element) { this.entry.observed.add(element); }
-    unobserve(element: Element) { this.entry.observed.delete(element); }
-    disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
-  globalThis.cancelAnimationFrame = () => {};
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  const restores = [
+    shimGlobal("ResizeObserver", class {
+      private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+      constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+      observe(element: Element) { this.entry.observed.add(element); }
+      unobserve(element: Element) { this.entry.observed.delete(element); }
+      disconnect() { this.entry.observed.clear(); }
+    } as unknown as typeof ResizeObserver),
+    shimGlobal("requestAnimationFrame", (callback) => (frames.push(callback), frames.length)),
+    shimGlobal("cancelAnimationFrame", () => {}),
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }),
+  ];
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -139,29 +128,25 @@ test("same-run replay drops the cached height of a changed streamed row", () => 
   } finally {
     if (!unmounted) act(() => root.unmount());
     container.remove();
-    globalThis.ResizeObserver = saved.ResizeObserver;
-    globalThis.requestAnimationFrame = saved.raf;
-    globalThis.cancelAnimationFrame = saved.caf;
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+    restores.reverse().forEach((restore) => restore());
   }
 });
 
 test("a pinned late row measurement re-applies the bottom after the browser shifts the range", () => {
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
   const frames: FrameRequestCallback[] = [];
-  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
-  globalThis.ResizeObserver = class {
-    private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
-    constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
-    observe(element: Element) { this.entry.observed.add(element); }
-    unobserve(element: Element) { this.entry.observed.delete(element); }
-    disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
-  globalThis.cancelAnimationFrame = () => {};
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  const restores = [
+    shimGlobal("ResizeObserver", class {
+      private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+      constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+      observe(element: Element) { this.entry.observed.add(element); }
+      unobserve(element: Element) { this.entry.observed.delete(element); }
+      disconnect() { this.entry.observed.clear(); }
+    } as unknown as typeof ResizeObserver),
+    shimGlobal("requestAnimationFrame", (callback) => (frames.push(callback), frames.length)),
+    shimGlobal("cancelAnimationFrame", () => {}),
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }),
+  ];
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -176,8 +161,10 @@ test("a pinned late row measurement re-applies the bottom after the browser shif
     // can report after reconnect, so the row observer must take the reader to the DOM end.
     let scrollTop = 201 * 72 + 16 - 600;
     const scrollHeight = 201 * 72 + 16 + 2;
-    Object.defineProperty(scroll!, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } });
-    Object.defineProperty(scroll!, "scrollHeight", { configurable: true, get: () => scrollHeight });
+    restores.push(
+      shimProperty(scroll!, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } }),
+      shimProperty(scroll!, "scrollHeight", { configurable: true, get: () => scrollHeight }),
+    );
     const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")));
     expect(rows).toBeDefined();
     const target = [...rows!.observed][0]!;
@@ -191,11 +178,7 @@ test("a pinned late row measurement re-applies the bottom after the browser shif
   } finally {
     act(() => root.unmount());
     container.remove();
-    globalThis.ResizeObserver = saved.ResizeObserver;
-    globalThis.requestAnimationFrame = saved.raf;
-    globalThis.cancelAnimationFrame = saved.caf;
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+    restores.reverse().forEach((restore) => restore());
   }
 });
 
@@ -204,18 +187,16 @@ test("a row resize reported just before a resync replaces its id is not measured
   // Timeline has two observers (rows and the viewport); keep each one's callback and targets.
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
   const frames: FrameRequestCallback[] = [];
-  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
-  globalThis.ResizeObserver = class {
+  const restoreResizeObserver = shimGlobal("ResizeObserver", class {
     private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
     constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
     observe(element: Element) { this.entry.observed.add(element); }
     unobserve(element: Element) { this.entry.observed.delete(element); }
     disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  globalThis.requestAnimationFrame = (callback) => frames.push(callback);
-  globalThis.cancelAnimationFrame = () => {};
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  } as unknown as typeof ResizeObserver);
+  const restoreRequestFrame = shimGlobal("requestAnimationFrame", (callback) => frames.push(callback));
+  const restoreCancelFrame = shimGlobal("cancelAnimationFrame", () => {});
+  const restoreClientHeight = shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -234,26 +215,25 @@ test("a row resize reported just before a resync replaces its id is not measured
   } finally {
     act(() => root.unmount());
     container.remove();
-    globalThis.ResizeObserver = saved.ResizeObserver;
-    globalThis.requestAnimationFrame = saved.raf;
-    globalThis.cancelAnimationFrame = saved.caf;
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+    restoreClientHeight();
+    restoreCancelFrame();
+    restoreRequestFrame();
+    restoreResizeObserver();
   }
 });
 
 test("touch movement wins over an owned end write when the row observer arrives first", () => {
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
-  const saved = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = class {
-    private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
-    constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
-    observe(element: Element) { this.entry.observed.add(element); }
-    unobserve(element: Element) { this.entry.observed.delete(element); }
-    disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  const restores = [
+    shimGlobal("ResizeObserver", class {
+      private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+      constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+      observe(element: Element) { this.entry.observed.add(element); }
+      unobserve(element: Element) { this.entry.observed.delete(element); }
+      disconnect() { this.entry.observed.clear(); }
+    } as unknown as typeof ResizeObserver),
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }),
+  ];
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -264,8 +244,10 @@ test("touch movement wins over an owned end write when the row observer arrives 
     const scroll = container.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
     const scrollHeight = () => Number.parseFloat(container.querySelector<HTMLElement>('[data-part="timeline"]')!.style.height) + 16;
     let scrollTop = scrollHeight() - 600;
-    Object.defineProperty(scroll, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } });
-    Object.defineProperty(scroll, "scrollHeight", { configurable: true, get: scrollHeight });
+    restores.push(
+      shimProperty(scroll, "scrollTop", { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } }),
+      shimProperty(scroll, "scrollHeight", { configurable: true, get: scrollHeight }),
+    );
     act(() => scroll.dispatchEvent(new Event("touchstart")));
     scrollTop -= 30;
     const rows = observers.find(({ observed }) => [...observed].some((element) => element.hasAttribute("data-virtual-id")))!;
@@ -278,37 +260,32 @@ test("touch movement wins over an owned end write when the row observer arrives 
   } finally {
     act(() => root.unmount());
     container.remove();
-    globalThis.ResizeObserver = saved;
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
+    restores.reverse().forEach((restore) => restore());
   }
 });
 
 test("host removal invalidates stale ResizeObserver completion", () => {
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
-  const saved = globalThis.ResizeObserver;
-  const savedMutation = globalThis.MutationObserver;
   const mutations: MutationCallback[] = [];
-  globalThis.MutationObserver = class {
-    constructor(callback: MutationCallback) { mutations.push(callback); }
-    observe() {}
-    disconnect() {}
-    takeRecords() { return []; }
-  } as unknown as typeof MutationObserver;
-  globalThis.ResizeObserver = class {
-    private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
-    constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
-    observe(element: Element) { this.entry.observed.add(element); }
-    unobserve(element: Element) { this.entry.observed.delete(element); }
-    disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, value); } });
+  const restores = [
+    shimGlobal("MutationObserver", class {
+      constructor(callback: MutationCallback) { mutations.push(callback); }
+      observe() {}
+      disconnect() {}
+      takeRecords() { return []; }
+    } as unknown as typeof MutationObserver),
+    shimGlobal("ResizeObserver", class {
+      private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+      constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
+      observe(element: Element) { this.entry.observed.add(element); }
+      unobserve(element: Element) { this.entry.observed.delete(element); }
+      disconnect() { this.entry.observed.clear(); }
+    } as unknown as typeof ResizeObserver),
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }),
+    shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") }),
+    shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, value); } }),
+  ];
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -334,7 +311,7 @@ test("host removal invalidates stale ResizeObserver completion", () => {
     expect(ref.current).toBe(newHost);
     const newTop = newHost.scrollTop;
     host.scrollTop = 1_000;
-    Object.defineProperty(host, "scrollHeight", { configurable: true, get: () => 50_000 });
+    restores.push(shimProperty(host, "scrollHeight", { configurable: true, get: () => 50_000 }));
     act(() => {
       host.dispatchEvent(new Event("scroll"));
       host.dispatchEvent(new Event("touchend"));
@@ -356,10 +333,6 @@ test("host removal invalidates stale ResizeObserver completion", () => {
   } finally {
     act(() => root.unmount());
     container.remove();
-    globalThis.ResizeObserver = saved;
-    globalThis.MutationObserver = savedMutation;
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollTop;
+    restores.reverse().forEach((restore) => restore());
   }
 });

@@ -46,11 +46,27 @@ export type Block =
 
 type ParsedBlock = { block: Block; map: [number, number]; closed: boolean };
 type Environment = { references?: Record<string, { href: string; title: string }> };
+type ExactCodeCloserScanner = {
+  position: number;
+  run?: { start: number; length: number };
+  resolvedEnd?: number;
+};
+
+type ResolvedCodeSuffix = {
+  prefix: Inline[];
+  start: number;
+  nodes: Inline[];
+  pending?: PendingInline;
+};
+
 type PendingInlineState = {
   offset: number;
   lineLength: number;
   continues: boolean;
   referenceCount: number;
+  openCode?: { source: string; index: number; length: number };
+  closer?: ExactCodeCloserScanner;
+  resolvedSuffix?: ResolvedCodeSuffix;
 };
 
 const pendingInlineMatches = (state: PendingInlineState | undefined, offset: number, continues: boolean, referenceCount: number) =>
@@ -287,6 +303,56 @@ const unmatchedCodeSpan = (source: string) => {
   return opener;
 };
 
+function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, source: () => string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
+  if (state.pending) {
+    const copied = state.pending.copiedCharacters;
+    state.pending.append(delta);
+    return state.pending.copiedCharacters - copied;
+  }
+  if (/^[\p{L}\p{N} ]*$/u.test(delta)) {
+    const last = state.nodes.at(-1);
+    if (last?.type === "text" && state.nodes.length > state.prefix.length) last.value += delta;
+    else if (delta) state.nodes.push({ type: "text", value: delta });
+    return delta.length;
+  }
+  state.pending = new PendingInline(parse, undefined, state.prefix);
+  state.pending.append(source());
+  state.nodes = state.pending.nodes;
+  return state.pending.copiedCharacters;
+}
+
+function scanExactCodeCloser(scanner: ExactCodeCloserScanner, source: string, markerLength: number, priorLength: number) {
+  let scanned = 0;
+  while (scanner.position < source.length && scanner.resolvedEnd === undefined) {
+    const character = source[scanner.position]!;
+    if (scanner.run) {
+      if (character === "`") {
+        scanner.run.length++;
+        scanner.position++;
+        scanned++;
+        continue;
+      }
+      scanned++;
+      if (scanner.run.length === markerLength) {
+        scanner.resolvedEnd = scanner.run.start + scanner.run.length;
+        break;
+      }
+      scanner.run = undefined;
+      continue;
+    }
+    if (character === "`") {
+      scanner.run = { start: scanner.position, length: 0 };
+      continue;
+    }
+    scanner.position++;
+    scanned++;
+  }
+  if (scanner.resolvedEnd === undefined && scanner.run && scanner.position === source.length
+    && scanner.run.length === markerLength && scanner.run.start > priorLength)
+    scanner.resolvedEnd = scanner.position;
+  return scanned;
+}
+
 // An open span's edge spaces hide: the closer may strip them, and a space that shows must never disappear.
 const codeSpanValue = (value: string) => value.replace(/\n/g, " ").replace(/^ | $/g, "");
 
@@ -423,7 +489,7 @@ type SafeInlineContent = { source: string; openCode?: string };
 // backslash waits one character on any line: after a line end, that character decides a hard break or text.
 function withoutTrailingLookahead(source: string, growing: boolean) {
   const backslashes = /\\+$/.exec(source)?.[0].length ?? 0;
-  if (backslashes % 2) return source.slice(0, -1);
+  if (growing && backslashes % 2) return source.slice(0, -1);
   if (!growing) return source;
   // The longest named entity has 31 characters after `&`, a numeric one at most 7 digits or 6 hex digits.
   const entity = /&(?:#(?:x[0-9a-f]{0,6}|[0-9]{0,7})?|[a-z][a-z0-9]{0,31})?$/i.exec(source);
@@ -447,8 +513,18 @@ function safeInlineContent(source: string, growing: boolean): SafeInlineContent 
 /** `growing`: the source's last line may still grow; a streaming paragraph's ended lines pass false. */
 function parseInline(source: string, streaming: boolean, environment: Environment = {}, growing = streaming) {
   const safe = streaming ? safeInlineContent(source, growing) : { source };
-  const tokens = markdown.parseInline(safe.source, environment);
+  // CommonMark decides trailing spaces and backslashes only when another line starts. A committed streaming line needs
+  // that decision now, so parse one harmless continuation and remove only it and its soft break afterward.
+  const committed = streaming && !growing;
+  const tokens = markdown.parseInline(committed ? `${safe.source}\na` : safe.source, environment);
   const nodes = inlineNodes(tokens[0]?.children ?? []);
+  if (committed) {
+    const last = nodes.at(-1);
+    if (last?.type === "text" && last.value.endsWith("a")) {
+      last.value = last.value.slice(0, -1).replace(/\n$/, "");
+      if (!last.value) nodes.pop();
+    }
+  }
   // An unclosed span may stay literal, so its preview shows only the text its content renders as markdown.
   if (safe.openCode) {
     const literal = inlineNodes(markdown.parseInline(withoutOpenSyntax(literalBrackets(safe.openCode), growing), environment)[0]?.children ?? []);
@@ -1117,8 +1193,9 @@ export function createStreamingDocument(): StreamingDocument {
       // line itself shows its backticks as sent (an ended line hides nothing).
       const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
       const after = open && openParagraph!.source[open.index + open.length];
-      const prefix = continues && openParagraph
-        ? [...openParagraph.block.children, { type: "text" as const, value: "\n" }]
+      const prior = openParagraph?.block.children;
+      const prefix = continues && prior
+        ? [...prior, ...(prior.at(-1)?.type === "break" ? [] : [{ type: "text" as const, value: "\n" }])]
         : undefined;
       pendingInline = new PendingInline(
         parsePending,
@@ -1130,15 +1207,55 @@ export function createStreamingDocument(): StreamingDocument {
         lineLength: 0,
         continues,
         referenceCount: resolver.references.size,
+        openCode: open && { source: openParagraph!.source, ...open },
+        closer: open && { position: 0 },
       };
+    }
+    const state = pendingInlineState!;
+    const currentLine = line.slice(state.offset);
+    const lineLength = currentLine.length;
+    let resolvedNow = false;
+    const closer = state.closer;
+    if (state.openCode && closer && closer.resolvedEnd === undefined) {
+      const resolvedLine = resolver.pendingLeafContent;
+      previewScannedCharacters += resolvedLine.length;
+      const priorLength = resolvedLine.length - (currentLine.length - state.lineLength);
+      previewScannedCharacters += scanExactCodeCloser(closer, resolvedLine, state.openCode.length, priorLength);
+      if (closer.resolvedEnd !== undefined) {
+        const end = closer.resolvedEnd;
+        const resolvedPrefix = resolvedLine.slice(0, end);
+        previewScannedCharacters += resolvedPrefix.length;
+        const prefix = parsePending(`${state.openCode.source}\n${resolvedPrefix}`, true, true);
+        state.resolvedSuffix = { prefix, start: end, nodes: prefix.slice() };
+        const suffix = resolvedLine.slice(end);
+        previewScannedCharacters += suffix.length;
+        copiedCharacters += appendResolvedCodeSuffix(state.resolvedSuffix, suffix, () => suffix, parsePending);
+        resolvedNow = true;
+      }
+    }
+    previewScannedCharacters += lineLength - state.lineLength;
+    if (state.resolvedSuffix) {
+      if (!resolvedNow) {
+        copiedCharacters += appendResolvedCodeSuffix(
+          state.resolvedSuffix,
+          currentLine.slice(state.lineLength),
+          () => {
+            const resolvedLine = resolver.pendingLeafContent;
+            previewScannedCharacters += resolvedLine.length;
+            const suffix = resolvedLine.slice(state.resolvedSuffix!.start);
+            previewScannedCharacters += suffix.length;
+            return suffix;
+          },
+          parsePending,
+        );
+      }
+      state.lineLength = lineLength;
+      return state.resolvedSuffix.nodes;
     }
     const inline = pendingInline!;
     const copied = inline.copiedCharacters;
-    const state = pendingInlineState!;
-    const lineLength = line.length - state.offset;
-    previewScannedCharacters += lineLength - state.lineLength;
-    if (startsInline) inline.extend(line.slice(state.offset));
-    else inline.append(line.slice(state.offset + state.lineLength));
+    if (startsInline) inline.extend(currentLine);
+    else inline.append(currentLine.slice(state.lineLength));
     state.lineLength = lineLength;
     copiedCharacters += inline.copiedCharacters - copied;
     return inline.nodes;
@@ -1196,7 +1313,8 @@ export function createStreamingDocument(): StreamingDocument {
         // that continues the paragraph makes it a hard break; any other line closes the paragraph, so it is text now.
         if (openParagraph && !continuesParagraph && !pendingMarkerLine(pending) && /(?<!\\)(?:\\\\)*\\$/.test(openParagraph.source)) {
           const paragraph = tailParagraph(overlay)!;
-          paragraph.children = [...paragraph.children, { type: "text", value: "\\" }];
+          const children = paragraph.children.at(-1)?.type === "break" ? paragraph.children.slice(0, -1) : paragraph.children;
+          paragraph.children = [...children, { type: "text", value: "\\" }];
         }
         // Every growing line shows as sent: as the open table's next row, or as paragraph text inside the containers it
         // continues. A pipe in it is text until a delimiter row ends below it (the resolver's one table rule).

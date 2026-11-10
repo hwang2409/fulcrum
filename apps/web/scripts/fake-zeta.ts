@@ -11,7 +11,7 @@ import type { ServerWebSocket } from "bun";
 import { validateHostCommands } from "@fulcrum/zeta";
 
 type Json = Record<string, unknown>;
-export type Mode = "ok" | "busy" | "busy-once" | "incompatible" | "slow" | "slow-catalog" | "broken-session" | "overflow" | "overflow-silent";
+export type Mode = "ok" | "busy" | "busy-once" | "incompatible" | "slow" | "slow-catalog" | "broken-session" | "overflow" | "overflow-silent" | "approval-persistence-failed";
 export type HistoryMode = "new" | "old";
 export type ApprovalHistoryMode = "advertised-with-rows" | "not-advertised-with-rows" | "not-advertised-without-rows";
 
@@ -267,7 +267,7 @@ const historyGroups = (rows: Json[]) => {
   return groups;
 };
 
-export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, serialDelays, overflowSilentCloseDelayMs = 0 }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; serialDelays?: Readonly<Record<string, number | readonly number[]>>; overflowSilentCloseDelayMs?: number }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, ambiguousPrefix = false, ambiguousSessionIds, serialDelays, overflowSilentCloseDelayMs = 0 }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; ambiguousPrefix?: boolean; ambiguousSessionIds?: readonly string[]; serialDelays?: Readonly<Record<string, number | readonly number[]>>; overflowSilentCloseDelayMs?: number }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
@@ -284,7 +284,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   if (largePages > 0) histories[LARGE] = Array.from({ length: largePages * 128 }, (_, index) => ({ id: `large-${index}`, role: index % 2 ? "assistant" : "user", content: [text(`large-page row ${index}`)], tool_result: null }));
   let sessions = [
     ...seeded,
-    ...(manyPages > 0 ? [meta(MANY, 1, { name: `${manyPages.toLocaleString("en")} small pages of history` })] : []),
+    ...(manyPages > 0 || ambiguousPrefix ? [meta(MANY, manyPages > 0 ? 1 : 60 * 6, manyPages > 0 ? { name: `${manyPages.toLocaleString("en")} small pages of history` } : { first_message_preview: "inspect an ambiguous session prefix" })] : []),
+    ...(ambiguousPrefix ? (ambiguousSessionIds ?? ["abcd1111-full", "abcd2222-full"]).map((id, index) => meta(id, 60 * (6 + index), { first_message_preview: "inspect an ambiguous session prefix" })) : []),
     ...(largePages > 0 ? [meta(LARGE, 1, { name: `${largePages.toLocaleString("en")} large pages of history` })] : []),
   ];
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
@@ -297,7 +298,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let delayedOpen = false;
   let catalogBusy = false;
   const decisions: Json[] = [];
-  const requests: Array<{ method: string; received: number; started: number; replied?: number }> = [];
+  const requests: Array<{ method: string; params: Json; received: number; started: number; replied?: number }> = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
   let controller: ServerWebSocket<unknown> | null = null;
   const reconnectControllers = new WeakSet<object>();
@@ -423,7 +424,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         const request = JSON.parse(String(raw)) as { id: number; method: string; params?: Json };
         return schedule(async () => {
         const { id, method, params = {} } = request;
-        const timing: { method: string; received: number; started: number; replied?: number } = { method, received, started: performance.now() };
+        const timing: { method: string; params: Json; received: number; started: number; replied?: number } = { method, params, received, started: performance.now() };
         requests.push(timing);
         await wait(requestDelay(method));
         const reply = (body: Json) => {
@@ -496,8 +497,22 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         }
         if (method === "resume") {
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
-          if (running && params.session_id !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
-          active = String(params.session_id);
+          const requested = String(params.session_id);
+          const allIds = sessions.map((session) => String(session.session_id));
+          const exact = allIds.includes(requested);
+          const matches = exact ? [requested] : allIds.filter((sessionId) => sessionId.startsWith(requested)).sort();
+          const candidates = matches.slice(0, 8).map((sessionId) => sessionId.slice(0, 8));
+          const sessionId = exact ? requested : matches.length === 1 && requested.length >= 4 ? matches[0]! : null;
+          if (!sessionId) {
+            if (matches.length > 0 && requested.length < 4) return reply({ error: { code: -32602, message: "session id prefix must be at least 4 characters" } });
+            if (matches.length > 1) {
+              const shown = candidates.join(", ") + (matches.length > 8 ? ", …" : "");
+              return reply({ error: { code: -32602, message: `session id '${requested}' is ambiguous; matches: ${shown}; please provide more characters`, data: { code: "session_id_ambiguous", session_id: requested, candidates } } });
+            }
+            return reply({ error: { code: -32602, message: "session not found", data: { code: "session_not_found", session_id: requested } } });
+          }
+          if (running && sessionId !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
+          active = sessionId;
           applyHostBinding(active, binding?.commands);
           delayedOpen = false;
           return reply({ result: { session: sessions.find((session) => session.session_id === active) } });
@@ -575,6 +590,8 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           return decide(method);
         }
         if ((method === "send" || method === "send_images") && active && hostBindingRequired.has(active)) return reply({ error: { code: -32003, message: "host binding required", data: { code: "host_binding_required" } } });
+        if ((method === "send" || method === "send_images" || method === "steer") && mode === "approval-persistence-failed")
+          return reply({ error: { code: -32000, message: "approval persistence failed", data: { code: "approval_persistence_failed" } } });
         const handled = composer.handle(method, params, active, send);
         // The echo is already out: the delay opens the window where the echoed row and the unsent draft both show.
         if (handled && method === "send" && sendReplyDelay > 0) await wait(sendReplyDelay);

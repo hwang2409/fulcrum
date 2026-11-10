@@ -4,6 +4,7 @@ GlobalRegistrator.register();
 
 import { afterAll, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
+import { shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 import { act, useLayoutEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { useVirtualList, type VirtualListState } from "../src/index.js";
@@ -113,31 +114,30 @@ function Harness({ outline, resetKey, expose }: {
 
 test.each(scenarios)("timeline routes $name through the DOM-aware scroll writer", (scenario) => {
   const observers: Observer[] = [];
-  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
-  const descriptors = (["clientHeight", "scrollHeight", "scrollTop"] as const).map((name) => [name, Object.getOwnPropertyDescriptor(HTMLElement.prototype, name)] as const);
   const positions = new WeakMap<HTMLElement, number>();
-  globalThis.ResizeObserver = class {
+  const restores = [shimGlobal("ResizeObserver", class {
     private entry: Observer;
     constructor(callback: ResizeObserverCallback) { this.entry = { callback, observed: new Set() }; observers.push(this.entry); }
     observe(element: Element) { this.entry.observed.add(element); }
     unobserve(element: Element) { this.entry.observed.delete(element); }
     disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  globalThis.requestAnimationFrame = (callback) => (callback(0), 1);
-  globalThis.cancelAnimationFrame = () => {};
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+  } as unknown as typeof ResizeObserver),
+  shimGlobal("requestAnimationFrame", (callback) => (callback(0), 1)),
+  shimGlobal("cancelAnimationFrame", () => {}),
+  shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }),
+  shimProperty(HTMLElement.prototype, "scrollHeight", {
     configurable: true,
     get() {
       if (!(this as HTMLElement).hasAttribute("data-test-scroll")) return 0;
       return Number.parseFloat((this as HTMLElement).firstElementChild?.getAttribute("style")?.match(/height:\s*([\d.]+)/)?.[1] ?? "0");
     },
-  });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  }),
+  shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-  });
+  }),
+  ];
 
   const container = document.createElement("div");
   document.body.append(container);
@@ -163,12 +163,6 @@ test.each(scenarios)("timeline routes $name through the DOM-aware scroll writer"
   } finally {
     act(() => root.unmount());
     container.remove();
-    globalThis.ResizeObserver = saved.ResizeObserver;
-    globalThis.requestAnimationFrame = saved.raf;
-    globalThis.cancelAnimationFrame = saved.caf;
-    for (const [name, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
-      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
-    }
+    restores.reverse().forEach((restore) => restore());
   }
 });

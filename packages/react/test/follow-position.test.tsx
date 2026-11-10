@@ -3,6 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 import { act, Profiler } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
@@ -26,35 +27,26 @@ afterEach(() => {
 });
 
 function installScrollGeometry() {
-  const descriptors = {
-    clientHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight"),
-    clientWidth: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth"),
-    scrollHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight"),
-    scrollTop: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop"),
-  };
   const positions = new WeakMap<HTMLElement, number>();
   let viewportHeight = 600;
   let domExtra = 0;
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => viewportHeight });
-  Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 800 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
-    configurable: true,
-    get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height.match(/[\d.]+/)?.[0] ?? "0") + domExtra,
-  });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
-    configurable: true,
-    get() { return Math.min(positions.get(this as HTMLElement) ?? 0, Math.max(0, this.scrollHeight - this.clientHeight)); },
-    set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-  });
+  const restores = [
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => viewportHeight }),
+    shimProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 800 }),
+    shimProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height.match(/[\d.]+/)?.[0] ?? "0") + domExtra,
+    }),
+    shimProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() { return Math.min(positions.get(this as HTMLElement) ?? 0, Math.max(0, this.scrollHeight - this.clientHeight)); },
+      set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
+    }),
+  ];
   return {
     addDomExtra(value: number) { domExtra += value; },
     resizeBy(value: number) { viewportHeight += value; },
-    restore() {
-      for (const [name, descriptor] of Object.entries(descriptors)) {
-        if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
-        else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
-      }
-    },
+    restore() { restores.reverse().forEach((restore) => restore()); },
   };
 }
 
@@ -93,18 +85,18 @@ function mountTimeline(hosted = false) {
 
 // A row observer and a frame queue the test drives: rows report measured sizes, and frames run when the test says.
 function installRowObserver() {
-  const saved = { ResizeObserver: globalThis.ResizeObserver, raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame };
   const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
   const frames: FrameRequestCallback[] = [];
-  globalThis.ResizeObserver = class {
+  const restores = [shimGlobal("ResizeObserver", class {
     private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
     constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
     observe(element: Element) { this.entry.observed.add(element); }
     unobserve(element: Element) { this.entry.observed.delete(element); }
     disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
-  globalThis.cancelAnimationFrame = () => {};
+  } as unknown as typeof ResizeObserver),
+    shimGlobal("requestAnimationFrame", (callback) => (frames.push(callback), frames.length)),
+    shimGlobal("cancelAnimationFrame", () => {}),
+  ];
   return {
     /** Reports the size `size(id)` gives each observed row (undefined: no report), then runs the browser's next frame
      * unless `frame` is false (a frame that has not run yet, as under heavy CPU load). */
@@ -117,11 +109,7 @@ function installRowObserver() {
       act(() => rows.report(entries as unknown as ResizeObserverEntry[], {} as ResizeObserver));
       if (frame) act(() => { for (const next of frames.splice(0)) next(0); });
     },
-    restore() {
-      globalThis.ResizeObserver = saved.ResizeObserver;
-      globalThis.requestAnimationFrame = saved.raf;
-      globalThis.cancelAnimationFrame = saved.caf;
-    },
+    restore() { restores.reverse().forEach((restore) => restore()); },
   };
 }
 
@@ -236,15 +224,14 @@ describe("timeline scroll position", () => {
 
   test("a viewport resize keeps a pinned reader at the physical end", () => {
     const geometry = installScrollGeometry();
-    const saved = globalThis.ResizeObserver;
     const observers: Array<{ report: ResizeObserverCallback; observed: Set<Element> }> = [];
-    globalThis.ResizeObserver = class {
+    const restoreResizeObserver = shimGlobal("ResizeObserver", class {
       private entry = { report: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
       constructor(callback: ResizeObserverCallback) { this.entry.report = callback; observers.push(this.entry); }
       observe(element: Element) { this.entry.observed.add(element); }
       unobserve(element: Element) { this.entry.observed.delete(element); }
       disconnect() { this.entry.observed.clear(); }
-    } as unknown as typeof ResizeObserver;
+    } as unknown as typeof ResizeObserver);
     try {
       const { append, host, jump, unseen } = mountTimeline();
       geometry.resizeBy(-200);
@@ -255,7 +242,7 @@ describe("timeline scroll position", () => {
       expect(jump()).toBeNull();
       expect(host.scrollHeight - host.clientHeight - host.scrollTop).toBeLessThanOrEqual(1);
     } finally {
-      globalThis.ResizeObserver = saved;
+      restoreResizeObserver();
       geometry.restore();
     }
   });

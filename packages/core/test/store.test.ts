@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { shimProperty } from "../../../test-support/dom-shim.js";
 import { createRunStore, type OutlineSnapshot, type RunEvent, type RunStore, type StoreDiagnostics } from "../src/index.js";
 import { seededRandom } from "./fuzz.js";
 
@@ -618,15 +619,14 @@ test("read methods never throw a listener error, inside or after a failing pass"
 
 test("later listener errors go to console.error where reportError does not exist", () => {
   const store = createRunStore((job) => job());
-  const saved = Object.getOwnPropertyDescriptor(globalThis, "reportError");
+  const restoreReportError = shimProperty(globalThis, "reportError");
   const logged = spyOn(console, "error").mockImplementation(() => {});
-  delete (globalThis as { reportError?: unknown }).reportError;
   try {
     for (const name of ["first", "second"]) store.subscribe(() => { throw new Error(name); });
     expect(() => store.dispatch(commit("a"))).toThrow("first");
     expect(logged.mock.calls.map(([error]) => (error as Error).message)).toEqual(["second"]);
   } finally {
-    if (saved) Object.defineProperty(globalThis, "reportError", saved);
+    restoreReportError();
     logged.mockRestore();
   }
 });
@@ -794,10 +794,9 @@ const throwingSinks = [
   {
     sink: "console.error",
     install: () => {
-      const saved = Object.getOwnPropertyDescriptor(globalThis, "reportError")!;
-      delete (globalThis as { reportError?: unknown }).reportError;
+      const restoreReportError = shimProperty(globalThis, "reportError");
       const spy = spyOn(console, "error").mockImplementation(() => { throw new Error("sink"); });
-      return { mockRestore: () => { spy.mockRestore(); Object.defineProperty(globalThis, "reportError", saved); } };
+      return { mockRestore: () => { spy.mockRestore(); restoreReportError(); } };
     },
   },
 ];

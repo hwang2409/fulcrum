@@ -3,6 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
+import { shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 import { readdirSync, readFileSync } from "node:fs";
 import { act, Profiler, StrictMode, useState, type ComponentType, type ReactNode } from "react";
 import * as FulcrumReact from "../src/index.js";
@@ -88,10 +89,12 @@ function setup(events: RunEvent[]) {
 
 let root: Root | undefined;
 let container: HTMLElement;
+const restoreShims: Array<() => void> = [];
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
+  restoreShims.splice(0).reverse().forEach((restore) => restore());
 });
 function mount(node: ReactNode) {
   container = document.createElement("div");
@@ -399,17 +402,14 @@ test("when a row appends, only the old and the new newest rows re-render", () =>
 });
 
 test("in virtual mode a row kept mounted for focus never takes the cursor from the newest row", () => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-  });
+  }));
   try {
     const { store, send } = setup([
       ...Array.from({ length: 300 }, (_, index): RunEvent => ({ type: "message_commit", message_id: String(index), message: message(String(index)) })),
@@ -436,10 +436,6 @@ test("in virtual mode a row kept mounted for focus never takes the cursor from t
     send({ type: "message_delta", message_id: "live", delta: " more" });
     expect(latest()).toEqual(["message:live"]);
   } finally {
-    for (const [name, descriptor] of [["clientHeight", clientHeight], ["scrollHeight", scrollHeight], ["scrollTop", scrollTop]] as const) {
-      if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
-      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
-    }
   }
 });
 
@@ -1176,15 +1172,10 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
 )))(
   "host transfer matrix: %s / %s / %s outline change",
   (transfer, interaction, outlineChange) => {
-    const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-    const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
-    const userAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent");
     const positions = new WeakMap<HTMLElement, number>();
     const listeners = new Map<EventTarget, Map<string, Set<EventListenerOrEventListenerObject>>>();
     const add = HTMLElement.prototype.addEventListener;
     const remove = HTMLElement.prototype.removeEventListener;
-    const OriginalResizeObserver = globalThis.ResizeObserver;
     let activeObservers = 0;
     class MatrixResizeObserver implements ResizeObserver {
       constructor(_callback: ResizeObserverCallback) { activeObservers++; }
@@ -1192,18 +1183,18 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
       observe() {}
       unobserve() {}
     }
-    Object.defineProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" });
-    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    restoreShims.push(shimProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", {
       configurable: true,
       get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"),
-    });
-    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
       configurable: true,
       get() { return positions.get(this as HTMLElement) ?? 0; },
       set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-    });
-    HTMLElement.prototype.addEventListener = function(type, listener, options) {
+    }));
+    const restoreAdd = shimProperty(HTMLElement.prototype, "addEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
       if (this.dataset.testid && listener) {
         const byType = listeners.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
         const entries = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
@@ -1212,12 +1203,12 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
         listeners.set(this, byType);
       }
       add.call(this, type, listener, options);
-    };
-    HTMLElement.prototype.removeEventListener = function(type, listener, options) {
+    } });
+    const restoreRemove = shimProperty(HTMLElement.prototype, "removeEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
       if (listener) listeners.get(this)?.get(type)?.delete(listener);
       remove.call(this, type, listener, options);
-    };
-    globalThis.ResizeObserver = MatrixResizeObserver;
+    } });
+    restoreShims.push(shimGlobal("ResizeObserver", MatrixResizeObserver));
     const listenerCount = () => [...listeners.values()].flatMap((types) => [...types.values()]).reduce((sum, entries) => sum + entries.size, 0);
     const viewportAnchor = (host: HTMLElement, scrollTop = host.scrollTop) => {
       const rows = [...container.querySelectorAll<HTMLElement>("[data-virtual-id]")].map((row) => ({
@@ -1246,7 +1237,7 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
       }
       if (interaction === "touch (active)" || interaction === "momentum" || interaction === "pending jump") {
         const touch = new Event("touchstart") as TouchEvent;
-        Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+        restoreShims.push(shimProperty(touch, "touches", { value: [{ clientY: 100 }] }));
         act(() => oldHost.dispatchEvent(touch));
       }
       if (interaction === "pending correction" || interaction === "momentum" || interaction === "pending jump") prepend();
@@ -1277,13 +1268,13 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
         return;
       }
       if (transfer === "null gap: 1 commit" || transfer === "null gap: N commits") {
-        globalThis.ResizeObserver = undefined as unknown as typeof ResizeObserver;
+        const restoreMissingObserver = shimGlobal("ResizeObserver", undefined as unknown as typeof ResizeObserver);
         render("removed");
         if (transfer === "null gap: N commits") {
           render("removed");
           render("removed");
         }
-        globalThis.ResizeObserver = MatrixResizeObserver;
+        restoreMissingObserver();
         render("outer", false, true, true);
         newHost = attachedHost("outer");
       } else if (transfer === "null gap: 0 commits") {
@@ -1330,13 +1321,8 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
       act(() => jump.click());
       expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
     } finally {
-      if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-      if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-      if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
-      if (userAgent) Object.defineProperty(Navigator.prototype, "userAgent", userAgent);
-      HTMLElement.prototype.addEventListener = add;
-      HTMLElement.prototype.removeEventListener = remove;
-      globalThis.ResizeObserver = OriginalResizeObserver;
+      restoreRemove();
+      restoreAdd();
     }
   },
 );
@@ -1387,17 +1373,14 @@ test("Timeline keeps attachment correct while switching between owned and host-o
 });
 
 test("follow, pinning, jump control, and bounded mounts survive every scroll-host transition", () => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-  });
+  }));
   try {
     const { append, view } = hostAttachmentHarness();
     let followRequest = 0;
@@ -1446,9 +1429,6 @@ test("follow, pinning, jump control, and bounded mounts survive every scroll-hos
     render();
     exercise(attachedHost(target));
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
   }
 });
 
@@ -1456,19 +1436,15 @@ test.each([
   ["active touch", false],
   ["momentum settle", true],
 ])("host transfer settles an iOS correction during %s", (_state, endTouch) => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
-  const userAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent");
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" });
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restoreShims.push(shimProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-  });
+  }));
   try {
     const { append, prepend, view } = hostAttachmentHarness();
     let followRequest = 0;
@@ -1480,7 +1456,7 @@ test.each([
       inner.dispatchEvent(new Event("scroll"));
     });
     const touch = new Event("touchstart") as TouchEvent;
-    Object.defineProperty(touch, "touches", { value: [{ clientY: 100 }] });
+    restoreShims.push(shimProperty(touch, "touches", { value: [{ clientY: 100 }] }));
     act(() => inner.dispatchEvent(touch));
     prepend();
     if (endTouch) act(() => inner.dispatchEvent(new Event("touchend")));
@@ -1504,10 +1480,6 @@ test.each([
     act(() => jump.click());
     expect(outer.scrollTop).toBe(outer.scrollHeight - outer.clientHeight);
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
-    if (userAgent) Object.defineProperty(Navigator.prototype, "userAgent", userAgent);
   }
 });
 
@@ -1519,7 +1491,6 @@ test("100 host swaps own the exact adapter listeners and release all of them", (
   const documentRemove = document.removeEventListener;
   const windowAdd = window.addEventListener;
   const windowRemove = window.removeEventListener;
-  const OriginalResizeObserver = globalThis.ResizeObserver;
   const recordAdd = (target: EventTarget, type: string, listener: EventListenerOrEventListenerObject | null) => {
     if (!listener) return;
     const byType = added.get(target) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
@@ -1546,31 +1517,33 @@ test("100 host swaps own the exact adapter listeners and release all of them", (
     observe() {}
     unobserve() {}
   }
-  HTMLElement.prototype.addEventListener = function(type, listener, options) {
-    if (this.dataset.testid && listener) recordAdd(this, type, listener);
-    hostAdd.call(this, type, listener, options);
-  };
-  HTMLElement.prototype.removeEventListener = function(type, listener, options) {
-    recordRemove(this, type, listener);
-    hostRemove.call(this, type, listener, options);
-  };
-  document.addEventListener = function(type, listener, options) {
-    recordAdd(this, type, listener);
-    documentAdd.call(this, type, listener, options);
-  };
-  document.removeEventListener = function(type, listener, options) {
-    recordRemove(this, type, listener);
-    documentRemove.call(this, type, listener, options);
-  };
-  window.addEventListener = function(type, listener, options) {
-    recordAdd(this, type, listener);
-    windowAdd.call(this, type, listener, options);
-  };
-  window.removeEventListener = function(type, listener, options) {
-    recordRemove(this, type, listener);
-    windowRemove.call(this, type, listener, options);
-  };
-  globalThis.ResizeObserver = CountingResizeObserver;
+  const restores = [
+    shimProperty(HTMLElement.prototype, "addEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+      if (this.dataset.testid) recordAdd(this, type, listener);
+      hostAdd.call(this, type, listener, options);
+    } }),
+    shimProperty(HTMLElement.prototype, "removeEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
+      recordRemove(this, type, listener);
+      hostRemove.call(this, type, listener, options);
+    } }),
+    shimProperty(document, "addEventListener", { configurable: true, writable: true, value: function(this: Document, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+      recordAdd(this, type, listener);
+      documentAdd.call(this, type, listener, options);
+    } }),
+    shimProperty(document, "removeEventListener", { configurable: true, writable: true, value: function(this: Document, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
+      recordRemove(this, type, listener);
+      documentRemove.call(this, type, listener, options);
+    } }),
+    shimProperty(window, "addEventListener", { configurable: true, writable: true, value: function(this: Window, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+      recordAdd(this, type, listener);
+      windowAdd.call(this, type, listener, options);
+    } }),
+    shimProperty(window, "removeEventListener", { configurable: true, writable: true, value: function(this: Window, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
+      recordRemove(this, type, listener);
+      windowRemove.call(this, type, listener, options);
+    } }),
+    shimGlobal("ResizeObserver", CountingResizeObserver),
+  ];
   try {
     mount(<div />);
     act(() => root!.unmount());
@@ -1602,26 +1575,17 @@ test("100 host swaps own the exact adapter listeners and release all of them", (
     expect(counts(window)).toEqual(windowBefore);
     expect(activeObservers).toBe(0);
   } finally {
-    HTMLElement.prototype.addEventListener = hostAdd;
-    HTMLElement.prototype.removeEventListener = hostRemove;
-    document.addEventListener = documentAdd;
-    document.removeEventListener = documentRemove;
-    window.addEventListener = windowAdd;
-    window.removeEventListener = windowRemove;
-    globalThis.ResizeObserver = OriginalResizeObserver;
+    restores.reverse().forEach((restore) => restore());
   }
 });
 
 test("10k-row commits do no layout work when the scroll element is unchanged", () => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const rect = HTMLElement.prototype.getBoundingClientRect;
   let layoutReads = 0;
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { layoutReads++; return 600; } });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { layoutReads++; return 200_000; } });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { layoutReads++; return 0; }, set() {} });
-  HTMLElement.prototype.getBoundingClientRect = function() { layoutReads++; return rect.call(this); };
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { layoutReads++; return 600; } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { layoutReads++; return 200_000; } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { layoutReads++; return 0; }, set() {} }));
+  const restoreRect = shimProperty(HTMLElement.prototype, "getBoundingClientRect", { configurable: true, writable: true, value: function(this: HTMLElement) { layoutReads++; return rect.call(this); } });
   try {
     const timeline = timelineStore(Array.from({ length: 10_000 }, (_, index) => committedItem(String(index))));
     const view = (commit: number) => <div data-commit={commit}><RunProvider store={timeline.store}><Timeline virtual /></RunProvider></div>;
@@ -1630,10 +1594,7 @@ test("10k-row commits do no layout work when the scroll element is unchanged", (
     for (let index = 1; index <= 100; index++) act(() => root!.render(view(index)));
     expect(layoutReads).toBe(0);
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
-    HTMLElement.prototype.getBoundingClientRect = rect;
+    restoreRect();
   }
 });
 
@@ -1672,16 +1633,12 @@ test.each([
     : item), ...Array.from({ length: 10 }, (_, index) => committedItem(`new-${index}`))];
   const first = timelineStore(items, "same-run");
   const second = timelineStore(stagedReplay ? [] : replacementItems, "same-run");
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
   let hostGeometry = { clientHeight: 600, top: 0, bottom: 600 };
   const rect = HTMLElement.prototype.getBoundingClientRect;
-  const OriginalResizeObserver = globalThis.ResizeObserver;
   const resizeObservers: Array<{ callback: ResizeObserverCallback; observed: Set<Element>; observer: ResizeObserver }> = [];
   if (stagedReplay) {
-    globalThis.ResizeObserver = class {
+    restoreShims.push(shimGlobal("ResizeObserver", class {
       private readonly record = { callback: (() => {}) as ResizeObserverCallback, observed: new Set<Element>(), observer: this as unknown as ResizeObserver };
       constructor(callback: ResizeObserverCallback) {
         this.record.callback = callback;
@@ -1690,23 +1647,23 @@ test.each([
       observe(element: Element) { this.record.observed.add(element); }
       unobserve(element: Element) { this.record.observed.delete(element); }
       disconnect() { this.record.observed.clear(); }
-    } as unknown as typeof ResizeObserver;
+    } as unknown as typeof ResizeObserver));
   }
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => hostGeometry.clientHeight });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => hostGeometry.clientHeight }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-  });
-  HTMLElement.prototype.getBoundingClientRect = function () {
+  }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "getBoundingClientRect", { configurable: true, writable: true, value: function () {
     if (this.getAttribute("data-part") === "timeline-scroll") return { x: 0, y: hostGeometry.top, top: hostGeometry.top, bottom: hostGeometry.bottom, left: 0, right: 800, width: 800, height: hostGeometry.bottom - hostGeometry.top, toJSON() {} };
     if (this.getAttribute("data-part") === "timeline") {
       const top = hostGeometry.top - (this.parentElement?.scrollTop ?? 0);
       return { x: 0, y: top, top, bottom: top + Number.parseFloat(this.style.height || "0"), left: 0, right: 800, width: 800, height: Number.parseFloat(this.style.height || "0"), toJSON() {} };
     }
     return rect.call(this);
-  };
+  } }));
   try {
     const scrollRef = { current: null as HTMLElement | null };
     const view = (store: RunStore) => {
@@ -1775,11 +1732,6 @@ test.each([
       expect(q('[data-part="jump-to-latest"]') === null).toBe(stagedReplay);
     }
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
-    HTMLElement.prototype.getBoundingClientRect = rect;
-    globalThis.ResizeObserver = OriginalResizeObserver;
   }
 });
 
@@ -1787,13 +1739,10 @@ test("same-run replacement keeps a pinned reader at bottom while a different run
   const source = timelineStore(Array.from({ length: 1_000 }, (_, index) => committedItem(String(index))), "run-a");
   const same = timelineStore(Array.from({ length: 1_010 }, (_, index) => committedItem(String(index))), "run-a");
   const different = timelineStore(Array.from({ length: 300 }, (_, index) => committedItem(`other-${index}`)), "run-b");
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); } });
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); } }));
   const view = (store: RunStore) => <RunProvider store={store}><Timeline virtual /></RunProvider>;
   try {
     mount(view(source.store));
@@ -1810,9 +1759,6 @@ test("same-run replacement keeps a pinned reader at bottom while a different run
     expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
     expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
   }
 });
 
@@ -1820,18 +1766,15 @@ test("a pinned reader keeps following when a reconnect banner leaves and the bro
   const items = Array.from({ length: 1_003 }, (_, index) => committedItem(String(index)));
   const source = timelineStore(items.slice(0, 1_000), "run-a");
   const replay = timelineStore(items.slice(0, 1_000), "run-a");
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
   let height = 550;
   let lag = 0;
   const now = performance.now;
   let elapsed = 0;
   performance.now = () => now.call(performance) + elapsed;
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => height });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") - lag; } });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); } });
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => height }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") - lag; } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return positions.get(this as HTMLElement) ?? 0; }, set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); } }));
   const view = (store: RunStore) => <RunProvider store={store}><Timeline /></RunProvider>;
   try {
     mount(view(source.store));
@@ -1870,9 +1813,6 @@ test("a pinned reader keeps following when a reconnect banner leaves and the bro
     expect(container.querySelector('[data-part="jump-to-latest"]')).not.toBeNull();
   } finally {
     performance.now = now;
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
   }
 });
 
@@ -1887,8 +1827,7 @@ test("virtual Timeline keeps its frame when a store is disposed, then replaces i
     message_id: `b-${index}`,
     message: message(`b-${index}`),
   })));
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
   mount(<RunProvider store={a.store}><Timeline virtual /></RunProvider>);
 
   act(() => a.store.dispose());
@@ -1897,7 +1836,6 @@ test("virtual Timeline keeps its frame when a store is disposed, then replaces i
   b.send({ type: "message_commit", message_id: "b-200", message: message("b-200") });
   expect(() => act(() => root!.render(<RunProvider store={b.store}><Timeline virtual /></RunProvider>))).not.toThrow();
   expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("201");
-  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
 });
 
 test("virtual Timeline resets and follows when its RunProvider store changes during a pending user scroll", () => {
@@ -1905,17 +1843,14 @@ test("virtual Timeline resets and follows when its RunProvider store changes dur
   const a = timelineStore(makeItems("a", 5_000));
   const b = timelineStore(makeItems("b", 100_000));
   const c = timelineStore(makeItems("c", 201));
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.min(value, Math.max(0, (this as HTMLElement).scrollHeight - (this as HTMLElement).clientHeight))); },
-  });
+  }));
 
   mount(<RunProvider store={a.store}><Timeline virtual /></RunProvider>);
   expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("5000");
@@ -1931,9 +1866,6 @@ test("virtual Timeline resets and follows when its RunProvider store changes dur
   expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
   expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
   expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
-  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-  if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-  if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
 });
 
 test("react does not import @fulcrum/zeta", () => {
@@ -1959,15 +1891,11 @@ const committedItem = (id: string): RunItem => ({
 });
 
 test("the unconstrained-height diagnostic checks layout only once while rows stream", () => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const requestFrame = globalThis.requestAnimationFrame;
-  const cancelFrame = globalThis.cancelAnimationFrame;
   const frames: FrameRequestCallback[] = [];
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100_000 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 100_001 });
-  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
-  globalThis.cancelAnimationFrame = () => {};
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100_000 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 100_001 }));
+  restoreShims.push(shimGlobal("requestAnimationFrame", (callback) => (frames.push(callback), frames.length)));
+  restoreShims.push(shimGlobal("cancelAnimationFrame", () => {}));
   try {
     let items = Array.from({ length: 201 }, (_, index) => committedItem(String(index)));
     const timeline = timelineStore(items);
@@ -1981,10 +1909,6 @@ test("the unconstrained-height diagnostic checks layout only once while rows str
     expect(container.querySelectorAll("[data-virtual-id]")).toHaveLength(202);
     expect(frames).toHaveLength(0);
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    globalThis.requestAnimationFrame = requestFrame;
-    globalThis.cancelAnimationFrame = cancelFrame;
   }
 });
 
@@ -2017,8 +1941,7 @@ test("virtual history mount, scroll, and prepend never enter the live region", (
   const current = Array.from({ length: 5_000 }, (_, index) => committedItem(String(index)));
   const history = Array.from({ length: 500 }, (_, index) => committedItem(`history-${index}`));
   const source = timelineStore(current);
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
   mount(<RunProvider store={source.store}><Timeline virtual /></RunProvider>);
   const timeline = q('[data-part="timeline"]');
   const live = q('[data-part="timeline-live"]');
@@ -2036,7 +1959,6 @@ test("virtual history mount, scroll, and prepend never enter the live region", (
   const row = q("[data-virtual-id]");
   expect(row.getAttribute("aria-setsize")).toBe("5500");
   expect(Number(row.getAttribute("aria-posinset"))).toBeGreaterThan(0);
-  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
 });
 
 test("a streamed message announces once after commit", async () => {
@@ -2124,8 +2046,7 @@ test("with a pending approval, the timeline's first tab stop jumps to it and foc
 
 test("virtual Timeline shows the folded tool card live when an approval folds in place across batches", () => {
   const { store, send } = setup([{ type: "user_message", text: "read it", mode: "normal" }]);
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
   try {
     mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
     const rows = () => [...container.querySelectorAll("[data-virtual-id]")].map((row) => row.getAttribute("data-virtual-id"));
@@ -2138,7 +2059,6 @@ test("virtual Timeline shows the folded tool card live when an approval folds in
     expect(rows()).toEqual(["user:1", "tool:read-1"]);
     expect(store.getOutline().map(({ id }) => id)).toEqual(rows());
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
   }
 });
 
@@ -2239,41 +2159,36 @@ test.each([
   const timeline = timelineStore(items);
   const positions = new WeakMap<HTMLElement, number>();
   const ends = new WeakMap<HTMLElement, number>();
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
-  const OriginalResizeObserver = globalThis.ResizeObserver;
-  const OriginalMutationObserver = globalThis.MutationObserver;
   const resizeObservers: Array<{ callback: ResizeObserverCallback; observed: Set<Element> }> = [];
   const mutationObservers: Array<{ callback: MutationCallback; observed: Set<Node> }> = [];
-  globalThis.ResizeObserver = class {
+  restoreShims.push(shimGlobal("ResizeObserver", class {
     private readonly entry = { callback: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
     constructor(callback: ResizeObserverCallback) { this.entry.callback = callback; resizeObservers.push(this.entry); }
     observe(element: Element) { this.entry.observed.add(element); }
     unobserve(element: Element) { this.entry.observed.delete(element); }
     disconnect() { this.entry.observed.clear(); }
-  } as unknown as typeof ResizeObserver;
-  globalThis.MutationObserver = class {
+  } as unknown as typeof ResizeObserver));
+  restoreShims.push(shimGlobal("MutationObserver", class {
     private readonly entry = { callback: (() => {}) as MutationCallback, observed: new Set<Node>() };
     constructor(callback: MutationCallback) { this.entry.callback = callback; mutationObservers.push(this.entry); }
     observe(node: Node) { this.entry.observed.add(node); }
     disconnect() { this.entry.observed.clear(); }
     takeRecords() { return []; }
-  } as unknown as typeof MutationObserver;
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+  } as unknown as typeof MutationObserver));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", {
     configurable: true,
     get() {
       const host = this as HTMLElement;
       const timelineHeight = Number.parseFloat(host.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0");
       return (ends.get(host) ?? Math.max(0, timelineHeight - 100)) + 100;
     },
-  });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, (ends.get(this as HTMLElement) ?? 1_100)))); },
-  });
+  }));
   try {
     const hostRef = { current: null as HTMLElement | null };
     const prefix = <div data-testid="prefix" />;
@@ -2308,14 +2223,6 @@ test.each([
     timeline.replace([...items, added], [{ index: items.length, deleteCount: 0, items: [added] }]);
     expect(host.scrollTop, "the append after sibling layout must land at the physical end").toBe(initialEnd + 44 + delta);
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
-    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollTop;
-    globalThis.ResizeObserver = OriginalResizeObserver;
-    globalThis.MutationObserver = OriginalMutationObserver;
   }
 });
 
@@ -2354,12 +2261,8 @@ test.each(layoutGeometryCases.flatMap((geometryCase) => layoutReaderMoves.flatMa
 }))))) (
   "host geometry transaction: $name",
   ({ geometryCase, move, pinned }) => {
-    const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-    const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
-    const rect = HTMLElement.prototype.getBoundingClientRect;
-    const OriginalResizeObserver = globalThis.ResizeObserver;
-    let state = geometryCase.before;
+          const rect = HTMLElement.prototype.getBoundingClientRect;
+      let state = geometryCase.before;
     let position = pinned ? state.end : Math.min(500, state.end - 100);
     class LayoutResizeObserver implements ResizeObserver {
       constructor(_callback: ResizeObserverCallback) {}
@@ -2367,15 +2270,15 @@ test.each(layoutGeometryCases.flatMap((geometryCase) => layoutReaderMoves.flatMa
       unobserve() {}
       disconnect() {}
     }
-    globalThis.ResizeObserver = LayoutResizeObserver;
-    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { return this.hasAttribute("data-part") ? state.clientHeight : 0; } });
-    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return this.hasAttribute("data-part") ? state.end + state.clientHeight : 0; } });
-    Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return this.hasAttribute("data-part") ? position : 0; }, set(value: number) { if (this.hasAttribute("data-part")) position = Math.max(0, Math.min(value, state.end)); } });
-    HTMLElement.prototype.getBoundingClientRect = function () {
+    restoreShims.push(shimGlobal("ResizeObserver", LayoutResizeObserver));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { return this.hasAttribute("data-part") ? state.clientHeight : 0; } }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return this.hasAttribute("data-part") ? state.end + state.clientHeight : 0; } }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { return this.hasAttribute("data-part") ? position : 0; }, set(value: number) { if (this.hasAttribute("data-part")) position = Math.max(0, Math.min(value, state.end)); } }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "getBoundingClientRect", { configurable: true, writable: true, value: function () {
       if (this.getAttribute("data-part") === "timeline-scroll") return { x: 0, y: state.top, top: state.top, bottom: state.bottom, left: 0, right: 800, width: 800, height: state.bottom - state.top, toJSON() {} };
       if (this.getAttribute("data-part") === "timeline") return { x: 0, y: state.top + 18 - position, top: state.top + 18 - position, bottom: state.bottom + 18 - position, left: 0, right: 800, width: 800, height: state.bottom - state.top, toJSON() {} };
       return rect.call(this);
-    };
+    } }));
     try {
       const items = Array.from({ length: 611 }, (_, index) => committedItem(`layout-${index}`));
       const timeline = timelineStore(items);
@@ -2409,11 +2312,6 @@ test.each(layoutGeometryCases.flatMap((geometryCase) => layoutReaderMoves.flatMa
         expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("1");
       }
     } finally {
-      HTMLElement.prototype.getBoundingClientRect = rect;
-      if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
-      if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight;
-      if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop); else delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollTop;
-      globalThis.ResizeObserver = OriginalResizeObserver;
-    }
+        }
   },
 );

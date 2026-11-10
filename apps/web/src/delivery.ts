@@ -55,6 +55,8 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
         const outcome = deliveryOutcome((error as { data?: { outcome?: unknown } }).data?.outcome);
         return { accepted: outcome === "delivered", status: outcome };
       }
+      if ((error as { kind?: unknown } | null)?.kind === "approval_persistence_failed")
+        throw new Error("zeta cannot save approvals right now. restart zeta serve to continue.", { cause: error });
       throw error;
     }
   };

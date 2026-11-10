@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { shimGlobal } from "../../../test-support/dom-shim.js";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,11 +43,12 @@ test("a foreign request stays 404 even while no server runs", async () => {
   expect((await call({ ...same, host: "evil.test:5173" }, file)).statusCode).toBe(404);
 });
 test("discoverZeta reads 204 and 404 as no server", async () => {
-  const real = globalThis.fetch;
-  try {
-    for (const status of [204, 404]) {
-      globalThis.fetch = (async () => new Response(null, { status })) as unknown as typeof fetch;
+  for (const status of [204, 404]) {
+    const restoreFetch = shimGlobal("fetch", (async () => new Response(null, { status })) as unknown as typeof fetch);
+    try {
       expect(await discoverZeta()).toBeNull();
+    } finally {
+      restoreFetch();
     }
-  } finally { globalThis.fetch = real; }
+  }
 });
