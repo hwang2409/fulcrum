@@ -65,8 +65,9 @@ jobs:
       - *install
       - *highlight-recipes-hash
       - *highlight-recipes-cache
-      - &playwright
-        run: cd apps/playground && bunx playwright install --with-deps chromium webkit
+      # measured p100: 10m19s across 5 green main runs; 12m leaves margin and 13m for the job.
+      - run: cd apps/playground && bunx playwright install --with-deps chromium webkit
+        timeout-minutes: 12
       - run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground smoke
       - &build-playground
         run: rm -rf packages/*/dist packages/*/*.tsbuildinfo && bun run --cwd apps/playground build
@@ -100,7 +101,9 @@ jobs:
       - *install
       - *highlight-recipes-hash
       - *highlight-recipes-cache
-      - *playwright
+      # measured p100: 2m30s across 5 green main runs; 8m leaves margin and 17m for the job.
+      - run: cd apps/playground && bunx playwright install --with-deps chromium webkit
+        timeout-minutes: 8
       - *build-playground
       - run: bun run --cwd apps/playground layout
         env: { LAYOUT_PART: themes }
@@ -115,7 +118,9 @@ jobs:
       - *install
       - *highlight-recipes-hash
       - *highlight-recipes-cache
-      - *playwright
+      # measured p100: 1m02s across 5 green main runs; 8m leaves margin and 17m for the job.
+      - run: cd apps/playground && bunx playwright install --with-deps chromium webkit
+        timeout-minutes: 8
       - *build-playground
       - name: build base playground for viewer timing
         env:
@@ -146,7 +151,9 @@ jobs:
       - *install
       - *highlight-recipes-hash
       - *highlight-recipes-cache
-      - *playwright
+      # measured p100: 15m16s across 5 green main runs; 18m leaves margin and 7m for the job.
+      - run: cd apps/playground && bunx playwright install --with-deps chromium webkit
+        timeout-minutes: 18
       - *build-playground
       - run: cd apps/web && bun run gate
       - if: always()
