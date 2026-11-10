@@ -310,7 +310,8 @@ const unmatchedCodeSpan = (source: string) => {
 };
 
 function resolveCodeSuffix(state: ResolvedCodeSuffix, suffix: string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
-  // First reveal the suffix exactly as the complete parse does; later deltas may make its syntax provisional again.
+  if (/^[\p{L}\p{N} ]*$/u.test(suffix)) return appendResolvedCodeSuffix(state, suffix, () => suffix, parse);
+  // First reveal provisional syntax exactly as the complete parse does; later deltas may resolve it.
   state.nodes = [...state.prefix, ...parse(suffix, true, false)];
   return suffix.length;
 }
