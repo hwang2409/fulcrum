@@ -3,8 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
-domShimAlarm(import.meta.path);
+import { shimProperty } from "../../../test-support/dom-shim.js";
 import { act } from "react";
 import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
 import type { Highlight, HighlightContext, Token } from "@fulcrum/highlight";

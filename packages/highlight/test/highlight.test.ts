@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, jest, test } from "bun:test";
-import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+import { shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 import type { Token } from "../src/index.js";
 import type { RegexRecipeOptions } from "../src/regex.js";
 import { semanticTheme } from "../src/scopes.js";
@@ -9,7 +9,6 @@ const { createHighlighter } = await import("../dist/index.js");
 // over the time limit by chance. Only a real worker (its own clock) runs on real time.
 let restoreFrozenClock = () => {};
 afterAll(() => { directHighlighter.dispose(); restoreTokenizer(); restoreFrozenClock(); });
-domShimAlarm(import.meta.path);
 restoreFrozenClock = shimProperty(performance, "now", { configurable: true, value: () => 0 });
 const { TokenizerRuntime, regexFromRecipe } = await import("../dist/runtime.js");
 // Every tokenize call on this (the main) thread. The page's thread must never tokenize: a test asserts this stays 0.

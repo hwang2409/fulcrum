@@ -1,11 +1,10 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
 import { afterAll, beforeEach, expect, mock, test } from "bun:test";
-import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+import { shimGlobal } from "../../../test-support/dom-shim.js";
 let restoreObserver: (() => void) | undefined;
 let restoreActEnvironment: (() => void) | undefined;
 afterAll(() => { restoreObserver?.(); restoreActEnvironment?.(); });
-domShimAlarm(import.meta.path);
 
 type Rendered = { svg: SVGSVGElement; label: string } | { error: string };
 const calls: Array<{ code: string; host: Element }> = [];

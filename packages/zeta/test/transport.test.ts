@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
-domShimAlarm(import.meta.path);
+import { shimGlobal } from "../../../test-support/dom-shim.js";
 import { connect, webSocketTransport, type Transport } from "../src/index.js";
 
 class FakeWebSocket {

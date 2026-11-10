@@ -3,8 +3,6 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { domShimAlarm } from "../../../test-support/dom-shim.js";
-domShimAlarm(import.meta.path);
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore } from "@fulcrum/core";

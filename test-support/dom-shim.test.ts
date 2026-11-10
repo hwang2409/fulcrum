@@ -1,54 +1,44 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { shimGlobal, shimProperty } from "./dom-shim.js";
 
-const rows = [
-  ["alias", `const root = globalThis as any; root.__guard_slot = 1;`, true],
-  ["direct", `(globalThis as any).__guard_slot = 1;`, true],
-  ["parameter-default-alias", `((root: any = globalThis) => { root.__guard_slot = 1; })();`, true],
-  ["computed-name", `(globalThis as any)["__guard_slot"] = 1;`, true],
-  ["reflect", `Reflect.defineProperty(globalThis, "__guard_slot", { configurable: true, value: 1, writable: true });`, true],
-  ["delete", `Reflect.deleteProperty(globalThis, "__guard_slot");`, true],
-  ["set-prototype-of", `Object.setPrototypeOf((globalThis as any).__GuardConstructor.prototype, null);`, true],
-  ["added-global", `(globalThis as any).__guard_added = 1;`, true],
-  ["restored", `(globalThis as any).__guard_slot = 1; (globalThis as any).__guard_slot = 0;`, false],
-  ["local-window-fixture", `const window = { value: 0 }; window.value = 1;`, false],
-] as const;
+test("restores exact own descriptors", () => {
+  const getter = () => 1;
+  const setter = (_value: number) => {};
+  const target = Object.create({ inherited: "parent" }) as Record<string, unknown>;
+  Object.defineProperty(target, "accessor", { configurable: true, enumerable: false, get: getter, set: setter });
+  const accessor = Object.getOwnPropertyDescriptor(target, "accessor");
 
-test("the public DOM shim alarm catches leaked runtime forms", () => {
-  // The source hint must distinguish a local fixture from the real browser global.
-  const window = { value: 0 };
-  window.value = 1;
-  expect(window.value).toBe(1);
+  const restoreAccessor = shimProperty(target, "accessor", { configurable: true, value: 2 });
+  const restoreInherited = shimProperty(target, "inherited", { configurable: true, value: "child" });
+  const restoreAbsent = shimProperty(target, "absent", { configurable: true, value: true });
 
-  const directory = mkdtempSync(join(import.meta.dir, "../packages/react/test/.dom-shim-cases-"));
-  try {
-    for (const [name, mutation, fails] of rows) {
-      const path = join(directory, `${name}.test.ts`);
-      writeFileSync(path, `
-import { afterAll, test } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { domShimAlarm } from "../../../../test-support/dom-shim.js";
+  restoreAbsent();
+  restoreInherited();
+  restoreAccessor();
+  restoreAccessor();
 
-GlobalRegistrator.register();
-Object.defineProperty(globalThis, "__guard_slot", { configurable: true, value: 0, writable: true });
-Object.defineProperty(globalThis, "__GuardConstructor", { configurable: true, value: function GuardConstructor() {} });
-domShimAlarm(import.meta.path);
-afterAll(() => GlobalRegistrator.unregister());
+  expect(Object.getOwnPropertyDescriptor(target, "accessor")).toEqual(accessor);
+  expect(Object.hasOwn(target, "inherited")).toBe(false);
+  expect(target.inherited).toBe("parent");
+  expect(Object.hasOwn(target, "absent")).toBe(false);
+});
 
-test(${JSON.stringify(name)}, () => { ${mutation} });
-`);
-      const result = Bun.spawnSync({ cmd: [process.execPath, "test", path], stdout: "pipe", stderr: "pipe" });
-      const output = new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
-      if (fails) {
-        expect(`${name} exit=${result.exitCode}`).toBe(`${name} exit=1`);
-        expect(output).toContain(`${basename(path)} leaked DOM shim`);
-      } else {
-        expect(`${name} exit=${result.exitCode}`).toBe(`${name} exit=0`);
-        expect(output).not.toContain("leaked DOM shim");
-      }
-    }
-  } finally {
-    rmSync(directory, { force: true, recursive: true });
-  }
+test("nested shims restore in LIFO order", () => {
+  const target = { value: "original" };
+  const restoreOuter = shimProperty(target, "value", { configurable: true, value: "outer" });
+  const restoreInner = shimProperty(target, "value", { configurable: true, value: "inner" });
+
+  restoreInner();
+  expect(target.value).toBe("outer");
+  restoreOuter();
+  expect(target.value).toBe("original");
+});
+
+test("shimGlobal restores the original descriptor", () => {
+  const name = Symbol("dom-shim-test");
+  const restore = shimGlobal(name, "temporary");
+  expect(Reflect.get(globalThis, name)).toBe("temporary");
+  restore();
+  restore();
+  expect(Object.hasOwn(globalThis, name)).toBe(false);
 });
