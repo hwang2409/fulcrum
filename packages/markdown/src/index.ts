@@ -1155,10 +1155,19 @@ export function createStreamingDocument(): StreamingDocument {
     if (combined && !state.ownerResolved && (!remaining || remaining.index !== state.openCode!.index || remaining.length !== state.openCode!.length)) {
       const markerLength = state.openCode!.length;
       const resolvedLine = resolver.pendingLeafContent;
+      const previousLength = resolvedLine.length - (currentLine.length - state.lineLength);
+      const unmatchedRuns = new Set<number>();
       const closer = [...resolvedLine.matchAll(/`+/g)].find((run) => {
         let escapes = 0;
         for (let index = run.index - 1; index >= 0 && resolvedLine[index] === "\\"; index--) escapes++;
-        return escapes % 2 === 0 && run[0].length === markerLength;
+        if (escapes % 2) return false;
+        if (run[0].length === markerLength) {
+          const confirmed = run.index > previousLength || run.index + run[0].length < resolvedLine.length;
+          return confirmed && unmatchedRuns.size === 0;
+        }
+        if (unmatchedRuns.has(run[0].length)) unmatchedRuns.delete(run[0].length);
+        else unmatchedRuns.add(run[0].length);
+        return false;
       });
       if (closer) {
         const end = closer.index + markerLength;
