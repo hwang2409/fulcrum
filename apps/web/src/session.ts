@@ -752,6 +752,11 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       onSelect?.(id);
       void open(id);
     },
+    retry(id: string) {
+      createAbort?.abort();
+      onSelect?.(id);
+      void open(id);
+    },
     refresh,
     dismissOpenError() { transition({ type: "dismiss" }); },
     /** Starts a session with zeta's `new_session` (which makes it the server's own), then opens it. */
