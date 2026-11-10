@@ -27,7 +27,7 @@ const state = (overrides: Partial<SettleState> = {}): SettleState => ({
   owner: null,
   recovery: null,
   pinned: false,
-  settled: basis,
+  lastObserved: basis,
   historyPending: false,
   writeBlockedByTouch: false,
   deferred: null,
@@ -51,16 +51,13 @@ const sampleFor = ({ geometry, reader }: Axes): HostSample => {
 };
 
 const expectedFor = (axes: Axes, sample: HostSample) => {
-  const expectedClamp = Math.max(0, Math.min(basis.top - (sample.rectBottom - basis.rectBottom), sample.end));
-  const within = Math.abs(sample.top - expectedClamp) <= 4;
+  const expectedTop = Math.max(0, Math.min(basis.top - (sample.rectBottom - basis.rectBottom), sample.end));
+  const readerMoved = Math.abs(sample.top - expectedTop) > (axes.owner === "open" ? 1 : 4);
   const atEnd = sample.end - sample.top <= 4;
-  if (axes.recovery === "open") return within
-    ? { report: "observe", recovery: "keep", owner: null, pinned: axes.pinned }
-    : { report: "user", recovery: "cancel", owner: null, pinned: atEnd };
-  if (axes.owner === "open" || (axes.pinned && axes.geometry !== "none")) return within
-    ? { report: "observe", recovery: "keep", owner: null, pinned: axes.owner === "open" ? axes.pinned : true, write: axes.pinned && Math.abs(sample.end - sample.top) >= 0.5 ? "end" : null }
-    : { report: "user", recovery: "cancel", owner: null, pinned: atEnd, write: null };
-  return { report: "user", recovery: "cancel", owner: null, pinned: atEnd, write: null };
+  if (readerMoved) return { report: "user", recovery: "cancel", owner: null, pinned: atEnd, write: null };
+  if (axes.recovery === "open") return { report: "observe", recovery: "keep", owner: null, pinned: axes.pinned, write: null };
+  if (axes.pinned) return { report: "observe", recovery: "keep", owner: null, pinned: true, write: Math.abs(sample.end - sample.top) >= 0.5 ? "end" : null };
+  return { report: "observe", recovery: "keep", owner: null, pinned: atEnd, write: null };
 };
 
 describe("decideSettle", () => {
@@ -76,10 +73,11 @@ describe("decideSettle", () => {
       const prev = state({
         pinned: axes.pinned,
         owner: axes.owner === "open" ? { target: 20923, readBack: basis } : null,
-        recovery: axes.recovery === "open" ? { basis, target: null } : null,
+        recovery: axes.recovery === "open" ? { target: null } : null,
       });
       const decision = decideSettle(prev, { kind: axes.event, sample });
       const expected = expectedFor(axes, sample);
+      expect(decision.next.lastObserved, `${Object.values(axes).join("/")}: observed sample`).toEqual(sample);
       expect({
         report: decision.report,
         write: decision.write,
@@ -102,13 +100,43 @@ describe("decideSettle", () => {
 
   test("an owner exists only when its write moved the host", () => {
     const moved = { ...basis, top: 120, engineTop: 112 };
-    expect(decideSettle(state(), { kind: "owner-write", target: "end", before: basis, sample: moved }).next.owner).toEqual({ target: "end", readBack: moved });
+    const movedDecision = decideSettle(state(), { kind: "owner-write", target: "end", before: basis, sample: moved });
+    expect(movedDecision.next.owner).toEqual({ target: "end", readBack: moved });
+    expect(movedDecision.next.lastObserved).toEqual(moved);
     expect(decideSettle(state(), { kind: "owner-write", target: "end", before: basis, sample: basis }).next.owner).toBeNull();
+  });
+
+  test("an end write that has not landed keeps a pinned reader pinned", () => {
+    const before = { ...basis, top: 0, end: 0, engineTop: 0 };
+    const readBack = { ...before, end: 621.5 };
+    const decision = decideSettle(state({ pinned: true, lastObserved: before }), {
+      kind: "owner-write",
+      target: "end",
+      before,
+      sample: readBack,
+    });
+    expect(decision.next.owner).toBeNull();
+    expect(decision.next.pinned).toBeTrue();
+    const retry = decideSettle(decision.next, { kind: "viewport", sample: readBack });
+    expect(retry.report).toBe("observe");
+    expect(retry.write).toBe("end");
+  });
+
+  test("an open reconnect survives its empty and first non-empty replay samples", () => {
+    const reconnectBasis = { ...basis, top: 20_931, end: 42_017, clientHeight: 643, engineTop: 20_923 };
+    const empty = { ...reconnectBasis, top: 0, end: 0, engineTop: 0 };
+    const firstRows = { ...empty, end: 1_077 };
+    const open = state({ pinned: false, lastObserved: reconnectBasis, recovery: { target: null } });
+    const afterEmpty = decideSettle(open, { kind: "scroll", sample: empty });
+    const afterRows = decideSettle(afterEmpty.next, { kind: "rows", sample: firstRows });
+    expect(afterRows.report).toBe("observe");
+    expect(afterRows.recovery).toBe("keep");
+    expect(afterRows.next.recovery).not.toBeNull();
   });
 
   test("a detached numeric owner echo stays detached", () => {
     const readBack = { ...basis, top: 20931, end: 42017, engineTop: 20923 };
-    const prev = state({ pinned: false, settled: readBack, owner: { target: 20923, readBack } });
+    const prev = state({ pinned: false, lastObserved: readBack, owner: { target: 20923, readBack } });
     const echo = decideSettle(prev, { kind: "scroll", sample: readBack });
     expect(echo.next.pinned).toBeFalse();
     expect(echo.next.owner).toBeNull();
@@ -117,16 +145,18 @@ describe("decideSettle", () => {
 
   test("a short page at its physical end keeps open recovery", () => {
     const short = { ...basis, top: 0, end: 0, engineTop: 0 };
-    const decision = decideSettle(state({ recovery: { basis, target: null } }), { kind: "scroll", sample: short });
+    const decision = decideSettle(state({ recovery: { target: null } }), { kind: "scroll", sample: short });
     expect(decision.report).toBe("observe");
     expect(decision.recovery).toBe("keep");
     expect(decision.next.recovery).not.toBeNull();
   });
 
-  test("the exact WebKit 41 px clamp stays in the open transaction", () => {
-    const now = { ...basis, top: 59, rectTop: 41, rectBottom: 641, engineTop: 51 };
-    const decision = decideSettle(state({ pinned: true, owner: { target: "end", readBack: basis } }), { kind: "viewport", sample: now });
+  test("the webkit reconnect run-2 clamp stays pinned against the last observed geometry", () => {
+    const lastObserved = { ...basis, top: 43_348, end: 43_348, clientHeight: 643, rectBottom: 800, engineTop: 43_330 };
+    const sample = { ...lastObserved, top: 43_307, clientHeight: 678, rectBottom: 843.6875, engineTop: 43_299 };
+    const decision = decideSettle(state({ pinned: true, lastObserved }), { kind: "viewport", sample });
     expect(decision.report).toBe("observe");
+    expect(decision.next.pinned).toBeTrue();
     expect(decision.write).toBe("end");
   });
 
@@ -143,10 +173,10 @@ describe("decideSettle", () => {
   });
 
   test("every open state has a callback-independent terminal transition", () => {
-    const numeric = { target: 20923, expectedHostTop: 20931, basis: { ...basis, top: 20931, end: 42017 } };
+    const numeric = { target: 20923 };
     const openStates = [
       state({ owner: { target: "end", readBack: basis } }),
-      state({ recovery: { basis, target: null } }),
+      state({ recovery: { target: null } }),
       state({ deferred: numeric, writeBlockedByTouch: true }),
     ];
     const terminalEvents: SettleEvent[] = [

@@ -100,7 +100,7 @@ export function useVirtualList<Id extends string>(
       owner: null,
       recovery: null,
       pinned: true,
-      settled: emptySample,
+      lastObserved: emptySample,
       historyPending: options.historyPending === true,
       writeBlockedByTouch: false,
       deferred: null,
@@ -147,7 +147,9 @@ export function useVirtualList<Id extends string>(
     const before = geometry(host);
     const logicalEnd = before.prefix + engine.getSnapshot().totalSize + 2 * defaultVirtualGutter - host.clientHeight;
     const desiredHostTop = target === "end"
-      ? Math.max(before.hostEnd, logicalEnd)
+      ? engine.getSnapshot().totalSize === 0
+        ? 0
+        : Math.max(before.hostEnd, logicalEnd)
       : before.prefix + before.gutter + target;
     host.scrollTop = desiredHostTop;
     const after = geometry(host);
@@ -175,7 +177,7 @@ export function useVirtualList<Id extends string>(
       if (coordinator.current.settle.recovery !== null) return;
       decision = decideSettle(coordinator.current.settle, { kind: "recovery-open", sample: current, target: null });
     } else {
-      const target: ScrollTarget = result.followedBottom ? "end" : result.scrollTop;
+      const target: ScrollTarget = coordinator.current.settle.pinned || result.followedBottom ? "end" : result.scrollTop;
       decision = decideSettle(coordinator.current.settle, { kind: "recovery-complete", sample: current, target });
     }
     coordinator.current.settle = decision.next;
@@ -248,7 +250,7 @@ export function useVirtualList<Id extends string>(
             size: Math.max(0, current.hostGeometry.clientHeight - current.gutter),
             source: decision.report,
           });
-          if (decision.report === "user" && decision.next.pinned && !engine.getSnapshot().pinned) engine.requestFollow();
+          if (decision.next.pinned && !engine.getSnapshot().pinned) engine.requestFollow();
         }
         if (decision.write !== null) writeScroll(decision.write);
       };
@@ -256,9 +258,6 @@ export function useVirtualList<Id extends string>(
         lastLayoutSample = sampleOf(current);
         applyDecision(decideSettle(coordinator.current.settle, { kind, sample: lastLayoutSample }), current);
       };
-
-      const attachedSnapshot = engine.getSnapshot();
-      writeScroll(attachedSnapshot.pinned ? "end" : attachedSnapshot.scrollTop);
 
       const rowObserver = new ResizeObserver((entries) => {
         if (entries.length === 0) return;
@@ -313,6 +312,9 @@ export function useVirtualList<Id extends string>(
       host.addEventListener("touchstart", onTouchStart, { passive: true });
       host.addEventListener("touchend", onTouchEnd, { passive: true });
       host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
+      const attachedSnapshot = engine.getSnapshot();
+      writeScroll(attachedSnapshot.pinned ? "end" : attachedSnapshot.scrollTop);
 
       const release = () => {
         coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "reset" }).next;
@@ -381,17 +383,20 @@ export function useVirtualList<Id extends string>(
 
   const scrollToId = useCallback((id: Id, viewportOffset = 0) => {
     if (!containerRef.current) return;
+    coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "detach" }).next;
     writeScroll(engine.scrollToId(id, viewportOffset));
   }, [engine, writeScroll]);
 
   const scrollToEnd = useCallback(() => {
     if (!containerRef.current) return;
+    coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "follow" }).next;
     engine.scrollToEnd();
     writeScroll("end");
   }, [engine, writeScroll]);
 
   const requestFollow = useCallback(() => {
     if (!containerRef.current) return;
+    coordinator.current.settle = decideSettle(coordinator.current.settle, { kind: "follow" }).next;
     const next = engine.requestFollow();
     if (next !== null) writeScroll("end");
   }, [engine, writeScroll]);

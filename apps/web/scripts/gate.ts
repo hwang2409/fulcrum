@@ -769,9 +769,18 @@ async function checkAnimatedReaderScrollRepins(page: Page, engine: string, gestu
       const box = await scroll.boundingBox();
       if (!box) throw new Error(`${row}: no scroll viewport`);
       await rowPage.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      await rowPage.mouse.wheel(0, -(gesture === "End" ? 2 : gesture === "PageDown repeated" ? 1.5 : 0.5) * box.height);
+      const wheelDelta = -(gesture === "End" ? 2 : gesture === "PageDown repeated" ? 1.5 : 0.5) * box.height;
+      let leftBottom = false;
+      for (let attempt = 1; attempt <= 5 && !leftBottom; attempt++) {
+        await rowPage.mouse.wheel(0, wheelDelta);
+        leftBottom = await rowPage.waitForFunction(() => {
+          const element = document.querySelector<HTMLElement>('[data-part="timeline-scroll"]')!;
+          return element.scrollHeight - element.clientHeight - element.scrollTop > 4;
+        }, undefined, { timeout: 2_000 }).then(() => true, () => false);
+      }
+      if (!leftBottom) throw new Error(`${row}: five wheel steps did not move the reader more than 4 px from the bottom`);
       fake.emit({ event: "user_message", session_id: LONG, text: `animated ${engine} ${gesture} away`, mode: "send", attachments: [], delivery_id: `animated-away-${engine}-${gesture}` });
-      await waitNamed(rowPage.locator('[data-part="jump-to-latest"][data-unseen-count="1"]'), `${row}: the reader did not leave the bottom (no jump control with unseen=1)`, 10_000);
+      await waitNamed(rowPage.locator('[data-part="jump-to-latest"][data-unseen-count="1"]'), `${row}: the detached reader did not show one unseen row`, 10_000);
       const settled = () => rowPage.evaluate(async () => {
         const w = window as typeof window & { __animatedScrolls?: number };
         let seen = -1;
