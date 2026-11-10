@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, jest, test } from "bun:test";
+import { shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 import type { Token } from "../src/index.js";
 import type { RegexRecipeOptions } from "../src/regex.js";
 import { semanticTheme } from "../src/scopes.js";
@@ -6,15 +7,19 @@ import { semanticTheme } from "../src/scopes.js";
 const { createHighlighter } = await import("../dist/index.js");
 // Unit tests never depend on how fast this machine is: the clock stands still unless a test moves it, so no line is ever
 // over the time limit by chance. Only a real worker (its own clock) runs on real time.
-Object.defineProperty(performance, "now", { configurable: true, value: () => 0 });
+let restoreFrozenClock = () => {};
+afterAll(() => { directHighlighter.dispose(); restoreTokenizer(); restoreFrozenClock(); });
+restoreFrozenClock = shimProperty(performance, "now", { configurable: true, value: () => 0 });
 const { TokenizerRuntime, regexFromRecipe } = await import("../dist/runtime.js");
 // Every tokenize call on this (the main) thread. The page's thread must never tokenize: a test asserts this stays 0.
 let mainThreadTokenizes = 0;
 const tokenizeOnMainThread = TokenizerRuntime.prototype.tokenize;
-TokenizerRuntime.prototype.tokenize = function (...args: Parameters<typeof tokenizeOnMainThread>) { mainThreadTokenizes++; return tokenizeOnMainThread.apply(this, args); };
+const restoreTokenizer = shimProperty(TokenizerRuntime.prototype, "tokenize", {
+  ...Object.getOwnPropertyDescriptor(TokenizerRuntime.prototype, "tokenize"),
+  value: function (...args: Parameters<typeof tokenizeOnMainThread>) { mainThreadTokenizes++; return tokenizeOnMainThread.apply(this, args); },
+});
 // Tests that drive a runtime directly count their own calls; the shared highlighter runs a real worker.
 const directHighlighter = createHighlighter();
-afterAll(() => directHighlighter.dispose());
 
 // A shared-worker grammar, warm: its first block is answered plain (cold, provisional), then once more, colored.
 const warmed = new Map<string, Promise<void>>();
@@ -235,14 +240,13 @@ describe("incremental tokenization", () => {
   test("a slow line still returns complete grammar tokens", async () => {
     const runtime = await warmRuntime("typescript");
     await runtime.tokenize("const warm = 1;\n", "typescript", { id: "warm", version: 1, state: "done" });
-    const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
     let clock = 0;
-    Object.defineProperty(performance, "now", { configurable: true, value: () => (clock += 50) });
+    const restoreClock = shimProperty(performance, "now", { configurable: true, value: () => (clock += 50) });
     try {
       const tokens = await runtime.tokenize("const slow = 1;\n", "typescript", { id: "slow", version: 1, state: "done" });
       expect(tokens.some((token) => token.type)).toBe(true);
     } finally {
-      if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
+      restoreClock();
       runtime.dispose();
     }
   });
@@ -286,7 +290,10 @@ describe("incremental tokenization", () => {
   test("warm-up exec-warms every grammar regex so no scanner does a cold first exec", async () => {
     const execd = new Set<string>();
     const originalExec = RegExp.prototype.exec;
-    RegExp.prototype.exec = function (this: RegExp, input: string) { execd.add(this.source); return originalExec.call(this, input); };
+    const restoreExec = shimProperty(RegExp.prototype, "exec", {
+      ...Object.getOwnPropertyDescriptor(RegExp.prototype, "exec"),
+      value: function (this: RegExp, input: string) { execd.add(this.source); return originalExec.call(this, input); },
+    });
     try {
       for (const language of ["typescript", "cpp"]) {
         execd.clear();
@@ -299,7 +306,7 @@ describe("incremental tokenization", () => {
         expect(coldPlain.map((r) => r.source)).toEqual([]); // none would be a cold first exec inside a scanner
         runtime.dispose();
       }
-    } finally { RegExp.prototype.exec = originalExec; }
+    } finally { restoreExec(); }
   }, 60_000);
 
   test("a warmed grammar tokenizes a document the same way twice", async () => {
@@ -321,7 +328,6 @@ describe("incremental tokenization", () => {
   // Regression: with a warm grammar, a slow attempt that built no scanner was final, so one pause of the thread (a
   // garbage collection, a busy CI runner) left a line plain for good (a write card's line 7 in CI, 5 of 48 loads).
   test("a line slowed once by a pause gets its retry and is colored", async () => {
-    const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
     let clock = 0;
     // The pause hits the second line's first attempt (a first line always builds a scanner, so it always got a retry).
     const counter = await countAttempts("typescript", () => { if (counter.attempts === 2) clock += 30; });
@@ -329,23 +335,22 @@ describe("incremental tokenization", () => {
     // The same document once before, so the slow attempt below builds no scanner: only the pause made it slow.
     await counter.runtime.tokenize(source, "typescript", { id: "warm", version: 1, state: "done" });
     counter.attempts = 0;
-    Object.defineProperty(performance, "now", { configurable: true, value: () => clock });
+    const restoreClock = shimProperty(performance, "now", { configurable: true, value: () => clock });
     try {
       const tokens = await counter.runtime.tokenize(source, "typescript", { id: "paused", version: 1, state: "done" });
       expect(counter.attempts).toBe(2);
       expect(typedPerLine(tokens).slice(0, 2)).toEqual([true, true]);
     } finally {
-      if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
+      restoreClock();
       counter.runtime.dispose();
     }
   });
 
   test("slow documents complete every line", async () => {
-    const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
     let clock = 0;
     let counter: Awaited<ReturnType<typeof countAttempts>> | undefined;
     counter = await countAttempts("typescript", () => { clock += 12; });
-    Object.defineProperty(performance, "now", { configurable: true, value: () => clock });
+    const restoreClock = shimProperty(performance, "now", { configurable: true, value: () => clock });
     try {
       const lines = 50;
       const source = "const a = 1;\n".repeat(lines);
@@ -353,7 +358,7 @@ describe("incremental tokenization", () => {
       expect(typedPerLine(tokens).every((typed, index) => index >= lines || typed)).toBe(true);
       expect(counter.attempts).toBe(lines);
     } finally {
-      if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
+      restoreClock();
       counter.runtime.dispose();
     }
   });
@@ -660,8 +665,7 @@ describe("worker liveness and restarts", () => {
 
   test("a long reply's parts are paced: the page acks one part per animation frame, and owing an ack is not silence", withFakeTimers(async () => {
     const frames: Array<() => void> = [];
-    const native = globalThis.requestAnimationFrame;
-    globalThis.requestAnimationFrame = ((run: () => void) => frames.push(run)) as typeof requestAnimationFrame;
+    const restoreRequestFrame = shimGlobal("requestAnimationFrame", ((run: () => void) => frames.push(run)) as typeof requestAnimationFrame);
     try {
       const workers: Scripted[] = [];
       const highlighter = createHighlighter({ workerFactory: () => scripted(workers) });
@@ -685,7 +689,7 @@ describe("worker liveness and restarts", () => {
       expect(await long).toEqual([{ text: "a", type: "keyword" }, { text: "b" }, { text: "c" }]);
       expect(frames.length).toBe(0);
       highlighter.dispose();
-    } finally { globalThis.requestAnimationFrame = native; }
+    } finally { restoreRequestFrame(); }
   }));
 
   test("crashes spread out over time keep recovering", withFakeTimers(async () => {
@@ -811,14 +815,13 @@ describe("identity, failure, and caps", () => {
   test("without a Worker (ssr, tests) or when one cannot be built (a strict csp), blocks are exact plain text", async () => {
     const before = mainThreadTokenizes;
     const code = samples.typescript;
-    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Worker")!;
-    delete (globalThis as { Worker?: unknown }).Worker;
+    const restoreWorker = shimProperty(globalThis, "Worker");
     let told = 0;
     try {
       const highlighter = createHighlighter({ onHighlightUnavailable: () => told++ });
       expect(highlighter(code, "typescript", { id: "no-worker", version: 1, state: "done" })).toEqual([{ text: code }]);
       highlighter.dispose();
-    } finally { Object.defineProperty(globalThis, "Worker", descriptor); }
+    } finally { restoreWorker(); }
     await Promise.resolve();
     expect(told).toBe(1);
     // A worker that cannot be built is a crash: it is tried again with backoff (250 ms, 1 s, 4 s), then plain for good.
@@ -979,10 +982,9 @@ test("an older same-key request that lands last does not replace the newer cache
 describe("grammar warm-up and regex caches", () => {
   // Every reading of the clock moves `step` ms, so every attempt is over the line limit and warm-up yields after each pattern.
   const withClock = async <T>(step: number, run: () => Promise<T>) => {
-    const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
     let clock = 0;
-    Object.defineProperty(performance, "now", { configurable: true, value: () => (clock += step) });
-    try { return await run(); } finally { if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor); }
+    const restoreClock = shimProperty(performance, "now", { configurable: true, value: () => (clock += step) });
+    try { return await run(); } finally { restoreClock(); }
   };
 
   test("a worker answers between warm-up slices, and re-sends each provisional block once when warm", async () => {

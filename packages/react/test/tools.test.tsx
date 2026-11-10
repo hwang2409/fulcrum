@@ -3,6 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
+import { shimProperty } from "../../../test-support/dom-shim.js";
 import { readFileSync } from "node:fs";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -14,10 +15,12 @@ import { segmentText } from "../src/tools/text-viewer.js";
 afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
 let container: HTMLElement;
+const restoreShims: Array<() => void> = [];
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
+  restoreShims.splice(0).reverse().forEach((restore) => restore());
 });
 
 function mount(node: ReactNode) {
@@ -151,7 +154,7 @@ test("fetch shows the status, the full url, and the body", () => {
 
 test("copy buttons copy the command, the path, and the full output", async () => {
   const copied: string[] = [];
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
+  restoreShims.push(shimProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } }));
   const long = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
   render([
     ...tool("c1", "bash", { kind: "shell", command: "ls -la" }, long),
@@ -258,7 +261,7 @@ test("every card and approval bounds multi-megabyte presentation surfaces", asyn
     ["fetch", { kind: "fetch", url: `https://example.com/${huge}` }],
   ];
   const copied: string[] = [];
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
+  restoreShims.push(shimProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } }));
 
   for (const [name, view] of cases) {
     const tool_call = { id: name, name, arguments: { value: huge } };
@@ -412,9 +415,8 @@ test("a command taller than its clamp gets a control that shows all of it", () =
   const command = Array.from({ length: 20 }, (_, i) => `echo ${i}`).join("\n");
   // happy-dom has no layout: the command reports 20 lines of content in an 8-line box until the clamp is removed.
   const proto = HTMLElement.prototype;
-  const descriptors = (["scrollHeight", "clientHeight"] as const).map((name) => [name, Object.getOwnPropertyDescriptor(proto, name)] as const);
-  Object.defineProperty(proto, "scrollHeight", { configurable: true, get() { return 400; } });
-  Object.defineProperty(proto, "clientHeight", { configurable: true, get(this: Element) { return this.hasAttribute("data-expanded") ? 400 : 160; } });
+  const restoreScrollHeight = shimProperty(proto, "scrollHeight", { configurable: true, get() { return 400; } });
+  const restoreClientHeight = shimProperty(proto, "clientHeight", { configurable: true, get(this: Element) { return this.hasAttribute("data-expanded") ? 400 : 160; } });
   try {
     render(tool("sh", "bash", { kind: "shell", command }, "ok\n"), ["tool:sh"]);
     openCard("tool:sh");
@@ -426,7 +428,8 @@ test("a command taller than its clamp gets a control that shows all of it", () =
     expect(q('[data-action="show-command"]')).toBeNull();
     expect(q('[data-part="shell-command"]').textContent).toBe(command);
   } finally {
-    for (const [name, descriptor] of descriptors) descriptor ? Object.defineProperty(proto, name, descriptor) : delete (proto as Partial<HTMLElement>)[name];
+    restoreClientHeight();
+    restoreScrollHeight();
   }
 });
 
