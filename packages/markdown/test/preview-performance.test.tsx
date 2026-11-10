@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown } from "../src/index.js";
 import { PENDING_INLINE_SUFFIX as PENDING_INLINE_SUFFIX_BUDGET } from "../src/pending-inline.js";
 import { expectGrowthBelow } from "../../../test-support/scaling.js";
+import { shimProperty } from "../../../test-support/dom-shim.js";
 
 function canonicalTree(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -47,16 +48,22 @@ function previewStringWork(source: string, chunkSize: number) {
   const substring = String.prototype.substring;
   let work = 0;
   let measuring = false;
-  String.prototype.slice = function (...args) {
-    const result = slice.apply(this, args);
-    if (measuring) work += result.length;
-    return result;
-  };
-  String.prototype.substring = function (...args) {
-    const result = substring.apply(this, args);
-    if (measuring) work += result.length;
-    return result;
-  };
+  const restoreSlice = shimProperty(String.prototype, "slice", {
+    ...Object.getOwnPropertyDescriptor(String.prototype, "slice"),
+    value: function (...args: Parameters<typeof slice>) {
+      const result = slice.apply(this, args);
+      if (measuring) work += result.length;
+      return result;
+    },
+  });
+  const restoreSubstring = shimProperty(String.prototype, "substring", {
+    ...Object.getOwnPropertyDescriptor(String.prototype, "substring"),
+    value: function (...args: Parameters<typeof substring>) {
+      const result = substring.apply(this, args);
+      if (measuring) work += result.length;
+      return result;
+    },
+  });
   try {
     const document = createStreamingDocument();
     for (let offset = 0; offset < source.length; offset += chunkSize) {
@@ -67,8 +74,8 @@ function previewStringWork(source: string, chunkSize: number) {
     }
     return work;
   } finally {
-    String.prototype.slice = slice;
-    String.prototype.substring = substring;
+    restoreSubstring();
+    restoreSlice();
   }
 }
 
