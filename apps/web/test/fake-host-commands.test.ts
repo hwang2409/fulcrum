@@ -145,14 +145,14 @@ test("fake zeta releases the controller immediately after overflow-silent termin
 }, SOCKET_EVENT_DEADLINE_MS + SOCKET_CLEANUP_DEADLINE_MS + 5_000);
 
 test("fake zeta resolves unique session prefixes and reports ambiguous candidates", async () => {
-  const fake = await startFakeZeta({ origins: [], live: false });
+  const fake = await startFakeZeta({ origins: [], live: false, ambiguousPrefix: true });
   try {
     const connection = await credentials(fake);
     const client = await connectZeta({ url: connection.url, token: connection.token });
     await expect(client.request("resume", { session_id: "s-rec" })).resolves.toMatchObject({ session: { session_id: "s-reconnect" } });
     await expect(client.request("resume", { session_id: "s-ma" })).rejects.toMatchObject({
       code: -32602,
-      data: { code: "session_id_ambiguous", session_id: "s-ma", candidates: ["s-many", "s-markdown"] },
+      data: { code: "session_id_ambiguous", session_id: "s-ma", candidates: ["s-markdown", "s-many"] },
     });
     client.close();
   } finally {
