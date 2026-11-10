@@ -51,6 +51,8 @@ type PendingInlineState = {
   lineLength: number;
   continues: boolean;
   referenceCount: number;
+  openCode?: { source: string; index: number; length: number };
+  ownerResolved?: true;
 };
 
 const pendingInlineMatches = (state: PendingInlineState | undefined, offset: number, continues: boolean, referenceCount: number) =>
@@ -447,8 +449,18 @@ function safeInlineContent(source: string, growing: boolean): SafeInlineContent 
 /** `growing`: the source's last line may still grow; a streaming paragraph's ended lines pass false. */
 function parseInline(source: string, streaming: boolean, environment: Environment = {}, growing = streaming) {
   const safe = streaming ? safeInlineContent(source, growing) : { source };
-  const tokens = markdown.parseInline(safe.source, environment);
+  // CommonMark decides trailing spaces and backslashes only when another line starts. A committed streaming line needs
+  // that decision now, so parse one harmless continuation and remove only it and its soft break afterward.
+  const committed = streaming && !growing;
+  const tokens = markdown.parseInline(committed ? `${safe.source}\na` : safe.source, environment);
   const nodes = inlineNodes(tokens[0]?.children ?? []);
+  if (committed) {
+    const last = nodes.at(-1);
+    if (last?.type === "text" && last.value.endsWith("a")) {
+      last.value = last.value.slice(0, -1).replace(/\n$/, "");
+      if (!last.value) nodes.pop();
+    }
+  }
   // An unclosed span may stay literal, so its preview shows only the text its content renders as markdown.
   if (safe.openCode) {
     const literal = inlineNodes(markdown.parseInline(withoutOpenSyntax(literalBrackets(safe.openCode), growing), environment)[0]?.children ?? []);
@@ -1117,8 +1129,9 @@ export function createStreamingDocument(): StreamingDocument {
       // line itself shows its backticks as sent (an ended line hides nothing).
       const open = continues && openParagraph ? unmatchedCodeSpan(openParagraph.source) : undefined;
       const after = open && openParagraph!.source[open.index + open.length];
-      const prefix = continues && openParagraph
-        ? [...openParagraph.block.children, { type: "text" as const, value: "\n" }]
+      const prior = openParagraph?.block.children;
+      const prefix = continues && prior
+        ? [...prior, ...(prior.at(-1)?.type === "break" ? [] : [{ type: "text" as const, value: "\n" }])]
         : undefined;
       pendingInline = new PendingInline(
         parsePending,
@@ -1130,15 +1143,39 @@ export function createStreamingDocument(): StreamingDocument {
         lineLength: 0,
         continues,
         referenceCount: resolver.references.size,
+        openCode: open && { source: openParagraph!.source, ...open },
       };
+    }
+    const state = pendingInlineState!;
+    const currentLine = line.slice(state.offset);
+    const lineLength = currentLine.length;
+    const combined = state.openCode && `${state.openCode.source}\n${currentLine}`;
+    const remaining = combined && unmatchedCodeSpan(combined);
+    let resolvedNow = false;
+    if (combined && !state.ownerResolved && (!remaining || remaining.index !== state.openCode!.index || remaining.length !== state.openCode!.length)) {
+      const markerLength = state.openCode!.length;
+      const resolvedLine = resolver.pendingLeafContent;
+      const closer = [...resolvedLine.matchAll(/`+/g)].find((run) => {
+        let escapes = 0;
+        for (let index = run.index - 1; index >= 0 && resolvedLine[index] === "\\"; index--) escapes++;
+        return escapes % 2 === 0 && run[0].length === markerLength;
+      });
+      if (closer) {
+        const end = closer.index + markerLength;
+        const prefix = parsePending(`${state.openCode!.source}\n${resolvedLine.slice(0, end)}`, true, true);
+        pendingInline = new PendingInline(parsePending, undefined, prefix);
+        pendingInline.append(resolvedLine.slice(end));
+        state.ownerResolved = true;
+        resolvedNow = true;
+      }
     }
     const inline = pendingInline!;
     const copied = inline.copiedCharacters;
-    const state = pendingInlineState!;
-    const lineLength = line.length - state.offset;
     previewScannedCharacters += lineLength - state.lineLength;
-    if (startsInline) inline.extend(line.slice(state.offset));
-    else inline.append(line.slice(state.offset + state.lineLength));
+    if (!state.ownerResolved) {
+      if (startsInline) inline.extend(currentLine);
+      else inline.append(currentLine.slice(state.lineLength));
+    } else if (!resolvedNow) inline.append(currentLine.slice(state.lineLength));
     state.lineLength = lineLength;
     copiedCharacters += inline.copiedCharacters - copied;
     return inline.nodes;
