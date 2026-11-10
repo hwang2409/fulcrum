@@ -267,7 +267,7 @@ const historyGroups = (rows: Json[]) => {
   return groups;
 };
 
-export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, ambiguousPrefix = false, serialDelays, overflowSilentCloseDelayMs = 0 }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; ambiguousPrefix?: boolean; serialDelays?: Readonly<Record<string, number | readonly number[]>>; overflowSilentCloseDelayMs?: number }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, ambiguousPrefix = false, ambiguousSessionIds, serialDelays, overflowSilentCloseDelayMs = 0 }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; ambiguousPrefix?: boolean; ambiguousSessionIds?: readonly string[]; serialDelays?: Readonly<Record<string, number | readonly number[]>>; overflowSilentCloseDelayMs?: number }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
@@ -285,6 +285,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let sessions = [
     ...seeded,
     ...(manyPages > 0 || ambiguousPrefix ? [meta(MANY, manyPages > 0 ? 1 : 60 * 6, manyPages > 0 ? { name: `${manyPages.toLocaleString("en")} small pages of history` } : { first_message_preview: "inspect an ambiguous session prefix" })] : []),
+    ...(ambiguousPrefix ? (ambiguousSessionIds ?? ["abcd1111-full", "abcd2222-full"]).map((id, index) => meta(id, 60 * (6 + index), { first_message_preview: "inspect an ambiguous session prefix" })) : []),
     ...(largePages > 0 ? [meta(LARGE, 1, { name: `${largePages.toLocaleString("en")} large pages of history` })] : []),
   ];
   let decide: ((decision: "approve" | "deny" | "abort") => void) | null = null;
@@ -297,7 +298,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let delayedOpen = false;
   let catalogBusy = false;
   const decisions: Json[] = [];
-  const requests: Array<{ method: string; received: number; started: number; replied?: number }> = [];
+  const requests: Array<{ method: string; params: Json; received: number; started: number; replied?: number }> = [];
   const sockets = new Set<ServerWebSocket<unknown>>();
   let controller: ServerWebSocket<unknown> | null = null;
   const reconnectControllers = new WeakSet<object>();
@@ -423,7 +424,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         const request = JSON.parse(String(raw)) as { id: number; method: string; params?: Json };
         return schedule(async () => {
         const { id, method, params = {} } = request;
-        const timing: { method: string; received: number; started: number; replied?: number } = { method, received, started: performance.now() };
+        const timing: { method: string; params: Json; received: number; started: number; replied?: number } = { method, params, received, started: performance.now() };
         requests.push(timing);
         await wait(requestDelay(method));
         const reply = (body: Json) => {
@@ -497,11 +498,19 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
         if (method === "resume") {
           if (mode === "broken-session") return reply({ error: { code: -32602, message: "session log is invalid at line 12" } });
           const requested = String(params.session_id);
-          const candidates = requested.length >= 4 ? sessions.map((session) => String(session.session_id)).filter((sessionId) => sessionId.startsWith(requested)).slice(0, 8) : [];
-          const sessionId = sessions.some((session) => session.session_id === requested) ? requested : candidates.length === 1 ? candidates[0]! : null;
-          if (!sessionId) return reply({ error: candidates.length > 1
-            ? { code: -32602, message: "session id prefix is ambiguous", data: { code: "session_id_ambiguous", session_id: requested, candidates } }
-            : { code: -32602, message: "session not found", data: { code: "session_not_found", session_id: requested } } });
+          const allIds = sessions.map((session) => String(session.session_id));
+          const exact = allIds.includes(requested);
+          const matches = exact ? [requested] : allIds.filter((sessionId) => sessionId.startsWith(requested)).sort();
+          const candidates = matches.slice(0, 8).map((sessionId) => sessionId.slice(0, 8));
+          const sessionId = exact ? requested : matches.length === 1 && requested.length >= 4 ? matches[0]! : null;
+          if (!sessionId) {
+            if (matches.length > 0 && requested.length < 4) return reply({ error: { code: -32602, message: "session id prefix must be at least 4 characters" } });
+            if (matches.length > 1) {
+              const shown = candidates.join(", ") + (matches.length > 8 ? ", …" : "");
+              return reply({ error: { code: -32602, message: `session id '${requested}' is ambiguous; matches: ${shown}; please provide more characters`, data: { code: "session_id_ambiguous", session_id: requested, candidates } } });
+            }
+            return reply({ error: { code: -32602, message: "session not found", data: { code: "session_not_found", session_id: requested } } });
+          }
           if (running && sessionId !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = sessionId;
           applyHostBinding(active, binding?.commands);

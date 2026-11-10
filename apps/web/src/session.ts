@@ -383,7 +383,9 @@ const resumeFailure = (requested: string, error: unknown): ResumeFailure => {
   const rpc = error as { data?: { code?: unknown; session_id?: unknown; candidates?: unknown } } | null;
   const failedId = typeof rpc?.data?.session_id === "string" ? rpc.data.session_id : requested;
   if (rpc?.data?.code === "session_id_ambiguous") {
-    const candidates = Array.isArray(rpc.data.candidates) ? rpc.data.candidates.filter((candidate): candidate is string => typeof candidate === "string").slice(0, 8) : [];
+    const raw = Array.isArray(rpc.data.candidates) ? rpc.data.candidates.filter((candidate): candidate is string => typeof candidate === "string").slice(0, 8) : [];
+    const candidates = [...new Set(raw)];
+    if (candidates.length !== raw.length || candidates.some((candidate) => candidate === failedId || !candidate.startsWith(failedId))) return { kind: "ambiguous", requested: failedId, candidates: [] };
     return { kind: "ambiguous", requested: failedId, candidates };
   }
   if (rpc?.data?.code === "session_not_found") return { kind: "not_found", requested: failedId };
@@ -507,7 +509,7 @@ const isResumeFailure = (error: unknown): error is ResumeFailure => {
 const openFailure = (id: string, error: unknown, restored = false): OpenFailure => {
   const suffix = restored ? { restored: true as const } : {};
   if (isResumeFailure(error)) {
-    if (error.kind === "ambiguous") return { id: error.requested, message: `more than one session matches “${error.requested}”. choose a full session id:`, busy: false, candidates: error.candidates, ...suffix };
+    if (error.kind === "ambiguous") return { id: error.requested, message: `more than one session matches “${error.requested}”. ${error.candidates.length ? "choose a full session id:" : "type a longer session id."}`, busy: false, ...(error.candidates.length ? { candidates: error.candidates } : {}), ...suffix };
     if (error.kind === "not_found") return { id: error.requested, message: `session “${error.requested}” was not found.`, busy: false, ...suffix };
     return { id: error.requested, message: message(error.error), busy: isBusyError(error.error), ...suffix };
   }

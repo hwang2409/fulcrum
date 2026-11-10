@@ -50,6 +50,14 @@ const staleHistorySnapshot = (error: unknown) => {
   return value?.code === -32009 && value.data?.code === "stale_history_snapshot";
 };
 
+const MAX_STALE_RESTARTS = 3;
+export class BackwardHistoryError extends Error {
+  readonly name = "BackwardHistoryError";
+  constructor(readonly kind: "history_kept_changing", message: string, readonly cause?: unknown) {
+    super(message);
+  }
+}
+
 export async function openBackwardHistory(
   request: BackwardHistoryRequest,
   options: {
@@ -63,7 +71,20 @@ export async function openBackwardHistory(
   const signal = options.signal ?? new AbortController().signal;
   let pages: Page[] = [];
   let restart = 0;
+  let staleRestarts = 0;
 
+  const keptChanging = (cause: unknown) => new BackwardHistoryError(
+    "history_kept_changing",
+    "history kept changing; retry",
+    cause,
+  );
+  const abortWins = () => signal.throwIfAborted();
+  const consumeRestart = (cause: unknown) => {
+    abortWins();
+    if (staleRestarts >= MAX_STALE_RESTARTS) throw keptChanging(cause);
+    staleRestarts++;
+    restart++;
+  };
   const publish = (page: Page, cause: BackwardHistorySnapshot["cause"]): BackwardHistorySnapshot => {
     const snapshot = {
       rows: [...pages].reverse().flatMap(({ messages }) => messages),
@@ -76,12 +97,22 @@ export async function openBackwardHistory(
     return snapshot;
   };
   const newest = async (cause: "newest" | "restart") => {
-    signal.throwIfAborted();
-    const response = await request({ before: null }, signal);
-    signal.throwIfAborted();
-    const page = parsePage(response);
-    pages = [page];
-    return publish(page, cause);
+    while (true) {
+      abortWins();
+      try {
+        const response = await request({ before: null }, signal);
+        abortWins();
+        const page = parsePage(response);
+        pages = [page];
+        if (page.nextBefore === null) staleRestarts = 0;
+        return publish(page, cause);
+      } catch (error) {
+        abortWins();
+        if (!staleHistorySnapshot(error)) throw error;
+        consumeRestart(error);
+        cause = "restart";
+      }
+    }
   };
 
   const snapshot = await newest("newest");
@@ -101,9 +132,11 @@ export async function openBackwardHistory(
         const page = parsePage(response, pages[0]!.validator, previous.nextBefore!);
         pages.push(page);
         current = publish(page, "older");
+        staleRestarts = 0;
       } catch (error) {
+        abortWins();
         if (!staleHistorySnapshot(error)) throw error;
-        restart++;
+        consumeRestart(error);
         current = await newest("restart");
       }
     }
