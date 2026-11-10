@@ -339,7 +339,7 @@ function inspectReferenceLine(line: string) {
 
 export interface StreamingDocument {
   readonly source: string;
-  readonly stats: { readonly frozenParses: number; readonly tailParses: number; readonly scannedCharacters: number; readonly previewScannedCharacters: number; readonly copiedCharacters: number; readonly delimiterRecords: number; readonly delimiterVisits: number; readonly floorOperations: number; readonly slotReads: number; readonly slotWrites: number; readonly slotShifts: number };
+  readonly stats: { readonly frozenParses: number; readonly tailParses: number; readonly scannedCharacters: number; readonly previewScannedCharacters: number; readonly copiedCharacters: number; readonly sourceScanned: number; readonly delimiterRecords: number; readonly delimiterVisits: number; readonly floorOperations: number; readonly slotReads: number; readonly slotWrites: number; readonly slotShifts: number };
   append(delta: string): void;
   finish(): void;
   /**
@@ -622,7 +622,7 @@ export function createStreamingDocument(): StreamingDocument {
   let scannedCharacters = 0;
   let previewScannedCharacters = 0;
   let copiedCharacters = 0;
-  const delimiterStats: DelimiterWorkStats = { delimiterRecords: 0, delimiterVisits: 0, floorOperations: 0, slotReads: 0, slotWrites: 0, slotShifts: 0 };
+  const delimiterStats: DelimiterWorkStats = { sourceScanned: 0, delimiterRecords: 0, delimiterVisits: 0, floorOperations: 0, slotReads: 0, slotWrites: 0, slotShifts: 0 };
   const resolver = new MarkdownLineResolver();
   const blocks = new BlockBuffer();
   let openRoots: Block[] = [];

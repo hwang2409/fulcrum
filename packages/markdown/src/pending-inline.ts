@@ -6,15 +6,15 @@ export const PENDING_INLINE_SUFFIX = 128;
 
 type OpenerKind = "emphasis" | "code" | "bracket" | "angle";
 // A bracket moves through `dest`, `title`, `close`, or `ref` after its `]`; that syntax stays hidden.
-type LinkState = "text" | "dest" | "title" | "close" | "ref";
+type LinkState = "text" | "wait" | "text-close" | "dest" | "title" | "close" | "ref";
 // `leadingSpace` marks a code span that an earlier line of the paragraph opened, and whether its content starts with a space.
 // `node`: the slot node a stable opener's hidden marker waits in (an empty text node), or -1 while the opener is new.
 // `below`: the nearest bracket and the nearest emphasis opener of each marker below this opener on the stack, so a
 // truncation repairs the stable index in one step. `decided`: a stable `[` whose `]` arrived and decided it as text.
 type Below = { bracket: number; "*": number; "_": number; "~": number };
-type BlockedCloser = { index: number; length: number; marker: string };
-type Opener = { index: number; end: number; kind: OpenerKind; marker: string; node: number; slot?: number; closeAt?: number; closeEnd?: number; state: LinkState; below: Below; hideFrom?: number; quote?: string; leadingSpace?: boolean; decided?: true; blockedClosers?: BlockedCloser[] };
-type PublicationSlot = { node: Inline; root: number; children: number[]; tombstone: boolean };
+type BlockedCloser = { index: number; length: number; marker: string; visible?: true; node?: number; slot?: number };
+type Opener = { index: number; end: number; kind: OpenerKind; marker: string; node: number; slot?: number; closerSlot?: number; closeAt?: number; closeEnd?: number; state: LinkState; below: Below; hideFrom?: number; releaseFrom?: number; quote?: string; leadingSpace?: boolean; codePendingFrom?: number; decided?: true; blockedClosers?: BlockedCloser[] };
+type PublicationSlot = { node: Inline; root: number; parent?: number; children: number[]; tombstone: boolean; flattened?: true };
 const NONE_BELOW: Below = { bracket: -1, "*": -1, "_": -1, "~": -1 };
 
 const whitespace = (character: string | undefined) => character !== undefined && /\s/.test(character);
@@ -34,27 +34,17 @@ function belowTop(openers: readonly Opener[]): Below {
   return top.below;
 }
 
-/** Source that puts a lone parse of the suffix back into the state the line is in at `emittedEnd`. */
-function suffixContext(opener: Opener | undefined) {
-  // A decided `[` already shows in its own slot: the suffix parses its `]` as plain text, with no context character.
-  if (opener?.kind !== "bracket" || opener.decided) return "";
-  if (opener.state === "text") return "[";
-  if (opener.state === "ref") return "[][";
-  if (opener.state === "dest") return "[](";
-  if (opener.state === "close") return "[](x \"\"";
-  return opener.quote ? `[](x ${opener.quote === ")" ? "(" : opener.quote}` : "[](x ";
-}
-
 /**
  * Tracks unresolved inline openers over one growing line. A scan stops early when a closer resolves an
  * opener from an earlier scan, because the text after that opener must be parsed again as one span.
  */
 type StableIndex = { emphasis: Map<string, number>; bracket: number; boundary: number };
-export type DelimiterWorkStats = { delimiterRecords: number; delimiterVisits: number; floorOperations: number; slotReads: number; slotWrites: number; slotShifts: number };
+export type DelimiterWorkStats = { sourceScanned: number; delimiterRecords: number; delimiterVisits: number; floorOperations: number; slotReads: number; slotWrites: number; slotShifts: number };
 type MutableDelimiterWorkStats = DelimiterWorkStats;
 
 class OpenerScan {
   resolved?: Opener;
+  boundary?: BlockedCloser;
   /** In a dry run: the stack position of a stable `[` that a `]` decided as text. */
   decidedAt = -1;
   /** The lowest stack length this scan truncated to: openers from here up are new and need slots when emitted. */
@@ -95,44 +85,77 @@ class OpenerScan {
   }
 
   run(from: number, to: number) {
+    if (this.work) this.work.sourceScanned += to - from;
     let index = from;
-    while (index < to && !this.resolved) index = this.step(index, to);
+    while (index < to && !this.resolved && !this.boundary) index = this.step(index, to);
     this.stoppedAt = index;
     return this.resolved;
   }
 
   private activeBracket(position: number) {
-    while (position >= 0 && this.openers[position]?.decided) position = this.openers[position]!.below.bracket;
-    return position;
+    let active = position;
+    while (active >= 0 && this.openers[active]?.decided) {
+      if (this.work) this.work.floorOperations++;
+      active = this.openers[active]!.below.bracket;
+    }
+    while (position >= 0 && position !== active && this.openers[position]?.decided) {
+      if (this.work) this.work.floorOperations++;
+      const next = this.openers[position]!.below.bracket;
+      this.openers[position]!.below.bracket = active;
+      position = next;
+    }
+    return active;
   }
 
   private resolve(position: number) {
     const opener = this.openers[position]!;
-    if (position < this.existing && (!this.saved || opener.kind === "emphasis" || opener.kind === "bracket" && opener.state === "text")) this.resolved = opener;
+    if (position < this.existing) this.resolved = opener;
     this.truncate(position);
   }
 
   /** A text-decided bracket stays as a transparent delimiter floor until every opener above it settles. */
   private settleText(position: number) {
+    if (this.saved && position < this.existing) {
+      this.keep(position);
+      if (this.resolveBlocked(position)) return;
+      this.resolved = this.openers[position];
+      this.decidedAt = position;
+      return;
+    }
     if (!this.saved && this.work) this.work.floorOperations++;
+    this.keep(position);
+    const bracket = this.openers[position]!;
+    bracket.decided = true;
+    bracket.state = "text";
+    bracket.releaseFrom = bracket.hideFrom;
+    bracket.hideFrom = undefined;
+    this.reveal?.(bracket);
+    if (this.stable?.bracket === position) this.stable.bracket = this.activeBracket(bracket.below.bracket);
+    this.resolveBlocked(position);
+  }
+
+  private resolveBlocked(position: number) {
     const bracket = this.openers[position]!;
     for (const candidate of bracket.blockedClosers ?? []) {
+      if (this.work) this.work.delimiterVisits++;
       const closer = delimiterRun(this.source, candidate.index, candidate.length);
       for (let at = position - 1; at >= 0; at--) {
+        if (this.work) this.work.delimiterVisits++;
         const opener = this.openers[at]!;
         if (opener.kind !== "emphasis") break;
         if (opener.marker[0] !== candidate.marker) continue;
         const opening = delimiterRun(this.source, opener.index, opener.marker.length);
         const oddMatch = (opening.canClose || closer.canOpen) && (opener.marker.length + candidate.length) % 3 === 0
           && (opener.marker.length % 3 !== 0 || candidate.length % 3 !== 0);
-        if (!oddMatch) { this.resolve(at); return; }
+        if (oddMatch) continue;
+        opener.closeAt = candidate.index;
+        opener.closeEnd = candidate.index + candidate.length;
+        opener.closerSlot = candidate.slot;
+        this.resolve(at);
+        return true;
       }
     }
-    this.keep(position);
-    const decided = this.openers[position]!;
-    decided.decided = true;
-    this.reveal?.(decided);
-    if (this.stable?.bracket === position) this.stable.bracket = this.activeBracket(decided.below.bracket);
+    return false;
   }
 
   /** The one way openers leave the stack: the stable index steps to the openers below `length`, never rescans. */
@@ -154,7 +177,9 @@ class OpenerScan {
 
   private push(index: number, end: number, kind: OpenerKind) {
     if (!this.saved && this.work && kind === "bracket") this.work.floorOperations++;
-    this.openers.push({ index, end, kind, marker: this.source.slice(index, end), node: -1, state: "text", below: belowTop(this.openers) });
+    const opener = { index, end, kind, marker: this.source.slice(index, end), node: -1, state: "text" as LinkState, below: belowTop(this.openers) };
+    this.openers.push(opener);
+    if (!this.saved) this.resolved = opener;
     return end;
   }
 
@@ -185,69 +210,80 @@ class OpenerScan {
 
   private emphasis(index: number) {
     const length = runLength(this.source, index);
+    if (this.source[index] === "~" && length < 2) return index + length;
     const { canOpen, canClose } = delimiterRun(this.source, index, length);
     if (canClose) {
       const match = this.emphasisOpener(this.source[index]!);
       if (match >= 0) {
         const matched = this.openers[match]!;
-        const openerLength = matched.marker.length;
+        const used = matched.marker.length;
         matched.closeAt = index;
-        matched.closeEnd = index + length;
+        matched.closeEnd = index + used;
         this.resolve(match);
-        // A three-character closer can terminate nested `**` and `*` spans in one run.
-        if (length === 3 && openerLength < 3) {
-          const nested = this.emphasisOpener(this.source[index]!);
-          if (nested >= 0) this.resolve(nested);
-        }
-        return index + length;
+        return index + used;
       }
-      if (!this.saved) {
-        const boundary = this.stable?.boundary ?? 0;
-        let floor = -1;
-        for (let at = this.openers.length - 1; at >= boundary; at--) {
-          const opener = this.openers[at]!;
-          if (opener.kind === "bracket" && !opener.decided) { floor = at; break; }
-        }
-        if (floor < 0) floor = this.stable?.bracket ?? -1;
-        if (floor >= 0) (this.openers[floor]!.blockedClosers ??= []).push({ index, length, marker: this.source[index]! });
+      const top = this.openers.at(-1);
+      const nearest = top?.kind === "bracket" && !top.decided ? this.openers.length - 1 : top?.below.bracket ?? this.stable?.bracket ?? -1;
+      const floor = this.activeBracket(nearest);
+      if (floor >= 0) {
+        this.keep(floor);
+        const boundary = { index, length, marker: this.source[index]! };
+        (this.openers[floor]!.blockedClosers ??= []).push(boundary);
+        if (!this.saved) this.boundary = boundary;
+        if (this.work) this.work.floorOperations++;
       }
     }
-    if (canOpen) this.push(index, index + length, "emphasis");
+    if (canOpen) {
+      let cursor = index;
+      if (this.source[index] !== "~" && length % 2 === 1) {
+        this.push(cursor, cursor + 1, "emphasis");
+        cursor++;
+      }
+      while (cursor + 1 < index + length) {
+        this.push(cursor, cursor + 2, "emphasis");
+        cursor += 2;
+      }
+    }
     return index + length;
   }
 
-  /** The nearest opener of `marker` with no `[` above it, or -1. Only the new openers are walked; below them the stable index answers. */
+  /** The nearest opener of `marker` above the nearest unresolved bracket floor. */
   private emphasisOpener(marker: string) {
-    const boundary = this.stable?.boundary ?? 0;
-    for (let position = this.openers.length - 1; position >= boundary; position--) {
-      const opener = this.openers[position]!;
-      if (opener.kind === "bracket" && !opener.decided) return -1;
-      if (opener.marker[0] === marker) return position;
-    }
-    const indexed = this.stable?.emphasis.get(marker) ?? -1;
-    return indexed > (this.stable?.bracket ?? -1) ? indexed : -1;
+    const top = this.openers.at(-1);
+    const position = top?.kind === "emphasis" && top.marker[0] === marker
+      ? this.openers.length - 1
+      : top?.below[marker as "*" | "_" | "~"] ?? this.stable?.emphasis.get(marker) ?? -1;
+    const nearest = top?.kind === "bracket" && !top.decided ? this.openers.length - 1 : top?.below.bracket ?? this.stable?.bracket ?? -1;
+    const floor = this.activeBracket(nearest);
+    if (position >= 0 && this.work) this.work.delimiterVisits++;
+    return position > floor ? position : -1;
   }
 
   private closeBracket(index: number) {
     // Only the new openers are walked; below them the stable index names the nearest bracket.
-    const boundary = this.stable?.boundary ?? 0;
-    let position = this.openers.length - 1;
-    while (position >= boundary && (this.openers[position]!.kind !== "bracket" || this.openers[position]!.decided)) position--;
-    if (position < boundary) position = this.activeBracket(this.stable?.bracket ?? -1);
+    const top = this.openers.at(-1);
+    const nearest = top?.kind === "bracket" && !top.decided ? this.openers.length - 1 : top?.below.bracket ?? this.stable?.bracket ?? -1;
+    const position = this.activeBracket(nearest);
     if (position < 0) return index + 1;
+    const bracket = this.openers[position]!;
     const next = this.source[index + 1];
+    if (next === undefined) {
+      bracket.state = "wait";
+      bracket.hideFrom = index;
+      if (!this.saved) this.boundary = { index, length: 1, marker: "]" };
+      return index + 1;
+    }
     if (next !== "(" && next !== "[") {
-      const bracket = this.openers[position]!;
-      if (this.resolveMetadata?.({ kind: "reference", image: bracket.marker === "![", form: "shortcut", label: this.source.slice(bracket.end, index) })) {
+      const metadata = this.resolveMetadata?.({ kind: "reference", image: bracket.marker === "![", form: "shortcut", label: this.source.slice(bracket.end, index) });
+      if (metadata) {
+        bracket.metadata = metadata;
         this.resolve(position);
         return index + 1;
       }
-      // A dry run only asks whether a stable `[` is decided: it stops here without copying the stack above it.
-      if (this.saved && position < this.existing) {
-        this.resolved = this.openers[position];
-        this.decidedAt = position;
-      }
-      else this.settleText(position);
+      if (!this.saved) {
+        bracket.state = "text-close";
+        this.boundary = { index, length: 1, marker: "]" };
+      } else this.settleText(position);
       return index + 1;
     }
     // The opener changes state in place: a dry run keeps its original first.
@@ -265,6 +301,8 @@ class OpenerScan {
     const length = runLength(this.source, index);
     if (length === opener.marker.length) {
       this.closedAt = index;
+      opener.closeAt = index;
+      opener.closeEnd = index + length;
       this.resolve(this.openers.length - 1);
     }
     return index + length;
@@ -275,6 +313,9 @@ class OpenerScan {
     match.lastIndex = from;
     const index = match.exec(this.source)?.index ?? to;
     if (index >= to) return to;
+    const opener = this.openers.at(-1)!;
+    opener.closeAt = index;
+    if (this.source[index] === ">") opener.closeEnd = index + 1;
     this.resolve(this.openers.length - 1);
     return index + 1;
   }
@@ -283,17 +324,46 @@ class OpenerScan {
     const character = this.source[index]!;
     if (character === "\\" && opener.state !== "close") return index + 2;
     const top = this.openers.length - 1;
+    if (opener.state === "text-close") {
+      this.settleText(top);
+      return index;
+    }
+    if (opener.state === "wait") {
+      if (character === "(") {
+        opener.state = "dest";
+        return index + 1;
+      }
+      if (character === "[") {
+        opener.state = "ref";
+        return index + 1;
+      }
+      const metadata = this.resolveMetadata?.({ kind: "reference", image: opener.marker === "![", form: "shortcut", label: this.source.slice(opener.end, opener.hideFrom) });
+      if (metadata) {
+        opener.metadata = metadata;
+        this.resolve(top);
+      } else if (!this.saved) {
+        opener.state = "text-close";
+        if (opener.closerSlot === undefined) this.boundary = { index: opener.hideFrom!, length: 1, marker: "]" };
+      } else this.settleText(top);
+      return index;
+    }
     if (opener.state === "dest") {
       if (character === ")") {
-        this.resolveMetadata?.({ kind: "inline", image: opener.marker === "![", tail: this.source.slice(opener.hideFrom! + 1, index + 1) });
-        this.resolve(top);
+        const metadata = this.resolveMetadata?.({ kind: "inline", image: opener.marker === "![", tail: this.source.slice(opener.hideFrom! + 1, index + 1) });
+        if (metadata) {
+          opener.metadata = metadata;
+          this.resolve(top);
+        } else this.settleText(top);
       } else if (whitespace(character)) opener.state = "title";
     } else if (opener.state === "ref") {
       if (character === "]") {
         const label = this.source.slice(opener.hideFrom! + 2, index);
-        this.resolveMetadata?.({ kind: "reference", image: opener.marker === "![", form: label ? "full" : "collapsed", label: label || this.source.slice(opener.end, opener.hideFrom) });
-        this.resolve(top);
-      } else if (character === "[") this.resolve(top);
+        const metadata = this.resolveMetadata?.({ kind: "reference", image: opener.marker === "![", form: label ? "full" : "collapsed", label: label || this.source.slice(opener.end, opener.hideFrom) });
+        if (metadata) {
+          opener.metadata = metadata;
+          this.resolve(top);
+        } else this.settleText(top);
+      } else if (character === "[") this.settleText(top);
     } else if (opener.state === "close") {
       if (!whitespace(character)) this.resolve(top);
     } else this.title(character, opener, top);
@@ -316,7 +386,7 @@ const plainText = (nodes: readonly Inline[]): string => nodes.map((node) => "val
   : "children" in node ? plainText(node.children) : node.type === "image" ? node.alt : "").join("");
 
 /** `growing`: the text may still grow (the default for streaming); a committed line's suffix passes false. */
-export type InlineParser = (source: string, streaming: boolean, growing?: boolean) => Inline[];
+export type InlineParser = (source: string, streaming: boolean, growing?: boolean, chargeScan?: (characters: number) => void) => Inline[];
 export type LinkMetadataResolver = (request:
   | { kind: "inline"; image: boolean; tail: string }
   | { kind: "reference"; image: boolean; form: "full" | "collapsed" | "shortcut"; label: string }
@@ -353,34 +423,44 @@ export class PendingInline {
   copiedCharacters = 0;
   private readonly openers: Opener[] = [];
   private readonly stableIndex: StableIndex = { emphasis: new Map(), bracket: -1, boundary: 0 };
-  private readonly work: MutableDelimiterWorkStats = { delimiterRecords: 0, delimiterVisits: 0, floorOperations: 0, slotReads: 0, slotWrites: 0, slotShifts: 0 };
+  private readonly work: MutableDelimiterWorkStats = { sourceScanned: 0, delimiterRecords: 0, delimiterVisits: 0, floorOperations: 0, slotReads: 0, slotWrites: 0, slotShifts: 0 };
   private indexedOpeners = 0;
   private suffixLength = 0;
   private totalLength = 0;
   private delimiterTail = "";
+  private trailingDelimiterStart = -1;
+  private trailingCodeStart = -1;
   private tildeOdd = false;
   private readonly publication: PublicationSlot[] = [];
+  private readonly publicationByRoot = new Map<number, PublicationSlot>();
+  private publicationStart = -1;
   private publicationValid = true;
+  private lastPlainRoot = -1;
+  private lastPlainOwner?: Opener;
+
+  private shouldHoldTrailingDelimiter() {
+    if (this.trailingDelimiterStart < 0) return false;
+    const marker = this.content[this.trailingDelimiterStart]!;
+    return marker !== "~" || this.content.length - this.trailingDelimiterStart >= 2;
+  }
 
   private recordDelimiterSource(delta: string) {
-    if (delta && !/[*_~]/.test(delta)) {
-      this.delimiterTail = delta.at(-1)!;
-      this.tildeOdd = false;
-      return;
-    }
+    let offset = 0;
     for (const character of delta) {
+      if (character !== "`") this.trailingCodeStart = -1;
+      else if ((offset ? delta[offset - 1] : this.content.at(-1)) !== "`") this.trailingCodeStart = this.content.length + offset;
+      const delimiter = character === "*" || character === "_" || character === "~";
+      if (!delimiter) this.trailingDelimiterStart = -1;
+      else if (character !== this.delimiterTail) this.trailingDelimiterStart = this.content.length + offset;
       if (character === "*" || character === "_") {
         this.work.delimiterRecords++;
-        this.work.delimiterVisits++;
       } else if (character === "~") {
         if (this.delimiterTail !== "~") this.tildeOdd = false;
         this.tildeOdd = !this.tildeOdd;
-        if (!this.tildeOdd) {
-          this.work.delimiterRecords++;
-          this.work.delimiterVisits++;
-        }
+        if (!this.tildeOdd) this.work.delimiterRecords++;
       } else this.tildeOdd = false;
       this.delimiterTail = character;
+      offset += character.length;
     }
   }
   private readonly chunks: string[] = [];
@@ -393,7 +473,7 @@ export class PendingInline {
   }
 
   constructor(
-    private readonly parse: InlineParser,
+    private readonly parseInline: InlineParser,
     private readonly openCode?: { marker: string; leadingSpace: boolean },
     prefix: readonly Inline[] = [],
     private readonly resolveMetadata?: LinkMetadataResolver,
@@ -415,10 +495,16 @@ export class PendingInline {
     this.suffixLength = 0;
     this.totalLength = 0;
     this.delimiterTail = "";
+    this.trailingDelimiterStart = -1;
+    this.trailingCodeStart = -1;
     this.tildeOdd = false;
     this.chunks.length = 0;
     this.publication.length = 0;
+    this.publicationByRoot.clear();
+    this.publicationStart = -1;
     this.publicationValid = true;
+    this.lastPlainRoot = -1;
+    this.lastPlainOwner = undefined;
     if (this.openCode) this.openers.push({ index: 0, end: 0, kind: "code", node: this.prefixLength, state: "text", below: NONE_BELOW, ...this.openCode });
   }
 
@@ -441,8 +527,18 @@ export class PendingInline {
     if (lastChunk >= 0 && this.chunks[lastChunk]!.length + delta.length <= 4_096) this.chunks[lastChunk] += delta;
     else if (delta) this.chunks.push(delta);
     this.nodes.length -= this.suffixLength;
-    const cut = cutPoint(this.content, this.content.length - PENDING_INLINE_SUFFIX);
-    if (cut > this.emittedEnd) this.emitStable(cut);
+    let cut = this.content.length;
+    if (this.shouldHoldTrailingDelimiter()) cut = Math.min(cut, this.trailingDelimiterStart);
+    if (this.trailingCodeStart >= 0) cut = Math.min(cut, this.trailingCodeStart);
+    const trailingBackslashes = /\\+$/.exec(this.content)?.[0].length ?? 0;
+    if (trailingBackslashes % 2) cut--;
+    const entity = /&(?:#(?:x[0-9a-f]{0,6}|[0-9]{0,7})?|[a-z][a-z0-9]{0,31})?$/i.exec(this.content);
+    if (entity) cut = Math.min(cut, entity.index);
+    while (cut > this.emittedEnd) {
+      const previous = this.emittedEnd;
+      this.emitStable(cut);
+      if (this.emittedEnd <= previous) break;
+    }
     this.decideStable(false);
     if (!this.openers.length) this.settlePublicationTail();
     const suffix = this.suffix();
@@ -451,9 +547,12 @@ export class PendingInline {
     if (last?.type === "text") last.value = last.value.replace(/[ \t]+$/, "");
     for (const node of suffix) this.nodes.push(node);
     this.suffixLength = suffix.length;
-    if (!this.openers.length && this.emittedEnd) {
-      this.content = this.content.slice(this.emittedEnd);
-      this.emittedEnd = 0;
+    if (!this.openers.length && this.emittedEnd > 2) {
+      const discarded = this.emittedEnd - 2;
+      this.content = this.content.slice(discarded);
+      this.emittedEnd = 2;
+      if (this.trailingDelimiterStart >= 0) this.trailingDelimiterStart -= discarded;
+      if (this.trailingCodeStart >= 0) this.trailingCodeStart -= discarded;
     }
     return suffix;
   }
@@ -494,7 +593,8 @@ export class PendingInline {
    */
   private decideStable(ended: boolean) {
     for (;;) {
-      const { cut } = this.pastStableCloser(ended);
+      const { cut, bracket } = this.pastStableCloser(ended);
+      if (bracket !== undefined) this.reveal(this.openers[bracket]!);
       if (cut <= this.emittedEnd) return;
       const previous = this.emittedEnd;
       this.emitStable(cut);
@@ -507,6 +607,22 @@ export class PendingInline {
     const slot = opener.node >= 0 ? this.nodes[opener.node] : undefined;
     if (slot?.type === "text") {
       slot.value = opener.marker;
+      const publication = this.publicationByRoot.get(opener.node);
+      if (opener.kind === "bracket" && opener.closerSlot !== undefined) {
+        const closer = this.publication[opener.closerSlot];
+        const node = closer && this.nodes[closer.root];
+        if (node?.type === "text") node.value = "]";
+      }
+      if (publication && !publication.flattened) {
+        publication.flattened = true;
+        const parent = publication.parent === undefined ? undefined : this.publication[publication.parent];
+        const at = parent?.children.indexOf(publication.root) ?? -1;
+        if (parent && at >= 0) {
+          parent.children.splice(at, 1, publication.root, ...publication.children);
+          publication.children.length = 0;
+          this.work.slotWrites += parent.children.length - at;
+        }
+      }
       this.work.slotWrites++;
     }
   };
@@ -527,22 +643,28 @@ export class PendingInline {
       let resolved = scan.run(from, cut);
       // The suffix parse already showed an autolink `<` that meets a space, so the cut moves past that end and
       // resolves it now instead of hiding the `<` until a later cut.
-      for (let next = this.pastAngle(cut); !resolved && next > cut; next = this.pastAngle(cut)) {
+      for (let next = this.pastAngle(cut); !resolved && !scan.boundary && next > cut; next = this.pastAngle(cut)) {
         resolved = scan.run(cut, next);
         cut = next;
       }
+      if (scan.boundary) {
+        cut = scan.stoppedAt;
+        this.indexOpeners(scan.low);
+        this.emitBoundary(from, cut, scan.low, scan.boundary);
+        break;
+      }
       if (!resolved) {
-        this.indexedOpeners = Math.min(this.indexedOpeners, scan.low);
-        for (; this.indexedOpeners < this.openers.length; this.indexedOpeners++) {
-          const opener = this.openers[this.indexedOpeners]!;
-          if (opener.kind === "emphasis") this.stableIndex.emphasis.set(opener.marker[0]!, this.indexedOpeners);
-          if (opener.kind === "bracket" && !opener.decided) this.stableIndex.bracket = this.indexedOpeners;
-        }
-        this.stableIndex.boundary = this.openers.length;
+        this.indexOpeners(scan.low);
         this.emitSegments(from, cut, scan.low);
         break;
       }
       this.indexedOpeners = Math.min(this.indexedOpeners, scan.low);
+      if (resolved.closeEnd === undefined && resolved.leadingSpace === undefined && this.openers.includes(resolved)) {
+        cut = scan.stoppedAt;
+        this.indexOpeners(scan.low);
+        this.emitSegments(from, cut, scan.low);
+        break;
+      }
       if (resolved.leadingSpace !== undefined) {
         // A span from an earlier line has no opener here to parse again from; its content is code up to the closer.
         const end = scan.closedAt - (this.stripsEdgeSpace(resolved, scan.closedAt) ? 1 : 0);
@@ -550,31 +672,61 @@ export class PendingInline {
         from = scan.closedAt + resolved.marker.length;
         continue;
       }
-      if (this.settleDelimiterSlot(resolved, from)) {
-        from = resolved.closeEnd!;
+      if (resolved.kind === "bracket" && resolved.decided) {
+        const decidedFrom = resolved.releaseFrom === undefined ? from : Math.max(from, resolved.releaseFrom + 1);
+        this.emitSegments(decidedFrom, scan.stoppedAt, scan.low);
+        from = scan.stoppedAt;
+        continue;
+      }
+      if (this.settleOwnerSlot(resolved, from)) {
+        from = resolved.closeEnd ?? scan.stoppedAt;
         continue;
       }
       const discarded = this.nodes.length - resolved.node;
       this.work.slotReads += discarded;
       this.work.slotWrites += discarded;
       this.nodes.length = resolved.node;
+      this.lastPlainRoot = -1;
+      this.lastPlainOwner = undefined;
       this.publicationValid = false;
       this.discardPublicationFrom(resolved.node);
       from = resolved.index;
     }
-    this.emittedEnd = cut;
+    this.emittedEnd = Math.max(cut, from);
+  }
+
+  private emitBoundary(from: number, to: number, low: number, boundary: BlockedCloser) {
+    if (from < boundary.index) this.emitSegments(from, boundary.index, low);
+    let ownerIndex = this.openers.length - 1;
+    while (this.openers[ownerIndex]?.decided) ownerIndex--;
+    const owner = this.openers[ownerIndex];
+    boundary.node = this.nodes.length;
+    boundary.slot = this.publish({ type: "text", value: boundary.visible ? boundary.marker : "" }, owner, true);
+    if (boundary.marker === "]" && owner?.kind === "bracket") owner.closerSlot = boundary.slot;
+    this.emitText(boundary.index + boundary.length, to, owner);
+  }
+
+  private indexOpeners(low: number) {
+    this.indexedOpeners = Math.min(this.indexedOpeners, low);
+    for (; this.indexedOpeners < this.openers.length; this.indexedOpeners++) {
+      const opener = this.openers[this.indexedOpeners]!;
+      if (opener.kind === "emphasis") this.stableIndex.emphasis.set(opener.marker[0]!, this.indexedOpeners);
+      if (opener.kind === "bracket" && !opener.decided) this.stableIndex.bracket = this.indexedOpeners;
+    }
+    this.stableIndex.boundary = this.openers.length;
   }
 
   /** Emits `from..to` behind the openers from `low` up (all new): each opener's hidden marker gets an empty slot node. */
   private emitSegments(from: number, to: number, low: number) {
     let start = from;
-    let owner = this.openers[low - 1];
+    let ownerIndex = low < this.openers.length && this.openers[low]!.node < 0 ? low - 1 : this.openers.length - 1;
+    while (this.openers[ownerIndex]?.decided) ownerIndex--;
+    let owner = this.openers[ownerIndex];
     for (let position = low; position < this.openers.length; position++) {
       const opener = this.openers[position]!;
       this.emitText(start, opener.index, owner);
-      if (opener.kind !== "emphasis" || opener.marker.length > 2 || opener.marker[0] === "~" && opener.marker.length !== 2) this.publicationValid = false;
       opener.node = this.nodes.length;
-      opener.slot = this.publish({ type: "text", value: opener.decided ? opener.marker : "" }, owner, true);
+      opener.slot = this.publish({ type: "text", value: opener.decided ? opener.marker : opener.marker === "![" ? "!" : "" }, owner, true);
       start = opener.end;
       owner = opener;
     }
@@ -582,48 +734,105 @@ export class PendingInline {
   }
 
   private emitText(from: number, to: number, owner: Opener | undefined) {
-    const end = owner?.hideFrom === undefined ? to : Math.min(to, owner.hideFrom);
+    const hidesInlineDestination = owner?.kind === "bracket" && (owner.state === "dest" || owner.state === "title" || owner.state === "close");
+    let end = hidesInlineDestination && owner.hideFrom !== undefined ? Math.min(to, owner.hideFrom) : to;
     let nodes: Inline[];
     if (owner?.kind === "code") {
+      from = Math.min(from, owner.codePendingFrom ?? from);
       const closer = this.codeCloser(owner.marker, to);
-      if (owner.leadingSpace === undefined && from === owner.end && this.content[from] === " " && this.stripsEdgeSpace(owner, closer)) from++;
+      if (from === owner.end && this.content[from] === " ") from++;
+      if (closer < 0) {
+        while (end > from && this.content[end - 1] === " ") end--;
+        owner.codePendingFrom = end;
+      } else owner.codePendingFrom = undefined;
       nodes = this.codeText(from, end, closer >= 0);
-    } else nodes = owner?.kind === "angle" ? this.rawText(from, end) : this.parseText(from, end, false);
+    } else {
+      const source = this.content.slice(from, end);
+      nodes = owner?.kind === "angle" || !/[\\&\n]/.test(source) ? this.rawText(from, end) : this.parseText(from, end, false);
+    }
     for (const node of nodes) this.publish(node, owner);
   }
 
   private publish(node: Inline, owner: Opener | undefined, structural = false) {
-    if (!structural && owner === undefined && !this.publication.length) {
-      this.nodes.push(node);
-      return -1;
+    if (!structural && node.type === "text" && this.lastPlainRoot === this.nodes.length - 1 && this.lastPlainOwner === owner) {
+      const previous = this.nodes[this.lastPlainRoot];
+      if (previous?.type === "text" && previous.value.length < 256) {
+        previous.value += node.value;
+        return -1;
+      }
     }
-    const slot = this.publication.length;
     const root = this.nodes.length;
     this.nodes.push(node);
-    this.publication.push({ node, root, children: [], tombstone: false });
-    if (owner?.slot !== undefined) this.publication[owner.slot]!.children.push(slot);
-    this.work.slotWrites++;
-    return slot;
-  }
-
-  /** Settles a simple delimiter owner without rebuilding source or moving descendant slots. */
-  private settleDelimiterSlot(opener: Opener, from: number) {
-    if (!this.publicationValid || opener.kind !== "emphasis" || opener.marker.length > 2 || opener.slot === undefined || opener.closeAt === undefined || opener.closeEnd === undefined || opener.closeEnd - opener.closeAt !== opener.marker.length) return false;
-    this.emitText(from, opener.closeAt, opener);
-    const slot = this.publication[opener.slot];
-    if (!slot || slot.tombstone) return false;
-    const children: Inline[] = [];
-    for (const childId of slot.children) {
-      const child = this.publication[childId];
-      if (!child) return false;
-      this.work.slotReads++;
-      if (!child.tombstone) children.push(child.node);
-      child.tombstone = true;
-      this.nodes[child.root] = { type: "text", value: "" };
+    this.lastPlainRoot = !structural && node.type === "text" ? root : -1;
+    this.lastPlainOwner = owner;
+    if (owner?.slot !== undefined) {
+      this.publication[owner.slot]!.children.push(root);
       this.work.slotWrites++;
     }
-    const type = opener.marker[0] === "~" ? "strike" : opener.marker.length === 2 ? "strong" : "emphasis";
-    const wrapper: Inline = { type, children };
+    if (!structural) return -1;
+    if (this.publicationStart < 0) this.publicationStart = root;
+    const slotId = this.publication.length;
+    const slot = { node, root, parent: owner?.slot, children: [], tombstone: false };
+    this.publication.push(slot);
+    this.publicationByRoot.set(root, slot);
+    this.work.slotWrites++;
+    return slotId;
+  }
+
+  /** Settles one owner without rebuilding source or moving descendant slots. */
+  private settleOwnerSlot(opener: Opener, from: number) {
+    if (!this.publicationValid || opener.slot === undefined) return false;
+    if (opener.kind === "angle" && opener.closeEnd === undefined) {
+      if (opener.closeAt === undefined) return false;
+      this.emitText(from, opener.closeAt + 1, opener);
+      this.reveal(opener);
+      return true;
+    }
+    if (opener.closeAt === undefined || opener.closeEnd === undefined) return false;
+    this.emitText(from, opener.closeAt, opener);
+    if (opener.closerSlot === undefined) opener.closerSlot = this.publish({ type: "text", value: "" }, opener, true);
+    const slot = this.publication[opener.slot];
+    const closer = this.publication[opener.closerSlot];
+    if (!slot || slot.tombstone || !closer) return false;
+    const closeAt = slot.children.indexOf(closer.root);
+    if (closeAt < 0) return false;
+    const consumed = slot.children.slice(0, closeAt);
+    const after = slot.children.slice(closeAt + 1);
+    slot.children.length = 0;
+    const parent = slot.parent === undefined ? undefined : this.publication[slot.parent];
+    const parentAt = parent?.children.indexOf(slot.root) ?? -1;
+    if (parent && parentAt >= 0 && after.length) parent.children.splice(parentAt + 1, 0, ...after);
+    this.work.slotReads += slot.children.length + 2;
+    this.work.slotWrites += after.length + 2;
+    const children: Inline[] = [];
+    for (const childRoot of consumed) {
+      const child = this.nodes[childRoot];
+      this.work.slotReads++;
+      if (child?.type !== "text" || child.value) children.push(child!);
+      this.nodes[childRoot] = { type: "text", value: "" };
+      const structural = this.publicationByRoot.get(childRoot);
+      if (structural) structural.tombstone = true;
+      this.work.slotWrites++;
+    }
+    this.nodes[closer.root] = { type: "text", value: "" };
+    closer.tombstone = true;
+    this.work.slotWrites++;
+    let wrapper: Inline;
+    if (opener.kind === "emphasis") {
+      const type = opener.marker[0] === "~" ? "strike" : opener.marker.length === 2 ? "strong" : "emphasis";
+      wrapper = { type, children };
+    } else if (opener.kind === "code") {
+      const code = this.codeNode(this.content.slice(opener.end, opener.closeAt), true)[0];
+      if (!code) return false;
+      wrapper = code;
+    } else if (opener.kind === "bracket" && opener.state === "link" && opener.metadata) {
+      wrapper = opener.image
+        ? { type: "image", src: opener.metadata.href, title: opener.metadata.title, alt: plainText(children) }
+        : { type: "link", href: opener.metadata.href, title: opener.metadata.title, children };
+    } else if (opener.kind === "angle") {
+      const target = this.content.slice(opener.end, opener.closeAt);
+      wrapper = { type: "link", href: target.includes("@") && !target.includes(":") ? `mailto:${target}` : target, children };
+    } else return false;
     slot.node = wrapper;
     this.nodes[slot.root] = wrapper;
     this.work.slotWrites++;
@@ -631,26 +840,30 @@ export class PendingInline {
   }
 
   private discardPublicationFrom(root: number) {
-    while (this.publication.at(-1)?.root !== undefined && this.publication.at(-1)!.root >= root) this.publication.pop();
+    while (this.publication.at(-1)?.root !== undefined && this.publication.at(-1)!.root >= root) {
+      const slot = this.publication.pop()!;
+      this.publicationByRoot.delete(slot.root);
+    }
+    if (!this.publication.length) this.publicationStart = -1;
   }
 
   /** Compacts only the active tail after its last owner settles; the settled prefix is never revisited. */
   private settlePublicationTail() {
-    if (!this.publication.length) return;
-    const start = this.publication[0]!.root;
-    if (this.publication.some((slot) => slot.tombstone)) {
-      const settled: Inline[] = [];
-      for (const slot of this.publication) {
-        this.work.slotReads++;
-        if (!slot.tombstone) settled.push(slot.node);
-      }
-      this.nodes.length = start;
-      for (const node of settled) {
-        this.nodes.push(node);
-        this.work.slotWrites++;
-      }
+    if (this.publicationStart < 0) return;
+    const settled: Inline[] = [];
+    for (let index = this.publicationStart; index < this.nodes.length; index++) {
+      const node = this.nodes[index]!;
+      this.work.slotReads++;
+      if (node.type !== "text" || node.value) settled.push(node);
+    }
+    this.nodes.length = this.publicationStart;
+    for (const node of settled) {
+      this.nodes.push(node);
+      this.work.slotWrites++;
     }
     this.publication.length = 0;
+    this.publicationByRoot.clear();
+    this.publicationStart = -1;
     this.publicationValid = true;
   }
 
@@ -671,8 +884,13 @@ export class PendingInline {
   }
 
   private codeNode(source: string, closed: boolean): Inline[] {
-    const value = closed ? source : plainText(this.parse(literalBrackets(source), true));
+    const value = closed ? source : source;
     return value ? [{ type: "code", value }] : [];
+  }
+
+  private parse(source: string, streaming: boolean, growing = streaming): Inline[] {
+    this.work.sourceScanned += source.length;
+    return this.parseInline(source, streaming, growing, (characters) => { this.work.sourceScanned += characters; });
   }
 
   private parseText(from: number, to: number, streaming: boolean): Inline[] {
@@ -682,18 +900,17 @@ export class PendingInline {
   }
 
   private suffix(growing = true): Inline[] {
-    const source = this.content.slice(this.emittedEnd);
+    if (this.openers.some((opener) => !opener.decided)) return [];
+    let visibleEnd = growing && this.shouldHoldTrailingDelimiter() ? this.trailingDelimiterStart : this.content.length;
+    if (growing && this.trailingCodeStart >= 0) visibleEnd = Math.min(visibleEnd, this.trailingCodeStart);
+    const source = this.content.slice(this.emittedEnd, visibleEnd);
     if (!source) return [];
     this.copiedCharacters += source.length;
     // Behind a link opener the suffix is parsed after that syntax, so its closer and the text after it already
     // follow the streaming rules they will have once stable.
     const top = this.openers.at(-1);
     if (top?.kind === "code" || top?.kind === "angle") return this.rawSuffix(source, top);
-    const context = suffixContext(top);
-    const nodes = this.parse(context + source, true, growing);
-    const first = nodes[0];
-    if (context.startsWith("[") && first && (first.type === "link" && !first.children.length || first.type === "text" && !first.value)) nodes.shift();
-    return nodes;
+    return this.parse(source, true, growing);
   }
 
   /**
@@ -703,10 +920,15 @@ export class PendingInline {
    */
   private pastStableCloser(ended: boolean): { cut: number; bracket?: number } {
     if (!this.openers.length) return { cut: -1 };
+    let to = this.content.length;
+    if (!ended && this.shouldHoldTrailingDelimiter()) to = this.trailingDelimiterStart;
+    if (!ended && this.trailingCodeStart >= 0) to = Math.min(to, this.trailingCodeStart);
+    if (!ended && (this.openers.at(-1)?.state === "wait" || this.openers.at(-1)?.state === "text-close")) to = Math.max(to, Math.min(this.content.length, this.emittedEnd + 1));
+    if (to <= this.emittedEnd) return { cut: -1 };
     const scan = new OpenerScan(this.content, this.openers, this.openers.length, true, this.stableIndex, undefined, this.work, this.resolveMetadata);
-    const resolved = scan.run(this.emittedEnd, this.content.length);
+    const resolved = scan.run(this.emittedEnd, to);
     scan.restore();
-    if (resolved?.kind !== "emphasis" && resolved?.kind !== "bracket") return { cut: -1 };
+    if (!resolved) return { cut: -1 };
     const decided = scan.decidedAt >= 0 ? scan.decidedAt : undefined;
     // A closer run at the end of a growing line may still grow, and a last `]` waits for the character after it; an
     // ended line's end decides both and is a cut.
