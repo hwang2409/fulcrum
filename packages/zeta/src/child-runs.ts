@@ -1,6 +1,10 @@
-import type { RequestOptions } from "./client.js";
+import { createRunStore } from "@fulcrum/core";
+import { fromZetaHistory } from "./adapter.js";
+import { BackwardHistoryError, openBackwardHistory, type BackwardHistoryCursor } from "./backward-history.js";
+import type { RequestOptions, SessionLease, ZetaClient } from "./client.js";
 
 export const CHILD_RUNS_FEATURE = "child_runs" as const;
+export const CHILD_RUN_HISTORY_FEATURE = "child_run_history" as const;
 
 export type KnownChildRunStatus = "running" | "idle" | "finishing" | "completed" | "failed" | "canceled";
 export type ChildRunStatus =
@@ -10,6 +14,35 @@ export type ChildRunStatus =
 export type ChildRunKey = {
   readonly sessionId: string;
   readonly runId: string;
+};
+
+export type ChildRunHistoryErrorKind =
+  | "not_negotiated"
+  | "invalid_request"
+  | "owner_not_active"
+  | "not_found"
+  | "corrupt_transcript"
+  | "history_kept_changing";
+
+export class ChildRunHistoryError extends Error {
+  readonly name = "ChildRunHistoryError";
+  constructor(readonly kind: ChildRunHistoryErrorKind, message: string, readonly cause?: unknown) {
+    super(message);
+  }
+}
+
+export type ChildRunHistoryProgress = {
+  readonly messages: number;
+  readonly complete: boolean;
+  readonly restart: number;
+};
+export type OpenChildRunOptions = {
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: ChildRunHistoryProgress) => void;
+};
+export type OpenChildRunResult = {
+  readonly lease: SessionLease;
+  readonly complete: Promise<void>;
 };
 
 export type ChildRunRow = {
@@ -155,4 +188,133 @@ export function sendChildRun(
       ? { kind: "accepted", runId: key.runId }
       : { kind: "malformed" };
   });
+}
+
+type ChildHistoryEntry = {
+  readonly store: ReturnType<typeof createRunStore>;
+  readonly controller: AbortController;
+  holders: number;
+  opening: Promise<Omit<OpenChildRunResult, "lease">>;
+};
+const childHistory = new WeakMap<ZetaClient, Map<string, Map<string, ChildHistoryEntry>>>();
+
+const historyError = (kind: ChildRunHistoryErrorKind, message: string, cause?: unknown) =>
+  new ChildRunHistoryError(kind, message, cause);
+const mappedHistoryError = (error: unknown): never => {
+  if (error instanceof ChildRunHistoryError || (error as { name?: unknown }).name === "AbortError") throw error;
+  if (error instanceof BackwardHistoryError && error.kind === "history_kept_changing")
+    throw historyError("history_kept_changing", "history kept changing; retry", error.cause ?? error);
+  const rpc = error as { code?: unknown; data?: { code?: unknown } } | null;
+  if (rpc?.code === -32601) throw historyError("not_negotiated", "child run history was not negotiated", error);
+  if (rpc?.code === -32602) throw historyError("invalid_request", "child run history request was invalid", error);
+  if (rpc?.code === -32003) throw historyError("owner_not_active", "child run owner is not active", error);
+  if (rpc?.code === -32012 && rpc.data?.code === "child_run_not_found")
+    throw historyError("not_found", "child run was not found", error);
+  if (rpc?.code === -32000 && rpc.data?.code === "corrupt_transcript")
+    throw historyError("corrupt_transcript", "child run transcript is corrupt", error);
+  throw error;
+};
+const abortReason = (signal: AbortSignal) => signal.reason ?? Object.assign(new Error("request aborted"), { name: "AbortError" });
+
+export function childRunHistoryUnavailable(client: ZetaClient): string | undefined {
+  return client.features.includes(CHILD_RUN_HISTORY_FEATURE) ? undefined : "child run history is unavailable";
+}
+
+function entryMap(client: ZetaClient, sessionId: string) {
+  let owners = childHistory.get(client);
+  if (!owners) childHistory.set(client, owners = new Map());
+  let runs = owners.get(sessionId);
+  if (!runs) owners.set(sessionId, runs = new Map());
+  return runs;
+}
+
+function createChildHistoryEntry(
+  client: ZetaClient,
+  key: ChildRunKey,
+  options: Pick<OpenChildRunOptions, "onProgress">,
+  runs: Map<string, ChildHistoryEntry>,
+): ChildHistoryEntry {
+  const store = createRunStore();
+  const controller = new AbortController();
+  const entry: ChildHistoryEntry = { store, controller, holders: 0, opening: undefined as never };
+  store.beginHistory();
+  entry.opening = (async () => {
+    const request = async (cursor: BackwardHistoryCursor, signal: AbortSignal) => {
+      try {
+        return await client.request("child_run_history", {
+          session_id: key.sessionId,
+          run_id: key.runId,
+          before: cursor.before,
+          ...(cursor.historyValidator ? { history_validator: cursor.historyValidator } : {}),
+        }, { signal });
+      } catch (error) {
+        mappedHistoryError(error);
+      }
+    };
+    try {
+      const opened = await openBackwardHistory(request, {
+        signal: controller.signal,
+        onSnapshot(snapshot) {
+          const events = fromZetaHistory(snapshot.cause === "older" ? snapshot.pageRows : snapshot.rows);
+          if (snapshot.cause === "older") store.prepend(events);
+          else store.resync(events);
+          options.onProgress?.({ messages: snapshot.rows.length, complete: snapshot.complete, restart: snapshot.restart });
+        },
+      });
+      const complete = opened.complete.then(() => undefined, mappedHistoryError).finally(() => store.endHistory());
+      return { complete };
+    } catch (error) {
+      store.endHistory();
+      mappedHistoryError(error);
+    }
+  })();
+  entry.opening.catch(() => {
+    if (entry.holders === 0 && runs.get(key.runId) === entry) {
+      runs.delete(key.runId);
+      store.dispose();
+    }
+  });
+  return entry;
+}
+
+/** Opens one durable child transcript. The resolved lease is shared until its final holder releases it. */
+export async function openChildRun(
+  client: ZetaClient,
+  key: ChildRunKey,
+  options: OpenChildRunOptions = {},
+): Promise<OpenChildRunResult> {
+  if (childRunHistoryUnavailable(client)) throw historyError("not_negotiated", "child run history was not negotiated");
+  if (!nonempty(key.sessionId) || !nonempty(key.runId)) throw historyError("invalid_request", "child run identity is invalid");
+  if (options.signal?.aborted) throw abortReason(options.signal);
+
+  const runs = entryMap(client, key.sessionId);
+  const entry = runs.get(key.runId) ?? createChildHistoryEntry(client, key, options, runs);
+  runs.set(key.runId, entry);
+  entry.holders++;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    entry.holders--;
+    if (entry.holders !== 0 || runs.get(key.runId) !== entry) return;
+    runs.delete(key.runId);
+    entry.controller.abort();
+    entry.store.dispose();
+  };
+  let onAbort: (() => void) | undefined;
+  try {
+    const opened = options.signal ? await Promise.race([
+      entry.opening,
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(abortReason(options.signal!));
+        options.signal!.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]) : await entry.opening;
+    return { lease: { store: entry.store, release }, complete: opened.complete };
+  } catch (error) {
+    release();
+    throw error;
+  } finally {
+    if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+  }
 }

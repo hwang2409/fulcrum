@@ -71,6 +71,88 @@ test("a stale continuation discards every old-snapshot row", async () => {
   ]);
 });
 
+test("bounds consecutive stale continuation restarts and never publishes stale rows", async () => {
+  const controller = new AbortController();
+  const snapshots: readonly unknown[][] = [];
+  let requests = 0;
+  let newest = 0;
+  const opened = await openBackwardHistory(async ({ before }) => {
+    requests++;
+    if (requests > 8) controller.abort(Object.assign(new Error("unbounded stale restarts"), { name: "AbortError" }));
+    if (before === null) return page([`new-${++newest}`], 1, { end: newest, entry_id: `new-${newest}` });
+    throw { code: -32009, data: { code: "stale_history_snapshot" } };
+  }, { signal: controller.signal, onSnapshot: ({ rows }) => snapshots.push(rows) });
+
+  await expect(opened.complete).rejects.toMatchObject({
+    name: "BackwardHistoryError",
+    kind: "history_kept_changing",
+    message: "history kept changing; retry",
+  });
+  expect(requests).toBe(8);
+  expect(snapshots).toEqual([["new-1"], ["new-2"], ["new-3"], ["new-4"]]);
+});
+
+test("stale restart-newest requests consume the same finite budget", async () => {
+  const controller = new AbortController();
+  let requests = 0;
+  const opened = await openBackwardHistory(async ({ before }) => {
+    requests++;
+    if (requests > 5) controller.abort(Object.assign(new Error("unbounded newest restarts"), { name: "AbortError" }));
+    if (requests === 1) return page(["new"], 1);
+    throw { code: -32009, data: { code: "stale_history_snapshot" } };
+  }, { signal: controller.signal });
+
+  await expect(opened.complete).rejects.toMatchObject({
+    name: "BackwardHistoryError",
+    kind: "history_kept_changing",
+  });
+  expect(requests).toBe(5);
+});
+
+test("an advancing older page resets the stale restart budget", async () => {
+  let newest = 0;
+  let afterProgressRestarts = 0;
+  let progress = false;
+  const opened = await openBackwardHistory(async ({ before }) => {
+    if (before === null) {
+      newest++;
+      return page([`new-${newest}`], 3, { end: newest, entry_id: `new-${newest}` });
+    }
+    if (!progress && newest === 1) throw { code: -32009, data: { code: "stale_history_snapshot" } };
+    if (!progress) {
+      progress = true;
+      return page(["middle"], 2, { end: newest, entry_id: `new-${newest}` });
+    }
+    if (afterProgressRestarts++ < 3) throw { code: -32009, data: { code: "stale_history_snapshot" } };
+    return page(["old"], null, { end: newest, entry_id: `new-${newest}` });
+  });
+
+  expect((await opened.complete).rows).toEqual(["old", `new-${newest}`]);
+  expect(newest).toBe(5);
+});
+
+test("abort wins while restart-newest is pending and prevents late publication", async () => {
+  const controller = new AbortController();
+  const reason = new Error("viewer closed");
+  const snapshots: readonly unknown[][] = [];
+  let requests = 0;
+  let resolveRestart!: (value: unknown) => void;
+  const opened = await openBackwardHistory(async ({ before }) => {
+    requests++;
+    if (requests === 1) return page(["new"], 1);
+    if (before !== null) throw { code: -32009, data: { code: "stale_history_snapshot" } };
+    return new Promise((resolve) => { resolveRestart = resolve; });
+  }, { signal: controller.signal, onSnapshot: ({ rows }) => snapshots.push(rows) });
+
+  expect(await becomesTrueWithin(() => resolveRestart !== undefined)).toBe(true);
+  controller.abort(reason);
+  resolveRestart(page(["late"], null, { end: 4, entry_id: "late" }));
+
+  await expect(opened.complete).rejects.toBe(reason);
+  expect(requests).toBe(3);
+  expect(snapshots).toEqual([["new"]]);
+});
+
 test("uses one abort signal for every request", async () => {
   const controller = new AbortController();
   const signals: AbortSignal[] = [];
