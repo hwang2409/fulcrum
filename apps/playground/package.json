@@ -17,7 +17,9 @@
     "mermaid": "bun scripts/mermaid-check.ts",
     "mermaid:shots": "bun scripts/mermaid-shots.ts",
     "test:virtual": "bun scripts/virtual-test.ts",
-    "fold-check": "bun scripts/fold-check.ts"
+    "fold-check": "bun scripts/fold-check.ts",
+    "prepend-check": "bun scripts/prepend-check.ts",
+    "row-estimates": "bun scripts/row-estimates.ts"
   },
   "dependencies": {
     "@fulcrum/core": "workspace:*",
