@@ -650,6 +650,45 @@ test("a busy server is reported as busy and the selection stays", async () => {
   expect(present(view).selected).toBe("a");
 });
 
+test("backward session history reaches the start after one stale snapshot restart", async () => {
+  const validator = { end: 0, entry_id: "fresh-new" };
+  const backwardCalls: Record<string, unknown>[] = [];
+  let newest = 0;
+  let stale = true;
+  const message = (id: string, text: string) => ({ id, role: "user", content: [{ type: "text", text }], tool_result: null });
+  const fake = await server(handlers("a", {
+    session_history: (params) => {
+      if (params.offset !== undefined) return { messages: [], next_offset: null };
+      backwardCalls.push(params);
+      if (params.before === null) {
+        newest++;
+        return newest === 1
+          ? { messages: [message("stale-new", "stale")], next_before: 2, history_validator: { end: 0, entry_id: "stale-new" } }
+          : { messages: [message("fresh-new", "new")], next_before: 2, history_validator: validator };
+      }
+      if (stale) {
+        stale = false;
+        throw { code: -32009, data: { code: "stale_history_snapshot" } };
+      }
+      if (params.before === 2) return { messages: [message("middle", "middle")], next_before: 1, history_validator: validator };
+      return { messages: [message("old", "old")], next_before: null, history_validator: validator };
+    },
+  }), ["list_sessions_paging", "session_history_backward"]);
+  const view = createSessions(source(fake.client), { selected: "a" });
+
+  await waitFor(() => present(view).open?.history.complete === true, "backward session history did not complete");
+  const outline = present(view).open!.lease.store.getOutline().map(({ id }) => id);
+  expect(outline).toEqual(["user:message:old", "user:message:middle", "user:message:fresh-new"]);
+  expect(backwardCalls).toEqual([
+    { session_id: "a", before: null },
+    { session_id: "a", before: 2, history_validator: { end: 0, entry_id: "stale-new" } },
+    { session_id: "a", before: null },
+    { session_id: "a", before: 2, history_validator: validator },
+    { session_id: "a", before: 1, history_validator: validator },
+  ]);
+  view.dispose();
+});
+
 test("a reconnect retires a backward walk before it can write the new generation", async () => {
   let release!: () => void;
   const held = new Promise((resolve) => { release = () => resolve({ messages: [{ id: "old", role: "user", content: [{ type: "text", text: "old generation" }], tool_result: null }], next_before: null, history_validator: { end: 2, entry_id: "old-new" } }); });

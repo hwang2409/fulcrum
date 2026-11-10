@@ -65,14 +65,14 @@ test("resolves at newest establishment and completes one oldest-first backfill",
   const opened = await openChildRun(fake.value, { sessionId: "owner", runId: "owner:1:1" }, {
     onProgress: (value) => progress.push(value),
   });
-  expect(outline(opened)).toEqual(["user:u-new"]);
+  expect(outline(opened)).toEqual(["user:message:u-new"]);
   expect(await settlesWithin(opened.complete)).toBe(false);
   expect(fake.calls[0]?.params).toEqual({ session_id: "owner", run_id: "owner:1:1", before: null });
 
   resolveOlder(page([row("u-old", "old")], null));
   await opened.complete;
 
-  expect(outline(opened)).toEqual(["user:u-old", "user:u-new"]);
+  expect(outline(opened)).toEqual(["user:message:u-old", "user:message:u-new"]);
   expect(fake.calls[1]?.params).toEqual({
     session_id: "owner",
     run_id: "owner:1:1",
@@ -99,6 +99,7 @@ test("one pair shares its in-flight store while equal child ids under different 
   expect(requests).toBe(2);
   expect(first.lease.store).toBe(second.lease.store);
   expect(other.lease.store).not.toBe(first.lease.store);
+  await Promise.all([first.complete, second.complete, other.complete]);
   first.lease.release();
   second.lease.release();
   other.lease.release();
@@ -119,7 +120,7 @@ test("a stale child snapshot replaces prior rows through the shared pager", asyn
   const opened = await openChildRun(fake.value, key);
   await opened.complete;
 
-  expect(outline(opened)).toEqual(["user:u-fresh"]);
+  expect(outline(opened)).toEqual(["user:message:u-fresh"]);
   opened.lease.release();
 });
 
@@ -142,7 +143,8 @@ test("the final release aborts a pending child load and a later open starts fres
 
   const reopened = await openChildRun(fake.value, key);
   expect(requests).toBe(2);
-  expect(outline(reopened)).toEqual(["user:u-fresh"]);
+  expect(outline(reopened)).toEqual(["user:message:u-fresh"]);
+  await reopened.complete;
   reopened.lease.release();
 });
 
