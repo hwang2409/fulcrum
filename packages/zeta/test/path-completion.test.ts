@@ -148,6 +148,27 @@ test.each(unchangedErrors)("completePath rejects $message unchanged without retr
   expect(calls).toBe(1);
 });
 
+const ABORT_DEADLINE_MESSAGE = "completePath did not forward the abort signal within 10 seconds";
+async function settleBeforeAbortDeadline(promise: Promise<unknown>, cancel: () => void): Promise<unknown> {
+  const timedOut = Symbol("timed out");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = promise.then(
+    (value) => ({ kind: "resolved" as const, value }),
+    (error) => ({ kind: "rejected" as const, error }),
+  );
+  const outcome = await Promise.race([
+    settled,
+    new Promise<typeof timedOut>((resolve) => { timer = setTimeout(() => resolve(timedOut), 10_000); }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  if (outcome === timedOut) {
+    cancel();
+    await settled;
+    throw new Error(ABORT_DEADLINE_MESSAGE);
+  }
+  return outcome.kind === "rejected" ? outcome.error : outcome.value;
+}
+
 test("completePath rejects aborts before send and releases an aborted pending request", async () => {
   const before = new AbortController();
   before.abort();
@@ -159,26 +180,34 @@ test("completePath rejects aborts before send and releases an aborted pending re
   const during = new AbortController();
   let pending = 0;
   let calls = 0;
+  let cancelPending = () => {};
   const client: PathCompletionClient = {
     features: [PATH_COMPLETION_FEATURE],
     request(_method, _params, options) {
       calls++;
       pending++;
       return new Promise((_resolve, reject) => {
-        const abort = () => {
+        let settled = false;
+        cancelPending = () => {
+          if (settled) return;
+          settled = true;
           pending--;
           reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
         };
-        options?.signal?.addEventListener("abort", abort, { once: true });
+        options?.signal?.addEventListener("abort", cancelPending, { once: true });
       });
     },
   };
   const request = completePath(client, "session-1", "@src", { signal: during.signal });
   expect(pending).toBe(1);
   during.abort();
-  expect(await request.catch((error) => error)).toMatchObject({ name: "AbortError" });
+  const duringError = await settleBeforeAbortDeadline(request, () => {
+    during.abort();
+    cancelPending();
+  });
+  expect(duringError).toMatchObject({ name: "AbortError" });
   expect({ calls, pending }).toEqual({ calls: 1, pending: 0 });
-});
+}, 15_000);
 
 type ZetaClientSatisfiesPathCompletionClient = ZetaClient extends PathCompletionClient ? true : false;
 const zetaClientSatisfiesPathCompletionClient: ZetaClientSatisfiesPathCompletionClient = true;
