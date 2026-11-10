@@ -143,6 +143,7 @@ test("same-run replay drops the cached height of a changed streamed row", () => 
     globalThis.requestAnimationFrame = saved.raf;
     globalThis.cancelAnimationFrame = saved.caf;
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
   }
 });
 
@@ -194,6 +195,7 @@ test("a pinned late row measurement re-applies the bottom after the browser shif
     globalThis.requestAnimationFrame = saved.raf;
     globalThis.cancelAnimationFrame = saved.caf;
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
   }
 });
 
@@ -236,6 +238,7 @@ test("a row resize reported just before a resync replaces its id is not measured
     globalThis.requestAnimationFrame = saved.raf;
     globalThis.cancelAnimationFrame = saved.caf;
     if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
+    else delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight;
   }
 });
 
