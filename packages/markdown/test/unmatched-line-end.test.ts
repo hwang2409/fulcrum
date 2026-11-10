@@ -90,7 +90,10 @@ test("backtick escapes stream like the complete parse across every split", () =>
       [`later escaped run, ${count} backslashes`, ["`owner\n", `\`owner\n${backslashes}\`still\\\`tail`]],
     );
   }
-  cases.push(["resolved owner with an unmatched suffix run", ["`owner\n", "`owner\n\\`still`tail"]]);
+  cases.push(
+    ["resolved owner with an unmatched suffix run", ["`owner\n", "`owner\n\\`still`tail"]],
+    ["paragraph code runs keep edge spaces provisional", ["open `code\nuse `a | b` in shell then `more` and *em*\n"]],
+  );
 
   for (const [name, checkpoints] of cases) for (const [checkpoint, source] of checkpoints.entries()) {
     for (const chunks of splitSweep(source)) {

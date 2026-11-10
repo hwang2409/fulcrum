@@ -57,6 +57,7 @@ type ResolvedCodeSuffix = {
   start: number;
   nodes: Inline[];
   pending?: PendingInline;
+  pendingCodeAtEnd?: boolean;
 };
 
 type PendingInlineState = {
@@ -309,13 +310,30 @@ const unmatchedCodeSpan = (source: string) => {
   return opener;
 };
 
+// An opener before whitespace stays provisional because a later closer can strip that space.
+const codeRunCanSettle = (source: string, run: { index: number; length: number }) => {
+  const after = source[run.index + run.length];
+  return after !== undefined && !/\s/.test(after);
+};
+
 const plainResolvedCodeSuffix = /^[\p{L}\p{N} ]*$/u;
 
 function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, source: () => string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
   if (state.pending) {
     const copied = state.pending.copiedCharacters;
     state.pending.append(delta);
-    return state.pending.copiedCharacters - copied;
+    const appended = state.pending.copiedCharacters - copied;
+    if (state.pendingCodeAtEnd && delta) {
+      state.pendingCodeAtEnd = false;
+      const suffix = source();
+      const unmatched = unmatchedCodeSpan(suffix);
+      if (unmatched && codeRunCanSettle(suffix, unmatched)) {
+        state.pending = undefined;
+        state.nodes = [...state.prefix, ...parse(suffix, true, false)];
+        return appended + suffix.length;
+      }
+    }
+    return appended;
   }
   if (plainResolvedCodeSuffix.test(delta)) {
     const last = state.nodes.at(-1);
@@ -325,10 +343,12 @@ function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, sour
     return delta.length;
   }
   const suffix = source();
-  if (unmatchedCodeSpan(suffix)) {
+  const unmatched = unmatchedCodeSpan(suffix);
+  if (unmatched && codeRunCanSettle(suffix, unmatched)) {
     state.nodes = [...state.prefix, ...parse(suffix, true, false)];
     return suffix.length;
   }
+  state.pendingCodeAtEnd = !!unmatched && unmatched.index + unmatched.length === suffix.length;
   state.pending = new PendingInline(parse, undefined, state.prefix);
   state.pending.append(suffix);
   state.nodes = state.pending.nodes;
