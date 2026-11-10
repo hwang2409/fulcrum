@@ -20,6 +20,12 @@ Successful calls return `entries`; each entry preserves the server's insertion t
 
 The `session_grants_changed` event stays host-level. Register with `client.onSessionGrantsChanged(handler)` and use the returned function to unsubscribe. The event describes approval policy state, not a generic run event, so the zeta adapter does not map it into `@fulcrum/core`.
 
+## child-run history
+
+`CHILD_RUN_HISTORY_FEATURE` is the `child_run_history` feature. `openChildRun(client, { sessionId, runId }, options?)` opens a shared durable transcript and returns `{ lease, complete }`. The lease store resolves at the newest page; `complete` settles once after the one-shot oldest-first backfill reaches `next_before: null`. Call `lease.release()` when the view closes, or abort with `options.signal`.
+
+A changing history rejects with `ChildRunHistoryError` kind `history_kept_changing`; retry the whole open. Other typed kinds map the server errors: `not_negotiated` (`-32601`), `invalid_request` (`-32602`), `owner_not_active` (`-32003`), `not_found` (`-32012`/`child_run_not_found`), and `corrupt_transcript` (`-32000`/`corrupt_transcript`).
+
 ## connect
 
 Start zeta with the browser origin, then start the playground:
