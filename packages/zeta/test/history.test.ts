@@ -8,7 +8,7 @@ const rows = [
   { id: "e2", role: "assistant", content: [{ type: "thinking", text: "" }, { type: "text", text: "running ls" }, { type: "tool_use", tool_call: { id: "t1", name: "bash", arguments: {} } }], tool_result: null },
   { id: "e3", role: "tool_result", content: [{ type: "text", text: "a\nb" }], tool_result: { tool_call_id: "t1", content: "a\nb", is_error: false, content_blocks: [], structured_content: null } },
   { id: "e4", role: "assistant", content: [{ type: "text", text: "done" }], tool_result: null, failed_turn: { code: "backend_error", message: "provider failed", provider_error: true } },
-  { id: "e5", role: "system", content: [{ type: "text", text: "agent finished" }], tool_result: null, notification: { notification_id: "n1", kind: "agent_completion" } },
+  { id: "e5", role: "system", content: [{ type: "text", text: "agent finished" }], tool_result: null, notification: { notification_id: "n1", kind: "agent_completion", child_instance_id: "child-1", description: "worker", status: "completed", text: "agent finished" } },
 ];
 
 test("history image stubs keep metadata without inventing a zero-byte size", () => {
@@ -32,7 +32,7 @@ test("maps negotiated history image stubs to generic lazy images without storing
 test("maps history rows into one ordered transcript", () => {
   const store = createRunStore((flush) => flush());
   for (const event of fromZetaHistory(rows)) store.dispatch(event);
-  expect(store.getOutline().map((entry) => entry.kind)).toEqual(["user", "message", "tool", "message", "error", "notification"]);
+  expect(store.getOutline().map((entry) => entry.kind)).toEqual(["user", "message", "tool", "message", "error", "sub_agent"]);
   const tool = store.getItem(store.getOutline()[2]!.id);
   expect(tool).toMatchObject({ type: "tool", active: false, output: "", result: { content: "a\nb" }, tool_call: { name: "bash" } });
   const message = store.getItem(store.getOutline()[1]!.id);
@@ -62,6 +62,105 @@ test("history and live approval events share one reducer item", () => {
   const request = { type: "approval_request" as const, request_id: "r1", tool_call: { id: "t1", name: "bash", arguments: {} }, delegated: false };
   for (const event of [...fromZetaHistory([{ id: "a1", role: "system", event: "approval_request", ...request }]), request]) store.dispatch(event);
   expect(store.getOutline()).toEqual([{ id: "approval:r1", kind: "approval" }]);
+});
+
+const reducedState = (events: ReturnType<typeof fromZetaEvent>) => {
+  const store = createRunStore((flush) => flush());
+  for (const event of events) store.dispatch(event);
+  return store.getState();
+};
+
+const notificationHistoryRow = (notificationId: string, data: Record<string, unknown>) => ({
+  id: notificationId,
+  role: "system",
+  content: [{ type: "text", text: data.text }],
+  tool_result: null,
+  notification: data,
+});
+
+test("child progress notifications have equal live and history events and reduced states", () => {
+  // Persisted shapes: zeta origin/main src/zeta/core/store/_notifications.py:300-328, :330-361 and
+  // src/zeta/agent/conversation_channel.py:470-503; withdrawals are written at _step_delivery.py:254-285.
+  // History keeps the entry id outside notification data (history_projection.py:426-446), while live adds it
+  // as notification_id (notifications.py:81-92). Protocol 1.2 names come from event_contract.py:93-110.
+  const cases = [
+    {
+      kind: "child_idle",
+      event: "child_idle",
+      data: { origin: "notification", kind: "child_idle", child_instance_id: "child-1", child_session_path: "/tmp/child", description: "worker", status: "child_idle", text: "worker is idle" },
+    },
+    {
+      kind: "child_question",
+      event: "child_question",
+      data: { origin: "notification", kind: "child_question", child_instance_id: "child-1", question_id: "question-1", question: "continue?", description: "child question", status: "pending", text: "child asks: continue?" },
+    },
+    {
+      kind: "child_question_withdrawn",
+      event: "child_question_withdrawn",
+      data: { origin: "notification", kind: "child_question_withdrawn", child_instance_id: "child-1", question_id: "question-1", description: "child question withdrawn", status: "withdrawn", text: "question withdrawn" },
+    },
+    {
+      kind: "agent_completion",
+      event: "sub_agent_receipt",
+      data: { origin: "notification", kind: "agent_completion", child_instance_id: "child-1", child_session_path: "/tmp/child", description: "worker", status: "completed", text: "worker finished" },
+    },
+  ];
+
+  for (const { kind, event, data } of cases) {
+    const notificationId = `${kind}-1`;
+    const live = fromZetaEvent({ event, session_id: "parent", data: { notification_id: notificationId, ...data } });
+    const history = fromZetaHistory([notificationHistoryRow(notificationId, data)]);
+    expect(history, kind).toEqual(live);
+    expect(reducedState(history), kind).toEqual(reducedState(live));
+  }
+});
+
+test("child progress history follows the same reducer sequence as live", () => {
+  const notices = [
+    { event: "child_hold", data: { origin: "notification", kind: "child_hold", child_instance_id: "child-1", child_session_path: "/tmp/child", description: "worker", status: "held", reason: "rate_limit", until: "2030-01-02T03:04:05+00:00", provider: "anthropic", retry_after: 1234, text: "worker is held" } },
+    { event: "child_idle", data: { origin: "notification", kind: "child_idle", child_instance_id: "child-1", child_session_path: "/tmp/child", description: "worker", status: "child_idle", text: "worker is idle" } },
+    { event: "child_question", data: { origin: "notification", kind: "child_question", child_instance_id: "child-1", question_id: "question-1", question: "continue?", description: "child question", status: "pending", text: "child asks: continue?" } },
+    { event: "child_question_withdrawn", data: { origin: "notification", kind: "child_question_withdrawn", child_instance_id: "child-1", question_id: "question-1", description: "child question withdrawn", status: "withdrawn", text: "question withdrawn" } },
+    { event: "sub_agent_receipt", data: { origin: "notification", kind: "agent_completion", child_instance_id: "child-1", child_session_path: "/tmp/child", description: "worker", status: "completed", text: "worker finished" } },
+  ];
+  const live = notices.flatMap(({ event, data }, index) => fromZetaEvent({ event, session_id: "parent", data: { notification_id: `notice-${index}`, ...data } }));
+  const history = fromZetaHistory(notices.map(({ data }, index) => notificationHistoryRow(`notice-${index}`, data)));
+
+  expect(reducedState(history)).toEqual(reducedState(live));
+});
+
+test("non-child system history rows keep the generic notification mapping", () => {
+  // Valid system rows without child data come from zeta origin/main
+  // src/zeta/server/handlers/history_projection.py:362-380, :408-425, and :523-528.
+  const cases = [
+    {
+      name: "transcript recovery",
+      row: { id: "recovery-1", role: "system", content: [{ type: "text", text: "recovered transcript" }], tool_result: null, transcript_recovery: { quarantine_id: "quarantine-1" } },
+      data: { role: "system", text: "recovered transcript" },
+    },
+    {
+      name: "system message",
+      row: { id: "system-1", role: "system", content: [{ type: "text", text: "system note" }], tool_result: null },
+      data: { role: "system", text: "system note" },
+    },
+    {
+      name: "unknown notification kind",
+      row: notificationHistoryRow("unknown-1", { kind: "future_child_notice", text: "future notice" }),
+      data: { kind: "future_child_notice", role: "system", text: "future notice" },
+    },
+    {
+      name: "notification without a kind",
+      row: notificationHistoryRow("kindless-1", { text: "kindless notice" }),
+      data: { role: "system", text: "kindless notice" },
+    },
+  ];
+
+  for (const { name, row, data } of cases) {
+    expect(fromZetaHistory([row]), name).toEqual([{ type: "notification", notification_id: undefined, data }]);
+  }
+
+  const data = { notification_id: "unknown-live", kind: "future_child_notice", text: "future notice" };
+  expect(fromZetaEvent({ event: "sub_agent_receipt", data })[0]).toMatchObject({ type: "notification" });
 });
 
 test("child holds use the same readable notification in live and history", () => {
