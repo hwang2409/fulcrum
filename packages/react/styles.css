@@ -958,8 +958,8 @@ a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--f
 [data-part="message-content"] > :last-child { margin-bottom: 0; }
 [data-part="md-paragraph"] { margin: 0 0 0.75em; }
 [data-part="md-heading"] { margin: 1.5em 0 0.5em; font-size: 14px; line-height: 1.35; font-weight: 700; text-wrap: balance; }
-h1[data-part="md-heading"] { font-size: 18px; }
-h2[data-part="md-heading"] { font-size: 16px; }
+[data-level="1"][data-part="md-heading"] { font-size: 18px; }
+[data-level="2"][data-part="md-heading"] { font-size: 16px; }
 [data-part="md-strong"] { font-weight: 700; }
 [data-part="md-emphasis"] { font-style: italic; }
 [data-part="md-strike"] { color: var(--fulcrum-muted); }
