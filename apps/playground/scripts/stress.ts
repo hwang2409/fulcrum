@@ -171,7 +171,11 @@ const percentile = (values: number[], fraction: number) => {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)]!;
 };
-const median = (values: number[]) => percentile(values, 0.5);
+const median = (values: number[]) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+};
 
 function aggregate(samples: Record<string, number | string>[]): Record<string, any> {
   const result: Record<string, any> = { case: samples[0]!.case, samples, statistics: {} };
@@ -228,6 +232,7 @@ try {
     const samples: Record<string, number | string>[] = [];
     const deadline = performance.now() + caseTimeoutMs;
     let round = 0;
+    let timedOut = false;
     do {
       for (let repetition = 1; repetition <= samplesPerRound; repetition++) {
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -254,9 +259,11 @@ try {
         Bun.sleep(Math.max(0, remaining)).then(() => ({ case: messages, timeout: `timed out after ${caseTimeoutMs} ms` })),
       ]);
       if ("timeout" in measured) {
-        await page.context().tracing.stop({ path: `${artifacts}/stress-${messages}-${repetition}.zip` }).catch(() => {});
+        await page.context().tracing.stop({ path: `${artifacts}/stress-${messages}-${round * samplesPerRound + repetition}.zip` }).catch(() => {});
         await page.close();
-        results.push(check(measured));
+        console.error(`stress ${messages}: ${measured.timeout}`);
+        results.push({ ...measured, contract: contract[messages], failures: [measured.timeout], knownFailures: [], resolvedKnownFailures: [] });
+        timedOut = true;
         break;
       }
       samples.push(measured);
@@ -266,8 +273,8 @@ try {
       await page.close();
       }
       round++;
-    } while (round <= maxExtraRounds && needsMoreSamples(aggregate(samples)));
-    if (samples.length) results.push(check(aggregate(samples)));
+    } while (!timedOut && round <= maxExtraRounds && needsMoreSamples(aggregate(samples)));
+    if (!timedOut) results.push(check(aggregate(samples)));
   }
   const flipMe = results.flatMap((result) => result.resolvedKnownFailures);
   if (flipMe.length) {
