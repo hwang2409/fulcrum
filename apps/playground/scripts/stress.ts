@@ -235,6 +235,7 @@ try {
       await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
       await instrument(page);
       await page.goto(`http://127.0.0.1:4173?stressMessages=${messages}`);
+      await page.waitForFunction(() => "__fulcrumStressPerf" in window);
       await page.evaluate(() => performance.mark("stress-start"));
       await page.context().tracing.start({ screenshots: true, snapshots: true });
       const remaining = deadline - performance.now();
