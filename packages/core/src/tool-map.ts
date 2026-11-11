@@ -1,4 +1,5 @@
 import type { RunItem, ToolCall, ToolView } from "./events.js";
+import { storeToolView } from "./text-source.js";
 
 export interface ToolArguments {
   value(name: string): unknown;
@@ -42,7 +43,7 @@ export function applyToolMap(
   item: Extract<RunItem, { type: "tool" }>,
 ): Extract<RunItem, { type: "tool" }> {
   const view = resolveToolView(map, item.tool_call);
-  return view ? { ...item, view } : item;
+  return view ? { ...item, view: storeToolView(view) } : item;
 }
 
 type DiffLine = { text: string; newline: boolean };

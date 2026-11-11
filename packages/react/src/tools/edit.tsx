@@ -2,7 +2,7 @@ import { useMemo, type CSSProperties, type ReactNode } from "react";
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import { MarkedTokens, tokenLines, useTokens, type Block } from "../highlight.js";
-import { Arguments, asking, boundText, Foot, memoText, Output, outputBlocks } from "./common.js";
+import { Arguments, asking, boundText, Foot, memoText, Output, outputBlocks, sourceText } from "./common.js";
 import { ROW_CHARS, TextViewer, useTextMetrics, viewerBlocks, type RowModel } from "./text-viewer.js";
 import { diffRows, type DiffRow } from "./diff.js";
 import type { Token } from "@fulcrum/highlight";
@@ -82,13 +82,16 @@ function diffModel(diff: string, language: string | undefined, id: string): RowM
 export function editBlocks({ item, output, state }: ToolBodyProps): Block[] {
   if (item.view?.kind !== "edit") return [];
   const id = `${item.id}:diff`;
-  const { diff, path } = item.view;
-  return [...viewerBlocks({ text: diff, id, rows: diffModel(diff, languageForPath(path), id) }), ...(output ? outputBlocks({ text: output, id: `${item.id}:output`, done: state !== "streaming" }) : [])];
+  const { path } = item.view;
+  const diff = sourceText(item.view.diff);
+  const shown = sourceText(output);
+  return [...viewerBlocks({ text: diff, id, rows: diffModel(diff, languageForPath(path), id) }), ...(shown ? outputBlocks({ text: shown, id: `${item.id}:output`, done: state !== "streaming" }) : [])];
 }
 
 export function EditBody({ item, output, state }: ToolBodyProps) {
   const view = item.view?.kind === "edit" ? item.view : undefined;
-  const diff = view?.diff ?? "";
+  const diff = view ? sourceText(view.diff) : "";
+  const shown = sourceText(output);
   const metrics = useTextMetrics(diff);
   const language = view ? languageForPath(view.path) : undefined;
   const id = `${item.id}:diff`;
@@ -97,7 +100,7 @@ export function EditBody({ item, output, state }: ToolBodyProps) {
   return (
     <>
       <TextViewer text={diff} id={id} label="diff" metrics={metrics} rows={model} />
-      {output ? <Output text={output} id={`${item.id}:output`} done={state !== "streaming"} /> : null}
+      {shown ? <Output text={shown} id={`${item.id}:output`} done={state !== "streaming"} /> : null}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["path", view.path], ["diff", diff]]} />
     </>

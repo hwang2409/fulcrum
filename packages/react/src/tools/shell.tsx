@@ -1,27 +1,33 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { ToolBodyProps } from "../parts.js";
 import { Code, type Block } from "../highlight.js";
-import { Arguments, asking, boundText, cutByHeader, Empty, Foot, Output, outputBlocks, plainOutput } from "./common.js";
+import { Arguments, asking, boundText, cutByHeader, Empty, Foot, Output, outputBlocks, plainOutput, sourceText } from "./common.js";
 import { CodeViewer, isLargeCode } from "./text-viewer.js";
 
 /** The highlight blocks ShellBody asks for when it first mounts. */
 export function shellBlocks({ item, output, state }: ToolBodyProps): Block[] {
   if (item.view?.kind !== "shell") return [];
-  const { command, stdout, stderr } = item.view;
+  const { command } = item.view;
+  const stdout = item.view.stdout && sourceText(item.view.stdout);
+  const stderr = item.view.stderr && sourceText(item.view.stderr);
+  const shown = sourceText(output);
   const done = state !== "streaming";
   const blocks: Block[] = cutByHeader(command) ? [{ code: boundText(command).text, language: "shell", id: `${item.id}:command` }] : [];
   if (stdout !== undefined && stderr !== undefined) {
     if (stdout) blocks.push(...outputBlocks({ text: stdout, id: `${item.id}:stdout`, done }));
     if (stderr) blocks.push(...outputBlocks({ text: stderr, id: `${item.id}:stderr`, done }));
-  } else if (output) blocks.push(...outputBlocks({ text: output, id: `${item.id}:output`, done }));
+  } else if (shown) blocks.push(...outputBlocks({ text: shown, id: `${item.id}:output`, done }));
   return blocks;
 }
 
 export function ShellBody({ item, output, state }: ToolBodyProps) {
   if (item.view?.kind !== "shell") return null;
-  const { command, cwd, exitCode, stdout, stderr } = item.view;
+  const { command, cwd, exitCode } = item.view;
+  const stdout = item.view.stdout && sourceText(item.view.stdout);
+  const stderr = item.view.stderr && sourceText(item.view.stderr);
+  const shown = sourceText(output);
   const split = stdout !== undefined && stderr !== undefined;
-  const all = split ? stdout + stderr : output;
+  const all = split ? stdout + stderr : shown;
   const done = state !== "streaming";
   return (
     <>
@@ -32,7 +38,7 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
           {stdout ? <Output text={stdout} id={`${item.id}:stdout`} done={done} /> : null}
           {stderr ? <Output text={stderr} id={`${item.id}:stderr`} stream="stderr" done={done} /> : null}
         </>
-      ) : output ? <Output text={output} id={`${item.id}:output`} done={done} /> : null}
+      ) : shown ? <Output text={shown} id={`${item.id}:output`} done={done} /> : null}
       {all ? null : <Empty state={state} />}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["command", command], ["output", all ? () => plainOutput(all) : undefined]]}>

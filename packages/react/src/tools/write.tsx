@@ -1,16 +1,18 @@
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import type { Block } from "../highlight.js";
-import { Arguments, asking, boundText, cutByHeader, bytes, Foot, NumberedLines, numberedBlocks, Output, outputBlocks } from "./common.js";
+import { Arguments, asking, boundText, cutByHeader, bytes, Foot, NumberedLines, numberedBlocks, Output, outputBlocks, sourceText } from "./common.js";
 
 export function WriteBody({ item, output, state }: ToolBodyProps) {
   if (item.view?.kind !== "write") return null;
-  const { path, content, bytes: size } = item.view;
+  const { path, bytes: size } = item.view;
+  const content = item.view.content && sourceText(item.view.content);
+  const shown = sourceText(output);
   return (
     <>
       {asking(state) && cutByHeader(path) ? <pre data-part="tool-path">{boundText(path).text}</pre> : null}
       {content ? <NumberedLines text={content} id={`${item.id}:content`} language={languageForPath(path)} /> : null}
-      {output ? <Output text={output} id={`${item.id}:output`} done={state !== "streaming"} /> : null}
+      {shown ? <Output text={shown} id={`${item.id}:output`} done={state !== "streaming"} /> : null}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["path", path], ["content", content]]}>
         {size !== undefined ? <span data-part="tool-size">{bytes(size)}</span> : null}
@@ -22,9 +24,11 @@ export function WriteBody({ item, output, state }: ToolBodyProps) {
 /** The highlight blocks WriteBody asks for when it first mounts. */
 export function writeBlocks({ item, output, state }: ToolBodyProps): Block[] {
   if (item.view?.kind !== "write") return [];
-  const { path, content } = item.view;
+  const { path } = item.view;
+  const content = item.view.content && sourceText(item.view.content);
+  const shown = sourceText(output);
   return [
     ...(content ? numberedBlocks({ text: content, id: `${item.id}:content`, language: languageForPath(path) }) : []),
-    ...(output ? outputBlocks({ text: output, id: `${item.id}:output`, done: state !== "streaming" }) : []),
+    ...(shown ? outputBlocks({ text: shown, id: `${item.id}:output`, done: state !== "streaming" }) : []),
   ];
 }

@@ -1,5 +1,5 @@
 import { Children, createContext, useContext, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { ToolCall } from "@fulcrum/core";
+import type { TextSourceSnapshot, ToolCall } from "@fulcrum/core";
 import type { ItemState } from "../parts.js";
 import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
 import { continueAnsi, hasControls, parseAnsi, type AnsiText } from "./ansi.js";
@@ -9,6 +9,25 @@ import { CopyButton, needsTextViewer, TextViewer, useTextMetrics, viewerBlocks, 
 const JSON_FORMAT: TextFormat = { language: "json" };
 export const MAX_DOM_CHARS = 100_000;
 export const MAX_SUMMARY_CHARS = 240;
+
+const humanBytes = (value: number) => value < 1024 ? `${value} bytes` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
+/** Retained source text with a truthful, visible line at every local cut. */
+export function sourceText(source: TextSourceSnapshot): string {
+  const chunks = [...source.chunks()];
+  const omission = source.omission;
+  let text: string;
+  if (!omission) text = chunks.map((chunk) => chunk.text).join("");
+  else {
+    const head = chunks.filter((chunk) => chunk.start < omission.start).map((chunk) => chunk.text).join("");
+    const tail = chunks.filter((chunk) => chunk.start >= omission.end).map((chunk) => chunk.text).join("");
+    const notice = omission.reason === "run-cap" && omission.whole
+      ? `output not kept (${humanBytes(omission.bytes)}) to save memory in this long run`
+      : `${humanBytes(omission.bytes)} not kept`;
+    const reset = /\u001b/.test(head + tail) ? "\u001b[0m" : "";
+    text = `${head}${reset}${head && !head.endsWith("\n") ? "\n" : ""}${notice}${tail && !tail.startsWith("\n") ? "\n" : ""}${reset}${tail}`;
+  }
+  return source.protocolTruncated ? `${text}${text && !text.endsWith("\n") ? "\n" : ""}host did not provide the complete output` : text;
+}
 
 type BoundedText = { text: string; shown: number; total: number; truncated: boolean };
 
