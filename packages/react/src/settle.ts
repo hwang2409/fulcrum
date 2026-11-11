@@ -137,8 +137,10 @@ export function decideSettle(prev: SettleState, event: SettleEvent): SettleDecis
   }
 
   const sample = event.sample;
-  const expected = impliedTop(prev.lastObserved, sample);
-  const readerMoved = Math.abs(sample.top - expected) > (prev.owner !== null ? collisionBand : band);
+  const expected = impliedTop(prev.owner?.readBack ?? prev.lastObserved, sample);
+  const readerMoved = prev.pinned
+    ? sample.top < expected - band
+    : Math.abs(sample.top - expected) > (prev.owner !== null ? collisionBand : band);
   const observed = { ...prev, lastObserved: sample };
 
   if (prev.deferred !== null && prev.writeBlockedByTouch) {

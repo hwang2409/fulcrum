@@ -52,7 +52,9 @@ const sampleFor = ({ geometry, reader }: Axes): HostSample => {
 
 const expectedFor = (axes: Axes, sample: HostSample) => {
   const expectedTop = Math.max(0, Math.min(basis.top - (sample.rectBottom - basis.rectBottom), sample.end));
-  const readerMoved = Math.abs(sample.top - expectedTop) > (axes.owner === "open" ? 1 : 4);
+  const readerMoved = axes.pinned
+    ? sample.top < expectedTop - 4
+    : Math.abs(sample.top - expectedTop) > (axes.owner === "open" ? 1 : 4);
   const atEnd = sample.end - sample.top <= 4;
   if (readerMoved) return { report: "user", recovery: "cancel", owner: null, pinned: atEnd, write: null };
   if (axes.recovery === "open") return { report: "observe", recovery: "keep", owner: null, pinned: axes.pinned, write: null };
@@ -85,6 +87,22 @@ describe("decideSettle", () => {
         owner: decision.next.owner,
         pinned: decision.next.pinned,
       }, Object.values(axes).join("/")).toEqual({ write: null, ...expected });
+    }
+  });
+
+  test("a pinned reader follows growth unless its top moved up beyond the bottom band", () => {
+    const cases = [
+      { name: "top moved down while the end grew", top: 166, end: 410, pinned: true, write: "end" },
+      { name: "top stayed while the end grew", top: 100, end: 410, pinned: true, write: "end" },
+      { name: "top moved up 5 px", top: 95, end: 300, pinned: false, write: null },
+      { name: "top moved up 3 px", top: 97, end: 300, pinned: true, write: "end" },
+    ] as const;
+    for (const row of cases) {
+      const decision = decideSettle(state({ pinned: true }), {
+        kind: "scroll",
+        sample: { ...basis, top: row.top, end: row.end, engineTop: row.top - 8 },
+      });
+      expect({ pinned: decision.next.pinned, write: decision.write }, row.name).toEqual({ pinned: row.pinned, write: row.write });
     }
   });
 
