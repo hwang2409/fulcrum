@@ -3,7 +3,7 @@ const builds = [
   { name: "core", entry: "packages/core/dist/index.js", external, ceiling: 9_000 }, // 8,563 after deterministic cross-page entity and state composition
   { name: "core-search", entry: "packages/core/dist/search.js", external, ceiling: 2_500 }, // 2,033 for createRunSearch on its own subpath; accident alarm
   { name: "core-internal", entry: "packages/core/dist/internal.js", external, ceiling: 500 }, // 221 for streamTail, the internal entry @fulcrum/react uses (no API promise); accident alarm
-  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 37_000 }, // 36,584 with the complete Timeline settle model; accident alarm only
+  { name: "react", entry: "packages/react/dist/index.js", external, ceiling: 37_263 }, // 36,532 with the complete Timeline settle model; 2% accident headroom
   { name: "zeta", entry: "packages/zeta/dist/index.js", external, ceiling: 17_000 }, // 16,666 with shared child-history paging (+1,071 on 15,595); bundle size is not a product goal, this ceiling only catches accidents
   { name: "virtual", entry: "packages/virtual/dist/index.js", external, ceiling: 11_000 },
   { name: "markdown", entry: "packages/markdown/dist/react.js", external, reportOnly: true },
