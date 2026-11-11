@@ -68,13 +68,6 @@ function mark(a: DiffRow, b: DiffRow) {
   b.word = [start, b.text.length - end];
 }
 
-export function diffStat(rows: DiffRow[]) {
-  let insert = 0;
-  let remove = 0;
-  for (const row of rows) row.change === "insert" ? insert++ : row.change === "delete" ? remove++ : 0;
-  return { insert, remove };
-}
-
 /** Counts changed lines for the header without building the body row model or its word ranges. */
 export function diffStatText(diff: string) {
   let insert = 0;
