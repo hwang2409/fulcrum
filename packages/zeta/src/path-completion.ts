@@ -1,4 +1,5 @@
 import type { RequestOptions } from "./client.js";
+import { record } from "./validation.js";
 
 export const PATH_COMPLETION_FEATURE = "path_completion" as const;
 
@@ -22,8 +23,6 @@ export interface PathCompletionClient {
 }
 
 const encoder = new TextEncoder();
-const object = (value: unknown): Record<string, unknown> | null =>
-  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
 function codePointCount(value: string): number | null {
   let count = 0;
@@ -49,13 +48,13 @@ function utf16Offset(value: string, codePointOffset: number): number {
 }
 
 function parseResult(value: unknown, textBeforeCursor: string, points: number): PathCompletionResult {
-  const envelope = object(value);
+  const envelope = record(value);
   if (!envelope || !Array.isArray(envelope.entries) || typeof envelope.truncated !== "boolean") {
     return { kind: "malformed" };
   }
   const entries: PathCompletionEntry[] = [];
   for (const value of envelope.entries) {
-    const row = object(value);
+    const row = record(value);
     if (!row || typeof row.text !== "string" || typeof row.display !== "string" ||
         row.kind !== "directory" && row.kind !== "file" ||
         typeof row.start_position !== "number" || !Number.isSafeInteger(row.start_position) ||
