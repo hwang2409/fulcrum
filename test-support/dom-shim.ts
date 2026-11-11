@@ -7,7 +7,7 @@ void nodePerformance.timerify;
 void nodePerformance.eventLoopUtilization;
 
 type Restore = () => void;
-type TrackedShim = { owner: string; name: PropertyKey };
+type TrackedShim = { owner: string; name: PropertyKey; restore: Restore };
 type DescriptorEntry = readonly [PropertyKey, PropertyDescriptor];
 type TargetSnapshot = {
   target: object;
@@ -25,12 +25,14 @@ const objectIs = Object.is;
 const isArray = Array.isArray;
 const ownKeys = Reflect.ownKeys;
 const reflectGet = Reflect.get;
+const setPrototypeOf = Reflect.setPrototypeOf;
 const deleteProperty = Reflect.deleteProperty;
 const stringEndsWith = Function.call.bind(String.prototype.endsWith) as (value: string, suffix: string) => boolean;
 const stringStartsWith = Function.call.bind(String.prototype.startsWith) as (value: string, prefix: string) => boolean;
 const symbolDescription = Function.call.bind(getOwnPropertyDescriptor(Symbol.prototype, "description")!.get!) as (value: symbol) => string | undefined;
 const propertyName = String;
 const AlarmError = Error;
+const scheduleMicrotask = queueMicrotask;
 const objectPrototype = Object.prototype;
 const weakRefPrototype = WeakRef.prototype;
 
@@ -248,6 +250,19 @@ const changedProperty = (snapshot: TargetSnapshot): PropertyKey | "[[Prototype]]
   }
 };
 
+const restoreSnapshot = (snapshot: TargetSnapshot) => {
+  const current = snapshotDescriptors(snapshot.target);
+  for (let index = 0; index < current.length; index += 1) {
+    const [name] = current[index]!;
+    if (!findDescriptor(snapshot.descriptors, name)) deleteProperty(snapshot.target, name);
+  }
+  for (let index = 0; index < snapshot.descriptors.length; index += 1) {
+    const [name, before] = snapshot.descriptors[index]!;
+    if (!sameDescriptor(before, findDescriptor(current, name))) defineProperty(snapshot.target, name, before);
+  }
+  if (getPrototypeOf(snapshot.target) !== snapshot.prototype) setPrototypeOf(snapshot.target, snapshot.prototype);
+};
+
 const ownerName = (target: object) => {
   if (target === globalThis) return "globalThis";
   if (typeof HTMLElement !== "undefined" && target === HTMLElement.prototype) return "HTMLElement.prototype";
@@ -265,17 +280,20 @@ export function domShimAlarm(file: string): void {
   if (findAlarm(file)) throw new AlarmError(`${file} registered the DOM shim alarm twice`);
   const alarm: Alarm = { file, shims: [], targets: snapshotTargets() };
   alarms[alarms.length] = alarm;
+  let failure: Error | undefined;
 
   afterAll(() => {
     if (alarm.shims.length > 0) {
       const shim = alarm.shims[0]!;
-      throw new AlarmError(`${file} leaked DOM shim ${shim.owner}.${propertyName(shim.name)}`);
+      failure = new AlarmError(`${file} leaked DOM shim ${shim.owner}.${propertyName(shim.name)}`);
     }
     for (let index = 0; index < alarm.targets.length; index += 1) {
       const target = alarm.targets[index]!;
       const name = changedProperty(target);
-      if (name !== undefined) throw new AlarmError(`${file} leaked DOM shim ${target.owner}.${propertyName(name)}`);
+      if (!failure && name !== undefined) failure = new AlarmError(`${file} leaked DOM shim ${target.owner}.${propertyName(name)}`);
     }
+    while (alarm.shims.length > 0) alarm.shims[alarm.shims.length - 1]!.restore();
+    for (let index = alarm.targets.length - 1; index >= 0; index -= 1) restoreSnapshot(alarm.targets[index]!);
     for (let index = 0; index < alarms.length; index += 1) {
       if (alarms[index] !== alarm) continue;
       for (let next = index + 1; next < alarms.length; next += 1) alarms[next - 1] = alarms[next]!;
@@ -283,6 +301,7 @@ export function domShimAlarm(file: string): void {
       break;
     }
   });
+  scheduleMicrotask(() => afterAll(() => { if (failure) throw failure; }));
 }
 
 export function shimProperty(target: object, name: PropertyKey, descriptor?: PropertyDescriptor): Restore {
@@ -291,24 +310,27 @@ export function shimProperty(target: object, name: PropertyKey, descriptor?: Pro
   if (!alarm) throw new AlarmError(`${file} used shimProperty without domShimAlarm(import.meta.path)`);
   const previous = getOwnPropertyDescriptor(target, name);
   const owner = ownerName(target);
-  const shim: TrackedShim = { owner, name };
+  let restored = false;
+  const shim: TrackedShim = {
+    owner,
+    name,
+    restore: () => {
+      if (restored) return;
+      if (previous) defineProperty(target, name, previous);
+      else deleteProperty(target, name);
+      restored = true;
+      for (let index = 0; index < alarm.shims.length; index += 1) {
+        if (alarm.shims[index] !== shim) continue;
+        for (let next = index + 1; next < alarm.shims.length; next += 1) alarm.shims[next - 1] = alarm.shims[next]!;
+        alarm.shims.length -= 1;
+        break;
+      }
+    },
+  };
   alarm.shims[alarm.shims.length] = shim;
   if (descriptor) defineProperty(target, name, descriptor);
   else deleteProperty(target, name);
-
-  let restored = false;
-  return () => {
-    if (restored) return;
-    if (previous) defineProperty(target, name, previous);
-    else deleteProperty(target, name);
-    restored = true;
-    for (let index = 0; index < alarm.shims.length; index += 1) {
-      if (alarm.shims[index] !== shim) continue;
-      for (let next = index + 1; next < alarm.shims.length; next += 1) alarm.shims[next - 1] = alarm.shims[next]!;
-      alarm.shims.length -= 1;
-      break;
-    }
-  };
+  return shim.restore;
 }
 
 export function shimGlobal<K extends keyof typeof globalThis>(name: K, value: (typeof globalThis)[K]): Restore;

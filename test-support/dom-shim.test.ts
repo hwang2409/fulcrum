@@ -80,6 +80,38 @@ const rows = [
   ["local-window-fixture", `const window = { value: 0 }; window.value = 1;`, null],
 ] as const;
 
+test("a failed alarm restores its snapshot before the next test file", () => {
+  const directory = mkdtempSync(join(import.meta.dir, "../packages/react/test/.dom-shim-cascade-"));
+  const leaking = join(directory, "01-leaking.test.ts");
+  const later = join(directory, "02-later.test.ts");
+  try {
+    writeFileSync(leaking, `
+import { afterAll, test } from "bun:test";
+import { domShimAlarm } from "../../../../test-support/dom-shim.js";
+(globalThis as any).__cascade_hook = true;
+domShimAlarm(import.meta.path);
+afterAll(() => { delete (globalThis as any).__cascade_hook; });
+test("plants a leak", () => { (globalThis as any).__cascade_leak = true; });
+`);
+    writeFileSync(later, `
+import { expect, test } from "bun:test";
+import { domShimAlarm } from "../../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
+test("later file sees restored globals", () => {
+  expect((globalThis as any).__cascade_leak).toBeUndefined();
+  expect((globalThis as any).__cascade_hook).toBeUndefined();
+});
+`);
+    const result = Bun.spawnSync({ cmd: [process.execPath, "test", leaking, later], stdout: "pipe", stderr: "pipe" });
+    const output = new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
+    expect(result.exitCode).toBe(1);
+    expect(output).toContain("01-leaking.test.ts leaked DOM shim globalThis.__cascade_leak");
+    expect(output).toContain("(pass) later file sees restored globals");
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}, 20_000);
+
 for (const [name, mutation, expected] of rows) {
   test(`the public DOM shim alarm handles ${name} and names the exact property`, () => {
     const directory = mkdtempSync(join(import.meta.dir, "../packages/react/test/.dom-shim-cases-"));

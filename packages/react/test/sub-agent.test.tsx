@@ -257,8 +257,11 @@ test("Escape and the back button each return one level, and the default navigato
   const calls: string[] = [];
   for (const name of ["pushState", "replaceState", "go", "back", "forward"] as const) {
     const real = history[name];
-    history[name] = ((...args: unknown[]) => { calls.push(name); return (real as (...a: unknown[]) => unknown).apply(history, args); }) as never;
-    restore.push(() => { history[name] = real as never; });
+    restore.push(shimProperty(history, name, {
+      configurable: true,
+      writable: true,
+      value: (...args: unknown[]) => { calls.push(name); return (real as (...a: unknown[]) => unknown).apply(history, args); },
+    }));
   }
   const length = history.length;
   mount(<RunNavigator store={storeOf([child("a")]).store} source={source} virtual={false} />);
