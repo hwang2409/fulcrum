@@ -19,7 +19,7 @@ PATH=/Users/henry/.bun/install/cache/@oven/bun-darwin-aarch64@1.4.4@@@1/bin:$PAT
   bun run --cwd apps/playground a11y --output=a11y-results.json
 ```
 
-the command builds the packages, starts private vite and fake-zeta processes on ports 5411 and 5412, scans the surfaces, captures chromium and webkit aria trees, writes the full axe node data to `a11y-results.json`, and stops its processes. the report includes the revision and exact tool versions.
+the command builds the packages, starts private vite and fake-zeta processes on operating-system-selected free ports, scans the surfaces, captures chromium and webkit aria trees, writes the full axe node data to `a11y-results.json`, and stops its processes. the report includes the revision and exact tool versions.
 
 ## automated axe matrix
 
@@ -47,7 +47,7 @@ chromium and webkit aria trees were captured for the gallery, the populated web 
 | check | chromium | webkit | result |
 | --- | --- | --- | --- |
 | timeline log role and name | captured | captured | `role="log"`, named `agent activity` in the gallery and `session activity` in apps/web; `aria-live="off"` avoids replaying the transcript |
-| paced append announcement | captured | captured | the separate polite live region coalesced three appended sub-agent updates to `3 new items` in both engines rather than announcing every update |
+| paced append announcement | captured | captured | the separate polite live region coalesced four appended sub-agent updates to `4 new items` in both engines rather than announcing every update |
 | history reconstruction/prepend | live turn already active | captured | webkit reconstructed the populated history with an empty live region; history rows enter the named log without making the log live |
 | approval group and controls | captured | captured | the group is labelled by its tool heading; `approve`, `always allow` when available, and `deny` expose button names and disabled state |
 | approval keyboard path | exercised | tree captured | `jump to approval: write docs/notes.md +8` moves focus to `approve`; the next tab stop is `deny` |

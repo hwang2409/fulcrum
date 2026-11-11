@@ -1,8 +1,11 @@
-import { chromium, webkit, type Page } from "playwright";
+import { chromium, webkit, type Browser, type BrowserContext, type Page } from "playwright";
 import axeCore from "axe-core";
+import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { startFakeZeta } from "../../web/scripts/fake-zeta.js";
+import { closeBrowser, stopChild, withDeadline } from "./lifecycle";
 
 const root = resolve(import.meta.dir, "../../..");
 const bun = process.execPath;
@@ -13,17 +16,53 @@ result.versions.bun = Bun.version;
 result.versions.playwright = (await import("playwright/package.json", { with: { type: "json" } })).default.version;
 result.versions.axe = "4.11.1";
 
-async function ready(url: string) {
-  for (let i = 0; i < 100; i++) {
-    try { if ((await fetch(url)).ok) return; } catch {}
-    await Bun.sleep(100);
-  }
-  throw new Error(`server not ready: ${url}`);
+async function freePort() {
+  const socket = createServer();
+  await withDeadline("reserve free port", 2_000, new Promise<void>((resolve, reject) => {
+    socket.once("error", reject);
+    socket.listen(0, "127.0.0.1", resolve);
+  }), () => socket.close());
+  const address = socket.address();
+  if (!address || typeof address === "string") throw new Error("could not select a free port");
+  await withDeadline("release free port", 2_000, new Promise<void>((resolve, reject) => socket.close((error) => error ? reject(error) : resolve())));
+  return address.port;
 }
+
 function server(cwd: string, port: number, env: Record<string, string> = {}) {
-  const proc = Bun.spawn([bun, "x", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd, env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" });
-  return proc;
+  const child = spawn(bun, ["x", "vite", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], {
+    cwd,
+    env: { ...process.env, ...env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  const capture = (chunk: Buffer) => { output = `${output}${chunk}`.slice(-4_000); };
+  child.stdout?.on("data", capture);
+  child.stderr?.on("data", capture);
+  return { child, logs: () => output.trim() };
 }
+
+async function ready(name: string, url: string, marker: string, process: ReturnType<typeof server>) {
+  const exited = new Promise<never>((_, reject) => process.child.once("exit", (code, signal) => {
+    reject(new Error(`${name} exited before it was ready (code ${code}, signal ${signal})${process.logs() ? `\n${process.logs()}` : ""}`));
+  }));
+  const polling = (async () => {
+    const end = Date.now() + 15_000;
+    while (Date.now() < end) {
+      const controller = new AbortController();
+      try {
+        const response = await withDeadline(`${name} readiness fetch`, 1_000, (async () => {
+          const fetched = await fetch(url, { signal: controller.signal });
+          return { ok: fetched.ok, body: await fetched.text() };
+        })(), () => controller.abort());
+        if (response.ok && response.body.includes(marker)) return;
+      } catch {}
+      await Bun.sleep(100);
+    }
+    throw new Error(`${name} did not serve its expected page at ${url}`);
+  })();
+  await Promise.race([polling, exited]);
+}
+
 async function runAxe(page: Page, surface: string, mode: string) {
   await page.addScriptTag({ content: axeSource });
   const scan = await page.evaluate(async () => (window as any).axe.run(document, { resultTypes: ["violations"] }));
@@ -51,13 +90,43 @@ async function contract(page: Page, browserName: string, surface: string) {
   result.trees.push({ browser: browserName, surface, snapshot: await page.locator("body").ariaSnapshot({ timeout: 10_000 }) });
 }
 
-const galleryPort = 5411;
-const galleryServer = server(`${root}/apps/playground`, galleryPort);
+const browsers = new Set<Browser>();
+const contexts = new Map<Browser, Set<BrowserContext>>();
+const browserPids = new Map<Browser, number>();
+async function launch(name: "chromium" | "webkit") {
+  const browser = await (name === "chromium" ? chromium : webkit).launch();
+  browsers.add(browser);
+  contexts.set(browser, new Set());
+  if (name === "chromium") {
+    const { processInfo } = await (await browser.newBrowserCDPSession()).send("SystemInfo.getProcessInfo");
+    const pid = processInfo.find((info) => info.type === "browser")?.id;
+    if (pid) browserPids.set(browser, pid);
+  }
+  return browser;
+}
+async function page(browser: Browser, options: Parameters<Browser["newPage"]>[0]) {
+  const opened = await browser.newPage(options);
+  contexts.get(browser)!.add(opened.context());
+  return opened;
+}
+async function closeTrackedBrowser(browser: Browser) {
+  await closeBrowser("a11y cleanup: browser.close", async () => {
+    for (const context of contexts.get(browser) ?? []) await context.close();
+    await browser.close();
+  }, browserPids.get(browser));
+  browsers.delete(browser);
+  contexts.delete(browser);
+  browserPids.delete(browser);
+}
+
+let galleryServer: ReturnType<typeof server> | undefined;
 let fake: Awaited<ReturnType<typeof startFakeZeta>> | undefined;
 let webServer: ReturnType<typeof server> | undefined;
 try {
-  await ready(`http://127.0.0.1:${galleryPort}/gallery.html`);
-  const c = await chromium.launch();
+  const galleryPort = await freePort();
+  galleryServer = server(`${root}/apps/playground`, galleryPort);
+  await ready("playground vite", `http://127.0.0.1:${galleryPort}/gallery.html`, "<title>fulcrum component gallery</title>", galleryServer);
+  const c = await launch("chromium");
   result.versions.chromium = c.version();
   for (const cfg of [
     { mode: "light-1440", width: 1440, colorScheme: "light" as const, forcedColors: "none" as const },
@@ -65,7 +134,7 @@ try {
     { mode: "forced-colors-1440", width: 1440, colorScheme: "light" as const, forcedColors: "active" as const },
     { mode: "light-390", width: 390, colorScheme: "light" as const, forcedColors: "none" as const },
   ]) {
-    const p = await c.newPage({ viewport: { width: cfg.width, height: 900 }, colorScheme: cfg.colorScheme, forcedColors: cfg.forcedColors, reducedMotion: "reduce" });
+    const p = await page(c, { viewport: { width: cfg.width, height: 900 }, colorScheme: cfg.colorScheme, forcedColors: cfg.forcedColors, reducedMotion: "reduce" });
     await p.goto(`http://127.0.0.1:${galleryPort}/gallery.html`, { waitUntil: "networkidle" });
     await runAxe(p, "playground gallery", cfg.mode);
     if (cfg.mode === "light-1440") {
@@ -81,55 +150,58 @@ try {
     }
     await p.close();
   }
-  await c.close();
-  const w = await webkit.launch();
+  await closeTrackedBrowser(c);
+  const w = await launch("webkit");
   result.versions.webkit = w.version();
-  const gp = await w.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  const gp = await page(w, { viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
   await gp.goto(`http://127.0.0.1:${galleryPort}/gallery.html`, { waitUntil: "networkidle" });
   await contract(gp, "webkit", "playground gallery");
-  await gp.close(); await w.close();
+  await gp.close();
+  await closeTrackedBrowser(w);
 
-  const webPort = 5412;
+  const webPort = await freePort();
   const webOrigin = `http://127.0.0.1:${webPort}`;
   fake = await startFakeZeta({ origins: [webOrigin], live: true, approvalReconnectGraceMs: 0 });
   webServer = server(`${root}/apps/web`, webPort, { ZETA_HOME: fake.home });
-  await ready(webOrigin);
-  for (const engine of [{ name: "chromium", launch: chromium.launch.bind(chromium) }, { name: "webkit", launch: webkit.launch.bind(webkit) }]) {
-    const b = await engine.launch();
-    const p = await b.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  await ready("web vite", webOrigin, "<title>zeta · fulcrum</title>", webServer);
+  for (const engine of ["chromium", "webkit"] as const) {
+    const b = await launch(engine);
+    const p = await page(b, { viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
     await p.goto(webOrigin, { waitUntil: "networkidle" });
     await p.waitForSelector('[data-part="timeline"]', { timeout: 15_000 });
-    await p.waitForTimeout(1800);
+    await p.waitForTimeout(1_800);
     const historyAnnouncer = await p.locator('[data-part="timeline-live"]').textContent();
-    for (let index = 0; index < 3; index++) fake.emit({
+    for (let index = 0; index < 4; index++) fake.emit({
       event: "sub_agent_receipt",
       session_id: "s-reconnect",
-      data: { notification_id: `a11y-${engine.name}-${index}`, kind: "agent_completion", child_instance_id: `a11y-child-${index}`, description: "accessibility worker", status: "completed", text: `accessibility worker ${index + 1} finished`, summary: `accessibility worker ${index + 1} finished` },
+      data: { notification_id: `a11y-${engine}-${index}`, kind: "agent_completion", child_instance_id: `a11y-child-${index}`, description: "accessibility worker", status: "completed", text: `accessibility worker ${index + 1} finished`, summary: `accessibility worker ${index + 1} finished` },
     });
-    await p.waitForTimeout(1_100);
-    await contract(p, engine.name, "apps/web running + tools + approval + history");
-    result.contracts.push({ browser: engine.name, surface: "apps/web history announcement", beforeAppend: historyAnnouncer, afterAppend: await p.locator('[data-part="timeline-live"]').textContent() });
-    if (engine.name === "chromium") {
+    await p.locator('[data-part="timeline-live"]').getByText("4 new items", { exact: true }).waitFor({ timeout: 5_000 });
+    await contract(p, engine, "apps/web running + tools + approval + history");
+    result.contracts.push({ browser: engine, surface: "apps/web history announcement", beforeAppend: historyAnnouncer, afterAppend: await p.locator('[data-part="timeline-live"]').textContent() });
+    if (engine === "chromium") {
       await runAxe(p, "apps/web running + tools + approval + history", "light-1440");
       await p.emulateMedia({ colorScheme: "dark" }); await runAxe(p, "apps/web running + tools + approval + history", "dark-1440");
       await p.emulateMedia({ forcedColors: "active", colorScheme: "light" }); await runAxe(p, "apps/web running + tools + approval + history", "forced-colors-1440");
       await p.setViewportSize({ width: 390, height: 844 }); await p.emulateMedia({ forcedColors: "none" }); await runAxe(p, "apps/web running + tools + approval + history", "light-390");
     }
-    await b.close();
+    await closeTrackedBrowser(b);
   }
   fake.setEmpty(true);
-  for (const engine of [{ name: "chromium", launch: chromium.launch.bind(chromium) }, { name: "webkit", launch: webkit.launch.bind(webkit) }]) {
-    const b = await engine.launch(); const p = await b.newPage({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
-    await p.goto(webOrigin, { waitUntil: "networkidle" }); await p.waitForTimeout(1000);
-    await contract(p, engine.name, "apps/web empty");
-    if (engine.name === "chromium") await runAxe(p, "apps/web empty", "light-390");
-    await b.close();
+  for (const engine of ["chromium", "webkit"] as const) {
+    const b = await launch(engine);
+    const p = await page(b, { viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
+    await p.goto(webOrigin, { waitUntil: "networkidle" }); await p.waitForTimeout(1_000);
+    await contract(p, engine, "apps/web empty");
+    if (engine === "chromium") await runAxe(p, "apps/web empty", "light-390");
+    await closeTrackedBrowser(b);
   }
 } finally {
-  if (webServer) { webServer.kill(); await webServer.exited; }
-  if (fake) await fake.close();
-  galleryServer.kill(); await galleryServer.exited;
-  await writeFile(output, JSON.stringify(result, null, 2));
+  for (const browser of [...browsers]) await closeTrackedBrowser(browser).catch((error) => { console.error(String(error)); process.exitCode = 1; });
+  if (webServer) await stopChild("a11y cleanup: web vite", webServer.child).catch((error) => { console.error(String(error)); process.exitCode = 1; });
+  if (fake) await withDeadline("a11y cleanup: fake zeta", 10_000, fake.close()).catch((error) => { console.error(String(error)); process.exitCode = 1; });
+  if (galleryServer) await stopChild("a11y cleanup: playground vite", galleryServer.child).catch((error) => { console.error(String(error)); process.exitCode = 1; });
+  await withDeadline("a11y cleanup: write report", 10_000, writeFile(output, JSON.stringify(result, null, 2))).catch((error) => { console.error(String(error)); process.exitCode = 1; });
 }
 console.log(`wrote ${output}`);
 console.log(JSON.stringify({ axe: result.axe.map((x: any) => ({ surface: x.surface, mode: x.mode, violations: x.violations.map((v: any) => `${v.id}:${v.nodes.length}`) })), contracts: result.contracts }, null, 2));
