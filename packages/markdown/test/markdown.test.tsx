@@ -45,7 +45,7 @@ const isSubsequence = (value: string, expected: string) => {
 };
 
 const conformance: Record<string, Array<[string, string]>> = {
-  headings: [["# alpha", "<h1 data-part=\"md-heading\">alpha</h1>"], ["## beta", "<h2 data-part=\"md-heading\">beta</h2>"], ["setext\n===", "<h1 data-part=\"md-heading\">setext</h1>"]],
+  headings: [["# alpha", "<h3 data-part=\"md-heading\" data-level=\"1\">alpha</h3>"], ["## beta", "<h4 data-part=\"md-heading\" data-level=\"2\">beta</h4>"], ["setext\n===", "<h3 data-part=\"md-heading\" data-level=\"1\">setext</h3>"]],
   paragraphs: [["alpha\nbeta", "<p data-part=\"md-paragraph\">alpha\nbeta</p>"]],
   emphasis: [["*a* **b** ~~c~~", "<p data-part=\"md-paragraph\"><em data-part=\"md-emphasis\">a</em> <strong data-part=\"md-strong\">b</strong> <del data-part=\"md-strike\">c</del></p>"]],
   codeSpans: [["`` a ` b ``", "<p data-part=\"md-paragraph\"><code data-part=\"md-code-inline\">a ` b</code></p>"]],
@@ -252,6 +252,20 @@ test("fuzzed html and scheme fragments never become executable markup", () => {
     expect(html).not.toMatch(/<(?:script|img)\b/i);
     expect(html).not.toMatch(/href=\"(?:javascript|data):/i);
   }
+});
+
+test("renders message headings at the offset level and preserves source levels", () => {
+  const source = "# one\n\n###### six";
+  const defaultHtml = renderToStaticMarkup(<Markdown source={source} />);
+  expect(defaultHtml).toContain('<h3 data-part="md-heading" data-level="1">one</h3>');
+  expect(defaultHtml).toContain('<h6 data-part="md-heading" data-level="6">six</h6>');
+
+  const pageHtml = renderToStaticMarkup(<Markdown source={source} headingOffset={0} />);
+  expect(pageHtml).toContain('<h1 data-part="md-heading" data-level="1">one</h1>');
+  expect(pageHtml).toContain('<h6 data-part="md-heading" data-level="6">six</h6>');
+
+  const clampedHtml = renderToStaticMarkup(<Markdown source="## two" headingOffset={99} />);
+  expect(clampedHtml).toContain('<h6 data-part="md-heading" data-level="2">two</h6>');
 });
 
 test("renders the review's commonmark failures correctly", () => {
