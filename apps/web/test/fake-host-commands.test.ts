@@ -151,13 +151,20 @@ test("fake zeta resolves unique session prefixes and reports ambiguous candidate
     const connection = await credentials(fake);
     const client = await connectZeta({ url: connection.url, token: connection.token });
     await expect(client.request("resume", { session_id: "s-rec" })).resolves.toMatchObject({ session: { session_id: "s-reconnect" } });
-    await expect(client.request("resume", { session_id: "s-ma" })).rejects.toMatchObject({
+    const expectWireError = async (request: Promise<unknown>, expected: { code: number; message: string; data?: unknown }) => {
+      try { await request; throw new Error("request unexpectedly succeeded"); }
+      catch (error) {
+        const rpc = error as { code?: unknown; message?: unknown; data?: unknown };
+        expect({ code: rpc.code, message: rpc.message, ...(rpc.data === undefined ? {} : { data: rpc.data }) }).toEqual(expected);
+      }
+    };
+    await expectWireError(client.request("resume", { session_id: "s-ma" }), {
       code: -32602,
       message: "session id 's-ma' is ambiguous; matches: s-many, s-markdo; please provide more characters",
       data: { code: "session_id_ambiguous", session_id: "s-ma", candidates: ["s-many", "s-markdo"] },
     });
-    await expect(client.request("resume", { session_id: "s" })).rejects.toMatchObject({ code: -32602, message: "session id prefix must be at least 4 characters" });
-    await expect(client.request("resume", { session_id: "missing" })).rejects.toMatchObject({ code: -32602, message: "session not found", data: { code: "session_not_found", session_id: "missing" } });
+    await expectWireError(client.request("resume", { session_id: "s" }), { code: -32602, message: "session id prefix must be at least 4 characters" });
+    await expectWireError(client.request("resume", { session_id: "missing" }), { code: -32602, message: "session missing was not found", data: { code: "session_not_found", session_id: "missing" } });
     client.close();
   } finally {
     await fake.close();
@@ -173,6 +180,12 @@ test("short ambiguous candidates select a full id through the session opener", a
       data: { code: "session_id_ambiguous", candidates: ["abcd1111", "abcd2222"] },
     });
     const selected: string[] = [];
+    const replayed: string[] = [];
+    const replay = client.replay.bind(client);
+    client.replay = (sessionId, load, replace) => {
+      replayed.push(sessionId);
+      return replay(sessionId, load, replace);
+    };
     const source = { client, state: { phase: "connected" }, subscribe: () => () => undefined };
     const sessions = createSessions(source, { onSelect: (id) => selected.push(id) });
     sessions.select("abcd");
@@ -188,6 +201,7 @@ test("short ambiguous candidates select a full id through the session opener", a
     const historyRequests = fake.requests.filter(({ method }) => method === "session_history" || method === "session_history_backward");
     expect(historyRequests.length).toBeGreaterThan(0);
     expect(historyRequests.every(({ params }) => params.session_id === "abcd1111-full")).toBe(true);
+    expect(replayed).toEqual(["abcd1111-full"]);
     expect(sessions.state.transition.kind).not.toBe("failed");
     sessions.dispose();
     client.close();
@@ -197,7 +211,7 @@ test("short ambiguous candidates select a full id through the session opener", a
 });
 
 test("fake zeta caps ambiguous candidates after sorting", async () => {
-  const ids = Array.from({ length: 9 }, (_, index) => `zzzz${String(index).padStart(2, "0")}-full`);
+  const ids = ["zzzz08-full", ...Array.from({ length: 8 }, (_, index) => `zzzz${String(index).padStart(2, "0")}-full`)];
   const fake = await startFakeZeta({ origins: [], live: false, ambiguousPrefix: true, ambiguousSessionIds: ids });
   try {
     const connection = await credentials(fake);
