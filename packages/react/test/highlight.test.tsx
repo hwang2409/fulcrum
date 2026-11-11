@@ -3,7 +3,8 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act } from "react";
 import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
 import type { Highlight, HighlightContext, Token } from "@fulcrum/highlight";
@@ -92,7 +93,11 @@ test("collapsed output does no JSON or highlight work in its first render", () =
   const { highlight, calls } = fakeHighlighter();
   const parse = JSON.parse;
   let parses = 0;
-  JSON.parse = ((...args: Parameters<typeof JSON.parse>) => { parses++; return parse(...args); }) as typeof JSON.parse;
+  const restoreParse = shimProperty(JSON, "parse", {
+    configurable: true,
+    writable: true,
+    value: ((...args: Parameters<typeof JSON.parse>) => { parses++; return parse(...args); }) as typeof JSON.parse,
+  });
   try {
     render(done("lazy", "custom", undefined, output), ["tool:lazy"], highlight);
     const card = q('[data-id="tool:lazy"]') as HTMLDetailsElement;
@@ -107,7 +112,7 @@ test("collapsed output does no JSON or highlight work in its first render", () =
     expect(parses).toBe(1);
     expect(calls).toHaveLength(1);
   } finally {
-    JSON.parse = parse;
+    restoreParse();
   }
 });
 

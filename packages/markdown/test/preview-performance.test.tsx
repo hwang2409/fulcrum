@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { createStreamingDocument, parseMarkdown } from "../src/index.js";
 import { PENDING_INLINE_SUFFIX as PENDING_INLINE_SUFFIX_BUDGET } from "../src/pending-inline.js";
 import { expectGrowthBelow } from "../../../test-support/scaling.js";
-import { shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 
 function canonicalTree(value: unknown): unknown {
   if (Array.isArray(value)) {

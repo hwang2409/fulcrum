@@ -1,14 +1,23 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
 import { createAiSdkAdapter } from "../src/index.js";
+domShimAlarm(import.meta.path);
 
 const source = new URL("../src/index.ts", import.meta.url).pathname;
 const anonymous = [{ type: "start" }, { type: "text-start", id: "t" }, { type: "text-delta", id: "t", delta: "hi" }, { type: "text-end", id: "t" }, { type: "finish" }];
 const named = [{ type: "start", messageId: "m1" }, ...anonymous.slice(1)];
 
 let warnings: unknown[][] = [];
-const warn = console.warn;
-beforeEach(() => { warnings = []; console.warn = (...args: unknown[]) => void warnings.push(args); });
-afterEach(() => { console.warn = warn; });
+let restoreWarn: (() => void) | undefined;
+beforeEach(() => {
+  warnings = [];
+  restoreWarn = shimProperty(console, "warn", {
+    configurable: true,
+    writable: true,
+    value: (...args: unknown[]) => void warnings.push(args),
+  });
+});
+afterEach(() => { restoreWarn?.(); });
 
 test("a start without a message id warns once per adapter in development, naming the server fix and the README section", () => {
   const first = createAiSdkAdapter({ streamKey: "a", originalMessages: [] });
@@ -55,7 +64,7 @@ test("a continuation whose start names a different message than the one it conti
 test("production (__FULCRUM_DEV__ = false) never warns, and a minifier that defines it drops the warning", async () => {
   // The development rule is read once at module load, so production needs its own process.
   const script = `globalThis.__FULCRUM_DEV__ = false;
-    let warned = 0; console.warn = () => { warned++; };
+    let warned = 0; Reflect.set(console, "warn", () => { warned++; });
     const { createAiSdkAdapter } = await import(${JSON.stringify(source)});
     const adapter = createAiSdkAdapter({ streamKey: "a", originalMessages: [] });
     for (const part of ${JSON.stringify([...anonymous, ...anonymous])}) adapter.decode(part);
