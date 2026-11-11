@@ -411,7 +411,6 @@ export async function openSession(
   knownStatus?: ServerStatus,
   endOutcome: EndOutcomeFactory = () => () => undefined,
 ): Promise<OpenResult> {
-  if (client.features.includes("session_replay_seq")) throw new Error("session_replay_seq needs the sequence replay coordinator");
   const before = knownStatus ?? await getStatus(client, signal);
   let id = requestedId;
   let status = before;
