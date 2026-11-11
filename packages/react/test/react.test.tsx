@@ -1091,7 +1091,7 @@ test("a tool body gets the normalized item and renders inside the one shared hea
   const seen: string[] = [];
   const Shell = ({ item, output, state }: ToolBodyProps) => {
     seen.push(`${item.tool_call.id}:${item.view?.kind}:${state}`);
-    return <pre data-part="tool-output">{`${item.tool_call.arguments.command}|${output}`}</pre>;
+    return <pre data-part="tool-output">{`${item.tool_call.arguments.command}|${[...output.chunks()].map((chunk) => chunk.text).join("")}`}</pre>;
   };
   mount(
     <RunProvider store={store}>
@@ -1847,12 +1847,14 @@ test("announcement text describes only committed item-level activity", () => {
     id: "tool:t",
     type: "tool",
     tool_call: call("t", "bash"),
-    output: "",
+    output: {
+      version: 1, length: 18, bytes: 18, lines: 1, retainedBytes: 18, omission: null, protocolTruncated: false,
+      *chunks() { yield { start: 0, line: 0, text: "exited with code 1" }; },
+    },
     version: 1,
     active: false,
     is_error: true,
     canceled: false,
-    result: { tool_call_id: "t", content: "exited with code 1", is_error: true },
   })).toBe("tool bash finished: exit 1");
   expect(announcementForItem({
     id: "approval:r",

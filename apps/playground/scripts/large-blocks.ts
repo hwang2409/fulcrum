@@ -163,6 +163,41 @@ for (let sample = 0; sample < 6; sample++) {
 results.readWarmup = readWarmup;
 results.readSamples = readSamples;
 results.read = readSamples.at(-1);
+// Source-backed tool output: synchronous dispatch through subscriber return, with the existing calibrated 4x CPU throttle.
+// Yielding every 64 appends makes each observed task a real browser work slice instead of one artificial 10,000-call task.
+results.toolOutput = await measure(async () => {
+  const outputStore = createRunStore((flush) => flush());
+  const outputCall = { id: "bounded", name: "shell", arguments: { command: "generate-output" } };
+  const samples = [];
+  for (let index = 0; index < 10 * 1024; index++) {
+    const started = performance.now();
+    outputStore.dispatch({ type: "tool_output", tool_call: outputCall, output: "x".repeat(1024), view: { kind: "shell", command: "generate-output" } });
+    samples.push(performance.now() - started);
+    if (index % 64 === 63) await nextFrame();
+  }
+  outputStore.dispatch({ type: "tool_end", tool_call: outputCall, tool_result: { tool_call_id: "bounded", content: "", is_error: false } });
+  samples.sort((a, b) => a - b);
+  const item = outputStore.getItem("tool:bounded");
+  const postsBefore = window.__posted.length;
+  flushSync(() => root.render(createElement(RunProvider, { store: outputStore, highlight }, createElement(ToolCall, { id: "tool:bounded" }))));
+  await nextFrame();
+  const closedPosts = window.__posted.length - postsBefore;
+  const outputCard = document.querySelector("[data-id='tool:bounded']");
+  const openStarted = performance.now();
+  if (outputCard.tagName === "DETAILS" && !outputCard.open) { outputCard.open = true; outputCard.dispatchEvent(new Event("toggle")); }
+  await nextFrame();
+  const openMs = performance.now() - openStarted;
+  const replacementStarted = performance.now();
+  outputStore.dispatch({ type: "tool_output", tool_call: outputCall, output: "r".repeat(3 * 1024 * 1024), replace: true, view: { kind: "shell", command: "generate-output" } });
+  const replacementMs = performance.now() - replacementStarted;
+  return {
+    p95DispatchMs: samples[Math.floor(samples.length * 0.95)], maxDispatchMs: samples.at(-1), logicalBytes: item?.type === "tool" ? item.output.bytes : 0,
+    retainedBytes: item?.type === "tool" ? item.output.retainedBytes : 0, closedParseRequests: closedPosts, openMs, replacementMs,
+    mountedRanges: document.querySelectorAll("[data-id='tool:bounded'] [data-part=text-viewer-row]").length,
+    mountedLines: document.querySelectorAll("[data-id='tool:bounded'] [data-part=numbered-line]").length,
+    outputNodes: document.querySelectorAll("[data-id='tool:bounded'] [data-part=tool-body] *").length,
+  };
+});
 root.render(createElement(Markdown, { id: "large", source: fence, highlight }));
 await nextFrame();
 await nextFrame();
@@ -238,6 +273,13 @@ try {
   if (affectedReadSamples >= 2) failures.push(`read: ${affectedReadSamples} of five samples had a main-thread task over 80 ms`);
   if (readMaxTask > 150) failures.push(`read: pathological main-thread task ${readMaxTask.toFixed(1)} ms`);
   if (!results.read?.colored) failures.push("read: the scrolled-to rows of the opened read viewer never colored");
+  const toolOutput = results.toolOutput;
+  if ((toolOutput.p95DispatchMs as number) > 1) failures.push(`tool output: p95 append dispatch took ${Number(toolOutput.p95DispatchMs).toFixed(3)} ms (limit 1 ms)`);
+  if ((toolOutput.maxDispatchMs as number) > 50) failures.push(`tool output: one append dispatch took ${Number(toolOutput.maxDispatchMs).toFixed(1)} ms (limit 50 ms)`);
+  if ((toolOutput.logicalBytes as number) !== 10 * 1024 * 1024 || (toolOutput.retainedBytes as number) > 2 * 1024 * 1024) failures.push(`tool output: retention result was invalid (${JSON.stringify(toolOutput)})`);
+  if ((toolOutput.closedParseRequests as number) !== 0) failures.push(`tool output: collapsed output started ${toolOutput.closedParseRequests} highlight requests`);
+  if ((toolOutput.openMs as number) > 50) failures.push(`tool output: open took ${Number(toolOutput.openMs).toFixed(1)} ms (limit 50 ms)`);
+  if ((toolOutput.mountedRanges as number) > 200 || (toolOutput.mountedLines as number) > 300 || (toolOutput.outputNodes as number) > 500) failures.push(`tool output: mounted work exceeded the viewer bounds (${JSON.stringify(toolOutput)})`);
   const { queue } = results;
   if (!queue.smallColored || !queue.bigColored) failures.push(`queue: both blocks must color (${JSON.stringify(queue)})`);
   // The regression this guards is the small block waiting for the whole large one: 325-335 ms on main before the fix.

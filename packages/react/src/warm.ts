@@ -1,34 +1,9 @@
 import { useCallback, useEffect, useRef, type RefObject } from "react";
 import type { Highlight } from "@fulcrum/highlight";
-import type { ToolBodyProps, ToolItem } from "./parts.js";
-import { requestTokens, type Block } from "./highlight.js";
-import { editBlocks } from "./tools/edit.js";
-import { fetchBlocks } from "./tools/fetch.js";
-import { genericBlocks } from "./tools/generic.js";
-import { readBlocks } from "./tools/read.js";
-import { searchBlocks } from "./tools/search.js";
-import { shellBlocks } from "./tools/shell.js";
-import { writeBlocks } from "./tools/write.js";
+import type { ToolBodyProps } from "./parts.js";
 
-const blocks: Record<NonNullable<ToolItem["view"]>["kind"], (props: ToolBodyProps) => Block[]> = {
-  shell: shellBlocks,
-  read: readBlocks,
-  edit: editBlocks,
-  write: writeBlocks,
-  search: searchBlocks,
-  fetch: fetchBlocks,
-};
-
-/** The highlight blocks ToolBody asks for when it first mounts. */
-const toolBodyBlocks = (props: ToolBodyProps): Block[] => ((props.item.view && blocks[props.item.view.kind]) || genericBlocks)(props);
-
-/**
- * ToolBody's first-render work, done ahead of time: the pure parts (JSON, ANSI, row models) land in their text caches
- * and every highlight block is requested, so the body paints colored on its first frame when it opens.
- */
-export function warmToolBody(props: ToolBodyProps, highlight: Highlight) {
-  for (const block of toolBodyBlocks(props)) requestTokens(highlight, block);
-}
+/** Bounded output stays unparsed until the disclosure opens. */
+export function warmToolBody(_props: ToolBodyProps, _highlight: Highlight) {}
 
 type Deadline = { timeRemaining(): number };
 type Job = { node: RefObject<Element | null>; run: () => void };
