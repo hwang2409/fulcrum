@@ -386,19 +386,36 @@ test("generic collapsed tool headers keep their ordinary argument text", () => {
   ]);
 });
 
-test("generic collapsed tool headers bound hostile argument work and text", () => {
+test("generic collapsed tool headers read a fixed number of properties", () => {
   let reads = 0;
   const wide: Record<string, unknown> = {};
   for (let index = 0; index < 1_000; index++) Object.defineProperty(wide, `key${index}`, {
     enumerable: true,
     get() { reads++; return index; },
   });
+  const call = { id: "summary-wide", name: "custom", arguments: { rows: [wide] } };
+  const original = JSON.stringify;
+  let stringifiedWholeValue = false;
+  restoreShims.push(shimProperty(JSON, "stringify", {
+    configurable: true,
+    writable: true,
+    value: ((value: unknown, ...rest: unknown[]) => {
+      if (value === wide) stringifiedWholeValue = true;
+      return original(value, ...(rest as [((key: string, value: unknown) => unknown) | null, string | number | undefined]));
+    }) as typeof JSON.stringify,
+  }));
+  render([{ type: "tool_start", tool_call: call as never }], ["tool:summary-wide"]);
+  expect(reads).toBeLessThanOrEqual(64);
+  expect(stringifiedWholeValue).toBe(false);
+  expect(q('[data-part="tool-summary"]').textContent!.length).toBeLessThanOrEqual(240);
+});
+
+test("generic collapsed tool headers bound hostile argument depth and text", () => {
   let deep: Record<string, unknown> = {};
   for (let index = 0; index < 10_000; index++) deep = { child: deep };
   const cyclic: Record<string, unknown> = {};
   cyclic.self = cyclic;
   const calls = [
-    { id: "summary-wide", name: "custom", arguments: { rows: [wide] } },
     { id: "summary-long", name: "custom", arguments: { text: "x".repeat(50_000_000) } },
     { id: "summary-deep", name: "custom", arguments: { rows: [deep] } },
     { id: "summary-cycle", name: "custom", arguments: { rows: [cyclic] } },
@@ -412,13 +429,12 @@ test("generic collapsed tool headers bound hostile argument work and text", () =
     configurable: true,
     writable: true,
     value: ((value: unknown, ...rest: unknown[]) => {
-      if (value === wide || value === deep || value === cyclic || value === calls[1]!.arguments.text || value === calls[6]!.arguments.rows) stringifiedWholeValue = true;
+      if (value === deep || value === cyclic || value === calls[0]!.arguments.text || value === calls[5]!.arguments.rows) stringifiedWholeValue = true;
       return original(value, ...(rest as [((key: string, value: unknown) => unknown) | null, string | number | undefined]));
     }) as typeof JSON.stringify,
   }));
   const events = calls.map(({ id, name, arguments: arguments_ }) => ({ type: "tool_start", tool_call: { id, name, arguments: arguments_ as never } } as RunEvent));
   expect(() => render(events, calls.map(({ id }) => `tool:${id}`))).not.toThrow();
-  expect(reads).toBeLessThanOrEqual(64);
   expect(stringifiedWholeValue).toBe(false);
   const summaryLengths = calls.map(({ id }) => q(`[data-id="tool:${id}"] [data-part="tool-summary"]`).textContent!.length);
   expect(summaryLengths.every((length) => length <= 240)).toBe(true);
