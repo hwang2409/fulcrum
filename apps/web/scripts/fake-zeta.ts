@@ -267,7 +267,7 @@ const historyGroups = (rows: Json[]) => {
   return groups;
 };
 
-export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, ambiguousPrefix = false, ambiguousSessionIds, serialDelays, overflowSilentCloseDelayMs = 0 }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; ambiguousPrefix?: boolean; ambiguousSessionIds?: readonly string[]; serialDelays?: Readonly<Record<string, number | readonly number[]>>; overflowSilentCloseDelayMs?: number }) {
+export async function startFakeZeta({ origins, port = 0, live = true, historyMode = process.env.FAKE_ZETA_HISTORY_MODE === "old" ? "old" : "new", approvalHistoryMode = (process.env.FAKE_ZETA_APPROVAL_HISTORY_MODE as ApprovalHistoryMode | undefined) ?? "not-advertised-with-rows", approvalReconnect = true, approvalReconnectGraceMs = 90_000, ambiguousPrefix = false, ambiguousSessionIds, serialDelays, overflowSilentCloseDelayMs = 0, opaqueHistoryValidator = true }: { origins: string[]; port?: number; live?: boolean; historyMode?: HistoryMode; approvalHistoryMode?: ApprovalHistoryMode; approvalReconnect?: boolean; approvalReconnectGraceMs?: number; ambiguousPrefix?: boolean; ambiguousSessionIds?: readonly string[]; serialDelays?: Readonly<Record<string, number | readonly number[]>>; overflowSilentCloseDelayMs?: number; opaqueHistoryValidator?: boolean }) {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-web-zeta-"));
   await mkdir(join(home, "run"), { recursive: true });
   const discovery = join(home, "run", "serve.ws.json");
@@ -509,7 +509,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
               const shown = candidates.join(", ") + (matches.length > 8 ? ", …" : "");
               return reply({ error: { code: -32602, message: `session id '${requested}' is ambiguous; matches: ${shown}; please provide more characters`, data: { code: "session_id_ambiguous", session_id: requested, candidates } } });
             }
-            return reply({ error: { code: -32602, message: "session not found", data: { code: "session_not_found", session_id: requested } } });
+            return reply({ error: { code: -32602, message: `session ${requested} was not found`, data: { code: "session_not_found", session_id: requested } } });
           }
           if (running && sessionId !== active) return reply({ error: { code: -32004, message: "a turn is already running" } });
           active = sessionId;
@@ -549,10 +549,16 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
             const end = before === null ? groups.length : Number(before);
             const snapshotEnd = params.before === null ? groups.length : Number(validator?.end);
             const endpoint = snapshotEnd ? String(groups[snapshotEnd - 1]?.findLast((row) => row.event !== "approval_request" && row.event !== "approval_end")?.id ?? "") : null;
-            if (params.before !== null && (validator?.end !== snapshotEnd || validator?.entry_id !== endpoint))
+            const repairGeneration = "fake-repair-generation";
+            if (params.before !== null && (validator?.end !== snapshotEnd || validator?.entry_id !== endpoint ||
+              (opaqueHistoryValidator && validator.repair_generation !== repairGeneration)))
               return reply({ error: { code: -32009, message: "history snapshot is stale", data: { code: "stale_history_snapshot" } } });
             const start = Math.max(0, end - pageSize);
-            reply({ result: { messages: countServedTurnEnds(groups.slice(start, end).flat()), next_before: start || null, history_validator: { end: snapshotEnd, entry_id: endpoint } } });
+            reply({ result: {
+              messages: countServedTurnEnds(groups.slice(start, end).flat()),
+              next_before: start || null,
+              history_validator: { end: snapshotEnd, entry_id: endpoint, ...(opaqueHistoryValidator ? { repair_generation: repairGeneration } : {}) },
+            } });
             if (liveEnabled && active === ACTIVE && !turnStarted) {
               turnStarted = true;
               running = true;

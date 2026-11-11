@@ -86,6 +86,28 @@ test("resolves at newest establishment and completes one oldest-first backfill",
   opened.lease.release();
 });
 
+test("returns every child history validator field unchanged", async () => {
+  const opaqueValidator = { end: 3, entry_id: "u-new", repair_generation: "repair-1" } as const;
+  const fake = client(["child_run_history"], ({ params }) => {
+    if (params?.before === null) return page([row("u-new", "new")], 2, opaqueValidator);
+    if ((params?.history_validator as Record<string, unknown> | undefined)?.repair_generation !== opaqueValidator.repair_generation)
+      throw { code: -32009, data: { code: "stale_history_snapshot" } };
+    return params?.before === 2
+      ? page([row("u-middle", "middle")], 1, opaqueValidator)
+      : page([row("u-old", "old")], null, opaqueValidator);
+  });
+
+  const opened = await openChildRun(fake.value, key);
+  await opened.complete;
+
+  expect(outline(opened)).toEqual(["user:message:u-old", "user:message:u-middle", "user:message:u-new"]);
+  expect(fake.calls.slice(1).map(({ params }) => params)).toEqual([
+    { session_id: key.sessionId, run_id: key.runId, before: 2, history_validator: opaqueValidator },
+    { session_id: key.sessionId, run_id: key.runId, before: 1, history_validator: opaqueValidator },
+  ]);
+  opened.lease.release();
+});
+
 test("one pair shares its in-flight store and progress while equal child ids under different owners do not", async () => {
   let requests = 0;
   const fake = client(["child_run_history"], ({ params }) => {

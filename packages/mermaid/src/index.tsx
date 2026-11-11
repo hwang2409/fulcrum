@@ -24,6 +24,19 @@ const wanted = new Map<string, Set<Element>>();
 const running = new Map<string, Promise<Rendered | null>>();
 let queue: Promise<unknown> = Promise.resolve();
 let renderer: Promise<typeof import("./render.js")> | undefined;
+const RENDER_TIMEOUT_MS = 20_000;
+declare global { var __FULCRUM_DEV__: boolean | undefined; }
+const viteDevelopment = typeof (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env === "object"
+  ? (import.meta as ImportMeta & { env: { DEV?: boolean } }).env.DEV
+  : undefined;
+const development = globalThis.__FULCRUM_DEV__ === undefined ? viteDevelopment !== false : globalThis.__FULCRUM_DEV__;
+const reportFailure = development
+  ? (error: unknown) => console.error("Mermaid could not render a diagram.", error)
+  : () => {};
+const fallback = (error: unknown): Rendered => {
+  reportFailure(error);
+  return { error: error instanceof Error && error.message === "render timed out" ? error.message : "the diagram could not be drawn" };
+};
 // After paint and while the page is idle (a timeout keeps a busy stream from starving it), one diagram at a time:
 // mermaid's render is one task that cannot be split, and it shares global config.
 const idle = () => new Promise<void>((resolve) => {
@@ -31,19 +44,36 @@ const idle = () => new Promise<void>((resolve) => {
   else setTimeout(resolve, 16);
 });
 
+async function renderResult(key: string, code: string): Promise<Rendered | null> {
+  await idle();
+  const host = [...wanted.get(key) ?? []].find((element) => element.isConnected);
+  if (!host) return null; // every fence that asked has gone (scrolled out of a virtual list): it asks again later
+  const module = await (renderer ??= import("./render.js").catch((error) => { renderer = undefined; throw error; }));
+  return module.renderMermaid(code, host);
+}
+
+function withRenderDeadline(render: Promise<Rendered | null>) {
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("render timed out")), RENDER_TIMEOUT_MS); });
+  return Promise.race([render, deadline]).finally(() => clearTimeout(timer));
+}
+
 function request(key: string, code: string): Promise<Rendered | null> {
   let job = running.get(key);
   if (job) return job;
-  job = queue.then(async () => {
-    await idle();
-    const host = [...wanted.get(key) ?? []].find((element) => element.isConnected);
-    if (!host) return null; // every fence that asked has gone (scrolled out of a virtual list): it asks again later
-    const rendered = await (renderer ??= import("./render.js")).then((module) => module.renderMermaid(code, host));
+  const render = queue.then(() => renderResult(key, code));
+  queue = render.catch(() => null); // a timed-out mermaid call keeps this queue slot until its uncancellable promise settles
+  job = withRenderDeadline(render).then((rendered) => {
+    if (!rendered) return null;
+    if ("error" in rendered) reportFailure(new Error(rendered.error));
+    remember(key, rendered);
+    return rendered;
+  }, (error) => {
+    const rendered = fallback(error);
     remember(key, rendered);
     return rendered;
   }).finally(() => running.delete(key));
   running.set(key, job);
-  queue = job.catch(() => null);
   return job;
 }
 
@@ -116,14 +146,20 @@ function fitScale(room: number, natural: number, smallest: number): number {
  * scrolls inside the box, which is then a labelled, focusable region with an edge fade on each side with more to see.
  * Without `fit` (full size), it is its natural size. Recomputed when the box resizes.
  */
-function Svg({ svg, part, fit = false }: { svg: SVGSVGElement; part: string; fit?: boolean }) {
+function Svg({ svg, part, fit = false, onFailure }: { svg: SVGSVGElement; part: string; fit?: boolean; onFailure?: (error: unknown) => void }) {
   const frame = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   // Before paint, in the commit that shows it: the box goes from the source to the diagram, at its scale, in one layout.
   useLayoutEffect(() => {
     const node = box.current!;
-    const copy = copyOf(svg);
-    node.replaceChildren(copy);
+    let copy: SVGSVGElement;
+    try {
+      copy = copyOf(svg);
+      node.replaceChildren(copy);
+    } catch (error) {
+      onFailure?.(error);
+      return;
+    }
     const width = Number(svg.getAttribute("width"));
     const height = Number(svg.getAttribute("height"));
     const edges = () => {
@@ -193,7 +229,17 @@ export function MermaidFence({ code, done, source }: FenceProps) {
   const [result, setResult] = useState<{ code: string; rendered: Rendered }>();
   const [view, setView] = useState<"diagram" | "source">("diagram");
   const [full, setFull] = useState(false);
+  const reportedApplyFailure = useRef<string | undefined>(undefined);
   const key = done && theme !== undefined ? `${theme}\n${code}` : undefined;
+  const applyFailed = (error: unknown) => {
+    if (reportedApplyFailure.current !== key) {
+      reportedApplyFailure.current = key;
+      const hit = key ? recall(key) : undefined;
+      const rendered = hit && "error" in hit ? hit : fallback(error);
+      if (key) remember(key, rendered);
+      setResult({ code, rendered });
+    }
+  };
 
   useLayoutEffect(() => {
     if (!done) return;
@@ -229,7 +275,7 @@ export function MermaidFence({ code, done, source }: FenceProps) {
   const showDiagram = !!diagram && view === "diagram";
   const state = !done ? "streaming" : diagram ? view : shown ? "error" : "pending";
   return (
-    <div ref={box} data-part="mermaid" data-state={state} data-wide="">
+    <div ref={box} data-part="mermaid" data-state={state} data-mermaid-fallback={state === "error" ? "" : undefined} data-wide="">
       {diagram ? (
         <div data-part="mermaid-bar">
           <span data-part="mermaid-caption">mermaid</span>
@@ -241,7 +287,7 @@ export function MermaidFence({ code, done, source }: FenceProps) {
           <button ref={openButton} type="button" data-action="open" aria-haspopup="dialog" aria-label="open diagram full size" onClick={() => setFull(true)}>open</button>
         </div>
       ) : null}
-      {showDiagram ? <Svg svg={diagram.svg} part="mermaid-diagram" fit /> : null}
+      {showDiagram ? <Svg svg={diagram.svg} part="mermaid-diagram" fit onFailure={applyFailed} /> : null}
       <div data-part="mermaid-source" hidden={showDiagram}>{source}</div>
       {shown && "error" in shown ? <p data-part="mermaid-error" role="note">mermaid: {shown.error}</p> : null}
       {full && diagram ? <FullSize svg={diagram.svg} label={diagram.label} onClose={() => { setFull(false); openButton.current?.focus(); }} /> : null}

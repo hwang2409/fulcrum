@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { inspect } from "node:util";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
 import { createClient, HostCommandError, type HostCommand, type Transport } from "../src/index.js";
+domShimAlarm(import.meta.path);
 
 type Message = { id: number; method: string; params: Record<string, unknown> };
 
@@ -611,11 +613,11 @@ test("host command validation rejects every protocol limit before sending", asyn
 test("does not expose host commands in warnings or errors", async () => {
   const secret = "host-command-secret-value";
   const messages: string[] = [];
-  const originals = { log: console.log, warn: console.warn, error: console.error, debug: console.debug };
-  console.log = (...values) => messages.push(values.join(" "));
-  console.warn = (...values) => messages.push(values.join(" "));
-  console.error = (...values) => messages.push(values.join(" "));
-  console.debug = (...values) => messages.push(values.join(" "));
+  const restores = (["log", "warn", "error", "debug"] as const).map((name) => shimProperty(console, name, {
+    configurable: true,
+    writable: true,
+    value: (...values: unknown[]) => { messages.push(values.join(" ")); },
+  }));
   try {
     const unsupported = fakeTransport();
     let calls = 0;
@@ -644,7 +646,7 @@ test("does not expose host commands in warnings or errors", async () => {
     expect(String(failure)).not.toContain(secret);
     expect(failure).toMatchObject({ name: "HostCommandError", kind: "host_command_request_failed" });
   } finally {
-    Object.assign(console, originals);
+    restores.reverse().forEach((restore) => restore());
   }
   expect(messages.join("\n")).not.toContain(secret);
   expect(messages.filter((message) => message.includes("session_host_commands"))).toHaveLength(1);
@@ -685,12 +687,12 @@ test("supplier failures and invalid output never expose their values", async () 
   ];
   const invalid = [{ ...command(), name: `!${marker}` }];
   const messages: string[] = [];
-  const originals = { log: console.log, warn: console.warn, error: console.error, debug: console.debug };
   const capture = (...values: unknown[]) => messages.push(values.map((value) => inspect(value)).join(" "));
-  console.log = capture;
-  console.warn = capture;
-  console.error = capture;
-  console.debug = capture;
+  const restores = (["log", "warn", "error", "debug"] as const).map((name) => shimProperty(console, name, {
+    configurable: true,
+    writable: true,
+    value: capture,
+  }));
   try {
     for (const value of [...thrown, invalid]) {
       const fake = fakeTransport();
@@ -721,7 +723,7 @@ test("supplier failures and invalid output never expose their values", async () 
       }
     }
   } finally {
-    Object.assign(console, originals);
+    restores.reverse().forEach((restore) => restore());
   }
   expect(messages.join("\n")).not.toContain(marker);
 });

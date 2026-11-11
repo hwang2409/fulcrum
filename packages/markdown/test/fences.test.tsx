@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { shimGlobal } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown, type FenceProps, type Fences } from "../src/react.js";
 

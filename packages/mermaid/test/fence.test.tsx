@@ -1,14 +1,15 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
-import { afterAll, beforeEach, expect, mock, test } from "bun:test";
-import { shimGlobal } from "../../../test-support/dom-shim.js";
+import { afterAll, beforeEach, expect, jest, mock, test } from "bun:test";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 let restoreObserver: (() => void) | undefined;
 let restoreActEnvironment: (() => void) | undefined;
-afterAll(() => { restoreObserver?.(); restoreActEnvironment?.(); });
+afterAll(() => { restoreObserver?.(); restoreActEnvironment?.(); mock.restore(); });
+domShimAlarm(import.meta.path);
 
 type Rendered = { svg: SVGSVGElement; label: string } | { error: string };
 const calls: Array<{ code: string; host: Element }> = [];
-let answer: (code: string) => Rendered;
+let answer: (code: string) => Rendered | Promise<Rendered>;
 const svgFor = (code: string) => {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.id = `fake-${calls.length}`;
@@ -143,19 +144,187 @@ test("every copy has its own ids, so two copies of one diagram never share marke
   await b.unmount();
 });
 
+test("a lazy module load failure keeps its source without an unhandled rejection", async () => {
+  const child = Bun.spawn([process.execPath, "test", "./packages/mermaid/test/load-failure.fixture.tsx"], {
+    cwd: process.cwd(), stdout: "pipe", stderr: "pipe",
+  });
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 10_000);
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text(), new Response(child.stdout).text()]);
+  clearTimeout(timer);
+  if (timedOut) throw new Error("load-failure fixture did not exit within 10 seconds");
+  expect(exitCode, stderr).toBe(0);
+  expect(stderr.match(/Mermaid could not render a diagram\./g)).toHaveLength(1);
+}, 15_000);
+
+test("a failed source is cached across remounts and a changed source retries", async () => {
+  const reports: unknown[][] = [];
+  const restoreConsole = shimProperty(console, "error", { configurable: true, value: (...values: unknown[]) => reports.push(values) });
+  answer = async () => { throw new Error("persistent failure"); };
+  const code = fresh();
+  const first = mount();
+  try {
+    await first.render(fence(code));
+    await settle();
+    expect(first.host.querySelector("[data-part=mermaid]")?.getAttribute("data-state")).toBe("error");
+    expect(calls).toHaveLength(1);
+    expect(reports).toHaveLength(1);
+  } finally {
+    await first.unmount();
+  }
+  const again = mount();
+  try {
+    await again.render(fence(code));
+    expect(again.host.querySelector("[data-part=mermaid]")?.getAttribute("data-state")).toBe("error");
+    await settle();
+    expect(calls).toHaveLength(1);
+    expect(reports).toHaveLength(1);
+    await again.render(fence(fresh()));
+    await settle();
+    expect(calls).toHaveLength(2);
+    expect(reports).toHaveLength(2);
+  } finally {
+    restoreConsole();
+    await again.unmount();
+  }
+});
+
+test("a renderer rejection keeps its source and does not become an unhandled rejection", async () => {
+  const reports: unknown[][] = [];
+  const restoreConsole = shimProperty(console, "error", { configurable: true, value: (...values: unknown[]) => reports.push(values) });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  answer = async () => { throw new Error("renderer crashed"); };
+  const { host, render, unmount } = mount();
+  try {
+    const code = fresh();
+    await render(fence(code));
+    await settle();
+    const box = host.querySelector("[data-part=mermaid]")!;
+    expect(box.hasAttribute("data-mermaid-fallback")).toBe(true);
+    expect(box.getAttribute("data-state")).toBe("error");
+    expect(box.querySelector("[data-part=mermaid-source] pre")?.textContent).toBe(code);
+    expect(unhandled).toEqual([]);
+    expect(reports).toHaveLength(1);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    restoreConsole();
+    await unmount();
+  }
+});
+
+test("a synchronous renderer throw keeps its source and does not become an unhandled rejection", async () => {
+  const reports: unknown[][] = [];
+  const restoreConsole = shimProperty(console, "error", { configurable: true, value: (...values: unknown[]) => reports.push(values) });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  answer = () => { throw new Error("renderer threw"); };
+  const { host, render, unmount } = mount();
+  try {
+    const code = fresh();
+    await render(fence(code));
+    await settle();
+    expect(host.querySelector("[data-mermaid-fallback] pre")?.textContent).toBe(code);
+    expect(unhandled).toEqual([]);
+    expect(reports).toHaveLength(1);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    restoreConsole();
+    await unmount();
+  }
+});
+
+test("a failure while inserting the svg keeps its source and reports once", async () => {
+  let restoreClone: (() => void) | undefined;
+  const reports: unknown[][] = [];
+  const restoreConsole = shimProperty(console, "error", { configurable: true, value: (...values: unknown[]) => reports.push(values) });
+  answer = (code) => {
+    const svg = svgFor(code);
+    restoreClone = shimProperty(svg, "cloneNode", { configurable: true, value: () => { throw new Error("insert failed"); } });
+    return { svg, label: `diagram of ${code.trim()}` };
+  };
+  const { host, render, unmount } = mount();
+  try {
+    const code = fresh();
+    await render(fence(code));
+    await settle();
+    expect(host.querySelector("[data-mermaid-fallback] pre")?.textContent).toBe(code);
+    expect(reports).toHaveLength(1);
+  } finally {
+    restoreClone?.();
+    restoreConsole();
+    await unmount();
+  }
+});
+
+test("a late result after the source changes never replaces the new source", async () => {
+  const pending: Array<(rendered: Rendered) => void> = [];
+  answer = () => new Promise<Rendered>((resolve) => pending.push(resolve));
+  const { host, render, unmount } = mount();
+  try {
+    const oldCode = fresh();
+    const newCode = fresh();
+    await render(fence(oldCode));
+    await settle();
+    expect(pending).toHaveLength(1);
+    await render(fence(newCode));
+    pending.shift()!({ svg: svgFor(oldCode), label: "old diagram" });
+    await settle();
+    expect(host.querySelector("[data-part=mermaid]")?.getAttribute("data-state")).toBe("pending");
+    expect(host.querySelector("[data-part=mermaid-source] pre")?.textContent).toBe(newCode);
+    expect(host.querySelector("[data-part=mermaid-diagram]")).toBeNull();
+    expect(pending).toHaveLength(1);
+    pending.shift()!({ svg: svgFor(newCode), label: "new diagram" });
+    await settle();
+    expect(host.querySelector("[data-part=mermaid-diagram] > svg")?.getAttribute("aria-label")).toBe(`diagram of ${newCode.trim()}`);
+  } finally {
+    await unmount();
+  }
+});
+
+test("a late result after unmount is ignored without an unhandled rejection", async () => {
+  let complete!: (rendered: Rendered) => void;
+  answer = () => new Promise<Rendered>((resolve) => { complete = resolve; });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  const { render, unmount } = mount();
+  try {
+    const code = fresh();
+    await render(fence(code));
+    await settle();
+    await unmount();
+    complete({ svg: svgFor(code), label: "late diagram" });
+    await settle();
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("an invalid diagram keeps its source with a short error, and never a blank box", async () => {
+  const reports: unknown[][] = [];
+  const restoreConsole = shimProperty(console, "error", { configurable: true, value: (...values: unknown[]) => reports.push(values) });
   answer = () => ({ error: "Parse error on line 2: Expecting 'SQE', got 'PS'" });
   const { host, render, unmount } = mount();
-  await render(fence("graph TD\nA[oops(\n"));
-  await settle();
-  const box = host.querySelector("[data-part=mermaid]")!;
-  expect(box.getAttribute("data-state")).toBe("error");
-  expect((box.querySelector("[data-part=mermaid-source]") as HTMLElement).hidden).toBe(false);
-  expect(box.querySelector("[data-part=mermaid-source] pre")?.textContent).toBe("graph TD\nA[oops(\n");
-  expect(box.querySelector("[data-part=mermaid-error]")?.textContent).toBe("mermaid: Parse error on line 2: Expecting 'SQE', got 'PS'");
-  expect(box.querySelector("[data-part=mermaid-bar]")).toBeNull();
-  expect(host.querySelector("p")?.textContent).toBe("intro"); // the rest of the message is there
-  await unmount();
+  try {
+    await render(fence("graph TD\nA[oops(\n"));
+    await settle();
+    const box = host.querySelector("[data-part=mermaid]")!;
+    expect(box.getAttribute("data-state")).toBe("error");
+    expect(box.hasAttribute("data-mermaid-fallback")).toBe(true);
+    expect((box.querySelector("[data-part=mermaid-source]") as HTMLElement).hidden).toBe(false);
+    expect(box.querySelector("[data-part=mermaid-source] pre")?.textContent).toBe("graph TD\nA[oops(\n");
+    expect(box.querySelector("[data-part=mermaid-error]")?.textContent).toBe("mermaid: Parse error on line 2: Expecting 'SQE', got 'PS'");
+    expect(box.querySelector("[data-part=mermaid-bar]")).toBeNull();
+    expect(host.querySelector("p")?.textContent).toBe("intro"); // the rest of the message is there
+    expect(reports).toHaveLength(1);
+  } finally {
+    restoreConsole();
+    await unmount();
+  }
 });
 
 test("a theme change draws again in the new colors; the old diagram stays up meanwhile", async () => {
@@ -187,6 +356,74 @@ test("a fence that leaves before its turn is not drawn", async () => {
   await unmount();
   await settle();
   expect(calls).toHaveLength(0);
+});
+
+test("a timed-out render keeps the queue until it settles", async () => {
+  jest.useFakeTimers();
+  const restoreConsole = shimProperty(console, "error", { configurable: true, value: () => {} });
+  const pending: Array<(rendered: Rendered) => void> = [];
+  let active = 0;
+  let mostActive = 0;
+  answer = (code) => {
+    active++;
+    mostActive = Math.max(mostActive, active);
+    return new Promise<Rendered>((resolve) => pending.push((rendered) => { active--; resolve(rendered); }));
+  };
+  const { host, render, unmount } = mount();
+  try {
+    const oldCode = fresh();
+    const newCode = fresh();
+    await render(fence(oldCode));
+    await act(async () => { jest.advanceTimersByTime(16); await Promise.resolve(); await Promise.resolve(); });
+    expect(calls.map((call) => call.code)).toEqual([oldCode]);
+    await act(async () => { jest.advanceTimersByTime(20_000); await Promise.resolve(); await Promise.resolve(); });
+    await render(fence(newCode));
+    await act(async () => { jest.advanceTimersByTime(16); await Promise.resolve(); await Promise.resolve(); });
+    expect(calls.map((call) => call.code)).toEqual([oldCode]);
+    pending.shift()!({ svg: svgFor(oldCode), label: "late old diagram" });
+    await act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
+    await act(async () => { jest.advanceTimersByTime(16); for (let i = 0; i < 6; i++) await Promise.resolve(); });
+    expect(calls.map((call) => call.code)).toEqual([oldCode, newCode]);
+    expect(mostActive).toBe(1);
+    expect(host.querySelector("[data-part=mermaid-diagram]")).toBeNull();
+    pending.shift()!({ svg: svgFor(newCode), label: "new diagram" });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(host.querySelector("[data-part=mermaid-diagram] > svg")?.getAttribute("aria-label")).toBe(`diagram of ${newCode.trim()}`);
+  } finally {
+    while (pending.length) pending.shift()!({ error: "test cleanup" });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await unmount();
+    restoreConsole();
+    jest.useRealTimers();
+  }
+});
+
+test("a render that never settles times out to its source", async () => {
+  jest.useFakeTimers();
+  const restoreConsole = shimProperty(console, "error", { configurable: true, value: () => {} });
+  answer = () => new Promise<Rendered>(() => {});
+  const { host, render, unmount } = mount();
+  try {
+    const code = fresh();
+    await render(fence(code));
+    await act(async () => {
+      jest.advanceTimersByTime(16);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(calls).toHaveLength(1);
+    await act(async () => {
+      jest.advanceTimersByTime(20_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(host.querySelector("[data-mermaid-fallback] pre")?.textContent).toBe(code);
+    expect(host.querySelector("[data-part=mermaid-error]")?.textContent).toBe("mermaid: render timed out");
+  } finally {
+    await unmount();
+    restoreConsole();
+    jest.useRealTimers();
+  }
 });
 
 test("a crowded gantt axis keeps every nth date and every grid line", async () => {

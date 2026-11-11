@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { TOKEN_TYPES } from "../../highlight/src/types.js";
 import { themes } from "../src/index.js";
 
@@ -211,6 +211,91 @@ test("every tool fact is colored by a ui-* accent, never a tok-* variable", () =
     return own.filter(({ body }) => body.includes("--fulcrum-tok-") || !body.includes("var(--fulcrum-ui-")).map(({ selector }) => `${selector} is not colored by --fulcrum-ui-*`);
   });
   expect(problems).toEqual([]);
+});
+
+// Every fulcrum stylesheet (the packages' css, themes.css, the apps' css) and every package and app source file, whose
+// template strings and inline style objects can also carry css.
+const ROOT = new URL("../../../", import.meta.url);
+const files = (top: string, keep: (path: string) => boolean) => readdirSync(new URL(top, ROOT), { recursive: true, encoding: "utf8" })
+  .filter((path) => keep(path) && !/(^|\/)(node_modules|dist)\//.test(path)).map((path) => `${top}/${path}`);
+const SHEETS = ["packages", "apps"].flatMap((top) => files(top, (path) => path.endsWith(".css"))).sort();
+const SOURCES = ["packages", "apps"].flatMap((top) => files(top, (path) => /^[^/]+\/src\/.*\.tsx?$/.test(path))).sort();
+type Declaration = { where: string; selector: string; body: string; property: string; value: string };
+// Each declaration with its file:line. Comments are blanked with their newlines kept, so lines stay true.
+function cssDeclarations(file: string, text: string): Declaration[] {
+  text = text.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, " "));
+  return [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap((rule) => {
+    const bodyAt = rule.index! + rule[1]!.length + 1;
+    return [...rule[2]!.matchAll(/([\w-]+)\s*:\s*([^;]+)/g)].map((decl) => ({
+      where: `${file}:${text.slice(0, bodyAt + decl.index!).split("\n").length}`,
+      selector: rule[1]!.trim().replace(/\s+/g, " "), body: rule[2]!, property: decl[1]!, value: decl[2]!.trim(),
+    }));
+  });
+}
+// In source: `prop: value` in css template strings, `prop: "value"` in style objects (camelCase or quoted kebab), and
+// `style.prop = value` / `setProperty("prop", value)`, wherever the value names a custom property.
+const kebab = (name: string) => name.replace(/^["']|["']$/g, "").replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).replace(/^webkit-/, "-webkit-");
+function sourceDeclarations(file: string, text: string): Declaration[] {
+  const at = (index: number) => `${file}:${text.slice(0, index).split("\n").length}`;
+  return [
+    ...[...text.matchAll(/(--[\w-]+|"[\w-]+"|'[\w-]+'|\b[a-zA-Z][\w]*)\s*:\s*["'`]?([^"'`;,}\n]*var\(--[\w-]+\)[^"'`;,}\n]*)/g)].map((m) => ({ where: at(m.index!), property: kebab(m[1]!), value: m[2]!.trim() })),
+    ...[...text.matchAll(/\.style\.(\w+)\s*=\s*["'`]([^"'`]*var\(--[\w-]+\)[^"'`]*)/g)].map((m) => ({ where: at(m.index!), property: kebab(m[1]!), value: m[2]! })),
+    ...[...text.matchAll(/setProperty\(\s*["'`]([\w-]+)["'`]\s*,\s*["'`]([^"'`]*var\(--[\w-]+\)[^"'`]*)/g)].map((m) => ({ where: at(m.index!), property: m[1]!, value: m[2]! })),
+  ].map((decl) => ({ ...decl, selector: "(source)", body: "" }));
+}
+const declarations = [...SHEETS.flatMap((file) => cssDeclarations(file, readFileSync(new URL(file, ROOT), "utf8"))), ...SOURCES.flatMap((file) => sourceDeclarations(file, readFileSync(new URL(file, ROOT), "utf8")))];
+// A custom property is a status tone when any value it is ever set to reaches ok, warn, or danger, through any chain of
+// aliases (--fulcrum-error: var(--fulcrum-danger), --mark: var(--fulcrum-error), ...), or when a state/urgency selector
+// assigns it. shortcut: one global set, not per-element cascade, so a property used for status anywhere is a tone
+// everywhere; that only errs strict.
+function statusCarriers(decls: { selector: string; property: string; value: string }[]) {
+  const tones = new Set(["--fulcrum-ok", "--fulcrum-warn", "--fulcrum-danger"]);
+  for (const { selector, property } of decls) if (property.startsWith("--") && /\[data-(?:state|urgency)(?:[=\]])/.test(selector)) tones.add(property);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const { property, value } of decls) {
+      if (!property.startsWith("--") || tones.has(property)) continue;
+      if ([...value.matchAll(/var\(\s*(--[\w-]+)/g)].some(([, name]) => tones.has(name!))) tones.add(property), (grew = true);
+    }
+  }
+  return tones;
+}
+const toneSet = (decls: { selector: string; property: string; value: string }[]) => {
+  const tones = statusCarriers(decls);
+  return (value: string) => [...value.matchAll(/var\(\s*(--[\w-]+)/g)].some(([, name]) => tones.has(name!));
+};
+const toned = toneSet(declarations);
+// Text paint: color, the WebKit fill that overrides it, and fill (svg text).
+const TEXT = new Set(["color", "-webkit-text-fill-color", "fill"]);
+const textProblems = (decls: Declaration[], isToned = toneSet(decls)) => decls.filter(({ property, value }) => TEXT.has(property) && isToned(value))
+  .map(({ where, selector, property, value }) => `${where} ${selector} { ${property}: ${value} }: status tokens are marks only; use fg (or muted) for the word and a mark (square, rail, border) for the tone`);
+
+// These status words use fg or muted; their adjacent square, rail, or border carries the status tone.
+const STATUS_WORD = /\[data-part="(?:delivery-note|sub-agent-status|run-urgency)"\]/;
+test("delivery and sub-agent status words do not use status colors", () => {
+  expect(SHEETS).toContain("packages/react/styles.css");
+  expect(textProblems(declarations.filter(({ selector }) => selector === "(source)" || STATUS_WORD.test(selector)), toned)).toEqual([]);
+});
+
+// The scan must see every route a status color takes to text, or it passes by missing them.
+test("the status text scan catches aliases, chains, text fill, and inline styles", () => {
+  const sheet = cssDeclarations("plant.css", `
+    :root { --fulcrum-error: var(--fulcrum-danger); --a: var(--fulcrum-warn); --b: var(--a); --calm: var(--fulcrum-muted); }
+    .alias { color: var(--fulcrum-error); }
+    .chain { color: color-mix(in srgb, var(--b) 80%, black); }
+    .fill { -webkit-text-fill-color: var(--fulcrum-ok); }
+    text { fill: var(--b); }
+    [data-part="sub-agent"][data-state="idle"] { --state: var(--fulcrum-ui-type); }
+    [data-part="sub-agent-status"] { color: var(--state); }
+    .fine { color: var(--calm); border-color: var(--fulcrum-error); }`);
+  const source = sourceDeclarations("plant.tsx", `
+    const a = <p style={{ color: "var(--fulcrum-danger)" }} />;
+    const b = <p style={{ WebkitTextFillColor: \`var(--fulcrum-warn)\` }} />;
+    node.style.color = "var(--fulcrum-ok)";
+    node.style.setProperty("color", "var(--fulcrum-error)");
+    const css = \`.x { color: var(--b); }\`;
+    const fine = <p style={{ color: "var(--fulcrum-fg)", borderColor: "var(--fulcrum-danger)" }} />;`);
+  expect(textProblems([...sheet, ...source]).map((problem) => problem.split(" ")[0]).sort()).toEqual(["plant.css:3", "plant.css:4", "plant.css:5", "plant.css:6", "plant.css:8", "plant.tsx:2", "plant.tsx:3", "plant.tsx:4", "plant.tsx:5", "plant.tsx:6"]);
 });
 
 test("the OS-dark default is github-dark", () => {
