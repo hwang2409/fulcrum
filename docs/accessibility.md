@@ -5,7 +5,7 @@ this page records the accessibility matrix for the playground component gallery 
 ## baseline
 
 - date: 2026-11-11
-- revision: `555da427fc69578a55e9352b785b6e7c025c9911`
+- revision: `f1c7b66e0276d63a1bd201f9c6dd136dd2fb82a2`
 - host: macos 26.6.2, arm64
 - tools: bun 1.4.4, playwright 1.64.1, axe-core 4.11.1
 - automated browser engines: chromium 156.0.8078.4 and webkit 27.2
@@ -42,7 +42,7 @@ two browser-only calibration runs took 44.73 and 43.51 seconds. their rule ids, 
 
 ## accessibility-tree and interaction checks
 
-chromium and webkit aria trees were captured for the gallery, the populated web run, and the empty web state.
+chromium and webkit aria trees were captured for the gallery, the populated web run, and the empty web state. chromium's pre-append live region contains `3 new items` because the fake zeta's scripted live turn emits three completed rows during setup; the measured append uses four distinct rows and waits for the distinct `4 new items` result.
 
 | check | chromium | webkit | result |
 | --- | --- | --- | --- |
