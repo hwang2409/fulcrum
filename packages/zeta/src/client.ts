@@ -306,7 +306,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     cancelLoad(session);
     replayLoads.set(session, load);
     quarantined.add(session);
-    quarantineRevisions.set(session, generation === 1 ? 0 : generation * 1_000_000);
+    quarantineRevisions.set(session, 0);
     const controller = new AbortController();
     activeLoads.set(session, controller);
     try {
