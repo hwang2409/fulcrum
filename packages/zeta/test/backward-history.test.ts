@@ -11,7 +11,7 @@ const becomesTrueWithin = async (condition: () => boolean, timeoutMs = 10_000) =
 const settlesWithin = (promise: Promise<unknown>, timeoutMs = 1_000) =>
   Promise.race([promise.then(() => true, () => true), Bun.sleep(timeoutMs).then(() => false)]);
 
-test("publishes newest first and complete history oldest first", async () => {
+test("pages with an old two-field validator", async () => {
   const requests: BackwardHistoryCursor[] = [];
   const snapshots: Array<{ rows: readonly unknown[]; pageRows: readonly unknown[]; cause: string; complete: boolean }> = [];
   const opened = await openBackwardHistory(async (cursor) => {
@@ -35,6 +35,38 @@ test("publishes newest first and complete history oldest first", async () => {
   ]);
 });
 
+test("returns every validator field unchanged on older-page requests", async () => {
+  const opaqueValidator = { end: 3, entry_id: "new", repair_generation: "repair-1", future: { enabled: true } } as const;
+  const reorderedValidator = { future: { enabled: true }, repair_generation: "repair-1", entry_id: "new", end: 3 } as const;
+  const requests: BackwardHistoryCursor[] = [];
+  const opened = await openBackwardHistory(async (cursor) => {
+    requests.push(cursor);
+    if (cursor.before === null) return page(["new"], 2, opaqueValidator);
+    if (cursor.historyValidator?.repair_generation !== opaqueValidator.repair_generation)
+      throw { code: -32009, data: { code: "stale_history_snapshot" } };
+    if (cursor.before === 2) return page(["middle"], 1, reorderedValidator);
+    return page(["old"], null, reorderedValidator);
+  });
+
+  expect((await opened.complete).rows).toEqual(["old", "middle", "new"]);
+  expect(requests.slice(1)).toEqual([
+    { before: 2, historyValidator: opaqueValidator },
+    { before: 1, historyValidator: opaqueValidator },
+  ]);
+});
+
+test("rejects a changed opaque validator field before publishing its rows", async () => {
+  const opaqueValidator = { end: 3, entry_id: "new", repair_generation: "repair-1" } as const;
+  const snapshots: readonly unknown[][] = [];
+  const opened = await openBackwardHistory(async ({ before }) => before === null
+    ? page(["new"], 1, opaqueValidator)
+    : page(["wrong snapshot"], null, { ...opaqueValidator, repair_generation: "repair-2" }),
+  { onSnapshot: ({ rows }) => snapshots.push(rows) });
+
+  await expect(opened.complete).rejects.toThrow("backward history response has an invalid validator");
+  expect(snapshots).toEqual([["new"]]);
+});
+
 test("rejects a malformed continuation before publishing its rows", async () => {
   const snapshots: readonly unknown[][] = [];
   const opened = await openBackwardHistory(async ({ before }) => before === null
@@ -51,6 +83,10 @@ test("rejects malformed first pages and outside-input cursors", async () => {
     .rejects.toThrow("backward history response is invalid");
   await expect(openBackwardHistory(async () => page(["negative"], -1)))
     .rejects.toThrow("backward history response is invalid");
+  await expect(openBackwardHistory(async () => page(["negative validator"], null, { end: -1, entry_id: null })))
+    .rejects.toThrow("backward history response has an invalid validator");
+  await expect(openBackwardHistory(async () => page(["unsafe validator"], null, { end: Number.MAX_SAFE_INTEGER + 1, entry_id: null })))
+    .rejects.toThrow("backward history response has an invalid validator");
   const opened = await openBackwardHistory(async ({ before }) => before === null ? page(["new"], 1) : page(["wrong"], 1));
   await expect(opened.complete).rejects.toThrow("backward history response is invalid");
 });

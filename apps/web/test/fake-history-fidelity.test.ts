@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { connectZeta } from "@fulcrum/zeta";
-import { startFakeZeta } from "../scripts/fake-zeta";
+import { LONG, startFakeZeta } from "../scripts/fake-zeta";
+import { openSession } from "../src/session";
 
 type Row = { content?: Array<{ type?: string; tool_call?: Record<string, unknown> }>; tool_result?: Record<string, unknown> | null };
 
@@ -25,6 +26,33 @@ async function themesHistory(features: string[]) {
     await fake.close();
   }
 }
+
+test("web paging returns the fake's opaque history validator unchanged", async () => {
+  const fake = await startFakeZeta({ origins: [], live: false, opaqueHistoryValidator: true });
+  let release: (() => void) | undefined;
+  try {
+    const discovery = JSON.parse(await readFile(join(fake.home, "run", "serve.ws.json"), "utf8")) as { controller_token: string };
+    const client = await connectZeta({
+      url: `ws://127.0.0.1:${fake.port}/`,
+      token: discovery.controller_token,
+      features: ["session_history_backward"],
+    });
+    try {
+      const opened = await openSession(client, LONG);
+      release = () => opened.lease.release();
+      await opened.complete;
+    } finally {
+      release?.();
+      client.close();
+    }
+    const continuations = fake.requests.filter(({ method, params }) => method === "session_history" && params.before !== null);
+    expect(continuations.length).toBeGreaterThan(1);
+    expect(continuations.every(({ params }) =>
+      (params.history_validator as Record<string, unknown>)?.repair_generation === "fake-repair-generation")).toBe(true);
+  } finally {
+    await fake.close();
+  }
+});
 
 test("with session_history_fidelity, fake history keeps tool arguments and the structured bash result", async () => {
   const { call, result } = await themesHistory(["session_history_fidelity"]);
