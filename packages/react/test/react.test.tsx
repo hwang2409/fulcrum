@@ -332,12 +332,18 @@ test("a failing virtual row is measured, keeps its siblings, and retries when it
   expect(q('[data-virtual-id="message:before"] [data-part="message"]').textContent).toBe("before");
   expect(q('[data-virtual-id="message:after"] [data-part="message"]').textContent).toBe("after");
   const failedRow = q('[data-virtual-id="message:broken"]');
+  const afterRow = q('[data-virtual-id="message:after"]');
+  const rowOffset = (row: HTMLElement) => Number.parseFloat(row.style.transform.slice("translateY(".length));
+  const initialFailedExtent = rowOffset(afterRow) - rowOffset(failedRow);
+  const initialTotal = Number.parseFloat(q('[data-part="timeline"]').style.height);
   const observer = rowObservers.find(({ element }) => element === failedRow)!;
   act(() => {
     observer.callback([{ target: failedRow, borderBoxSize: [{ blockSize: 44 }] } as unknown as ResizeObserverEntry], {} as ResizeObserver);
     while (frames.length) frames.shift()!(performance.now());
   });
-  expect(Number.parseFloat(q('[data-part="timeline"]').style.height)).toBe(188);
+  const measuredFailedExtent = rowOffset(afterRow) - rowOffset(failedRow);
+  expect(measuredFailedExtent, "the measured failed row must move its next sibling by 44 px").toBe(44);
+  expect(Number.parseFloat(q('[data-part="timeline"]').style.height), "only the failed row's estimate changes; the container gutter stays included").toBe(initialTotal - initialFailedExtent + measuredFailedExtent);
   expect(reports.filter(([message]) => message === "Timeline could not render message:broken.")).toHaveLength(1);
 
   send({ type: "message_commit", message_id: "broken", message: message("recovered") });
