@@ -4,7 +4,8 @@ GlobalRegistrator.register();
 
 import { afterAll, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act, useLayoutEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { useVirtualList, type VirtualListState } from "../src/index.js";

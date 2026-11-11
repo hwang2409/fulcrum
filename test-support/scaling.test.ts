@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
+import { domShimAlarm, shimProperty } from "./dom-shim.js";
 import { expectGrowthBelow } from "./scaling.js";
+domShimAlarm(import.meta.path);
 
 let sink = 0;
 const loop = (size: number) => { for (let index = 0; index < size; index++) sink += index & 7; };
@@ -33,15 +35,17 @@ test("one stall in the judged warm-up does not fail linear work", () => {
   const stall = 10 * fastFailBound * large * NS_PER_ITEM;
   let clock = 0;
   let largeCalls = 0;
-  const realNanoseconds = Bun.nanoseconds;
-  Bun.nanoseconds = () => clock;
+  const restoreNanoseconds = shimProperty(Bun, "nanoseconds", {
+    ...Object.getOwnPropertyDescriptor(Bun, "nanoseconds"),
+    value: () => clock,
+  });
   try {
     expectGrowthBelow([small, large], (size) => () => {
       if (size === large && largeCalls++ === 1) clock += stall;
       clock += size * NS_PER_ITEM;
     }, { samples });
   } finally {
-    Bun.nanoseconds = realNanoseconds;
+    restoreNanoseconds();
   }
   // repeat pick, two warm-ups (the second only because the first was over the fast-fail bound), the timed rounds
   expect(largeCalls).toBe(1 + 2 + samples);
