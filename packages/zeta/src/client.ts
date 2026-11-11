@@ -138,7 +138,6 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   let handshaken = false;
   let negotiatedProtocol = "1.0";
   let negotiatedFeatures: string[] = [];
-  let connectionRole: "controller" | "observer" = "controller";
   let warnedHostCommandsUnavailable = false;
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
@@ -651,7 +650,6 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     adaptHistory: fromZetaHistory,
     adaptEvent: fromZetaEvent,
     stampEvent: stampIntent,
-    role: () => connectionRole,
     protocolViolation(message) { call(() => console.warn(`zeta replay protocol violation: ${message}`)); },
   });
   const hello = (requestedFeatures?: string[], role: "controller" | "observer" = "controller"): Promise<HelloResult> => {
@@ -660,7 +658,6 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", role, ...(features ? { features } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => { // host code: outside; README row "transport"
       handshaken = true;
-      connectionRole = role;
       negotiatedProtocol = typeof result.protocol_version === "string" ? result.protocol_version : "1.0";
       const features = result.capabilities?.features;
       negotiatedFeatures = negotiatedProtocol !== "1.0" && Array.isArray(features) && features.every((feature): feature is string => typeof feature === "string") ? features : [];

@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
 import { createClient, parseJoinStatus, type EventParams, type Transport } from "../src/index.js";
+
+domShimAlarm(import.meta.path);
 
 const assistantText = (client: ReturnType<typeof createClient>, session: string) => {
   const store = client.stores.get(session)!;
@@ -200,23 +203,36 @@ test("reasonless and restart cleanup ends both close the joined approval", async
   }
 });
 
-test("observer unmatched sequenced ends are quiet and never create cards", async () => {
-  const fake = harness();
-  await fake.ready;
-  // The second hello records the role used by the replay owner.
-  const observerHello = fake.client.hello(["session_replay_seq"], "observer");
-  await waitFor(() => fake.sent.length === 1);
-  fake.reply(fake.sent[0]!.id, { protocol_version: "1.2", capabilities: { features: ["session_replay_seq"] } });
-  await observerHello;
-  fake.sent.splice(0);
-  const open = fake.client.openSessionReplay("session-a");
-  await waitFor(() => fake.sent.length === 1);
-  fake.reply(fake.sent[0]!.id, joinResult({ status: { state: "tool", pending_approvals: [], pending_approvals_truncated: false } }));
-  const lease = await open;
-  fake.event({ event: "approval_end", session_id: "session-a", stream_id: "stream-a", seq: 1, request_id: "outside-page", data: {} });
+test("an unmatched sequenced approval end is quiet for both roles and never creates a card", async () => {
+  // zeta #1218 gives observers the controller's pending rows, but until zeta #1227 a durable approval can be missing
+  // from either role's join baseline after a zeta restart, so its later end has no request to close.
+  for (const role of ["controller", "observer"] as const) {
+    const fake = harness();
+    await fake.ready;
+    if (role === "observer") {
+      const observerHello = fake.client.hello(["session_replay_seq"], "observer");
+      await waitFor(() => fake.sent.length === 1);
+      fake.reply(fake.sent[0]!.id, { protocol_version: "1.2", capabilities: { features: ["session_replay_seq"] } });
+      await observerHello;
+      fake.sent.splice(0);
+    }
+    const warnings: unknown[] = [];
+    const restoreWarn = shimProperty(console, "warn", { configurable: true, writable: true, value: (...args: unknown[]) => { warnings.push(args); } });
+    try {
+      const open = fake.client.openSessionReplay("session-a");
+      await waitFor(() => fake.sent.length === 1);
+      fake.reply(fake.sent[0]!.id, joinResult({ status: { state: "tool", pending_approvals: [], pending_approvals_truncated: false } }));
+      const lease = await open;
+      fake.event({ event: "approval_end", session_id: "session-a", stream_id: "stream-a", seq: 1, request_id: "outside-page", data: {} });
 
-  expect(lease.state.approvals.incomplete).toBe("observer");
-  expect(fake.client.stores.get("session-a")!.getOutline().some(({ kind }) => kind === "approval")).toBe(false);
+      expect(lease.state.approvals.incomplete, role).toBeNull();
+      expect(lease.state.replay, role).toMatchObject({ phase: "joined", lastSeq: 1 });
+      expect(fake.client.stores.get("session-a")!.getOutline().some(({ kind }) => kind === "approval"), role).toBe(false);
+      expect(warnings, role).toEqual([]);
+    } finally {
+      restoreWarn();
+    }
+  }
 });
 
 test("defensive truncation retains supplied approvals and marks incompleteness", async () => {

@@ -16,7 +16,7 @@ export type ReplayHistoryState =
 export type SessionReplayState = {
   readonly replay: ReplayJoinState;
   readonly history: ReplayHistoryState;
-  readonly approvals: { readonly incomplete: "observer" | "server_truncated" | null };
+  readonly approvals: { readonly incomplete: "server_truncated" | null };
 };
 export type ReplayStore = {
   readonly getItem: (id: string) => unknown;
@@ -117,7 +117,6 @@ export function createReplayRegistry(deps: {
   readonly adaptHistory: (rows: readonly unknown[]) => RunEvent[];
   readonly adaptEvent: (params: EventParams) => RunEvent[];
   readonly stampEvent: (event: RunEvent, session: string) => RunEvent;
-  readonly role: () => "controller" | "observer";
   readonly protocolViolation?: (message: string) => void;
 }) {
   const owners = new Map<string, Owner>();
@@ -263,12 +262,11 @@ export function createReplayRegistry(deps: {
         call(() => candidate.resync(joinedEvents(owner, result)));
         owner.store = candidate;
         deps.commitStore(owner.session, candidate);
-        const incomplete = deps.role() === "observer" ? "observer" : result.status.pending_approvals_truncated ? "server_truncated" : null;
         if (result.status.pending_approvals_truncated) violation("replay join reported truncated pending approvals");
         owner.state = {
           replay: { phase: "joined", streamId: owner.streamId, lastSeq: owner.lastSeq },
           history: result.next_before === null ? { phase: "complete", messages: result.messages.length } : { phase: "loading", messages: result.messages.length },
-          approvals: { incomplete },
+          approvals: { incomplete: result.status.pending_approvals_truncated ? "server_truncated" : null },
         };
         owner.joining = false;
         publish(owner, generation, owner.state);
@@ -417,10 +415,8 @@ export function createReplayRegistry(deps: {
         owner.openApprovals.add(event.request_id);
       }
       if (event.type === "approval_end") {
-        if (!owner.openApprovals.has(event.request_id)) {
-          if (deps.role() === "controller") violation(`approval end ${event.request_id} has no request`);
-          continue;
-        }
+        // Valid for either role: after a zeta restart a durable approval can be missing from the join baseline.
+        if (!owner.openApprovals.has(event.request_id)) continue;
         owner.openApprovals.delete(event.request_id);
       }
       call(() => { try { owner.store?.dispatch(event); } catch (error) { dispatched = false; throw error; } });

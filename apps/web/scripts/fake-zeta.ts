@@ -552,7 +552,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           const start = Math.max(0, end - (active === LARGE ? 128 : 8));
           const endpoint = end ? String(groups[end - 1]?.findLast((row) => row.event !== "approval_request" && row.event !== "approval_end")?.id ?? "") : null;
           const stream = { session: active!, id: crypto.randomUUID(), seq: 0 };
-          const pending = connectionRoles.get(socket as object) === "controller" && decide && !approvalAborted
+          const pending = decide && !approvalAborted
             ? [{ request_id: "approval-1", tool_call: approvalCall, delegated: false, label: "shell" }]
             : [];
           const previous = replayStreams.get(socket as object);
