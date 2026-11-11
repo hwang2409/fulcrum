@@ -14,6 +14,7 @@ import {
   announcementForItem,
   Approval,
   Composer,
+  Fallback,
   Message,
   RunProvider,
   Timeline,
@@ -253,6 +254,32 @@ test("a failing non-virtual row keeps its siblings and composer mounted", () => 
   expect([...container.querySelectorAll('[data-part="message"]')].map((row) => row.textContent)).toEqual(["before", "after"]);
   expect(q('[data-row-error="message:broken"]').textContent).toBe("this item could not be shown · message:broken");
   expect(q('[data-part="composer"]')).toBeTruthy();
+});
+
+test("a failed streaming row retries on the next immutable item update without moving focus", () => {
+  restoreShims.push(shimProperty(console, "error", { configurable: true, value: () => {} }));
+  let firstItem: RunItem | undefined;
+  let failedItem: RunItem | undefined;
+  const StreamingRow = ({ id }: { id: string }) => {
+    const item = useItem(id);
+    if (failedItem === undefined && firstItem !== undefined && item !== firstItem) failedItem = item;
+    if (item === failedItem) throw new Error("row failed");
+    return <Message id={id} />;
+  };
+  const { store, send } = setup([{ type: "message_delta", message_id: "stream", delta: "bro" }]);
+  firstItem = store.getItem("message:stream");
+  mount(<RunProvider store={store}><Timeline virtual={false} renderers={{ message: StreamingRow }} /><Composer state="idle" onSubmit={() => {}} /></RunProvider>);
+  const composer = q('[data-part="composer"] textarea');
+  act(() => composer.focus());
+
+  send({ type: "message_delta", message_id: "stream", delta: "ken" });
+  expect(q('[data-row-error="message:stream"]').getAttribute("role")).toBe("status");
+  expect(document.activeElement).toBe(composer);
+
+  send({ type: "message_delta", message_id: "stream", delta: " recovered" });
+  expect(q('[data-part="message"]').textContent).toBe("broken recovered");
+  expect(container.querySelector('[data-row-error="message:stream"]')).toBeNull();
+  expect(document.activeElement).toBe(composer);
 });
 
 test("a failing virtual row is measured, keeps its siblings, and retries when its item changes", () => {
@@ -1189,6 +1216,48 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
   expect(q('[data-part="timeline"]').getAttribute("data-virtual")).toBe("true");
   expect(container.querySelectorAll('[data-part="message"]').length).toBeLessThanOrEqual(200);
 
+});
+
+test("throwing host render callbacks fall back without taking down their content", () => {
+  const reports: unknown[][] = [];
+  restoreShims.push(shimProperty(console, "error", { configurable: true, value: (...args: unknown[]) => reports.push(args) }));
+  const delivery = setup([{ type: "user_message", text: "kept message", mode: "normal" }]);
+  mount(
+    <RunProvider store={delivery.store}>
+      <Timeline virtual={false} renderers={{ user: ({ id }) => <Fallback id={id} renderDeliveryNote={() => { throw new Error("note failed"); }} /> }} />
+    </RunProvider>,
+  );
+  expect(container.textContent).toContain("kept message");
+  expect(container.querySelector("[data-row-error]")).toBeNull();
+  expect(reports.filter(([message]) => message === "renderDeliveryNote could not render.")).toHaveLength(1);
+  act(() => root!.unmount());
+  root = undefined;
+  container.remove();
+
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  const messages = setup(Array.from({ length: 10 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: String(index),
+    message: message(String(index)),
+  })));
+  const scrollRef = { current: null as HTMLElement | null };
+  let jumpCalls = 0;
+  mount(
+    <div ref={scrollRef}>
+      <RunProvider store={messages.store}>
+        <Timeline
+          virtual
+          initialViewport={{ anchorId: "message:0", offset: 0, following: false }}
+          scrollRef={scrollRef}
+          renderJumpToLatest={() => { jumpCalls++; throw new Error("jump failed"); }}
+        />
+      </RunProvider>
+    </div>,
+  );
+  messages.send({ type: "message_commit", message_id: "new", message: message("new") });
+  expect(jumpCalls).toBe(1);
+  expect(q('[data-part="timeline"]')).toBeTruthy();
+  expect(reports.filter(([message]) => message === "renderJumpToLatest could not render.")).toHaveLength(1);
 });
 
 test("host-owned Timeline uses the supplied scroll element without replacing its ref", () => {
