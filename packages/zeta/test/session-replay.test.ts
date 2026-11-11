@@ -279,3 +279,28 @@ test("suspending for another session prevents the old owner from rejoining", asy
   fake.reply(fake.sent[1]!.id, joinResult({ replay: { stream_id: "stream-b", history_seq: 0 } }));
   await openB;
 });
+
+test("navigation abort synchronously suspends and blocks a late join", async () => {
+  const fake = harness();
+  await fake.ready;
+  const navigation = new AbortController();
+  const open = fake.client.openSessionReplay("session-a", { signal: navigation.signal });
+  await waitFor(() => fake.sent.length === 1);
+  navigation.abort();
+  const lease = await open;
+  fake.reply(fake.sent[0]!.id, joinResult({ messages: [{ id: "late", role: "assistant", content: [{ type: "text", text: "late" }], tool_result: null }] }));
+  await Bun.sleep(1);
+
+  expect(lease.state.replay.phase).toBe("suspended");
+  expect(assistantText(fake.client, "session-a")).toBeUndefined();
+});
+
+test("an already-aborted navigation never sends a join", async () => {
+  const fake = harness();
+  await fake.ready;
+  const navigation = new AbortController();
+  navigation.abort();
+
+  await expect(fake.client.openSessionReplay("session-a", { signal: navigation.signal })).rejects.toMatchObject({ name: "AbortError" });
+  expect(fake.sent).toHaveLength(0);
+});

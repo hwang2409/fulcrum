@@ -68,6 +68,7 @@ type Owner = {
   state: SessionReplayState;
   listeners: Set<() => void>;
   navigationSignal?: AbortSignal;
+  navigationCleanup?: () => void;
 };
 
 const RETRY_DELAYS = [0, 500, 1_000, 2_000, 4_000, 8_000] as const;
@@ -162,6 +163,8 @@ export function createReplayRegistry(deps: {
   const releaseOwner = (owner: Owner) => {
     if (owner.leases > 0 || owners.get(owner.session) !== owner) return;
     cancel(owner);
+    owner.navigationCleanup?.();
+    owner.navigationCleanup = undefined;
     owner.released = true;
     owners.delete(owner.session);
     if (activeSequencedOwner === owner) activeSequencedOwner = undefined;
@@ -340,7 +343,17 @@ export function createReplayRegistry(deps: {
   };
   const openSessionReplay = async (session: string, options: { signal?: AbortSignal } = {}): Promise<SessionReplayLease> => {
     const owner = acquire(session, "sequenced");
+    owner.navigationCleanup?.();
     owner.navigationSignal = options.signal;
+    if (options.signal?.aborted) {
+      releaseOwner(owner);
+      throw Object.assign(new Error("request aborted"), { name: "AbortError" });
+    }
+    if (options.signal) {
+      const onAbort = () => { if (owners.get(session) === owner) suspend(owner); };
+      options.signal.addEventListener("abort", onAbort, { once: true });
+      owner.navigationCleanup = () => options.signal?.removeEventListener("abort", onAbort);
+    }
     owner.leases++;
     transferSlot(owner);
     const generation = owner.generation;
@@ -444,13 +457,15 @@ export function createReplayRegistry(deps: {
       if (!owner) return true;
       if (owner.mode === "sequenced") return false;
       cancel(owner);
+      owner.navigationCleanup?.();
+      owner.navigationCleanup = undefined;
       owner.released = true;
       owners.delete(session);
       return true;
     },
     close() {
       closed = true;
-      for (const owner of owners.values()) cancel(owner), owner.listeners.clear();
+      for (const owner of owners.values()) cancel(owner), owner.navigationCleanup?.(), owner.listeners.clear();
       owners.clear();
       activeSequencedOwner = undefined;
     },
