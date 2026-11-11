@@ -18,6 +18,8 @@ const safePrefix = (text: string, length: number) => {
   if (last >= 0xd800 && last <= 0xdbff && text.charCodeAt(end) >= 0xdc00 && text.charCodeAt(end) <= 0xdfff) end--;
   return text.slice(0, end);
 };
+/** Compact text cut at a Unicode boundary with one ellipsis. */
+export const clipSummary = (text: string, limit = MAX_SUMMARY_CHARS) => text.length <= limit ? text : `${safePrefix(text, limit - 1)}…`;
 const characters = (text: string) => {
   let count = 0;
   for (const _ of text) count++;
