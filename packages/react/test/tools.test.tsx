@@ -370,6 +370,68 @@ test("open arguments serialize once across 1,000 output tokens and once per argu
   }
 });
 
+test("generic collapsed tool headers keep their ordinary argument text", () => {
+  const calls = [
+    { id: "summary-string", name: "custom", arguments: { command: "echo hi", ignored: true } },
+    { id: "summary-label", name: "custom", arguments: { todos: [{ title: "cap the pending queue", done: false }] } },
+    { id: "summary-item", name: "custom", arguments: { rows: [{ done: true, count: 2 }] } },
+    { id: "summary-object", name: "custom", arguments: { enabled: true, retries: 2, nested: { value: "x" }, empty: null } },
+  ];
+  render(calls.map((tool_call) => ({ type: "tool_start", tool_call })), calls.map(({ id }) => `tool:${id}`));
+  expect(calls.map(({ id }) => q(`[data-id="tool:${id}"] [data-part="tool-summary"]`).textContent)).toEqual([
+    "echo hi",
+    "1 item · cap the pending queue",
+    '1 item · {"done":true,"count":2}',
+    '{"enabled":true,"retries":2,"nested":{"value":"x"},"empty":null}',
+  ]);
+});
+
+test("generic collapsed tool headers bound hostile argument work and text", () => {
+  let reads = 0;
+  const wide: Record<string, unknown> = {};
+  for (let index = 0; index < 1_000; index++) Object.defineProperty(wide, `key${index}`, {
+    enumerable: true,
+    get() { reads++; return index; },
+  });
+  let deep: Record<string, unknown> = {};
+  for (let index = 0; index < 10_000; index++) deep = { child: deep };
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  const calls = [
+    { id: "summary-wide", name: "custom", arguments: { rows: [wide] } },
+    { id: "summary-long", name: "custom", arguments: { text: "x".repeat(50_000_000) } },
+    { id: "summary-deep", name: "custom", arguments: { rows: [deep] } },
+    { id: "summary-cycle", name: "custom", arguments: { rows: [cyclic] } },
+    { id: "summary-bigint", name: "custom", arguments: { value: 1n } },
+    { id: "summary-symbol", name: "custom", arguments: { value: Symbol("value") } },
+    { id: "summary-array", name: "custom", arguments: { rows: new Array(1_000_000).fill(undefined) } },
+  ];
+  const original = JSON.stringify;
+  let stringifiedWholeValue = false;
+  restoreShims.push(shimProperty(JSON, "stringify", {
+    configurable: true,
+    writable: true,
+    value: ((value: unknown, ...rest: unknown[]) => {
+      if (value === wide || value === deep || value === cyclic || value === calls[1]!.arguments.text || value === calls[6]!.arguments.rows) stringifiedWholeValue = true;
+      return original(value, ...(rest as [((key: string, value: unknown) => unknown) | null, string | number | undefined]));
+    }) as typeof JSON.stringify,
+  }));
+  const events = calls.map(({ id, name, arguments: arguments_ }) => ({ type: "tool_start", tool_call: { id, name, arguments: arguments_ as never } } as RunEvent));
+  expect(() => render(events, calls.map(({ id }) => `tool:${id}`))).not.toThrow();
+  expect(reads).toBeLessThanOrEqual(64);
+  expect(stringifiedWholeValue).toBe(false);
+  const summaryLengths = calls.map(({ id }) => q(`[data-id="tool:${id}"] [data-part="tool-summary"]`).textContent!.length);
+  expect(summaryLengths.every((length) => length <= 240)).toBe(true);
+  expect(q('[data-id="tool:summary-array"] [data-part="tool-summary"]').textContent).toStartWith("1000000 items ·");
+});
+
+test("generic collapsed tool headers survive throwing getters", () => {
+  const bad = Object.defineProperty({}, "value", { enumerable: true, get() { throw new Error("no value"); } });
+  const events = [{ type: "tool_start", tool_call: { id: "summary-getter", name: "custom", arguments: { rows: [bad] } } } as RunEvent];
+  expect(() => render(events, ["tool:summary-getter"])).not.toThrow();
+  expect(q('[data-part="tool-summary"]').textContent).toContain("unavailable");
+});
+
 test("unknown tools show output and collapsed json arguments", () => {
   render(tool("unknown", "custom", undefined, "done"), ["tool:unknown"]);
   const card = q('[data-id="tool:unknown"]');
