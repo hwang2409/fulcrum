@@ -1,4 +1,5 @@
 import { createStreamingDocument } from "../packages/markdown/src/index.js";
+import { PendingInline } from "../packages/markdown/src/pending-inline.js";
 
 const targetBytes = 100_000;
 const deltaSizes = [1, 20, 200];
@@ -79,6 +80,19 @@ const cases = [
   ["nested table", nestedTable.repeat(Math.ceil(targetBytes / nestedTable.length)).slice(0, targetBytes)],
 ] as const;
 
+// shortcut: this report measures the parked nested-emphasis limit; upgrade when persistent slot publication lands.
+const nestedValidEmphasis = (depth: number) => `${"*a ".repeat(depth)}z${" b*".repeat(depth)}`;
+const nestedEmphasisTotal = (depth: number) => {
+  const source = nestedValidEmphasis(depth);
+  const samples = Array.from({ length: 5 }, () => {
+    const pending = new PendingInline((text) => text ? [{ type: "text", value: text }] : []);
+    const start = performance.now();
+    for (const character of source) pending.append(character);
+    return performance.now() - start;
+  });
+  return median(samples);
+};
+
 proveGateSensitivity();
 console.log(`markdown stream benchmark: ${targetBytes} bytes`);
 let failed = false;
@@ -97,16 +111,28 @@ const richUnit = "plain **strong** and *emphasis* with `code`. ";
 
 // A growing 1 MB rich line copies only the delta plus the fixed pending suffix, whatever its markers do.
 const PENDING_SUFFIX = 128;
+// Minified JSON on one line in prose, nested `depth` arrays deep, each level padded with `width` strings on both sides.
+const nestedJson = (depth: number, width: number) => {
+  const fill = Array.from({ length: width }, (_, index) => `"item-${index}"`).join(",");
+  let value = `{"leaf":true}`;
+  for (let level = 0; level < depth; level++) value = `[${fill},${value},${fill}]`;
+  return `Result: ${value}`;
+};
 const adversarialRows = [
   ["300k openers underscore", `${"*a ".repeat(100_000)}${"_x".repeat(200)}`],
   ["300k openers brackets", `${"*a ".repeat(100_000)}${"]x".repeat(200)}`],
   ["bracket over 300k openers", `[${"*a ".repeat(100_000)}]x`],
   ["30k openers underscore", `${"*a ".repeat(10_000)}${"_x".repeat(200)}`],
+  // Closers that decide nested `[` as text one after another: each decision reveals its `[` in place, never parses the
+  // text inside it again (that re-parse made the JSON row's closing frames 0.3-0.8 s).
+  ["minified JSON depth 30", nestedJson(30, 280)],
+  ["1000 nested brackets", `${"[w ".repeat(1_000)}${"ab ".repeat(30_000)}${"]x ".repeat(1_000)}`],
 ] as const;
 for (const [name, source] of adversarialRows) {
   const result = measure(source, 1_024);
   console.log(`1024 B  ${name.padEnd(26)} p95 ${result.p95.toFixed(3)} ms  p99 ${result.p99.toFixed(3)} ms  p999 ${result.p999.toFixed(3)} ms  max ${result.max.toFixed(3)} ms  work ${result.workRatio.toFixed(2)}x  max-copy ${result.maxCopied}`);
-  if (result.p99 > 10 || result.max > 100 || result.workRatio > 1.2) failed = true;
+  // A frame copies its delta twice (stable text and suffix) plus the suffix window and cut slack, whatever its closers do.
+  if (result.p99 > 10 || result.max > 100 || result.workRatio > 1.2 || result.maxCopied > 2 * (1_024 + PENDING_SUFFIX + 66) + 16) failed = true;
 }
 
 const richLines = [
@@ -163,12 +189,12 @@ const commitTime = (length: number) => {
 const commits = [100_000, 200_000, 1_000_000].map((length) => [length, commitTime(length)] as const);
 for (const [length, time] of commits) console.log(`newline  ${`rich line commit ${length / 1000}k`.padEnd(22)} median ${time.toFixed(3)} ms`);
 const commitRatio = commits[2]![1] / Math.max(commits[0]![1], 0.1);
+// Report only: the gate is the 32x-span test in packages/markdown/test/closed-paragraphs.test.tsx.
 console.log(`rich line commit growth 100k -> 1 MB: ${commitRatio.toFixed(1)}x (linear is ~10x)`);
-if (commitRatio > 25 || commits[2]![1] > 500) failed = true;
 
 // A continuation preview must append its delta and bounded provisional suffix without copying or scanning the whole
-// line. This only reports the doubling ratios (clean is about 2.0x); the gate is the 32x-span subquadratic test in
-// packages/markdown/test/preview-performance.test.tsx, because a 2.3x doubling limit flaked on shared runners.
+// line. This only reports the doubling ratios (clean is about 2.0x); the gates are the copy-count and flat-delta tests
+// in packages/markdown/test/preview-performance.test.tsx, because a 2.3x doubling limit flaked on shared runners.
 const continuationTimes = () => {
   const line = "word **b** `c` and more ".repeat(16_000);
   const document = createStreamingDocument();
@@ -186,10 +212,59 @@ const continuationTimes = () => {
 continuationTimes(); // discarded warm-up
 const continuationSamples = Array.from({ length: 7 }, continuationTimes);
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
+const nestedEmphasisTimes = [1_000, 2_000].map((depth) => nestedEmphasisTotal(depth));
+console.log(`KNOWN LIMIT nested valid emphasis depth 1k: total ${nestedEmphasisTimes[0]!.toFixed(0)} ms; doubling ratio n/a (median of 5, 1-character chunks)`);
+console.log(`KNOWN LIMIT nested valid emphasis depth 2k: total ${nestedEmphasisTimes[1]!.toFixed(0)} ms; doubling ratio ${(nestedEmphasisTimes[1]! / nestedEmphasisTimes[0]!).toFixed(2)}x (median of 5, 1-character chunks)`);
+// Known quadratic limit. The persistent delimiter-owner design is parked at ~/.zeta/scratch/fulcrum/f2a-state-machine-plan.md (PR #147 closed; backup/f2-gate1-tests).
 const continuationMedians = [0, 1, 2].map((index) => median(continuationSamples.map((sample) => sample[index]!)));
 const continuationRatios = [
   median(continuationSamples.map(([small, medium]) => medium / small)),
   median(continuationSamples.map(([, medium, large]) => large / medium)),
 ];
 console.log(`64 B  continuation line 96k -> 192k -> 384k: ${continuationMedians.map((time) => time.toFixed(0)).join(" -> ")} ms; doubling ${continuationRatios.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")} (median of 7 pairs)`);
+
+const longLineSizes = [50_000, 100_000, 200_000] as const;
+const jsonPrefix = '{"time":"2026-11-09T12:34:56.789Z","level":"info","agent":"worker","output":"';
+const jsonSuffix = '"}';
+const logUnit = "2026-11-09T12:34:56.789Z INFO worker tool completed duration_ms=12 output_bytes=4096 ";
+const longLineCases = [
+  ["single-line JSON", (size: number) => jsonPrefix + "x".repeat(size - jsonPrefix.length - jsonSuffix.length) + jsonSuffix],
+  ["single-line log", (size: number) => logUnit.repeat(Math.ceil(size / logUnit.length)).slice(0, size)],
+] as const;
+const longLineChunkSizes = [32, 1] as const;
+const percentile = (sorted: readonly number[], fraction: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))]!;
+for (const chunkSize of longLineChunkSizes) for (const [name, sourceAtSize] of longLineCases) {
+  const results = longLineSizes.map((size) => ({
+    durations: [] as number[],
+    source: sourceAtSize(size),
+    trialTotals: [] as number[],
+    trialWork: [] as number[],
+  }));
+  for (let trial = 0; trial < 3; trial++) for (const result of results) {
+    const document = createStreamingDocument();
+    const start = performance.now();
+    for (let offset = 0; offset < result.source.length; offset += chunkSize) {
+      const frameStart = performance.now();
+      document.append(result.source.slice(offset, offset + chunkSize));
+      document.render();
+      result.durations.push(performance.now() - frameStart);
+    }
+    result.trialTotals.push(performance.now() - start);
+    result.trialWork.push(document.stats.previewScannedCharacters);
+  }
+  const totals = results.map((result, index) => {
+    const total = median(result.trialTotals);
+    result.durations.sort((left, right) => left - right);
+    console.log(`${String(chunkSize).padStart(2)} B  ${name.padEnd(18)} ${String(longLineSizes[index]! / 1000).padStart(3)}k total ${total.toFixed(1)} ms  p50 ${percentile(result.durations, 0.5).toFixed(3)} ms  p95 ${percentile(result.durations, 0.95).toFixed(3)} ms  max ${result.durations.at(-1)!.toFixed(3)} ms`);
+    return total;
+  });
+  const growth = totals.slice(1).map((time, index) => time / totals[index]!);
+  const work = results.map((result) => median(result.trialWork));
+  const workGrowth = work.slice(1).map((characters, index) => characters / work[index]!);
+  console.log(`${String(chunkSize).padStart(2)} B  ${name.padEnd(18)} growth ${growth.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")} per doubling; work ${workGrowth.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")}`);
+  if (workGrowth.some((ratio) => ratio > 2.2)) {
+    console.error(`FAIL ${chunkSize} B ${name} work growth exceeded 2.20x`);
+    failed = true;
+  }
+}
 if (failed) process.exit(1);

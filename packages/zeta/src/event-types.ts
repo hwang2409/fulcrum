@@ -1,6 +1,7 @@
 export const eventTypes: Record<string, string> = {
   sub_agent_receipt: "sub_agent",
   child_idle: "sub_agent",
+  child_hold: "notification",
   task_exit_notification: "notification",
   project_inbox_notification: "notification",
   child_question: "sub_agent",

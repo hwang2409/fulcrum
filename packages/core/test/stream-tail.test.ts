@@ -1,4 +1,6 @@
 import { expect, test, setDefaultTimeout } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { createRunStore, type RunEvent, type RunItem } from "../src/index.js";
 import { streamTail } from "../src/internal.js";
 // These tests count work over megabyte texts; on a loaded machine one can take several seconds (no timing is asserted).
@@ -93,14 +95,17 @@ test("a message's text is its stream; a reasoning delta in between is a content 
 function walked(run: () => unknown) {
   const push = Array.prototype.push;
   let count = 0;
-  Array.prototype.push = function (this: unknown[], ...items: unknown[]) {
-    count += items.length;
-    return push.apply(this, items);
-  };
+  const restorePush = shimProperty(Array.prototype, "push", {
+    ...Object.getOwnPropertyDescriptor(Array.prototype, "push"),
+    value: function (this: unknown[], ...items: unknown[]) {
+      count += items.length;
+      return push.apply(this, items);
+    },
+  });
   try {
     run();
   } finally {
-    Array.prototype.push = push;
+    restorePush();
   }
   return count;
 }
@@ -125,7 +130,7 @@ test("streamTail walks exactly the chunks since the previous snapshot, whatever 
   expect(work(200_000, 0)).toBe(0);
 });
 
-test("across many compactions, every held snapshot reads its own text and each next tail is its delta", () => {
+test("across many compactions and rebuilds, every held snapshot reads its own text and each next tail is its delta", () => {
   const store = run();
   const held: ToolItem[] = [];
   let expected = "";
@@ -141,6 +146,13 @@ test("across many compactions, every held snapshot reads its own text and each n
     held.push(item);
     texts.push(expected);
   }
-  // Snapshots from inside compacted runs: their own chains still give their text.
+  // Snapshots from inside compacted runs and from before rebuilds: their own chains still give their text.
   held.forEach((item, index) => expect(item.output).toBe(texts[index]!));
+  // From any older snapshot, a tail is the exact appended text or undefined (the full path), never a wrong text.
+  for (let from = 0; from < held.length; from += 7) {
+    for (let to = from; to < held.length; to += 5) {
+      const tail = streamTail(held[from], held[to]!, "output");
+      if (tail !== undefined) expect(tail).toBe(texts[to]!.slice(texts[from]!.length));
+    }
+  }
 });

@@ -6,6 +6,7 @@ import { boundText, bytes, MAX_SUMMARY_CHARS } from "./tools/common.js";
 import { CopyButton, TextViewer, type TextFormat } from "./tools/text-viewer.js";
 import { UserMessageContent } from "./user-message.js";
 import { useNewestRow } from "./newest-row.js";
+import { development, RenderGuard } from "./render-guard.js";
 
 export type MarkdownContentProps = { id: string; source: string; streaming: boolean };
 /** What every block renderer gets, the default ones and a host's own. */
@@ -45,6 +46,21 @@ const JSON_FORMAT: TextFormat = { language: "json" };
 const str = (value: unknown) => (typeof value === "string" && value.trim() !== "" ? value : undefined);
 const label = (value: string, limit = MAX_SUMMARY_CHARS) => boundText(value.replace(/\s+/g, " ").trim(), limit).text;
 const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
+const reportMarkdownFailure = development
+  ? (id: string, error: unknown) => console.error(`Markdown could not render ${id}.`, error)
+  : () => {};
+
+function MarkdownContent({ markdown: Markdown, id, source, streaming }: MarkdownContentProps & { markdown: ComponentType<MarkdownContentProps> }) {
+  return (
+    <RenderGuard
+      resetKey={source}
+      onError={(error) => reportMarkdownFailure(id, error)}
+      fallback={<span data-markdown-fallback="" style={pre}>{source}</span>}
+    >
+      <Markdown id={id} source={source} streaming={streaming} />
+    </RenderGuard>
+  );
+}
 
 /**
  * The message as an ordered list: its content blocks, then its streaming text tail. Adjacent text joins into one run,
@@ -79,7 +95,7 @@ export const Message = memo(function Message({ id, className, markdown: Markdown
     if (block.type !== "text") return <UnknownBlock key={index} block={block} id={blockId} streaming={streaming} />;
     const source = String(block.text);
     if (!source) return null;
-    if (Rich) return <Rich key={index} id={blockId} source={source} streaming={streaming} />;
+    if (Rich) return <MarkdownContent key={index} markdown={Rich} id={blockId} source={source} streaming={streaming} />;
     // While it streams, plain text hides its trailing spaces and its last line break, so the cursor hugs the last word
     // and takes the line the commit shows: a trailing blank line ("end\n\n") keeps its line, the cursor on it.
     const text = streaming ? source.replace(/[ \t]*(?:\r?\n[ \t]*)?$/, "") : source;
@@ -154,7 +170,7 @@ export const ReasoningBlock = memo(function ReasoningBlock({ block, id, streamin
 });
 
 function ReasoningBody({ id, text, streaming, markdown: Markdown }: { id: string; text: string; streaming: boolean; markdown: ContentBlockProps["markdown"] }) {
-  return <div data-part="reasoning-body" style={Markdown ? undefined : pre}>{Markdown ? <Markdown id={id} source={text} streaming={streaming} /> : text}</div>;
+  return <div data-part="reasoning-body" style={Markdown ? undefined : pre}>{Markdown ? <MarkdownContent markdown={Markdown} id={id} source={text} streaming={streaming} /> : text}</div>;
 }
 
 // A link's visible address: no scheme, no trailing slash, one bounded line.
@@ -217,13 +233,13 @@ export const FileBlock = memo(function FileBlock({ block, onOpen }: ContentBlock
 // Images draw at most 360px tall; a known size reserves its exact box, an unknown one a fixed frame.
 const dimension = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
 type ImageState =
-  | { status: "idle" | "loading" | "blocked" | "error" | "unavailable" }
+  | { status: "idle" | "loading" | "blocked" | "omitted" | "error" | "unavailable" }
   | { status: "ready"; url: string };
 type LazyImage = ImageContentBlock & { source: NonNullable<ImageContentBlock["source"]> };
 
 function imageState(image: ImageContentBlock, lazy: LazyImage | undefined, media: ReturnType<typeof useMedia>, decodeFailures: number): ImageState {
   const url = safeUrl(image.url, "image") ?? (media.state.status === "ready" ? media.state.url : undefined);
-  if (!url && (!lazy || !media.available)) return { status: "blocked" };
+  if (!url && (!lazy || !media.available)) return { status: image.omitted ? "omitted" : "blocked" };
   if (media.state.status === "error" && (media.state.error as { code?: unknown }).code === "not_available") return { status: "unavailable" };
   if (decodeFailures > 1) return { status: "error" };
   if (url) return { status: "ready", url };
@@ -258,6 +274,8 @@ function ImageFrame({ box, height, lifecycle, name, width }: { box?: CSSProperti
       </button>;
     case "blocked":
       return <div data-part="image-placeholder"><span>image not shown: unsupported address</span></div>;
+    case "omitted":
+      return <div data-part="image-placeholder" style={box}><span>image not kept in history</span></div>;
     case "unavailable":
       return <div data-part="image-placeholder" style={box}>
         <span>image no longer available</span>

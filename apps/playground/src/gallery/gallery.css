@@ -20,6 +20,8 @@ body {
 ::selection { background: var(--fulcrum-accent); color: var(--fulcrum-bg); }
 a { color: inherit; text-decoration: none; }
 .intro code { padding: 0 4px; border: 1px solid var(--fulcrum-border); background: var(--fulcrum-surface); font: 13px var(--gallery-font); }
+.delivery-note-action { appearance: none; padding: 0; border: 0; background: transparent; color: var(--fulcrum-accent); font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.delivery-note-action:hover { color: var(--fulcrum-fg); }
 :focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: 2px; }
 /* The first tab stop skips the nav: hidden until focused, then drawn over the top bar. */
 .skip { position: fixed; top: 8px; left: 8px; z-index: 30; padding: 8px 12px; border: 1px solid var(--fulcrum-fg); background: var(--fulcrum-bg); color: var(--fulcrum-fg); font-size: 13px; font-weight: 700; }

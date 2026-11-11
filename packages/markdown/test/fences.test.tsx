@@ -1,6 +1,11 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown, type FenceProps, type Fences } from "../src/react.js";
+
+let restoreBrowser: (() => void) | undefined;
+afterEach(() => { restoreBrowser?.(); restoreBrowser = undefined; });
 
 const calls: FenceProps[] = [];
 const Diagram = (props: FenceProps) => {
@@ -41,7 +46,8 @@ test("a closed fence does not render again while later text streams in", async (
   const { act } = await import("react");
   const { createRoot } = await import("react-dom/client");
   const window = new Window();
-  Object.assign(globalThis, { window, document: window.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const restores = [shimGlobal("window", window), shimGlobal("document", window.document), shimGlobal("IS_REACT_ACT_ENVIRONMENT", true)];
+  restoreBrowser = () => { for (const restore of restores.reverse()) restore(); };
   const root = createRoot(window.document.createElement("div") as unknown as Element);
   let source = "```mermaid\ngraph TD\n";
   await act(() => root.render(<Markdown streaming source={source} fences={fences} />));
@@ -63,4 +69,16 @@ test("a code block says it streams only while its fence is open, so a streaming 
   expect(state("run:\n\n```sh\nbun test\n```", true)).toBeUndefined();
   expect(state("run:\n\n```sh\nbun test\n```\n\nthen", true)).toBeUndefined();
   expect(state("run:\n\n```sh\nbun test\n", false)).toBeUndefined();
+});
+
+test("while the document streams, a fence's final line break follows the cursor's anchor, open or closed", () => {
+  for (const source of ["```sh\nbun run typecheck\n", "```sh\nbun run typecheck\n```\n"]) {
+    const html = renderToStaticMarkup(<Markdown source={source} streaming />);
+    expect(html, source).toContain('<code>bun run typecheck<span data-part="md-code-end">\n</span></code>');
+  }
+  // A trailing blank line keeps its line before the anchor; mid-line, the anchor ends the line.
+  expect(renderToStaticMarkup(<Markdown source={"```sh\nbun\n\n"} streaming />)).toContain('<code>bun\n<span data-part="md-code-end">\n</span></code>');
+  expect(renderToStaticMarkup(<Markdown source={"```sh\nbun ru"} streaming />)).toContain('<code>bun ru<span data-part="md-code-end"></span></code>');
+  // A finished document renders exactly the fence text.
+  expect(renderToStaticMarkup(<Markdown source={"```sh\nbun run typecheck\n```\n"} />)).toContain("<code>bun run typecheck\n</code>");
 });

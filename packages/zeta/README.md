@@ -6,13 +6,27 @@
 
 `MODEL_INPUT_IDS_FEATURE` is the feature name to request during the hello handshake. `parseSlashList` and `parseSlashRun` validate server results without throwing; malformed command rows are dropped and malformed result discriminators return `{ kind: "malformed" }`. `parseModelInput(value)` validates either the opaque-id or expanded-text `model_input` shape and returns `null` for malformed data; pass `{ requireInputId: true }` as its second argument to require the opaque-id shape used by prepared input.
 
+Session mutations and deliveries reject with `ApprovalPersistenceError` when zeta cannot persist approval state. Test `error.kind === "approval_persistence_failed"`; the `kind` discriminator is the supported check because `instanceof` can fail when an application loads two copies of the package. Clients should keep the draft and ask the user to restart `zeta serve`.
+
 `CommandClient.features` is required. `runSlashCommand` fails closed when `model_input_ids` was not negotiated: it sends no `slash_run` request and returns `{ kind: "unavailable", feature: "model_input_ids" }`. This prevents an older server from returning the resolved hidden prompt as text. `listSlashCommands` remains available because `slash_list` returns catalog metadata, not model input. `sendModelInput` sends an opaque input ID returned by a negotiated server.
+
+## path completion
+
+`PATH_COMPLETION_FEATURE` is the `path_completion` hello feature. `completePath(client, sessionId, textBeforeCursor, options?)` sends at most one `path_complete` request and never retries. A missing feature returns `unavailable` without sending; an empty session ID, unpaired UTF-16 surrogate, or input larger than 4,096 UTF-8 bytes returns `malformed` without sending. Request aborts reject with `AbortError`, including a signal that was already aborted.
+
+Successful calls return `entries`; each entry preserves the server's insertion text, display text, and file or directory kind. Its non-positive `startPosition` is converted from Zeta's Unicode code-point offset to a UTF-16 code-unit offset, ready for JavaScript slicing. Observer access returns `observer`; `-32601` returns `unavailable`; `-32602` and malformed response envelopes or rows return `malformed`. Other request errors reject unchanged.
 
 ## session grants
 
 `SESSION_GRANTS_FEATURE` is the feature name to request during the hello handshake. `parseSessionGrants`, `parseRevokeSessionGrants`, and `parseSessionGrantsChanged` validate session-grant snapshots and events without throwing; malformed string rows are dropped. `getSessionGrants(client)` reads the active connection's approval policy. `revokeSessionGrant(client, grant)` removes one exact grant, and `clearSessionGrants(client)` removes all session grants. `isSessionGrantError` recognizes the three session-grant error data codes from zeta.
 
 The `session_grants_changed` event stays host-level. Register with `client.onSessionGrantsChanged(handler)` and use the returned function to unsubscribe. The event describes approval policy state, not a generic run event, so the zeta adapter does not map it into `@fulcrum/core`.
+
+## child-run history
+
+`CHILD_RUN_HISTORY_FEATURE` is the `child_run_history` feature. `openChildRun(client, { sessionId, runId }, options?)` opens a shared durable transcript and returns `{ lease, complete }`. The lease store resolves at the newest page; `complete` settles once after the one-shot oldest-first backfill reaches `next_before: null`. Call `lease.release()` when the view closes, or abort with `options.signal`.
+
+A changing history rejects with `ChildRunHistoryError` kind `history_kept_changing`; retry the whole open. Other typed kinds map the server errors: `not_negotiated` (`-32601`), `invalid_request` (`-32602`), `owner_not_active` (`-32003`), `not_found` (`-32012`/`child_run_not_found`), and `corrupt_transcript` (`-32000`/`corrupt_transcript`).
 
 ## connect
 
@@ -64,7 +78,7 @@ const client = await connectZeta({
 });
 ```
 
-`hostCommands(sessionId)` supplies a fresh binding for each `new_session` and `resume`; `sessionId` is `null` for a new session. If `send` or `send_images` returns `host_binding_required`, the client resumes that request's `session_id` with a fresh binding and retries once with the same `delivery_id`. Supplier values and failures are not logged or copied into errors. A server that does not negotiate the feature never calls the supplier.
+`hostCommands(sessionId)` supplies a fresh binding for each `new_session` and `resume`; `sessionId` is `null` for a new session. A successful `resume` returns the canonical, full id in `result.session.session_id`; use that id for every later session call. If `send` or `send_images` returns `host_binding_required`, the client resumes that canonical session id with a fresh binding and retries once with the same `delivery_id`. Supplier values and failures are not logged or copied into errors. A server that does not negotiate the feature never calls the supplier.
 
 `new_session` and `resume` retry zeta's transient `-32004` busy error three times after 250, 500, and 1000 ms. The delays follow the request signal and are canceled when the client closes. After the last retry, busy is surfaced to the caller.
 

@@ -13,9 +13,8 @@ import { useVirtualList } from "./virtual.js";
 import { useWarm, warmToolBody } from "./warm.js";
 import { Message, ToolResultBlocks } from "./content.js";
 import { UserMessageContent } from "./user-message.js";
-import { NewestRowProvider } from "./newest-row.js";
-
-declare global { var __FULCRUM_DEV__: boolean | undefined; }
+import { NewestRowProvider, newestStreamableRow } from "./newest-row.js";
+import { development, RenderGuard } from "./render-guard.js";
 
 export type ItemProps = { id: string; className?: string };
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
@@ -222,7 +221,8 @@ const approvalEnd = (ended: RunEvent | undefined) => {
 
 type ApprovalAction = "approve" | "approve-always" | "deny";
 
-const ApprovalButton = ({ action, label = action, handler, sending, disabledReason, decide }: { action: ApprovalAction; label?: string; handler?: Decide; sending: boolean; disabledReason?: string; decide: (action: ApprovalAction, handler: Decide) => () => void }) => handler || disabledReason ? <button type="button" data-action={action} disabled={!handler} aria-disabled={!handler || sending || undefined} onClick={handler ? decide(action, handler) : undefined}>{label}</button> : null;
+// Unavailable is aria-disabled, not disabled: a disabled button leaves the tab order, so Tab never reads its reason.
+const ApprovalButton = ({ action, label = action, handler, sending, reasonId, decide }: { action: ApprovalAction; label?: string; handler?: Decide; sending: boolean; reasonId?: string; decide: (action: ApprovalAction, handler: Decide) => () => void }) => handler || reasonId ? <button type="button" data-action={action} aria-disabled={!handler || sending || undefined} aria-describedby={handler ? undefined : reasonId} onClick={handler ? decide(action, handler) : undefined}>{label}</button> : null;
 
 const ApprovalActions = function ApprovalActions({
   sending,
@@ -241,13 +241,15 @@ const ApprovalActions = function ApprovalActions({
   disabledReason?: string;
   decide: (action: ApprovalAction, handler: Decide) => () => void;
 }) {
+  const id = useId();
   if (!onApprove && !onApproveAlways && !onDeny && !disabledReason) return null;
   const busy = Boolean(sending);
+  const reasonId = disabledReason ? id : undefined;
   return <div data-part="approval-actions">
-    <ApprovalButton action="approve" handler={onApprove} sending={busy} disabledReason={disabledReason} decide={decide} />
-    {approveAlwaysLabel !== undefined ? <ApprovalButton action="approve-always" label={approveAlwaysLabel} handler={onApproveAlways} sending={busy} disabledReason={disabledReason} decide={decide} /> : null}
-    <ApprovalButton action="deny" handler={onDeny} sending={busy} disabledReason={disabledReason} decide={decide} />
-    {disabledReason ? <span role="status">{disabledReason}</span> : null}
+    <ApprovalButton action="approve" handler={onApprove} sending={busy} reasonId={reasonId} decide={decide} />
+    {approveAlwaysLabel !== undefined ? <ApprovalButton action="approve-always" label={approveAlwaysLabel} handler={onApproveAlways} sending={busy} reasonId={reasonId} decide={decide} /> : null}
+    <ApprovalButton action="deny" handler={onDeny} sending={busy} reasonId={reasonId} decide={decide} />
+    {disabledReason ? <span role="status" id={id}>{disabledReason}</span> : null}
   </div>;
 };
 
@@ -381,21 +383,55 @@ const fallbackDisplay = (item: RunItem) => {
   return {
     kind: stopped ? "stopped" : item.type,
     state: stopped ? "stopped" : item.type === "error" ? "error" : "done",
-    label: user?.delivery_status === "dropped" ? `${label} · not delivered${user.delivery_reason ? ` · ${user.delivery_reason}` : ""}` : label,
+    label,
     attachments: user?.attachments,
   };
 };
 
+/** A user row whose event is a `user_message`: the item `renderDeliveryNote` receives. */
+export type UserMessageItem = { id: string; type: "user"; event: Extract<RunEvent, { type: "user_message" }> };
+// Words for the closed set of drop reasons zeta sends (DeliveryDropReason). An unknown reason shows no words: a raw
+// token tells the reader nothing.
+const dropReasons: Record<string, string> = {
+  turn_end: "the turn ended first",
+  abort: "the run was stopped",
+  clear: "the pending steers were cleared",
+  disconnect: "the connection was lost",
+  failed: "the turn failed",
+  restart: "the server restarted",
+};
+export const deliveryNoteText = (status: "delivered" | "dropped" | "unknown", reason?: string, textOmitted = false) => {
+  if (status === "delivered") return null;
+  const why = reason !== undefined && Object.hasOwn(dropReasons, reason) ? dropReasons[reason] : undefined;
+  const note = `${status === "unknown" ? "not confirmed" : "not delivered"}${why ? ` · ${why}` : ""}`;
+  return textOmitted ? `${note} · text not kept` : note;
+};
+const defaultDeliveryNote = ({ event }: UserMessageItem): ReactNode =>
+  deliveryNoteText(event.delivery_status ?? "delivered", event.delivery_reason, event.text_omitted);
+
+export type FallbackProps = ItemProps & {
+  /**
+   * The note under a user row, called for every user message row. Return null to show no note. Omitted, a dropped
+   * message reads "not delivered", plus why when the reason is known. Pass a stable function.
+   */
+  renderDeliveryNote?: (item: UserMessageItem) => ReactNode;
+};
+
 /** Generic part for kinds without a renderer (user, error, unknown, ...). */
-export const Fallback = memo(function Fallback({ id, className }: ItemProps) {
+export const Fallback = memo(function Fallback({ id, className, renderDeliveryNote = defaultDeliveryNote }: FallbackProps) {
   const item = useItem(id);
+  const userEvent = item?.type === "user" && item.event.type === "user_message" ? item.event : undefined;
+  const user = userEvent !== undefined;
+  const note = useHostRender("renderDeliveryNote", item, renderDeliveryNote, item as UserMessageItem, user);
   if (!item) return null;
   const display = fallbackDisplay(item);
-  const user = item.type === "user" && item.event.type === "user_message";
+  const textOmitted = userEvent?.text_omitted === true;
+  if (textOmitted && (note == null || note === false)) return null;
   const content = <>{display.label}{display.attachments?.length ? <ToolResultBlocks id={id} blocks={display.attachments} /> : null}</>;
   return (
-    <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state}>
-      {user ? <UserMessageContent style={pre}>{content}</UserMessageContent> : content}
+    <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state} data-text-omitted={textOmitted ? "" : undefined}>
+      {user && !textOmitted ? <UserMessageContent style={pre}>{content}</UserMessageContent> : user ? null : content}
+      {note == null || note === false ? null : <div data-part="delivery-note"><RenderGuard resetKey={item} onError={(error) => reportHostRenderFailure("renderDeliveryNote", error)} fallback={null}>{note}</RenderGuard></div>}
     </div>
   );
 });
@@ -467,7 +503,7 @@ function ApprovalSkip({ items, reveal }: { items: readonly { id: string; kind?: 
   const summary = toolSummary({ id: pending.id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false });
   const jump = async () => {
     const card = await reveal(pending.id);
-    (card?.querySelector<HTMLElement>("[data-part=approval-actions] button:not(:disabled)") ?? card)?.focus();
+    (card?.querySelector<HTMLElement>("[data-part=approval-actions] button:not([aria-disabled=true])") ?? card)?.focus();
   };
   return <button type="button" data-part="jump-to-approval" onClick={() => void jump()}>jump to approval: {view?.kind === "shell" ? "" : `${toolLabel(tool_call.name)} `}{oneLine(summary)}</button>;
 }
@@ -532,7 +568,37 @@ function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; ch
   );
 }
 
-// Subscribes to a string key only, so text deltas never re-render the row.
+const reportRowFailure = development
+  ? (id: string, error: unknown) => console.error(`Timeline could not render ${id}.`, error)
+  : () => {};
+const reportHostRenderFailure = development
+  ? (name: string, error: unknown) => console.error(`${name} could not render.`, error)
+  : () => {};
+
+function useHostRender<T>(name: string, resetKey: unknown, render: (value: T) => ReactNode, value: T, enabled = true) {
+  const failure = useRef<{ render: typeof render; resetKey: unknown } | undefined>(undefined);
+  if (!enabled) return null;
+  try {
+    const result = render(value);
+    failure.current = undefined;
+    return result;
+  } catch (error) {
+    if (!failure.current || failure.current.render !== render || !Object.is(failure.current.resetKey, resetKey)) {
+      failure.current = { render, resetKey };
+      reportHostRenderFailure(name, error);
+    }
+    return null;
+  }
+}
+
+function FailedRow({ id, retry }: { id: string; retry(): void }) {
+  const item = useItem(id);
+  const failedItem = useRef(item);
+  useEffect(() => { if (item !== failedItem.current) retry(); }, [item, retry]);
+  return <div data-part="item" data-kind="row-error" data-id={id} data-row-error={id} role="status">this item could not be shown · {id}</div>;
+}
+
+// Subscribes to a string key only, so text deltas never re-render a healthy row. A failed row alone watches for a retry.
 const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Renderers }) {
   const rendererKey = useItemSelector(id, (item) =>
     item?.type === "tool" ? `tool:${item.tool_call.name}` : item?.type,
@@ -540,7 +606,15 @@ const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Rende
   const kind = rendererKey?.startsWith("tool:") ? "tool" : rendererKey;
   const Part =
     (rendererKey && renderers?.[rendererKey]) || (kind && (renderers?.[kind] ?? defaults[kind])) || Fallback;
-  return <Part id={id} />;
+  return (
+    <RenderGuard
+      resetKey={id}
+      onError={(error) => reportRowFailure(id, error)}
+      fallback={(retry) => <FailedRow id={id} retry={retry} />}
+    >
+      <Part id={id} />
+    </RenderGuard>
+  );
 });
 
 // A sub-agent row is fixed at 56 px; with the 12 px row gap the estimate is exact.
@@ -583,7 +657,8 @@ function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest
       jump to latest ({unseenCount})
     </button>
   ) : null;
-  if (hostOwned) return <>{children}{control && renderJumpToLatest!(control)}</>;
+  const hostedControl = useHostRender("renderJumpToLatest", unseenCount, renderJumpToLatest ?? (() => null), control, hostOwned && control !== null);
+  if (hostOwned) return <>{children}{control ? <RenderGuard resetKey={unseenCount} onError={(error) => reportHostRenderFailure("renderJumpToLatest", error)} fallback={null}>{hostedControl}</RenderGuard> : null}</>;
   return (
     <div data-part="timeline-frame">
       <div data-part="timeline-scroll" ref={ownedScrollRef}>{children}</div>
@@ -595,11 +670,6 @@ function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest
 const storeKeys = new WeakMap<object, number>();
 let nextStoreKey = 0;
 let checkedUnconstrainedTimeline = false;
-const viteDevelopment = typeof (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env === "object"
-  ? (import.meta as ImportMeta & { env: { DEV?: boolean } }).env.DEV
-  : undefined;
-const configuredDevelopment = globalThis.__FULCRUM_DEV__;
-const development = configuredDevelopment === undefined ? viteDevelopment !== false : configuredDevelopment;
 const useUnconstrainedWarning: (enabled: boolean, hostOwned: boolean, scroll: RefObject<HTMLElement | null>, itemCount: number, mountedCount: number) => void = development
   ? (enabled, hostOwned, scroll, itemCount, mountedCount) => useEffect(() => {
       if (!enabled || hostOwned || checkedUnconstrainedTimeline || itemCount <= 200 || mountedCount !== itemCount) return;
@@ -703,7 +773,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, renderers, clas
     return () => container.removeEventListener("scroll", capture);
   }, [activeScrollRef, enabled, items]);
   // The newest row comes from the outline, not the DOM: a virtual timeline also mounts a row kept for focus after it.
-  const newest = items.at(-1)?.id;
+  const newest = newestStreamableRow(items);
   if (!enabled) {
     return (
       <NewestRowProvider id={newest}><TimelineLayout unseenCount={0} scrollToEnd={list.scrollToEnd} renderJumpToLatest={renderJumpToLatest} ownedScrollRef={ownedScrollRef} hostOwned={scrollRef !== undefined} virtual={false}>

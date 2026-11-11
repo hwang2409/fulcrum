@@ -28,8 +28,14 @@ async function server(handlers: Record<string, Handler>, features = ["list_sessi
   };
   const client = createClient(transport, (flush) => flush());
   await client.hello(features);
+  const replayed: string[] = [];
+  const replay = client.replay.bind(client);
+  client.replay = (sessionId, load, replace) => {
+    replayed.push(sessionId);
+    return replay(sessionId, load, replace);
+  };
   const event = (params: Record<string, unknown>) => deliver(JSON.stringify({ jsonrpc: "2.0", method: "event", params }));
-  return { client, calls, event, drop: () => close(1006) };
+  return { client, calls, replayed, event, drop: () => close(1006) };
 }
 
 const present = (view: Sessions) => sessionPresentation(view.state.transition);
@@ -85,6 +91,18 @@ const kinds = (state: ReturnType<typeof createSessions>["state"]) => {
   const store = sessionPresentation(state.transition).open!.lease.store;
   return store.getOutline().map(({ kind }) => kind);
 };
+const retryOpen = (view: Sessions, id: string) => {
+  const retry = (view as Sessions & { retry?: (sessionId: string) => void }).retry;
+  if (retry) retry(id);
+  else view.select(id);
+};
+const messageTexts = (view: Sessions) => {
+  const store = present(view).open!.lease.store;
+  return store.getOutline().flatMap(({ id }) => {
+    const item = store.getItem(id);
+    return item?.type === "message" ? item.message.content.flatMap((block) => block.type === "text" ? [block.text] : []) : [];
+  });
+};
 
 test("titles, times, and the top-level list", () => {
   expect(sessions.map(sessionTitle)).toEqual(["alpha", "fix the build", "untitled session"]);
@@ -93,6 +111,76 @@ test("titles, times, and the top-level list", () => {
   expect(["2026-11-02T11:59:30Z", "2026-11-02T11:15:00Z", "2026-11-02T07:00:00Z", "2026-10-30T12:00:00Z", "2026-10-01T12:00:00Z", "2025-10-01T12:00:00Z"].map((iso) => ago(iso, now)))
     .toEqual(["now", "45m", "5h", "3d", "Oct 1", "Oct 1, 2025"]);
   expect(topLevel(sessions).map((session) => session.session_id)).toEqual(["b", "a"]);
+});
+
+test("every resume route canonicalizes ids and preserves typed failures", async () => {
+  const routes = ["initial open", "reopen", "reconnect", "retained-run restore", "previousId restore"] as const;
+  const outcomes = ["success", "ambiguous", "not_found"] as const;
+
+  for (const route of routes) for (const outcome of outcomes) {
+    const requested = `${route.replaceAll(" ", "-")}-prefix`;
+    const canonical = `${requested}-full`;
+    const candidates = [`${requested}-one`, `${requested}-two`];
+    const selected: string[] = [];
+    const resume = () => {
+      if (outcome === "success") return { session: meta(canonical, "x") };
+      if (outcome === "ambiguous") throw { code: -32602, message: "ambiguous", data: { code: "session_id_ambiguous", session_id: requested, candidates } };
+      throw { code: -32602, message: "missing", data: { code: "session_not_found", session_id: requested } };
+    };
+    let view: ReturnType<typeof createSessions>;
+
+    if (route === "initial open") {
+      const fake = await server(handlers(null, { resume }));
+      view = createSessions(source(fake.client), { selected: requested, onSelect: (id) => selected.push(id) });
+    } else if (route === "reopen") {
+      const fake = await server(handlers("b", { resume }));
+      view = createSessions(source(fake.client), { onSelect: (id) => selected.push(id) });
+      await waitFor(() => present(view).open?.history.complete === true, `${route}: initial run did not open`);
+      view.select(requested);
+    } else if (route === "reconnect") {
+      const first = await server(handlers(requested));
+      const connection = source(first.client);
+      view = createSessions(connection, { selected: requested, onSelect: (id) => selected.push(id) });
+      await waitFor(() => present(view).open?.history.complete === true, `${route}: initial run did not open`);
+      connection.set(null);
+      const second = await server(handlers(null, { resume }));
+      connection.set(second.client);
+    } else {
+      const replacement = `${requested}-replacement`;
+      const fake = await server(handlers(requested, {
+        resume: (params) => {
+          if (params.session_id === requested) return resume();
+          if (route === "retained-run restore") throw { code: -32602, message: "replacement could not open" };
+          return { session: meta(`${replacement}-full`, "x") };
+        },
+        session_history: (params) => {
+          if (params.session_id === `${replacement}-full` && route === "previousId restore") throw { code: -32602, message: "replacement history is invalid" };
+          if (params.session_id === `${replacement}-full`) return { messages: [], next_offset: null };
+          return { messages: history[params.session_id as string] ?? [], next_offset: null };
+        },
+      }));
+      view = createSessions(source(fake.client), { selected: requested, onSelect: (id) => selected.push(id) });
+      await waitFor(() => present(view).open?.history.complete === true, `${route}: retained run did not open`);
+      view.select(replacement);
+    }
+
+    await waitFor(() => outcome === "success" ? present(view).open?.id === canonical : present(view).openError !== null, `${route} / ${outcome} did not settle`);
+    if (outcome === "success") {
+      expect(present(view).open?.id, `${route} must use the canonical id`).toBe(canonical);
+      expect(selected, `${route} must route to the canonical id`).toContain(canonical);
+      if (route === "retained-run restore" || route === "previousId restore")
+        expect(present(view).openError?.restored, `${route} must keep the restored run ready`).toBe(true);
+    } else if (outcome === "ambiguous") {
+      expect(present(view).openError, `${route} must preserve ambiguous candidates`).toMatchObject({
+        id: requested,
+        message: `more than one session matches “${requested}”. choose a full session id:`,
+        candidates,
+      });
+    } else {
+      expect(present(view).openError?.message, `${route} must render not-found failures`).toBe(`session “${requested}” was not found.`);
+    }
+    view.dispose();
+  }
 });
 
 test("a locally created session survives an older catalog snapshot", async () => {
@@ -122,21 +210,6 @@ test("a newer catalog retires a locally created session", async () => {
   expect(view.state.sessions.map((item) => item.session_id)).toContain("new");
   await view.refresh();
   expect(view.state.sessions.map((item) => item.session_id)).not.toContain("new");
-});
-
-test("a failed replacement restores the old active session and its readiness", async () => {
-  const resumed: string[] = [];
-  const selected: string[] = [];
-  const fake = await server(handlers("b", { resume: (params) => { resumed.push(params.session_id as string); if (params.session_id === "a") { return { session: meta("a", "x") }; } return { session: meta("b", "x") }; }, session_history: (params) => { if (params.session_id === "a") throw { code: -32602, message: "session log is invalid at line 12" }; return { messages: [], next_offset: null }; } }));
-  const view = createSessions(source(fake.client), { onSelect: (id) => selected.push(id) });
-  await tick();
-  view.select("a");
-  await tick();
-  expect(resumed).toEqual(["a", "b"]);
-  expect(present(view).open?.id).toBe("b");
-  expect(present(view).selected).toBe("b");
-  expect(selected).toEqual(["a", "b"]);
-  expect(present(view).openError?.message).toBe("session log is invalid at line 12");
 });
 
 const turn = "5ec6b9bb4c8c44d29bfa315da83a4190";
@@ -529,6 +602,62 @@ test("a failed later page keeps its first-page approval and exposes the error", 
   expect(present(view).openError?.message).toBe("older history failed");
 });
 
+test("retrying a failed history open starts fresh while selecting the healthy run stays deduplicated", async () => {
+  let opens = 0;
+  const fake = await server(handlers("b", {
+    status: () => ({ session: meta("b", "x"), state: "idle", pending_approvals: [] }),
+    session_history: (params) => {
+      if (params.offset === 0) {
+        opens++;
+        return { messages: [{ id: `open-${opens}`, role: "assistant", content: [{ type: "text", text: `open ${opens}` }], tool_result: null }], next_offset: opens === 1 ? 1 : null };
+      }
+      throw { code: -32000, message: "history completion failed" };
+    },
+  }));
+  const view = createSessions(source(fake.client));
+  await waitFor(() => present(view).openError?.message === "history completion failed", "initial history failure did not surface");
+
+  retryOpen(view, "b");
+  await waitFor(() => present(view).open?.history.complete === true, "retry did not complete");
+  expect(opens, "try again must start one fresh history open").toBe(2);
+  expect(messageTexts(view)).toEqual(["open 2"]);
+
+  view.select("b");
+  await tick();
+  expect(opens, "selecting the healthy open session must remain deduplicated").toBe(2);
+  view.dispose();
+});
+
+test("the last of two quick history retries wins and ignores the earlier late reply", async () => {
+  let opens = 0;
+  let releaseEarlier!: () => void;
+  const earlier = new Promise<unknown>((resolve) => { releaseEarlier = () => resolve({ messages: [{ id: "superseded", role: "assistant", content: [{ type: "text", text: "superseded" }], tool_result: null }], next_offset: null }); });
+  const fake = await server(handlers("b", {
+    status: () => ({ session: meta("b", "x"), state: "idle", pending_approvals: [] }),
+    session_history: (params) => {
+      if (params.offset !== 0) throw { code: -32000, message: "history completion failed" };
+      opens++;
+      if (opens === 1) return { messages: [], next_offset: 1 };
+      if (opens === 2) return earlier;
+      return { messages: [{ id: "latest", role: "assistant", content: [{ type: "text", text: "latest" }], tool_result: null }], next_offset: null };
+    },
+  }));
+  const view = createSessions(source(fake.client));
+  await waitFor(() => present(view).openError?.message === "history completion failed", "initial history failure did not surface");
+
+  retryOpen(view, "b");
+  await waitFor(() => opens === 2, "first retry did not start");
+  retryOpen(view, "b");
+  await waitFor(() => present(view).open?.history.complete === true, "last retry did not complete");
+  expect(opens, "each click must start exactly one fresh open").toBe(3);
+  expect(messageTexts(view)).toEqual(["latest"]);
+
+  releaseEarlier();
+  await tick();
+  expect(messageTexts(view), "the superseded retry's late reply must be ignored").toEqual(["latest"]);
+  view.dispose();
+});
+
 test("selecting another session resumes it, releases the old one, and reports progress", async () => {
   const fake = await server(handlers("b"));
   const selected: string[] = [];
@@ -578,17 +707,6 @@ test("the newest selection wins when opens overlap", async () => {
   expect(present(view).selected).toBe("b");
 });
 
-test("a failed replacement keeps the previous run usable", async () => {
-  const fake = await server(handlers("b", { resume: (params) => { if (params.session_id === "a") throw { code: -32602, message: "session log is invalid at line 12" }; return {}; } }));
-  const view = createSessions(source(fake.client));
-  await tick();
-  view.select("a");
-  await tick();
-  expect(present(view).open?.id).toBe("b");
-  expect(present(view).openError).toEqual({ id: "a", message: "session log is invalid at line 12", busy: false, restored: true });
-  expect(present(view).opening).toBeNull();
-});
-
 test("a busy server is reported as busy and the selection stays", async () => {
   const fake = await server(handlers(null, { resume: () => { throw { code: -32004, message: "a turn is already running" }; } }));
   const view = createSessions(source(fake.client));
@@ -598,6 +716,45 @@ test("a busy server is reported as busy and the selection stays", async () => {
   await tick();
   expect(present(view).openError).toEqual({ id: "a", message: "a turn is already running", busy: true });
   expect(present(view).selected).toBe("a");
+});
+
+test("backward session history reaches the start after one stale snapshot restart", async () => {
+  const validator = { end: 0, entry_id: "fresh-new" };
+  const backwardCalls: Record<string, unknown>[] = [];
+  let newest = 0;
+  let stale = true;
+  const message = (id: string, text: string) => ({ id, role: "user", content: [{ type: "text", text }], tool_result: null });
+  const fake = await server(handlers("a", {
+    session_history: (params) => {
+      if (params.offset !== undefined) return { messages: [], next_offset: null };
+      backwardCalls.push(params);
+      if (params.before === null) {
+        newest++;
+        return newest === 1
+          ? { messages: [message("stale-new", "stale")], next_before: 2, history_validator: { end: 0, entry_id: "stale-new" } }
+          : { messages: [message("fresh-new", "new")], next_before: 2, history_validator: validator };
+      }
+      if (stale) {
+        stale = false;
+        throw { code: -32009, data: { code: "stale_history_snapshot" } };
+      }
+      if (params.before === 2) return { messages: [message("middle", "middle")], next_before: 1, history_validator: validator };
+      return { messages: [message("old", "old")], next_before: null, history_validator: validator };
+    },
+  }), ["list_sessions_paging", "session_history_backward"]);
+  const view = createSessions(source(fake.client), { selected: "a" });
+
+  await waitFor(() => present(view).open?.history.complete === true, "backward session history did not complete");
+  const outline = present(view).open!.lease.store.getOutline().map(({ id }) => id);
+  expect(outline).toEqual(["user:message:old", "user:message:middle", "user:message:fresh-new"]);
+  expect(backwardCalls).toEqual([
+    { session_id: "a", before: null },
+    { session_id: "a", before: 2, history_validator: { end: 0, entry_id: "stale-new" } },
+    { session_id: "a", before: null },
+    { session_id: "a", before: 2, history_validator: validator },
+    { session_id: "a", before: 1, history_validator: validator },
+  ]);
+  view.dispose();
 });
 
 test("a reconnect retires a backward walk before it can write the new generation", async () => {

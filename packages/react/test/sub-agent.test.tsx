@@ -3,10 +3,12 @@ GlobalRegistrator.register({ url: "http://localhost:3000/gallery.html" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type RunSource, type SubAgentEvent } from "@fulcrum/core";
-import { Approval, RunNavigator, RunProvider, subAgentRow, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunNavigatorProps } from "../src/index.js";
+import { Approval, RunNavigator, RunProvider, SubAgentNavigationProvider, subAgentRow, Timeline, useHistoryRunPath, useRunNavigation, type Renderers, type RunNavigatorProps } from "../src/index.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 
@@ -57,17 +59,14 @@ function fakeSource(runs: Record<string, ReturnType<typeof storeOf>>) {
 
 // happy-dom has no layout: every box is 600 px tall and scrolls the virtual timeline's estimated height.
 function fakeLayout() {
-  const keys = ["clientHeight", "scrollHeight", "scrollTop"] as const;
-  const saved = keys.map((key) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, key));
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restore.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restore.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } }));
+  restore.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.min(value, Math.max(0, (this as HTMLElement).scrollHeight - (this as HTMLElement).clientHeight))); },
-  });
-  restore.push(() => keys.forEach((key, index) => saved[index] && Object.defineProperty(HTMLElement.prototype, key, saved[index]!)));
+  }));
 }
 const frames = async (count = 3) => { for (let i = 0; i < count; i++) await act(() => new Promise((resolve) => setTimeout(resolve, 20))); };
 const userScroll = (scroller: HTMLElement, top: number) => act(() => {
@@ -127,29 +126,31 @@ test("subAgentRow derives the badge, text, accessible name, and drill-in from th
 // IntersectionObserver as the browser reports it, driven by the test; and the 1 s intervals that are running.
 function fakeVisibility() {
   const observers = new Set<{ callback: IntersectionObserverCallback; targets: Set<Element> }>();
-  const saved = globalThis.IntersectionObserver;
-  globalThis.IntersectionObserver = class {
+  const restoreObserver = shimGlobal("IntersectionObserver", class {
     entry = { callback: (() => {}) as IntersectionObserverCallback, targets: new Set<Element>() };
     constructor(callback: IntersectionObserverCallback) { this.entry.callback = callback; observers.add(this.entry); }
     observe(target: Element) { this.entry.targets.add(target); }
     unobserve(target: Element) { this.entry.targets.delete(target); }
     disconnect() { this.entry.targets.clear(); observers.delete(this.entry); }
-  } as unknown as typeof IntersectionObserver;
+  } as unknown as typeof IntersectionObserver);
   const timers = new Set<unknown>();
   const [setTimer, clearTimer] = [globalThis.setInterval, globalThis.clearInterval];
-  globalThis.setInterval = ((run: () => void, ms?: number) => {
+  const restoreSetTimer = shimGlobal("setInterval", ((run: () => void, ms?: number) => {
     const timer = setTimer(run, ms);
     if (ms === 1_000) timers.add(timer);
     return timer;
-  }) as typeof setInterval;
-  globalThis.clearInterval = ((timer: ReturnType<typeof setInterval>) => { timers.delete(timer); clearTimer(timer); }) as typeof clearInterval;
+  }) as typeof setInterval);
+  const restoreClearTimer = shimGlobal("clearInterval", ((timer: ReturnType<typeof setInterval>) => {
+    timers.delete(timer);
+    clearTimer(timer);
+  }) as typeof clearInterval);
   let hidden = false;
-  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+  const restoreHidden = shimProperty(document, "hidden", { configurable: true, get: () => hidden });
   restore.push(() => {
-    globalThis.IntersectionObserver = saved;
-    globalThis.setInterval = setTimer;
-    globalThis.clearInterval = clearTimer;
-    delete (document as { hidden?: boolean }).hidden;
+    restoreHidden();
+    restoreClearTimer();
+    restoreSetTimer();
+    restoreObserver();
   });
   return {
     timers: () => timers.size,
@@ -181,9 +182,7 @@ test("the elapsed clock runs only while a live row is in view and the page is vi
   visibility.hide(true);
   expect(visibility.timers()).toBe(0);
   // Back from a background tab, the row shows the real time at once, not the time it was hidden at.
-  const now = Date.now;
-  Date.now = () => started + 65_000;
-  restore.push(() => { Date.now = now; });
+  restore.push(shimProperty(Date, "now", { configurable: true, writable: true, value: () => started + 65_000 }));
   visibility.hide(false);
   expect(visibility.timers()).toBe(1);
   expect(a!.querySelector('[data-part="sub-agent-meta"]')!.textContent).toBe("1m 5s");
@@ -256,8 +255,11 @@ test("Escape and the back button each return one level, and the default navigato
   const calls: string[] = [];
   for (const name of ["pushState", "replaceState", "go", "back", "forward"] as const) {
     const real = history[name];
-    history[name] = ((...args: unknown[]) => { calls.push(name); return (real as (...a: unknown[]) => unknown).apply(history, args); }) as never;
-    restore.push(() => { history[name] = real as never; });
+    restore.push(shimProperty(history, name, {
+      configurable: true,
+      writable: true,
+      value: (...args: unknown[]) => { calls.push(name); return (real as (...a: unknown[]) => unknown).apply(history, args); },
+    }));
   }
   const length = history.length;
   mount(<RunNavigator store={storeOf([child("a")]).store} source={source} virtual={false} />);

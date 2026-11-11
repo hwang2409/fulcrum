@@ -57,6 +57,46 @@ test("content_read rejects declared sizes over the cap and is abortable", async 
   await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
 });
 
+test("every approval-health-gated method maps persistence failures through one typed error", async () => {
+  const methods = [
+    "send", "send_images", "steer",
+    "approve", "deny", "abort", "rename_session", "repair_transcript", "switch_branch", "fork_message",
+    "set_settings", "set_compaction", "slash_run", "set_turn_context", "clear_steering", "revoke_session_grants",
+  ];
+  for (const method of methods) {
+    const fake = fakeTransport();
+    const client = createClient(fake.transport);
+    await hello(fake, client);
+    const request = client.request(method);
+    fake.receive({ jsonrpc: "2.0", id: 2, error: { code: -32000, message: "approval persistence failed", data: { code: "approval_persistence_failed" } } });
+    await expect(request, method).rejects.toMatchObject({
+      name: "ApprovalPersistenceError",
+      kind: "approval_persistence_failed",
+      code: -32000,
+      data: { code: "approval_persistence_failed" },
+      cause: { code: -32000, data: { code: "approval_persistence_failed" } },
+    });
+  }
+});
+
+test("approval persistence mapping preserves other -32000 errors", async () => {
+  for (const error of [
+    { code: -32000, message: "plain failure" },
+    { code: -32000, message: "corrupt transcript", data: { code: "corrupt_transcript" } },
+  ]) {
+    const fake = fakeTransport();
+    const client = createClient(fake.transport);
+    await hello(fake, client);
+    const request = client.request("send");
+    fake.receive({ jsonrpc: "2.0", id: 2, error });
+    try { await request; throw new Error("request unexpectedly succeeded"); }
+    catch (actual) {
+      const rpc = actual as { code?: unknown; message?: unknown; data?: unknown };
+      expect({ code: rpc.code, message: rpc.message, ...(rpc.data === undefined ? {} : { data: rpc.data }) }).toEqual(error);
+    }
+  }
+});
+
 test("content_not_found has a typed not-available error", async () => {
   const fake = fakeTransport();
   const client = createClient(fake.transport);

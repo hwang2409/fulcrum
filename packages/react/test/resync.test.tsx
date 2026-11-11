@@ -2,7 +2,9 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent } from "@fulcrum/core";
@@ -86,25 +88,21 @@ const rows: Row[] = [
   },
 ];
 
-const descriptors = new Map<string, PropertyDescriptor | undefined>();
+const restoreShims: Array<() => void> = [];
 const positions = new WeakMap<HTMLElement, number>();
-beforeAll(() => {
-  for (const key of ["clientHeight", "scrollHeight", "scrollTop"]) descriptors.set(key, Object.getOwnPropertyDescriptor(HTMLElement.prototype, key));
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+beforeEach(() => {
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", {
     configurable: true,
     get(this: HTMLElement) { return Number.parseFloat(this.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height || "0"); },
-  });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get(this: HTMLElement) { return positions.get(this) ?? 0; },
     set(this: HTMLElement, value: number) { positions.set(this, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-  });
+  }));
 });
-afterAll(() => {
-  for (const [key, descriptor] of descriptors) if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
-  GlobalRegistrator.unregister();
-});
+afterAll(() => GlobalRegistrator.unregister());
 
 let root: Root | undefined;
 let container: HTMLElement | undefined;
@@ -112,6 +110,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
+  restoreShims.splice(0).reverse().forEach((restore) => restore());
 });
 
 test.each(rows)("resync reaches every outline consumer whole: $name", async ({ setup, pending, replay, reader, expected }) => {

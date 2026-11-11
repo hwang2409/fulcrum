@@ -9,6 +9,14 @@ const LIVE_STATUS_WAIT_MS = 1_000;
 const code = (error: unknown) => (error as { code?: unknown } | null)?.code;
 
 type Accepted = { accepted?: boolean; status?: string };
+type DeliveryOutcome = "delivered" | "dropped" | "unknown";
+export type DeliveryNotice = { intent: string; outcome: Exclude<DeliveryOutcome, "delivered"> };
+
+/** A live row outcome is newer than a query-derived warning, so the warning no longer applies. */
+export const visibleDeliveryNotice = (outcome: DeliveryNotice["outcome"] | undefined, liveStatus: string | undefined) => liveStatus === undefined ? outcome : undefined;
+
+/** Zeta's closed delivery outcomes. A newer or malformed value is unconfirmed, never accepted. */
+const deliveryOutcome = (value: unknown): DeliveryOutcome => value === "delivered" || value === "dropped" ? value : "unknown";
 
 /** One message the user asked for. `intent` names it for its whole life; `id` names one attempt to deliver it. */
 type Message = { text: string; intent: string; id: string | null };
@@ -43,8 +51,12 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
       return (await client.request(method, { text, ...(id ? { delivery_id: id } : {}) }, { timeoutMs: 15_000, intent })) as Accepted;
     } catch (error) {
       // The id was accepted before, but the server no longer has its result: its outcome still says what happened.
-      const outcome = (error as { data?: { outcome?: unknown } }).data?.outcome;
-      if (code(error) === DETAILS_EVICTED) return { accepted: outcome !== "dropped", status: String(outcome) };
+      if (code(error) === DETAILS_EVICTED) {
+        const outcome = deliveryOutcome((error as { data?: { outcome?: unknown } }).data?.outcome);
+        return { accepted: outcome === "delivered", status: outcome };
+      }
+      if ((error as { kind?: unknown } | null)?.kind === "approval_persistence_failed")
+        throw new Error("zeta cannot save approvals right now. restart zeta serve to continue.", { cause: error });
       throw error;
     }
   };
@@ -71,19 +83,19 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
     return { text, intent, id: client.features.includes("delivery_id") ? intent : null };
   };
   /** The live delivery status on the message's row: the row has its intent's id, or its delivery id's when zeta's echo came first. */
-  const liveStatus = (live: SessionStore, { intent, id }: Message) => {
+  const liveStatus = (live: SessionStore, { intent, id }: Message): DeliveryOutcome | undefined => {
     for (const itemId of [`user:intent:${intent}`, `user:delivery:${id}`]) {
       const item = live.getItem(itemId);
-      if (item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === id && item.event.delivery_status) return item.event.delivery_status === "dropped";
+      if (item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === id && item.event.delivery_status) return deliveryOutcome(item.event.delivery_status);
     }
     return undefined;
   };
   // Checks of messages that wait for their live status. The store listener exists only while one waits.
   const waiting = new Set<() => void>();
   let unsubscribe: (() => void) | null = null;
-  const waitForLiveStatus = (live: SessionStore, message: Message) => new Promise<boolean | undefined>((resolve) => {
+  const waitForLiveStatus = (live: SessionStore, message: Message) => new Promise<DeliveryOutcome | undefined>((resolve) => {
     const check = () => { const status = liveStatus(live, message); if (status !== undefined) finish(status); };
-    const finish = (value: boolean | undefined) => {
+    const finish = (value: DeliveryOutcome | undefined) => {
       clearTimeout(timer);
       waiting.delete(check);
       if (!waiting.size) { unsubscribe?.(); unsubscribe = null; }
@@ -95,22 +107,33 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
     unsubscribe ??= live.subscribe(() => [...waiting].forEach((waiter) => waiter()));
   });
   const queryStatus = async (client: ZetaClient, message: Message) => {
-    const { status, outcome } = (await client.request("delivery_status", { delivery_id: message.id }, { timeoutMs: 15_000 })) as { status?: string; outcome?: string };
-    return status === "dropped" || (status === "evicted" && outcome === "dropped");
+    const { status, outcome } = (await client.request("delivery_status", { delivery_id: message.id }, { timeoutMs: 15_000 })) as { status?: unknown; outcome?: unknown };
+    return deliveryOutcome(status === "evicted" ? outcome : status);
   };
-  const dropped = async (client: ZetaClient, message: Message) => {
+  const finalOutcome = async (client: ZetaClient, message: Message) => {
     if (!store || !client.features.includes("delivery_id") || !client.features.includes("session_history_fidelity")) return queryStatus(client, message);
     const live = liveStatus(store, message) ?? await waitForLiveStatus(store, message);
     // No live status: a restart snapshot may have rebuilt the store and lost the row the drop would mark, so ask zeta.
     return live ?? queryStatus(client, message);
   };
   return {
-    async submit(client: ZetaClient, text: string, steer: boolean) {
+    /** `trackDelivery` gets the attempt's delivery id, so the composer can clear its draft at zeta's echo of it. */
+    async submit(client: ZetaClient, text: string, steer: boolean, trackDelivery?: (deliveryId: string) => void) {
+      // A reply can fail before the echo arrives. The echo is authoritative and spends that saved attempt.
+      if (unsettled?.id && store?.hasMessageDelivery(unsettled.id)) unsettled = null;
       const message = unsettled?.text === text ? unsettled : fresh(client, text);
       unsettled = message;
-      const delivered = await deliver(client, steer ? "steer" : "send", message);
-      unsettled = null;
+      if (message.id) trackDelivery?.(message.id);
+      let delivered: Awaited<ReturnType<typeof deliver>>;
+      try {
+        delivered = await deliver(client, steer ? "steer" : "send", message);
+      } catch (error) {
+        // zeta echoed this id into the run, so it took the message: a later message with the same text needs a new id.
+        if (message.id && store?.hasMessageDelivery(message.id)) unsettled = null;
+        throw error;
+      }
       if (delivered.result.accepted === false) throw refusal(delivered.result);
+      unsettled = null;
       reconcileAccepted(message, delivered.used, delivered.result);
     },
     /** Stops the running turn (zeta's default session-scope abort); `turnEnded` then knows the user ended it. */
@@ -121,27 +144,28 @@ export function createDelivery(newId: () => string = () => `web-${crypto.randomU
     },
     /**
      * Call when the running turn ends. Resends the steers it dropped, unless the user's stop ended it: then they stay
-     * dropped, and their intents are returned so the view can mark those rows as not delivered. A stop that failed or
-     * found no turn is not a stop: the turn ended on its own, so its dropped steers are resent.
+     * dropped, and notices are returned so the view can mark those rows. An unknown outcome is not resent and returns
+     * a not-confirmed notice. A stop that failed or found no turn is not a stop, so its dropped steers are resent.
      */
     async turnEnded(client: ZetaClient) {
       const ended = steers;
       steers = [];
       const stopped = await (stopping ?? false);
       stopping = null;
-      const undelivered: string[] = [];
+      const notices: DeliveryNotice[] = [];
       // A query that fails (a dropped socket) leaves its steer unmarked, the safe side; the others still count.
-      const statuses = await Promise.allSettled(ended.map((message) => dropped(client, message)));
+      const statuses = await Promise.allSettled(ended.map((message) => finalOutcome(client, message)));
       for (const [index, message] of ended.entries()) {
         const status = statuses[index]!;
-        if (status.status === "rejected" || !status.value) continue;
-        if (stopped) { undelivered.push(message.intent); continue; }
+        if (status.status === "rejected" || status.value === "delivered") continue;
+        if (status.value === "unknown") { notices.push({ intent: message.intent, outcome: "unknown" }); continue; }
+        if (stopped) { notices.push({ intent: message.intent, outcome: "dropped" }); continue; }
         const retry = { ...message, id: newId() };
         const delivered = await deliver(client, "send", retry);
         if (delivered.result.accepted === false) throw refusal(delivered.result);
         reconcileAccepted(retry, delivered.used, delivered.result);
       }
-      return undelivered;
+      return notices;
     },
   };
 }

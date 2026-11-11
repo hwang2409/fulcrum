@@ -2,7 +2,9 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import { afterAll, afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
@@ -11,15 +13,16 @@ import { Markdown } from "../../markdown/src/react.js";
 import { RunProvider, ToolCall } from "../src/index.js";
 
 // happy-dom does no layout: a viewer's scroll box is as tall as styles.css makes it, so its visible rows mount.
-const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight")!;
-Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get(this: HTMLElement) { return this.dataset.part === "text-viewer" ? 320 : 0; } });
-afterAll(() => { Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight); GlobalRegistrator.unregister(); });
+afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
 let container: HTMLElement;
+const restoreShims: Array<() => void> = [];
+beforeEach(() => restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get(this: HTMLElement) { return this.dataset.part === "text-viewer" ? 320 : 0; } })));
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
+  restoreShims.splice(0).reverse().forEach((restore) => restore());
 });
 const mount = (node: ReactNode) => {
   container = document.createElement("div");
@@ -111,7 +114,7 @@ test.each([
 
 test("a large fence shows an honest line count and copies the whole text", async () => {
   const copied: string[] = [];
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
+  restoreShims.push(shimProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } }));
   mount(<Markdown id="m" source={"```cpp\n" + large + "```\n"} highlight={highlight} />);
   const block = container.querySelector('[data-part="md-code-block"]')!;
   expect(block.getAttribute("data-size")).toBe("large");

@@ -3,21 +3,25 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { readFileSync } from "node:fs";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type ApprovalDecision, type RunEvent, type ToolView } from "@fulcrum/core";
-import { Approval, Fallback, RunProvider, Timeline, ToolCall } from "../src/index.js";
+import { Approval, deliveryNoteText, Fallback, RunProvider, Timeline, ToolCall, useItem, type Renderers } from "../src/index.js";
 import { boundLines } from "../src/tools/common.js";
 import { segmentText } from "../src/tools/text-viewer.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
 let container: HTMLElement;
+const restoreShims: Array<() => void> = [];
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
+  restoreShims.splice(0).reverse().forEach((restore) => restore());
 });
 
 function mount(node: ReactNode) {
@@ -151,7 +155,7 @@ test("fetch shows the status, the full url, and the body", () => {
 
 test("copy buttons copy the command, the path, and the full output", async () => {
   const copied: string[] = [];
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
+  restoreShims.push(shimProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } }));
   const long = Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n");
   render([
     ...tool("c1", "bash", { kind: "shell", command: "ls -la" }, long),
@@ -258,7 +262,7 @@ test("every card and approval bounds multi-megabyte presentation surfaces", asyn
     ["fetch", { kind: "fetch", url: `https://example.com/${huge}` }],
   ];
   const copied: string[] = [];
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } });
+  restoreShims.push(shimProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { copied.push(value); } } }));
 
   for (const [name, view] of cases) {
     const tool_call = { id: name, name, arguments: { value: huge } };
@@ -338,10 +342,14 @@ test("open arguments serialize once across 1,000 output tokens and once per argu
   store.dispatch({ type: "tool_start", tool_call });
   const original = JSON.stringify;
   let serializations = 0;
-  JSON.stringify = ((value: unknown, ...rest: unknown[]) => {
-    if (value && typeof value === "object" && "path" in value && "value" in value) serializations++;
-    return original(value, ...(rest as [((key: string, value: unknown) => unknown) | null, string | number | undefined]));
-  }) as typeof JSON.stringify;
+  const restoreStringify = shimProperty(JSON, "stringify", {
+    configurable: true,
+    writable: true,
+    value: ((value: unknown, ...rest: unknown[]) => {
+      if (value && typeof value === "object" && "path" in value && "value" in value) serializations++;
+      return original(value, ...(rest as [((key: string, value: unknown) => unknown) | null, string | number | undefined]));
+    }) as typeof JSON.stringify,
+  });
   try {
     mount(<RunProvider store={store}><ToolCall id="tool:lazy" /></RunProvider>);
     expect(serializations).toBe(0);
@@ -358,7 +366,7 @@ test("open arguments serialize once across 1,000 output tokens and once per argu
     expect(serializations).toBe(2);
     expect(q('[data-part="tool-args"]').textContent).toContain("updated");
   } finally {
-    JSON.stringify = original;
+    restoreStringify();
   }
 });
 
@@ -412,9 +420,8 @@ test("a command taller than its clamp gets a control that shows all of it", () =
   const command = Array.from({ length: 20 }, (_, i) => `echo ${i}`).join("\n");
   // happy-dom has no layout: the command reports 20 lines of content in an 8-line box until the clamp is removed.
   const proto = HTMLElement.prototype;
-  const descriptors = (["scrollHeight", "clientHeight"] as const).map((name) => [name, Object.getOwnPropertyDescriptor(proto, name)] as const);
-  Object.defineProperty(proto, "scrollHeight", { configurable: true, get() { return 400; } });
-  Object.defineProperty(proto, "clientHeight", { configurable: true, get(this: Element) { return this.hasAttribute("data-expanded") ? 400 : 160; } });
+  const restoreScrollHeight = shimProperty(proto, "scrollHeight", { configurable: true, get() { return 400; } });
+  const restoreClientHeight = shimProperty(proto, "clientHeight", { configurable: true, get(this: Element) { return this.hasAttribute("data-expanded") ? 400 : 160; } });
   try {
     render(tool("sh", "bash", { kind: "shell", command }, "ok\n"), ["tool:sh"]);
     openCard("tool:sh");
@@ -426,7 +433,8 @@ test("a command taller than its clamp gets a control that shows all of it", () =
     expect(q('[data-action="show-command"]')).toBeNull();
     expect(q('[data-part="shell-command"]').textContent).toBe(command);
   } finally {
-    for (const [name, descriptor] of descriptors) descriptor ? Object.defineProperty(proto, name, descriptor) : delete (proto as Partial<HTMLElement>)[name];
+    restoreClientHeight();
+    restoreScrollHeight();
   }
 });
 
@@ -439,8 +447,11 @@ test("a command that fits its clamp has no show control", () => {
 
 test("output restarted into the same tool id (a replay, a reconnect, a demo loop) shows each line once", () => {
   const errors: unknown[] = [];
-  const original = console.error;
-  console.error = (...args: unknown[]) => { errors.push(args); };
+  const restoreError = shimProperty(console, "error", {
+    configurable: true,
+    writable: true,
+    value: (...args: unknown[]) => { errors.push(args); },
+  });
   try {
     const tool_call = { id: "r", name: "bash", arguments: { command: "bun test" } };
     const lines = Array.from({ length: 24 }, (_, i) => `\x1b[32mok\x1b[0m case ${i + 1}\n`);
@@ -458,7 +469,7 @@ test("output restarted into the same tool id (a replay, a reconnect, a demo loop
     }
     expect(errors).toEqual([]);
   } finally {
-    console.error = original;
+    restoreError();
   }
 });
 
@@ -544,7 +555,7 @@ test("styles.css writes run, sub-agent, viewer, composer, and image status words
     `<button data-part="sub-agent" data-state="running" data-urgency="approval"><span data-part="sub-agent-head"><span data-part="sub-agent-status" id="sub-urgent">needs approval</span></span></button>`,
     `<span data-part="run-urgency" data-urgency="approval">needs approval</span>`,
     `<span data-part="run-notice" data-tone="error">lost</span>`,
-    `<span data-part="text-viewer-position" data-position="at-bottom">at bottom</span><span data-part="text-viewer-position" data-position="new-output">new output</span>`,
+    `<span data-part="text-viewer-head"><span data-part="text-viewer-position" data-position="at-bottom">at bottom</span><span data-part="text-viewer-position" data-position="new-output">new output</span></span>`,
     `<span data-part="approval-error" role="alert">failed</span>`,
     `<div data-part="composer"><div data-part="composer-bar"><p data-part="composer-status" data-tone="danger" id="composer-danger"><span data-part="composer-message">failed</span></p><p data-part="composer-status" data-tone="busy" id="composer-busy"><span data-part="composer-message">sending</span></p><button data-part="composer-stop">stop</button></div></div>`,
     `<figure data-part="image" data-state="error"><div data-part="image-placeholder"><span>image failed</span></div></figure>`,
@@ -566,7 +577,7 @@ test("styles.css writes run, sub-agent, viewer, composer, and image status words
     }).toEqual({
       "end completed": "fg", "end cancelled": "muted", "end failed": "fg", "end disconnected": "fg", "end unknown": "fg",
       "run unknown": "fg",
-      "sub-agent running": "fg", "sub-agent done": "fg", "sub-agent error": "fg", "sub-agent canceled": "muted", "sub-agent idle": "fg", "sub-agent urgent": "fg",
+      "sub-agent running": "fg", "sub-agent done": "muted", "sub-agent error": "fg", "sub-agent canceled": "muted", "sub-agent idle": "muted", "sub-agent urgent": "fg",
       "run urgency": "fg", "run notice error": "fg",
       "viewer at bottom": "muted", "viewer new output": "fg",
       "approval error": "fg", "composer error": "fg", "composer busy": "fg",
@@ -658,9 +669,94 @@ test("dropped steering is explicit live and compact after reload", () => {
     { type: "delivery_status", delivery_id: "dropped-steer", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
     { type: "delivery_status", delivery_id: "history-only", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" },
   ].forEach((event) => store.dispatch(event as RunEvent));
-  mount(<RunProvider store={store}><Fallback id="user:delivery:dropped-steer" /><Fallback id="notification:1" /></RunProvider>);
-  expect(q('[data-id="user:delivery:dropped-steer"] [data-part="message-content"]').textContent).toBe("this steer must be dropped · not delivered · abort");
-  expect(q('[data-id="notification:1"]').textContent).toBe("steer dropped: abort");
+  mount(<RunProvider store={store}><Fallback id="user:delivery:dropped-steer" /><Fallback id="user:delivery:history-only" /></RunProvider>);
+  expect(q('[data-id="user:delivery:dropped-steer"] [data-part="message-content"]').textContent).toBe("this steer must be dropped");
+  expect(q('[data-id="user:delivery:dropped-steer"] [data-part="delivery-note"]').textContent).toBe("not delivered · the run was stopped");
+  expect(q('[data-id="user:delivery:history-only"] [data-part="message-content"]')).toBeNull();
+  expect(q('[data-id="user:delivery:history-only"] [data-part="delivery-note"]').textContent).toBe("not delivered · the run was stopped · text not kept");
+});
+
+const droppedSteer = (reason?: string): RunEvent => ({ type: "user_message", text: "steer", mode: "steer", delivery_id: "d", delivery_status: "dropped", ...(reason === undefined ? {} : { delivery_reason: reason }) });
+const deliveryNote = (within: HTMLElement) => within.querySelector('[data-id="user:delivery:d"] [data-part="delivery-note"]');
+
+test.each([
+  ["turn_end", "the turn ended first"],
+  ["abort", "the run was stopped"],
+  ["clear", "the pending steers were cleared"],
+  ["disconnect", "the connection was lost"],
+  ["failed", "the turn failed"],
+  ["restart", "the server restarted"],
+])("a steer dropped for %s reads as words, not the token", (reason, words) => {
+  const store = createRunStore(() => {});
+  store.dispatch(droppedSteer(reason));
+  const view = mount(<RunProvider store={store}><Fallback id="user:delivery:d" /></RunProvider>);
+  expect(deliveryNote(view)?.textContent).toBe(`not delivered · ${words}`);
+  expect(view.querySelector('[data-part="message-content"]')?.textContent).toBe("steer");
+});
+
+test("an unconfirmed delivery uses readable words and never exposes an unknown reason token", () => {
+  expect(deliveryNoteText("unknown")).toBe("not confirmed");
+  expect(deliveryNoteText("unknown", "future_reason")).toBe("not confirmed");
+});
+
+test("an unknown or missing drop reason says only not delivered", () => {
+  for (const reason of ["quota_exhausted", undefined]) {
+    const store = createRunStore(() => {});
+    store.dispatch(droppedSteer(reason));
+    const view = mount(<RunProvider store={store}><Fallback id="user:delivery:d" /></RunProvider>);
+    expect(deliveryNote(view)?.textContent).toBe("not delivered");
+    if (reason) expect(view.textContent).not.toContain(reason);
+  }
+});
+
+test("renderDeliveryNote replaces the delivery note, and null hides it", () => {
+  const store = createRunStore(() => {});
+  store.dispatch(droppedSteer("turn_end"));
+  store.dispatch({ type: "user_message", text: "delivered", mode: "send", delivery_id: "ok", delivery_status: "delivered" });
+  const seen: string[] = [];
+  const view = mount(<RunProvider store={store}>
+    <Fallback id="user:delivery:d" renderDeliveryNote={(item) => { seen.push(item.id); return <>lost · <button type="button">resend</button></>; }} />
+    <Fallback id="user:delivery:ok" renderDeliveryNote={(item) => { seen.push(item.id); return null; }} />
+  </RunProvider>);
+  expect(deliveryNote(view)?.textContent).toBe("lost · resend");
+  expect(deliveryNote(view)?.querySelector("button")?.textContent).toBe("resend");
+  expect(seen).toEqual(["user:delivery:d", "user:delivery:ok"]);
+  expect(view.querySelector('[data-id="user:delivery:ok"] [data-part="delivery-note"]')).toBeNull();
+  const hidden = mount(<RunProvider store={store}><Fallback id="user:delivery:d" renderDeliveryNote={() => null} /></RunProvider>);
+  expect(deliveryNote(hidden)).toBeNull();
+  expect(hidden.textContent).toBe("> steer");
+});
+
+test("renderDeliveryNote replaces a text-omitted note", () => {
+  const store = createRunStore(() => {});
+  store.dispatch({ type: "delivery_status", delivery_id: "d", method: "steer", status: "dropped", content: "steer dropped: abort", reason: "abort" });
+
+  const replaced = mount(<RunProvider store={store}><Fallback id="user:delivery:d" renderDeliveryNote={() => <>host lost it</>} /></RunProvider>);
+  expect(replaced.querySelector('[data-part="delivery-note"]')?.textContent).toBe("host lost it");
+});
+
+test("a null delivery note hides a text-omitted row in the default renderer", () => {
+  const store = createRunStore(() => {});
+  store.dispatch({ type: "user_message", text: "", text_omitted: true, mode: "steer", delivery_id: "d", delivery_status: "dropped" });
+
+  const hidden = mount(<RunProvider store={store}><Fallback id="user:delivery:d" renderDeliveryNote={() => null} /></RunProvider>);
+  expect(hidden.querySelector('[data-id="user:delivery:d"]')).toBeNull();
+});
+
+test("a text-omitted row reaches a custom user renderer and its nested Fallback", () => {
+  const store = createRunStore(() => {});
+  store.dispatch({ type: "delivery_status", delivery_id: "d", method: "steer", status: "dropped", content: "steer dropped: clear", reason: "clear" });
+  const seen: Array<{ type?: string; textOmitted?: true }> = [];
+  const User = ({ id }: { id: string }) => {
+    const item = useItem(id);
+    seen.push({ type: item?.type, textOmitted: item?.type === "user" && item.event.type === "user_message" ? (item.event as { text_omitted?: true }).text_omitted : undefined });
+    return <Fallback id={id} renderDeliveryNote={() => <>host note</>} />;
+  };
+  const renderers: Renderers = { user: User };
+
+  const view = mount(<RunProvider store={store}><Timeline virtual={false} renderers={renderers} /></RunProvider>);
+  expect(seen.at(-1)).toEqual({ type: "user", textOmitted: true });
+  expect(view.querySelector('[data-part="delivery-note"]')?.textContent).toBe("host note");
 });
 
 test("a notification row says what the notification says", () => {

@@ -8,10 +8,11 @@ import { demos } from "../src/gallery/demos";
 import { sourceFor } from "../src/gallery/source";
 
 test("every exported part of @fulcrum/react has a gallery demo", () => {
-  // Components are the capitalized value exports; the providers (RunProvider, HighlightContext) wrap demos, so they need
-  // none of their own. Tool bodies render inside ToolCall and Approval, so each needs a demo call with its view kind
-  // (generic: no view).
-  const components = Object.keys(parts).filter((name) => /^[A-Z]/.test(name) && name !== "RunProvider" && name !== "HighlightContext");
+  // Components are the capitalized value exports; providers wrap demos, so they need none of their own. RunNavigator's
+  // demos exercise the shared sub-agent provider. Tool bodies render inside ToolCall and Approval, so each needs a demo
+  // call with its view kind (generic: no view).
+  const providers = new Set(["RunProvider", "SubAgentNavigationProvider", "HighlightContext"]);
+  const components = Object.keys(parts).filter((name) => /^[A-Z]/.test(name) && !providers.has(name));
   const bodies = components.filter((name) => name.endsWith("Body") && name !== "ToolBody");
   const parents = components.filter((name) => !name.endsWith("Body"));
   const shown = new Set([...demos, ...composerDemos, ...codeDemos].map((demo) => demo.part));
@@ -52,6 +53,17 @@ test("gallery fixtures cover every public run state", () => {
   for (const [part, expected] of Object.entries(expectedStates)) {
     const missing = Object.keys(expected).filter((state) => !observed[part as keyof typeof observed].has(state));
     expect(missing, `${part} is missing gallery states: ${missing.join(", ")}`).toEqual([]);
+  }
+});
+
+test("gallery shows text-less dropped steers with default and host delivery notes", () => {
+  for (const id of ["fallback-user-dropped", "fallback-user-dropped-host"]) {
+    const demo = demos.find((candidate) => candidate.id === id);
+    expect(demo).toBeDefined();
+    const { store } = reduced(demo!);
+    expect(store.getOutline()).toEqual([{ id: `user:delivery:${id === "fallback-user-dropped" ? "gallery-dropped" : "gallery-dropped-host"}`, kind: "user" }]);
+    const item = store.getItem(store.getOutline()[0]!.id);
+    expect(item).toMatchObject({ type: "user", event: { text: "", text_omitted: true, delivery_status: "dropped" } });
   }
 });
 

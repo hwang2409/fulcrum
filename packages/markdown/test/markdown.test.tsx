@@ -1,4 +1,6 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import type { Highlight, HighlightContext, Token } from "@fulcrum/highlight";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -10,9 +12,21 @@ import {
   type Block,
 } from "../src/index.js";
 import { Markdown } from "../src/react.js";
+import { withoutDelimiterCells } from "./accepted-changes.js";
 import corpus from "./fixtures/agent-corpus.json";
 
 const json = (blocks: readonly Block[]) => JSON.stringify(blocks, (key, value) => key === "open" ? undefined : value);
+let restoreBrowser: (() => void) | undefined;
+const installBrowser = (browser: Window) => {
+  restoreBrowser?.();
+  const restores = [
+    shimGlobal("window", browser),
+    shimGlobal("document", browser.document),
+    shimGlobal("IS_REACT_ACT_ENVIRONMENT", true),
+  ];
+  restoreBrowser = () => { for (const restore of restores.reverse()) restore(); };
+};
+afterEach(() => { restoreBrowser?.(); restoreBrowser = undefined; });
 const window = new Window();
 const visibleText = (source: string, streaming = false, includeProvisional = true) => {
   const element = window.document.createElement("div");
@@ -20,10 +34,13 @@ const visibleText = (source: string, streaming = false, includeProvisional = tru
   if (!includeProvisional) element.querySelectorAll('[data-part="md-reference-pending"]').forEach((node) => node.remove());
   return element.textContent;
 };
+// A pipe is table syntax: a streaming row shows its pipes, and a delimiter row arriving shows as sent, until the
+// complete delimiter row turns them into a table (accepted-changes.ts).
+const withoutPipes = (text: string) => withoutDelimiterCells(text).replace(/\s*\|\s*/g, "");
 const isSubsequence = (value: string, expected: string) => {
-  const wanted = [...value];
+  const wanted = [...withoutPipes(value)];
   let index = 0;
-  for (const character of expected) if (character === wanted[index]) index++;
+  for (const character of withoutPipes(expected)) if (character === wanted[index]) index++;
   return index === wanted.length;
 };
 
@@ -157,38 +174,34 @@ test("open containers retain completed children while only the open leaf changes
   expect(next.children[0]).toBe(first);
 });
 
-test("streaming references never flash bracket syntax", () => {
-  const cases = [
-    "[known]: https://example.com\n\nUse [known].",
-    "Use [late].\n\n[late]: https://example.com",
-    "> See [nested].\n>\n> [nested]: https://example.com",
+// The bracket wait never waits for a definition: a `[label]` whose definition is already known never shows its brackets
+// (it waits only for the character after `]`, then becomes the link), and one whose definition comes later shows as the
+// text it is until the definition settles (the rare change the rule accepts). Both end as the one-shot parse.
+test("a reference waits only for the character after its bracket, never for a later definition", () => {
+  const cases: Array<[string, boolean]> = [
+    ["[known]: https://example.com\n\nUse [known].", false],
+    ["Use [late].\n\n[late]: https://example.com", true],
+    ["> See [nested].\n>\n> [nested]: https://example.com", true],
+    ...Array.from({ length: 30 }, (_, index): [string, boolean] => {
+      const label = `ref-${index}`;
+      const use = index % 3 === 0 ? `> See [${label}].` : index % 3 === 1 ? `- See [${label}].` : `See [${label}].`;
+      const definition = `[${label}]: https://example.com/${index}`;
+      return index % 2 ? [`${use}\n\n${definition}`, true] : [`${definition}\n\n${use}`, false];
+    }),
   ];
-  for (const source of cases) {
-    const document = createStreamingDocument();
-    for (const character of source) {
-      document.append(character);
-      const text = visibleText(document.source, true) ?? "";
-      expect(text).not.toMatch(/\[[^\]]*\]/);
-      expect(text).not.toContain("[known]:");
+  for (const [source, useFirst] of cases) {
+    const label = /\[([^\]]+)\]\./.exec(source)![1]!;
+    const decided = source.indexOf(`[${label}].`) + label.length + 3;
+    // Once the definition line starts, its settling (a title may still follow) decides when the link appears.
+    const definitionStart = useFirst ? source.lastIndexOf(`[${label}]:`) : source.length;
+    for (let end = 1; end <= source.length; end++) {
+      const text = visibleText(source.slice(0, end), true) ?? "";
+      expect(text, JSON.stringify(source.slice(0, end))).not.toContain(`[${label}]:`);
+      if (useFirst && end > definitionStart) continue;
+      expect(text.includes(`[${label}]`), JSON.stringify(source.slice(0, end))).toBe(useFirst && end >= decided);
     }
-    document.finish();
-    expect(json(document.render())).toBe(json(parseMarkdown(source)));
-  }
-});
-
-test("generated mixed reference streams hide definitions and brackets", () => {
-  const sources = Array.from({ length: 100 }, (_, index) => {
-    const label = `ref-${index}`;
-    const use = index % 3 === 0 ? `> See [${label}].` : index % 3 === 1 ? `- See [${label}].` : `See [${label}].`;
-    const definition = `[${label}]: https://example.com/${index}`;
-    return index % 2 ? `${use}\n\n${definition}` : `${definition}\n\n${use}`;
-  });
-  for (const source of sources) {
     const document = createStreamingDocument();
-    for (const character of source) {
-      document.append(character);
-      expect(visibleText(document.source, true), JSON.stringify(document.source)).not.toMatch(/\[[^\]]*\]/);
-    }
+    for (const character of source) document.append(character);
     document.finish();
     expect(json(document.render())).toBe(json(parseMarkdown(source)));
   }
@@ -312,9 +325,9 @@ test("the agent corpus has the expected shape 20/20", () => {
 test("every streamed prefix only reveals final visible text", () => {
   const exactExample = "The build fails because `vite.config.ts` imports `node:path` in a browser bundle. Move the import into the config's server block, or use `new";
   for (const source of [exactExample, ...corpus]) {
-    const finalText = visibleText(source, true).replace(/\s/g, "");
+    const finalText = withoutDelimiterCells(visibleText(source, true)!).replace(/\s/g, "");
     for (let length = 0; length <= source.length; length++) {
-      const prefixText = visibleText(source.slice(0, length), true, false).replace(/\s/g, "");
+      const prefixText = withoutDelimiterCells(visibleText(source.slice(0, length), true, false)!).replace(/\s/g, "");
       expect(isSubsequence(prefixText, finalText), `visible prefix ${length} of ${JSON.stringify(source)}`).toBe(true);
     }
   }
@@ -342,9 +355,11 @@ test("every inline construct has a safe visible prefix in every container", () =
   for (const construct of constructs) for (const [container, wrap] of containers) {
     const source = wrap(construct);
     const finalText = visibleText(source, true);
+    // An image's alt text is inside `[...]`, which shows while it streams; its change to an image is the accepted one.
+    const asText = construct.startsWith("![") ? visibleText(wrap("!value"), true) : finalText;
     for (let length = 0; length <= source.length; length++) {
       const prefixText = visibleText(source.slice(0, length), true);
-      expect(isSubsequence(prefixText, finalText), `${container} prefix ${length} of ${JSON.stringify(source)} rendered ${JSON.stringify(prefixText)} final ${JSON.stringify(finalText)}`).toBe(true);
+      expect(isSubsequence(prefixText, finalText) || isSubsequence(prefixText, asText), `${container} prefix ${length} of ${JSON.stringify(source)} rendered ${JSON.stringify(prefixText)} final ${JSON.stringify(finalText)}`).toBe(true);
     }
   }
 });
@@ -433,11 +448,13 @@ test("every design row checks unfinished syntax at every character", () => {
   ];
   for (const source of rows) {
     const final = visibleText(source)!;
+    // As above: an image's alt text shows until the image closes.
+    const asText = source.startsWith("![") ? "!logo" : final;
     const document = createStreamingDocument();
     for (const character of source) {
       document.append(character);
       const visible = visibleText(document.source, true)!;
-      expect(isSubsequence(visible, final), `${JSON.stringify(source)} at ${JSON.stringify(document.source)}`).toBe(true);
+      expect(isSubsequence(visible, final) || isSubsequence(visible, asText), `${JSON.stringify(source)} at ${JSON.stringify(document.source)}`).toBe(true);
       expect(visible).not.toMatch(/(?:^|[^\\])\\$/);
       const openEntity = /&(?:#x?[0-9a-f]*)?$/i.exec(document.source);
       if (openEntity) expect(visible).toBe(visibleText(document.source.slice(0, openEntity.index), true));
@@ -474,7 +491,7 @@ test("later reference definitions update frozen blocks and react when committed"
   expect(json(document.render())).toBe(json(parseMarkdown(`${first}${definition}\nnext block\n`)));
 
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const host = browser.document.createElement("div");
   const root = createRoot(host);
   act(() => root.render(<Markdown source={first} streaming />));
@@ -491,7 +508,7 @@ test("later reference definitions update frozen blocks and react when committed"
 test("renders a real typescript fence with the shared highlighter", async () => {
   const { createHighlighter } = await import("../../highlight/dist/index.js");
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   const highlight = createHighlighter();
@@ -505,7 +522,7 @@ test("renders a real typescript fence with the shared highlighter", async () => 
 
 test("a stale streaming highlight cannot replace the done result", async () => {
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   const pending: Array<(tokens: Token[]) => void> = [];
@@ -526,7 +543,7 @@ test("a stale streaming highlight cannot replace the done result", async () => {
 
 test("a closing fence never shows fewer characters than the source while its done colors are pending", async () => {
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   // Streaming answers at once (the incremental path); the done answer waits for the worker.
@@ -564,7 +581,7 @@ test("highlighter uses the shared cumulative source contract", async () => {
 
 test("a code block repaints when the highlighter updates its tokens", async () => {
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   let tokens: Token[] = [{ text: "const a = 1;\n" }];
@@ -584,7 +601,7 @@ test("a code block repaints when the highlighter updates its tokens", async () =
 
 test("a streamed code block shows plain text first, then the colored update, through the streaming resolver", async () => {
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   const colored = new Set<string>();
@@ -618,7 +635,7 @@ test("a streamed code block shows plain text first, then the colored update, thr
 
 test("an open fence keeps updating when every delta ends at a newline", async () => {
   const browser = new Window();
-  Object.assign(globalThis, { window: browser, document: browser.document, IS_REACT_ACT_ENVIRONMENT: true });
+  installBrowser(browser);
   const container = browser.document.createElement("div");
   const root = createRoot(container);
   let source = "```ts\n";

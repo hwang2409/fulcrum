@@ -1,6 +1,6 @@
 import { expect, jest, test } from "bun:test";
 import { createClient, fromZetaHistory, type Transport } from "@fulcrum/zeta";
-import { createDelivery, stopTurn } from "../src/delivery";
+import { createDelivery, stopTurn, visibleDeliveryNotice } from "../src/delivery";
 import { composerMethods } from "../scripts/fake-zeta";
 
 type Reply = { result?: unknown; error?: { code: number; message: string; data?: unknown } };
@@ -86,6 +86,43 @@ test("a retry of the same text after a failure reuses its id; the next message a
   expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-1", "id-2"]);
 });
 
+test("a later live delivery outcome retires an older not-confirmed note", () => {
+  expect(visibleDeliveryNotice("unknown", undefined)).toBe("unknown");
+  expect(visibleDeliveryNotice("unknown", "delivered")).toBeUndefined();
+  expect(visibleDeliveryNotice("unknown", "dropped")).toBeUndefined();
+});
+
+test("a late echo after an unknown reply spends the saved id before the same text is sent again", async () => {
+  let fail = true;
+  const { client, calls, emit } = await server(() => fail ? { error: { code: -32000, message: "reply lost" } } : ok, fullFeatures, false);
+  const lease = client.forSession("s");
+  const delivery = createDelivery(ids(), undefined, lease.store);
+  await expect(delivery.submit(client, "hello", false)).rejects.toThrow("reply lost");
+  emit({ event: "user_message", session_id: "s", text: "hello", mode: "send", attachments: [], delivery_id: "id-1" });
+  fail = false;
+  await delivery.submit(client, "hello", false);
+  expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-2"]);
+  lease.release();
+});
+
+test("submit names its delivery id to the composer; a failure after zeta's echo spends the id, so the same text later is a new message", async () => {
+  let echoThenFail = true;
+  const { client, calls, emit } = await server((method, params) => {
+    if (method !== "send" || !echoThenFail) return ok;
+    emit({ event: "user_message", session_id: "s", text: params.text, mode: "send", attachments: [], delivery_id: params.delivery_id });
+    return { error: { code: -32000, message: "reply lost" } };
+  }, fullFeatures, false);
+  const lease = client.forSession("s");
+  const tracked: string[] = [];
+  const delivery = createDelivery(ids(), undefined, lease.store);
+  await expect(delivery.submit(client, "hello", false, (id: string) => tracked.push(id))).rejects.toThrow("reply lost");
+  echoThenFail = false;
+  await delivery.submit(client, "hello", false, (id: string) => tracked.push(id));
+  expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-2"]);
+  expect(tracked).toEqual(["id-1", "id-2"]);
+  lease.release();
+});
+
 test("a turn that ends before a steer lands sends it instead, and one that starts before a send steers, with the same id", async () => {
   const { client, calls } = await server((method) => (method === "steer" ? { error: { code: -32005, message: "no turn is running" } } : ok));
   await createDelivery(ids()).submit(client, "late steer", true);
@@ -127,7 +164,7 @@ test("a restart snapshot after the drop rebuilds the steer's row from history; i
   lease.release();
 });
 
-test("a restart snapshot between a steer and its turn end loses the live drop's row; zeta is asked once and the steer is resent once", async () => {
+test("a drop after a restart rebuilds one row and resends once without a redundant status poll", async () => {
   jest.useFakeTimers();
   try {
     const { client, calls, emit } = await server((method) => method === "delivery_status" ? { result: { status: "dropped" } } : ok, fullFeatures);
@@ -138,13 +175,15 @@ test("a restart snapshot between a steer and its turn end loses the live drop's 
     lease.store.resync([]); // the snapshot's history has no row for the queued steer yet
     emit({ event: "delivery_status", session_id: "s", id: "drop-1", role: "system", delivery_id: "id-2", method: "steer", status: "dropped", reason: "turn_end", content: [{ type: "text", text: "survive restart" }] });
     calls.length = 0;
-    let result: string[] | undefined;
+    let result: Awaited<ReturnType<typeof delivery.turnEnded>> | undefined;
     void delivery.turnEnded(client).then((value) => { result = value; });
     await Promise.resolve();
     jest.advanceTimersByTime(1_000);
     for (let i = 0; i < 20 && !result; i++) await Promise.resolve();
     expect(result).toEqual([]);
-    expect(calls).toEqual([["delivery_status", { delivery_id: "id-2" }], ["send", { text: "survive restart", delivery_id: "id-3" }]]);
+    expect(lease.store.getItem("user:delivery:id-2")).toMatchObject({ event: { text: "", text_omitted: true, delivery_status: "dropped" } });
+    expect(lease.store.getOutline().filter(({ id }) => id === "user:delivery:id-2")).toHaveLength(1);
+    expect(calls).toEqual([["send", { text: "survive restart", delivery_id: "id-3" }]]);
     lease.release();
   } finally {
     jest.useRealTimers();
@@ -174,7 +213,7 @@ test("live dropped status after stop marks not delivered without polling", async
   await delivery.stop(client);
   emit({ event: "delivery_status", session_id: "s", id: "drop-1", role: "system", delivery_id: "id-2", method: "steer", status: "dropped", content: [{ type: "text", text: "cancel this" }] });
   calls.length = 0;
-  expect(await delivery.turnEnded(client)).toEqual(["id-2"]);
+  expect(await delivery.turnEnded(client)).toEqual([{ intent: "id-2", outcome: "dropped" }]);
   expect(calls).toEqual([]);
   lease.release();
 });
@@ -191,7 +230,7 @@ test("fake abort event marks its queued steer not delivered through the real cli
   await delivery.submit(connection.client, "stop this", true);
   await delivery.stop(connection.client);
   connection.calls.length = 0;
-  expect(await delivery.turnEnded(connection.client)).toEqual(["id-2"]);
+  expect(await delivery.turnEnded(connection.client)).toEqual([{ intent: "id-2", outcome: "dropped" }]);
   expect(connection.calls).toEqual([]);
   lease.release();
 });
@@ -199,7 +238,7 @@ test("fake abort event marks its queued steer not delivered through the real cli
 test("the store is watched only while a turn end waits for live drops, and the watch is removed after", async () => {
   jest.useFakeTimers();
   try {
-    const { client, calls, emit } = await server(() => ok, ["delivery_id", "session_history_fidelity"]);
+    const { client, calls, emit } = await server((method) => method === "delivery_status" ? { result: { status: "delivered" } } : ok, ["delivery_id", "session_history_fidelity"]);
     const lease = client.forSession("s");
     let listeners = 0;
     let notices = 0;
@@ -214,7 +253,7 @@ test("the store is watched only while a turn end waits for live drops, and the w
     await delivery.submit(client, "delivered one", true);
     expect(listeners).toBe(0);
     calls.length = 0;
-    let result: string[] | undefined;
+    let result: Awaited<ReturnType<typeof delivery.turnEnded>> | undefined;
     void delivery.turnEnded(client).then((value) => { result = value; });
     await Promise.resolve();
     expect(listeners).toBe(1);
@@ -237,13 +276,13 @@ test("the store is watched only while a turn end waits for live drops, and the w
 test("negotiated turn end without a drop event asks zeta once and does not resend a delivered steer", async () => {
   jest.useFakeTimers();
   try {
-    const { client, calls } = await server(() => ok, ["delivery_id", "session_history_fidelity"]);
+    const { client, calls } = await server((method) => method === "delivery_status" ? { result: { status: "delivered" } } : ok, ["delivery_id", "session_history_fidelity"]);
     const lease = client.forSession("s");
     const delivery = createDelivery(ids(), undefined, lease.store);
     await delivery.submit(client, "start", false);
     await delivery.submit(client, "already delivered", true);
     calls.length = 0;
-    let result: string[] | undefined;
+    let result: Awaited<ReturnType<typeof delivery.turnEnded>> | undefined;
     void delivery.turnEnded(client).then((value) => { result = value; });
     await Promise.resolve();
     jest.advanceTimersByTime(1_000);
@@ -256,16 +295,37 @@ test("negotiated turn end without a drop event asks zeta once and does not resen
   }
 });
 
-test("a dropped steer is an error and the retry gets a fresh id; an evicted id reports its outcome", async () => {
-  let reply: Reply = { result: { accepted: false, duplicate: true, status: "dropped" } };
-  const { client, calls } = await server(() => reply);
-  const delivery = createDelivery(ids());
-  await expect(delivery.submit(client, "steer me", true)).rejects.toThrow("dropped");
-  reply = { error: { code: -32010, message: "evicted", data: { outcome: "delivered" } } };
-  await delivery.submit(client, "steer me", true);
-  reply = { error: { code: -32010, message: "evicted", data: { outcome: "dropped" } } };
-  await expect(delivery.submit(client, "again", true)).rejects.toThrow("dropped");
-  expect(calls.map(([, params]) => params.delivery_id)).toEqual(["id-1", "id-2", "id-3"]);
+test.each([
+  ["delivered", true, []],
+  ["dropped", false, []],
+  ["unknown", false, [{ intent: "id-1", outcome: "unknown" }]],
+  ["future-outcome", false, [{ intent: "id-1", outcome: "unknown" }]],
+] as const)("an evicted %s outcome has the same meaning during submit and turn end", async (outcome, accepted, notices) => {
+  let path: "submit" | "turn-end" = "submit";
+  const { client, calls } = await server((method) => {
+    if (method === "delivery_status") return { result: { status: "evicted", outcome } };
+    if (path === "submit") return { error: { code: -32010, message: "evicted", data: { outcome } } };
+    return ok;
+  });
+
+  const submit = createDelivery(ids());
+  const submitAccepted = await submit.submit(client, "keep me", false).then(() => true, () => false);
+  await submit.submit(client, "keep me", false).catch(() => {});
+  const submitIds = calls.slice(0, 2).map(([, params]) => params.delivery_id);
+
+  path = "turn-end";
+  calls.length = 0;
+  const turnEnd = createDelivery(ids());
+  await turnEnd.submit(client, "steer me", true);
+  calls.length = 0;
+  const actualNotices = await turnEnd.turnEnded(client);
+  const turnMethods = calls.map(([method]) => method);
+  expect({ submitAccepted, submitIds, notices: actualNotices, turnMethods }).toEqual({
+    submitAccepted: accepted,
+    submitIds: accepted ? ["id-1", "id-2"] : ["id-1", "id-1"],
+    notices,
+    turnMethods: outcome === "dropped" ? ["delivery_status", "send"] : ["delivery_status"],
+  });
 });
 
 test("a steer the turn dropped at its end is resent as a new message, in order; delivered ones are not", async () => {
@@ -308,7 +368,7 @@ test("after a stop, dropped steers stay dropped and are reported by intent; deli
   await delivery.submit(client, "this one landed", true);
   await delivery.stop(client);
   calls.length = 0;
-  expect(await delivery.turnEnded(client)).toEqual(["id-1"]);
+  expect(await delivery.turnEnded(client)).toEqual([{ intent: "id-1", outcome: "dropped" }]);
   expect(calls).toEqual([["delivery_status", { delivery_id: "id-1" }], ["delivery_status", { delivery_id: "id-2" }]]);
 });
 
@@ -319,7 +379,7 @@ test("one failed delivery_status query keeps the marks the other queries found",
   await delivery.submit(client, "first", true);
   await delivery.submit(client, "second", true);
   await delivery.stop(client);
-  expect(await delivery.turnEnded(client)).toEqual(["id-2"]);
+  expect(await delivery.turnEnded(client)).toEqual([{ intent: "id-2", outcome: "dropped" }]);
 });
 
 test("a stop that failed, or found no turn, is not a stop: steers the turn's own end dropped are resent", async () => {

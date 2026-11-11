@@ -8,7 +8,7 @@ const rows = [
   { id: "e2", role: "assistant", content: [{ type: "thinking", text: "" }, { type: "text", text: "running ls" }, { type: "tool_use", tool_call: { id: "t1", name: "bash", arguments: {} } }], tool_result: null },
   { id: "e3", role: "tool_result", content: [{ type: "text", text: "a\nb" }], tool_result: { tool_call_id: "t1", content: "a\nb", is_error: false, content_blocks: [], structured_content: null } },
   { id: "e4", role: "assistant", content: [{ type: "text", text: "done" }], tool_result: null, failed_turn: { code: "backend_error", message: "provider failed", provider_error: true } },
-  { id: "e5", role: "system", content: [{ type: "text", text: "agent finished" }], tool_result: null, notification: { notification_id: "n1", kind: "agent_completion" } },
+  { id: "e5", role: "system", content: [{ type: "text", text: "agent finished" }], tool_result: null, notification: { notification_id: "n1", kind: "agent_completion", child_instance_id: "child-1", description: "worker", status: "completed", text: "agent finished" } },
 ];
 
 test("history image stubs keep metadata without inventing a zero-byte size", () => {
@@ -32,7 +32,7 @@ test("maps negotiated history image stubs to generic lazy images without storing
 test("maps history rows into one ordered transcript", () => {
   const store = createRunStore((flush) => flush());
   for (const event of fromZetaHistory(rows)) store.dispatch(event);
-  expect(store.getOutline().map((entry) => entry.kind)).toEqual(["user", "message", "tool", "message", "error", "notification"]);
+  expect(store.getOutline().map((entry) => entry.kind)).toEqual(["user", "message", "tool", "message", "error", "sub_agent"]);
   const tool = store.getItem(store.getOutline()[2]!.id);
   expect(tool).toMatchObject({ type: "tool", active: false, output: "", result: { content: "a\nb" }, tool_call: { name: "bash" } });
   const message = store.getItem(store.getOutline()[1]!.id);
@@ -62,6 +62,148 @@ test("history and live approval events share one reducer item", () => {
   const request = { type: "approval_request" as const, request_id: "r1", tool_call: { id: "t1", name: "bash", arguments: {} }, delegated: false };
   for (const event of [...fromZetaHistory([{ id: "a1", role: "system", event: "approval_request", ...request }]), request]) store.dispatch(event);
   expect(store.getOutline()).toEqual([{ id: "approval:r1", kind: "approval" }]);
+});
+
+const reducedState = (events: ReturnType<typeof fromZetaEvent>) => {
+  const store = createRunStore((flush) => flush());
+  for (const event of events) store.dispatch(event);
+  return store.getState();
+};
+
+const notificationHistoryRow = (notificationId: string, data: Record<string, unknown>) => ({
+  id: notificationId,
+  role: "system",
+  content: [{ type: "text", text: data.text }],
+  tool_result: null,
+  notification: data,
+});
+
+test("child progress notifications have equal live and history events and reduced states", () => {
+  // Persisted shapes: zeta origin/main src/zeta/core/store/_notifications.py:300-328, :330-361 and
+  // src/zeta/agent/conversation_channel.py:470-503; withdrawals are written at _step_delivery.py:254-285.
+  // History keeps the entry id outside notification data (history_projection.py:426-446), while live adds it
+  // as notification_id (notifications.py:81-92). Protocol 1.2 names come from event_contract.py:93-110.
+  const cases = [
+    {
+      kind: "child_idle",
+      event: "child_idle",
+      data: { origin: "notification", kind: "child_idle", child_instance_id: "child-1", child_session_path: "/tmp/child", description: "worker", status: "child_idle", text: "worker is idle" },
+    },
+    {
+      kind: "child_question",
+      event: "child_question",
+      data: { origin: "notification", kind: "child_question", child_instance_id: "child-1", question_id: "question-1", question: "continue?", description: "child question", status: "pending", text: "child asks: continue?" },
+    },
+    {
+      kind: "child_question_withdrawn",
+      event: "child_question_withdrawn",
+      data: { origin: "notification", kind: "child_question_withdrawn", child_instance_id: "child-1", question_id: "question-1", description: "child question withdrawn", status: "withdrawn", text: "question withdrawn" },
+    },
+    {
+      kind: "agent_completion",
+      event: "sub_agent_receipt",
+      data: { origin: "notification", kind: "agent_completion", child_instance_id: "child-1", child_session_path: "/tmp/child", description: "worker", status: "completed", text: "worker finished" },
+    },
+  ];
+
+  for (const { kind, event, data } of cases) {
+    const notificationId = `${kind}-1`;
+    const live = fromZetaEvent({ event, session_id: "parent", data: { notification_id: notificationId, ...data } });
+    const history = fromZetaHistory([notificationHistoryRow(notificationId, data)]);
+    expect(history, kind).toEqual(live);
+    expect(reducedState(history), kind).toEqual(reducedState(live));
+  }
+});
+
+test("child progress history follows the same reducer sequence as live", () => {
+  const notices = [
+    { event: "child_hold", data: { origin: "notification", kind: "child_hold", child_instance_id: "child-1", child_session_path: "/tmp/child", description: "worker", status: "held", reason: "rate_limit", until: "2030-01-02T03:04:05+00:00", provider: "anthropic", retry_after: 1234, text: "worker is held" } },
+    { event: "child_idle", data: { origin: "notification", kind: "child_idle", child_instance_id: "child-1", child_session_path: "/tmp/child", description: "worker", status: "child_idle", text: "worker is idle" } },
+    { event: "child_question", data: { origin: "notification", kind: "child_question", child_instance_id: "child-1", question_id: "question-1", question: "continue?", description: "child question", status: "pending", text: "child asks: continue?" } },
+    { event: "child_question_withdrawn", data: { origin: "notification", kind: "child_question_withdrawn", child_instance_id: "child-1", question_id: "question-1", description: "child question withdrawn", status: "withdrawn", text: "question withdrawn" } },
+    { event: "sub_agent_receipt", data: { origin: "notification", kind: "agent_completion", child_instance_id: "child-1", child_session_path: "/tmp/child", description: "worker", status: "completed", text: "worker finished" } },
+  ];
+  const live = notices.flatMap(({ event, data }, index) => fromZetaEvent({ event, session_id: "parent", data: { notification_id: `notice-${index}`, ...data } }));
+  const history = fromZetaHistory(notices.map(({ data }, index) => notificationHistoryRow(`notice-${index}`, data)));
+
+  expect(reducedState(history)).toEqual(reducedState(live));
+});
+
+test("non-child system history rows keep the generic notification mapping", () => {
+  // Valid system rows without child data come from zeta origin/main
+  // src/zeta/server/handlers/history_projection.py:362-380, :408-425, and :523-528.
+  const cases = [
+    {
+      name: "transcript recovery",
+      row: { id: "recovery-1", role: "system", content: [{ type: "text", text: "recovered transcript" }], tool_result: null, transcript_recovery: { quarantine_id: "quarantine-1" } },
+      data: { role: "system", text: "recovered transcript" },
+    },
+    {
+      name: "system message",
+      row: { id: "system-1", role: "system", content: [{ type: "text", text: "system note" }], tool_result: null },
+      data: { role: "system", text: "system note" },
+    },
+    {
+      name: "unknown notification kind",
+      row: notificationHistoryRow("unknown-1", { kind: "future_child_notice", text: "future notice" }),
+      data: { kind: "future_child_notice", role: "system", text: "future notice" },
+    },
+    {
+      name: "notification without a kind",
+      row: notificationHistoryRow("kindless-1", { text: "kindless notice" }),
+      data: { role: "system", text: "kindless notice" },
+    },
+  ];
+
+  for (const { name, row, data } of cases) {
+    expect(fromZetaHistory([row]), name).toEqual([{ type: "notification", notification_id: undefined, data }]);
+  }
+
+  const data = { notification_id: "unknown-live", kind: "future_child_notice", text: "future notice" };
+  expect(fromZetaEvent({ event: "sub_agent_receipt", data })[0]).toMatchObject({ type: "notification" });
+});
+
+test("child holds use the same readable notification in live and history", () => {
+  // Frame shape from zeta 1bef23e0 src/zeta/agent/conversation_channel.py:336-353 and event_contract.py:93-110.
+  const data = {
+    notification_id: "hold-1",
+    origin: "notification",
+    kind: "child_hold",
+    child_instance_id: "child-1",
+    child_session_path: "/tmp/child",
+    description: "worker",
+    status: "held",
+    reason: "rate_limit",
+    until: "2030-01-02T03:04:05+00:00",
+    provider: "anthropic",
+    account: "secret-account",
+    retry_after: 1234,
+    text: "child child-1 is held by a provider rate limit on secret-account until 2030-01-02T03:04:05+00:00.",
+  };
+  const live = fromZetaEvent({ event: "child_hold", session_id: "parent", data });
+  const history = fromZetaHistory([{ id: "hold-1", role: "system", content: [{ type: "text", text: data.text }], tool_result: null, notification: data }]);
+  expect(live).toEqual(history);
+  const liveStore = createRunStore((flush) => flush());
+  const historyStore = createRunStore((flush) => flush());
+  for (const event of live) liveStore.dispatch(event);
+  for (const event of history) historyStore.dispatch(event);
+  expect(liveStore.getState()).toEqual(historyStore.getState());
+  const item = liveStore.getItem(liveStore.getOutline()[0]!.id);
+  const readableDeadline = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.until));
+  expect(item).toMatchObject({ event: { type: "notification", data: { kind: "child_hold", text: `child worker waits for a provider rate limit until ${readableDeadline}` } } });
+  expect(JSON.stringify(item)).not.toContain("secret-account");
+});
+
+test("child hold copy omits missing or invalid deadlines", () => {
+  for (const until of [undefined, "not-a-date"]) {
+    const [event] = fromZetaEvent({ event: "child_hold", data: { kind: "child_hold", description: "worker", reason: "subscription_limit", ...(until === undefined ? {} : { until }) } });
+    expect(event).toMatchObject({ type: "notification", data: { text: "child worker waits for a subscription limit" } });
+    expect((event as { type: "notification"; data: Record<string, unknown> }).data.text).not.toContain("Invalid Date");
+  }
+});
+
+test("legacy child hold receipts remain notifications", () => {
+  expect(fromZetaEvent({ event: "sub_agent_receipt", data: { ...{ kind: "child_hold", notification_id: "hold-1" }, description: "worker", reason: "rate_limit", until: "2030-01-02T03:04:05+00:00", text: "held" } })[0]).toMatchObject({ type: "notification", data: { kind: "child_hold" } });
 });
 
 test("one invalid row becomes an error and the rest still map", () => {
@@ -215,18 +357,20 @@ test("a drop the user's stop caused stays not delivered, even when the same text
     .toEqual([{ text: "cancel this", status: "dropped" }, { text: "cancel this", status: undefined }]);
 });
 
-test("a legacy dropped row without a reason keeps its compact status row", () => {
-  expect(historyUsers([dropRow("id-2", "steer dropped")])).toEqual({ users: [], notices: 1 });
+test("a legacy dropped row without a reason becomes a text-omitted user row", () => {
+  expect(historyUsers([dropRow("id-2", "steer dropped")])).toEqual({ users: [{ text: "", status: "dropped" }], notices: 0 });
 });
 
-test("legacy dropped-steer history keeps its compact status row without inventing text", async () => {
+test("legacy dropped-steer history becomes a text-omitted user row without exposing raw text", async () => {
   const fixture = await Bun.file(new URL("./fixtures/history-steer-delivery.json", import.meta.url)).json();
   const store = createRunStore((flush) => flush());
   for (const event of fromZetaHistory(fixture.dropped.historyRows)) store.dispatch(event);
-  const notices = store.getOutline().filter((item) => item.kind === "notification").map(({ id }) => store.getItem(id));
-  expect(notices).toHaveLength(1);
-  expect(notices[0]).toMatchObject({ event: { data: { type: "delivery_status", status: "dropped", content: "steer dropped: abort", reason: "abort" } } });
-  expect(store.getOutline().map(({ id }) => store.getItem(id)).some((item) => item?.type === "user" && item.event.type === "user_message" && item.event.delivery_id === "dropped-steer")).toBe(false);
+  expect(store.getOutline().filter((item) => item.kind === "notification")).toHaveLength(0);
+  expect(store.getItem("user:delivery:dropped-steer")).toMatchObject({
+    type: "user",
+    event: { text: "", text_omitted: true, delivery_status: "dropped", delivery_reason: "abort" },
+  });
+  expect(JSON.stringify(store.getOutline().map(({ id }) => store.getItem(id)))).not.toContain("steer dropped");
 });
 
 test("real delivered-steer history joins its user row without an extra status row", async () => {

@@ -1,4 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { createRunStore, type OutlineSnapshot, type RunEvent, type RunStore, type StoreDiagnostics } from "../src/index.js";
 import { seededRandom } from "./fuzz.js";
 
@@ -269,6 +271,21 @@ test("history windows reject prepends after releasing their accepted events", ()
 
   expect(store.getState().agent).toBe("idle");
   expect(() => store.prepend([])).toThrow("prepend requires an open history window");
+});
+
+test("prepend joins an older message to its newer dropped status", () => {
+  const store = createRunStore((flush) => flush());
+  store.beginHistory();
+  store.dispatch({ type: "delivery_status", delivery_id: "d", method: "steer", status: "dropped", content: "steer dropped: turn_end", reason: "turn_end" });
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:d", kind: "user" }]);
+  expect(store.getItem("user:delivery:d")).toMatchObject({ event: { text: "", text_omitted: true } });
+
+  store.prepend([{ type: "user_message", text: "keep going", mode: "steer", delivery_id: "d" }]);
+
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:d", kind: "user" }]);
+  expect(store.getItem("user:delivery:d")).toMatchObject({
+    event: { text: "keep going", delivery_status: "dropped", delivery_reason: "turn_end" },
+  });
 });
 
 test("prepend composes a message stream split across the page seam", () => {
@@ -580,15 +597,14 @@ test("read methods never throw a listener error, inside or after a failing pass"
 
 test("later listener errors go to console.error where reportError does not exist", () => {
   const store = createRunStore((job) => job());
-  const saved = Object.getOwnPropertyDescriptor(globalThis, "reportError");
+  const restoreReportError = shimProperty(globalThis, "reportError");
   const logged = spyOn(console, "error").mockImplementation(() => {});
-  delete (globalThis as { reportError?: unknown }).reportError;
   try {
     for (const name of ["first", "second"]) store.subscribe(() => { throw new Error(name); });
     expect(() => store.dispatch(commit("a"))).toThrow("first");
     expect(logged.mock.calls.map(([error]) => (error as Error).message)).toEqual(["second"]);
   } finally {
-    if (saved) Object.defineProperty(globalThis, "reportError", saved);
+    restoreReportError();
     logged.mockRestore();
   }
 });
@@ -756,10 +772,9 @@ const throwingSinks = [
   {
     sink: "console.error",
     install: () => {
-      const saved = Object.getOwnPropertyDescriptor(globalThis, "reportError")!;
-      delete (globalThis as { reportError?: unknown }).reportError;
+      const restoreReportError = shimProperty(globalThis, "reportError");
       const spy = spyOn(console, "error").mockImplementation(() => { throw new Error("sink"); });
-      return { mockRestore: () => { spy.mockRestore(); Object.defineProperty(globalThis, "reportError", saved); } };
+      return { mockRestore: () => { spy.mockRestore(); restoreReportError(); } };
     },
   },
 ];

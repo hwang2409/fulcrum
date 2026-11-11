@@ -90,6 +90,55 @@ test("all event paths replay through the store", () => {
   expect(store.getState().agent).toBe("idle");
 });
 
+test("a dropped delivery without a message becomes one text-omitted user row", () => {
+  const store = replay([{
+    type: "delivery_status",
+    delivery_id: "dropped-steer",
+    method: "steer",
+    status: "dropped",
+    content: "steer dropped: turn_end",
+    reason: "turn_end",
+  }]);
+
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:dropped-steer", kind: "user" }]);
+  expect(store.getItem("user:delivery:dropped-steer")).toEqual({
+    id: "user:delivery:dropped-steer",
+    type: "user",
+    event: {
+      type: "user_message",
+      text: "",
+      text_omitted: true,
+      mode: "steer",
+      delivery_id: "dropped-steer",
+      delivery_status: "dropped",
+      delivery_reason: "turn_end",
+    },
+  });
+});
+
+test("a dropped status followed by its echo fills the same row and keeps the drop", () => {
+  const store = replay([
+    { type: "delivery_status", delivery_id: "d", method: "steer", status: "dropped", content: "steer dropped: turn_end", reason: "turn_end" },
+    { type: "user_message", text: "keep going", mode: "steer", delivery_id: "d" },
+  ]);
+
+  expect(store.getOutline()).toEqual([{ id: "user:delivery:d", kind: "user" }]);
+  expect(store.getItem("user:delivery:d")).toMatchObject({
+    event: { text: "keep going", delivery_status: "dropped", delivery_reason: "turn_end" },
+  });
+  expect((store.getItem("user:delivery:d") as { event: { text_omitted?: true } }).event.text_omitted).toBeUndefined();
+});
+
+test("a message without a delivery id never fills a text-omitted delivery row", () => {
+  const store = replay([
+    { type: "delivery_status", delivery_id: "d", method: "steer", status: "dropped", content: "steer dropped: turn_end", reason: "turn_end" },
+    { type: "user_message", text: "same words are not identity", mode: "steer" },
+  ]);
+
+  expect(store.getOutline().filter(({ kind }) => kind === "user")).toHaveLength(2);
+  expect(store.getItem("user:delivery:d")).toMatchObject({ event: { text: "", text_omitted: true } });
+});
+
 test("run end outcome is retained for the finished run and cleared by its next start", () => {
   const store = replay([
     { type: "run_start" },

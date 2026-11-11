@@ -4,17 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type ViteDevServer } from "vite";
 import { zetaDiscoveryPlugin } from "@fulcrum/zeta/discovery";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
 
 let server: ViteDevServer;
 let base: string;
-let previousHome: string | undefined;
+let restoreHome: (() => void) | undefined;
 
 beforeAll(async () => {
   const home = await mkdtemp(join(tmpdir(), "fulcrum-zeta-home-"));
   await mkdir(join(home, "run"));
   await writeFile(join(home, "run", "serve.ws.json"), JSON.stringify({ port: 8765, controller_token: "controller", observer_token: "observer" }));
-  previousHome = process.env.ZETA_HOME;
-  process.env.ZETA_HOME = home;
+  restoreHome = shimProperty(process.env, "ZETA_HOME", {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: home,
+  });
   server = await createServer({ configFile: false, plugins: [zetaDiscoveryPlugin()], server: { port: 0, cors: false } });
   await server.listen();
   const address = server.httpServer!.address();
@@ -24,9 +29,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await server.close();
-  if (previousHome === undefined) delete process.env.ZETA_HOME;
-  else process.env.ZETA_HOME = previousHome;
+  restoreHome?.();
 });
+domShimAlarm(import.meta.path);
 
 const request = (headers: Record<string, string> = {}) => fetch(`${base}/__fulcrum/zeta`, { headers });
 const sameOrigin = () => ({ "Sec-Fetch-Site": "same-origin", Origin: base });

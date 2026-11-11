@@ -1,4 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { connect, webSocketTransport, type Transport } from "../src/index.js";
 
 class FakeWebSocket {
@@ -29,15 +31,17 @@ class FakeWebSocket {
   }
 }
 
-const OriginalWebSocket = globalThis.WebSocket;
+let restoreWebSocket: (() => void) | undefined;
+const useFakeWebSocket = () => { restoreWebSocket = shimGlobal("WebSocket", FakeWebSocket as unknown as typeof WebSocket); };
 
 afterEach(() => {
-  globalThis.WebSocket = OriginalWebSocket;
+  restoreWebSocket?.();
+  restoreWebSocket = undefined;
   FakeWebSocket.instances = [];
 });
 
 test("does not send before open", async () => {
-  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  useFakeWebSocket();
   const connecting = webSocketTransport("ws://test");
   const socket = FakeWebSocket.instances[0];
 
@@ -49,7 +53,7 @@ test("does not send before open", async () => {
 });
 
 test("error before open rejects", async () => {
-  globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  useFakeWebSocket();
   const connecting = webSocketTransport("ws://test");
   FakeWebSocket.instances[0].emit("error");
 

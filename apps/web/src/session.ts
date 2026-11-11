@@ -54,7 +54,7 @@ export async function listSessions(client: ZetaClient, offset = 0): Promise<{ se
 export const getStatus = (client: ZetaClient, signal?: AbortSignal) => client.request("status", {}, { timeoutMs: 15_000, signal }) as Promise<ServerStatus>;
 
 export type OpenProgress = (messages: number, complete: boolean) => void;
-export type OpenResult = { lease: SessionLease; syncing: boolean; complete: Promise<{ lease?: SessionLease; syncing: boolean; incomplete?: boolean }> };
+export type OpenResult = { id: string; lease: SessionLease; syncing: boolean; complete: Promise<{ lease?: SessionLease; syncing: boolean; incomplete?: boolean }> };
 
 type HistoryPage = { messages?: unknown[]; next_offset?: number | null };
 type BackwardHistoryPage = { messages?: unknown[]; next_before?: number | null; history_validator?: HistoryValidator };
@@ -108,11 +108,11 @@ const staleHistorySnapshot = (error: unknown) => {
 async function openBackwardSession(
   client: ZetaClient,
   id: string,
-  progress?: OpenProgress,
-  signal?: AbortSignal,
-  knownStatus?: ServerStatus,
+  progress: OpenProgress | undefined,
+  signal: AbortSignal | undefined,
+  initialStatus: ServerStatus,
   /** Read at each idle snapshot: the session's next run start can clear it while the open is in flight. */
-  endOutcome: EndOutcome = () => undefined,
+  endOutcome: EndOutcome,
 ): Promise<OpenResult> {
   const approvalReconnect = client.features.includes("approval_reconnect");
   let historyRows: readonly unknown[] = [];
@@ -121,7 +121,6 @@ async function openBackwardSession(
   let newestBoundary = 0;
   let newestReplaced = false;
   let validator!: HistoryValidator;
-  let initialStatus!: ServerStatus;
   let activeSignal!: AbortSignal;
   let lease!: SessionLease;
   let initialEvents: RunEvent[] = [];
@@ -206,12 +205,6 @@ async function openBackwardSession(
       return snapshotEvents(id, rows(), await getStatus(client, activeSignal), true, approvalReconnect, outcome);
     }
     firstLoad = false;
-    const before = knownStatus ?? await getStatus(client, activeSignal);
-    if (before.session?.session_id === id) initialStatus = before;
-    else {
-      const resumed = await client.request("resume", { session_id: id }, { timeoutMs: 30_000, signal: activeSignal }) as { session?: SessionMeta };
-      initialStatus = { session: resumed.session ?? null, state: "idle", pending_approvals: [] };
-    }
     const { snapshot } = await startBackwardHistory(true);
     initialEvents = snapshotEvents(id, rows(), initialStatus, snapshot.complete, approvalReconnect, outcome);
     return initialEvents;
@@ -242,25 +235,22 @@ async function openBackwardSession(
       status = await waitUntilIdle(status);
     }
   })().finally(() => lease.store.endHistory());
-  return { lease, syncing: initialStatus.state !== "idle", complete };
+  return { id, lease, syncing: initialStatus.state !== "idle", complete };
 }
 
 /** Opens the first history page immediately, then one coordinator owns paging and the replay join. */
-export async function openSession(
+async function openForwardSession(
   client: ZetaClient,
   id: string,
-  progress?: OpenProgress,
-  signal?: AbortSignal,
-  knownStatus?: ServerStatus,
+  progress: OpenProgress | undefined,
+  signal: AbortSignal | undefined,
+  initialStatus: ServerStatus,
   /** Read at each idle snapshot: the session's next run start can clear it while the open is in flight. */
-  endOutcome: EndOutcome = () => undefined,
+  endOutcome: EndOutcome,
 ): Promise<OpenResult> {
-  if (client.features.includes("session_replay_seq")) throw new Error("session_replay_seq needs the sequence replay coordinator");
-  if (client.features.includes("session_history_backward")) return openBackwardSession(client, id, progress, signal, knownStatus, endOutcome);
   const approvalReconnect = client.features.includes("approval_reconnect");
   let pages: LoadedPage[] = [];
   let incomplete = false;
-  let initialStatus!: ServerStatus;
   let activeSignal!: AbortSignal;
   const combinedSignal = (replaySignal: AbortSignal) => signal ? AbortSignal.any([signal, replaySignal]) : replaySignal;
   const historyPage = async (offset: number, loadSignal: AbortSignal): Promise<LoadedPage> => {
@@ -338,12 +328,6 @@ export async function openSession(
       return snapshotEvents(id, allRows(), await getStatus(client, activeSignal), true, approvalReconnect, outcome);
     }
     firstLoad = false;
-    const before = knownStatus ?? await getStatus(client, activeSignal);
-    if (before.session?.session_id === id) initialStatus = before;
-    else {
-      const resumed = await client.request("resume", { session_id: id }, { timeoutMs: 30_000, signal: activeSignal }) as { session?: SessionMeta };
-      initialStatus = { session: resumed.session ?? null, state: "idle", pending_approvals: [] };
-    }
     pages = [await historyPage(0, activeSignal)];
     progress?.(allRows().length, pages[0]!.nextOffset === null);
     return snapshotEvents(id, allRows(), initialStatus, pages[0]!.nextOffset === null, approvalReconnect, outcome);
@@ -386,13 +370,66 @@ export async function openSession(
       throw error;
     }
   })();
-  return { lease, syncing: initialStatus.state !== "idle", complete };
+  return { id, lease, syncing: initialStatus.state !== "idle", complete };
+}
+
+type EndOutcomeFactory = (id: string) => EndOutcome;
+type ResumeFailure =
+  | { kind: "ambiguous"; requested: string; candidates: string[] }
+  | { kind: "not_found"; requested: string }
+  | { kind: "other"; requested: string; error: unknown };
+
+const resumeFailure = (requested: string, error: unknown): ResumeFailure => {
+  const rpc = error as { data?: { code?: unknown; session_id?: unknown; candidates?: unknown } } | null;
+  const failedId = typeof rpc?.data?.session_id === "string" ? rpc.data.session_id : requested;
+  if (rpc?.data?.code === "session_id_ambiguous") {
+    const raw = Array.isArray(rpc.data.candidates) ? rpc.data.candidates.filter((candidate): candidate is string => typeof candidate === "string").slice(0, 8) : [];
+    const candidates = [...new Set(raw)];
+    if (candidates.length !== raw.length || candidates.some((candidate) => candidate === failedId || !candidate.startsWith(failedId))) return { kind: "ambiguous", requested: failedId, candidates: [] };
+    return { kind: "ambiguous", requested: failedId, candidates };
+  }
+  if (rpc?.data?.code === "session_not_found") return { kind: "not_found", requested: failedId };
+  return { kind: "other", requested, error };
+};
+
+/** The only resume owner: it canonicalizes successful ids and preserves structured failures for every caller. */
+async function resumeSession(client: ZetaClient, requested: string, signal?: AbortSignal): Promise<{ id: string; session: SessionMeta | null }> {
+  try {
+    const resumed = await client.request("resume", { session_id: requested }, { timeoutMs: 30_000, signal }) as { session?: SessionMeta };
+    return { id: resumed.session?.session_id ?? requested, session: resumed.session ?? null };
+  } catch (error) {
+    throw resumeFailure(requested, error);
+  }
+}
+
+/** Attaches first so every replay, history request, and local run key uses zeta's canonical session id. */
+export async function openSession(
+  client: ZetaClient,
+  requestedId: string,
+  progress?: OpenProgress,
+  signal?: AbortSignal,
+  knownStatus?: ServerStatus,
+  endOutcome: EndOutcomeFactory = () => () => undefined,
+): Promise<OpenResult> {
+  if (client.features.includes("session_replay_seq")) throw new Error("session_replay_seq needs the sequence replay coordinator");
+  const before = knownStatus ?? await getStatus(client, signal);
+  let id = requestedId;
+  let status = before;
+  if (before.session?.session_id !== requestedId) {
+    const resumed = await resumeSession(client, requestedId, signal);
+    id = resumed.id;
+    status = before.session?.session_id === id ? before : { session: resumed.session, state: "idle", pending_approvals: [] };
+  }
+  const outcome = endOutcome(id);
+  return client.features.includes("session_history_backward")
+    ? openBackwardSession(client, id, progress, signal, status, outcome)
+    : openForwardSession(client, id, progress, signal, status, outcome);
 }
 
 export const isBusyError = (error: unknown) => (error as { code?: unknown } | null)?.code === -32004;
 
 export type OpenRun = { id: string; lease: SessionLease; stale: boolean; history: { messages: number; complete: boolean; incomplete?: boolean }; syncing: boolean };
-export type OpenFailure = { id: string; message: string; busy: boolean; restored?: boolean };
+export type OpenFailure = { id: string; message: string; busy: boolean; candidates?: string[]; restored?: boolean };
 export type SessionTransition =
   | { kind: "idle"; selected: string | null }
   | { kind: "opening"; to: string; messages: number }
@@ -465,6 +502,19 @@ export type SessionsState = {
 type Source = { readonly client: ZetaClient | null; readonly state: { readonly phase: string }; subscribe(listener: () => void): () => void };
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const isResumeFailure = (error: unknown): error is ResumeFailure => {
+  const kind = (error as { kind?: unknown } | null)?.kind;
+  return kind === "ambiguous" || kind === "not_found" || kind === "other";
+};
+const openFailure = (id: string, error: unknown, restored = false): OpenFailure => {
+  const suffix = restored ? { restored: true as const } : {};
+  if (isResumeFailure(error)) {
+    if (error.kind === "ambiguous") return { id: error.requested, message: `more than one session matches “${error.requested}”. ${error.candidates.length ? "choose a full session id:" : "type a longer session id."}`, busy: false, ...(error.candidates.length ? { candidates: error.candidates } : {}), ...suffix };
+    if (error.kind === "not_found") return { id: error.requested, message: `session “${error.requested}” was not found.`, busy: false, ...suffix };
+    return { id: error.requested, message: message(error.error), busy: isBusyError(error.error), ...suffix };
+  }
+  return { id, message: message(error), busy: isBusyError(error), ...suffix };
+};
 
 /**
  * Session list and selection over a connection. On every connect it reloads the list and reopens the selected
@@ -581,13 +631,14 @@ export function createSessions(connection: Source, { selected = null, onSelect }
         history = { messages, complete };
         if (mine !== openGeneration) return;
         transition({ type: "progress", id, messages });
-      }, abort.signal, knownStatus, endOutcome(id));
+      }, abort.signal, knownStatus, endOutcome);
       if (!state.listLoading && !state.listReady) void refresh();
-      const { lease } = opened;
-      if (knownStatus && knownStatus.state !== "idle" && interruptedTurns.delete(id)) lease.store.dispatch({ type: "run_start" });
+      const { id: canonicalId, lease } = opened;
+      if (knownStatus && knownStatus.state !== "idle" && interruptedTurns.delete(canonicalId)) lease.store.dispatch({ type: "run_start" });
       if (mine !== openGeneration || !live(target)) return lease.release();
+      if (canonicalId !== id) onSelect?.(canonicalId);
       previous?.lease.release();
-      transition({ type: "opened", run: { id, lease, stale: false, history, syncing: opened.syncing } });
+      transition({ type: "opened", run: { id: canonicalId, lease, stale: false, history, syncing: opened.syncing } });
       void opened.complete.then((result) => {
         if (mine !== openGeneration || !live(target)) return result.lease?.release();
         let completedLease = lease;
@@ -595,31 +646,40 @@ export function createSessions(connection: Source, { selected = null, onSelect }
           const run = transitionRun(state.transition);
           run?.lease.release();
           completedLease = result.lease;
-          transition({ type: "updated", run: { id, lease: result.lease, stale: false, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
+          transition({ type: "updated", run: { id: canonicalId, lease: result.lease, stale: false, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
         } else {
           const run = transitionRun(state.transition);
-          if (run?.id === id) {
+          if (run?.id === canonicalId) {
             completedLease = run.lease;
             transition({ type: "updated", run: { ...run, history: { ...history, complete: true, ...(result.incomplete ? { incomplete: true } : {}) }, syncing: result.syncing } });
           }
         }
-        watchOutcome(id, completedLease);
+        watchOutcome(canonicalId, completedLease);
       }).catch((error) => {
         if (mine === openGeneration && live(target) && (error as { name?: string }).name !== "AbortError")
-          transition({ type: "failed", id, error: { id, message: message(error), busy: isBusyError(error) } });
+          transition({ type: "failed", id: canonicalId, error: openFailure(canonicalId, error) });
       });
     } catch (error) {
       if (mine !== openGeneration || !live(target)) return;
-      let restored = false;
+      let restoredId: string | null = null;
+      let restoreError: unknown;
       if (previousId) {
         try {
-          await target.request("resume", { session_id: previousId }, { timeoutMs: 30_000 });
-          restored = true;
-        } catch { /* keep the retained run read-only with an explicit reopen action */ }
+          restoredId = (await resumeSession(target, previousId, abort.signal)).id;
+        } catch (failure) {
+          restoreError = failure;
+        }
       }
       if (mine !== openGeneration || !live(target)) return;
-      if (restored && previousId) onSelect?.(previousId);
-      transition({ type: "failed", id, error: { id, message: message(error), busy: isBusyError(error), ...(restored ? { restored: true } : {}) } });
+      if (restoreError) {
+        transition({ type: "failed", id: previousId!, error: openFailure(previousId!, restoreError) });
+        return;
+      }
+      if (restoredId) {
+        onSelect?.(restoredId);
+        if (previous && previous.id !== restoredId) transition({ type: "updated", run: { ...previous, id: restoredId } });
+      }
+      transition({ type: "failed", id, error: openFailure(id, error, restoredId !== null) });
     }
   };
 
@@ -665,7 +725,7 @@ export function createSessions(connection: Source, { selected = null, onSelect }
     } catch (error) {
       if (!live(target)) return;
       const id = transitionSelected(state.transition) ?? "";
-      transition({ type: "failed", id, error: { id, message: message(error), busy: isBusyError(error) } });
+      transition({ type: "failed", id, error: openFailure(id, error) });
     }
   };
   const connect = (target: ZetaClient) => {
@@ -691,6 +751,11 @@ export function createSessions(connection: Source, { selected = null, onSelect }
       createAbort?.abort();
       const run = transitionRun(state.transition);
       if (id === transitionSelected(state.transition) && ((state.transition.kind === "opening" || state.transition.kind === "replacing") || (run?.id === id && !run.stale))) return;
+      onSelect?.(id);
+      void open(id);
+    },
+    retry(id: string) {
+      createAbort?.abort();
       onSelect?.(id);
       void open(id);
     },

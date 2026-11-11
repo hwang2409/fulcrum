@@ -224,10 +224,12 @@ function sourceDeclarations(file: string, text: string): Declaration[] {
 }
 const declarations = [...SHEETS.flatMap((file) => cssDeclarations(file, readFileSync(new URL(file, ROOT), "utf8"))), ...SOURCES.flatMap((file) => sourceDeclarations(file, readFileSync(new URL(file, ROOT), "utf8")))];
 // A custom property is a status tone when any value it is ever set to reaches ok, warn, or danger, through any chain of
-// aliases (--fulcrum-error: var(--fulcrum-danger), --mark: var(--fulcrum-error), ...). shortcut: one global set, not
-// per-element cascade, so a property set to a status tone anywhere is a tone everywhere; that only errs strict.
-function statusCarriers(decls: { property: string; value: string }[]) {
+// aliases (--fulcrum-error: var(--fulcrum-danger), --mark: var(--fulcrum-error), ...), or when a state/urgency selector
+// assigns it. shortcut: one global set, not per-element cascade, so a property used for status anywhere is a tone
+// everywhere; that only errs strict.
+function statusCarriers(decls: { selector: string; property: string; value: string }[]) {
   const tones = new Set(["--fulcrum-ok", "--fulcrum-warn", "--fulcrum-danger"]);
+  for (const { selector, property } of decls) if (property.startsWith("--") && /\[data-(?:state|urgency)(?:[=\]])/.test(selector)) tones.add(property);
   for (let grew = true; grew; ) {
     grew = false;
     for (const { property, value } of decls) {
@@ -237,7 +239,7 @@ function statusCarriers(decls: { property: string; value: string }[]) {
   }
   return tones;
 }
-const toneSet = (decls: { property: string; value: string }[]) => {
+const toneSet = (decls: { selector: string; property: string; value: string }[]) => {
   const tones = statusCarriers(decls);
   return (value: string) => [...value.matchAll(/var\(\s*(--[\w-]+)/g)].some(([, name]) => tones.has(name!));
 };
@@ -264,6 +266,8 @@ test("the status text scan catches aliases, chains, text fill, and inline styles
     .chain { color: color-mix(in srgb, var(--b) 80%, black); }
     .fill { -webkit-text-fill-color: var(--fulcrum-ok); }
     text { fill: var(--b); }
+    [data-part="sub-agent"][data-state="idle"] { --state: var(--fulcrum-ui-type); }
+    [data-part="sub-agent-status"] { color: var(--state); }
     .fine { color: var(--calm); border-color: var(--fulcrum-error); }`);
   const source = sourceDeclarations("plant.tsx", `
     const a = <p style={{ color: "var(--fulcrum-danger)" }} />;
@@ -272,7 +276,7 @@ test("the status text scan catches aliases, chains, text fill, and inline styles
     node.style.setProperty("color", "var(--fulcrum-error)");
     const css = \`.x { color: var(--b); }\`;
     const fine = <p style={{ color: "var(--fulcrum-fg)", borderColor: "var(--fulcrum-danger)" }} />;`);
-  expect(textProblems([...sheet, ...source]).map((problem) => problem.split(" ")[0]).sort()).toEqual(["plant.css:3", "plant.css:4", "plant.css:5", "plant.css:6", "plant.tsx:2", "plant.tsx:3", "plant.tsx:4", "plant.tsx:5", "plant.tsx:6"]);
+  expect(textProblems([...sheet, ...source]).map((problem) => problem.split(" ")[0]).sort()).toEqual(["plant.css:3", "plant.css:4", "plant.css:5", "plant.css:6", "plant.css:8", "plant.tsx:2", "plant.tsx:3", "plant.tsx:4", "plant.tsx:5", "plant.tsx:6"]);
 });
 
 // A status square sits on bg, surface, or a tint. Its 1 px bg ring makes bg the color next to it everywhere, which is

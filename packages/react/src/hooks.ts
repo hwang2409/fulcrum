@@ -11,23 +11,13 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { createRunStore, LazyContentBlock, RunItem, RunState } from "@fulcrum/core";
+import type { LazyContentBlock, RunItem, RunState } from "@fulcrum/core";
 import type { Highlight } from "@fulcrum/highlight";
 import { HighlightContext } from "./highlight.js";
 import { createMediaStore, type LoadMedia, type MediaLease, type MediaState, type MediaStore } from "./media-store.js";
+import { StoreContext, type RunStore } from "./run-store-context.js";
 export type { LoadMedia } from "./media-store.js";
-
-export type RunStore = Pick<
-  ReturnType<typeof createRunStore>,
-  | "getState"
-  | "getItem"
-  | "getOutline"
-  | "getOutlineSnapshot"
-  | "subscribe"
-  | "subscribeOutline"
-> & Partial<Pick<ReturnType<typeof createRunStore>, "getDiagnostics" | "subscribeDiagnostics">>;
-
-const StoreContext = createContext<RunStore | null>(null);
+export type { RunStore } from "./run-store-context.js";
 const RetryContext = createContext<(() => void) | undefined>(undefined);
 const MediaContext = createContext<MediaStore | undefined>(undefined);
 
@@ -79,6 +69,7 @@ export const useRunStore = () => {
 
 const syncedDiagnostics = { ignoredEvents: 0, sanitizedFields: 0, desynced: false } as const;
 const noSubscription = () => () => {};
+
 export const useRunDiagnostics = () => {
   const store = useRunStore();
   const available = store.subscribeDiagnostics && store.getDiagnostics;

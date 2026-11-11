@@ -3,6 +3,8 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { readdirSync, readFileSync } from "node:fs";
 import { act, Profiler, StrictMode, useState, type ComponentType, type ReactNode } from "react";
 import * as FulcrumReact from "../src/index.js";
@@ -12,6 +14,8 @@ import { Markdown } from "../../markdown/src/react.js";
 import {
   announcementForItem,
   Approval,
+  Composer,
+  Fallback,
   Message,
   RunProvider,
   Timeline,
@@ -81,10 +85,12 @@ function setup(events: RunEvent[]) {
 
 let root: Root | undefined;
 let container: HTMLElement;
+const restoreShims: Array<() => void> = [];
 afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
+  restoreShims.splice(0).reverse().forEach((restore) => restore());
 });
 function mount(node: ReactNode) {
   container = document.createElement("div");
@@ -206,6 +212,132 @@ test("Message can opt user messages into markdown", () => {
   expect(q('[data-part="md-strong"]').textContent).toBe("strong");
 });
 
+test("a markdown failure falls back to that message and retries changed content", () => {
+  const reports: unknown[][] = [];
+  restoreShims.push(shimProperty(console, "error", { configurable: true, value: (...args: unknown[]) => reports.push(args) }));
+  const BrokenMarkdown: ComponentType<{ source: string }> = ({ source }) => {
+    if (source === "broken **markdown**") throw new Error("parser failed");
+    return <strong data-part="test-markdown">{source}</strong>;
+  };
+  const { store, send } = setup([
+    { type: "message_commit", message_id: "before", message: message("before") },
+    { type: "message_commit", message_id: "broken", message: message("broken **markdown**") },
+    { type: "message_commit", message_id: "after", message: message("after") },
+  ]);
+  try {
+    mount(<RunProvider store={store}><Timeline virtual={false} renderers={{ message: ({ id }) => <Message id={id} markdown={BrokenMarkdown} /> }} /></RunProvider>);
+  } catch {}
+
+  expect([...container.querySelectorAll('[data-part="message"]')].map((row) => row.textContent)).toEqual(["before", "broken **markdown**", "after"]);
+  expect(q('[data-id="message:broken"] [data-markdown-fallback]').textContent).toBe("broken **markdown**");
+  expect(reports.filter(([message]) => message === "Markdown could not render message:broken.")).toHaveLength(1);
+
+  send({ type: "message_commit", message_id: "broken", message: message("fixed **markdown**") });
+  expect(q('[data-id="message:broken"] [data-part="test-markdown"]').textContent).toBe("fixed **markdown**");
+  expect(container.querySelector('[data-id="message:broken"] [data-markdown-fallback]')).toBeNull();
+});
+
+test("a failing non-virtual row keeps its siblings and composer mounted", () => {
+  restoreShims.push(shimProperty(console, "error", { configurable: true, value: () => {} }));
+  const BrokenRow = ({ id }: { id: string }) => {
+    if (id === "message:broken") throw new Error("row failed");
+    return <Message id={id} />;
+  };
+  const { store } = setup([
+    { type: "message_commit", message_id: "before", message: message("before") },
+    { type: "message_commit", message_id: "broken", message: message("broken") },
+    { type: "message_commit", message_id: "after", message: message("after") },
+  ]);
+  try {
+    mount(<RunProvider store={store}><Timeline virtual={false} renderers={{ message: BrokenRow }} /><Composer state="idle" onSubmit={() => {}} /></RunProvider>);
+  } catch {}
+
+  expect([...container.querySelectorAll('[data-part="message"]')].map((row) => row.textContent)).toEqual(["before", "after"]);
+  expect(q('[data-row-error="message:broken"]').textContent).toBe("this item could not be shown · message:broken");
+  expect(q('[data-part="composer"]')).toBeTruthy();
+});
+
+test("a failed streaming row retries on the next immutable item update without moving focus", () => {
+  restoreShims.push(shimProperty(console, "error", { configurable: true, value: () => {} }));
+  let firstItem: RunItem | undefined;
+  let failedItem: RunItem | undefined;
+  const StreamingRow = ({ id }: { id: string }) => {
+    const item = useItem(id);
+    if (failedItem === undefined && firstItem !== undefined && item !== firstItem) failedItem = item;
+    if (item === failedItem) throw new Error("row failed");
+    return <Message id={id} />;
+  };
+  const { store, send } = setup([{ type: "message_delta", message_id: "stream", delta: "bro" }]);
+  firstItem = store.getItem("message:stream");
+  mount(<RunProvider store={store}><Timeline virtual={false} renderers={{ message: StreamingRow }} /><Composer state="idle" onSubmit={() => {}} /></RunProvider>);
+  const composer = q('[data-part="composer"] textarea');
+  act(() => composer.focus());
+
+  send({ type: "message_delta", message_id: "stream", delta: "ken" });
+  expect(q('[data-row-error="message:stream"]').getAttribute("role")).toBe("status");
+  expect(document.activeElement).toBe(composer);
+
+  send({ type: "message_delta", message_id: "stream", delta: " recovered" });
+  expect(q('[data-part="message"]').textContent).toBe("broken recovered");
+  expect(container.querySelector('[data-row-error="message:stream"]')).toBeNull();
+  expect(document.activeElement).toBe(composer);
+});
+
+test("a failing virtual row is measured, keeps its siblings, and retries when its item changes", () => {
+  const reports: unknown[][] = [];
+  restoreShims.push(shimProperty(console, "error", { configurable: true, value: (...args: unknown[]) => reports.push(args) }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") }));
+  const positions = new WeakMap<HTMLElement, number>();
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() { return positions.get(this as HTMLElement) ?? 0; },
+    set(value: number) { positions.set(this as HTMLElement, value); },
+  }));
+  const frames: FrameRequestCallback[] = [];
+  restoreShims.push(shimGlobal("requestAnimationFrame", ((callback: FrameRequestCallback) => (frames.push(callback), frames.length)) as typeof requestAnimationFrame));
+  restoreShims.push(shimGlobal("cancelAnimationFrame", (() => {}) as typeof cancelAnimationFrame));
+  const rowObservers: Array<{ callback: ResizeObserverCallback; element: Element }> = [];
+  class MeasuringResizeObserver implements ResizeObserver {
+    constructor(private callback: ResizeObserverCallback) {}
+    disconnect() {}
+    observe(element: Element) {
+      if (element instanceof HTMLElement && element.dataset.virtualId) rowObservers.push({ callback: this.callback, element });
+    }
+    unobserve() {}
+  }
+  restoreShims.push(shimGlobal("ResizeObserver", MeasuringResizeObserver));
+  const ThrowingRow = ({ id }: { id: string }) => {
+    const item = useItem(id);
+    if (item?.type === "message" && item.message.content[0]?.text === "broken") throw new Error("row failed");
+    return <Message id={id} />;
+  };
+  const { store, send } = setup([
+    { type: "message_commit", message_id: "before", message: message("before") },
+    { type: "message_commit", message_id: "broken", message: message("broken") },
+    { type: "message_commit", message_id: "after", message: message("after") },
+  ]);
+  try {
+    mount(<RunProvider store={store}><Timeline virtual renderers={{ message: ThrowingRow }} /></RunProvider>);
+  } catch {}
+
+  expect(q('[data-row-error="message:broken"]').textContent).toBe("this item could not be shown · message:broken");
+  expect(q('[data-virtual-id="message:before"] [data-part="message"]').textContent).toBe("before");
+  expect(q('[data-virtual-id="message:after"] [data-part="message"]').textContent).toBe("after");
+  const failedRow = q('[data-virtual-id="message:broken"]');
+  const observer = rowObservers.find(({ element }) => element === failedRow)!;
+  act(() => {
+    observer.callback([{ target: failedRow, borderBoxSize: [{ blockSize: 44 }] } as unknown as ResizeObserverEntry], {} as ResizeObserver);
+    while (frames.length) frames.shift()!(performance.now());
+  });
+  expect(Number.parseFloat(q('[data-part="timeline"]').style.height)).toBe(188);
+  expect(reports.filter(([message]) => message === "Timeline could not render message:broken.")).toHaveLength(1);
+
+  send({ type: "message_commit", message_id: "broken", message: message("recovered") });
+  expect(q('[data-virtual-id="message:broken"] [data-part="message"]').textContent).toBe("recovered");
+  expect(container.querySelector('[data-row-error="message:broken"]')).toBeNull();
+});
+
 test("a timeline row uses one keyed subscription and ignores output deltas", () => {
   const { store, send } = setup(Array.from({ length: 200 }, (_, index) => ({
     type: "message_commit" as const,
@@ -298,6 +430,63 @@ test("only the newest row streams the cursor: text that a tool row follows stops
   expect(latest()).toEqual(["message:n"]);
 });
 
+test("a notification or an unknown event that lands mid-stream never takes the cursor from the streaming message", () => {
+  const { store, send: more } = setup([{ type: "message_delta", message_id: "m", delta: "Reading the files now" }]);
+  const commits: Record<string, number> = {};
+  const renderers: Renderers = { message: ({ id }) => <Profiler id={id} onRender={() => (commits[id] = (commits[id] ?? 0) + 1)}><Message id={id} /></Profiler> };
+  mount(<RunProvider store={store}><Timeline virtual={false} renderers={renderers} /></RunProvider>);
+  const before = commits["message:m"];
+  more({ type: "notification", notification_id: "bg-1", data: { message: "background task finished" } });
+  more({ type: "unknown", name: "some_future_event", data: {} });
+  expect(latest()).toEqual(["message:m"]);
+  // Neither passive row is the newest streamable row, so the message is not even told about them.
+  expect(commits["message:m"]).toBe(before);
+  more({ type: "message_delta", message_id: "m", delta: " and summarising" });
+  expect(latest()).toEqual(["message:m"]);
+  // The next thing the agent does (a tool) still takes it.
+  more({ type: "tool_start", tool_call: call("ls", "shell") });
+  expect(latest()).toEqual([]);
+});
+
+test("a pipe row the model already sent shows while a tool runs below its uncommitted message, and at the end", () => {
+  const { store, send: more } = setup([{ type: "message_delta", message_id: "m", delta: "Results:\n\n| a | b |\n" }]);
+  mount(<RunProvider store={store}><Timeline virtual={false} renderers={{ message: ({ id }) => <Message id={id} markdown={Markdown} /> }} /></RunProvider>);
+  const shown = () => q('[data-part="message"]').textContent;
+  // A stall on the row: it shows as sent, pipes kept.
+  expect(shown()).toContain("| a | b |");
+  // A tool starts before any commit: the message stays streaming above it, and the row still shows.
+  more({ type: "tool_start", tool_call: call("ls", "shell") });
+  expect(q('[data-part="message"]').dataset.state).toBe("streaming");
+  expect(shown()).toContain("| a | b |");
+  // The turn ends without a commit: the finished parse shows the lone row as text.
+  more({ type: "turn_end" });
+  expect(shown()).toContain("| a | b |");
+});
+
+for (const [name, end] of [
+  ["a commit", { type: "message_commit", message_id: "m", message: message("| a | b |") }],
+  ["turn_end", { type: "turn_end" }],
+] as const) {
+  test(`a message that ends on a lone pipe row (${name}) shows it`, () => {
+    const { store, send: more } = setup([{ type: "message_delta", message_id: "m", delta: "| a | b |" }]);
+    mount(<RunProvider store={store}><Message id="message:m" markdown={Markdown} /></RunProvider>);
+    expect(q('[data-part="message"]').textContent).toBe("| a | b |");
+    more(end as RunEvent);
+    expect(q('[data-part="message"]').dataset.state).not.toBe("streaming");
+    expect(q('[data-part="message"]').textContent).toBe("| a | b |");
+  });
+}
+
+test("Markdown that stops streaming on a pipe row shows it, raw or as the table its delimiter makes", () => {
+  mount(<Markdown source={"Results:\n\n| a | b |"} streaming />);
+  expect(container.textContent).toContain("| a | b |");
+  act(() => root!.render(<Markdown source={"Results:\n\n| a | b |"} />));
+  expect(container.textContent).toContain("| a | b |");
+  act(() => root!.render(<Markdown source={"Results:\n\n| a | b |\n| - | - |"} streaming />));
+  act(() => root!.render(<Markdown source={"Results:\n\n| a | b |\n| - | - |"} />));
+  expect([...container.querySelectorAll("th")].map((cell) => cell.textContent)).toEqual(["a", "b"]);
+});
+
 test("a streaming message outside a Timeline is the newest row", () => {
   const { store } = setup([{ type: "message_delta", message_id: "m", delta: "hello" }]);
   mount(<RunProvider store={store}><Message id="message:m" /></RunProvider>);
@@ -335,17 +524,14 @@ test("when a row appends, only the old and the new newest rows re-render", () =>
 });
 
 test("in virtual mode a row kept mounted for focus never takes the cursor from the newest row", () => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-  });
+  }));
   try {
     const { store, send } = setup([
       ...Array.from({ length: 300 }, (_, index): RunEvent => ({ type: "message_commit", message_id: String(index), message: message(String(index)) })),
@@ -373,10 +559,6 @@ test("in virtual mode a row kept mounted for focus never takes the cursor from t
     send({ type: "message_delta", message_id: "live", delta: " more" });
     expect(latest()).toEqual(["message:live"]);
   } finally {
-    for (const [name, descriptor] of [["clientHeight", clientHeight], ["scrollHeight", scrollHeight], ["scrollTop", scrollTop]] as const) {
-      if (descriptor) Object.defineProperty(HTMLElement.prototype, name, descriptor);
-      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[name];
-    }
   }
 });
 
@@ -593,7 +775,7 @@ test("a pending approval exposes adapter-supplied reconnect and resolving states
   expect(card.getAttribute("data-state")).toBe("reconnecting");
   expect(card.textContent).toContain("reconnecting…");
   expect(card.textContent).toContain("decisions are disabled while disconnected");
-  expect([...card.querySelectorAll("button")].every((button) => button.disabled)).toBe(true);
+  expect([...card.querySelectorAll("button")].every((button) => button.getAttribute("aria-disabled") === "true")).toBe(true);
 
   act(() => store.dispatch({
     type: "approval_request", request_id: "r1", delegated: false,
@@ -602,6 +784,35 @@ test("a pending approval exposes adapter-supplied reconnect and resolving states
   } as RunEvent));
   expect(card.getAttribute("data-state")).toBe("resolving");
   expect(card.textContent).toContain("resolving…");
+});
+
+test("an unavailable approval's actions stay in the tab order, are described by the visible reason, and do nothing", async () => {
+  const reason = "opening another session — decisions are paused";
+  const store = createRunStore((flush) => flush());
+  store.dispatch({ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false });
+  const calls: string[] = [];
+  const renderers: Renderers = { approval: ({ id }) => <Approval id={id} onApprove={() => void calls.push("approve")} onApproveAlways={() => void calls.push("always")} onDeny={() => void calls.push("deny")} disabledReason={reason} /> };
+  mount(<RunProvider store={store}><Timeline renderers={renderers} /></RunProvider>);
+  const buttons = [...container.querySelectorAll<HTMLButtonElement>('[data-part="approval-actions"] button')];
+  expect(buttons.map((button) => button.dataset.action)).toEqual(["approve", "approve-always", "deny"]);
+  for (const button of buttons) {
+    // A disabled button leaves the tab order, so a keyboard user never hears why it is unavailable.
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    const described = document.getElementById(button.getAttribute("aria-describedby") ?? "");
+    expect(described?.textContent).toBe(reason);
+    expect(described?.getAttribute("role")).toBe("status");
+    act(() => {
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+      button.click();
+    });
+  }
+  expect(calls).toEqual([]);
+  expect(container.querySelector('[data-part="approval"]')!.getAttribute("data-state")).toBe("pending");
+  // The skip link never lands on an action that cannot act: it focuses the row instead.
+  await act(async () => q('[data-part="jump-to-approval"]').click());
+  expect(document.activeElement).toBe(q('[data-part="approval"]'));
 });
 
 test("a reconnect keeps focus in the pending approval row", () => {
@@ -621,7 +832,7 @@ test("a reconnect keeps focus in the pending approval row", () => {
 
   expect(document.activeElement).toBe(card);
   expect(card.contains(document.activeElement)).toBe(true);
-  expect([...card.querySelectorAll('[data-part="approval-actions"] button')].every((button) => button.disabled)).toBe(true);
+  expect([...card.querySelectorAll('[data-part="approval-actions"] button')].every((button) => button.getAttribute("aria-disabled") === "true")).toBe(true);
   expect(card.textContent).toContain("decisions are disabled while disconnected");
 
   act(() => store.dispatch({ type: "approval_request", request_id: "r1", tool_call: call("t1", "bash"), delegated: false }));
@@ -762,7 +973,6 @@ test("the approve-always action takes the host's label and is disabled with the 
     state: "reconnecting", status: "reconnecting…", disabled_reason: "decisions are disabled while disconnected",
   } as RunEvent);
   const always = q('[data-action="approve-always"]') as HTMLButtonElement;
-  expect(always.disabled).toBe(true);
   expect(always.getAttribute("aria-disabled")).toBe("true");
   act(() => always.click());
   expect(calls).toEqual([]);
@@ -1009,6 +1219,48 @@ test("timeline selects virtual mode above 200 items and supports explicit modes"
 
 });
 
+test("throwing host render callbacks fall back without taking down their content", () => {
+  const reports: unknown[][] = [];
+  restoreShims.push(shimProperty(console, "error", { configurable: true, value: (...args: unknown[]) => reports.push(args) }));
+  const delivery = setup([{ type: "user_message", text: "kept message", mode: "normal" }]);
+  mount(
+    <RunProvider store={delivery.store}>
+      <Timeline virtual={false} renderers={{ user: ({ id }) => <Fallback id={id} renderDeliveryNote={() => { throw new Error("note failed"); }} /> }} />
+    </RunProvider>,
+  );
+  expect(container.textContent).toContain("kept message");
+  expect(container.querySelector("[data-row-error]")).toBeNull();
+  expect(reports.filter(([message]) => message === "renderDeliveryNote could not render.")).toHaveLength(1);
+  act(() => root!.unmount());
+  root = undefined;
+  container.remove();
+
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  const messages = setup(Array.from({ length: 10 }, (_, index): RunEvent => ({
+    type: "message_commit",
+    message_id: String(index),
+    message: message(String(index)),
+  })));
+  const scrollRef = { current: null as HTMLElement | null };
+  let jumpCalls = 0;
+  mount(
+    <div ref={scrollRef}>
+      <RunProvider store={messages.store}>
+        <Timeline
+          virtual
+          initialViewport={{ anchorId: "message:0", offset: 0, following: false }}
+          scrollRef={scrollRef}
+          renderJumpToLatest={() => { jumpCalls++; throw new Error("jump failed"); }}
+        />
+      </RunProvider>
+    </div>,
+  );
+  messages.send({ type: "message_commit", message_id: "new", message: message("new") });
+  expect(jumpCalls).toBe(1);
+  expect(q('[data-part="timeline"]')).toBeTruthy();
+  expect(reports.filter(([message]) => message === "renderJumpToLatest could not render.")).toHaveLength(1);
+});
+
 test("host-owned Timeline uses the supplied scroll element without replacing its ref", () => {
   const { store } = setup(Array.from({ length: 300 }, (_, index): RunEvent => ({
     type: "message_commit",
@@ -1100,15 +1352,10 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
 )))(
   "host transfer matrix: %s / %s / %s outline change",
   (transfer, interaction, outlineChange) => {
-    const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-    const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
-    const userAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent");
     const positions = new WeakMap<HTMLElement, number>();
     const listeners = new Map<EventTarget, Map<string, Set<EventListenerOrEventListenerObject>>>();
     const add = HTMLElement.prototype.addEventListener;
     const remove = HTMLElement.prototype.removeEventListener;
-    const OriginalResizeObserver = globalThis.ResizeObserver;
     let activeObservers = 0;
     class MatrixResizeObserver implements ResizeObserver {
       constructor(_callback: ResizeObserverCallback) { activeObservers++; }
@@ -1116,18 +1363,18 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
       observe() {}
       unobserve() {}
     }
-    Object.defineProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" });
-    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    restoreShims.push(shimProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", {
       configurable: true,
       get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"),
-    });
-    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    }));
+    restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
       configurable: true,
       get() { return positions.get(this as HTMLElement) ?? 0; },
       set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-    });
-    HTMLElement.prototype.addEventListener = function(type, listener, options) {
+    }));
+    const restoreAdd = shimProperty(HTMLElement.prototype, "addEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
       if (this.dataset.testid && listener) {
         const byType = listeners.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
         const entries = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
@@ -1136,12 +1383,12 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
         listeners.set(this, byType);
       }
       add.call(this, type, listener, options);
-    };
-    HTMLElement.prototype.removeEventListener = function(type, listener, options) {
+    } });
+    const restoreRemove = shimProperty(HTMLElement.prototype, "removeEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
       if (listener) listeners.get(this)?.get(type)?.delete(listener);
       remove.call(this, type, listener, options);
-    };
-    globalThis.ResizeObserver = MatrixResizeObserver;
+    } });
+    restoreShims.push(shimGlobal("ResizeObserver", MatrixResizeObserver));
     const listenerCount = () => [...listeners.values()].flatMap((types) => [...types.values()]).reduce((sum, entries) => sum + entries.size, 0);
     const viewportAnchor = (host: HTMLElement, scrollTop = host.scrollTop) => {
       const rows = [...container.querySelectorAll<HTMLElement>("[data-virtual-id]")].map((row) => ({
@@ -1201,13 +1448,13 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
         return;
       }
       if (transfer === "null gap: 1 commit" || transfer === "null gap: N commits") {
-        globalThis.ResizeObserver = undefined as unknown as typeof ResizeObserver;
+        const restoreMissingObserver = shimGlobal("ResizeObserver", undefined as unknown as typeof ResizeObserver);
         render("removed");
         if (transfer === "null gap: N commits") {
           render("removed");
           render("removed");
         }
-        globalThis.ResizeObserver = MatrixResizeObserver;
+        restoreMissingObserver();
         render("outer", false, true, true);
         newHost = attachedHost("outer");
       } else if (transfer === "null gap: 0 commits") {
@@ -1254,13 +1501,8 @@ test.each(transferKinds.flatMap((transfer) => transferInteractions.flatMap((inte
       act(() => jump.click());
       expect(newHost.scrollTop).toBe(newHost.scrollHeight - newHost.clientHeight);
     } finally {
-      if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-      if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-      if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
-      if (userAgent) Object.defineProperty(Navigator.prototype, "userAgent", userAgent);
-      HTMLElement.prototype.addEventListener = add;
-      HTMLElement.prototype.removeEventListener = remove;
-      globalThis.ResizeObserver = OriginalResizeObserver;
+      restoreRemove();
+      restoreAdd();
     }
   },
 );
@@ -1311,17 +1553,14 @@ test("Timeline keeps attachment correct while switching between owned and host-o
 });
 
 test("follow, pinning, jump control, and bounded mounts survive every scroll-host transition", () => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-  });
+  }));
   try {
     const { append, view } = hostAttachmentHarness();
     let followRequest = 0;
@@ -1370,9 +1609,6 @@ test("follow, pinning, jump control, and bounded mounts survive every scroll-hos
     render();
     exercise(attachedHost(target));
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
   }
 });
 
@@ -1380,19 +1616,15 @@ test.each([
   ["active touch", false],
   ["momentum settle", true],
 ])("host transfer settles an iOS correction during %s", (_state, endTouch) => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
-  const userAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent");
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" });
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restoreShims.push(shimProperty(Navigator.prototype, "userAgent", { configurable: true, get: () => "iPhone" }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => Number.parseFloat(document.querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0") }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight))); },
-  });
+  }));
   try {
     const { append, prepend, view } = hostAttachmentHarness();
     let followRequest = 0;
@@ -1428,10 +1660,6 @@ test.each([
     act(() => jump.click());
     expect(outer.scrollTop).toBe(outer.scrollHeight - outer.clientHeight);
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
-    if (userAgent) Object.defineProperty(Navigator.prototype, "userAgent", userAgent);
   }
 });
 
@@ -1439,7 +1667,6 @@ test("100 host swaps release every adapter listener and observer", () => {
   const added = new Map<EventTarget, Map<string, Set<EventListenerOrEventListenerObject>>>();
   const add = HTMLElement.prototype.addEventListener;
   const remove = HTMLElement.prototype.removeEventListener;
-  const OriginalResizeObserver = globalThis.ResizeObserver;
   let activeObservers = 0;
   class CountingResizeObserver implements ResizeObserver {
     constructor(_callback: ResizeObserverCallback) { activeObservers++; }
@@ -1447,7 +1674,7 @@ test("100 host swaps release every adapter listener and observer", () => {
     observe() {}
     unobserve() {}
   }
-  HTMLElement.prototype.addEventListener = function(type, listener, options) {
+  const restoreAdd = shimProperty(HTMLElement.prototype, "addEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
     if (this.dataset.testid && listener) {
       const byType = added.get(this) ?? new Map<string, Set<EventListenerOrEventListenerObject>>();
       const listeners = byType.get(type) ?? new Set<EventListenerOrEventListenerObject>();
@@ -1456,12 +1683,12 @@ test("100 host swaps release every adapter listener and observer", () => {
       added.set(this, byType);
     }
     add.call(this, type, listener, options);
-  };
-  HTMLElement.prototype.removeEventListener = function(type, listener, options) {
+  } });
+  const restoreRemove = shimProperty(HTMLElement.prototype, "removeEventListener", { configurable: true, writable: true, value: function(this: HTMLElement, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
     if (listener) added.get(this)?.get(type)?.delete(listener);
     remove.call(this, type, listener, options);
-  };
-  globalThis.ResizeObserver = CountingResizeObserver;
+  } });
+  restoreShims.push(shimGlobal("ResizeObserver", CountingResizeObserver));
   try {
     const { view } = hostAttachmentHarness();
     mount(view("inner"));
@@ -1473,22 +1700,18 @@ test("100 host swaps release every adapter listener and observer", () => {
     expect([...added.values()].flatMap((types) => [...types.values()]).reduce((sum, listeners) => sum + listeners.size, 0)).toBe(0);
     expect(activeObservers).toBe(0);
   } finally {
-    HTMLElement.prototype.addEventListener = add;
-    HTMLElement.prototype.removeEventListener = remove;
-    globalThis.ResizeObserver = OriginalResizeObserver;
+    restoreRemove();
+    restoreAdd();
   }
 });
 
 test("10k-row commits do no layout work when the scroll element is unchanged", () => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const rect = HTMLElement.prototype.getBoundingClientRect;
   let layoutReads = 0;
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { layoutReads++; return 600; } });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { layoutReads++; return 200_000; } });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { layoutReads++; return 0; }, set() {} });
-  HTMLElement.prototype.getBoundingClientRect = function() { layoutReads++; return rect.call(this); };
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get() { layoutReads++; return 600; } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { layoutReads++; return 200_000; } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", { configurable: true, get() { layoutReads++; return 0; }, set() {} }));
+  const restoreRect = shimProperty(HTMLElement.prototype, "getBoundingClientRect", { configurable: true, writable: true, value: function(this: HTMLElement) { layoutReads++; return rect.call(this); } });
   try {
     const timeline = timelineStore(Array.from({ length: 10_000 }, (_, index) => committedItem(String(index))));
     const view = (commit: number) => <div data-commit={commit}><RunProvider store={timeline.store}><Timeline virtual /></RunProvider></div>;
@@ -1497,10 +1720,7 @@ test("10k-row commits do no layout work when the scroll element is unchanged", (
     for (let index = 1; index <= 100; index++) act(() => root!.render(view(index)));
     expect(layoutReads).toBe(0);
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
-    HTMLElement.prototype.getBoundingClientRect = rect;
+    restoreRect();
   }
 });
 
@@ -1532,8 +1752,7 @@ test("virtual Timeline keeps its frame when a store is disposed, then replaces i
     message_id: `b-${index}`,
     message: message(`b-${index}`),
   })));
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
   mount(<RunProvider store={a.store}><Timeline virtual /></RunProvider>);
 
   act(() => a.store.dispose());
@@ -1542,7 +1761,6 @@ test("virtual Timeline keeps its frame when a store is disposed, then replaces i
   b.send({ type: "message_commit", message_id: "b-200", message: message("b-200") });
   expect(() => act(() => root!.render(<RunProvider store={b.store}><Timeline virtual /></RunProvider>))).not.toThrow();
   expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("201");
-  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
 });
 
 test("virtual Timeline resets and follows when its RunProvider store changes during a pending user scroll", () => {
@@ -1550,17 +1768,14 @@ test("virtual Timeline resets and follows when its RunProvider store changes dur
   const a = timelineStore(makeItems("a", 5_000));
   const b = timelineStore(makeItems("b", 100_000));
   const c = timelineStore(makeItems("c", 201));
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const scrollTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
   const positions = new WeakMap<HTMLElement, number>();
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } });
-  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>('[data-part="timeline"]')?.style.height ?? "0"); } }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
     configurable: true,
     get() { return positions.get(this as HTMLElement) ?? 0; },
     set(value: number) { positions.set(this as HTMLElement, Math.min(value, Math.max(0, (this as HTMLElement).scrollHeight - (this as HTMLElement).clientHeight))); },
-  });
+  }));
 
   mount(<RunProvider store={a.store}><Timeline virtual /></RunProvider>);
   expect(q("[data-virtual-id]").getAttribute("aria-setsize")).toBe("5000");
@@ -1576,9 +1791,6 @@ test("virtual Timeline resets and follows when its RunProvider store changes dur
   expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight);
   expect(q('[data-part="timeline"]').getAttribute("data-unseen-count")).toBe("0");
   expect(container.querySelector('[data-part="jump-to-latest"]')).toBeNull();
-  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-  if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-  if (scrollTop) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTop);
 });
 
 test("react does not import @fulcrum/zeta", () => {
@@ -1604,15 +1816,11 @@ const committedItem = (id: string): RunItem => ({
 });
 
 test("the unconstrained-height diagnostic checks layout only once while rows stream", () => {
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  const scrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  const requestFrame = globalThis.requestAnimationFrame;
-  const cancelFrame = globalThis.cancelAnimationFrame;
   const frames: FrameRequestCallback[] = [];
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100_000 });
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 100_001 });
-  globalThis.requestAnimationFrame = (callback) => (frames.push(callback), frames.length);
-  globalThis.cancelAnimationFrame = () => {};
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100_000 }));
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 100_001 }));
+  restoreShims.push(shimGlobal("requestAnimationFrame", (callback) => (frames.push(callback), frames.length)));
+  restoreShims.push(shimGlobal("cancelAnimationFrame", () => {}));
   try {
     let items = Array.from({ length: 201 }, (_, index) => committedItem(String(index)));
     const timeline = timelineStore(items);
@@ -1626,10 +1834,6 @@ test("the unconstrained-height diagnostic checks layout only once while rows str
     expect(container.querySelectorAll("[data-virtual-id]")).toHaveLength(202);
     expect(frames).toHaveLength(0);
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
-    if (scrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeight);
-    globalThis.requestAnimationFrame = requestFrame;
-    globalThis.cancelAnimationFrame = cancelFrame;
   }
 });
 
@@ -1662,8 +1866,7 @@ test("virtual history mount, scroll, and prepend never enter the live region", (
   const current = Array.from({ length: 5_000 }, (_, index) => committedItem(String(index)));
   const history = Array.from({ length: 500 }, (_, index) => committedItem(`history-${index}`));
   const source = timelineStore(current);
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
   mount(<RunProvider store={source.store}><Timeline virtual /></RunProvider>);
   const timeline = q('[data-part="timeline"]');
   const live = q('[data-part="timeline-live"]');
@@ -1681,7 +1884,6 @@ test("virtual history mount, scroll, and prepend never enter the live region", (
   const row = q("[data-virtual-id]");
   expect(row.getAttribute("aria-setsize")).toBe("5500");
   expect(Number(row.getAttribute("aria-posinset"))).toBeGreaterThan(0);
-  if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
 });
 
 test("a streamed message announces once after commit", async () => {
@@ -1769,8 +1971,7 @@ test("with a pending approval, the timeline's first tab stop jumps to it and foc
 
 test("virtual Timeline shows the folded tool card live when an approval folds in place across batches", () => {
   const { store, send } = setup([{ type: "user_message", text: "read it", mode: "normal" }]);
-  const clientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+  restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 }));
   try {
     mount(<RunProvider store={store}><Timeline virtual /></RunProvider>);
     const rows = () => [...container.querySelectorAll("[data-virtual-id]")].map((row) => row.getAttribute("data-virtual-id"));
@@ -1783,7 +1984,6 @@ test("virtual Timeline shows the folded tool card live when an approval folds in
     expect(rows()).toEqual(["user:1", "tool:read-1"]);
     expect(store.getOutline().map(({ id }) => id)).toEqual(rows());
   } finally {
-    if (clientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeight);
   }
 });
 
