@@ -567,7 +567,7 @@
   --fulcrum-ansi-yellow: #4d2d00;
   --fulcrum-ansi-blue: #0969da;
   --fulcrum-ansi-magenta: #8250df;
-  --fulcrum-ansi-cyan: #1b7c83;
+  --fulcrum-ansi-cyan: #1b797f; /* #1b7c83 is 4.37:1 on gallery output; OKLCH L -0.012 */
   --fulcrum-ansi-white: #6e7781;
   --fulcrum-ansi-bright-black: #57606a;
   --fulcrum-ansi-bright-red: #a40e26;

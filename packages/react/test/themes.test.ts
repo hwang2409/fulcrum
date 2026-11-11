@@ -161,6 +161,21 @@ test("fg reaches 4.5:1 on a 12% ok, warn, danger, accent, or muted tint over bg"
   expect(problems).toEqual([]);
 });
 
+test("copy buttons use readable text and ANSI cyan reaches text contrast", () => {
+  expect(styles).toMatch(/button\[data-action="copy"\][^{]*\{[^}]*forced-color-adjust:\s*none;[^}]*color:\s*ButtonText;/s);
+  for (const { name, vars } of palettes) {
+    const value = color(vars.fg!, vars);
+    for (const [background, rgb] of Object.entries(backgrounds(vars, "fg"))) {
+      const actual = contrast(value, rgb);
+      if (actual < 4.5) throw new Error(`${name}: copy button on ${background} is ${actual.toFixed(3)}:1`);
+    }
+    if (name === '[data-fulcrum-theme="github-light"]') {
+      const cyan = contrast(color(vars["ansi-cyan"]!, vars), color(vars.surface!, vars));
+      if (cyan < 4.5) throw new Error(`${name}: ANSI cyan on surface is ${cyan.toFixed(3)}:1`);
+    }
+  }
+});
+
 test("syntax colors reach 4.5:1 and ANSI colors 3:1 where they sit, as the official hex or its smallest OKLCH lightness change", () => {
   const problems: string[] = [];
   for (const { name, vars, official } of palettes) {
