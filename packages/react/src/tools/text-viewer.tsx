@@ -3,6 +3,7 @@ import { HighlightContext, requestTokens, Tokens, useTokens, type Block } from "
 import type { Token } from "@fulcrum/highlight";
 import { useVirtualList } from "../virtual.js";
 import { spansIn, type AnsiSpan } from "./ansi.js";
+import { markScrollable } from "../overflow.js";
 
 const SEGMENT_CHARS = 2_000;
 // A code viewer's ranges are smaller: each scrolled-in range is one react commit of its tokens, and dense code reaches
@@ -607,14 +608,7 @@ function useCap(content: unknown, label: string) {
       const fade = hidden > 1 ? `${top > 1 ? "top " : ""}${top < hidden - 1 ? "bottom" : ""}`.trim() : "";
       if (fade) node.dataset.fade = fade;
       else delete node.dataset.fade;
-      const scrollable = hidden > 1 || node.scrollWidth - node.clientWidth > 1;
-      if (scrollable) {
-        node.tabIndex = 0;
-        node.setAttribute("aria-label", `${label}, scrollable`);
-      } else {
-        if (node.tabIndex === 0) node.removeAttribute("tabindex");
-        if (node.getAttribute("aria-label") === `${label}, scrollable`) node.removeAttribute("aria-label");
-      }
+      markScrollable(node, hidden > 1 || node.scrollWidth - node.clientWidth > 1 ? label : null);
       setCut(hidden > 1);
     };
     update();
@@ -626,8 +620,7 @@ function useCap(content: unknown, label: string) {
       observer.disconnect();
       node.removeEventListener("scroll", update);
       delete node.dataset.fade;
-      if (node.tabIndex === 0) node.removeAttribute("tabindex");
-      if (node.getAttribute("aria-label") === `${label}, scrollable`) node.removeAttribute("aria-label");
+      markScrollable(node, null);
     };
   }, [node, expanded, content, label]);
   // "show all" unmounts itself: focus moves to the box it opened (tabIndex -1: focusable by script, not a tab stop).
