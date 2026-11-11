@@ -46,7 +46,7 @@ function requiresRawHtml({ markdown, html }: Example) {
 function runSuite(examples: Example[]) {
   const excluded = examples.filter((example) => ["HTML blocks", "Raw HTML", "Disallowed Raw HTML"].includes(example.section) || requiresRawHtml(example));
   const included = examples.filter((example) => !excluded.includes(example));
-  const failures = included.filter(({ markdown, html }) => JSON.stringify(normalized(renderToStaticMarkup(<Markdown source={markdown} />))) !== JSON.stringify(normalized(html)));
+  const failures = included.filter(({ markdown, html }) => JSON.stringify(normalized(renderToStaticMarkup(<Markdown source={markdown} headingOffset={0} />))) !== JSON.stringify(normalized(html)));
   return { included, excluded, failures, rate: (included.length - failures.length) / included.length };
 }
 
