@@ -25,7 +25,6 @@ import {
   type SettleState,
 } from "./settle.js";
 
-const defaultVirtualGutter = 8;
 const emptySample: HostSample = { top: 0, end: 0, clientHeight: 0, rectTop: 0, rectBottom: 0, engineTop: 0 };
 const isPureAppend = <Id extends string>(update: OutlineUpdate<Id> | null | undefined) => {
   if (!update || update.splices.length === 0) return false;
@@ -50,6 +49,8 @@ export type VirtualListOptions<Id extends string> = VirtualOptions<Id> & {
   historyPending?: boolean;
   /** Whether a newly created list starts by following its end. Defaults to true. */
   initialFollow?: boolean;
+  /** Block padding, in px, between the timeline element's edges and its rows (the Timeline's 8 px gutter). Defaults to 0. */
+  gutter?: number;
 };
 
 export type VirtualListState<Id extends string> = {
@@ -77,6 +78,7 @@ export function useVirtualList<Id extends string>(
     if (options.initialFollow === false) engineRef.current.setFollow(false);
   }
   const engine = engineRef.current;
+  const gutter = options.gutter ?? 0;
   const appliedResetKey = useRef(options.resetKey);
   const resetPending = appliedResetKey.current !== options.resetKey;
   const debug = typeof window !== "undefined" && location.search.includes("virtualDebug=1");
@@ -117,10 +119,9 @@ export function useVirtualList<Id extends string>(
     const measuredPrefix = timelineTop - hostTopInViewport - host.clientTop + host.scrollTop;
     // happy-dom has no layout and returns zero for both rects; a direct child then has no host prefix.
     const prefix = timeline && timelineTop === 0 && hostTopInViewport === 0 ? 0 : measuredPrefix;
-    const gutter = defaultVirtualGutter;
     const hostTop = host.scrollTop;
     const measuredEnd = Math.max(0, host.scrollHeight - host.clientHeight);
-    const noLayoutEnd = timeline ? prefix + engine.getSnapshot().totalSize + 2 * defaultVirtualGutter - host.clientHeight : 0;
+    const noLayoutEnd = timeline ? prefix + engine.getSnapshot().totalSize + 2 * gutter - host.clientHeight : 0;
     const hostEnd = measuredEnd === 0 && noLayoutEnd > 0 ? noLayoutEnd : measuredEnd;
     return {
       prefix,
@@ -141,19 +142,21 @@ export function useVirtualList<Id extends string>(
     engineTop: current.engineTop,
   }), []);
 
-  const writeScroll = useCallback((target: ScrollTarget, syncEngine = true) => {
+  // `sampled` is a geometry the caller read in this same callback, with no DOM change since; it saves a second read.
+  const writeScroll = useCallback((target: ScrollTarget, syncEngine = true, sampled?: ReturnType<typeof geometry>) => {
     const host = containerRef.current;
     if (!host) return;
-    const before = geometry(host);
+    const before = sampled ?? geometry(host);
     const snapshot = engine.getSnapshot();
-    const logicalEnd = before.prefix + snapshot.totalSize + 2 * defaultVirtualGutter - host.clientHeight;
+    const logicalEnd = before.prefix + snapshot.totalSize + 2 * gutter - before.hostGeometry.clientHeight;
     const desiredHostTop = target === "end"
       ? snapshot.totalSize === 0
         ? 0
         : Math.max(before.hostEnd, logicalEnd)
       : before.prefix + before.gutter + target;
-    // A write to the current top moves nothing, but would still force a layout for the read-back below.
-    const moves = Math.abs(desiredHostTop - before.hostTop) >= 0.5;
+    // The browser clamps a write to [0, end]. A write that lands on the current top moves nothing (no scroll event,
+    // no re-pin), but would still force a layout for the read-back below.
+    const moves = Math.abs(Math.max(0, Math.min(desiredHostTop, before.hostEnd)) - before.hostTop) >= 0.5;
     if (moves) host.scrollTop = desiredHostTop;
     const after = moves ? geometry(host) : before;
     const decision = decideSettle(coordinator.current, {
@@ -163,8 +166,10 @@ export function useVirtualList<Id extends string>(
       sample: sampleOf(after),
     });
     coordinator.current = decision.next;
-    const size = Math.max(0, host.clientHeight - after.gutter);
-    if (syncEngine && (Math.abs(snapshot.scrollTop - after.engineTop) >= 0.5 || snapshot.viewportSize !== size)) {
+    const size = Math.max(0, after.hostGeometry.clientHeight - after.gutter);
+    // The engine clamps to its own end, which can sit up to a pixel from the host's rounded scrollHeight.
+    const engineTop = Math.min(after.engineTop, Math.max(0, snapshot.totalSize - size));
+    if (syncEngine && (Math.abs(snapshot.scrollTop - engineTop) >= 0.5 || snapshot.viewportSize !== size)) {
       engine.setViewport({ scrollTop: after.engineTop, size, source: "programmatic" });
     }
   }, [engine, geometry, sampleOf]);
@@ -172,7 +177,8 @@ export function useVirtualList<Id extends string>(
   const finishMutation = useCallback((result: MutationResult) => {
     const host = containerRef.current;
     if (!host) return;
-    const current = sampleOf(geometry(host));
+    const measured = geometry(host);
+    const current = sampleOf(measured);
     let decision: SettleDecision;
     const recoveryWasOpen = coordinator.current.recovery !== null;
     if (result.recoveryPending) {
@@ -184,7 +190,7 @@ export function useVirtualList<Id extends string>(
     }
     coordinator.current = decision.next;
     if (decision.write !== null && (recoveryWasOpen || result.followedBottom || Math.abs(result.jump) >= 0.5)) {
-      writeScroll(decision.write);
+      writeScroll(decision.write, true, measured);
     }
   }, [geometry, sampleOf, writeScroll]);
 
@@ -251,7 +257,7 @@ export function useVirtualList<Id extends string>(
           });
           if (decision.next.pinned && !engine.getSnapshot().pinned) engine.requestFollow();
         }
-        if (decision.write !== null) writeScroll(decision.write);
+        if (decision.write !== null) writeScroll(decision.write, true, current);
       };
       const settle = (kind: "scroll" | "viewport" | "rows" | "siblings" | "commit-layout", current = geometry(host)) => {
         lastLayoutSample = sampleOf(current);

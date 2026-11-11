@@ -99,7 +99,7 @@ function Harness({ outline, resetKey, expose }: {
   expose(value: VirtualListState<string>): void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const list = useVirtualList(outline, { estimateSize: () => 72, scrollRef, resetKey });
+  const list = useVirtualList(outline, { estimateSize: () => 72, gutter: 8, scrollRef, resetKey });
   const initialScroll = useRef(true);
   useLayoutEffect(() => {
     if (initialScroll.current && list.snapshot.totalSize > 0) {

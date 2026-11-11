@@ -193,7 +193,7 @@ test("a streaming fence over the limits follows its newest line with one scroll 
     const content = viewer.querySelector<HTMLElement>('[data-part="text-viewer-content"]')!;
     const rowBottoms = [...content.querySelectorAll<HTMLElement>('[data-part="text-viewer-row"]')]
       .map((row) => Number(/translateY\(([\d.]+)px\)/.exec(row.style.transform)![1]) + linesOf(row) * LINE);
-    return Math.max(parseFloat(content.style.height) || 0, ...rowBottoms) + 16;
+    return Math.max(parseFloat(content.style.height) || 0, ...rowBottoms);
   };
   const clientHeight = descriptor("clientHeight");
   restoreShims.push(shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get(this: HTMLElement) { return read(clientHeight.get!.call(this)); } }));

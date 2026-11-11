@@ -359,7 +359,8 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
   useLayoutEffect(() => {
     const grew = text.length > seenLength.current;
     if (follow && following.current && grew) list.scrollToEnd();
-    else if (grew) setNewOutput(true);
+    // A pinned list follows its end itself (at the bottom = following), so its reader sees the new output.
+    else if (grew && !list.snapshot.pinned) setNewOutput(true);
     seenLength.current = text.length;
   }, [follow, text, list.scrollToEnd]);
   useLayoutEffect(() => {
@@ -380,8 +381,10 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
     if (bottom) following.current = follow;
     else if (node.scrollTop < lastTop.current) following.current = false;
     lastTop.current = node.scrollTop;
-    setPlace(bottom || following.current ? "bottom" : node.scrollTop < 1 ? "top" : "middle");
-    if (bottom) setNewOutput(false);
+    // A scroll that keeps the same place (the viewer's own follow write) sets no state, so it costs no commit.
+    const next = bottom || following.current ? "bottom" : node.scrollTop < 1 ? "top" : "middle";
+    if (next !== place) setPlace(next);
+    if (bottom && newOutput) setNewOutput(false);
   };
   const jump = (end: boolean) => {
     const node = scrollRef.current!;

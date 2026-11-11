@@ -740,7 +740,7 @@ const TimelineForStore = memo(function TimelineForStore({ store, runKey, rendere
   const enabled = virtual ?? (priorVirtual.current || items.length > 200);
   const ownedScrollRef = useRef<HTMLDivElement>(null);
   const activeScrollRef = scrollRef ?? ownedScrollRef;
-  const list = useVirtualList(items, { estimateSize: estimateRowSize, scrollRef: activeScrollRef, enabled, outlineUpdate: change, resetKey: runKey, invalidateMeasurements: invalidMeasurements, historyPending, cache: initialViewport?.cache });
+  const list = useVirtualList(items, { estimateSize: estimateRowSize, gutter: 8, scrollRef: activeScrollRef, enabled, outlineUpdate: change, resetKey: runKey, invalidateMeasurements: invalidMeasurements, historyPending, cache: initialViewport?.cache });
   useUnconstrainedWarning(enabled, !!scrollRef, ownedScrollRef, items.length, list.snapshot.rows.length);
   const priorFollowRequest = useRef(followRequest);
   useLayoutEffect(() => {
