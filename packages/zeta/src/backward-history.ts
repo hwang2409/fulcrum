@@ -1,4 +1,8 @@
-export type HistoryValidator = { readonly end: number; readonly entry_id: string | null };
+export type HistoryValidator = {
+  readonly end: number;
+  readonly entry_id: string | null;
+  readonly [field: string]: unknown;
+};
 
 export type BackwardHistoryCursor = {
   readonly before: number | null;
@@ -27,21 +31,32 @@ type Page = {
 const invalidResponse = () => new Error("backward history response is invalid");
 const invalidValidator = () => new Error("backward history response has an invalid validator");
 
+function equalJson(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+  if (Array.isArray(left) || Array.isArray(right))
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => equalJson(value, right[index]));
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = Object.keys(leftRecord);
+  return keys.length === Object.keys(rightRecord).length && keys.every((key) => Object.hasOwn(rightRecord, key) && equalJson(leftRecord[key], rightRecord[key]));
+}
+
 function parsePage(value: unknown, expectedValidator?: HistoryValidator, requestedBefore?: number): Page {
   if (!value || typeof value !== "object") throw invalidResponse();
   const page = value as { messages?: unknown; next_before?: unknown; history_validator?: unknown };
   if (!Array.isArray(page.messages) || (page.next_before !== null && (!Number.isInteger(page.next_before) || (page.next_before as number) < 0)) ||
       (requestedBefore !== undefined && typeof page.next_before === "number" && page.next_before >= requestedBefore))
     throw invalidResponse();
-  const validator = page.history_validator as { end?: unknown; entry_id?: unknown } | null | undefined;
-  if (!validator || !Number.isInteger(validator.end) || (validator.entry_id !== null && typeof validator.entry_id !== "string"))
+  const validator = page.history_validator as Record<string, unknown> | null | undefined;
+  if (!validator || Array.isArray(validator) || !Number.isSafeInteger(validator.end) || (validator.end as number) < 0 ||
+      (validator.entry_id !== null && typeof validator.entry_id !== "string"))
     throw invalidValidator();
-  if (expectedValidator && (validator.end !== expectedValidator.end || validator.entry_id !== expectedValidator.entry_id))
-    throw invalidValidator();
+  if (expectedValidator && !equalJson(validator, expectedValidator)) throw invalidValidator();
   return {
     messages: page.messages,
     nextBefore: page.next_before as number | null,
-    validator: { end: validator.end as number, entry_id: validator.entry_id as string | null },
+    validator: validator as HistoryValidator,
   };
 }
 

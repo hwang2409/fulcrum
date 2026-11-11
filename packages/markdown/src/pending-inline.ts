@@ -61,7 +61,7 @@ class OpenerScan {
   /** Where the last run stopped: just after the closer of `resolved`, when there is one. */
   stoppedAt = -1;
 
-  /** In a dry run: the existing openers it changed or removed, by position, so `restore` can put them back. */
+  /** In a dry run: the existing opener slots it changed or removed, so `restore` can put them back. */
   private readonly saved?: Map<number, Opener>;
 
   /** A dry run stops only at an existing emphasis opener or a `[` decided as text, and `restore` undoes its changes to the existing openers. */
@@ -99,13 +99,17 @@ class OpenerScan {
 
   private resolve(position: number) {
     const opener = this.openers[position]!;
-    if (position < this.existing && (!this.saved || opener.kind === "emphasis" || opener.kind === "bracket" && opener.state === "text")) this.resolved = opener;
+    if (opener.node >= 0 && (!this.saved || opener.kind === "emphasis" || opener.kind === "bracket" && opener.state === "text")) this.resolved = opener;
     this.truncate(position);
   }
 
   /** A stable `[` decided as text: its marker and the hidden markers of the stable openers above it show in their slots. */
   private settleText(position: number) {
-    for (let at = position; at < Math.min(this.existing, this.openers.length); at++) this.reveal?.(this.openers[at]!);
+    for (let at = position; at < this.openers.length; at++) {
+      const opener = this.openers[at]!;
+      if (opener.node < 0) break;
+      this.reveal?.(opener);
+    }
     this.truncate(position);
   }
 
@@ -198,11 +202,11 @@ class OpenerScan {
     const next = this.source[index + 1];
     if (next !== "(" && next !== "[") {
       // A dry run only asks whether a stable `[` is decided: it stops here without copying the stack above it.
-      if (this.saved && position < this.existing) {
+      if (this.saved && this.openers[position]!.node >= 0) {
         this.resolved = this.openers[position];
         this.decidedAt = position;
       }
-      else if (position < this.existing) this.settleText(position);
+      else if (this.openers[position]!.node >= 0) this.settleText(position);
       else this.resolve(position);
       return index + 1;
     }

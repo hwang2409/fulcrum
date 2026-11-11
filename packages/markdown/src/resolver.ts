@@ -251,7 +251,11 @@ const markerOnly = (content: string) => /^[ \t]*(?:#+|[+*=_-]+|\d{1,9}[.)]?|`{1,
 const paragraphStartIsSettled = (line: string, offset: number) => {
   while (line[offset] === " " || line[offset] === "\t") offset++;
   const lead = line[offset];
-  if (lead === undefined || lead === "[" || lead === "<") return false;
+  if (lead === undefined || lead === "<") return false;
+  if (lead === "[") {
+    const reference = new ReferenceDefinitionParser().append(line.slice(offset));
+    return reference.kind === "ineligible" || reference.kind === "rejected";
+  }
   if (!"#`~*-_=|:".includes(lead)) return true;
   const possibleMarker = "|:".includes(lead) ? " \t|:-" : ` \t${lead}`;
   for (; offset < line.length; offset++) if (!possibleMarker.includes(line[offset]!)) return true;
