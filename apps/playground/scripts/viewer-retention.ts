@@ -1,9 +1,9 @@
 // A long-lived text viewer: one page, many appends. Reports per-append time (first 20 vs last 20 median) and the heap
-// retained after a forced garbage collection, before and after the appends. Not a CI gate: a measurement harness for
-// a viewer whose append cost doubled for the rest of the page's life once it switched (batch-k results, 2026-11-08).
+// retained after a forced garbage collection, before and after the appends. Passing --max-growth-kib makes the
+// stable retained-heap measurement a gate; timing stays report-only because runner noise is larger than its effect.
 // Needs a production build (`bun run build`). Usage:
 //   bun scripts/viewer-retention.ts [--root <playground dir>] [--port 4191] [--fixture lines|single|read] [--lines N]
-//     [--runs 10] [--appends 100] [--chars N] [--warmup N] [--classes]
+//     [--runs 10] [--appends 100] [--chars N] [--warmup N] [--classes] [--max-growth-kib N]
 // `--chars N`: each append is a newline and N - 1 letters (default: "\npaired tail <i>"). `--lines N`: the read
 // fixture's line count. `--warmup N`: appends before the first heap reading; they fill fixed-size caches (the virtual
 // engine's 2,000-entry action log) and warm the JIT, so the measured growth is only what scales. `--classes`: also take
@@ -25,17 +25,24 @@ const { values } = parseArgs({
     lines: { type: "string" },
     warmup: { type: "string", default: "0" },
     classes: { type: "boolean", default: false },
+    "max-growth-kib": { type: "string" },
   },
 });
 const port = Number(values.port);
 const runs = Number(values.runs);
+const maxGrowthKiB = values["max-growth-kib"] === undefined ? undefined : Number(values["max-growth-kib"]);
+if (maxGrowthKiB !== undefined && (!Number.isFinite(maxGrowthKiB) || maxGrowthKiB < 0)) throw new Error("--max-growth-kib must be a non-negative number");
 const appends = Number(values.appends);
 const warmup = Number(values.warmup);
 const query = new URLSearchParams({ viewerFixture: values.fixture! });
 if (values.lines) query.set("viewerLines", values.lines);
 const url = `http://127.0.0.1:${port}/gallery.html?${query}`;
 const delta = (index: number) => values.chars ? `\n${"p".repeat(Number(values.chars) - 1)}` : `\npaired tail ${index}`;
-const median = (list: number[]) => [...list].sort((a, b) => a - b)[Math.floor(list.length / 2)]!;
+const percentile = (list: number[], fraction: number) => {
+  const sorted = [...list].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * fraction) - 1)]!;
+};
+const median = (list: number[]) => percentile(list, 0.5);
 
 const preview = spawn("bun", ["x", "vite", "preview", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { cwd: values.root, stdio: "ignore" });
 const browser = await chromium.launch({ args: ["--js-flags=--expose-gc"] });
@@ -114,6 +121,9 @@ try {
   const results: { first: number; last: number; growth: number; added: number; switched: boolean }[] = [];
   for (let run = 0; run < runs; run++) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const throttle = await page.context().newCDPSession(page);
+    await throttle.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+    await throttle.detach();
     await page.goto(url);
     await page.getByRole("button", { name: /^open all/ }).click();
     await page.locator('[data-part="text-viewer"]').waitFor();
@@ -141,7 +151,15 @@ try {
     await page.close();
   }
   const switched = results.filter(({ switched }) => switched).length;
-  console.log(`summary ${values.fixture}${values.lines ? ` ${values.lines} lines` : ""}, ${appends} appends of ${values.chars ?? "~15"} chars after ${warmup} warm-up: switched ${switched}/${runs}; first-20 medians ${median(results.map(({ first }) => first)).toFixed(2)} ms, last-20 ${median(results.map(({ last }) => last)).toFixed(2)} ms; retained growth median ${(median(results.map(({ growth }) => growth)) / 1024).toFixed(0)} KiB, max ${(Math.max(...results.map(({ growth }) => growth)) / 1024).toFixed(0)} KiB`);
+  const retainedGrowth = results.map(({ growth }) => growth);
+  const retainedMedian = median(retainedGrowth) / 1024;
+  const retainedP90 = percentile(retainedGrowth, 0.9) / 1024;
+  const retainedMax = Math.max(...retainedGrowth) / 1024;
+  console.log(`summary ${values.fixture}${values.lines ? ` ${values.lines} lines` : ""}, 4x CPU throttle, ${appends} appends of ${values.chars ?? "~15"} chars after ${warmup} warm-up: switched ${switched}/${runs}; first-20 medians ${median(results.map(({ first }) => first)).toFixed(2)} ms, last-20 ${median(results.map(({ last }) => last)).toFixed(2)} ms; retained growth median ${retainedMedian.toFixed(0)} KiB, p90 ${retainedP90.toFixed(0)} KiB, max ${retainedMax.toFixed(0)} KiB`);
+  if (maxGrowthKiB !== undefined && retainedMax > maxGrowthKiB) {
+    console.error(`FAIL retained heap: ${retainedMax.toFixed(0)} KiB max exceeds ${maxGrowthKiB} KiB budget`);
+    process.exitCode = 1;
+  }
 } finally {
   await browser.close();
   preview.kill();
