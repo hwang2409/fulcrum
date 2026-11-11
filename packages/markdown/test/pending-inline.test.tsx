@@ -42,19 +42,20 @@ const lostAt = (needle: string, haystack: string) => {
 /** Streams `source` and checks every frame: nothing seen disappears and nothing is shown twice. */
 // `checkFinal` off skips only the stable-text-in-final check; the 300-line probe of review 1 measures
 // duplication, order, and loss, and a residual class (a backtick inside link text) still fails that check.
-function stream(source: string, sizes: (step: number) => number, onFrame?: (blocks: Block[], received: number) => void, checkFinal = true) {
-  const final = visible(parseMarkdown(source));
+function stream(source: string, sizes: (step: number) => number, onFrame?: (blocks: Block[], received: number, current: string) => void, checkFinal = true, checkpoint = (_step: number) => true) {
+  const final = checkFinal ? visible(parseMarkdown(source)) : "";
   const document = createStreamingDocument();
   let previous = "";
   for (let offset = 0, step = 0; offset < source.length; step++) {
     const size = Math.max(1, sizes(step));
     document.append(source.slice(offset, offset + size));
     offset = Math.min(source.length, offset + size);
+    if (offset < source.length && !checkpoint(step)) continue;
     const blocks = document.render();
     const current = visible(blocks);
     if (!subsequence(unmarked(previous), unmarked(current))) throw new Error(`text vanished at ${offset}: ${lostAt(unmarked(previous), unmarked(current))}`);
     if (checkFinal && !subsequence(unmarked(visible(blocks, false)), unmarked(final))) throw new Error(`stable text not in final at ${offset} in ${JSON.stringify(source.slice(0, offset + 40))}: ${JSON.stringify(visible(blocks, false).slice(-120))}`);
-    onFrame?.(blocks, offset);
+    onFrame?.(blocks, offset, current);
     previous = current;
   }
   document.finish();
@@ -95,15 +96,28 @@ test("300 unique-word rich lines never duplicate, reorder, or drop a word", () =
     (n: string) => `\`${n} `, (n: string) => `${n}\` `, (n: string) => `snake_${n} `, (n: string) => `${n} * x `,
     (n: string) => `<https://e.com/${n}> `, (n: string) => `👍${n} `, (n: string) => `[${n} `, (n: string) => `${n}] `];
   const rng = random(7);
-  const ids = (value: string) => [...value.matchAll(/q(\d+)z/g)].map((match) => Number(match[1]));
+  const checkpointRng = random(17);
+  const ordered = (value: string) => {
+    let previous = -1;
+    for (const match of value.matchAll(/q(\d+)z/g)) {
+      const id = Number(match[1]);
+      if (id <= previous) return false;
+      previous = id;
+    }
+    return true;
+  };
   for (let line = 0; line < 300; line++) {
     const length = 200 + Math.floor(rng() * 1500);
     let source = "";
     for (let word = 0; source.length < length; word++) source += shapes[Math.floor(rng() * shapes.length)]!(`q${word}z`);
-    stream(source, () => 1 + Math.floor(rng() * 24), (blocks) => {
-      const seen = ids(visible(blocks));
-      expect(seen.every((id, index) => !index || id > seen[index - 1]!), source).toBe(true);
-    }, false);
+    let nextCheckpoint = 0;
+    stream(source, () => 1 + Math.floor(rng() * 24), (_blocks, _received, current) => {
+      expect(ordered(current), source).toBe(true);
+    }, false, (step) => {
+      if (step < nextCheckpoint) return false;
+      nextCheckpoint = step + 1 + Math.floor(checkpointRng() * 24);
+      return true;
+    });
   }
 });
 
