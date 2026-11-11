@@ -48,14 +48,15 @@ function audit({ forced, filled }: { forced?: boolean; filled: string[] }) {
     return `${id ? `#${id.dataset.id ?? id.id} ` : ""}${node === part || !part ? "" : `${part.getAttribute("data-part")} > `}${node.getAttribute("data-part") ?? `${node.tagName.toLowerCase()}${node.className ? `.${String(node.className).split(" ")[0]}` : ""}`} "${node.textContent!.trim().slice(0, 32)}"`;
   };
   const shown = (node: Element) => node.getClientRects().length > 0 && getComputedStyle(node).visibility !== "hidden";
-  // A mark is a 7 px square: a ::before or, for the run bar's state, the element itself.
+  const opaque = (color: string) => !/^rgba\(.*, 0\)$|^transparent$/.test(color);
+  // A mark is a painted or outlined 7 px square. An unpainted ::before can reserve space without claiming status.
   const marks = [...document.querySelectorAll("body *")].filter(shown).flatMap((node) => {
     const before = getComputedStyle(node, "::before");
-    if (before.content !== "none" && before.content !== "normal" && before.width === "7px" && before.height === "7px") return [{ host: node, style: before }];
+    const decorated = opaque(before.backgroundColor) || before.outlineStyle !== "none" || [before.borderTopStyle, before.borderRightStyle, before.borderBottomStyle, before.borderLeftStyle].some((style) => style !== "none");
+    if (before.content !== "none" && before.content !== "normal" && before.width === "7px" && before.height === "7px" && decorated) return [{ host: node, style: before }];
     return node.getAttribute("data-part") === "run-state" ? [{ host: node, style: getComputedStyle(node) }] : [];
   });
   const problems: string[] = [];
-  const opaque = (color: string) => !/^rgba\(.*, 0\)$|^transparent$/.test(color);
   if (forced === undefined) return { problems, marks: marks.length, filled: marks.filter(({ style }) => opaque(style.backgroundColor)).map(({ host }) => name(host)) };
   if (!forced) {
     // The word next to each mark, and every status part's own text, is fg or muted.
