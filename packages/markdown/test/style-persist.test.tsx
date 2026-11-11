@@ -76,6 +76,16 @@ function random(seed: number) {
   };
 }
 
+function streamingWork(source: string) {
+  const document = createStreamingDocument();
+  for (const character of source) {
+    document.append(character);
+    document.render();
+  }
+  const stats = document.stats;
+  return stats.scannedCharacters + stats.previewScannedCharacters + stats.copiedCharacters;
+}
+
 test("generated long lines with styled spans before and after the suffix cut have zero style regressions", () => {
   const rng = random(0x5eed);
   const sample = random(0xc0ffee);
@@ -87,6 +97,7 @@ test("generated long lines with styled spans before and after the suffix cut hav
     return text;
   };
   const failures: string[] = [];
+  let workSource = "";
   for (let index = 0; index < 400; index++) {
     const container = pick(["", "- ", "1. ", "> "]);
     const marker = pick(["**", "*", "__", "_", "***"]);
@@ -99,10 +110,15 @@ test("generated long lines with styled spans before and after the suffix cut hav
     }
     const source = `${container}${line.trimEnd()}\n`;
     const delta = pick([1, 7, 64]);
+    if (!workSource && delta === 1 && source.length >= 2_000 && line.startsWith("[")) workSource = source;
     const failure = styleRegression(source, delta, () => sample() < 1 / 16);
     if (failure) failures.push(`${JSON.stringify(source.slice(0, 80))}… (${source.length}, ${marker}, delta ${delta}) ${failure}`);
   }
   expect(`${failures.length} regressions\n${failures.slice(0, 5).join("\n")}`).toBe("0 regressions\n");
+  if (!workSource) throw new Error("generated cases did not include a 2,000-character bracket-led line with one-character deltas");
+  const work = [500, 1_000, 2_000].map((length) => streamingWork(workSource.slice(0, length)));
+  const growth = work.slice(1).map((value, index) => value / work[index]!);
+  expect(Math.max(...growth), `streaming parser work grew ${growth.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")} per doubling`).toBeLessThanOrEqual(2.2);
 });
 
 for (const file of ["doc-1-179.json", "doc-1-316.json", "doc-1-483.json", "doc-2-139.json", "doc-2-245.json", "doc-2-50.json"]) {
