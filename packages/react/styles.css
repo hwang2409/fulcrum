@@ -1267,6 +1267,7 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="approval-actions"] button { border-color: ButtonText; }
   :is([data-part="tool"], [data-part="approval"], [data-part="md-code-block"], [data-part="file"], [data-part="block-unknown"], [data-part="image-dialog"]) button[data-action="copy"] {
     forced-color-adjust: none;
+    background: Canvas;
     color: ButtonText;
   }
   [data-part="approval-actions"] button[data-action="approve"]:not([aria-disabled="true"]) { forced-color-adjust: none; background: Highlight; color: HighlightText; }
