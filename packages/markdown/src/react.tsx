@@ -25,6 +25,8 @@ export interface MarkdownProps {
   id?: string;
   /** Renderers for fenced blocks by lowercase language (`{ mermaid: MermaidFence }`); other fences stay code blocks. Pass a stable object. */
   fences?: Fences;
+  /** Add this many levels to rendered headings. Defaults to 2 so message headings start at h3; use 0 for page-level markdown. */
+  headingOffset?: number;
 }
 
 /** What a fence renderer gets: the fence's text, whether its closing fence has arrived, and the default code block. */
@@ -39,7 +41,7 @@ export interface FenceProps {
 }
 export type Fences = Readonly<Record<string, ComponentType<FenceProps>>>;
 // `streaming`: the document still streams, so its tail block may draw the cursor (styles.css).
-type Shared = { highlight?: Highlighter; fences?: Fences; streaming?: boolean };
+type Shared = { highlight?: Highlighter; fences?: Fences; streaming?: boolean; headingOffset: number };
 
 const InlineView = ({ nodes }: { nodes: Inline[] }): ReactNode => nodes.map((node, index) => {
   const key = index;
@@ -135,39 +137,41 @@ const withoutFinalBreak = (tokens: Token[]) => {
 };
 
 const isOpen = (block: Block) => block.type === "code" ? block.open : undefined;
+const renderedHeadingLevel = (level: number, offset: number) => Math.min(6, Math.max(1, level + (Number.isFinite(offset) ? Math.trunc(offset) : 0)));
 
-const ListView = ({ id, block, highlight, fences, streaming }: { id: string; block: ListBlock } & Shared) => {
+const ListView = ({ id, block, highlight, fences, streaming, headingOffset }: { id: string; block: ListBlock } & Shared) => {
   const Tag = block.ordered ? "ol" : "ul";
   return <Tag data-part="md-list" start={block.ordered && block.start !== 1 ? block.start : undefined}>{block.items.map((item, index) => (
     <li key={index} data-part="md-list-item">
       {item.checked !== undefined && <input type="checkbox" disabled readOnly checked={item.checked} />}
-      {item.children.map((child, childIndex) => <BlockView key={childIndex} id={`${id}:${index}:${childIndex}`} block={child} open={isOpen(child)} highlight={highlight} fences={fences} streaming={streaming} />)}
+      {item.children.map((child, childIndex) => <BlockView key={childIndex} id={`${id}:${index}:${childIndex}`} block={child} open={isOpen(child)} highlight={highlight} fences={fences} streaming={streaming} headingOffset={headingOffset} />)}
     </li>
   ))}</Tag>;
 };
 
-const BlockView = memo(function BlockView({ id, block, highlight, fences, streaming }: { id: string; block: Block; open: boolean | undefined } & Shared): ReactNode {
+const BlockView = memo(function BlockView({ id, block, highlight, fences, streaming, headingOffset }: { id: string; block: Block; open: boolean | undefined } & Shared): ReactNode {
   if (block.type === "paragraph") return block.tight
     ? <InlineView nodes={block.children} />
     : <p data-part="md-paragraph"><InlineView nodes={block.children} /></p>;
   if (block.type === "heading") {
-    const Tag = `h${block.level}` as "h1";
-    return <Tag data-part="md-heading"><InlineView nodes={block.children} /></Tag>;
+    const level = block.level;
+    const Tag = `h${renderedHeadingLevel(level, headingOffset)}` as "h1";
+    return <Tag data-part="md-heading" data-level={level}><InlineView nodes={block.children} /></Tag>;
   }
   if (block.type === "code") {
     const source = <CodeBlock id={id} block={block} highlight={highlight} streaming={streaming} />;
     const Fence = block.language ? fences?.[block.language.toLowerCase()] : undefined;
     return Fence ? <Fence id={id} code={block.value} language={block.language!} done={!block.open} source={source} /> : source;
   }
-  if (block.type === "list") return <ListView id={id} block={block} highlight={highlight} fences={fences} streaming={streaming} />;
-  if (block.type === "blockquote") return <blockquote data-part="md-blockquote">{block.children.map((child, index) => <BlockView key={index} id={`${id}:${index}`} block={child} open={isOpen(child)} highlight={highlight} fences={fences} streaming={streaming} />)}</blockquote>;
+  if (block.type === "list") return <ListView id={id} block={block} highlight={highlight} fences={fences} streaming={streaming} headingOffset={headingOffset} />;
+  if (block.type === "blockquote") return <blockquote data-part="md-blockquote">{block.children.map((child, index) => <BlockView key={index} id={`${id}:${index}`} block={child} open={isOpen(child)} highlight={highlight} fences={fences} streaming={streaming} headingOffset={headingOffset} />)}</blockquote>;
   if (block.type === "rule") return <hr data-part="md-rule" />;
   return <table data-part="md-table"><thead><tr>{block.header.map((cell, index) => <th key={index} align={block.align[index]}><InlineView nodes={cell} /></th>)}</tr></thead>{block.rows.length ? <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} align={block.align[cellIndex]}><InlineView nodes={cell} /></td>)}</tr>)}</tbody> : null}</table>;
 // An open block can be the same object, grown in place (a fence after a whole-line delta) and then closed in place: it
 // re-renders while open and once more when `open` (a prop of its own, read before the object changed) turns false.
-}, (prior, next) => prior.block === next.block && !(next.block.type === "code" && next.block.open) && prior.open === next.open && prior.id === next.id && prior.highlight === next.highlight && prior.fences === next.fences && prior.streaming === next.streaming);
+}, (prior, next) => prior.block === next.block && !(next.block.type === "code" && next.block.open) && prior.open === next.open && prior.id === next.id && prior.highlight === next.highlight && prior.fences === next.fences && prior.streaming === next.streaming && prior.headingOffset === next.headingOffset);
 
-export const Markdown = memo(function Markdown({ source, streaming = false, highlight, id, fences }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ source, streaming = false, highlight, id, fences, headingOffset = 2 }: MarkdownProps) {
   const documentId = id ?? "markdown";
   const state = useRef<{ document: ReturnType<typeof createStreamingDocument>; length: number; finished: boolean } | undefined>(undefined);
   let blocks: readonly Block[];
@@ -185,5 +189,5 @@ export const Markdown = memo(function Markdown({ source, streaming = false, high
     }
     blocks = current.document.render();
   }
-  return <>{blocks.map((block, index) => <BlockView key={index} id={`${documentId}:${index}`} block={block} open={isOpen(block)} highlight={highlight} fences={fences} streaming={streaming} />)}</>;
+  return <>{blocks.map((block, index) => <BlockView key={index} id={`${documentId}:${index}`} block={block} open={isOpen(block)} highlight={highlight} fences={fences} streaming={streaming} headingOffset={headingOffset} />)}</>;
 });
