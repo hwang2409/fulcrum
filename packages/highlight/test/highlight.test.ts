@@ -896,8 +896,11 @@ describe("identity, failure, and caps", () => {
 
   test("concurrent first requests share one engine and one grammar load", async () => {
     const warnings: string[] = [];
-    const warn = console.warn;
-    console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+    const restoreWarn = shimProperty(console, "warn", {
+      configurable: true,
+      writable: true,
+      value: (...args: unknown[]) => { warnings.push(args.join(" ")); },
+    });
     try {
       const runtime = new TokenizerRuntime(() => {});
       const sources = Array.from({ length: 24 }, (_, index) => `const n${index} = ${index};\n`);
@@ -910,7 +913,7 @@ describe("identity, failure, and caps", () => {
       expect(colored.every((tokens) => tokens.some((token) => token.type))).toBe(true);
       runtime.dispose();
     } finally {
-      console.warn = warn;
+      restoreWarn();
     }
     expect(warnings.filter((warning) => warning.includes("instances have been created"))).toEqual([]);
   });

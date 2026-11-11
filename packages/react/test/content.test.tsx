@@ -35,6 +35,11 @@ afterEach(() => {
   container?.remove();
   restoreShims.splice(0).reverse().forEach((restore) => restore());
 });
+function shimObjectUrls(create: typeof URL.createObjectURL, revoke: typeof URL.revokeObjectURL) {
+  const restoreCreate = shimProperty(URL, "createObjectURL", { configurable: true, writable: true, value: create });
+  const restoreRevoke = shimProperty(URL, "revokeObjectURL", { configurable: true, writable: true, value: revoke });
+  return () => { restoreRevoke(); restoreCreate(); };
+}
 function mount(node: ReactNode) {
   container = document.createElement("div");
   document.body.append(container);
@@ -302,8 +307,6 @@ test("a tool result's image blocks show under its output, and the card opens for
 });
 
 test("omitted lazy images load only near the viewport, keep their reserved box, and revoke object urls", async () => {
-  const savedCreate = URL.createObjectURL;
-  const savedRevoke = URL.revokeObjectURL;
   let seen: IntersectionObserverCallback | undefined;
   const revoked: string[] = [];
   let loads = 0;
@@ -315,8 +318,7 @@ test("omitted lazy images load only near the viewport, keep their reserved box, 
     takeRecords() { return []; }
     root = null; rootMargin = "400px 0px"; thresholds = [0];
   } as unknown as typeof IntersectionObserver);
-  URL.createObjectURL = () => "blob:lazy-image";
-  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  const restoreUrls = shimObjectUrls(() => "blob:lazy-image", (url) => { revoked.push(url); });
   try {
     render([commit([{ type: "image", omitted: true, filename: "history.png", width: 800, height: 400, source: { kind: "lazy", key: "opaque" } }])], {
       loadMedia: async () => { loads++; return new Blob(["png"], { type: "image/png" }); },
@@ -334,8 +336,7 @@ test("omitted lazy images load only near the viewport, keep their reserved box, 
     expect(revoked).toEqual(["blob:lazy-image"]);
   } finally {
     restoreObserver();
-    URL.createObjectURL = savedCreate;
-    URL.revokeObjectURL = savedRevoke;
+    restoreUrls();
   }
 });
 
@@ -429,14 +430,11 @@ test("a lazy image shows an error after two decode failures and retry recovers",
 });
 
 test("a sibling decode retry keeps an open full view visible through a slow replacement", async () => {
-  const savedCreate = URL.createObjectURL;
-  const savedRevoke = URL.revokeObjectURL;
   const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const replacement = deferredBlob();
   const revoked: string[] = [];
   let calls = 0;
-  URL.createObjectURL = () => `blob:generation-${calls}`;
-  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  const restoreUrls = shimObjectUrls(() => `blob:generation-${calls}`, (url) => { revoked.push(url); });
   const { store } = setup([
     { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "slow-shared" } }] } },
     { type: "message_commit", message_id: "b", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "slow-shared" } }] } },
@@ -455,21 +453,17 @@ test("a sibling decode retry keeps an open full view visible through a slow repl
     expect(q('[data-part="image-dialog"] img').getAttribute("src")).toBe("blob:generation-2");
   } finally {
     restoreObserver();
-    URL.createObjectURL = savedCreate;
-    URL.revokeObjectURL = savedRevoke;
+    restoreUrls();
   }
 });
 
 test("a replaced image url is revoked once after the last lease commits the new url", async () => {
-  const savedCreate = URL.createObjectURL;
-  const savedRevoke = URL.revokeObjectURL;
   const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const replacement = deferredBlob();
   const revoked: string[] = [];
   const renderedAtRevoke: number[] = [];
   let calls = 0;
-  URL.createObjectURL = () => `blob:generation-${calls}`;
-  URL.revokeObjectURL = (url) => { revoked.push(url); renderedAtRevoke.push(container.querySelectorAll(`img[src="${url}"]`).length); };
+  const restoreUrls = shimObjectUrls(() => `blob:generation-${calls}`, (url) => { revoked.push(url); renderedAtRevoke.push(container.querySelectorAll(`img[src="${url}"]`).length); });
   const { store } = setup([
     { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "revoke-shared" } }] } },
     { type: "message_commit", message_id: "b", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "revoke-shared" } }] } },
@@ -486,20 +480,16 @@ test("a replaced image url is revoked once after the last lease commits the new 
     expect(renderedAtRevoke).toEqual([0]);
   } finally {
     restoreObserver();
-    URL.createObjectURL = savedCreate;
-    URL.revokeObjectURL = savedRevoke;
+    restoreUrls();
   }
 });
 
 test("a failed replacement keeps good sibling leases on the old url", async () => {
-  const savedCreate = URL.createObjectURL;
-  const savedRevoke = URL.revokeObjectURL;
   const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const replacement = deferredBlob();
   const revoked: string[] = [];
   let calls = 0;
-  URL.createObjectURL = () => `blob:generation-${calls}`;
-  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  const restoreUrls = shimObjectUrls(() => `blob:generation-${calls}`, (url) => { revoked.push(url); });
   const { store } = setup([
     { type: "message_commit", message_id: "a", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "failed-shared" } }] } },
     { type: "message_commit", message_id: "b", message: { role: "assistant", content: [{ type: "image", source: { kind: "lazy", key: "failed-shared" } }] } },
@@ -514,23 +504,19 @@ test("a failed replacement keeps good sibling leases on the old url", async () =
     expect(revoked).toEqual([]);
   } finally {
     restoreObserver();
-    URL.createObjectURL = savedCreate;
-    URL.revokeObjectURL = savedRevoke;
+    restoreUrls();
   }
 });
 
 test("100 image retries neither revoke a rendered url nor leak generations", async () => {
-  const savedCreate = URL.createObjectURL;
-  const savedRevoke = URL.revokeObjectURL;
   const restoreObserver = shimGlobal("IntersectionObserver", undefined as unknown as typeof IntersectionObserver);
   const revoked: string[] = [];
   let revokedWhileRendered = 0;
   let created = 0;
-  URL.createObjectURL = () => `blob:retry-${created++}`;
-  URL.revokeObjectURL = (url) => {
+  const restoreUrls = shimObjectUrls(() => `blob:retry-${created++}`, (url) => {
     revoked.push(url);
     if (container.querySelector(`img[src="${url}"]`)) revokedWhileRendered++;
-  };
+  });
   try {
     render([commit([
       { type: "image", source: { kind: "lazy", key: "retry-100" } },
@@ -553,8 +539,7 @@ test("100 image retries neither revoke a rendered url nor leak generations", asy
     expect(new Set(revoked).size).toBe(created);
   } finally {
     restoreObserver();
-    URL.createObjectURL = savedCreate;
-    URL.revokeObjectURL = savedRevoke;
+    restoreUrls();
   }
 });
 
@@ -594,14 +579,11 @@ const deferredBlob = () => {
 };
 
 test("1,000 mounted images and an open full view keep valid urls, then released urls stay bounded", async () => {
-  const savedCreate = URL.createObjectURL;
-  const savedRevoke = URL.revokeObjectURL;
   const observed: Observed[] = [];
   const revoked: string[] = [];
   let next = 0;
   const restoreObserver = shimGlobal("IntersectionObserver", installObservers(observed));
-  URL.createObjectURL = () => `blob:${next++}`;
-  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  const restoreUrls = shimObjectUrls(() => `blob:${next++}`, (url) => { revoked.push(url); });
   try {
     const blocks = Array.from({ length: 1_000 }, (_, index) => ({ type: "image", source: { kind: "lazy" as const, key: `image-${index}` } }));
     const { send } = render([commit(blocks)], { loadMedia: async () => new Blob(["x"]) });
@@ -618,8 +600,7 @@ test("1,000 mounted images and an open full view keep valid urls, then released 
     expect(new Set(revoked).size).toBe(967);
   } finally {
     restoreObserver();
-    URL.createObjectURL = savedCreate;
-    URL.revokeObjectURL = savedRevoke;
+    restoreUrls();
   }
 });
 

@@ -33,8 +33,7 @@ const symbolDescription = Function.call.bind(getOwnPropertyDescriptor(Symbol.pro
 const propertyName = String;
 const AlarmError = Error;
 const scheduleMicrotask = queueMicrotask;
-const objectPrototype = Object.prototype;
-const weakRefPrototype = WeakRef.prototype;
+const createObject = Object.create;
 
 const alarms: Alarm[] = [];
 
@@ -61,6 +60,40 @@ const snapshotDescriptors = (target: object): DescriptorEntry[] => {
   for (let index = 0; index < names.length; index += 1) {
     const name = names[index]!;
     descriptors[index] = [name, getOwnPropertyDescriptor(target, name)!];
+  }
+  return descriptors;
+};
+
+const isHappyDomCache = (owner: string, name: PropertyKey) =>
+  (owner === "document" || stringEndsWith(owner, ".document"))
+  && typeof name === "symbol"
+  && (symbolDescription(name) === "affectsCache" || symbolDescription(name) === "affectsComputedStyleCache");
+
+const cloneCache = (value: unknown) => {
+  if (!isArray(value)) return value;
+  const copy: unknown[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const source = objectValue(value[index]);
+    if (!source) {
+      copy[index] = value[index];
+      continue;
+    }
+    const entry = createObject(getPrototypeOf(source));
+    const descriptors = snapshotDescriptors(source);
+    for (let descriptorIndex = 0; descriptorIndex < descriptors.length; descriptorIndex += 1) {
+      const [name, descriptor] = descriptors[descriptorIndex]!;
+      defineProperty(entry, name, descriptor);
+    }
+    copy[index] = entry;
+  }
+  return copy;
+};
+
+const snapshotTargetDescriptors = (target: object, owner: string) => {
+  const descriptors = snapshotDescriptors(target);
+  for (let index = 0; index < descriptors.length; index += 1) {
+    const [name, descriptor] = descriptors[index]!;
+    if (isHappyDomCache(owner, name)) descriptors[index] = [name, { ...descriptor, value: cloneCache(descriptor.value) }];
   }
   return descriptors;
 };
@@ -128,7 +161,7 @@ const snapshotTargets = (): TargetSnapshot[] => {
       target,
       owner,
       prototype: getPrototypeOf(target) as object | null,
-      descriptors: snapshotDescriptors(target),
+      descriptors: snapshotTargetDescriptors(target, owner),
     };
   }
   return snapshots;
@@ -141,47 +174,7 @@ const sameDescriptorExceptValue = (left: PropertyDescriptor, right: PropertyDesc
   && left.get === right.get
   && left.set === right.set;
 
-const cacheEntryResult = (entry: unknown) => {
-  if (typeof entry !== "object" || entry === null) return undefined;
-  const keys = ownKeys(entry);
-  if (keys.length !== 1 || keys[0] !== "result") return undefined;
-  const descriptor = getOwnPropertyDescriptor(entry, "result");
-  if (!descriptor || !descriptor.configurable || !descriptor.enumerable || !descriptor.writable || descriptor.get || descriptor.set) return undefined;
-  return descriptor.value;
-};
-
-const isCacheResult = (value: unknown) => {
-  if (value === null) return true;
-  if (typeof value !== "object") return false;
-  const prototype = getPrototypeOf(value);
-  if (prototype === weakRefPrototype) return true;
-  const names = ownKeys(value);
-  if (prototype !== objectPrototype || names.length !== 1 || (names[0] !== "match" && names[0] !== "element")) return false;
-  const result = getOwnPropertyDescriptor(value, names[0]);
-  return result?.configurable === true
-    && result.enumerable === true
-    && result.writable === true
-    && (names[0] === "match"
-      ? result.value === null || typeof result.value === "object"
-      : result.value === null || (typeof result.value === "object" && getPrototypeOf(result.value) === weakRefPrototype))
-    && result.get === undefined
-    && result.set === undefined;
-};
-
 type LifecyclePredicate = (before?: PropertyDescriptor, after?: PropertyDescriptor) => boolean;
-
-const changesCache = (before: PropertyDescriptor | undefined, after: PropertyDescriptor | undefined) => {
-  if (!before || !after || !sameDescriptorExceptValue(before, after) || !isArray(before.value) || !isArray(after.value)) return false;
-  if (before.value === after.value || before.value.length === after.value.length) return false;
-  for (let index = 0; index < before.value.length; index += 1) if (!isCacheResult(cacheEntryResult(before.value[index]))) return false;
-  let hasLiveResult = false;
-  for (let index = 0; index < after.value.length; index += 1) {
-    const result = cacheEntryResult(after.value[index]);
-    if (!isCacheResult(result)) return false;
-    if (result !== null) hasLiveResult = true;
-  }
-  return after.value.length === 0 ? before.value.length > 0 : hasLiveResult;
-};
 
 // Bun returns a fresh supportedEntryTypes array each time its descriptor is read.
 const sameSupportedEntryTypes: LifecyclePredicate = (before, after) =>
@@ -202,8 +195,6 @@ const sameSupportedEntryTypes: LifecyclePredicate = (before, after) =>
 const lifecycleTransitions: Record<string, LifecyclePredicate> = {
   "document.Symbol(readyState)": (before, after) =>
     !!before && !!after && sameDescriptorExceptValue(before, after) && before.value === "interactive" && after.value === "complete",
-  "document.Symbol(affectsCache)": changesCache,
-  "document.Symbol(affectsComputedStyleCache)": changesCache,
   "document._reactListening*": (before, after) =>
     !before
     && after?.configurable === true
@@ -233,6 +224,13 @@ const isExpectedLifecycleChange = (
 ) => {
   const key = lifecycleKey(snapshot, name);
   return key ? lifecycleTransitions[key]?.(before, after) === true : false;
+};
+
+const resetHappyDomCaches = (snapshot: TargetSnapshot) => {
+  for (let index = 0; index < snapshot.descriptors.length; index += 1) {
+    const [name, before] = snapshot.descriptors[index]!;
+    if (isHappyDomCache(snapshot.owner, name)) defineProperty(snapshot.target, name, before);
+  }
 };
 
 const changedProperty = (snapshot: TargetSnapshot): PropertyKey | "[[Prototype]]" | undefined => {
@@ -287,6 +285,7 @@ export function domShimAlarm(file: string): void {
       const shim = alarm.shims[0]!;
       failure = new AlarmError(`${file} leaked DOM shim ${shim.owner}.${propertyName(shim.name)}`);
     }
+    for (let index = 0; index < alarm.targets.length; index += 1) resetHappyDomCaches(alarm.targets[index]!);
     for (let index = 0; index < alarm.targets.length; index += 1) {
       const target = alarm.targets[index]!;
       const name = changedProperty(target);

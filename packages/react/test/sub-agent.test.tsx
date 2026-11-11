@@ -182,9 +182,7 @@ test("the elapsed clock runs only while a live row is in view and the page is vi
   visibility.hide(true);
   expect(visibility.timers()).toBe(0);
   // Back from a background tab, the row shows the real time at once, not the time it was hidden at.
-  const now = Date.now;
-  Date.now = () => started + 65_000;
-  restore.push(() => { Date.now = now; });
+  restore.push(shimProperty(Date, "now", { configurable: true, writable: true, value: () => started + 65_000 }));
   visibility.hide(false);
   expect(visibility.timers()).toBe(1);
   expect(a!.querySelector('[data-part="sub-agent-meta"]')!.textContent).toBe("1m 5s");

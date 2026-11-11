@@ -64,10 +64,6 @@ const rows = [
     if (document.readyState !== "loading") throw new Error("readyState mutation did not apply");
   `, "globalThis.document.Symbol(readyState)"],
   ["react-marker-replace", `(document as any)._reactListeningReview = false;`, "globalThis.document._reactListeningReview"],
-  ["affects-cache-replace", `replaceDocumentSymbol("affectsCache", ["leak"]);`, "globalThis.document.Symbol(affectsCache)"],
-  ["affects-cache-shaped-replace", `appendDocumentCacheResult("affectsCache");`, "globalThis.document.Symbol(affectsCache)"],
-  ["affects-computed-style-cache-replace", `replaceDocumentSymbol("affectsComputedStyleCache", ["leak"]);`, "globalThis.document.Symbol(affectsComputedStyleCache)"],
-  ["affects-computed-style-cache-shaped-replace", `appendDocumentCacheResult("affectsComputedStyleCache");`, "globalThis.document.Symbol(affectsComputedStyleCache)"],
   ["node-timing-replace", `Object.defineProperty(Performance.prototype, "nodeTiming", { configurable: true, value: 123, writable: true });`, "Performance.prototype.nodeTiming"],
   ["prototype-method-replace", `
     Object.defineProperty(Array.prototype, "map", { configurable: true, writable: true, value() { return []; } });
@@ -79,6 +75,48 @@ const rows = [
   ["restored", `(globalThis as any).__guard_slot = 1; (globalThis as any).__guard_slot = 0;`, null],
   ["local-window-fixture", `const window = { value: 0 }; window.value = 1;`, null],
 ] as const;
+
+test("happy-dom cache slots are reset before the next test file", () => {
+  const directory = mkdtempSync(join(import.meta.dir, "../packages/react/test/.dom-shim-cache-"));
+  const leaking = join(directory, "01-cache.test.ts");
+  const later = join(directory, "02-later.test.ts");
+  try {
+    writeFileSync(leaking, `
+import { test } from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { domShimAlarm } from "../../../../test-support/dom-shim.js";
+GlobalRegistrator.register();
+domShimAlarm(import.meta.path);
+test("plants cache junk", () => {
+  for (const key of Reflect.ownKeys(document)) {
+    if (typeof key === "symbol" && (key.description === "affectsCache" || key.description === "affectsComputedStyleCache")) {
+      ((document as any)[key] as unknown[]).push({ result: "junk" });
+    }
+  }
+});
+`);
+    writeFileSync(later, `
+import { afterAll, expect, test } from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { domShimAlarm } from "../../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
+afterAll(() => GlobalRegistrator.unregister());
+test("later file sees clean caches", () => {
+  for (const key of Reflect.ownKeys(document)) {
+    if (typeof key === "symbol" && (key.description === "affectsCache" || key.description === "affectsComputedStyleCache")) {
+      expect(((document as any)[key] as Array<{ result: unknown }>).some((entry) => entry.result === "junk")).toBe(false);
+    }
+  }
+});
+`);
+    const result = Bun.spawnSync({ cmd: [process.execPath, "test", leaking, later], stdout: "pipe", stderr: "pipe" });
+    const output = new TextDecoder().decode(result.stdout) + new TextDecoder().decode(result.stderr);
+    expect(`${result.exitCode}\n${output}`).toContain("0\n");
+    expect(output).toContain("(pass) later file sees clean caches");
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+}, 20_000);
 
 test("a failed alarm restores its snapshot before the next test file", () => {
   const directory = mkdtempSync(join(import.meta.dir, "../packages/react/test/.dom-shim-cascade-"));
@@ -126,23 +164,6 @@ GlobalRegistrator.register();
 Object.defineProperty(globalThis, "__guard_slot", { configurable: true, value: 0, writable: true });
 Object.defineProperty(globalThis, "__GuardConstructor", { configurable: true, value: function GuardConstructor() {} });
 Object.defineProperty(document, "_reactListeningReview", { configurable: true, enumerable: true, value: true, writable: true });
-function replaceDocumentSymbol(description: string, value: unknown) {
-  for (const key of Reflect.ownKeys(document)) {
-    if (typeof key !== "symbol" || key.description !== description) continue;
-    Object.defineProperty(document, key, { ...Object.getOwnPropertyDescriptor(document, key), value });
-    return;
-  }
-  throw new Error(description + " symbol missing");
-}
-function appendDocumentCacheResult(description: string) {
-  for (const key of Reflect.ownKeys(document)) {
-    if (typeof key !== "symbol" || key.description !== description) continue;
-    const before = (document as any)[key] as unknown[];
-    replaceDocumentSymbol(description, [...before, { result: null }]);
-    return;
-  }
-  throw new Error(description + " symbol missing");
-}
 domShimAlarm(import.meta.path);
 afterAll(() => GlobalRegistrator.unregister());
 

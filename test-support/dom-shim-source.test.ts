@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import ts from "typescript";
 
 const root = join(import.meta.dir, "..");
-const globalTargets = new Set(["globalThis", "window", "self", "document", "navigator", "performance", "location"]);
 
 const propertyName = (node: ts.Expression): string | undefined => {
   if (ts.isPropertyAccessExpression(node)) return node.name.text;
@@ -28,10 +28,10 @@ const rawDomShimLine = (source: ts.SourceFile, checker: ts.TypeChecker) => {
   const isUnbound = (node: ts.Identifier) => !checker.getSymbolAtLocation(node);
   const isProtected = (node: ts.Expression): boolean => {
     node = unwrap(node);
-    if (ts.isIdentifier(node)) return globalTargets.has(node.text) && isUnbound(node);
+    if (ts.isIdentifier(node)) return isUnbound(node);
     const owner = propertyOwner(node);
     return !!owner && (
-      propertyName(node) === "prototype" && ts.isIdentifier(unwrap(owner))
+      propertyName(node) === "prototype" && ts.isIdentifier(unwrap(owner)) && isUnbound(unwrap(owner) as ts.Identifier)
       || isProtected(owner)
     );
   };
@@ -65,6 +65,24 @@ const rawDomShimLine = (source: ts.SourceFile, checker: ts.TypeChecker) => {
   visit(source);
   return found && source.getLineAndCharacterOfPosition(found.getStart(source)).line + 1;
 };
+
+test("the source hint covers unbound global members but not local lookalikes", () => {
+  const directory = mkdtempSync(join(import.meta.dir, ".dom-shim-source-"));
+  const direct = join(directory, "direct.test.ts");
+  const computed = join(directory, "computed.test.ts");
+  const local = join(directory, "local.test.ts");
+  try {
+    writeFileSync(direct, "URL.createObjectURL = () => 'blob:test';\n");
+    writeFileSync(computed, "URL[Symbol.for('create')] = () => 'blob:test';\n");
+    writeFileSync(local, "const URL = { createObjectURL: () => '', prototype: {} as { value?: number } }; URL.createObjectURL = () => 'blob:test'; URL.prototype.value = 1;\n");
+    const paths = [direct, computed, local];
+    const program = ts.createProgram(paths, { moduleDetection: ts.ModuleDetectionKind.Force, noLib: true, noResolve: true, target: ts.ScriptTarget.Latest });
+    const checker = program.getTypeChecker();
+    expect(paths.map((path) => rawDomShimLine(program.getSourceFile(path)!, checker))).toEqual([1, 1, undefined]);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
 
 test("test DOM shims use the shared helper and register its alarm", async () => {
   const paths: string[] = [];

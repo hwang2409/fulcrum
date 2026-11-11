@@ -342,10 +342,14 @@ test("open arguments serialize once across 1,000 output tokens and once per argu
   store.dispatch({ type: "tool_start", tool_call });
   const original = JSON.stringify;
   let serializations = 0;
-  JSON.stringify = ((value: unknown, ...rest: unknown[]) => {
-    if (value && typeof value === "object" && "path" in value && "value" in value) serializations++;
-    return original(value, ...(rest as [((key: string, value: unknown) => unknown) | null, string | number | undefined]));
-  }) as typeof JSON.stringify;
+  const restoreStringify = shimProperty(JSON, "stringify", {
+    configurable: true,
+    writable: true,
+    value: ((value: unknown, ...rest: unknown[]) => {
+      if (value && typeof value === "object" && "path" in value && "value" in value) serializations++;
+      return original(value, ...(rest as [((key: string, value: unknown) => unknown) | null, string | number | undefined]));
+    }) as typeof JSON.stringify,
+  });
   try {
     mount(<RunProvider store={store}><ToolCall id="tool:lazy" /></RunProvider>);
     expect(serializations).toBe(0);
@@ -362,7 +366,7 @@ test("open arguments serialize once across 1,000 output tokens and once per argu
     expect(serializations).toBe(2);
     expect(q('[data-part="tool-args"]').textContent).toContain("updated");
   } finally {
-    JSON.stringify = original;
+    restoreStringify();
   }
 });
 
@@ -443,8 +447,11 @@ test("a command that fits its clamp has no show control", () => {
 
 test("output restarted into the same tool id (a replay, a reconnect, a demo loop) shows each line once", () => {
   const errors: unknown[] = [];
-  const original = console.error;
-  console.error = (...args: unknown[]) => { errors.push(args); };
+  const restoreError = shimProperty(console, "error", {
+    configurable: true,
+    writable: true,
+    value: (...args: unknown[]) => { errors.push(args); },
+  });
   try {
     const tool_call = { id: "r", name: "bash", arguments: { command: "bun test" } };
     const lines = Array.from({ length: 24 }, (_, i) => `\x1b[32mok\x1b[0m case ${i + 1}\n`);
@@ -462,7 +469,7 @@ test("output restarted into the same tool id (a replay, a reconnect, a demo loop
     }
     expect(errors).toEqual([]);
   } finally {
-    console.error = original;
+    restoreError();
   }
 });
 
