@@ -1,4 +1,4 @@
-import { Children, createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Children, createContext, useContext, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { ToolCall } from "@fulcrum/core";
 import type { ItemState } from "../parts.js";
 import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
@@ -7,11 +7,8 @@ import { jsonText } from "./json.js";
 import { CopyButton, needsTextViewer, TextViewer, useTextMetrics, viewerBlocks, type CopyValue, type Grown, type TextFormat } from "./text-viewer.js";
 
 const JSON_FORMAT: TextFormat = { language: "json" };
-const HEAD_LINES = 40;
-const TAIL_LINES = 20;
 export const MAX_DOM_CHARS = 100_000;
 export const MAX_SUMMARY_CHARS = 240;
-const DOM_CHROME_BUDGET = 256;
 
 type BoundedText = { text: string; shown: number; total: number; truncated: boolean };
 
@@ -55,43 +52,6 @@ export const lineCount = (text: string) => {
   for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n", at + 1)) lines++;
   return lines;
 };
-
-type Window<T> = { head: T[]; tail: T[]; tailFrom: number; hidden: number; total: number; truncated: boolean };
-
-function take<T>(items: T[], from: number, step: 1 | -1, maxItems: number, budget: number, size: (item: T) => number, cut: (item: T, chars: number) => T) {
-  const out: T[] = [];
-  for (let i = from; out.length < maxItems && i >= 0 && i < items.length; i += step) {
-    const length = size(items[i]!) + 1;
-    if (length > budget) {
-      if (!out.length) out.push(cut(items[i]!, budget));
-      break;
-    }
-    budget -= length;
-    out.push(items[i]!);
-  }
-  return step === 1 ? out : out.reverse();
-}
-
-/** A short first/last preview. Full large text is available through TextViewer. */
-export function bound<T>(items: T[], size: (item: T) => number, cut: (item: T, chars: number) => T, tail = TAIL_LINES, budget = MAX_DOM_CHARS - DOM_CHROME_BUDGET): Window<T> {
-  const total = items.length;
-  let chars = 0;
-  for (const item of items) chars += size(item) + 1;
-  if (total <= HEAD_LINES + tail && chars <= budget) return { head: items, tail: [], tailFrom: total, hidden: 0, total, truncated: false };
-  const head = take(items, 0, 1, HEAD_LINES, tail ? budget / 2 : budget, size, cut);
-  const end = tail ? take(items.slice(head.length), total - head.length - 1, -1, tail, budget / 2, size, cut) : [];
-  return { head, tail: end, tailFrom: total - end.length, hidden: total - head.length - end.length, total, truncated: chars > budget };
-}
-const cutLine = (line: string, chars: number) => boundText(line, chars).text;
-export const boundLines = (lines: string[], tail?: number, budget?: number) => bound(lines, (line) => line.length, cutLine, tail, budget);
-
-export function Gap({ window, noun = "lines" }: { window: Window<unknown>; noun?: string }) {
-  if (!window.hidden && !window.truncated) return null;
-  const text = window.hidden
-    ? `… ${window.hidden} ${noun} hidden; open to view all …`
-    : `… part of ${noun} shown; open to view all …`;
-  return <span data-part="tool-gap">{text}</span>;
-}
 
 const MEMO_ENTRIES = 32;
 const MEMO_CHARS = 2_000_000;

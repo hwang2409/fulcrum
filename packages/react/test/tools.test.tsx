@@ -10,7 +10,6 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type ApprovalDecision, type RunEvent, type ToolView } from "@fulcrum/core";
 import { Approval, deliveryNoteText, Fallback, RunProvider, Timeline, ToolCall, useItem, type Renderers } from "../src/index.js";
-import { boundLines } from "../src/tools/common.js";
 import { segmentText } from "../src/tools/text-viewer.js";
 
 afterAll(() => GlobalRegistrator.unregister());
@@ -251,12 +250,6 @@ test("a short tool name has no redundant title", () => {
   const label = container.querySelector<HTMLElement>('[data-part="tool-name"]')!;
   expect(label.textContent).toBe("bash");
   expect(label.hasAttribute("title")).toBe(false);
-});
-
-test("the compact line preview stays bounded", () => {
-  const window = boundLines(Array.from({ length: 1_000_000 }, () => "x"));
-  expect(window.head.length + window.tail.length).toBeLessThanOrEqual(60);
-  expect(window.hidden).toBe(999_940);
 });
 
 test("multi-megabyte output stays bounded in the dom and says what it left out", () => {
