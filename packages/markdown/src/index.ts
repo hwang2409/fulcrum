@@ -57,6 +57,7 @@ type ResolvedCodeSuffix = {
   start: number;
   nodes: Inline[];
   pending?: PendingInline;
+  pendingCodeAtEnd?: boolean;
 };
 
 type PendingInlineState = {
@@ -290,33 +291,66 @@ export function parseMarkdown(source: string): Block[] {
   return parseDetailed(source).map(({ block }) => block);
 }
 
+const escaped = (source: string, index: number) => {
+  let escapes = 0;
+  for (let at = index - 1; at >= 0 && source[at] === "\\"; at--) escapes++;
+  return escapes % 2 === 1;
+};
+
+const codeRunIsDelimiter = (source: string, index: number, context: "opener" | "closer") =>
+  context === "closer" || !escaped(source, index);
+
 const unmatchedCodeSpan = (source: string) => {
   let opener: { index: number; length: number } | undefined;
   for (const run of source.matchAll(/`+/g)) {
-    if (run.index === undefined) continue;
-    let escapes = 0;
-    for (let index = run.index - 1; index >= 0 && source[index] === "\\"; index--) escapes++;
-    if (escapes % 2) continue;
+    if (run.index === undefined || !codeRunIsDelimiter(source, run.index, opener ? "closer" : "opener")) continue;
     if (!opener) opener = { index: run.index, length: run[0].length };
     else if (opener.length === run[0].length) opener = undefined;
   }
   return opener;
 };
 
+// An opener before whitespace stays provisional because a later closer can strip that space.
+const codeRunCanSettle = (source: string, run: { index: number; length: number }) => {
+  const after = source[run.index + run.length];
+  return after !== undefined && !/\s/.test(after);
+};
+
+const plainResolvedCodeSuffix = /^[\p{L}\p{N} ]*$/u;
+
 function appendResolvedCodeSuffix(state: ResolvedCodeSuffix, delta: string, source: () => string, parse: (source: string, streaming: boolean, growing?: boolean) => Inline[]) {
   if (state.pending) {
     const copied = state.pending.copiedCharacters;
     state.pending.append(delta);
-    return state.pending.copiedCharacters - copied;
+    const appended = state.pending.copiedCharacters - copied;
+    if (state.pendingCodeAtEnd && delta) {
+      state.pendingCodeAtEnd = false;
+      const suffix = source();
+      const unmatched = unmatchedCodeSpan(suffix);
+      if (unmatched && codeRunCanSettle(suffix, unmatched)) {
+        state.pending = undefined;
+        state.nodes = [...state.prefix, ...parse(suffix, true, false)];
+        return appended + suffix.length;
+      }
+    }
+    return appended;
   }
-  if (/^[\p{L}\p{N} ]*$/u.test(delta)) {
+  if (plainResolvedCodeSuffix.test(delta)) {
     const last = state.nodes.at(-1);
     if (last?.type === "text" && state.nodes.length > state.prefix.length) last.value += delta;
+    else if (last?.type === "text" && delta) state.nodes[state.nodes.length - 1] = { type: "text", value: last.value + delta };
     else if (delta) state.nodes.push({ type: "text", value: delta });
     return delta.length;
   }
+  const suffix = source();
+  const unmatched = unmatchedCodeSpan(suffix);
+  if (unmatched && codeRunCanSettle(suffix, unmatched)) {
+    state.nodes = [...state.prefix, ...parse(suffix, true, false)];
+    return suffix.length;
+  }
+  state.pendingCodeAtEnd = !!unmatched && unmatched.index + unmatched.length === suffix.length;
   state.pending = new PendingInline(parse, undefined, state.prefix);
-  state.pending.append(source());
+  state.pending.append(suffix);
   state.nodes = state.pending.nodes;
   return state.pending.copiedCharacters;
 }
@@ -333,7 +367,7 @@ function scanExactCodeCloser(scanner: ExactCodeCloserScanner, source: string, ma
         continue;
       }
       scanned++;
-      if (scanner.run.length === markerLength) {
+      if (scanner.run.length === markerLength && codeRunIsDelimiter(source, scanner.run.start, "closer")) {
         scanner.resolvedEnd = scanner.run.start + scanner.run.length;
         break;
       }
@@ -348,7 +382,8 @@ function scanExactCodeCloser(scanner: ExactCodeCloserScanner, source: string, ma
     scanned++;
   }
   if (scanner.resolvedEnd === undefined && scanner.run && scanner.position === source.length
-    && scanner.run.length === markerLength && scanner.run.start > priorLength)
+    && scanner.run.length === markerLength && scanner.run.start > priorLength
+    && codeRunIsDelimiter(source, scanner.run.start, "closer"))
     scanner.resolvedEnd = scanner.position;
   return scanned;
 }
@@ -363,12 +398,6 @@ function tailCode(blocks: Block[]): Extract<Block, { type: "code" }> | undefined
   if (last?.type === "blockquote") return tailCode(last.children);
   return undefined;
 }
-
-const escaped = (source: string, index: number) => {
-  let escapes = 0;
-  for (let at = index - 1; at >= 0 && source[at] === "\\"; at--) escapes++;
-  return escapes % 2 === 1;
-};
 
 // Unescaped `[` and `]` outside code spans, including a span that may still close: code binds tighter than brackets.
 function bracketMarks(source: string) {
@@ -938,7 +967,7 @@ export function createStreamingDocument(): StreamingDocument {
       const inspected = inspectReferenceLine(inlineSource);
       if (inspected.metadata && inspected.disposition.kind !== "definition") inlineSource = inlineSource.replace("[", "\\[");
     }
-    record.block.children = /[\\[*_~`<!&]/.test(inlineSource)
+    record.block.children = /[\\[*_~`<!&]/.test(inlineSource) || (markdown as any).linkify.pretest(inlineSource)
       ? parseInline(inlineSource, streaming, environment(), false)
       : [{ type: "text", value: inlineSource }];
     registerReferences(record);
@@ -1212,14 +1241,14 @@ export function createStreamingDocument(): StreamingDocument {
       };
     }
     const state = pendingInlineState!;
-    const currentLine = line.slice(state.offset);
-    const lineLength = currentLine.length;
+    const lineLength = line.length - state.offset;
+    const delta = line.slice(state.offset + state.lineLength);
     let resolvedNow = false;
     const closer = state.closer;
     if (state.openCode && closer && closer.resolvedEnd === undefined) {
       const resolvedLine = resolver.pendingLeafContent;
       previewScannedCharacters += resolvedLine.length;
-      const priorLength = resolvedLine.length - (currentLine.length - state.lineLength);
+      const priorLength = resolvedLine.length - delta.length;
       previewScannedCharacters += scanExactCodeCloser(closer, resolvedLine, state.openCode.length, priorLength);
       if (closer.resolvedEnd !== undefined) {
         const end = closer.resolvedEnd;
@@ -1233,12 +1262,12 @@ export function createStreamingDocument(): StreamingDocument {
         resolvedNow = true;
       }
     }
-    previewScannedCharacters += lineLength - state.lineLength;
+    previewScannedCharacters += delta.length;
     if (state.resolvedSuffix) {
       if (!resolvedNow) {
         copiedCharacters += appendResolvedCodeSuffix(
           state.resolvedSuffix,
-          currentLine.slice(state.lineLength),
+          delta,
           () => {
             const resolvedLine = resolver.pendingLeafContent;
             previewScannedCharacters += resolvedLine.length;
@@ -1254,8 +1283,8 @@ export function createStreamingDocument(): StreamingDocument {
     }
     const inline = pendingInline!;
     const copied = inline.copiedCharacters;
-    if (startsInline) inline.extend(currentLine);
-    else inline.append(currentLine.slice(state.lineLength));
+    if (startsInline) inline.extend(delta);
+    else inline.append(delta);
     state.lineLength = lineLength;
     copiedCharacters += inline.copiedCharacters - copied;
     return inline.nodes;
@@ -1271,7 +1300,7 @@ export function createStreamingDocument(): StreamingDocument {
 
   return {
     get source() { return source; },
-    get stats() { return { frozenParses, tailParses, scannedCharacters, previewScannedCharacters, copiedCharacters }; },
+    get stats() { return { frozenParses, tailParses, scannedCharacters, previewScannedCharacters: previewScannedCharacters + resolver.pendingClassificationScanned, copiedCharacters }; },
     append(delta) {
       if (finished || !delta) return;
       const normalized = normalizeDelta(delta);

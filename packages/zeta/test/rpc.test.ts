@@ -101,6 +101,24 @@ test("every approval-health-gated method maps persistence failures through one t
   }
 });
 
+test("approval persistence mapping preserves other -32000 errors", async () => {
+  for (const error of [
+    { code: -32000, message: "plain failure" },
+    { code: -32000, message: "corrupt transcript", data: { code: "corrupt_transcript" } },
+  ]) {
+    const fake = fakeTransport();
+    const client = createClient(fake.transport);
+    await hello(fake, client);
+    const request = client.request("send");
+    fake.receive({ jsonrpc: "2.0", id: 2, error });
+    try { await request; throw new Error("request unexpectedly succeeded"); }
+    catch (actual) {
+      const rpc = actual as { code?: unknown; message?: unknown; data?: unknown };
+      expect({ code: rpc.code, message: rpc.message, ...(rpc.data === undefined ? {} : { data: rpc.data }) }).toEqual(error);
+    }
+  }
+});
+
 test("content_not_found has a typed not-available error", async () => {
   const fake = fakeTransport();
   const client = createClient(fake.transport);

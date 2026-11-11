@@ -56,6 +56,7 @@ type MutablePendingLine = {
   orderedDigits: number;
   blank: boolean;
   settledProseStart: boolean;
+  classificationSettled: boolean;
 };
 
 type Cursor = { line: string; offset: number; column: number; partialTab: number };
@@ -86,6 +87,7 @@ const freshPending = (): MutablePendingLine => ({
   orderedDigits: 0,
   blank: true,
   settledProseStart: false,
+  classificationSettled: false,
 });
 
 function advancePending(scan: MutablePendingLine, delta: string) {
@@ -246,6 +248,16 @@ const startsTable = (paragraph: string, delimiter: string) => {
 // text too (an autolink `<` waits in the inline parse).
 const markerOnly = (content: string) => /^[ \t]*(?:#+|[+*=_-]+|\d{1,9}[.)]?|`{1,}|~{1,})?[ \t]*$/.test(content);
 
+const paragraphStartIsSettled = (line: string, offset: number) => {
+  while (line[offset] === " " || line[offset] === "\t") offset++;
+  const lead = line[offset];
+  if (lead === undefined || lead === "[" || lead === "<") return false;
+  if (!"#`~*-_=|:".includes(lead)) return true;
+  const possibleMarker = "|:".includes(lead) ? " \t|:-" : ` \t${lead}`;
+  for (; offset < line.length; offset++) if (!possibleMarker.includes(line[offset]!)) return true;
+  return false;
+};
+
 /** The growing line is blank or only block markers so far (after its container markers): it decides nothing yet. */
 export const pendingMarkerLine = (line: string) => markerOnly(stripPendingContainers(line));
 
@@ -294,6 +306,7 @@ export class MarkdownLineResolver {
   private openLeaf?: { kind: "paragraph"; content: string; tableEligible: boolean } | { kind: "fence"; marker: string } | { kind: "indented-code" } | { kind: "table" } | { kind: "html"; end: RegExp };
   private pendingLine: MutablePendingLine = freshPending();
   private pendingClassification?: { length: number; value: PendingClassification };
+  private pendingClassificationScannedCharacters = 0;
   private readonly referenceIndex = new Map<string, ReferenceDefinition>();
   private activeReference?: {
     parser: ReferenceDefinitionParser;
@@ -316,6 +329,10 @@ export class MarkdownLineResolver {
     return { content: this.pendingLine.content, length: this.pendingLine.length, scan: this.pendingLine.scan };
   }
 
+  get pendingClassificationScanned() {
+    return this.pendingClassificationScannedCharacters;
+  }
+
   get pendingLeafContent() {
     const cursor: Cursor = { line: this.pendingLine.content, offset: 0, column: 0, partialTab: 0 };
     for (const frame of this.stack.slice(1)) {
@@ -329,6 +346,8 @@ export class MarkdownLineResolver {
   classifyPending(line = this.pendingLine.content): Readonly<PendingClassification> {
     const cached = this.pendingClassification;
     if (line === this.pendingLine.content && cached && line.length === cached.length) return cached.value;
+    // Charge the whole input before classification so performance tests catch a new per-frame rescan.
+    if (line === this.pendingLine.content) this.pendingClassificationScannedCharacters += line.length;
     const { cursor, unmatched } = this.matchContinuations(line);
     if (!unmatched && this.openLeaf?.kind === "fence") {
       const content = cursorContent(cursor);
@@ -343,6 +362,7 @@ export class MarkdownLineResolver {
       this.pendingClassification = { length: line.length, value };
       return value;
     }
+    if (paragraphStartIsSettled(line, value.offset)) this.pendingLine.classificationSettled = true;
     const owner = this;
     const liveValue: PendingClassification = {
       kind: "paragraph",
@@ -386,7 +406,8 @@ export class MarkdownLineResolver {
 
   private appendPartial(delta: string) {
     advancePending(this.pendingLine, delta);
-    if (this.pendingClassification?.value.kind === "paragraph" && this.pendingLine.settledProseStart)
+    if (this.pendingClassification?.value.kind === "paragraph"
+      && (this.pendingLine.settledProseStart || this.pendingLine.classificationSettled))
       this.pendingClassification.length += delta.length;
     else this.pendingClassification = undefined;
   }

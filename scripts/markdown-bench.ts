@@ -222,4 +222,49 @@ const continuationRatios = [
   median(continuationSamples.map(([, medium, large]) => large / medium)),
 ];
 console.log(`64 B  continuation line 96k -> 192k -> 384k: ${continuationMedians.map((time) => time.toFixed(0)).join(" -> ")} ms; doubling ${continuationRatios.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")} (median of 7 pairs)`);
+
+const longLineSizes = [50_000, 100_000, 200_000] as const;
+const jsonPrefix = '{"time":"2026-11-09T12:34:56.789Z","level":"info","agent":"worker","output":"';
+const jsonSuffix = '"}';
+const logUnit = "2026-11-09T12:34:56.789Z INFO worker tool completed duration_ms=12 output_bytes=4096 ";
+const longLineCases = [
+  ["single-line JSON", (size: number) => jsonPrefix + "x".repeat(size - jsonPrefix.length - jsonSuffix.length) + jsonSuffix],
+  ["single-line log", (size: number) => logUnit.repeat(Math.ceil(size / logUnit.length)).slice(0, size)],
+] as const;
+const longLineChunkSizes = [32, 1] as const;
+const percentile = (sorted: readonly number[], fraction: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))]!;
+for (const chunkSize of longLineChunkSizes) for (const [name, sourceAtSize] of longLineCases) {
+  const results = longLineSizes.map((size) => ({
+    durations: [] as number[],
+    source: sourceAtSize(size),
+    trialTotals: [] as number[],
+    trialWork: [] as number[],
+  }));
+  for (let trial = 0; trial < 3; trial++) for (const result of results) {
+    const document = createStreamingDocument();
+    const start = performance.now();
+    for (let offset = 0; offset < result.source.length; offset += chunkSize) {
+      const frameStart = performance.now();
+      document.append(result.source.slice(offset, offset + chunkSize));
+      document.render();
+      result.durations.push(performance.now() - frameStart);
+    }
+    result.trialTotals.push(performance.now() - start);
+    result.trialWork.push(document.stats.previewScannedCharacters);
+  }
+  const totals = results.map((result, index) => {
+    const total = median(result.trialTotals);
+    result.durations.sort((left, right) => left - right);
+    console.log(`${String(chunkSize).padStart(2)} B  ${name.padEnd(18)} ${String(longLineSizes[index]! / 1000).padStart(3)}k total ${total.toFixed(1)} ms  p50 ${percentile(result.durations, 0.5).toFixed(3)} ms  p95 ${percentile(result.durations, 0.95).toFixed(3)} ms  max ${result.durations.at(-1)!.toFixed(3)} ms`);
+    return total;
+  });
+  const growth = totals.slice(1).map((time, index) => time / totals[index]!);
+  const work = results.map((result) => median(result.trialWork));
+  const workGrowth = work.slice(1).map((characters, index) => characters / work[index]!);
+  console.log(`${String(chunkSize).padStart(2)} B  ${name.padEnd(18)} growth ${growth.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")} per doubling; work ${workGrowth.map((ratio) => `${ratio.toFixed(2)}x`).join(", ")}`);
+  if (workGrowth.some((ratio) => ratio > 2.2)) {
+    console.error(`FAIL ${chunkSize} B ${name} work growth exceeded 2.20x`);
+    failed = true;
+  }
+}
 if (failed) process.exit(1);
