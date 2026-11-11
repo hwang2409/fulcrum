@@ -162,18 +162,23 @@ test("fg reaches 4.5:1 on a 12% ok, warn, danger, accent, or muted tint over bg"
 });
 
 test("copy buttons use readable text and ANSI cyan reaches text contrast", () => {
-  expect(styles).toMatch(/button\[data-action="copy"\][^{]*\{[^}]*forced-color-adjust:\s*none;[^}]*color:\s*ButtonText;/s);
+  const copyRule = rules.find(({ selector }) => selector.endsWith('[data-part="image-dialog"]) button'))!;
+  const copyColor = /(?:^|;)\s*color:\s*([^;]+);/.exec(copyRule.body)?.[1]!.trim();
+  const forcedCopyRule = rules.find(({ selector }) => selector.endsWith('button[data-action="copy"]'))!;
+  expect(forcedCopyRule.body).toMatch(/forced-color-adjust:\s*none;/);
+  expect(forcedCopyRule.body).toMatch(/background:\s*Canvas;/);
+  expect(forcedCopyRule.body).toMatch(/color:\s*ButtonText;/);
+
   for (const { name, vars } of palettes) {
-    const value = color(vars.fg!, vars);
-    for (const [background, rgb] of Object.entries(backgrounds(vars, "fg"))) {
-      const actual = contrast(value, rgb);
-      if (actual < 4.5) throw new Error(`${name}: copy button on ${background} is ${actual.toFixed(3)}:1`);
-    }
-    if (name === '[data-fulcrum-theme="github-light"]') {
-      const cyan = contrast(color(vars["ansi-cyan"]!, vars), color(vars.surface!, vars));
-      if (cyan < 4.5) throw new Error(`${name}: ANSI cyan on surface is ${cyan.toFixed(3)}:1`);
-    }
+    expect(color(copyColor!, vars), `${name}: copy button color resolves to --fulcrum-fg`).toEqual(color(vars.fg!, vars));
   }
+
+  const github = palettes.find(({ name }) => name.endsWith('[data-fulcrum-theme="github-light"]'))!;
+  expect(rules.find(({ selector }) => selector === ".ansi-cyan")?.body).toMatch(/color:\s*var\(--fulcrum-ansi-cyan\);/);
+  expect(rules.find(({ selector }) => selector === '[data-tool-view="shell"] [data-part="tool-output"]')?.body).toMatch(/background:\s*var\(--fulcrum-bg\);/);
+  // The gallery's shell stderr fixture renders this pair. Its narrow faded row painted #ecf3ee in the axe capture.
+  const actual = contrast(color(github.vars["ansi-cyan"]!, github.vars), color("#ecf3ee", github.vars));
+  expect(actual, `${github.name}: ANSI cyan on gallery shell output`).toBeGreaterThanOrEqual(4.5);
 });
 
 test("syntax colors reach 4.5:1 and ANSI colors 3:1 where they sit, as the official hex or its smallest OKLCH lightness change", () => {
