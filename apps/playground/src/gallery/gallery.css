@@ -190,4 +190,6 @@ a { color: inherit; text-decoration: none; }
   .inspect, .demo-actions button { transition: none; }
 }
 .code-line { margin: 0 0 8px; padding: 8px 12px; overflow-x: auto; border: 1px solid var(--fulcrum-border); background: var(--fulcrum-surface); color: var(--fulcrum-fg); font: 13px/1.6 var(--fulcrum-font); }
+.code-line > code { display: inline-block; min-width: 100%; }
+.code-line:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 .code-line:last-child { margin-bottom: 0; }

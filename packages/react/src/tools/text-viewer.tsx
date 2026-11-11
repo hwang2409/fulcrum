@@ -515,7 +515,7 @@ export function TextViewer({ text, label, id, appendOnly = false, grown, follow 
   // "open all" unmounts itself: the viewer it opens takes focus.
   const openViewer = () => setOpen("focus");
   const rowSegments = useMemo(() => open && rows ? rowGroups(rows) : [], [open, rows]);
-  const cap = useCap(rows ? rows.count : text);
+  const cap = useCap(rows ? rows.count : text, label);
   if (rows && !(large && open)) {
     const { head, tail } = previewRows(rows);
     const cut = large && head < tail;
@@ -545,7 +545,7 @@ export function TextViewer({ text, label, id, appendOnly = false, grown, follow 
   const shown = textMetrics(ends.head.slice(0, headEnd)).lines + textMetrics(ends.tail.slice(tailStart - offset)).lines;
   return (
     <>
-      <pre data-part={part} data-stream={stream} data-language={format?.language} data-anchor={follow ? undefined : "start"}><span>
+      <pre ref={cap.ref} data-part={part} data-stream={stream} data-language={format?.language} data-anchor={follow ? undefined : "start"}><span>
         <Styled text={ends.head} end={headEnd} format={format} id={id} />
         <span data-part="tool-gap">… {count(metrics.lines - shown)} more lines of {count(metrics.lines)} …{"\n"}</span>
         <Styled text={ends.tail} offset={offset} start={tailStart} format={format} id={id} done={done} />
@@ -594,7 +594,7 @@ export function CodeViewer({ text, language, id, done = true, label = "code", se
  * A box capped by styles.css (output, arguments, numbered lines) says when it cuts its content: a fade on each cut
  * edge (`data-fade`, set on scroll without a render) and `expand`, which lifts the cap. `content` changes re-measure.
  */
-function useCap(content: unknown) {
+function useCap(content: unknown, label: string) {
   const [node, setNode] = useState<HTMLElement | null>(null);
   const [cut, setCut] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -607,6 +607,14 @@ function useCap(content: unknown) {
       const fade = hidden > 1 ? `${top > 1 ? "top " : ""}${top < hidden - 1 ? "bottom" : ""}`.trim() : "";
       if (fade) node.dataset.fade = fade;
       else delete node.dataset.fade;
+      const scrollable = hidden > 1 || node.scrollWidth - node.clientWidth > 1;
+      if (scrollable) {
+        node.tabIndex = 0;
+        node.setAttribute("aria-label", `${label}, scrollable`);
+      } else {
+        if (node.tabIndex === 0) node.removeAttribute("tabindex");
+        if (node.getAttribute("aria-label") === `${label}, scrollable`) node.removeAttribute("aria-label");
+      }
       setCut(hidden > 1);
     };
     update();
@@ -618,8 +626,10 @@ function useCap(content: unknown) {
       observer.disconnect();
       node.removeEventListener("scroll", update);
       delete node.dataset.fade;
+      if (node.tabIndex === 0) node.removeAttribute("tabindex");
+      if (node.getAttribute("aria-label") === `${label}, scrollable`) node.removeAttribute("aria-label");
     };
-  }, [node, expanded, content]);
+  }, [node, expanded, content, label]);
   // "show all" unmounts itself: focus moves to the box it opened (tabIndex -1: focusable by script, not a tab stop).
   const expand = () => {
     setExpanded(true);

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 domShimAlarm(import.meta.path);
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown, type FenceProps, type Fences } from "../src/react.js";
@@ -39,6 +39,40 @@ test("an open fence is not done; the language matches in any case; fences nest i
   calls.length = 0;
   renderToStaticMarkup(<Markdown source={"- item\n\n  ```mermaid\n  pie\n  ```\n\n> ```mermaid\n> pie\n> ```\n"} fences={fences} />);
   expect(calls.map((call) => call.code)).toEqual(["pie\n", "pie\n"]);
+});
+
+test("only a code block that overflows is a named keyboard tab stop", async () => {
+  const { Window } = await import("happy-dom");
+  const { act } = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const window = new Window();
+  const observed = new Set<Element>();
+  let observers = 0;
+  const restores = [
+    shimGlobal("window", window),
+    shimGlobal("document", window.document),
+    shimGlobal("IS_REACT_ACT_ENVIRONMENT", true),
+    shimProperty(window.HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 100 }),
+    shimProperty(window.HTMLElement.prototype, "scrollWidth", { configurable: true, get(this: HTMLElement) { return this.textContent!.length > 20 ? 200 : 100; } }),
+    shimGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) { observers++; }
+      observe(target: Element) { observed.add(target); this.callback([{ target }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      unobserve(target: Element) { observed.delete(target); }
+      disconnect() { observed.clear(); }
+    } as unknown as typeof ResizeObserver),
+  ];
+  restoreBrowser = () => { for (const restore of restores.reverse()) restore(); };
+  const container = window.document.createElement("div") as unknown as HTMLElement;
+  const root = createRoot(container);
+  await act(() => root.render(<Markdown source={"```ts\nconst deliberatelyLongName = true\n```\n\n```sh\necho ok\n```"} />));
+  const blocks = container.querySelectorAll<HTMLElement>('[data-part="md-code-block"]');
+  expect(blocks[0]!.tabIndex).toBe(0);
+  expect(blocks[0]!.getAttribute("aria-label")).toBe("ts code, scrollable");
+  expect(blocks[1]!.hasAttribute("tabindex")).toBe(false);
+  expect(blocks[1]!.hasAttribute("aria-label")).toBe(false);
+  expect(observers).toBe(1);
+  await act(() => root.unmount());
+  expect(observed.size).toBe(0);
 });
 
 test("a closed fence does not render again while later text streams in", async () => {

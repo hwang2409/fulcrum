@@ -16,7 +16,7 @@ import {
   type ListBlock,
   type Token,
 } from "./index.js";
-import { CodeViewer, HighlightContext, INLINE_SPANS, isLargeCode, Tokens } from "@fulcrum/react/code";
+import { CodeViewer, HighlightContext, INLINE_SPANS, isLargeCode, Tokens, useOverflowFocus } from "@fulcrum/react/code";
 
 export interface MarkdownProps {
   source: string;
@@ -80,6 +80,7 @@ function keepColors(previous: Token[] | null, candidate: Token[] | null, code: s
 // One component for a fence's whole life, so the tokens it has carry over when it becomes the viewer (over isLargeCode's
 // limits, or with more than INLINE_SPANS tokens): its colors never blink and the commit stays bounded.
 function CodeBlock({ id, block, highlight, streaming }: { id: string; block: Extract<Block, { type: "code" }>; highlight?: Highlighter; streaming?: boolean }) {
+  const overflow = useOverflowFocus(block.language ? `${block.language} code` : "code");
   const large = isLargeCode(block.value);
   const version = useRef(0);
   const previous = useRef("");
@@ -126,7 +127,7 @@ function CodeBlock({ id, block, highlight, streaming }: { id: string; block: Ext
   // a trailing break draws no line of its own, so the cursor ends the last code line, open or closed, and nothing moves.
   const end = streaming && block.value.endsWith("\n") ? "\n" : "";
   const body = shown ? <Tokens tokens={end ? withoutFinalBreak(shown) : shown} /> : end ? block.value.slice(0, -1) : block.value;
-  return <pre data-part="md-code-block" data-language={block.language} data-state={block.open ? "streaming" : undefined}><code>{body}{streaming && <span data-part="md-code-end">{end}</span>}</code></pre>;
+  return <pre {...overflow} data-part="md-code-block" data-language={block.language} data-state={block.open ? "streaming" : undefined}><code>{body}{streaming && <span data-part="md-code-end">{end}</span>}</code></pre>;
 }
 
 const withoutFinalBreak = (tokens: Token[]) => {
@@ -146,6 +147,11 @@ const ListView = ({ id, block, highlight, fences, streaming }: { id: string; blo
   ))}</Tag>;
 };
 
+const TableView = ({ block }: { block: Extract<Block, { type: "table" }> }) => {
+  const overflow = useOverflowFocus("table");
+  return <table {...overflow} data-part="md-table"><thead><tr>{block.header.map((cell, index) => <th key={index} align={block.align[index]}><InlineView nodes={cell} /></th>)}</tr></thead>{block.rows.length ? <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} align={block.align[cellIndex]}><InlineView nodes={cell} /></td>)}</tr>)}</tbody> : null}</table>;
+};
+
 const BlockView = memo(function BlockView({ id, block, highlight, fences, streaming }: { id: string; block: Block; open: boolean | undefined } & Shared): ReactNode {
   if (block.type === "paragraph") return block.tight
     ? <InlineView nodes={block.children} />
@@ -162,7 +168,7 @@ const BlockView = memo(function BlockView({ id, block, highlight, fences, stream
   if (block.type === "list") return <ListView id={id} block={block} highlight={highlight} fences={fences} streaming={streaming} />;
   if (block.type === "blockquote") return <blockquote data-part="md-blockquote">{block.children.map((child, index) => <BlockView key={index} id={`${id}:${index}`} block={child} open={isOpen(child)} highlight={highlight} fences={fences} streaming={streaming} />)}</blockquote>;
   if (block.type === "rule") return <hr data-part="md-rule" />;
-  return <table data-part="md-table"><thead><tr>{block.header.map((cell, index) => <th key={index} align={block.align[index]}><InlineView nodes={cell} /></th>)}</tr></thead>{block.rows.length ? <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} align={block.align[cellIndex]}><InlineView nodes={cell} /></td>)}</tr>)}</tbody> : null}</table>;
+  return <TableView block={block} />;
 // An open block can be the same object, grown in place (a fence after a whole-line delta) and then closed in place: it
 // re-renders while open and once more when `open` (a prop of its own, read before the object changed) turns false.
 }, (prior, next) => prior.block === next.block && !(next.block.type === "code" && next.block.open) && prior.open === next.open && prior.id === next.id && prior.highlight === next.highlight && prior.fences === next.fences && prior.streaming === next.streaming);
