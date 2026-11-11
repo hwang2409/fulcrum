@@ -303,6 +303,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
   let controller: ServerWebSocket<unknown> | null = null;
   const reconnectControllers = new WeakSet<object>();
   const negotiatedFeatures = new WeakMap<object, Set<string>>();
+  const replayStreams = new WeakMap<object, { session: string; id: string; seq: number }>();
   const connectionRoles = new WeakMap<object, "controller" | "observer">();
   const hostBoundSessions = new Set<string>();
   const hostBindingRequired = new Set<string>();
@@ -431,7 +432,18 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           timing.replied = performance.now();
           socket.send(JSON.stringify({ jsonrpc: "2.0", id, ...body }));
         };
-        const send = (event: Json) => { for (const each of sockets) each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event })); };
+        const send = (event: Json) => {
+          for (const each of sockets) {
+            if (!negotiatedFeatures.get(each as object)?.has("session_replay_seq")) {
+              each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event }));
+              continue;
+            }
+            const stream = replayStreams.get(each as object);
+            if (!stream || event.session_id !== stream.session) continue;
+            stream.seq++;
+            each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { ...event, stream_id: stream.id, seq: stream.seq } }));
+          }
+        };
         if (method === "hello") {
           const bearer = (socket.data as { bearer?: string }).bearer;
           const requestedRole = params.role === "observer" ? "observer" : "controller";
@@ -445,7 +457,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           if (!sockets.has(socket)) return;
           connectionRoles.set(socket as object, requestedRole);
           if (requestedRole === "controller") controller = socket;
-          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || (name === "session_history_backward" && backwardHistoryOffered) || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect) || (name === "served_turn_end" && servedTurnEndOffered)) ?? [];
+          const features = (params.features as string[] | undefined)?.filter((name) => name === "list_sessions_paging" || name === "delivery_id" || name === "user_message_event" || name === "user_message_delivery_id" || (name === "session_history_backward" && backwardHistoryOffered) || name === "session_history_fidelity" || name === "content_read" || name === "session_host_commands" || name === "session_replay_seq" || (name === "approval_history" && approvalHistoryMode === "advertised-with-rows") || (name === "approval_reconnect" && approvalReconnect) || (name === "served_turn_end" && servedTurnEndOffered)) ?? [];
           negotiatedFeatures.set(socket as object, new Set(features));
           const reconnect = features.includes("approval_reconnect");
           if (reconnect) reconnectControllers.add(socket as object);
@@ -457,12 +469,12 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
             else {
               if (approvalExpiry) clearTimeout(approvalExpiry);
               approvalExpiry = null;
-              queueMicrotask(() => socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "approval_request", session_id: ACTIVE, request_id: "approval-1", tool_call: approvalCall, delegated: false } })));
+              if (!features.includes("session_replay_seq")) queueMicrotask(() => socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "approval_request", session_id: ACTIVE, request_id: "approval-1", tool_call: approvalCall, delegated: false } })));
             }
           }
           return;
         }
-        if (connectionRoles.get(socket as object) === "observer" && !["list_sessions", "status", "session_tree", "session_history", "model_catalog", "session_settings", "ping", "delivery_status", "content_read"].includes(method)) return reply({ error: { code: -32008, message: "observer is read-only", data: { code: "observer_read_only", method } } });
+        if (connectionRoles.get(socket as object) === "observer" && !["list_sessions", "status", "session_tree", "session_history", "session_history_and_subscribe", "model_catalog", "session_settings", "ping", "delivery_status", "content_read"].includes(method)) return reply({ error: { code: -32008, message: "observer is read-only", data: { code: "observer_read_only", method } } });
         const binding = parseHostBinding(socket, method, params);
         if (binding?.error) return reply({ error: { code: -32602, message: binding.error } });
         if ((method === "new_session" || method === "resume") && mode === "busy-once" && !busyOnce) {
@@ -527,6 +539,33 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           const next = Math.min(fakeImage.byteLength, offset + limit);
           const data = btoa(String.fromCharCode(...fakeImage.slice(offset, next)));
           return reply({ result: { handle: fakeImageHandle, media_type: "image/png", title: "reconnect.png", size: fakeImage.byteLength, offset, data, next_offset: next, eof: next === fakeImage.byteLength } });
+        }
+        if (method === "session_history_and_subscribe") {
+          if (!negotiatedFeatures.get(socket as object)?.has("session_replay_seq")) return reply({ error: { code: -32601, message: "session_replay_seq requires negotiation" } });
+          if (params.session_id !== active) return reply({ error: { code: -32003, message: "no active session" } });
+          const servedEnds = negotiatedFeatures.get(socket as object)?.has("served_turn_end");
+          const rows = (histories[active!] ?? []).filter((row) =>
+            (approvalHistoryMode !== "not-advertised-without-rows" || (row.event !== "approval_request" && row.event !== "approval_end")) &&
+            (servedEnds || row.event !== "served_turn_end"));
+          const groups = historyGroups(rows);
+          const end = groups.length;
+          const start = Math.max(0, end - (active === LARGE ? 128 : 8));
+          const endpoint = end ? String(groups[end - 1]?.findLast((row) => row.event !== "approval_request" && row.event !== "approval_end")?.id ?? "") : null;
+          const stream = { session: active!, id: crypto.randomUUID(), seq: 0 };
+          const pending = connectionRoles.get(socket as object) === "controller" && decide && !approvalAborted
+            ? [{ request_id: "approval-1", tool_call: approvalCall, delegated: false, label: "shell" }]
+            : [];
+          const previous = replayStreams.get(socket as object);
+          reply({ result: {
+            messages: countServedTurnEnds(groups.slice(start, end).flat()),
+            next_before: start || null,
+            history_validator: { end, entry_id: endpoint, ...(opaqueHistoryValidator ? { repair_generation: "fake-repair-generation" } : {}) },
+            replay: { stream_id: stream.id, history_seq: 0 },
+            status: { state: running ? (decide ? "tool" : "running") : "idle", pending_approvals: pending, pending_approvals_truncated: false },
+          } });
+          replayStreams.set(socket as object, stream);
+          if (previous) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "replay_stream_ended", session_id: previous.session, stream_id: previous.id, reason: "rejoined" } }));
+          return;
         }
         if (method === "session_history") {
           if (params.session_id !== active) return reply({ error: { code: -32003, message: "no active session" } });

@@ -1,5 +1,6 @@
 import { createRunStore, type RunEvent, type Scheduler, type RunState } from "@fulcrum/core";
-import { fromZetaEvent } from "./adapter.js";
+import { fromZetaEvent, fromZetaHistory } from "./adapter.js";
+import { createReplayRegistry } from "./session-replay.js";
 import { createDeliveryIdentity } from "./delivery-identity.js";
 import type { HelloResult, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
@@ -137,6 +138,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   let handshaken = false;
   let negotiatedProtocol = "1.0";
   let negotiatedFeatures: string[] = [];
+  let connectionRole: "controller" | "observer" = "controller";
   let warnedHostCommandsUnavailable = false;
   const maxPending = options.maxPendingRequests ?? 1000;
   const maxFrame = options.maxFrameSize ?? 1024 * 1024;
@@ -146,7 +148,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const deliveryIdentity = createDeliveryIdentity(maxPending);
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
-  const replaying = new Set<string>();
+  let replayRegistry: ReturnType<typeof createReplayRegistry> | undefined;
   const quarantined = new Set<string>();
   // The last served turn each session started (feature `served_turn_end`), so a host can look up its recorded end.
   const servedTurns = new Map<string, string>();
@@ -178,9 +180,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const store = createRunStore(scheduler); // host code: outside; README row "scheduler"
   let evictionCount = 0;
   const evict = (id: string) => {
+    if (replayRegistry && !replayRegistry.prepareEvict(id)) return false;
     cancelRecovery(id);
     cancelLoad(id);
-    replaying.delete(id);
     quarantined.delete(id);
     quarantineRevisions.delete(id);
     replayLoads.delete(id);
@@ -245,9 +247,15 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       if (recoveries.get(session) === recovery) recoveries.delete(session);
     }
   };
-  const createSession = (session: string) => {
+  const makeSession = (session: string) => {
     let value!: SessionStore;
-    value = createRunStore(scheduler, { onError: () => { void resyncSession(session, value).catch(() => {}); } }); // host code: outside; README row "scheduler"
+    value = createRunStore(scheduler, { onError: () => { // host code: outside; README row "scheduler"
+      if (!replayRegistry?.retrySession(session)) void resyncSession(session, value).catch(() => {});
+    } });
+    return value;
+  };
+  const createSession = (session: string) => {
+    const value = makeSession(session);
     stores.set(session, value);
     holders.set(session, 0);
     return value;
@@ -289,24 +297,34 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       },
     };
   };
-  /** Opens `session` on a fresh store. Until `session_replay_seq` ships, overlapping live events are ambiguous and dropped. */
+  /** Opens `session` on a fresh store while its previous committed replay remains readable. */
   const replay = async (session: string, load: (signal: AbortSignal) => Promise<RunEvent[]>, keepQuarantined = false): Promise<SessionLease> => {
-    if (replaying.has(session)) throw new Error(`session ${session} is already replaying`);
-    evict(session);
+    if (!replayRegistry) throw new Error("replay registry is not ready");
+    if (!replayRegistry.mode(session)) evict(session);
+    const generation = replayRegistry.acquireLegacy(session);
+    cancelRecovery(session);
+    cancelLoad(session);
     replayLoads.set(session, load);
-    replaying.add(session);
     quarantined.add(session);
-    quarantineRevisions.set(session, 0);
+    quarantineRevisions.set(session, generation === 1 ? 0 : generation * 1_000_000);
     const controller = new AbortController();
     activeLoads.set(session, controller);
     try {
       const history = await load(controller.signal); // host code: outside; README row "load(signal)"
-      if (controller.signal.aborted) throw Object.assign(new Error("request aborted"), { name: "AbortError" });
+      if (controller.signal.aborted || replayRegistry.generation(session) !== generation)
+        throw Object.assign(new Error("request aborted"), { name: "AbortError" });
       if (!keepQuarantined) activeLoads.delete(session);
-      const value = createSession(session);
+      const value = makeSession(session);
+      stores.set(session, value);
       holders.set(session, 1);
       let released = false;
-      const lease = { store: value, release() { if (released) return; released = true; const count = holders.get(session); if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1)); } };
+      const lease = { store: value, release() {
+        if (released) return;
+        released = true;
+        const count = holders.get(session);
+        if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1));
+        replayRegistry?.releaseLegacy(session, generation);
+      } };
       for (const event of history) call(() => lease.store.dispatch(event));
       if (!keepQuarantined) {
         quarantined.delete(session);
@@ -314,13 +332,13 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       }
       return lease;
     } catch (error) {
+      replayRegistry.releaseLegacy(session, generation);
       replayLoads.delete(session);
       quarantined.delete(session);
       quarantineRevisions.delete(session);
       throw error;
     } finally {
       if (!quarantined.has(session) && activeLoads.get(session) === controller) activeLoads.delete(session);
-      replaying.delete(session);
     }
   };
   const replayRevision = (session: string) => quarantineRevisions.get(session) ?? 0;
@@ -361,6 +379,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       if (event) deliver(sessionGrantsListeners, event);
       return;
     }
+    if (replayRegistry?.route(message.params)) return;
     const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
     // The newest served turn id is valid metadata even while its event stays quarantined.
     const turnId = message.params.event === "turn_start" ? (message.params.data as { turn_id?: unknown } | undefined)?.turn_id : undefined;
@@ -473,6 +492,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     closeWaiters.forEach((reject) => reject(error)); // host code: outside; README row "client functions held as values"
     closeWaiters.clear();
     attachmentIdentity.clear();
+    replayRegistry?.close();
     cancelLoads();
     deliver(closeListeners, error);
   };
@@ -502,7 +522,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
         deliveryId: typeof params.delivery_id === "string" ? params.delivery_id : undefined,
       });
       if (requestOptions.signal) requestOptions.signal.addEventListener("abort", abort, { once: true }); // host code: outside; README row "request signal"
-      if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(new Error("request timed out"))), requestOptions.timeoutMs); // host code: outside; README row "client functions held as values"
+      if (requestOptions.timeoutMs !== undefined) item.timer = setTimeout(() => settle(id, (entry) => entry.reject(Object.assign(new Error("request timed out"), { name: "TimeoutError" }))), requestOptions.timeoutMs); // host code: outside; README row "client functions held as values"
       try { transport.send(JSON.stringify({ jsonrpc: "2.0", id, method, params })); } // host code: outside; README row "transport"
       catch (error) { settle(id, (entry) => entry.reject(error)); } // host code: outside; README row "client functions held as values"
     });
@@ -620,12 +640,27 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       : result.catch((error) => isHostBindingRequired(error) ? recoverHostBinding(method, params, requestOptions, error) : Promise.reject(error));
     return approvalPersistenceMethods.has(method) ? recovered.catch(typeApprovalPersistenceError) : recovered;
   };
+  replayRegistry = createReplayRegistry({
+    request: (method, params, requestOptions) => request(method, params as Record<string, unknown>, requestOptions),
+    makeStore: makeSession,
+    commitStore(session, value) {
+      stores.set(session, value as SessionStore);
+      holders.set(session, 0);
+      touch(session);
+    },
+    adaptHistory: fromZetaHistory,
+    adaptEvent: fromZetaEvent,
+    stampEvent: stampIntent,
+    role: () => connectionRole,
+    protocolViolation(message) { call(() => console.warn(`zeta replay protocol violation: ${message}`)); },
+  });
   const hello = (requestedFeatures?: string[], role: "controller" | "observer" = "controller"): Promise<HelloResult> => {
     const requested = new Set(requestedFeatures ?? []);
     const features = [...new Set([...(requestedFeatures ?? []), ...(requested.has("delivery_id") ? ["send_images_delivery_id"] : []), ...(options.hostCommands ? ["session_host_commands"] : []), "served_turn_end"])];
     const send = () => request("hello", { protocol_version: "1.2", client_version: "1.2", role, ...(features ? { features } : {}) }) as Promise<HelloResult>;
     return (transport.ready ? transport.ready.then(send) : send()).then((result) => { // host code: outside; README row "transport"
       handshaken = true;
+      connectionRole = role;
       negotiatedProtocol = typeof result.protocol_version === "string" ? result.protocol_version : "1.0";
       const features = result.capabilities?.features;
       negotiatedFeatures = negotiatedProtocol !== "1.0" && Array.isArray(features) && features.every((feature): feature is string => typeof feature === "string") ? features : [];
@@ -637,6 +672,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     });
   };
   const retrySession = (session: string) => {
+    if (replayRegistry?.retrySession(session)) return Promise.resolve();
     const target = stores.get(session);
     return target ? resyncSession(session, target) : Promise.reject(new Error(`session ${session} is not open`));
   };
@@ -647,7 +683,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return await readContentChunks(handle, cap, (offset) => request("content_read", { handle, offset }, { signal: options.signal }));
     } catch (error) { return contentReadError(error); }
   };
-  return { store, stores, forSession, servedTurn: (sessionId: string) => servedTurns.get(sessionId), replay, replayRevision, finishReplay, retrySession, readContent, request, hello, onClose, onSessionGrantsChanged, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { closeClient(); transport.close(); } }; // host code: outside; README row "transport"
+  return { store, stores, forSession, servedTurn: (sessionId: string) => servedTurns.get(sessionId), replay, replayRevision, finishReplay, openSessionReplay: replayRegistry.openSessionReplay, retrySession, readContent, request, hello, onClose, onSessionGrantsChanged, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { replayRegistry?.close(); closeClient(); transport.close(); } }; // host code: outside; README row "transport"
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler, options?: ClientOptions) { return createClient(transport, scheduler, undefined, options); }
