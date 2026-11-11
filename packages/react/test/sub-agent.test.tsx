@@ -3,7 +3,8 @@ GlobalRegistrator.register({ url: "http://localhost:3000/gallery.html" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { act, StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type RunSource, type SubAgentEvent } from "@fulcrum/core";
@@ -181,9 +182,7 @@ test("the elapsed clock runs only while a live row is in view and the page is vi
   visibility.hide(true);
   expect(visibility.timers()).toBe(0);
   // Back from a background tab, the row shows the real time at once, not the time it was hidden at.
-  const now = Date.now;
-  Date.now = () => started + 65_000;
-  restore.push(() => { Date.now = now; });
+  restore.push(shimProperty(Date, "now", { configurable: true, writable: true, value: () => started + 65_000 }));
   visibility.hide(false);
   expect(visibility.timers()).toBe(1);
   expect(a!.querySelector('[data-part="sub-agent-meta"]')!.textContent).toBe("1m 5s");
@@ -256,8 +255,11 @@ test("Escape and the back button each return one level, and the default navigato
   const calls: string[] = [];
   for (const name of ["pushState", "replaceState", "go", "back", "forward"] as const) {
     const real = history[name];
-    history[name] = ((...args: unknown[]) => { calls.push(name); return (real as (...a: unknown[]) => unknown).apply(history, args); }) as never;
-    restore.push(() => { history[name] = real as never; });
+    restore.push(shimProperty(history, name, {
+      configurable: true,
+      writable: true,
+      value: (...args: unknown[]) => { calls.push(name); return (real as (...a: unknown[]) => unknown).apply(history, args); },
+    }));
   }
   const length = history.length;
   mount(<RunNavigator store={storeOf([child("a")]).store} source={source} virtual={false} />);

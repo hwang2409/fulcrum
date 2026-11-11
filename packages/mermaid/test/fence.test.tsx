@@ -1,10 +1,11 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
 import { afterAll, beforeEach, expect, jest, mock, test } from "bun:test";
-import { shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 let restoreObserver: (() => void) | undefined;
 let restoreActEnvironment: (() => void) | undefined;
-afterAll(() => { restoreObserver?.(); restoreActEnvironment?.(); });
+afterAll(() => { restoreObserver?.(); restoreActEnvironment?.(); mock.restore(); });
+domShimAlarm(import.meta.path);
 
 type Rendered = { svg: SVGSVGElement; label: string } | { error: string };
 const calls: Array<{ code: string; host: Element }> = [];
@@ -144,7 +145,7 @@ test("every copy has its own ids, so two copies of one diagram never share marke
 });
 
 test("a lazy module load failure keeps its source without an unhandled rejection", async () => {
-  const child = Bun.spawn([process.execPath, "packages/mermaid/test/load-failure.fixture.tsx"], {
+  const child = Bun.spawn([process.execPath, "test", "./packages/mermaid/test/load-failure.fixture.tsx"], {
     cwd: process.cwd(), stdout: "pipe", stderr: "pipe",
   });
   let timedOut = false;

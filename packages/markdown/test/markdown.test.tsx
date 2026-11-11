@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { shimGlobal } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import type { Highlight, HighlightContext, Token } from "@fulcrum/highlight";
 import { act } from "react";
 import { createRoot } from "react-dom/client";

@@ -1,7 +1,9 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
-import { mock } from "bun:test";
-import { shimGlobal } from "../../../test-support/dom-shim.js";
+import { afterAll, mock } from "bun:test";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
+afterAll(() => { mock.restore(); GlobalRegistrator.unregister(); });
 
 if (process.env.FULCRUM_TEST_LOAD_FAILURE_HANG === "1") await new Promise(() => {});
 
@@ -35,5 +37,4 @@ try {
   process.off("unhandledRejection", onUnhandled);
   restoreObserver();
   restoreAct();
-  GlobalRegistrator.unregister();
 }

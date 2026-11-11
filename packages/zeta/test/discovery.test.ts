@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { shimGlobal } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
