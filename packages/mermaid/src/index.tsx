@@ -25,7 +25,11 @@ const running = new Map<string, Promise<Rendered | null>>();
 let queue: Promise<unknown> = Promise.resolve();
 let renderer: Promise<typeof import("./render.js")> | undefined;
 const RENDER_TIMEOUT_MS = 20_000;
-const development = process.env.NODE_ENV !== "production";
+declare global { var __FULCRUM_DEV__: boolean | undefined; }
+const viteDevelopment = typeof (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env === "object"
+  ? (import.meta as ImportMeta & { env: { DEV?: boolean } }).env.DEV
+  : undefined;
+const development = globalThis.__FULCRUM_DEV__ === undefined ? viteDevelopment !== false : globalThis.__FULCRUM_DEV__;
 const reportFailure = development
   ? (error: unknown) => console.error("Mermaid could not render a diagram.", error)
   : () => {};
