@@ -152,8 +152,10 @@ export function useVirtualList<Id extends string>(
         ? 0
         : Math.max(before.hostEnd, logicalEnd)
       : before.prefix + before.gutter + target;
-    host.scrollTop = desiredHostTop;
-    const after = geometry(host);
+    // A write to the current top moves nothing, but would still force a layout for the read-back below.
+    const moves = Math.abs(desiredHostTop - before.hostTop) >= 0.5;
+    if (moves) host.scrollTop = desiredHostTop;
+    const after = moves ? geometry(host) : before;
     const decision = decideSettle(coordinator.current, {
       kind: "owner-write",
       target,
