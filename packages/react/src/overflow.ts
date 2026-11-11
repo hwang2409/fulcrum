@@ -52,6 +52,7 @@ export function useOverflowFocus(label: string): { ref: RefCallback<HTMLElement>
     }
     watched.current = [next, ...next.children];
     for (const target of watched.current) watch(target, update);
+    update(); // ResizeObserver can defer descendants skipped by content-visibility; one mount read keeps them reachable.
   }, [detach, update]);
   useEffect(() => detach, [detach]);
   return { ref, tabIndex: overflowing ? 0 : undefined, "aria-label": overflowing ? `${label}, scrollable` : undefined };
