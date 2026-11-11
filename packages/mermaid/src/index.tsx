@@ -44,30 +44,36 @@ const idle = () => new Promise<void>((resolve) => {
   else setTimeout(resolve, 16);
 });
 
+async function renderResult(key: string, code: string): Promise<Rendered | null> {
+  await idle();
+  const host = [...wanted.get(key) ?? []].find((element) => element.isConnected);
+  if (!host) return null; // every fence that asked has gone (scrolled out of a virtual list): it asks again later
+  const module = await (renderer ??= import("./render.js").catch((error) => { renderer = undefined; throw error; }));
+  return module.renderMermaid(code, host);
+}
+
+function withRenderDeadline(render: Promise<Rendered | null>) {
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("render timed out")), RENDER_TIMEOUT_MS); });
+  return Promise.race([render, deadline]).finally(() => clearTimeout(timer));
+}
+
 function request(key: string, code: string): Promise<Rendered | null> {
   let job = running.get(key);
   if (job) return job;
-  job = queue.then(async () => {
-    await idle();
-    const host = [...wanted.get(key) ?? []].find((element) => element.isConnected);
-    if (!host) return null; // every fence that asked has gone (scrolled out of a virtual list): it asks again later
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const rendered = await Promise.race([
-        (renderer ??= import("./render.js").catch((error) => { renderer = undefined; throw error; })).then((module) => module.renderMermaid(code, host)),
-        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("render timed out")), RENDER_TIMEOUT_MS); }),
-      ]);
-      remember(key, rendered);
-      if ("error" in rendered) reportFailure(new Error(rendered.error));
-      return rendered;
-    } catch (error) {
-      return fallback(error);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
+  const render = queue.then(() => renderResult(key, code));
+  queue = render.catch(() => null); // a timed-out mermaid call keeps this queue slot until its uncancellable promise settles
+  job = withRenderDeadline(render).then((rendered) => {
+    if (!rendered) return null;
+    if ("error" in rendered) reportFailure(new Error(rendered.error));
+    remember(key, rendered);
+    return rendered;
+  }, (error) => {
+    const rendered = fallback(error);
+    remember(key, rendered);
+    return rendered;
   }).finally(() => running.delete(key));
   running.set(key, job);
-  queue = job.catch(() => null);
   return job;
 }
 
@@ -228,7 +234,10 @@ export function MermaidFence({ code, done, source }: FenceProps) {
   const applyFailed = (error: unknown) => {
     if (reportedApplyFailure.current !== key) {
       reportedApplyFailure.current = key;
-      setResult({ code, rendered: fallback(error) });
+      const hit = key ? recall(key) : undefined;
+      const rendered = hit && "error" in hit ? hit : fallback(error);
+      if (key) remember(key, rendered);
+      setResult({ code, rendered });
     }
   };
 

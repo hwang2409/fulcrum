@@ -3,6 +3,8 @@ GlobalRegistrator.register();
 import { mock } from "bun:test";
 import { shimGlobal } from "../../../test-support/dom-shim.js";
 
+if (process.env.FULCRUM_TEST_LOAD_FAILURE_HANG === "1") await new Promise(() => {});
+
 mock.module("../src/render.ts", () => { throw new Error("lazy module failed to load"); });
 const { act } = await import("react");
 const { createRoot } = await import("react-dom/client");

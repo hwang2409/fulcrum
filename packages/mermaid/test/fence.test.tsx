@@ -147,9 +147,45 @@ test("a lazy module load failure keeps its source without an unhandled rejection
   const child = Bun.spawn([process.execPath, "packages/mermaid/test/load-failure.fixture.tsx"], {
     cwd: process.cwd(), stdout: "pipe", stderr: "pipe",
   });
-  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, 10_000);
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text(), new Response(child.stdout).text()]);
+  clearTimeout(timer);
+  if (timedOut) throw new Error("load-failure fixture did not exit within 10 seconds");
   expect(exitCode, stderr).toBe(0);
   expect(stderr.match(/Mermaid could not render a diagram\./g)).toHaveLength(1);
+}, 15_000);
+
+test("a failed source is cached across remounts and a changed source retries", async () => {
+  const reports: unknown[][] = [];
+  const restoreConsole = shimProperty(console, "error", { configurable: true, value: (...values: unknown[]) => reports.push(values) });
+  answer = async () => { throw new Error("persistent failure"); };
+  const code = fresh();
+  const first = mount();
+  try {
+    await first.render(fence(code));
+    await settle();
+    expect(first.host.querySelector("[data-part=mermaid]")?.getAttribute("data-state")).toBe("error");
+    expect(calls).toHaveLength(1);
+    expect(reports).toHaveLength(1);
+  } finally {
+    await first.unmount();
+  }
+  const again = mount();
+  try {
+    await again.render(fence(code));
+    expect(again.host.querySelector("[data-part=mermaid]")?.getAttribute("data-state")).toBe("error");
+    await settle();
+    expect(calls).toHaveLength(1);
+    expect(reports).toHaveLength(1);
+    await again.render(fence(fresh()));
+    await settle();
+    expect(calls).toHaveLength(2);
+    expect(reports).toHaveLength(2);
+  } finally {
+    restoreConsole();
+    await again.unmount();
+  }
 });
 
 test("a renderer rejection keeps its source and does not become an unhandled rejection", async () => {
@@ -319,6 +355,46 @@ test("a fence that leaves before its turn is not drawn", async () => {
   await unmount();
   await settle();
   expect(calls).toHaveLength(0);
+});
+
+test("a timed-out render keeps the queue until it settles", async () => {
+  jest.useFakeTimers();
+  const restoreConsole = shimProperty(console, "error", { configurable: true, value: () => {} });
+  const pending: Array<(rendered: Rendered) => void> = [];
+  let active = 0;
+  let mostActive = 0;
+  answer = (code) => {
+    active++;
+    mostActive = Math.max(mostActive, active);
+    return new Promise<Rendered>((resolve) => pending.push((rendered) => { active--; resolve(rendered); }));
+  };
+  const { host, render, unmount } = mount();
+  try {
+    const oldCode = fresh();
+    const newCode = fresh();
+    await render(fence(oldCode));
+    await act(async () => { jest.advanceTimersByTime(16); await Promise.resolve(); await Promise.resolve(); });
+    expect(calls.map((call) => call.code)).toEqual([oldCode]);
+    await act(async () => { jest.advanceTimersByTime(20_000); await Promise.resolve(); await Promise.resolve(); });
+    await render(fence(newCode));
+    await act(async () => { jest.advanceTimersByTime(16); await Promise.resolve(); await Promise.resolve(); });
+    expect(calls.map((call) => call.code)).toEqual([oldCode]);
+    pending.shift()!({ svg: svgFor(oldCode), label: "late old diagram" });
+    await act(async () => { for (let i = 0; i < 6; i++) await Promise.resolve(); });
+    await act(async () => { jest.advanceTimersByTime(16); for (let i = 0; i < 6; i++) await Promise.resolve(); });
+    expect(calls.map((call) => call.code)).toEqual([oldCode, newCode]);
+    expect(mostActive).toBe(1);
+    expect(host.querySelector("[data-part=mermaid-diagram]")).toBeNull();
+    pending.shift()!({ svg: svgFor(newCode), label: "new diagram" });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(host.querySelector("[data-part=mermaid-diagram] > svg")?.getAttribute("aria-label")).toBe(`diagram of ${newCode.trim()}`);
+  } finally {
+    while (pending.length) pending.shift()!({ error: "test cleanup" });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    await unmount();
+    restoreConsole();
+    jest.useRealTimers();
+  }
 });
 
 test("a render that never settles times out to its source", async () => {
