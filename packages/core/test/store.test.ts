@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
-import { shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+domShimAlarm(import.meta.path);
 import { createRunStore, type OutlineSnapshot, type RunEvent, type RunStore, type StoreDiagnostics } from "../src/index.js";
 import { seededRandom } from "./fuzz.js";
 
