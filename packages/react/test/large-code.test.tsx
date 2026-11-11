@@ -3,9 +3,9 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 domShimAlarm(import.meta.path);
-import { act, type ReactNode } from "react";
+import { act, Profiler, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type ToolView } from "@fulcrum/core";
 import type { Highlight, Token } from "@fulcrum/highlight";
@@ -167,14 +167,75 @@ test("a colored cold-grammar result stays colored on the next streamed append", 
 });
 
 test("a streaming fence over the limits follows its newest line", () => {
+  let commits = 0;
+  let count = false;
+  let writes = 0;
+  const writeValues: number[] = [];
+  let postWriteLayoutBatches = 0;
+  let awaitingLayout = false;
+  const descriptor = (name: "clientHeight" | "scrollHeight" | "scrollTop") => {
+    for (let target: object | null = HTMLElement.prototype; target; target = Object.getPrototypeOf(target)) {
+      const found = Object.getOwnPropertyDescriptor(target, name);
+      if (found) return found;
+    }
+    throw new Error(`${name} descriptor is missing`);
+  };
+  const read = <Value,>(value: Value) => {
+    if (count && awaitingLayout) {
+      postWriteLayoutBatches++;
+      awaitingLayout = false;
+    }
+    return value;
+  };
+  for (const name of ["clientHeight", "scrollHeight"] as const) {
+    const original = descriptor(name);
+    restoreShims.push(shimProperty(HTMLElement.prototype, name, { configurable: true, get(this: HTMLElement) { return read(original.get!.call(this)); } }));
+  }
+  const originalScrollTop = descriptor("scrollTop");
+  restoreShims.push(shimProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get(this: HTMLElement) { return read(originalScrollTop.get!.call(this)); },
+    set(this: HTMLElement, value: number) {
+      if (count) { writes++; writeValues.push(value); awaitingLayout = true; }
+      originalScrollTop.set!.call(this, value);
+    },
+  }));
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  restoreShims.push(shimProperty(HTMLElement.prototype, "getBoundingClientRect", {
+    configurable: true,
+    value(this: HTMLElement) { return read(originalRect.call(this)); },
+  }));
+  const observers: Array<{ callback: ResizeObserverCallback; observed: Set<Element> }> = [];
+  restoreShims.push(shimGlobal("ResizeObserver", class {
+    private record = { callback: (() => {}) as ResizeObserverCallback, observed: new Set<Element>() };
+    constructor(callback: ResizeObserverCallback) { this.record.callback = callback; observers.push(this.record); }
+    observe(element: Element) { this.record.observed.add(element); }
+    unobserve(element: Element) { this.record.observed.delete(element); }
+    disconnect() { this.record.observed.clear(); }
+  } as unknown as typeof ResizeObserver));
+  const measureRows = (blockSize: number) => {
+    const rows = observers.find(({ observed }) => [...observed].some((element) => element.getAttribute("data-part") === "text-viewer-row"))!;
+    const entries = [...rows.observed].map((target) => ({ target, borderBoxSize: [{ blockSize }] })) as unknown as ResizeObserverEntry[];
+    act(() => rows.callback(entries, {} as ResizeObserver));
+  };
+
   const open = "```cpp\n" + line.repeat(300);
-  mount(<Markdown id="m" source={open} streaming highlight={highlight} />);
+  const view = (source: string) => <Profiler id="viewer" onRender={() => { commits++; }}><Markdown id="m" source={source} streaming highlight={highlight} /></Profiler>;
+  mount(view(open));
   const viewer = container.querySelector<HTMLElement>('[data-part="text-viewer"]')!;
   expect(viewer.scrollTop, "a viewer that is live at mount must start following").toBeGreaterThan(0);
   expect(container.querySelector('[data-part="text-viewer-position"]')!.textContent).toBe("at bottom");
-  act(() => root!.render(<Markdown id="m" source={open + "```\n"} streaming highlight={highlight} />));
-  expect(viewer.scrollTop, "finishing at the bottom must preserve follow").toBeGreaterThan(0);
+  measureRows(84);
+  const commitsBefore = commits;
+  count = true;
+  act(() => root!.render(view(open + line)));
+  measureRows(84);
+  count = false;
+  expect(viewer.scrollTop, "appending at the bottom must preserve follow").toBeGreaterThan(0);
   expect(container.querySelector('[data-part="text-viewer-position"]')!.textContent).toBe("at bottom");
+  expect(writes, `one viewer append must write scrollTop at most once; wrote ${writeValues.join(", ")}`).toBeLessThanOrEqual(1);
+  expect(postWriteLayoutBatches, "one viewer append must force at most one post-write layout batch").toBeLessThanOrEqual(1);
+  expect(commits - commitsBefore, "one viewer append keeps the existing React commit bound").toBeLessThanOrEqual(3);
 });
 
 // Streaming answers at once; any other request (a viewer range, the whole block) stays pending, so only colors carried

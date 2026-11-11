@@ -89,6 +89,7 @@ export function useVirtualList<Id extends string>(
   const timelineElement = useRef<HTMLElement | null>(null);
   const rows = useRef(new Map<Id, HTMLElement>());
   const rowCallbacks = useRef(new Map<Id, RefCallback<HTMLElement>>());
+  const pendingScrollEcho = useRef<number | null>(null);
   const rowIds = useRef(new WeakMap<Element, Id>());
   const observerRef = useRef<ResizeObserver | null>(null);
   const historyPending = useRef(options.historyPending === true);
@@ -154,6 +155,7 @@ export function useVirtualList<Id extends string>(
       : before.prefix + before.gutter + target;
     host.scrollTop = desiredHostTop;
     const after = geometry(host);
+    pendingScrollEcho.current = after.hostTop;
     const decision = decideSettle(coordinator.current, {
       kind: "owner-write",
       target,
@@ -181,7 +183,7 @@ export function useVirtualList<Id extends string>(
       decision = decideSettle(coordinator.current, { kind: "recovery-complete", sample: current, target });
     }
     coordinator.current = decision.next;
-    if (decision.write !== null && (recoveryWasOpen || result.followedBottom || Math.abs(result.jump) >= 0.5)) {
+    if (decision.write !== null && (recoveryWasOpen || Math.abs(result.jump) >= 0.5)) {
       writeScroll(decision.write);
     }
   }, [geometry, sampleOf, writeScroll]);
@@ -239,7 +241,7 @@ export function useVirtualList<Id extends string>(
 
       type Geometry = ReturnType<typeof geometry>;
       let lastLayoutSample = sampleOf(geometry(host));
-      const applyDecision = (decision: SettleDecision, current: Geometry) => {
+      const applyDecision = (decision: SettleDecision, current: Geometry, write = true) => {
         coordinator.current = decision.next;
         if (decision.report !== null) {
           engine.setViewport({
@@ -249,17 +251,17 @@ export function useVirtualList<Id extends string>(
           });
           if (decision.next.pinned && !engine.getSnapshot().pinned) engine.requestFollow();
         }
-        if (decision.write !== null) writeScroll(decision.write);
+        if (write && decision.write !== null) writeScroll(decision.write);
       };
-      const settle = (kind: "scroll" | "viewport" | "rows" | "siblings" | "commit-layout", current = geometry(host)) => {
+      const settle = (kind: "scroll" | "viewport" | "rows" | "siblings" | "commit-layout", current = geometry(host), write = true) => {
         lastLayoutSample = sampleOf(current);
-        applyDecision(decideSettle(coordinator.current, { kind, sample: lastLayoutSample }), current);
+        applyDecision(decideSettle(coordinator.current, { kind, sample: lastLayoutSample }), current, write);
       };
 
       const rowObserver = new ResizeObserver((entries) => {
         if (entries.length === 0) return;
         const current = geometry(host);
-        settle("rows", current);
+        settle("rows", current, false);
         const measurements = entries.flatMap((entry) => {
           const id = rowIds.current.get(entry.target);
           return id !== undefined && rows.current.get(id) === entry.target
@@ -297,7 +299,12 @@ export function useVirtualList<Id extends string>(
       const siblingMutations = new MutationObserver(observeSiblings);
       siblingMutations.observe(host, { childList: true });
 
-      const onScroll = () => settle("scroll");
+      const onScroll = () => {
+        const pending = pendingScrollEcho.current;
+        pendingScrollEcho.current = null;
+        if (pending !== null && Math.abs(host.scrollTop - pending) < 0.5) return;
+        settle("scroll");
+      };
       const onTouchStart = () => {
         coordinator.current = decideSettle(coordinator.current, { kind: "touch-start" }).next;
       };
