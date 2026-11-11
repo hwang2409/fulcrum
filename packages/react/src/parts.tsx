@@ -14,8 +14,7 @@ import { useWarm, warmToolBody } from "./warm.js";
 import { Message, ToolResultBlocks } from "./content.js";
 import { UserMessageContent } from "./user-message.js";
 import { NewestRowProvider, newestStreamableRow } from "./newest-row.js";
-
-declare global { var __FULCRUM_DEV__: boolean | undefined; }
+import { development, RenderGuard } from "./render-guard.js";
 
 export type ItemProps = { id: string; className?: string };
 /** Keys are item kinds (`message`, `tool`, `approval`, `user`, ...) or `tool:<name>`; a `tool:<name>` key wins over `tool`. */
@@ -421,18 +420,18 @@ export type FallbackProps = ItemProps & {
 /** Generic part for kinds without a renderer (user, error, unknown, ...). */
 export const Fallback = memo(function Fallback({ id, className, renderDeliveryNote = defaultDeliveryNote }: FallbackProps) {
   const item = useItem(id);
+  const userEvent = item?.type === "user" && item.event.type === "user_message" ? item.event : undefined;
+  const user = userEvent !== undefined;
+  const note = useHostRender("renderDeliveryNote", item, renderDeliveryNote, item as UserMessageItem, user);
   if (!item) return null;
   const display = fallbackDisplay(item);
-  const userEvent = item.type === "user" && item.event.type === "user_message" ? item.event : undefined;
-  const user = userEvent !== undefined;
   const textOmitted = userEvent?.text_omitted === true;
-  const note = user ? renderDeliveryNote(item as UserMessageItem) : null;
   if (textOmitted && (note == null || note === false)) return null;
   const content = <>{display.label}{display.attachments?.length ? <ToolResultBlocks id={id} blocks={display.attachments} /> : null}</>;
   return (
     <div className={className} style={pre} data-part="item" data-kind={display.kind} data-id={id} data-state={display.state} data-text-omitted={textOmitted ? "" : undefined}>
       {user && !textOmitted ? <UserMessageContent style={pre}>{content}</UserMessageContent> : user ? null : content}
-      {note == null || note === false ? null : <div data-part="delivery-note">{note}</div>}
+      {note == null || note === false ? null : <div data-part="delivery-note"><RenderGuard resetKey={item} onError={(error) => reportHostRenderFailure("renderDeliveryNote", error)} fallback={null}>{note}</RenderGuard></div>}
     </div>
   );
 });
@@ -569,7 +568,37 @@ function LiveAnnouncer({ items, change }: { items: readonly { id: string }[]; ch
   );
 }
 
-// Subscribes to a string key only, so text deltas never re-render the row.
+const reportRowFailure = development
+  ? (id: string, error: unknown) => console.error(`Timeline could not render ${id}.`, error)
+  : () => {};
+const reportHostRenderFailure = development
+  ? (name: string, error: unknown) => console.error(`${name} could not render.`, error)
+  : () => {};
+
+function useHostRender<T>(name: string, resetKey: unknown, render: (value: T) => ReactNode, value: T, enabled = true) {
+  const failure = useRef<{ render: typeof render; resetKey: unknown } | undefined>(undefined);
+  if (!enabled) return null;
+  try {
+    const result = render(value);
+    failure.current = undefined;
+    return result;
+  } catch (error) {
+    if (!failure.current || failure.current.render !== render || !Object.is(failure.current.resetKey, resetKey)) {
+      failure.current = { render, resetKey };
+      reportHostRenderFailure(name, error);
+    }
+    return null;
+  }
+}
+
+function FailedRow({ id, retry }: { id: string; retry(): void }) {
+  const item = useItem(id);
+  const failedItem = useRef(item);
+  useEffect(() => { if (item !== failedItem.current) retry(); }, [item, retry]);
+  return <div data-part="item" data-kind="row-error" data-id={id} data-row-error={id} role="status">this item could not be shown · {id}</div>;
+}
+
+// Subscribes to a string key only, so text deltas never re-render a healthy row. A failed row alone watches for a retry.
 const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Renderers }) {
   const rendererKey = useItemSelector(id, (item) =>
     item?.type === "tool" ? `tool:${item.tool_call.name}` : item?.type,
@@ -577,7 +606,15 @@ const Row = memo(function Row({ id, renderers }: { id: string; renderers?: Rende
   const kind = rendererKey?.startsWith("tool:") ? "tool" : rendererKey;
   const Part =
     (rendererKey && renderers?.[rendererKey]) || (kind && (renderers?.[kind] ?? defaults[kind])) || Fallback;
-  return <Part id={id} />;
+  return (
+    <RenderGuard
+      resetKey={id}
+      onError={(error) => reportRowFailure(id, error)}
+      fallback={(retry) => <FailedRow id={id} retry={retry} />}
+    >
+      <Part id={id} />
+    </RenderGuard>
+  );
 });
 
 // A sub-agent row is fixed at 56 px; with the 12 px row gap the estimate is exact.
@@ -620,7 +657,8 @@ function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest
       jump to latest ({unseenCount})
     </button>
   ) : null;
-  if (hostOwned) return <>{children}{control && renderJumpToLatest!(control)}</>;
+  const hostedControl = useHostRender("renderJumpToLatest", unseenCount, renderJumpToLatest ?? (() => null), control, hostOwned && control !== null);
+  if (hostOwned) return <>{children}{control ? <RenderGuard resetKey={unseenCount} onError={(error) => reportHostRenderFailure("renderJumpToLatest", error)} fallback={null}>{hostedControl}</RenderGuard> : null}</>;
   return (
     <div data-part="timeline-frame">
       <div data-part="timeline-scroll" ref={ownedScrollRef}>{children}</div>
@@ -632,11 +670,6 @@ function TimelineLayout({ children, unseenCount, scrollToEnd, renderJumpToLatest
 const storeKeys = new WeakMap<object, number>();
 let nextStoreKey = 0;
 let checkedUnconstrainedTimeline = false;
-const viteDevelopment = typeof (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env === "object"
-  ? (import.meta as ImportMeta & { env: { DEV?: boolean } }).env.DEV
-  : undefined;
-const configuredDevelopment = globalThis.__FULCRUM_DEV__;
-const development = configuredDevelopment === undefined ? viteDevelopment !== false : configuredDevelopment;
 const useUnconstrainedWarning: (enabled: boolean, hostOwned: boolean, scroll: RefObject<HTMLElement | null>, itemCount: number, mountedCount: number) => void = development
   ? (enabled, hostOwned, scroll, itemCount, mountedCount) => useEffect(() => {
       if (!enabled || hostOwned || checkedUnconstrainedTimeline || itemCount <= 200 || mountedCount !== itemCount) return;
