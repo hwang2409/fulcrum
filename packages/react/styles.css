@@ -186,8 +186,8 @@
 [data-part="message-prompt"] { color: var(--fulcrum-muted); user-select: none; }
 [data-part="message-content"] { min-width: 0; text-wrap: pretty; }
 /* A user row's delivery note sits under its text, in the content column. Its word stays fg; the danger mark carries status. */
-[data-part="item"][data-kind="user"] > [data-part="delivery-note"] { --mark: var(--fulcrum-danger); display: flex; align-items: baseline; gap: 6px; grid-column: 2; margin-top: 4px; color: var(--fulcrum-fg); font-size: 12px; font-weight: 400; }
-[data-part="delivery-note"]::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--mark); outline: 1px solid var(--fulcrum-bg); transform: translateY(-1px); }
+[data-part="item"][data-kind="user"] > [data-part="delivery-note"] { --mark: var(--fulcrum-danger); grid-column: 2; margin-top: 4px; padding-left: 13px; color: var(--fulcrum-fg); font-size: 12px; font-weight: 400; text-indent: -13px; }
+[data-part="delivery-note"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; background: var(--mark); outline: 1px solid var(--fulcrum-bg); vertical-align: 1px; }
 /* With no kept text there is no empty message surface: the note is the whole row. */
 [data-part="item"][data-kind="user"][data-text-omitted] { display: block; padding: 0; border: 0; background: transparent; }
 [data-part="item"][data-kind="user"][data-text-omitted] > [data-part="delivery-note"] { margin-top: 0; }
