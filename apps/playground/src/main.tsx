@@ -1,6 +1,6 @@
 import "@fulcrum/highlight/styles.css";
 import "@fulcrum/mermaid/styles.css";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createRunStore, initialState, type RunEvent, type RunItem } from "@fulcrum/core";
 import { createAiSdkAdapter } from "@fulcrum/ai-sdk";
@@ -86,6 +86,14 @@ const setPhase = (next: Phase) => {
   phaseListeners.forEach((listener) => listener(next));
 };
 let continueReplay = () => {};
+let stopStress = () => {};
+const stressPerf = { commits: 0 };
+Object.assign(window, { __fulcrumStressPerf: stressPerf, __stopStress: () => stopStress() });
+function CommitProbe() {
+  useTimeline();
+  useLayoutEffect(() => { stressPerf.commits++; });
+  return null;
+}
 function CountedMessage({ id }: { id: string }) {
   useItem(id);
   messageRenders++;
@@ -189,6 +197,11 @@ function useReplay(mode: string, speed: number, run: number) {
     continueReplay = () => {
       state = { ...state, budget: 0, paused: false };
     };
+    const stop = () => {
+      clearInterval(timer);
+      setPhase("static");
+    };
+    stopStress = stop;
     const timer = setInterval(() => {
       const now = performance.now();
       state = { ...state, elapsed: now - last, rate: stress ? STRESS_RATE : rate.current };
@@ -200,12 +213,13 @@ function useReplay(mode: string, speed: number, run: number) {
         active.dispatch(event);
         dispatched++;
       }
-      if (step.done) clearInterval(timer);
+      if (step.done) stop();
     }, 16);
     return () => {
       clearInterval(timer);
       active.dispose();
       continueReplay = () => {};
+      stopStress = () => {};
     };
   }, [mode, run]);
   const committedStore = useRef(store);
@@ -236,6 +250,7 @@ function Status({ label }: { label: string }) {
     return () => cancelAnimationFrame(raf);
   }, [activePhase]);
   useEffect(() => {
+    if (activePhase !== "streaming") return;
     let longTasks = 0;
     const observer = new PerformanceObserver((list) => {
       longTasks += list.getEntries().length;
@@ -261,7 +276,7 @@ function Status({ label }: { label: string }) {
       clearInterval(timer);
       observer.disconnect();
     };
-  }, []);
+  }, [activePhase]);
   return (
     <div className="status">
       <span className="mode" data-state={activePhase}>
@@ -380,6 +395,7 @@ function App() {
         </p>
         <Status label={label} />
         <div className="scroll">
+          {new URLSearchParams(location.search).has("stressMessages") && <CommitProbe />}
           <Timeline virtual renderers={renderers} />
         </div>
       </Shell>

@@ -1,5 +1,6 @@
 import type { Highlight } from "@fulcrum/highlight";
 import { Code, HighlightContext } from "@fulcrum/react";
+import { useOverflowFocus } from "@fulcrum/react/code";
 
 /** `Code` outside a run: one line of text highlighted by language, under a `HighlightContext`. */
 export type CodeDemo = { id: string; part: "Code"; title: string; description: string; lines: Array<{ text: string; language: string }> };
@@ -16,6 +17,11 @@ export const codeDemos: CodeDemo[] = [{
   ],
 }];
 
+function CodeLine({ line, id }: { line: CodeDemo["lines"][number]; id: string }) {
+  const overflow = useOverflowFocus(`${line.language} code`);
+  return <pre {...overflow} className="code-line"><code><Code text={line.text} language={line.language} id={id} /></code></pre>;
+}
+
 export function CodeCard({ demo, highlight }: { demo: CodeDemo; highlight: Highlight }) {
   return (
     <article className="demo" id={demo.id}>
@@ -28,7 +34,7 @@ export function CodeCard({ demo, highlight }: { demo: CodeDemo; highlight: Highl
       <div className="demo-body">
         <HighlightContext value={highlight}>
           {demo.lines.map((line, index) => (
-            <pre key={line.text} className="code-line"><code><Code text={line.text} language={line.language} id={`${demo.id}:${index}`} /></code></pre>
+            <CodeLine key={line.text} line={line} id={`${demo.id}:${index}`} />
           ))}
         </HighlightContext>
       </div>

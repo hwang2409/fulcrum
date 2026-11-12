@@ -29,7 +29,7 @@ import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown } from "@fulcrum/markdown/react";
 import { parseMarkdown } from "@fulcrum/markdown";
 import { createRunStore } from "@fulcrum/core";
-import { RunProvider, ToolCall } from "@fulcrum/react";
+import { Message, RunProvider, Timeline, ToolCall } from "@fulcrum/react";
 const line = "A<B<C,D>,E<F>>::g(h++,--i,j+=k,l?m:n); // x\\n";
 const code = "int first_marker = 1;\\n" + line.repeat(${lines} - 2) + "int last_marker = 2;\\n";
 const bigCode = line.repeat(9_999);
@@ -166,6 +166,23 @@ results.read = readSamples.at(-1);
 root.render(createElement(Markdown, { id: "large", source: fence, highlight }));
 await nextFrame();
 await nextFrame();
+// Code-heavy rows in a non-virtual timeline, whose off-screen rows content-visibility skips: the node side counts the
+// layouts their mount forces. Every fence overflows its row, so a per-box layout read on mount costs one layout per row.
+window.__codeRows = async (count) => {
+  const store = createRunStore();
+  const fenceLine = "const deliberatelyLongName = compute(first, second, third, fourth, fifth, sixth, seventh);";
+  for (let i = 0; i < count; i++) store.dispatch({ type: "message_commit", message_id: "c" + i, message: { role: "assistant", content: [{ type: "text", text: "row " + i + "\\n\\n\`\`\`ts\\n" + fenceLine + "\\n\`\`\`" }] } });
+  await nextFrame(); // the store applies events on the next frame
+  const host = document.body.appendChild(document.createElement("div"));
+  host.style.cssText = "height:800px;overflow:auto";
+  const rowsRoot = createRoot(host);
+  const renderers = { message: ({ id }) => createElement(Message, { id, markdown: Markdown }) };
+  window.__codeRowsUnmount = () => { rowsRoot.unmount(); host.remove(); };
+  rowsRoot.render(createElement(RunProvider, { store }, createElement(Timeline, { virtual: false, renderers })));
+  for (let frame = 0; frame < 6; frame++) await new Promise(requestAnimationFrame);
+  const blocks = host.querySelectorAll("[data-part=md-code-block]");
+  return { blocks: blocks.length, stops: host.querySelectorAll("[data-part=md-code-block][tabindex='0']").length, lastStop: blocks[blocks.length - 1]?.getAttribute("tabindex") === "0" };
+};
 window.__code = code;
 window.__results = results;
 </script>`);
@@ -268,6 +285,33 @@ try {
     const code = await page.evaluate(() => (window as typeof window & { __code: string }).__code);
     if (copied !== code) failures.push(`markdown: copy gave ${copied.length} characters, expected ${code.length}`);
   }
+  // A code or table box becomes a keyboard tab stop from the browser's own layout, never from a read on mount: a read per
+  // box lays out every row content-visibility skips (201 forced layouts for 200 rows, 5,001 for 5,000 measured on the
+  // read; 3 without it).
+  const metrics = await context.newCDPSession(page);
+  await metrics.send("Performance.enable");
+  const layoutCount = async () => (await metrics.send("Performance.getMetrics")).metrics.find((metric) => metric.name === "LayoutCount")?.value ?? 0;
+  const rowCount = 200;
+  const layoutsBefore = await layoutCount();
+  const rows = await page.evaluate((count) => (window as typeof window & { __codeRows: (count: number) => Promise<{ blocks: number; stops: number; lastStop: boolean }> }).__codeRows(count), rowCount);
+  const mountLayouts = (await layoutCount()) - layoutsBefore;
+  console.log(`code rows\t${rowCount} rows\tlayouts ${mountLayouts}\t${JSON.stringify(rows)}`);
+  if (rows.blocks !== rowCount) failures.push(`code rows: ${rows.blocks} of ${rowCount} code blocks mounted`);
+  if (mountLayouts >= rowCount / 4) failures.push(`code rows: mounting ${rowCount} rows forced ${mountLayouts} layouts; a per-box layout read on mount defeats content-visibility`);
+  if (!rows.stops) failures.push("code rows: no visible overflowing code block became a tab stop");
+  if (rows.lastStop) failures.push("code rows: an off-screen row was laid out on mount (its code block is already a tab stop)");
+  // Scrolled into view, the last row is laid out: its box becomes a tab stop that Tab reaches from the box before it.
+  const last = page.locator("[data-part=md-code-block]").last();
+  await last.evaluate((node) => node.scrollIntoView({ block: "end" }));
+  const reachable = await page.waitForFunction(() => [...document.querySelectorAll("[data-part=md-code-block]")].at(-1)?.getAttribute("tabindex") === "0", undefined, { timeout: 10_000 }).then(() => true, () => false);
+  if (!reachable) failures.push("code rows: the last code block never became a tab stop after it scrolled into view");
+  else {
+    await page.locator("[data-part=md-code-block]").nth(-2).focus();
+    await page.keyboard.press("Tab");
+    if (!(await last.evaluate((node) => node === document.activeElement))) failures.push(`code rows: Tab from the box before did not reach the last code block (focused ${await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 120))})`);
+  }
+  await page.evaluate(() => (window as typeof window & { __codeRowsUnmount: () => void }).__codeRowsUnmount());
+  await metrics.detach();
   if (failures.length) throw new Error(failures.join("\n"));
   console.log("large blocks: ok");
 } catch (error) {
