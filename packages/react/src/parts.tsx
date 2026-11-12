@@ -1,10 +1,10 @@
 import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type ReactNode, type RefObject } from "react";
 import type { ApprovalDecision, ContentBlock, OutlineChange, RunEvent, RunItem, StoredResultBlock, TextSourceSnapshot } from "@fulcrum/core";
-import { storeToolView } from "@fulcrum/core/internal";
+import { sourceTail, storeToolView } from "@fulcrum/core/internal";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { HighlightContext, Tokens, useTokens } from "./highlight.js";
-import { boundText, duration, lineCount, MAX_SUMMARY_CHARS, sourceText } from "./tools/common.js";
+import { boundText, duration, GrownText, MAX_SUMMARY_CHARS, Output, sourceText } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
 import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
 import { Notification, notificationText } from "./notification.js";
@@ -135,29 +135,40 @@ const SHORT_OUTPUT_LINES = 8;
 /* Open while running (live progress) or after a failure (the reason), and for short output, which is usually the
    answer ("1 replacement", "42 pass"). Long or empty output starts collapsed so the header row carries the run.
    Set once at mount, so the user's own toggle is never overridden while output streams in. */
-const openByDefault = (item: ToolItem | undefined, output: TextSourceSnapshot | undefined) => {
-  const text = output ? sourceText(output) : "";
-  return !item || item.active || (!denied(item) && (item.is_error || !!item.result?.blocks?.length || (text !== "" && text.length < 1200 && text.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1)));
-};
+const openByDefault = (item: ToolItem | undefined, output: TextSourceSnapshot | undefined) =>
+  !item || item.active || (!denied(item) && (item.is_error || !!item.result?.blocks?.length || (!!output && output.length > 0 && output.length < 1200 && !output.omission && output.lines <= SHORT_OUTPUT_LINES)));
 
 // A call its approval denied never ran: the header's "denied" is its status, and the harness's note stays closed.
 const denied = (item: ToolItem) => item.approval?.type === "approval_end" && item.approval.decision === "deny";
 
 const toolState = (item: ToolItem): ItemState =>
   item.canceled ? "canceled" : item.is_error ? "error" : item.active ? "streaming" : "done";
-const storedBlocks = (blocks: readonly StoredResultBlock[]): ContentBlock[] => blocks.map((block) => ({
-  ...block.metadata,
-  ...(block.text ? { text: sourceText(block.text) } : {}),
-}));
+const storedBlocks = (blocks: readonly StoredResultBlock[]): ContentBlock[] => blocks.map((block) => block.text ? { ...block.metadata, text: sourceText(block.text) } as ContentBlock : block.metadata);
 const EMPTY_SOURCE: TextSourceSnapshot = Object.freeze({
   version: 0, length: 0, bytes: 0, lines: 0, retainedBytes: 0, omission: null, protocolTruncated: false,
   *chunks() {},
 });
 
+/**
+ * How the row's output grew since this card's previous render, while the shown output is the row's own source: an
+ * append reads only its added chunks, and the body's Output extends its view from the tail.
+ */
+function useGrownOutput(output: TextSourceSnapshot | undefined) {
+  const seen = useRef<TextSourceSnapshot | undefined>(undefined);
+  const prior = seen.current;
+  seen.current = output;
+  if (!output) return null;
+  const text = sourceText(output, prior);
+  if (!prior || prior === output) return null;
+  const tail = sourceTail(prior, output);
+  return tail === undefined ? null : { text, previous: sourceText(prior), tail };
+}
+
 export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = ToolBody }: ItemProps & ToolViewProps) {
   const item = useItem(id);
   const tool = item?.type === "tool" ? item : undefined;
   const output = tool?.output;
+  const grown = useGrownOutput(output);
   const [open, setOpen] = useState(() => openByDefault(tool, output));
   const [bodyMounted, setBodyMounted] = useState(open);
   const highlight = useContext(HighlightContext);
@@ -189,13 +200,27 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
         <Header item={tool} state={state} summary={summary} />
       </summary>
       {bodyMounted ? <div data-part="tool-body">
-        <Body item={tool} output={tool.output} state={state} />
-        {tool.result?.finalContent ? <div data-part="tool-final-result"><span data-part="block-label">final result (relation unknown)</span><pre>{sourceText(tool.result.finalContent)}</pre></div> : null}
-        {tool.result?.blocks?.length ? <ToolResultBlocks id={id} blocks={storedBlocks(tool.result.blocks)} /> : null}
+        <GrownText.Provider value={grown}><Body item={tool} output={tool.output} state={state} /></GrownText.Provider>
+        {tool.result?.finalContent ? <FinalResult id={id} source={tool.result.finalContent} /> : null}
+        {tool.result?.blocks?.length ? <ResultBlocks id={id} blocks={tool.result.blocks} /> : null}
       </div> : null}
     </details>
   );
 });
+
+/** A final result whose relation to the output is unknown (the output was cut before it arrived): shown as its own section. */
+function FinalResult({ id, source }: { id: string; source: TextSourceSnapshot }) {
+  return (
+    <section data-part="tool-final-result" aria-label="final result">
+      <span data-part="block-label">final result</span>
+      <Output text={sourceText(source)} id={`${id}:final`} />
+    </section>
+  );
+}
+function ResultBlocks({ id, blocks }: { id: string; blocks: readonly StoredResultBlock[] }) {
+  const shown = useMemo(() => storedBlocks(blocks), [blocks]);
+  return <ToolResultBlocks id={id} blocks={shown} />;
+}
 
 type Decide = (requestId: string) => void | Promise<unknown>;
 

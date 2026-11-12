@@ -11,7 +11,9 @@ export function WriteBody({ item, output, state }: ToolBodyProps) {
   return (
     <>
       {asking(state) && cutByHeader(path) ? <pre data-part="tool-path">{boundText(path).text}</pre> : null}
-      {content ? <NumberedLines text={content} id={`${item.id}:content`} language={languageForPath(path)} /> : null}
+      {content ? (item.view.content!.omission
+        ? <Output text={content} id={`${item.id}:content`} />
+        : <NumberedLines text={content} id={`${item.id}:content`} language={languageForPath(path)} />) : null}
       {shown ? <Output text={shown} id={`${item.id}:output`} done={state !== "streaming"} /> : null}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["path", path], ["content", content]]}>
@@ -28,7 +30,7 @@ export function writeBlocks({ item, output, state }: ToolBodyProps): Block[] {
   const content = item.view.content && sourceText(item.view.content);
   const shown = sourceText(output);
   return [
-    ...(content ? numberedBlocks({ text: content, id: `${item.id}:content`, language: languageForPath(path) }) : []),
+    ...(content ? (item.view.content!.omission ? outputBlocks({ text: content, id: `${item.id}:content` }) : numberedBlocks({ text: content, id: `${item.id}:content`, language: languageForPath(path) })) : []),
     ...(shown ? outputBlocks({ text: shown, id: `${item.id}:output`, done: state !== "streaming" }) : []),
   ];
 }

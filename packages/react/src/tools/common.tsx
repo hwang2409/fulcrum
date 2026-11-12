@@ -1,5 +1,6 @@
 import { Children, createContext, useContext, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { TextSourceSnapshot, ToolCall } from "@fulcrum/core";
+import { sourceTail } from "@fulcrum/core/internal";
 import type { ItemState } from "../parts.js";
 import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
 import { continueAnsi, hasControls, parseAnsi, type AnsiText } from "./ansi.js";
@@ -11,22 +12,40 @@ export const MAX_DOM_CHARS = 100_000;
 export const MAX_SUMMARY_CHARS = 240;
 
 const humanBytes = (value: number) => value < 1024 ? `${value} bytes` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
-/** Retained source text with a truthful, visible line at every local cut. */
-export function sourceText(source: TextSourceSnapshot): string {
-  const chunks = [...source.chunks()];
-  const omission = source.omission;
+/** The visible line at a local cut: a whole body the run let go of, or the middle an item kept out. */
+export const omissionNotice = ({ reason, whole, bytes }: NonNullable<TextSourceSnapshot["omission"]>) =>
+  whole && reason === "run-cap" ? `output not kept (${humanBytes(bytes)}) to save memory in this long run` : `${humanBytes(bytes)} not kept`;
+const PROTOCOL_NOTICE = "host did not provide the complete output";
+const shownText = new WeakMap<TextSourceSnapshot, string>();
+const withNotice = (text: string, notice: string) => `${text}${text && !text.endsWith("\n") ? "\n" : ""}${notice}`;
+/**
+ * A source as the viewer shows it: the retained text, with one plain line where the middle (or all of it) was not kept,
+ * and a last line when the host itself cut the output. Each snapshot is read once; pass the snapshot it grew from
+ * (`previous`) and an append costs only the added chunks.
+ */
+export function sourceText(source: TextSourceSnapshot, previous?: TextSourceSnapshot): string {
+  const known = shownText.get(source);
+  if (known !== undefined) return known;
+  const base = previous && shownText.get(previous);
+  const tail = base !== undefined && !previous!.protocolTruncated ? sourceTail(previous, source) : undefined;
   let text: string;
-  if (!omission) text = chunks.map((chunk) => chunk.text).join("");
+  if (tail !== undefined) text = base + tail;
   else {
-    const head = chunks.filter((chunk) => chunk.start < omission.start).map((chunk) => chunk.text).join("");
-    const tail = chunks.filter((chunk) => chunk.start >= omission.end).map((chunk) => chunk.text).join("");
-    const notice = omission.reason === "run-cap" && omission.whole
-      ? `output not kept (${humanBytes(omission.bytes)}) to save memory in this long run`
-      : `${humanBytes(omission.bytes)} not kept`;
-    const reset = /\u001b/.test(head + tail) ? "\u001b[0m" : "";
-    text = `${head}${reset}${head && !head.endsWith("\n") ? "\n" : ""}${notice}${tail && !tail.startsWith("\n") ? "\n" : ""}${reset}${tail}`;
+    const omission = source.omission;
+    let head = "", rest = "";
+    for (const chunk of source.chunks()) {
+      if (omission && chunk.start >= omission.end) rest += chunk.text;
+      else head += chunk.text;
+    }
+    if (omission) {
+      // Style never crosses the cut: what the omitted text opened (a color, a bold run) must not paint the notice or the tail.
+      const reset = head.includes("\u001b") || rest.includes("\u001b") ? "\u001b[0m" : "";
+      text = withNotice(head, reset + omissionNotice(omission)) + (rest ? `\n${rest}` : "");
+    } else text = head;
+    if (source.protocolTruncated) text = withNotice(text, PROTOCOL_NOTICE);
   }
-  return source.protocolTruncated ? `${text}${text && !text.endsWith("\n") ? "\n" : ""}host did not provide the complete output` : text;
+  shownText.set(source, text);
+  return text;
 }
 
 type BoundedText = { text: string; shown: number; total: number; truncated: boolean };

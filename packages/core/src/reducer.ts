@@ -1,6 +1,6 @@
-import type { RunEndOutcome, RunEvent, RunItem, SubAgentEvent } from "./events.js";
+import type { RunEndOutcome, RunEvent, RunItem, StoredToolResult, SubAgentEvent, TextSourceSnapshot } from "./events.js";
 import { appendText } from "./stream.js";
-import { appendTextSource, createStreamingTextSource, createTextSource, emptyTextSource, finalizeTextSource, markProtocolTruncated, retainedText, storeToolResult, storeToolView } from "./text-source.js";
+import { appendTextSource, createStreamingTextSource, createTextSource, DEFAULT_TOOL_OUTPUT_ITEM_BYTES, emptyTextSource, finalizeTextSource, markProtocolTruncated, retainedText, storeToolResult, storeToolView } from "./text-source.js";
 import { messageAlias } from "./message-identity.js";
 
 /** Maximum durable notification ids retained for replay dedupe. */
@@ -75,6 +75,8 @@ interface EntityDraft {
   splice(splice: OutlineSplice): void;
   getMessageAlias(key: string): string | undefined;
   setMessageAlias(key: string, id: string): void;
+  /** Retained UTF-8 bytes per tool text source (the store passes its item cap). */
+  readonly toolTextBytes?: number;
 }
 type SpliceOutline = (index: number, deleteCount: number, items: readonly OutlineItem[]) => void;
 
@@ -339,6 +341,7 @@ export function reduceAllWithEntities(
   const isEmptyDelta = (event: RunEvent | null) => event?.type === "message_delta" && event.delta === "";
   if (events.some(isEmptyDelta)) events = events.filter((event) => !isEmptyDelta(event));
   if (events.length === 0) return state;
+  const textBytes = entities.toolTextBytes ?? DEFAULT_TOOL_OUTPUT_ITEM_BYTES;
 
   const next: RunState = {
     turns: state.turns,
@@ -410,7 +413,7 @@ export function reduceAllWithEntities(
     for (const toolId of Object.keys(next.activeToolIds)) {
       const item = getItem(toolItemId(toolId));
       if (item?.type === "tool" && item.active)
-        setItem({ ...item, output: finalizeTextSource(item.output), active: false });
+        setItem({ ...item, output: finalizeTextSource(item.output, textBytes), active: false });
     }
     next.activeToolIds = {};
   };
@@ -487,7 +490,7 @@ export function reduceAllWithEntities(
           id: itemId,
           type: "tool",
           tool_call: event.tool_call,
-          view: storeToolView(event.view),
+          view: storeToolView(event.view, textBytes),
           output: emptyTextSource(),
           version: 1,
           active: true,
@@ -507,12 +510,12 @@ export function reduceAllWithEntities(
         const old = getItem(itemId);
         const prior = old?.type === "tool" ? old : undefined;
         if (!prior) {
-          appendItem({ id: itemId, type: "tool", tool_call: event.tool_call, view: storeToolView(event.view), output: emptyTextSource(), version: 1, active: true, is_error: false, canceled: false });
+          appendItem({ id: itemId, type: "tool", tool_call: event.tool_call, view: storeToolView(event.view, textBytes), output: emptyTextSource(), version: 1, active: true, is_error: false, canceled: false });
           setToolActive(id, true);
           foldApproval(id);
           break;
         }
-        setItem({ ...prior, tool_call: event.tool_call, view: event.view ? storeToolView(event.view) : prior.view, version: prior.version + 1 });
+        setItem({ ...prior, tool_call: event.tool_call, view: event.view ? storeToolView(event.view, textBytes) : prior.view, version: prior.version + 1 });
         foldApproval(id);
         break;
       }
@@ -524,12 +527,12 @@ export function reduceAllWithEntities(
         // Output events report output; only tool_start and tool_input define a tool row's call.
         const replace = event.replace === true;
         const continuing = !replace && Boolean(next.activeToolIds[id]);
-        const output = continuing && prior ? appendTextSource(prior.output, event.output) : createStreamingTextSource(event.output);
+        const output = continuing && prior ? appendTextSource(prior.output, event.output, textBytes) : createStreamingTextSource(event.output, textBytes);
         const item: RunItem = {
           id: itemId,
           type: "tool",
           tool_call: prior?.tool_call ?? event.tool_call,
-          view: event.view ? storeToolView(event.view) : prior?.view,
+          view: event.view ? storeToolView(event.view, textBytes) : prior?.view,
           output,
           version: (prior?.version ?? 0) + 1,
           active: true,
@@ -550,28 +553,41 @@ export function reduceAllWithEntities(
         const old = getItem(itemId);
         const prior = old?.type === "tool" ? old : undefined;
         const result = event.tool_result;
-        let output = finalizeTextSource(prior?.output ?? emptyTextSource());
-        let relation: "same" | "append" | "replace" | "unknown" = "same";
-        let finalContent;
+        let output = finalizeTextSource(prior?.output ?? emptyTextSource(), textBytes);
+        let relation: StoredToolResult["relation"] = "same";
+        let finalContent: TextSourceSnapshot | undefined;
         if (result) {
+          const content = result.content;
           const requested = event.resultContent ?? "auto";
-          if (requested === "replace") output = createTextSource(result.content), relation = "replace";
-          else if (requested === "append") output = appendTextSource(output, result.content, undefined, true), relation = "append";
+          // A result appended to output starts on its own line, as it always has.
+          const appendResult = () => {
+            let last: string | undefined;
+            for (const chunk of output.chunks()) last = chunk.text.at(-1);
+            output = appendTextSource(output, `${last !== undefined && last !== "\n" ? "\n" : ""}${content}`, textBytes, true);
+            relation = "append";
+          };
+          if (!content) relation = "same";
+          else if (requested === "replace") output = createTextSource(content, textBytes), relation = "replace";
+          else if (requested === "append" || (requested === "same" && output.length === 0)) appendResult();
           else if (requested === "same") relation = "same";
-          else if (output.omission) finalContent = createTextSource(result.content), relation = "unknown";
-          else if (!result.content || retainedText(output).includes(result.content)) relation = "same";
-          else output = appendTextSource(output, `${output.length && !retainedText(output).endsWith("\n") ? "\n" : ""}${result.content}`, undefined, true), relation = "append";
-          if (result.truncated) output = markProtocolTruncated(output);
+          // `auto` after a local cut cannot know whether the content repeats the output: keep it as its own source.
+          else if (output.omission) finalContent = createTextSource(content, textBytes), relation = "unknown";
+          else if (content.length <= output.length && retainedText(output).includes(content)) relation = "same";
+          else appendResult();
+          if (result.truncated) {
+            if (finalContent) finalContent = markProtocolTruncated(finalContent);
+            else output = markProtocolTruncated(output);
+          }
         }
         const item: RunItem = {
           id: itemId,
           type: "tool",
           tool_call: prior?.tool_call ?? event.tool_call,
-          view: event.view ? storeToolView(event.view) : prior?.view,
+          view: event.view ? storeToolView(event.view, textBytes) : prior?.view,
           output,
           version: (prior?.version ?? 0) + 1,
           active: false,
-          result: result ? storeToolResult(result, relation, finalContent, 2 * 1024 * 1024) : undefined,
+          result: result ? storeToolResult(result, relation, finalContent, textBytes) : undefined,
           is_error: result?.is_error ?? false,
           canceled: result?.is_canceled ?? false,
           ...(prior?.approval ? { approval: prior.approval } : {}),

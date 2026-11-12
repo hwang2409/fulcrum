@@ -8,7 +8,7 @@ domShimAlarm(import.meta.path);
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type RunEvent, type RunItem, type ToolView } from "@fulcrum/core";
-import { streamTail } from "@fulcrum/core/internal";
+import { sourceTail, streamTail } from "@fulcrum/core/internal";
 import { RunProvider, ToolCall } from "../src/index.js";
 // These tests count work over megabyte texts; on a loaded machine one can take several seconds (no timing is asserted).
 setDefaultTimeout(60_000);
@@ -26,6 +26,9 @@ afterEach(() => {
   restoreClientHeight?.();
 });
 
+// These tests measure the viewer's append path on texts of several megabytes, above the store's default retention
+// cap (packages/core text-source.ts); retention has its own tests in packages/core/test/text-retention.test.ts.
+const UNCAPPED = { toolOutputItemBytes: 64 * 1024 * 1024, toolOutputRunBytes: 64 * 1024 * 1024 };
 const call = (id: string) => ({ id, name: "bash", arguments: { command: "log" } });
 const start = (id: string, view: ToolView = { kind: "shell", command: "log" }): RunEvent => ({ type: "tool_start", tool_call: call(id), view });
 const out = (id: string, output: string, replace?: boolean): RunEvent => ({ type: "tool_output", tool_call: call(id), output, ...(replace ? { replace } : {}) });
@@ -123,7 +126,7 @@ const red = (lines: number) => "\u001b[31mx\u001b[0m\n".repeat(lines);
 // `min`: the shortest string that counts as the whole text; it stays above the appended text, whose own reads are the
 // tail's cost.
 function appendWork(text: string, appends: number, delta: (index: number) => string, open = true, view?: ToolView, min = 10_000) {
-  const store = createRunStore((job) => job());
+  const store = createRunStore((job) => job(), UNCAPPED);
   store.dispatch(start("a", view));
   store.dispatch(out("a", text));
   mount(store, ["a"]);
@@ -184,7 +187,7 @@ for (const { name, large, delta, end: atEnd, view, min } of paths) for (const op
 
 test("the segment arrays are copied only by an append that seals a segment, once per append", () => {
   const copy = "array Symbol(Symbol.iterator) in useSegments (tools/text-viewer.tsx)";
-  const store = createRunStore((job) => job());
+  const store = createRunStore((job) => job(), UNCAPPED);
   store.dispatch(start("a"));
   store.dispatch(out("a", big(1_000_000)));
   mount(store, ["a"]);
@@ -217,7 +220,7 @@ for (const { name, small, large, delta, view, min } of paths) for (const open of
 });
 
 test("the appended plain output is counted and shown", () => {
-  const store = createRunStore((job) => job());
+  const store = createRunStore((job) => job(), UNCAPPED);
   store.dispatch(start("a"));
   store.dispatch(out("a", big(1_000_000)));
   mount(store, ["a"]);
@@ -253,7 +256,7 @@ function show(mode: string) {
 }
 for (const { name, events, text } of cases) for (const [mode, prefix] of modes) {
   test(`${name} (${mode}): every step shows what a fresh render shows`, () => {
-    const live = createRunStore((job) => job());
+    const live = createRunStore((job) => job(), UNCAPPED);
     live.dispatch(start("a"));
     if (prefix) live.dispatch(out("a", prefix));
     mount(live, ["a"]);
@@ -269,7 +272,7 @@ for (const { name, events, text } of cases) for (const [mode, prefix] of modes) 
     act(() => root?.unmount());
     container.remove();
     for (let step = 0; step < steps.length; step++) {
-      const fresh = createRunStore((job) => job());
+      const fresh = createRunStore((job) => job(), UNCAPPED);
       fresh.dispatch(start("a"));
       if (prefix) fresh.dispatch(out("a", prefix));
       steps.slice(0, step + 1).forEach(fresh.dispatch);
@@ -284,7 +287,7 @@ for (const { name, events, text } of cases) for (const [mode, prefix] of modes) 
 
 test("a resync to a different history starts the text over, then appends to the new text", () => {
   const history = [start("a"), out("a", `${big(59_000)}other\n`)];
-  const store = createRunStore((job) => job());
+  const store = createRunStore((job) => job(), UNCAPPED);
   store.dispatch(start("a"));
   store.dispatch(out("a", big(60_000)));
   mount(store, ["a"]);
@@ -296,7 +299,7 @@ test("a resync to a different history starts the text over, then appends to the 
   expect(seen[1]).toBe("59,002 lines · 118,011 characters");
   act(() => root?.unmount());
   container.remove();
-  const fresh = createRunStore((job) => job());
+  const fresh = createRunStore((job) => job(), UNCAPPED);
   [...history, out("a", "tail\n")].forEach(fresh.dispatch);
   mount(fresh, ["a"]);
   openViewer("a");
@@ -343,7 +346,7 @@ test.skipIf(inChild)(RETENTION, () => {
   if (child.exitCode !== 0 || !output.includes(" 1 pass")) throw new Error(`retention child failed:\n${output}`);
 });
 test.if(inChild)(`${RETENTION} (child)`, () => {
-  const store = createRunStore((job) => job());
+  const store = createRunStore((job) => job(), UNCAPPED);
   store.dispatch(start("a"));
   store.dispatch(out("a", big(1_000_000)));
   mount(store, ["a"]);
@@ -364,11 +367,11 @@ test.if(inChild)(`${RETENTION} (child)`, () => {
   expect(per("segments")).toBeLessThanOrEqual(0.25);
 });
 
-test("streamTail through @fulcrum/core/internal reads the chains the public @fulcrum/core reducer builds", () => {
+test("streamTail and sourceTail through @fulcrum/core/internal read what the public @fulcrum/core reducer builds", () => {
   // One stream.js behind both entries: a second copy would have empty chain maps and give undefined here.
   type Tool = Extract<RunItem, { type: "tool" }>;
   type Message = Extract<RunItem, { type: "message" }>;
-  const store = createRunStore((job) => job());
+  const store = createRunStore((job) => job(), UNCAPPED);
   const call = { id: "shared", name: "bash", arguments: {} };
   store.dispatch({ type: "tool_start", tool_call: call });
   store.dispatch({ type: "tool_output", tool_call: call, output: "a" });
@@ -377,6 +380,6 @@ test("streamTail through @fulcrum/core/internal reads the chains the public @ful
   const message = store.getItem("message:shared") as Message;
   store.dispatch({ type: "tool_output", tool_call: call, output: "bc" });
   store.dispatch({ type: "message_delta", message_id: "shared", delta: "yz" });
-  expect(streamTail(tool, store.getItem("tool:shared") as Tool, "output")).toBe("bc");
+  expect(sourceTail(tool.output, (store.getItem("tool:shared") as Tool).output)).toBe("bc");
   expect(streamTail(message, store.getItem("message:shared") as Message, "text")).toBe("yz");
 });

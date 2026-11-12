@@ -106,7 +106,7 @@ function searchRows(groups: Group[], pattern: string, id: string): RowModel {
 }
 
 const groupsOf = memoText((text) => group(splitLines(text)));
-const searchText = (item: ToolBodyProps["item"], output: ToolBodyProps["output"]) => (item.view?.kind === "search" ? item.view.matches?.map(sourceText).join("\n") ?? sourceText(output) : "");
+const searchText = (item: ToolBodyProps["item"], output: ToolBodyProps["output"]) => (item.view?.kind === "search" ? item.view.matches?.map((match) => sourceText(match)).join("\n") ?? sourceText(output) : "");
 
 /** The highlight blocks SearchBody asks for when it first mounts. */
 export function searchBlocks({ item, output, state }: ToolBodyProps): Block[] {
