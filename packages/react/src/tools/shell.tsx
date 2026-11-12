@@ -35,10 +35,10 @@ export function ShellBody({ item, output, state }: ToolBodyProps) {
       {item.result?.truncated ? <div data-part="tool-truncated">output truncated</div> : null}
       {split ? (
         <>
-          {stdout ? <Output text={stdout} id={`${item.id}:stdout`} done={done} /> : null}
-          {stderr ? <Output text={stderr} id={`${item.id}:stderr`} stream="stderr" done={done} /> : null}
+          {stdout ? <Output text={stdout} id={`${item.id}:stdout`} done={done} source={item.view.stdout} /> : null}
+          {stderr ? <Output text={stderr} id={`${item.id}:stderr`} stream="stderr" done={done} source={item.view.stderr} /> : null}
         </>
-      ) : shown ? <Output text={shown} id={`${item.id}:output`} done={done} /> : null}
+      ) : shown ? <Output text={shown} id={`${item.id}:output`} done={done} source={output} /> : null}
       {all ? null : <Empty state={state} />}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["command", command], ["output", all ? () => plainOutput(all) : undefined]]}>

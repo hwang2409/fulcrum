@@ -5,7 +5,7 @@ import type { ItemState } from "../parts.js";
 import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
 import { continueAnsi, hasControls, parseAnsi, type AnsiText } from "./ansi.js";
 import { jsonText } from "./json.js";
-import { CopyButton, needsTextViewer, TextViewer, useTextMetrics, viewerBlocks, type CopyValue, type Grown, type TextFormat } from "./text-viewer.js";
+import { CopyButton, needsTextViewer, TextViewer, useTextMetrics, viewerBlocks, type CopyValue, type Grown, type Retained, type TextFormat } from "./text-viewer.js";
 
 const JSON_FORMAT: TextFormat = { language: "json" };
 export const MAX_DOM_CHARS = 100_000;
@@ -199,6 +199,12 @@ function useAnsi(text: string, grown: Grown | undefined, done: boolean): { parse
   return { parsed, grown: shown };
 }
 
+/** What a viewer exports for a source shown as `text` (sourceText(source)), and whether nothing of it was cut. */
+function useRetained(text: string, source: TextSourceSnapshot | undefined): Retained | undefined {
+  const complete = !source?.omission && !source?.protocolTruncated;
+  return useMemo(() => source ? { text, complete } : undefined, [source, text, complete]);
+}
+
 /** Output text without its escape codes, for copying. */
 export const plainOutput = (text: string) => (hasControls(text) ? parseAnsi(text).text : text);
 
@@ -207,7 +213,17 @@ export const plainOutput = (text: string) => (hasControls(text) ? parseAnsi(text
  * given language, else JSON when the finished text parses as one JSON object or array. `pretty` indents compact JSON.
  * Logs `follow` their newest line; a document (`follow={false}`) starts at its top.
  */
-type OutputProps = { text: string; id: string; stream?: "stderr"; done?: boolean; language?: string; pretty?: boolean; follow?: boolean };
+type OutputProps = {
+  text: string;
+  id: string;
+  stream?: "stderr";
+  done?: boolean;
+  language?: string;
+  pretty?: boolean;
+  follow?: boolean;
+  /** The source `text` shows (`text` is sourceText(source)): the open viewer exports it, and says when it was cut. */
+  source?: TextSourceSnapshot;
+};
 
 // What Output shows and how it is colored, from the text with its escape codes applied.
 function outputView(ansi: AnsiText | undefined, text: string, done: boolean, language: string | undefined, pretty: boolean) {
@@ -218,11 +234,12 @@ function outputView(ansi: AnsiText | undefined, text: string, done: boolean, lan
   return { shown, format, appendOnly: shown === plain };
 }
 
-export function Output({ text, id, stream, done = true, language, pretty = false, follow = true }: OutputProps) {
+export function Output({ text, id, stream, done = true, language, pretty = false, follow = true, source }: OutputProps) {
   const known = useContext(GrownText);
   const { parsed: ansi, grown } = useAnsi(text, known?.text === text ? known : undefined, done);
   const { shown, format, appendOnly } = useMemo(() => outputView(ansi, text, done, language, pretty), [ansi, text, done, language, pretty]);
-  return <TextViewer text={shown} id={id} label={stream ?? "output"} appendOnly={appendOnly} grown={appendOnly ? grown : undefined} follow={follow} stream={stream} format={format} done={done} />;
+  const retained = useRetained(text, source);
+  return <TextViewer text={shown} id={id} label={stream ?? "output"} appendOnly={appendOnly} grown={appendOnly ? grown : undefined} follow={follow} stream={stream} format={format} done={done} retained={retained} />;
 }
 
 /** The highlight blocks Output asks for when it first mounts; see viewerBlocks. */
@@ -235,7 +252,7 @@ const Row = ({ number, children }: { number: number | undefined; children: React
   <div data-part="line"><span data-part="line-number">{number}</span><span data-part="line-text">{children}</span></div>
 );
 
-type NumberedProps = { text: string; start?: number; id: string; language?: string; done?: boolean; cut?: { row: number; line: number } };
+type NumberedProps = { text: string; start?: number; id: string; language?: string; done?: boolean; cut?: { row: number; line: number }; source?: TextSourceSnapshot };
 
 /** The highlight blocks NumberedLines asks for when it first mounts. */
 export function numberedBlocks({ text, id, language, done = true }: NumberedProps): Block[] {
@@ -243,14 +260,15 @@ export function numberedBlocks({ text, id, language, done = true }: NumberedProp
 }
 
 /** Numbered text uses rich rows while small and the shared viewer while large. */
-export function NumberedLines({ text, start = 1, id, language, done = true, cut }: NumberedProps) {
+export function NumberedLines({ text, start = 1, id, language, done = true, cut, source }: NumberedProps) {
   const known = useContext(GrownText);
   const grown = known?.text === text ? known : undefined;
   const metrics = useTextMetrics(text, true, grown);
   const large = needsTextViewer(text, metrics);
   const tokens = useTokens(large ? "" : text, language, id, done);
   const format = useMemo(() => language ? { language } : undefined, [language]);
-  if (large) return <TextViewer text={text} id={id} label="content" appendOnly grown={grown} metrics={metrics} format={format} done={done} />;
+  const retained = useRetained(text, source);
+  if (large) return <TextViewer text={text} id={id} label="content" appendOnly grown={grown} metrics={metrics} format={format} done={done} retained={retained} />;
   const lines = splitLines(text);
   const tokenRows = tokens ? tokenLines(tokens) : undefined;
   // Past a cut's notice row, rows resume at the source line the kept tail starts on.

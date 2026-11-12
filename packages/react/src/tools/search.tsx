@@ -135,7 +135,7 @@ export function SearchBody({ item, output, state }: ToolBodyProps) {
       {asking(state) && cutByHeader(path ? `"${pattern}" ${path}` : pattern) ? <pre data-part="tool-path">{boundText(path ? `${pattern} in ${path}` : pattern).text}</pre> : null}
       {!text ? <Empty state={state} noun="matches" /> : model
         ? <TextViewer text={text} id={`${item.id}:results`} label="search results" appendOnly metrics={metrics} done={state !== "streaming"} rows={model} />
-        : <Output text={text} id={`${item.id}:output`} done={state !== "streaming"} />}
+        : <Output text={text} id={`${item.id}:output`} done={state !== "streaming"} source={view.matches ? undefined : output} />}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["pattern", pattern], ["output", text]]}>
         {text && matches !== undefined ? <span data-part="search-total">{matches} {matches === 1 ? "match" : "matches"} in {groups!.length} {groups!.length === 1 ? "file" : "files"}</span> : null}

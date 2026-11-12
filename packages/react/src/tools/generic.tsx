@@ -7,7 +7,7 @@ export function GenericBody({ item, output, state }: ToolBodyProps) {
   const text = sourceText(output);
   return (
     <>
-      {text ? <Output text={text} id={`${item.id}:output`} done={state !== "streaming"} pretty follow={state === "streaming"} /> : <Empty state={state} />}
+      {text ? <Output text={text} id={`${item.id}:output`} done={state !== "streaming"} pretty follow={state === "streaming"} source={output} /> : <Empty state={state} />}
       <Arguments call={item.tool_call} id={item.id} open={asking(state)} />
       <Foot copy={[["output", text]]} />
     </>

@@ -100,7 +100,7 @@ export function EditBody({ item, output, state }: ToolBodyProps) {
   return (
     <>
       <TextViewer text={diff} id={id} label="diff" metrics={metrics} rows={model} />
-      {shown ? <Output text={shown} id={`${item.id}:output`} done={state !== "streaming"} /> : null}
+      {shown ? <Output text={shown} id={`${item.id}:output`} done={state !== "streaming"} source={output} /> : null}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["path", view.path], ["diff", diff]]} />
     </>

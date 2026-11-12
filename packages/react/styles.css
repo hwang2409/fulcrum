@@ -531,6 +531,19 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
 [data-part="text-viewer-status"]::before { animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
 [data-part="text-viewer-position"][data-position="new-output"] { color: var(--fulcrum-fg); font-weight: 700; }
 [data-part="text-viewer-position"][data-position="new-output"]::before { content: ""; display: inline-block; box-sizing: border-box; width: 7px; height: 7px; margin-inline-end: 6px; border-right: 2px solid var(--fulcrum-warn); border-bottom: 2px solid var(--fulcrum-warn); transform: translateY(-1px) rotate(45deg); }
+/* Find in the open viewer: a second head row with the query, where it is, and the arrows. Matches are CSS highlights
+   (no extra markup in rows): all in a warn tint, the current one in an accent tint with an underline. */
+[data-part="text-viewer-find"] { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; padding: 4px 4px 4px 12px; border-top: 1px solid var(--fulcrum-border); background: var(--fulcrum-surface); color: var(--fulcrum-muted); font-size: 12px; }
+[data-part="text-viewer-find"] > input { flex: 1 1 16ch; min-width: 12ch; height: 28px; box-sizing: border-box; margin: 0 8px 0 0; padding: 0 8px; border: 1px solid var(--fulcrum-border); border-radius: 0; background: var(--fulcrum-bg); color: var(--fulcrum-fg); font: inherit; }
+[data-part="text-viewer-find"] > input::placeholder { color: var(--fulcrum-muted); opacity: 1; }
+[data-part="text-viewer-find"] > input:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+[data-part="text-viewer-find-count"] { margin-inline-end: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+[data-part="text-viewer-find-count"][data-state="none"] { color: var(--fulcrum-fg); }
+[data-part="text-viewer-find"] > button { min-width: 32px; font-size: 14px; }
+[data-part="text-viewer-find"] > button:disabled { cursor: default; opacity: 0.45; }
+[data-part="text-viewer-announce"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+::highlight(fulcrum-find) { background-color: color-mix(in srgb, var(--fulcrum-warn) 12%, var(--fulcrum-bg)); }
+::highlight(fulcrum-find-current) { background-color: color-mix(in srgb, var(--fulcrum-accent) 12%, var(--fulcrum-bg)); text-decoration: underline 2px var(--fulcrum-accent); text-underline-offset: 3px; }
 [data-part="text-viewer"] {
   position: relative;
   max-height: 320px;
@@ -1280,6 +1293,9 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="composer"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="composer"] button { border-color: ButtonText; }
   [data-part="composer-submit"]:not([aria-disabled="true"]) { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  ::highlight(fulcrum-find) { background-color: Mark; color: MarkText; }
+  ::highlight(fulcrum-find-current) { background-color: Highlight; color: HighlightText; text-decoration-color: HighlightText; }
+  [data-part="text-viewer-find"] > input { border-color: CanvasText; }
 }
 
 [data-part="virtual-debug"] {

@@ -15,8 +15,8 @@ export function ReadBody({ item, output, state }: ToolBodyProps) {
     <>
       {asking(state) && cutByHeader(path) ? <pre data-part="tool-path">{boundText(path).text}</pre> : null}
       {text ? (numbered({ item, output, state })
-        ? <NumberedLines text={text} start={(range?.offset ?? 0) + 1} id={id} language={languageForPath(path)} done={state !== "streaming"} cut={cutRows(output)} />
-        : <Output text={text} id={id} />
+        ? <NumberedLines text={text} start={(range?.offset ?? 0) + 1} id={id} language={languageForPath(path)} done={state !== "streaming"} cut={cutRows(output)} source={output} />
+        : <Output text={text} id={id} source={output} />
       ) : <Empty state={state} noun="content" />}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["path", path], ["output", text]]} />

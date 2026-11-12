@@ -4,6 +4,7 @@ import type { Token } from "@fulcrum/highlight";
 import { useVirtualList } from "../virtual.js";
 import { spansIn, type AnsiSpan } from "./ansi.js";
 import { markScrollable } from "../overflow.js";
+import { useFind } from "./find.js";
 
 const SEGMENT_CHARS = 2_000;
 // A code viewer's ranges are smaller: each scrolled-in range is one react commit of its tokens, and dense code reaches
@@ -321,11 +322,16 @@ export const Styled = memo(function Styled({ text, offset = 0, start = offset, e
 const counts = new Intl.NumberFormat("en-US");
 const count = (value: number) => counts.format(value);
 
-type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; texts?: Segmented; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean; seed?: Token[] | null; caption?: string; focus?: boolean; live?: boolean };
+/**
+ * The output a viewer shows, as kept: `text` is the retained text with a line where any of it was not kept (what export
+ * saves), `complete` says nothing was cut. Find and export say "retained" when it is not complete.
+ */
+export type Retained = { text: string; complete: boolean };
+type ViewerProps = { text: string; label: string; follow: boolean; metrics: TextMetrics; segments: TextSegment[]; texts?: Segmented; rows?: RowModel; format?: TextFormat; id: string; done: boolean; copy?: boolean; seed?: Token[] | null; caption?: string; focus?: boolean; live?: boolean; retained?: Retained };
 type Place = "top" | "middle" | "bottom";
 const placeWords: Record<Place, string> = { top: "at top", middle: "scrolled", bottom: "at bottom" };
 
-function VirtualText({ text, label, follow, metrics, segments, texts, rows, format, id, done, copy, seed, caption, focus, live }: ViewerProps) {
+function VirtualText({ text, label, follow, metrics, segments, texts, rows, format, id, done, copy, seed, caption, focus, live, retained }: ViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(follow);
   const lastTop = useRef(0);
@@ -384,12 +390,31 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
     }
     node.focus({ preventScroll: true });
   };
+  const starts = useMemo(() => segments.map((segment) => segment.start), [segments]);
+  // Find covers the whole text (structured rows draw their own markup, so they have none).
+  const find = useFind({
+    text: texts ? text : "",
+    starts,
+    scrollRef,
+    label,
+    complete: retained?.complete ?? true,
+    scrollToRow: (index) => {
+      following.current = false;
+      list.scrollToId(segments[index]!.id);
+    },
+    stopFollow: () => { following.current = false; },
+    viewStart: () => {
+      const top = scrollRef.current?.scrollTop ?? 0;
+      return ranges.find(({ row }) => row.start + row.size > top)?.start ?? 0;
+    },
+  });
+  const onKeyDown = texts ? find.onKeyDown : undefined;
   const atBottom = place === "bottom";
   const position = newOutput ? "new output" : placeWords[place];
   const target = atBottom ? "top" : "bottom";
   return (
     <>
-      <div data-part="text-viewer-head">
+      <div data-part="text-viewer-head" onKeyDown={onKeyDown}>
         {caption ? <span data-part="text-viewer-language">{caption}</span> : null}
         {/* Narrow heads drop the character count and the buttons' verbs (styles.css): the head stays one row. */}
         <span data-part="text-viewer-count">{count(metrics.lines)}<span data-part="text-viewer-unit"> {metrics.lines === 1 ? "line" : "lines"}</span><span data-part="text-viewer-wide"> · {count(metrics.characters)} characters</span></span>
@@ -399,8 +424,11 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
         <button type="button" data-action={`jump-${target}`} aria-label={`jump to ${target}`} onClick={() => jump(!atBottom)}>
           <span data-part="text-viewer-wide">jump to </span>{target}
         </button>
+        {texts ? <button type="button" data-action="find" aria-label={`find in ${label}`} aria-keyshortcuts="Control+F Meta+F" onClick={find.open}>find</button> : null}
+        {retained ? <ExportButton retained={retained} label={label} /> : null}
         {copy ? <CopyButton label={label} value={text} /> : null}
       </div>
+      {find.bar}
       <div
         ref={scrollRef}
         data-part="text-viewer"
@@ -413,6 +441,7 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
         onScroll={(event) => onScroll(event.currentTarget)}
         onKeyDown={(event) => {
           if (event.key.endsWith("Up") || event.key === "Home") following.current = false;
+          onKeyDown?.(event);
           event.stopPropagation();
         }}
         onWheel={(event) => event.stopPropagation()}
@@ -427,6 +456,7 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
                 key={row.id}
                 ref={list.observeRow(row.id)}
                 data-part="text-viewer-row"
+                data-start={rows ? undefined : start}
                 data-language={rows?.language}
                 style={{ position: "absolute", insetInline: 0, transform: `translateY(${row.start}px)` } as CSSProperties}
               >{rows ? rows.render(start, end) : <Styled text={slice} offset={start} format={format} id={id} done={rangeDone} whole={whole} />}</Row>
@@ -503,10 +533,12 @@ export type TextViewerProps = {
   rows?: RowModel;
   /** Start a large text in the open viewer instead of its cut preview (what an approval asks about is never cut). */
   opened?: boolean;
+  /** The output as kept, when `text` shows a bounded tool source: the open viewer exports it, and find says "retained" when it was cut. */
+  retained?: Retained;
 };
 
 /** One bounded, virtualized disclosure for every large tool text surface. */
-export function TextViewer({ text, label, id, appendOnly = false, grown, follow = false, part = "tool-output", stream, metrics: suppliedMetrics, format, done = true, rows, opened = false }: TextViewerProps) {
+export function TextViewer({ text, label, id, appendOnly = false, grown, follow = false, part = "tool-output", stream, metrics: suppliedMetrics, format, done = true, rows, opened = false, retained }: TextViewerProps) {
   const [open, setOpen] = useState<boolean | "focus">(opened);
   const measuredMetrics = useTextMetrics(suppliedMetrics ? "" : text, appendOnly, grown);
   const metrics = suppliedMetrics ?? measuredMetrics;
@@ -544,7 +576,7 @@ export function TextViewer({ text, label, id, appendOnly = false, grown, follow 
       {cap.expand ? <ExpandButton lines={metrics.lines} expand={cap.expand} /> : null}
     </>
   );
-  if (open) return <VirtualText text={text} label={label} follow={follow} metrics={metrics} segments={rows ? rowSegments : textSegments.segments} texts={rows ? undefined : textSegments} rows={rows} format={format} id={id} done={done} focus={open === "focus"} />;
+  if (open) return <VirtualText text={text} label={label} follow={follow} metrics={metrics} segments={rows ? rowSegments : textSegments.segments} texts={rows ? undefined : textSegments} rows={rows} format={format} id={id} done={done} focus={open === "focus"} retained={retained} />;
   const { headEnd, tailStart, offset } = previewRanges(ends);
   const shown = textMetrics(ends.head.slice(0, headEnd)).lines + textMetrics(ends.tail.slice(tailStart - offset)).lines;
   return (
@@ -560,6 +592,30 @@ export function TextViewer({ text, label, id, appendOnly = false, grown, follow 
 }
 
 export type CopyValue = string | (() => string);
+
+/**
+ * Saves the output as kept to a file, with its cut and host-cut lines, through one Blob that is let go once the
+ * download has started; nothing is kept in state. Says "retained" when the output was cut.
+ */
+function ExportButton({ retained, label }: { retained: Retained; label: string }) {
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (!saved) return;
+    const timer = setTimeout(() => setSaved(false), 1500);
+    return () => clearTimeout(timer);
+  }, [saved]);
+  const kept = retained.complete ? "" : " retained";
+  const save = () => {
+    const url = URL.createObjectURL(new Blob([retained.text], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${label}${retained.complete ? "" : "-retained"}.txt`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000); // after the browser has read it for the download
+    setSaved(true);
+  };
+  return <button type="button" data-action="export" data-complete={retained.complete ? "" : undefined} aria-label={`export${kept} ${label}`} onClick={save}>{saved ? `exported${kept}` : `export${kept}`}</button>;
+}
 
 export function CopyButton({ value, label }: { value: CopyValue; label: string }) {
   const [result, setResult] = useState<"copied" | "copy failed">();

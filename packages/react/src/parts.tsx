@@ -216,7 +216,7 @@ function FinalResult({ id, source }: { id: string; source: TextSourceSnapshot })
   return (
     <section data-part="tool-final-result" aria-label="final result">
       <span data-part="block-label">final result</span>
-      <Output text={sourceText(source)} id={`${id}:final`} />
+      <Output text={sourceText(source)} id={`${id}:final`} source={source} />
     </section>
   );
 }

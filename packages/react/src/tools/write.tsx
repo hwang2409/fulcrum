@@ -12,9 +12,9 @@ export function WriteBody({ item, output, state }: ToolBodyProps) {
     <>
       {asking(state) && cutByHeader(path) ? <pre data-part="tool-path">{boundText(path).text}</pre> : null}
       {content ? (item.view.content!.omission
-        ? <Output text={content} id={`${item.id}:content`} />
-        : <NumberedLines text={content} id={`${item.id}:content`} language={languageForPath(path)} />) : null}
-      {shown ? <Output text={shown} id={`${item.id}:output`} done={state !== "streaming"} /> : null}
+        ? <Output text={content} id={`${item.id}:content`} source={item.view.content} />
+        : <NumberedLines text={content} id={`${item.id}:content`} language={languageForPath(path)} source={item.view.content} />) : null}
+      {shown ? <Output text={shown} id={`${item.id}:output`} done={state !== "streaming"} source={output} /> : null}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
       <Foot copy={[["path", path], ["content", content]]}>
         {size !== undefined ? <span data-part="tool-size">{bytes(size)}</span> : null}
