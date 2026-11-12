@@ -1,5 +1,6 @@
 import type { RunItem, StoredToolView, ToolView } from "./events.js";
 import type { OutlineChange, OutlineSnapshot } from "./store.js";
+import { fold } from "./fold.js";
 
 export interface RunSearchStore {
   getItem(id: string): RunItem | undefined;
@@ -57,24 +58,6 @@ type SearchField = {
 };
 type SearchEntry = { id: string; fields: SearchField[]; truncated: boolean };
 type Watched = { item: RunItem | undefined; unsubscribe: () => void };
-
-const fold = (value: string) => {
-  let folded = "";
-  const starts: number[] = [];
-  const ends: number[] = [];
-  let offset = 0;
-  for (const character of value) {
-    const start = offset;
-    offset += character.length;
-    const part = character.toUpperCase().toLowerCase();
-    folded += part;
-    for (let index = 0; index < part.length; index++) {
-      starts.push(start);
-      ends.push(offset);
-    }
-  }
-  return { folded, starts, ends };
-};
 
 const viewFields = (prefix: string, view: ToolView | StoredToolView | undefined): Array<[string, string | undefined]> => {
   if (!view) return [];
