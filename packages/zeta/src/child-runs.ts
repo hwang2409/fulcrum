@@ -3,6 +3,7 @@ import { fromZetaHistory } from "./adapter.js";
 import { BackwardHistoryError, openBackwardHistory, type BackwardHistoryCursor } from "./backward-history.js";
 import type { RequestOptions, SessionLease, ZetaClient } from "./client.js";
 import { call } from "./host.js";
+import { record } from "./validation.js";
 
 export const CHILD_RUNS_FEATURE = "child_runs" as const;
 export const CHILD_RUN_HISTORY_FEATURE = "child_run_history" as const;
@@ -91,8 +92,6 @@ export type ListChildRunsOptions = RequestOptions & {
 };
 
 const knownStatuses = new Set<KnownChildRunStatus>(["running", "idle", "finishing", "completed", "failed", "canceled"]);
-const object = (value: unknown): Record<string, unknown> | null =>
-  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const nonempty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const duration = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -105,7 +104,7 @@ function parseStatus(value: unknown): ChildRunStatus | null {
 }
 
 function parseRow(value: unknown): ChildRunRow | null {
-  const row = object(value);
+  const row = record(value);
   const status = parseStatus(row?.status);
   if (!row || !nonempty(row.run_id) || !nonempty(row.session_id) ||
       row.parent_run_id !== null && !nonempty(row.parent_run_id) ||
@@ -132,7 +131,7 @@ function parseRow(value: unknown): ChildRunRow | null {
 }
 
 function parseList(value: unknown, offset: number): ChildRunListResult {
-  const envelope = object(value);
+  const envelope = record(value);
   if (!envelope || !Array.isArray(envelope.runs)) return { kind: "malformed" };
   const nextOffset = envelope.next_offset;
   if (nextOffset !== undefined && (!Number.isSafeInteger(nextOffset) || (nextOffset as number) <= offset)) return { kind: "malformed" };
@@ -184,7 +183,7 @@ export function sendChildRun(
     run_id: key.runId,
     text,
   }, options).then((value) => {
-    const result = object(value);
+    const result = record(value);
     return result?.accepted === true && result.run_id === key.runId
       ? { kind: "accepted", runId: key.runId }
       : { kind: "malformed" };

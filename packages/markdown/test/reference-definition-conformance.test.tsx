@@ -74,7 +74,7 @@ function expectOracleAgreement(source: string) {
   expect(resolverReferences(source), source).toEqual(expected.references);
   expect(parseMarkdown(source)).toBeArray();
   const safeOracleHtml = expected.html.replace("<bar>(baz)", "&lt;bar&gt;(baz)");
-  expect(normalized(renderToStaticMarkup(<Markdown source={source} />))).toBe(normalized(safeOracleHtml));
+  expect(normalized(renderToStaticMarkup(<Markdown source={source} headingOffset={0} />))).toBe(normalized(safeOracleHtml));
 }
 
 for (const example of examples.filter(({ example }) => example >= 192 && example <= 218)) {

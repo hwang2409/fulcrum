@@ -1,7 +1,7 @@
 import { createRunStore, type RunEvent, type Scheduler, type RunState } from "@fulcrum/core";
 import { fromZetaEvent } from "./adapter.js";
 import { createDeliveryIdentity } from "./delivery-identity.js";
-import type { HelloResult, RpcError, TransportMessage } from "./wire.js";
+import type { HelloResult, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
 import { parseSessionGrantsChanged, type SessionGrantsChanged } from "./grants.js";
 import {

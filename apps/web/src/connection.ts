@@ -81,7 +81,8 @@ export type Connection = {
   stop(): void;
 };
 
-export const FEATURES = ["list_sessions_paging", "approval_history", "approval_reconnect", "delivery_id", "user_message_event", "user_message_delivery_id", "session_replay_seq", "session_history_backward", "session_history_fidelity", "content_read"];
+// replay PR 2 re-adds "session_replay_seq" together with the sequence replay coordinator.
+export const FEATURES = ["list_sessions_paging", "approval_history", "approval_reconnect", "delivery_id", "user_message_event", "user_message_delivery_id", "session_history_backward", "session_history_fidelity", "content_read"];
 
 /**
  * Finds the server through the dev-server handoff, connects, and reconnects with backoff after any failure or drop.

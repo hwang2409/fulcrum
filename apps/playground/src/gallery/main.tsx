@@ -322,24 +322,24 @@ function Gallery() {
           </div>
         ))}
       </nav>
-      {/* Narrow screens hide the side nav; a sticky jump list keeps every demo one tap away. */}
-      <label className="jump">
-        <span>jump to</span>
-        <select
-          value={active}
-          onChange={(event) => {
-            history.replaceState(history.state, "", `#${event.target.value}`);
-            document.getElementById(event.target.value)?.scrollIntoView();
-          }}
-        >
-          {parts.map((part) => (
-            <optgroup key={part} label={part}>
-              {cards.filter((demo) => demo.part === part).map((demo) => <option key={demo.id} value={demo.id}>{demo.title}</option>)}
-            </optgroup>
-          ))}
-        </select>
-      </label>
       <main className="main" id="main" tabIndex={-1}>
+        {/* Narrow screens hide the side nav; a sticky jump list keeps every demo one tap away. */}
+        <label className="jump">
+          <span>jump to</span>
+          <select
+            value={active}
+            onChange={(event) => {
+              history.replaceState(history.state, "", `#${event.target.value}`);
+              document.getElementById(event.target.value)?.scrollIntoView();
+            }}
+          >
+            {parts.map((part) => (
+              <optgroup key={part} label={part}>
+                {cards.filter((demo) => demo.part === part).map((demo) => <option key={demo.id} value={demo.id}>{demo.title}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </label>
         <header className="intro">
           <h1>Agent UI parts, in every state.</h1>
           <p>

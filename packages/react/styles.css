@@ -185,8 +185,9 @@
 }
 [data-part="message-prompt"] { color: var(--fulcrum-muted); user-select: none; }
 [data-part="message-content"] { min-width: 0; text-wrap: pretty; }
-/* A user row's delivery note sits under its text, in the content column. */
-[data-part="item"][data-kind="user"] > [data-part="delivery-note"] { grid-column: 2; margin-top: 4px; color: var(--fulcrum-danger); font-size: 12px; font-weight: 400; }
+/* A user row's delivery note sits under its text, in the content column. Its word stays fg; the danger mark carries status. */
+[data-part="item"][data-kind="user"] > [data-part="delivery-note"] { --mark: var(--fulcrum-danger); grid-column: 2; margin-top: 4px; padding-left: 13px; color: var(--fulcrum-fg); font-size: 12px; font-weight: 400; text-indent: -13px; }
+[data-part="delivery-note"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; background: var(--mark); outline: 1px solid var(--fulcrum-bg); vertical-align: 1px; }
 /* With no kept text there is no empty message surface: the note is the whole row. */
 [data-part="item"][data-kind="user"][data-text-omitted] { display: block; padding: 0; border: 0; background: transparent; }
 [data-part="item"][data-kind="user"][data-text-omitted] > [data-part="delivery-note"] { margin-top: 0; }
@@ -540,7 +541,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   color: var(--fulcrum-fg);
   contain: layout paint style;
 }
-[data-part="text-viewer"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+:is([data-part="text-viewer"], [data-part="tool-output"], [data-part="tool-args"], [data-part="tool-lines"], [data-part="tool-matches"], [data-part="tool-diff"]):focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 [data-part="text-viewer-content"] { position: relative; min-height: 100%; }
 /* Structured rows (diff, search) draw their own gutters. */
 div[data-part="text-viewer-row"] { padding: 0; }
@@ -701,7 +702,6 @@ summary[data-part="notification-summary"]:focus-visible { outline: 2px solid var
 [data-part="sub-agent"] {
   --rail: var(--fulcrum-border);
   --mark: var(--fulcrum-muted);
-  --state: var(--fulcrum-muted);
   appearance: none;
   display: grid;
   grid-template-rows: 20px 18px;
@@ -733,7 +733,7 @@ button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-a
 [data-part="sub-agent-head"] > [data-part="sub-agent-task"] { flex: 1 1 0; }
 /* At reflow widths (320 px) the elapsed time and tool count give way too; the state and the open mark never do. */
 [data-part="sub-agent-head"] > [data-part="sub-agent-meta"] { flex: 0 1 auto; margin-left: auto; }
-[data-part="sub-agent-status"] { display: inline-flex; align-items: baseline; gap: 6px; color: var(--state); }
+[data-part="sub-agent-status"] { display: inline-flex; align-items: baseline; gap: 6px; color: var(--fulcrum-fg); }
 [data-part="sub-agent-status"]::before { content: ""; flex: none; width: 7px; height: 7px; background: var(--mark); transform: translateY(-1px); }
 [data-part="sub-agent-name"] { color: var(--fulcrum-accent); font-weight: 700; }
 [data-part="sub-agent-task"] { color: var(--fulcrum-fg); }
@@ -745,18 +745,20 @@ button[data-part="sub-agent"]:focus-visible { outline: 2px solid var(--fulcrum-a
 [data-part="sub-agent-activity"] { flex: 1; color: var(--fulcrum-muted); }
 [data-part="sub-agent-reason"] { flex: none; max-width: 100%; color: var(--fulcrum-fg); }
 [data-part="sub-agent-reason"]::before { content: "no details: "; color: var(--fulcrum-muted); }
-[data-part="sub-agent"][data-state="running"] { --rail: var(--fulcrum-accent); --mark: var(--fulcrum-accent); --state: var(--fulcrum-accent); }
+[data-part="sub-agent"][data-state="running"] { --rail: var(--fulcrum-accent); --mark: var(--fulcrum-accent); }
 [data-part="sub-agent"][data-state="running"] [data-part="sub-agent-status"]::before { animation: fulcrum-pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate; }
-[data-part="sub-agent"][data-state="done"] { --mark: var(--fulcrum-ok); --state: var(--fulcrum-ok); }
-[data-part="sub-agent"][data-state="error"] { --rail: var(--fulcrum-danger); --mark: var(--fulcrum-danger); --state: var(--fulcrum-danger); border-color: var(--fulcrum-danger); }
+[data-part="sub-agent"][data-state="done"] { --mark: var(--fulcrum-ok); }
+[data-part="sub-agent"]:is([data-state="done"], [data-state="idle"]) [data-part="sub-agent-status"] { color: var(--fulcrum-muted); }
+[data-part="sub-agent"][data-state="error"] { --rail: var(--fulcrum-danger); --mark: var(--fulcrum-danger); border-color: var(--fulcrum-danger); }
 [data-part="sub-agent"][data-state="error"] [data-part="sub-agent-status"] { font-weight: 700; }
 [data-part="sub-agent"][data-state="canceled"] { --rail: var(--fulcrum-muted); --mark: transparent; }
+[data-part="sub-agent"][data-state="canceled"] [data-part="sub-agent-status"] { color: var(--fulcrum-muted); }
 [data-part="sub-agent"][data-state="canceled"] [data-part="sub-agent-status"]::before { outline: 1px solid var(--fulcrum-muted); outline-offset: -1px; }
-[data-part="sub-agent"][data-state="idle"] { --mark: var(--fulcrum-ui-type); --state: var(--fulcrum-ui-type); }
-/* Waiting on the user: warn on every edge and the state word as a boxed badge, so it stands out in a long run. */
-[data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { --rail: var(--fulcrum-warn); --mark: var(--fulcrum-warn); --state: var(--fulcrum-warn); border-color: var(--fulcrum-warn); }
+[data-part="sub-agent"][data-state="idle"] { --mark: var(--fulcrum-ui-type); }
+/* Waiting on the user: warn on every edge and a bold fg word, boxed in warn, so it stands out in a long run. */
+[data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { --rail: var(--fulcrum-warn); --mark: var(--fulcrum-warn); border-color: var(--fulcrum-warn); }
 [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) [data-part="sub-agent-status"],
-[data-part="run-urgency"] { padding: 0 5px; border: 1px solid var(--fulcrum-warn); color: var(--fulcrum-warn); font-weight: 700; line-height: 16px; }
+[data-part="run-urgency"] { padding: 0 5px; border: 1px solid var(--fulcrum-warn); color: var(--fulcrum-fg); font-weight: 700; line-height: 16px; }
 
 /* Run navigator: a fixed run bar (back, breadcrumb, state) over one scrolling timeline. Give it a height. */
 [data-part="run-navigator"] { display: flex; flex-direction: column; min-height: 0; background: var(--fulcrum-bg); }
@@ -956,8 +958,8 @@ a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--f
 [data-part="message-content"] > :last-child { margin-bottom: 0; }
 [data-part="md-paragraph"] { margin: 0 0 0.75em; }
 [data-part="md-heading"] { margin: 1.5em 0 0.5em; font-size: 14px; line-height: 1.35; font-weight: 700; text-wrap: balance; }
-h1[data-part="md-heading"] { font-size: 18px; }
-h2[data-part="md-heading"] { font-size: 16px; }
+[data-level="1"][data-part="md-heading"] { font-size: 18px; }
+[data-level="2"][data-part="md-heading"] { font-size: 16px; }
 [data-part="md-strong"] { font-weight: 700; }
 [data-part="md-emphasis"] { font-style: italic; }
 [data-part="md-strike"] { color: var(--fulcrum-muted); }
@@ -996,7 +998,9 @@ ul[data-part="md-list"] { list-style: "- "; }
   tab-size: 2;
   white-space: pre;
 }
-[data-part="md-code-block"] > code { --cursor-gap: 0px; --cursor-hang: 0px; padding: 0; border: 0; background: none; font: inherit; }
+[data-part="md-code-block"] > code { --cursor-gap: 0px; --cursor-hang: 0px; display: inline-block; min-width: 100%; padding: 0; border: 0; background: none; font: inherit; }
+[data-part="md-code-block"]:focus-visible,
+[data-part="md-table"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 /* A large block is the shared code viewer (counts, copy, a scroll box); its rows bring their own padding. */
 [data-part="md-code-block"][data-size="large"] { padding: 0; white-space: normal; }
 /* As tall as the most lines an inline block shows (INLINE_LINES), so a fence that becomes the viewer keeps its height. */
@@ -1271,7 +1275,7 @@ ul[data-part="md-list"] { list-style: "- "; }
   [data-part="sub-agent"][data-state="running"] { --rail: Highlight; border-left-color: Highlight; }
   [data-part="sub-agent"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="sub-agent"]:is([data-urgency="approval"], [data-urgency="input"]) { border-width: 2px; }
-  :is([data-part="sub-agent-status"], [data-part="run-state"])::before,
+  :is([data-part="sub-agent-status"], [data-part="delivery-note"], [data-part="run-state"])::before,
   [data-part="run-state"] { forced-color-adjust: none; background: CanvasText; }
   [data-part="composer"] { --rail: CanvasText; border-color: CanvasText; }
   [data-part="composer"] button { border-color: ButtonText; }

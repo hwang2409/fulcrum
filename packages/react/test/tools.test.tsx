@@ -3,14 +3,13 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 domShimAlarm(import.meta.path);
 import { readFileSync } from "node:fs";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type ApprovalDecision, type RunEvent, type ToolView } from "@fulcrum/core";
 import { Approval, deliveryNoteText, Fallback, RunProvider, Timeline, ToolCall, useItem, type Renderers } from "../src/index.js";
-import { boundLines } from "../src/tools/common.js";
 import { segmentText } from "../src/tools/text-viewer.js";
 
 afterAll(() => GlobalRegistrator.unregister());
@@ -169,6 +168,33 @@ test("copy buttons copy the command, the path, and the full output", async () =>
   expect(buttons[0]!.textContent).toBe("copied");
 });
 
+test("only an output that overflows is a named keyboard tab stop", () => {
+  restoreShims.push(
+    shimProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get(this: HTMLElement) { return this.closest('[data-id="tool:overflow"]') ? 400 : 100; },
+    }),
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100 }),
+    shimGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) { this.callback([{ target }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver),
+  );
+  render([
+    ...tool("overflow", "bash", { kind: "shell", command: "long" }, "long output"),
+    ...tool("fits", "bash", { kind: "shell", command: "short" }, "short output"),
+  ], ["tool:overflow", "tool:fits"]);
+
+  const overflow = q('[data-id="tool:overflow"] [data-part="tool-output"]');
+  const fits = q('[data-id="tool:fits"] [data-part="tool-output"]');
+  expect(overflow.tabIndex).toBe(0);
+  expect(overflow.getAttribute("aria-label")).toBe("output, scrollable");
+  expect(fits.hasAttribute("tabindex")).toBe(false);
+  expect(fits.hasAttribute("aria-label")).toBe(false);
+});
+
 test("large output opens in the shared bounded viewer", () => {
   const output = Array.from({ length: 500 }, (_, index) => `line ${index}`).join("\n");
   render(tool("large", "bash", { kind: "shell", command: "log" }, output), ["tool:large"]);
@@ -224,12 +250,6 @@ test("a short tool name has no redundant title", () => {
   const label = container.querySelector<HTMLElement>('[data-part="tool-name"]')!;
   expect(label.textContent).toBe("bash");
   expect(label.hasAttribute("title")).toBe(false);
-});
-
-test("the compact line preview stays bounded", () => {
-  const window = boundLines(Array.from({ length: 1_000_000 }, () => "x"));
-  expect(window.head.length + window.tail.length).toBeLessThanOrEqual(60);
-  expect(window.hidden).toBe(999_940);
 });
 
 test("multi-megabyte output stays bounded in the dom and says what it left out", () => {
