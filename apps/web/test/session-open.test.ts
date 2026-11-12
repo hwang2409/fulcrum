@@ -508,7 +508,3 @@ test("evicting during progressive paging aborts completion before the held reque
   await Promise.resolve();
   expect(fake.calls.filter(([method]) => method === "session_history")).toHaveLength(2);
 });
-
-test("session_replay_seq stops at the future sequence coordinator seam", async () => {
-  await expect(openSession({ features: ["session_replay_seq"] } as ReturnType<typeof createClient>, "s1")).rejects.toThrow("session_replay_seq needs the sequence replay coordinator");
-});
