@@ -29,6 +29,7 @@ import { createHighlighter } from "@fulcrum/highlight";
 import { Markdown } from "@fulcrum/markdown/react";
 import { parseMarkdown } from "@fulcrum/markdown";
 import { createRunStore } from "@fulcrum/core";
+import { findText } from "@fulcrum/core/text";
 import { Message, RunProvider, Timeline, ToolCall } from "@fulcrum/react";
 const line = "A<B<C,D>,E<F>>::g(h++,--i,j+=k,l?m:n); // x\\n";
 const code = "int first_marker = 1;\\n" + line.repeat(${lines} - 2) + "int last_marker = 2;\\n";
@@ -207,6 +208,86 @@ results.toolOutput = await measure(async () => {
   const item = replaceStore.getItem("tool:replace");
   results.toolReplacement = { dispatchMs: Math.round(performance.now() - started), retainedBytes: item.output.retainedBytes, logicalBytes: item.output.bytes };
 }
+// Local find over 10 MiB of retained text (a whole run at its cap), one 32 KiB chunk per kept body. A ticker task runs
+// between find's work slices: a slice is the time from the last tick to the update it ends with. The first update must
+// come within one slice, and an abort while a step waits must end it with no further update.
+await nextFrame(); // the replacement's long task above ends before this measure starts
+results.find = await measure(async () => {
+  const chunk = "x".repeat(32 * 1024 - 7) + "needle\\n";
+  const chunks = Array.from({ length: 320 }, (_, index) => ({ start: index * chunk.length, line: index, text: chunk }));
+  const source = { chunks: () => chunks.values(), omission: null, protocolTruncated: false };
+  let lastTick = performance.now();
+  let ticking = true;
+  const ticker = new MessageChannel();
+  ticker.port1.onmessage = () => { lastTick = performance.now(); if (ticking) ticker.port2.postMessage(null); };
+  ticker.port2.postMessage(null);
+  const slices = [];
+  let found = 0, updates = 0, firstAfterTicks = -1, complete = false;
+  let ticks = 0;
+  const counter = new MessageChannel();
+  counter.port1.onmessage = () => { ticks++; if (ticking) counter.port2.postMessage(null); };
+  counter.port2.postMessage(null);
+  const started = performance.now();
+  for await (const update of findText(source, "NEEDLE")) {
+    const now = performance.now();
+    if (updates === 0) firstAfterTicks = ticks;
+    slices.push(now - Math.max(lastTick, updates === 0 ? started : 0));
+    updates++;
+    found += update.matches.length;
+    if (update.done) complete = update.complete;
+  }
+  const scanMs = performance.now() - started;
+  // Abort while the second step waits for its task.
+  const controller = new AbortController();
+  const iterator = findText(source, "needle", { signal: controller.signal })[Symbol.asyncIterator]();
+  await iterator.next();
+  const pending = iterator.next();
+  controller.abort();
+  const aborted = await pending.then(() => "update", (error) => error.name);
+  const after = await iterator.next();
+  ticking = false;
+  ticker.port1.close();
+  counter.port1.close();
+  slices.sort((a, b) => a - b);
+  return { found, updates, complete, firstAfterTicks, maxSliceMs: slices.at(-1), p95SliceMs: slices[Math.floor(slices.length * 0.95)], scanMs: Math.round(scanMs), aborted, staleAfterAbort: !after.done };
+});
+// The same find through the viewer: the cut 10 MiB output's card, opened, ctrl+f, a query; the count arrives with no
+// long task and the drawn matches are highlighted.
+// Setup (a 10 MiB dispatch, opening a 2 MiB viewer) happens before the measure; find alone is measured.
+{
+  const findStore = createRunStore((flush) => flush());
+  const findCall = { id: "found", name: "shell", arguments: { command: "generate-output" } };
+  findStore.dispatch({ type: "tool_output", tool_call: findCall, output: ("y".repeat(1015) + " needle\\n").repeat(10 * 1024) });
+  findStore.dispatch({ type: "tool_end", tool_call: findCall, tool_result: { tool_call_id: "found", content: "", is_error: false } });
+  flushSync(() => root.render(createElement(RunProvider, { store: findStore, highlight }, createElement(ToolCall, { id: "tool:found" }))));
+  await nextFrame();
+  const card = document.querySelector("[data-id='tool:found']");
+  if (card.tagName === "DETAILS" && !card.open) { card.open = true; card.dispatchEvent(new Event("toggle")); }
+  await nextFrame();
+  flushSync(() => card.querySelector("[data-action=open-viewer]").click());
+  await nextFrame();
+  await nextFrame();
+}
+results.viewerFind = await measure(async () => {
+  const card = document.querySelector("[data-id='tool:found']");
+  const viewer = card.querySelector("[data-part=text-viewer]");
+  viewer.focus();
+  flushSync(() => viewer.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true })));
+  const input = card.querySelector("[data-part=text-viewer-find] > input");
+  const focused = document.activeElement === input;
+  const started = performance.now();
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "NEEDLE");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  const status = () => card.querySelector("[data-part=text-viewer-find-count]").textContent;
+  await until(() => / in retained text$/.test(status()), 30_000);
+  const countMs = performance.now() - started;
+  await nextFrame();
+  const painted = CSS.highlights?.get("fulcrum-find")?.size ?? 0;
+  const current = CSS.highlights?.get("fulcrum-find-current")?.size ?? 0;
+  return { focused, status: status(), countMs: Math.round(countMs), painted, current, rows: card.querySelectorAll("[data-part=text-viewer-row]").length, outputNodes: card.querySelectorAll("[data-part=tool-body] *").length };
+});
+root.render(null);
+await nextFrame();
 // Heap probe (run from the gate through CDP): keep 32 KiB of each of "count" fresh 10 MiB parents, as plain slices
 // (the control, which V8 backs by the parent) or as one store's tool outputs.
 window.__retain = (mode, count) => {
@@ -317,6 +398,17 @@ try {
   if ((toolOutput.logicalBytes as number) !== 10 * 1024 * 1024 || (toolOutput.retainedBytes as number) > 2 * 1024 * 1024) failures.push(`tool output: retention result was invalid (${JSON.stringify(toolOutput)})`);
   if ((toolReplacement.logicalBytes as number) !== 64 * 1024 * 1024 || (toolReplacement.retainedBytes as number) > 2 * 1024 * 1024) failures.push(`tool output: the replacement was not bounded (${JSON.stringify(toolReplacement)})`);
   if (!toolOutput.notice) failures.push("tool output: the opened card does not say how much was not kept");
+  // Local find: bounded work slices (8 ms each, at most one 8 KiB piece past the clock check), a first update within one
+  // slice, and an abort that ends a waiting step with an AbortError and nothing after it.
+  const { find, viewerFind } = results;
+  if (find.found !== 320 || find.complete !== true) failures.push(`find: wrong result (${JSON.stringify(find)})`);
+  if ((find.maxSliceMs as number) > 8) failures.push(`find: a work slice took ${Number(find.maxSliceMs).toFixed(1)} ms (limit 8 ms)`);
+  if ((find.firstAfterTicks as number) > 1) failures.push(`find: the first update came after ${find.firstAfterTicks} other tasks (limit one slice)`);
+  if (find.aborted !== "AbortError" || find.staleAfterAbort) failures.push(`find: abort while waiting gave ${find.aborted}${find.staleAfterAbort ? " and a later update" : ""}`);
+  if (!viewerFind.focused) failures.push("viewer find: ctrl+f did not focus the find field");
+  if (!/^[\d,]+ of [\d,]+ in retained text$/.test(viewerFind.status as string)) failures.push(`viewer find: the count reads "${viewerFind.status}"`);
+  if (!(viewerFind.painted as number) || viewerFind.current !== 1) failures.push(`viewer find: drawn matches were not highlighted (${JSON.stringify(viewerFind)})`);
+  if ((viewerFind.rows as number) > 200 || (viewerFind.outputNodes as number) > 500) failures.push(`viewer find: mounted work exceeded the viewer bounds (${JSON.stringify(viewerFind)})`);
   if ((toolOutput.openMs as number) > 50) failures.push(`tool output: open took ${Number(toolOutput.openMs).toFixed(1)} ms (limit 50 ms)`);
   if ((toolOutput.mountedRanges as number) > 200 || (toolOutput.outputNodes as number) > 500) failures.push(`tool output: mounted work exceeded the viewer bounds (${JSON.stringify(toolOutput)})`);
   // Retained tool text owns its strings: 24 more 10 MiB parents must not stay alive. The control (plain slices) must
