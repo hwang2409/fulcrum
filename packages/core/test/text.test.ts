@@ -154,6 +154,9 @@ test("abort before start rejects the first step and leaves nothing running", asy
   const error = await iterator.next().then(() => undefined, (reason: unknown) => reason);
   expect(isAbort(error)).toBe(true);
   expect(await iterator.next()).toEqual({ done: true, value: undefined });
+  // An empty query has nothing to scan, and still gives no update once aborted.
+  const empty = await collect(sourceOf(["a"]), "", { signal: controller.signal }).then(() => undefined, (reason: unknown) => reason);
+  expect(isAbort(empty)).toBe(true);
 });
 
 test("abort during a 10 MiB scan, between updates, and while a step waits: AbortError, no stale update", async () => {

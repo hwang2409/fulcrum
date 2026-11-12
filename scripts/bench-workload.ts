@@ -51,9 +51,21 @@ export type ToolOutputScalingResult = {
   largeReplacementCpu: number;
 };
 
+/** Pure local find over retained text (null on a base without @fulcrum/core/text). */
+export type FindScalingResult = {
+  /** 10x the retained bytes in the same 32 KiB chunks; the gate allows 12x. */
+  bytesRatio: number;
+  /** The larger text in 10x as many chunks; the gate allows 2x. */
+  chunkRatio: number;
+  smallCpu: number;
+  largeCpu: number;
+  fineChunkCpu: number;
+};
+
 export type WorkloadResult = {
   streams: StreamResult[];
   toolOutput: ToolOutputScalingResult;
+  find: FindScalingResult | null;
   queuedPrepends: PrependScalingResult[];
   timedCpu: number;
   prepend: { elapsed: number; rows: number };
@@ -236,6 +248,8 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
     smallAppendCpu, largeAppendCpu, smallReplacementCpu, largeReplacementCpu,
   };
 
+  const find = await findScaling(root);
+
   const prependStore = createRunStore(() => {});
   prependStore.beginHistory();
   for (let i = 0; i < 100_000; i++) prependStore.dispatch({ type: "message_commit", message_id: `current-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
@@ -244,5 +258,39 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
   for (let page = 0; page < 50; page++) prependStore.prepend(Array.from({ length: 200 }, (_, row) => ({ type: "message_commit" as const, message_id: `older-${page}-${row}`, message: { role: "assistant", content: [{ type: "text", text: "old" }] } })));
   const prependUsage = process.cpuUsage(prependStart);
   const prepend = { elapsed: (prependUsage.user + prependUsage.system) / 1_000, rows: prependStore.getOutline().length };
-  return { streams, toolOutput, queuedPrepends, timedCpu, prepend, outlineSize: prepend.rows };
+  return { streams, toolOutput, find, queuedPrepends, timedCpu, prepend, outlineSize: prepend.rows };
+}
+
+// Process CPU of one whole find over `bytes` of retained text in chunks of `chunkBytes`; the waits between work slices
+// are idle, so they do not count.
+async function findScaling(root: string): Promise<FindScalingResult | null> {
+  let findText: (source: unknown, query: string) => AsyncIterable<{ matches: readonly unknown[] }>;
+  try {
+    ({ findText } = await import(pathToFileURL(`${root}/packages/core/src/text.ts`).href));
+  } catch {
+    return null; // a base from before local find
+  }
+  const findCpu = async (bytes: number, chunkBytes: number) => {
+    // One match per chunk, so the scan reads every chunk (the default 10,000-match limit never stops it).
+    const text = `Needle\n${"build step 0042 finished: ok\n".repeat(Math.ceil(chunkBytes / 29))}`.slice(0, chunkBytes);
+    const chunks = Array.from({ length: bytes / chunkBytes }, (_, index) => ({ start: index * chunkBytes, line: 0, text }));
+    const source = { chunks: () => chunks.values(), omission: null, protocolTruncated: false };
+    if (typeof Bun.gc === "function") Bun.gc(true);
+    let found = 0;
+    const start = process.cpuUsage();
+    for await (const update of findText(source, "NEEDLE")) found += update.matches.length;
+    const usage = process.cpuUsage(start);
+    if (found !== chunks.length) throw new Error(`invalid find result: ${found}`);
+    return (usage.user + usage.system) / 1_000;
+  };
+  await findCpu(1_024_000, 32_000);
+  await findCpu(10_240_000, 32_000);
+  const measurements = [];
+  for (let run = 0; run < runs; run++) {
+    measurements.push({ small: await findCpu(1_024_000, 32_000), large: await findCpu(10_240_000, 32_000), fine: await findCpu(10_240_000, 3_200) });
+  }
+  const smallCpu = median(measurements.map(({ small }) => small));
+  const largeCpu = median(measurements.map(({ large }) => large));
+  const fineChunkCpu = median(measurements.map(({ fine }) => fine));
+  return { bytesRatio: largeCpu / Math.max(smallCpu, 0.001), chunkRatio: fineChunkCpu / Math.max(largeCpu, 0.001), smallCpu, largeCpu, fineChunkCpu };
 }

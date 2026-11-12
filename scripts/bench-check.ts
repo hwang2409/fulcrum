@@ -5,7 +5,7 @@ const injection = process.env.BENCH_INJECT === "quadratic";
 const result = await runWorkload(root, injection);
 console.log(JSON.stringify({
   ...result,
-  gates: { perDeltaRatio: "enforced per named case", toolOutputAppendRatio: 1.5, toolOutputCutAppendRatio: 1.5, toolOutputReplacementRatio: 12, absoluteTimings: "report-only" },
+  gates: { perDeltaRatio: "enforced per named case", toolOutputAppendRatio: 1.5, toolOutputCutAppendRatio: 1.5, toolOutputReplacementRatio: 12, findBytesRatio: 12, findChunkRatio: 2, absoluteTimings: "report-only" },
   injection: injection
     ? { mode: "quadratic", purpose: "manual sensitivity check; adds per-event work proportional to seed size" }
     : null,
@@ -26,6 +26,18 @@ if (result.toolOutput.cutAppendRatio > 1.5) {
 }
 if (result.toolOutput.replacementRatio > 12) {
   console.error(`tool output replacement scaling failed: 10x replacement size took ${result.toolOutput.replacementRatio.toFixed(3)}x CPU (limit 12x)`);
+  process.exit(1);
+}
+if (!result.find) {
+  console.error("local find was not measured");
+  process.exit(1);
+}
+if (result.find.bytesRatio > 12) {
+  console.error(`local find scaling failed: 10x retained bytes took ${result.find.bytesRatio.toFixed(3)}x CPU (limit 12x)`);
+  process.exit(1);
+}
+if (result.find.chunkRatio > 2) {
+  console.error(`local find chunk scaling failed: the same bytes in 10x as many chunks took ${result.find.chunkRatio.toFixed(3)}x CPU (limit 2x)`);
   process.exit(1);
 }
 for (const queued of result.queuedPrepends) {
