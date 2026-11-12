@@ -60,7 +60,7 @@ const rows = (events: RunEvent[]) => {
       const blocks = item.message.content.map((block) => `${block.type}:${String(block.text ?? "")}${block.meta ? JSON.stringify(block.meta) : ""}`);
       return `${id} ${item.active ? "live " : ""}${[...blocks, ...(item.text ? [`streaming:${item.text}`] : [])].join("|")}`;
     }
-    if (item.type === "tool") return `${id} ${item.tool_call.name}${JSON.stringify(item.tool_call.arguments)} -> ${item.output}${item.approval ? ` (${item.approval.decision})` : ""}`;
+    if (item.type === "tool") return `${id} ${item.tool_call.name}${JSON.stringify(item.tool_call.arguments)} -> ${[...item.output.chunks()].map((chunk) => chunk.text).join("")}${item.approval ? ` (${item.approval.decision})` : ""}`;
     if (item.type === "error") return `error ${item.event.type === "error" ? item.event.error.code : ""}`;
     return id;
   });
@@ -180,7 +180,7 @@ const cases: Array<[name: string, streams: () => Promise<readonly Entry[]>, expe
   ]],
   ["denied with a reason: the tool row is canceled and keeps its call", async () => (await session([denySteps, denySteps.slice(1)], { approved: false, reason: "keep it" })).log, [
     "message:m:message:m:1 text:i will delete it.",
-    "tool:w:tool:c1 rm{\"path\":\"a\"} ->  (deny)",
+    "tool:w:tool:c1 rm{\"path\":\"a\"} -> tool execution denied (deny)",
     "message:m:message:m:2 text:kept it.",
   ]],
   ["an approved generator tool: preliminary outputs replace each other in one row", async () => (await session([countSteps, countSteps.slice(1)], { approved: true })).log, [
@@ -195,7 +195,7 @@ const cases: Array<[name: string, streams: () => Promise<readonly Entry[]>, expe
   ]],
   ["reload of a denied message", async () => reload((await session([denySteps, denySteps.slice(1)], { approved: false, reason: "keep it" })).messages), [
     "message:m:message:m:1 text:i will delete it.",
-    "tool:w:tool:c1 rm{\"path\":\"a\"} ->  (deny)",
+    "tool:w:tool:c1 rm{\"path\":\"a\"} -> tool execution denied (deny)",
     "message:m:message:m:2 text:kept it.",
   ]],
   ["reload before the decision: the approval waits", async () => reload((await session([deleteSteps])).messages), [
@@ -411,5 +411,7 @@ test("a persisted approval with a malformed decision is one error; the tool's ou
   ] });
   expect(events.filter((event) => event.type === "error").map((event) => event.type === "error" ? event.error.code : "")).toEqual(["adapter_invalid_payload"]);
   const store = storeOf(events);
-  expect(store.getItem("tool:w:tool:c1")).toMatchObject({ type: "tool", active: false, output: "ok" });
+  const tool = store.getItem("tool:w:tool:c1");
+  expect(tool).toMatchObject({ type: "tool", active: false });
+  expect(tool?.type === "tool" ? [...tool.output.chunks()].map((chunk) => chunk.text).join("") : undefined).toBe("ok");
 });

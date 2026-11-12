@@ -6,12 +6,14 @@ import {
   type RunItem,
 } from "../src/index.js";
 import { appendText } from "../src/stream.js";
+import { retainedText } from "../src/text-source.js";
 
 const message = (text: string) => ({
   role: "assistant",
   content: [{ type: "text", text }],
 });
 const toolCall = { id: "tool-1", name: "read", arguments: { path: "README.md" } };
+const toolText = (item: RunItem | undefined) => item?.type === "tool" ? retainedText(item.output) : undefined;
 
 const replay = (events: RunEvent[]) => {
   const store = createRunStore(() => {});
@@ -267,7 +269,7 @@ test("output events keep a known call; an unknown call takes the event's call", 
   const orphan = { id: "tool-2", name: "bash", arguments: { command: "ls" } };
   store.dispatch({ type: "tool_output", tool_call: orphan, output: "x" });
   const created = store.getItem("tool:tool-2");
-  expect(created?.type === "tool" ? [created.tool_call, created.output, created.active] : undefined).toEqual([orphan, "x", true]);
+  expect(created?.type === "tool" ? [created.tool_call, retainedText(created.output), created.active] : undefined).toEqual([orphan, "x", true]);
   expect(created?.type === "tool" ? created.tool_call : undefined).toBe(orphan);
 });
 
@@ -292,19 +294,20 @@ test("tool_output with replace replaces the output in place and keeps the approv
   ]);
   const streamedIds = ids(streamed);
   streamed.dispatch(replace("1 2 3"));
-  expect(toolOf(streamed).output).toBe("1 2 3");
+  expect(retainedText(toolOf(streamed).output)).toBe("1 2 3");
   expect(toolOf(streamed).active).toBe(true);
   streamed.dispatch(replace("1 2 3 4"));
-  expect(toolOf(streamed).output).toBe("1 2 3 4");
+  expect(retainedText(toolOf(streamed).output)).toBe("1 2 3 4");
   streamed.dispatch({ type: "tool_output", tool_call: toolCall, output: " 5" });
-  expect(toolOf(streamed).output).toBe("1 2 3 4 5");
+  expect(retainedText(toolOf(streamed).output)).toBe("1 2 3 4 5");
   expect(ids(streamed)).toEqual(streamedIds);
 
   // After an approval folds into the row: the decision stays.
   const approved = replay([request, approve, { type: "tool_start", tool_call: toolCall }, replace("1"), after]);
   const approvedIds = ids(approved);
   approved.dispatch(replace("1 2"));
-  expect(toolOf(approved)).toMatchObject({ output: "1 2", active: true, approval: { decision: "approve" } });
+  expect(toolOf(approved)).toMatchObject({ active: true, approval: { decision: "approve" } });
+  expect(retainedText(toolOf(approved).output)).toBe("1 2");
   expect(ids(approved)).toEqual(approvedIds);
   expect(approvedIds.filter((id) => id.startsWith("approval:"))).toEqual([]);
 
@@ -320,7 +323,8 @@ test("tool_output with replace replaces the output in place and keeps the approv
   const endedIds = ids(ended);
   ended.dispatch(replace("whole"));
   const row = toolOf(ended);
-  expect(row).toMatchObject({ output: "whole", active: true, is_error: false, canceled: false, approval: { decision: "approve" } });
+  expect(row).toMatchObject({ active: true, is_error: false, canceled: false, approval: { decision: "approve" } });
+  expect(retainedText(row.output)).toBe("whole");
   expect(row.result).toBeUndefined();
   expect(ids(ended)).toEqual(endedIds);
   expect(ended.getState().activeToolIds[toolCall.id]).toBe(true);
@@ -385,7 +389,7 @@ test.each([
 test("tool output read through the stream cache every few chunks keeps each version's text", () => {
   const store = createRunStore((flush) => flush());
   store.dispatch({ type: "tool_start", tool_call: toolCall });
-  const outputOf = (item: RunItem | undefined) => (item?.type === "tool" ? item.output : undefined);
+  const outputOf = (item: RunItem | undefined) => toolText(item);
   const read: { item: RunItem; text: string }[] = [];
   let expected = "";
   for (let i = 0; i < 200; i++) {
@@ -427,7 +431,7 @@ test("run_end clears active assistant and tool streams", () => {
   expect(itemText(store.getItem("message:assistant"))).toBe("old");
   expect(itemText(store.getItem("message:assistant-2"))).toBe("new");
   const tool = store.getItem(`tool:${toolCall.id}`);
-  expect(tool?.type === "tool" ? tool.output : undefined).toBe("new");
+  expect(toolText(tool)).toBe("new");
 });
 
 test("handles unknown events and receipt dedupe", () => {
@@ -500,10 +504,11 @@ test("tool_start on a known call restarts its row in place and keeps the approva
   const outline = store.getOutline().map(({ id }) => id);
   expect(outline).toEqual([`tool:${toolCall.id}`, "message:after"]);
   const item = store.getItem(`tool:${toolCall.id}`);
-  expect(item).toMatchObject({ output: "", active: true, is_error: false, canceled: false, approval: { decision: "approve" } });
+  expect(item).toMatchObject({ active: true, is_error: false, canceled: false, approval: { decision: "approve" } });
+  expect(toolText(item)).toBe("");
   expect(item?.type === "tool" ? [item.result, item.view] : "missing").toEqual([undefined, undefined]);
   store.dispatch({ type: "tool_output", tool_call: toolCall, output: "whole" });
-  expect(store.getItem(`tool:${toolCall.id}`)).toMatchObject({ output: "whole" });
+  expect(toolText(store.getItem(`tool:${toolCall.id}`))).toBe("whole");
   expect(store.getOutline().map(({ id }) => id)).toEqual(outline);
 });
 

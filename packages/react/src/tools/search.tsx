@@ -2,7 +2,7 @@ import { useMemo, type CSSProperties } from "react";
 import { languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import { MarkedTokens, tokenLines, useTokens, type Block } from "../highlight.js";
-import { Arguments, asking, boundText, cutByHeader, Empty, Foot, memoText, Output, outputBlocks, splitLines } from "./common.js";
+import { Arguments, asking, boundText, cutByHeader, Empty, Foot, memoText, Output, outputBlocks, sourceText, splitLines } from "./common.js";
 import { ROW_CHARS, TextViewer, useTextMetrics, viewerBlocks, type RowModel } from "./text-viewer.js";
 
 // `path:line:text` (grep -n, ripgrep), or `path-line-text` for ripgrep context lines.
@@ -106,7 +106,7 @@ function searchRows(groups: Group[], pattern: string, id: string): RowModel {
 }
 
 const groupsOf = memoText((text) => group(splitLines(text)));
-const searchText = (item: ToolBodyProps["item"], output: string) => (item.view?.kind === "search" ? item.view.matches?.join("\n") ?? output : "");
+const searchText = (item: ToolBodyProps["item"], output: ToolBodyProps["output"]) => (item.view?.kind === "search" ? item.view.matches?.map((match) => sourceText(match)).join("\n") ?? sourceText(output) : "");
 
 /** The highlight blocks SearchBody asks for when it first mounts. */
 export function searchBlocks({ item, output, state }: ToolBodyProps): Block[] {

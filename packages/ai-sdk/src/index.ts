@@ -337,7 +337,8 @@ function messageDecoder(streamKey: string | undefined, continued: (messageId: st
     const events: RunEvent[] = [{ type: "tool_output", tool_call: state.call, output, replace: true }];
     if (!isError && part.preliminary === true) return events;
     const result: ToolResult = { tool_call_id: id, content: output, is_error: isError };
-    return [...events, { type: "tool_end", tool_call: state.call, tool_result: result }];
+    // The result repeats the output just sent, so core keeps it once.
+    return [...events, { type: "tool_end", tool_call: state.call, tool_result: result, resultContent: "same" }];
   };
 
   const decodeLifecycle = (part: Row, type: string): RunEvent[] => {

@@ -1,10 +1,10 @@
 import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type ReactNode, type RefObject } from "react";
-import type { ApprovalDecision, OutlineChange, RunEvent, RunItem } from "@fulcrum/core";
-import { streamTail } from "@fulcrum/core/internal";
+import type { ApprovalDecision, ContentBlock, OutlineChange, RunEvent, RunItem, StoredResultBlock, TextSourceSnapshot } from "@fulcrum/core";
+import { sourceTail, storeToolView } from "@fulcrum/core/internal";
 import type { VirtualCache } from "@fulcrum/virtual";
 import { useItem, useItemSelector, useRunDiagnostics, useRunRetry, useRunStore, useTimelineSnapshot } from "./hooks.js";
 import { HighlightContext, Tokens, useTokens } from "./highlight.js";
-import { boundText, duration, GrownText, lineCount, MAX_SUMMARY_CHARS } from "./tools/common.js";
+import { boundText, duration, GrownText, humanBytes, MAX_SUMMARY_CHARS, Output, sourceText } from "./tools/common.js";
 import { diffStatText } from "./tools/diff.js";
 import { argumentSummary, ToolBody, toolSummary } from "./tools/index.js";
 import { Notification, notificationText } from "./notification.js";
@@ -29,7 +29,7 @@ export type ToolItem = Extract<RunItem, { type: "tool" }>;
  * one; `output` is the streamed output plus a final result that adds to it. Approvals pass the requested call (and
  * the request's view) as an active tool item with no output and state "pending" or "submitting".
  */
-export type ToolBodyProps = { item: ToolItem; output: string; state: ItemState };
+export type ToolBodyProps = { item: ToolItem; output: TextSourceSnapshot; state: ItemState };
 /**
  * Per-tool customization shared by ToolCall and Approval. They own the one header row (name, summary, status), the
  * disclosure, and the approval actions; `body` renders only what goes inside `data-part="tool-body"`.
@@ -96,11 +96,13 @@ function ViewSummary({ item }: { item: ToolItem }) {
       return <>{path(view.path)}{summary.length > view.path.length ? <span data-part="summary-range">{summary.slice(view.path.length)}</span> : null}</>;
     }
     case "edit": {
-      const { insert, remove } = diffStatText(view.diff);
+      // Counts over a diff that was not all kept would be wrong: say only the path.
+      if (view.diff.omission) return path(view.path);
+      const { insert, remove } = diffStatText(sourceText(view.diff));
       return <>{path(view.path)} <span data-part="diff-stat" data-change="insert">+{insert}</span> <span data-part="diff-stat" data-change="delete">-{remove}</span></>;
     }
     case "write":
-      return <>{path(view.path)}{view.content !== undefined ? <> <span data-part="diff-stat" data-change="insert">+{lineCount(view.content)}</span></> : null}</>;
+      return <>{path(view.path)}{view.content !== undefined ? <> <span data-part="diff-stat" data-change="insert">+{view.content.lines}</span></> : null}</>;
     case "search":
       return <><span data-part="summary-pattern">"{oneLine(view.pattern)}"</span>{view.path ? <> {path(view.path)}</> : null}</>;
     case "fetch":
@@ -135,41 +137,39 @@ const SHORT_OUTPUT_LINES = 8;
 /* Open while running (live progress) or after a failure (the reason), and for short output, which is usually the
    answer ("1 replacement", "42 pass"). Long or empty output starts collapsed so the header row carries the run.
    Set once at mount, so the user's own toggle is never overridden while output streams in. */
-const openByDefault = (item: ToolItem | undefined, output: string) =>
-  !item || item.active || (!denied(item) && (item.is_error || !!item.result?.blocks?.length || (output !== "" && output.length < 1200 && output.split("\n", SHORT_OUTPUT_LINES + 2).length <= SHORT_OUTPUT_LINES + 1)));
+const openByDefault = (item: ToolItem | undefined, output: TextSourceSnapshot | undefined) =>
+  !item || item.active || (!denied(item) && (item.is_error || !!item.result?.blocks?.length || (!!output && output.length > 0 && output.length < 1200 && !output.omission && output.lines <= SHORT_OUTPUT_LINES)));
 
 // A call its approval denied never ran: the header's "denied" is its status, and the harness's note stays closed.
 const denied = (item: ToolItem) => item.approval?.type === "approval_end" && item.approval.decision === "deny";
 
-// Streamed output, then the final result when it adds something (an error message, a cancel reason).
-const toolOutput = ({ output, result }: Pick<ToolItem, "output" | "result">) => {
-  const content = result?.content ?? "";
-  if (!content || output.includes(content)) return output;
-  return output ? `${output}${output.endsWith("\n") ? "" : "\n"}${content}` : content;
-};
 const toolState = (item: ToolItem): ItemState =>
   item.canceled ? "canceled" : item.is_error ? "error" : item.active ? "streaming" : "done";
+const storedBlocks = (blocks: readonly StoredResultBlock[]): ContentBlock[] => blocks.map((block) => block.text ? { ...block.metadata, text: sourceText(block.text) } as ContentBlock : block.metadata);
+const EMPTY_SOURCE: TextSourceSnapshot = Object.freeze({
+  version: 0, length: 0, bytes: 0, lines: 0, retainedBytes: 0, omission: null, protocolTruncated: false,
+  *chunks() {},
+});
 
 /**
- * How the row's output grew since this card's previous render (core streamTail), while the shown output is the row's
- * stream itself; the body's Output extends its view from the tail.
+ * How the row's output grew since this card's previous render, while the shown output is the row's own source: an
+ * append reads only its added chunks, and the body's Output extends its view from the tail.
  */
-function useGrownOutput(tool: ToolItem | undefined, streamed: string | undefined, output: string) {
-  const seen = useRef<{ tool?: ToolItem; output?: string }>({});
+function useGrownOutput(output: TextSourceSnapshot | undefined) {
+  const seen = useRef<TextSourceSnapshot | undefined>(undefined);
   const prior = seen.current;
-  const stream = tool !== undefined && output === streamed;
-  seen.current = stream ? { tool, output } : {};
-  const tail = stream && prior.output !== undefined ? streamTail(prior.tool, tool, "output") : undefined;
-  return tail === undefined ? null : { text: output, previous: prior.output!, tail };
+  seen.current = output;
+  if (!output) return null;
+  const tail = prior && prior !== output ? sourceTail(prior, output) : undefined;
+  const text = sourceText(output, prior, tail);
+  return tail === undefined ? null : { text, previous: sourceText(prior!), tail };
 }
 
 export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = ToolBody }: ItemProps & ToolViewProps) {
   const item = useItem(id);
   const tool = item?.type === "tool" ? item : undefined;
-  // One read of the streamed output: a result that adds to it makes a different (longer) string.
-  const streamed = tool?.output;
-  const output = tool ? toolOutput({ output: streamed!, result: tool.result }) : "";
-  const grown = useGrownOutput(tool, streamed, output);
+  const output = tool?.output;
+  const grown = useGrownOutput(output);
   const [open, setOpen] = useState(() => openByDefault(tool, output));
   const [bodyMounted, setBodyMounted] = useState(open);
   const highlight = useContext(HighlightContext);
@@ -177,7 +177,7 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
   // The body mounts on first open (never-opened cards cost nothing on first paint); its data warms before that, so
   // the first open paints colored. Only the default body is known to warm; a custom body renders as it is.
   const warm = useWarm(summaryRef, tool && highlight && !bodyMounted && Body === ToolBody
-    ? () => warmToolBody({ item: tool, output, state: toolState(tool) }, highlight)
+    ? () => warmToolBody({ item: tool, output: tool.output, state: toolState(tool) }, highlight)
     : undefined, tool);
   if (!tool) return null;
   const state = toolState(tool);
@@ -201,12 +201,29 @@ export const ToolCall = memo(function ToolCall({ id, className, summary, body: B
         <Header item={tool} state={state} summary={summary} />
       </summary>
       {bodyMounted ? <div data-part="tool-body">
-        <GrownText.Provider value={grown}><Body item={tool} output={output} state={state} /></GrownText.Provider>
-        {tool.result?.blocks?.length ? <ToolResultBlocks id={id} blocks={tool.result.blocks} /> : null}
+        {/* The cut row sits in the middle of the output, which a collapsed preview elides: say it where it is always seen. */}
+        {tool.output.omission && !tool.output.omission.whole ? <p data-part="tool-gap" data-cut="">{humanBytes(tool.output.omission.bytes)} of {humanBytes(tool.output.bytes)} not kept from the middle of this output</p> : null}
+        <GrownText.Provider value={grown}><Body item={tool} output={tool.output} state={state} /></GrownText.Provider>
+        {tool.result?.finalContent ? <FinalResult id={id} source={tool.result.finalContent} /> : null}
+        {tool.result?.blocks?.length ? <ResultBlocks id={id} blocks={tool.result.blocks} /> : null}
       </div> : null}
     </details>
   );
 });
+
+/** A final result whose relation to the output is unknown (the output was cut before it arrived): shown as its own section. */
+function FinalResult({ id, source }: { id: string; source: TextSourceSnapshot }) {
+  return (
+    <section data-part="tool-final-result" aria-label="final result">
+      <span data-part="block-label">final result</span>
+      <Output text={sourceText(source)} id={`${id}:final`} />
+    </section>
+  );
+}
+function ResultBlocks({ id, blocks }: { id: string; blocks: readonly StoredResultBlock[] }) {
+  const shown = useMemo(() => storedBlocks(blocks), [blocks]);
+  return <ToolResultBlocks id={id} blocks={shown} />;
+}
 
 type Decide = (requestId: string) => void | Promise<unknown>;
 
@@ -316,7 +333,7 @@ export const Approval = memo(function Approval({
   const focus = useDecisionFocus(!item || (item.type === "approval" && !item.ended), focusAvailable, request?.tool_call.id ?? "");
   if (item?.type !== "approval" || item.request.type !== "approval_request") return null;
   const { request_id, tool_call, view } = item.request;
-  const requested: ToolItem = { id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false };
+  const requested: ToolItem = { id, type: "tool", tool_call, view: storeToolView(view), output: EMPTY_SOURCE, version: 0, active: true, is_error: false, canceled: false };
   const { pending, end, reason, buttonsEnabled, state, label } = approvalState(item, sending, disabledReason);
   // One decision per request: later clicks are ignored until the handler fails or the request resolves.
   const decide = (action: ApprovalAction, handler: Decide) => () => {
@@ -357,7 +374,7 @@ export const Approval = memo(function Approval({
       {pending ? (
         <>
           <div data-part="tool-body">
-            <Body item={requested} output="" state={state} />
+            <Body item={requested} output={EMPTY_SOURCE} state={state} />
           </div>
           <ApprovalActions sending={sending} onApprove={buttonsEnabled ? onApprove : undefined} onApproveAlways={buttonsEnabled ? onApproveAlways : undefined} approveAlwaysLabel={onApproveAlways ? approveAlwaysLabel : undefined} onDeny={buttonsEnabled ? onDeny : undefined} disabledReason={reason} decide={decide} />
           {decisionError ? <span role="alert" data-part="approval-error">{decisionError}</span> : null}
@@ -444,7 +461,7 @@ export const announcementForItem = (item: RunItem): string | null => {
     case "tool": {
       if (item.active) return null;
       if (item.canceled) return `tool ${toolLabel(item.tool_call.name)} canceled`;
-      const result = item.result?.content ?? item.output;
+      const result = sourceText(item.result?.finalContent ?? item.output);
       const exitCode = item.view?.kind === "shell" ? item.view.exitCode : undefined;
       const parsedCode = exitCode ?? result.match(/\b(?:exit(?:ed)?(?: with code)?|code)\s+(-?\d+)\b/i)?.[1];
       return `tool ${toolLabel(item.tool_call.name)} finished${parsedCode === undefined ? "" : `: exit ${parsedCode}`}`;
@@ -500,7 +517,7 @@ function ApprovalSkip({ items, reveal }: { items: readonly { id: string; kind?: 
   const pending = usePendingApproval(items);
   if (!pending) return null;
   const { tool_call, view } = pending.request;
-  const summary = toolSummary({ id: pending.id, type: "tool", tool_call, view, output: "", version: 0, active: true, is_error: false, canceled: false });
+  const summary = toolSummary({ id: pending.id, type: "tool", tool_call, view: storeToolView(view), output: EMPTY_SOURCE, version: 0, active: true, is_error: false, canceled: false });
   const jump = async () => {
     const card = await reveal(pending.id);
     (card?.querySelector<HTMLElement>("[data-part=approval-actions] button:not([aria-disabled=true])") ?? card)?.focus();

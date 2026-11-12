@@ -388,7 +388,7 @@ test("respondToApproval ends the card only after the SDK records the decision", 
 const rendered = (store: ReturnType<typeof createRunStore>) => store.getOutline().map(({ id }) => {
   const item = store.getItem(id);
   if (item?.type === "message") return `${item.active ? "live " : ""}${item.message.content.map((block) => `${block.type}:${String(block.text ?? "")}`).join("|")}${item.text ? `|text:${item.text}` : ""}`.replace(/^\|/, "");
-  if (item?.type === "tool") return `tool ${item.tool_call.name}: ${item.output}${item.active ? " (live)" : ""}`;
+  if (item?.type === "tool") return `tool ${item.tool_call.name}: ${[...item.output.chunks()].map((chunk) => chunk.text).join("")}${item.active ? " (live)" : ""}`;
   return item?.type ?? "missing";
 });
 const finishChunk = { type: "finish", finishReason: { unified: "tool-calls", raw: "tool_calls" }, usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } } };

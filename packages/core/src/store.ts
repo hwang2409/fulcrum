@@ -2,7 +2,7 @@
 // value's text), plus the "outside" rows of the README table: scheduler(job), and reading host-given events (inside a
 // reduction's try, or the argument copy at the top of resync and prepend). See packages/core/README.md, "Notification
 // contract"; a new host call gets a table row and a test. Every site is marked "host code" so one grep finds them all.
-import type { RunEvent, RunItem } from "./events.js";
+import type { RunEvent, RunItem, ToolView } from "./events.js";
 import {
   initialState,
   reduceAllWithEntities,
@@ -10,6 +10,8 @@ import {
   type OutlineSplice,
   type RunState,
 } from "./reducer.js";
+import { DEFAULT_TOOL_OUTPUT_ITEM_BYTES, DEFAULT_TOOL_OUTPUT_RUN_BYTES } from "./text-source.js";
+import { createToolRetention } from "./text-retention.js";
 
 export type Scheduler = (callback: () => void) => void;
 type Listener = () => void;
@@ -64,6 +66,10 @@ const mergeSplices = (base: readonly OutlineSplice[], edits: readonly OutlineSpl
 export interface StoreOptions {
   /** Called when validated reduction still throws. The store stays readable but refuses dispatches until `resync`. */
   onError?: (error: unknown) => void;
+  /** Retained UTF-8 bytes across all text sources of one tool item. */
+  toolOutputItemBytes?: number;
+  /** Retained UTF-8 bytes across tool sources in the run. Protected tools can make this a soft cap. */
+  toolOutputRunBytes?: number;
 }
 export interface StoreDiagnostics {
   readonly ignoredEvents: number;
@@ -97,14 +103,52 @@ const append = <T>(target: T[], source: readonly T[]) => {
 // ids carry their kind, so ids decide. What it publishes is a replacement (`change: null`).
 const resyncOutlineChange = (prior: readonly OutlineItem[], pending: boolean, next: readonly OutlineItem[]) =>
   pending || prior.length !== next.length || prior.some((item, index) => item.id !== next[index]?.id);
+
+const replayView = (view: ToolView | undefined): ToolView | undefined => {
+  if (!view) return undefined;
+  switch (view.kind) {
+    case "shell": { const { stdout: _stdout, stderr: _stderr, ...rest } = view; return rest; }
+    case "edit": return { ...view, diff: "" };
+    case "write": { const { content: _content, ...rest } = view; return rest; }
+    case "search": { const { matches: _matches, ...rest } = view; return rest; }
+    default: return view;
+  }
+};
+/**
+ * A tool event without its text. The history log replays tool ordering and status from these, and the rebuilt item
+ * takes its text sources from the live item (see flushPrepend), so the log never holds tool output.
+ */
+const compactReplayEvent = (event: RunEvent): RunEvent => {
+  switch (event.type) {
+    case "tool_start":
+    case "tool_input": return event.view ? { ...event, view: replayView(event.view) } : event;
+    case "tool_output": return { ...event, output: "", ...(event.view ? { view: replayView(event.view) } : {}) };
+    case "tool_end": return {
+      ...event,
+      ...(event.view ? { view: replayView(event.view) } : {}),
+      ...(event.tool_result ? { tool_result: { ...event.tool_result, content: "", ...(event.tool_result.blocks ? { blocks: event.tool_result.blocks.map((block) => {
+        if (typeof (block as { text?: unknown }).text !== "string") return block;
+        const { text: _text, ...metadata } = block as typeof block & { text: string };
+        return metadata as typeof block;
+      }) } : {}) } } : {}),
+    };
+    default: return event;
+  }
+};
+
 export function createRunStore(scheduler: Scheduler = defaultScheduler, options: StoreOptions = {}) {
   // host code: read once here, so a getter on `options` cannot run (or throw) during a later flush.
   const onError = options.onError;
+  const itemBytes = options.toolOutputItemBytes ?? DEFAULT_TOOL_OUTPUT_ITEM_BYTES;
+  const runBytes = options.toolOutputRunBytes ?? DEFAULT_TOOL_OUTPUT_RUN_BYTES;
   let entities = new Map<string, RunItem>();
   let messageAliases = new Map<string, string>();
   let current: RunState = structuredClone(initialState);
   let pending: RunEvent[] = [];
   let acceptedLog: RunEvent[] = [];
+  // The live tool items while history is open: a prepend's rebuilt tool takes its text sources from here.
+  const replayTools = new Map<string, Extract<RunItem, { type: "tool" }>>();
+  const retention = createToolRetention(itemBytes, runBytes);
   let historyOpen = false;
   let pendingOlderPages: RunEvent[][] = [];
   const listeners = new Set<Listener>();
@@ -172,6 +216,9 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     diagnosticsListeners.forEach(call);
   };
   const refuseDesynced = () => { if (desynced) throw new Error("store is desynced"); };
+  const recordAccepted = (events: readonly RunEvent[]) => {
+    for (const event of events) acceptedLog.push(compactReplayEvent(event));
+  };
 
   const flush = () => {
     if (pending.length === 0 || disposed || desynced || flushing || notifying) return false;
@@ -180,16 +227,18 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     pending = [];
     const beforeOutline = current.outline;
     let next: RunState;
+    const changedTools = new Set<string>();
     const accepted = historyOpen ? [] as RunEvent[] : undefined;
     // host code: getters and proxies on events run inside this try; a throw is a reduction failure.
     try {
       next = reduceAllWithEntities(current, events, {
         get: (id) => entities.get(id),
-        set: (item) => { entities.set(item.id, item); changedItems.add(item.id); },
-        delete: (id) => { entities.delete(id); changedItems.add(id); },
+        set: (item) => { entities.set(item.id, item); changedItems.add(item.id); if (item.type === "tool") changedTools.add(item.id); },
+        delete: (id) => { if (entities.get(id)?.type === "tool") changedTools.add(id); entities.delete(id); changedItems.add(id); },
         splice: (edit) => edits.push(edit),
         getMessageAlias: (key) => messageAliases.get(key),
         setMessageAlias: (key, id) => { messageAliases.set(key, id); },
+        toolTextBytes: itemBytes,
       }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, accepted && ((event) => accepted.push(event)));
     } catch (error) {
       desynced = true;
@@ -209,8 +258,17 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       flushing = false;
       return false;
     }
+    if (changedTools.size) retention.enforce(entities, changedTools, changedItems);
     current = next;
-    if (accepted) append(acceptedLog, accepted);
+    if (accepted) {
+      recordAccepted(accepted);
+      // Retention can rewrite tools no event named (eviction), and those are all in changedItems.
+      for (const id of changedItems) {
+        const item = entities.get(id);
+        if (item?.type === "tool") replayTools.set(id, item);
+        else replayTools.delete(id);
+      }
+    }
     stateChanged = true;
     if (current.outline !== beforeOutline) {
       // One change per notification: flushes before it (a read forces one) extend it, so subscribers see one edit list.
@@ -245,7 +303,16 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
         splice() {},
         getMessageAlias: (key) => nextAliases.get(key),
         setMessageAlias: (key, id) => nextAliases.set(key, id),
+        toolTextBytes: itemBytes,
       }, () => { ignoredEvents++; }, (count) => { sanitizedFields += count; }, (event) => nextLog.push(event));
+      // The log's tool events carry no text: each rebuilt tool takes its sources from the live item. A tool whose
+      // events straddle the page edge keeps the live text it showed before this prepend.
+      for (const [id, item] of replayTools) {
+        const rebuilt = nextEntities.get(id);
+        if (rebuilt?.type !== "tool") continue;
+        nextEntities.set(id, { ...rebuilt, output: item.output, view: item.view ?? rebuilt.view, result: item.result ?? rebuilt.result, version: Math.max(rebuilt.version, item.version) });
+      }
+      retention.reset(nextEntities, next.outline, new Set());
       for (const [id, item] of nextEntities) {
         const prior = entities.get(id);
         if (prior && structurallyEqual(prior, item)) nextEntities.set(id, prior);
@@ -267,7 +334,10 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
     current = next;
     entities = nextEntities;
     messageAliases = nextAliases;
-    acceptedLog = nextLog;
+    acceptedLog = [];
+    recordAccepted(nextLog);
+    replayTools.clear();
+    for (const [id, item] of nextEntities) if (item.type === "tool") replayTools.set(id, item);
     stateChanged = true;
     if (splice.deleteCount > 0 || splice.items.length > 0) {
       outlineSnapshot = { items: current.outline, change: { from: beforeOutline, splices: [splice] } };
@@ -397,6 +467,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       outlineChanged = false;
       desynced = false;
       acceptedLog = [];
+      replayTools.clear();
+      retention.clear();
       // Inside a notification the flush waits for notify's next pass, so the rows are not known yet: notify then.
       const flushed = flush();
       stateChanged = true;
@@ -414,6 +486,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       flush();
       notify();
       acceptedLog = [];
+      replayTools.clear();
       historyOpen = true;
       report();
     },
@@ -425,6 +498,7 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       flushPrepend();
       notify();
       acceptedLog = [];
+      replayTools.clear();
       historyOpen = false;
       report();
     },
@@ -463,6 +537,8 @@ export function createRunStore(scheduler: Scheduler = defaultScheduler, options:
       pending = [];
       pendingOlderPages = [];
       acceptedLog = [];
+      replayTools.clear();
+      retention.clear();
       historyOpen = false;
       current = structuredClone(initialState);
       outlineSnapshot = { items: current.outline, change: null };
