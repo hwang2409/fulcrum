@@ -432,7 +432,9 @@ export function sourceTail(previous: TextSourceSnapshot | undefined, next: TextS
   for (let index = after.values.length - 1; index >= 0; index--) {
     const { start, text } = after.values[index]!;
     if (start + text.length <= before.length) break;
-    tail = (start >= before.length ? text : text.slice(before.length - start)) + tail;
+    // A copy, not a slice: the reader keeps this tail inside its shown text, and a slice would keep this chunk version
+    // alive with it (one chunk-sized string per append).
+    tail = (start >= before.length ? text : owned(text, before.length - start, text.length)) + tail;
   }
   return tail;
 }
