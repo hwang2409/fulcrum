@@ -439,6 +439,7 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
               continue;
             }
             const stream = replayStreams.get(each as object);
+            if (event.session_id === undefined) each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: event }));
             if (!stream || event.session_id !== stream.session) continue;
             stream.seq++;
             each.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { ...event, stream_id: stream.id, seq: stream.seq } }));
@@ -555,7 +556,10 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
           const pending = decide && !approvalAborted
             ? [{ request_id: "approval-1", tool_call: approvalCall, delegated: false, label: "shell" }]
             : [];
+          // Like zeta's begin_replay_join: the socket's old stream ends before the join replies.
           const previous = replayStreams.get(socket as object);
+          if (previous) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "replay_stream_ended", session_id: previous.session, stream_id: previous.id, reason: "rejoined" } }));
+          replayStreams.set(socket as object, stream);
           reply({ result: {
             messages: countServedTurnEnds(groups.slice(start, end).flat()),
             next_before: start || null,
@@ -563,8 +567,6 @@ export async function startFakeZeta({ origins, port = 0, live = true, historyMod
             replay: { stream_id: stream.id, history_seq: 0 },
             status: { state: running ? (decide ? "tool" : "running") : "idle", pending_approvals: pending, pending_approvals_truncated: false },
           } });
-          replayStreams.set(socket as object, stream);
-          if (previous) socket.send(JSON.stringify({ jsonrpc: "2.0", method: "event", params: { event: "replay_stream_ended", session_id: previous.session, stream_id: previous.id, reason: "rejoined" } }));
           return;
         }
         if (method === "session_history") {
