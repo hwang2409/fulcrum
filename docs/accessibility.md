@@ -4,8 +4,8 @@ this page records the accessibility matrix for the playground component gallery 
 
 ## baseline
 
-- date: 2026-11-11
-- revision: `f1c7b66e0276d63a1bd201f9c6dd136dd2fb82a2`
+- date: 2026-11-12
+- revision: `bc3ea0e13b35e0004b5bd000072ad2c46b93e42a` (the sweep code of this record; later commits change only this page)
 - host: macos 26.6.2, arm64
 - tools: bun 1.4.4, playwright 1.64.1, axe-core 4.11.1
 - automated browser engines: chromium 156.0.8078.4 and webkit 27.2
@@ -21,24 +21,33 @@ PATH=/Users/henry/.bun/install/cache/@oven/bun-darwin-aarch64@1.4.4@@@1/bin:$PAT
 
 the command builds the packages, starts private vite and fake-zeta processes on operating-system-selected free ports, scans the surfaces, captures chromium and webkit aria trees, writes the full axe node data to `a11y-results.json`, and stops its processes. the report includes the revision and exact tool versions.
 
+### how the scan sees real pairs
+
+long timelines skip layout and paint for off-screen rows: `content-visibility: auto` with a 2.5em placeholder (`packages/react/styles.css`). on an unscrolled page, the content of such a row overflows its placeholder and overlaps the next card. axe works from geometry, so it took another card as the background and reported false findings. the sweep now adds `[data-part="timeline"] > * { content-visibility: visible !important }` to the page before each scan, so axe measures every row at the size and position a user sees once the row renders. the product css does not change. scrolling each row into view was rejected: it needs one scan per row, and the other rows stay placeholders during each scan.
+
+so that this cannot hide real defects, the sweep plants two real ones in the last, off-screen timeline row of the gallery in every mode: a text pair at about 1.3:1 (`forced-color-adjust: none`, so it stays low in forced colors) and an overflowing box with no tab stop. the script adds them to the page at scan time, so no bundle contains them. the sweep fails with `the sweep missed planted real defects` if axe does not report both as violations; the planted nodes are then removed from the reported counts. a scan that excluded the timeline failed this check in light 1440 for both plants.
+
 ## automated axe matrix
 
 | surface and state | light 1440 | dark 1440 | forced colors 1440 | light 390 |
 | --- | ---: | ---: | ---: | ---: |
-| playground `/gallery.html`: every component card and state | 4 rules, 9 nodes | 4 rules, 9 nodes | 4 rules, 9 nodes | 5 rules, 20 nodes |
-| apps/web: history, running message, tools, approval pending, and errors | 0 | 0 | 0 | 1 rule, 2 nodes |
+| playground `/gallery.html`: every component card and state | 1 rule, 2 nodes | 1 rule, 2 nodes | 1 rule, 2 nodes | 1 rule, 2 nodes |
+| apps/web: history, running message, tools, approval pending, and errors | 0 | 0 | 0 | 0 |
 | apps/web: no sessions | not run | not run | not run | 0 |
 
-axe reported four implementation defect classes. the implementation work is split by class so one fix does not hide another:
+the first record (`f1c7b66`) listed four defect classes. their state on this revision:
 
-- `scrollable-region-focusable`: 3 gallery nodes at 1440, 12 gallery nodes at 390, and 2 apps/web nodes at 390. scrollable tool output and code/source blocks are not keyboard focusable.
-- `color-contrast`: 2 text-viewer copy buttons at 1440 and 390. their measured ratios are 2.58:1 in light, 2.60:1 in dark, and 1.84:1 in forced colors. one ansi cyan sample is 4.37:1 at 390.
-- gallery document structure: `heading-order` affects 2 card headings that follow deeper headings rendered by the previous markdown demo; `region` affects the mobile jump control because it sits outside every landmark.
-- `landmark-unique`: one repeated `code viewer` region name and one repeated `run path` navigation name.
+- `heading-order`: fixed by #174 (message headings start at h3).
+- `region`: fixed by #180 (the mobile jump control sits inside a landmark).
+- `scrollable-region-focusable`: fixed by #177 (scrollable code and output are keyboard reachable). 6 of the 12 gallery nodes at 390 in the first record were placeholder overlap, not real overflow.
+- `color-contrast`: 0 real failures. the earlier 2 copy-button nodes (2.58:1 light, 2.60:1 dark, 1.84:1 forced colors) and the ansi cyan node at 390 (4.37:1) were placeholder overlap: axe's own related nodes were the approve button and a diff insert row of other cards. scrolled into view, the copy button is about 6.1:1 on its white card and the cyan is 4.93:1 on white. the same sweep with the override removed still reports them (2, 2, 2, and 3 nodes); the scan above reports 0. this is why pr #173 was closed.
+- `landmark-unique`: still open on main, 2 nodes in every mode: a repeated `code viewer` region name and a repeated `run path` navigation name. #183 fixes them.
 
-apps/web had no axe violations in the 1440 history/running/tools/approval state in light, dark, or forced colors. its two mobile findings are the same scrollable-code class found in the gallery. the full selectors, html, impact, and axe failure summaries are in the generated json report.
+axe leaves some nodes as "needs review" (incomplete) rather than pass or fail, and the json report counts them per rule with axe's reason. on this revision the gallery has 304 to 425 incomplete `color-contrast` nodes per mode, mostly `pseudoContent` (a background from a pseudo-element) and `elmPartiallyObscured` (axe found another element over part of the text). this sweep does not judge those nodes, so "0 real failures" covers only what axe could decide.
 
-two browser-only calibration runs took 44.73 and 43.51 seconds. their rule ids, impacts, and node selectors were identical. the sweep is not in ci yet because the baseline intentionally contains known failures and the complete command also builds packages. after the defect prs merge, add the browser-only script to an existing browser job; keep the package build in that job as its existing setup rather than adding a second build.
+the two apps/web mobile `scrollable-region-focusable` nodes from the first record are fixed by #177. the full selectors, html, impact, and axe failure summaries are in the generated json report.
+
+on this revision the full command (packages already built once, so the build step reused its outputs) took 49 seconds, and the browser-only script (`bun apps/playground/scripts/a11y.ts`) took 33 seconds, both at a load average of about 36 to 43 from other work on the host. the web scans wait for conditions (the run no longer streams and the live region is stable for longer than the announcer's 1 s batch window), not fixed sleeps, and each axe run has a 60 s deadline. the sweep is not in ci yet; when `landmark-unique` is fixed, add the browser-only script to an existing browser job, with the package build kept as that job's existing setup.
 
 ## accessibility-tree and interaction checks
 
