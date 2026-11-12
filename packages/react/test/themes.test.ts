@@ -9,8 +9,9 @@ test("themes lists every palette in themes.css, in file order", () => {
 });
 
 // UI text and syntax (tok-*) colors must reach 4.5:1 on every background they sit on: bg, surface, the 8% diff row
-// tints of styles.css, and for status colors their own 8% marker tint. Syntax and terminal (ansi-*: bg, surface, 3:1) colors keep each palette's official hex where it
-// reaches its ratio. Otherwise the value carries an `/* official #rrggbb ... */` note and is the smallest OKLCH lightness
+// tints of styles.css, and for status colors their own 8% marker tint. Syntax and terminal (ansi-*: bg, surface; 4.5:1
+// in the default themes, 3:1 in named palettes and 4.5:1 there under prefers-contrast: more) colors keep each palette's
+// official hex where it reaches its ratio. Otherwise the value carries an `/* official #rrggbb ... */` note and is the smallest OKLCH lightness
 // change of it, at the same hue, that reaches the ratio.
 const css = readFileSync(new URL("../themes.css", import.meta.url), "utf8");
 const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({
@@ -20,6 +21,16 @@ const blocks = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body
   source: Object.fromEntries([...body!.matchAll(/--fulcrum-(ui-[\w-]+):[^;]+;\s*\/\*\s*(tok-[\w-]+) (#[0-9a-f]{6})\b/g)].map(([, name, token, hex]) => [name!, [token!, hex!]])),
 }));
 const palettes = blocks.filter((block) => block.vars.bg);
+// The default themes: github-light, github-dark, and the no-attribute default that follows the OS between them. Their
+// ANSI colors reach 4.5:1 always; a named palette keeps its own and raises them only under prefers-contrast: more.
+const DEFAULT_THEMES = new Set(['[data-fulcrum-theme="github-dark"]', ':root:not([data-fulcrum-theme]), [data-fulcrum-theme="github-light"]', ":root:not([data-fulcrum-theme])"]);
+const ansiFloor = (name: string) => (DEFAULT_THEMES.has(name) ? 4.5 : 3);
+// The rules inside @media (prefers-contrast: more), by selector.
+const moreContrast = [...css.matchAll(/@media \(prefers-contrast: more\) \{((?:[^{}]*\{[^{}]*\})*)\s*\}/g)];
+const raised = new Map(moreContrast.flatMap(([, inner]) => [...inner!.matchAll(/([^{}]+)\{([^{}]*)\}/g)]).map(([, selector, body]) => [
+  selector!.replace(/\/\*[\s\S]*?\*\//g, "").trim().replace(/\s+/g, " "),
+  Object.fromEntries([...body!.matchAll(/--fulcrum-([\w-]+):\s*([^;]+);/g)].map(([, name, value]) => [name!, value!.trim()])),
+]));
 const UI = ["fg", "muted", "accent", "ok", "warn", "danger"];
 const ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"].flatMap((name) => [`ansi-${name}`, `ansi-bright-${name}`]);
 // Tool facts are UI text, so they get their own accents, each from one official syntax hue (named in its comment).
@@ -161,11 +172,47 @@ test("fg reaches 4.5:1 on a 12% ok, warn, danger, accent, or muted tint over bg"
   expect(problems).toEqual([]);
 });
 
-test("syntax colors reach 4.5:1 and ANSI colors 3:1 where they sit, as the official hex or its smallest OKLCH lightness change", () => {
+test("ANSI colors reach 4.5:1 on bg and surface in the default themes", () => {
+  const problems: string[] = [];
+  for (const { name, vars } of palettes.filter(({ name }) => DEFAULT_THEMES.has(name))) {
+    for (const key of ANSI) {
+      const ratio = worst(color(vars[key]!, vars), backgrounds(vars, key));
+      if (ratio < 4.5) problems.push(`${name}: --fulcrum-${key} ${vars[key]} is ${ratio.toFixed(3)}:1, needs 4.5:1`);
+    }
+  }
+  expect(problems).toEqual([]);
+});
+
+test("under prefers-contrast: more, every named palette's ANSI colors reach 4.5:1, as the official hex or its smallest OKLCH lightness change", () => {
+  const problems: string[] = [];
+  for (const { name, vars, official } of palettes.filter(({ name }) => !DEFAULT_THEMES.has(name))) {
+    const more = raised.get(name) ?? {};
+    for (const key of ANSI) {
+      const on = backgrounds(vars, key);
+      const where = `${name}: --fulcrum-${key} ${more[key] ?? vars[key]} under prefers-contrast: more`;
+      const ratio = worst(color(more[key] ?? vars[key]!, vars), on);
+      if (ratio < 4.5) problems.push(`${where} is ${ratio.toFixed(3)}:1, needs 4.5:1`);
+      if (!more[key]) continue;
+      // Only a color that misses 4.5:1 by default changes; the change starts from the official hex.
+      if (worst(color(vars[key]!, vars), on) >= 4.5) problems.push(`${where}: its default ${vars[key]} already reaches 4.5:1`);
+      if (!/^#[0-9a-f]{6}$/i.test(more[key]!)) problems.push(`${where} is not a palette hex`);
+      else problems.push(...familyProblems(where, color(more[key]!, vars), official[key] ?? vars[key]!, on, 4.5));
+    }
+  }
+  // The default themes need no raise, and the block raises ANSI colors only.
+  for (const [selector, more] of raised) {
+    if (DEFAULT_THEMES.has(selector) || !palettes.some(({ name }) => name === selector)) problems.push(`${selector} is not a named palette`);
+    for (const key of Object.keys(more)) if (!ANSI.includes(key)) problems.push(`${selector}: --fulcrum-${key} is not an ANSI color`);
+  }
+  expect(problems).toEqual([]);
+  expect(moreContrast).toHaveLength(1);
+});
+
+test("syntax colors reach 4.5:1 and ANSI colors their floor where they sit, as the official hex or its smallest OKLCH lightness change", () => {
   const problems: string[] = [];
   for (const { name, vars, official } of palettes) {
     for (const key of [...TOKENS, ...ANSI]) {
-      const min = key.startsWith("tok-") ? 4.5 : 3;
+      const min = key.startsWith("tok-") ? 4.5 : ansiFloor(name);
       const where = `${name}: --fulcrum-${key} ${vars[key]}`;
       if (!/^#[0-9a-f]{6}$/i.test(vars[key]!)) { problems.push(`${where} is not a palette hex`); continue; }
       const on = backgrounds(vars, key);

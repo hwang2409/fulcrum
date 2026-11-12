@@ -143,7 +143,7 @@ function fitScale(room: number, natural: number, smallest: number): number {
 
 /**
  * The drawn diagram. `fit`: scaled down to its box while its smallest label stays readable; wider than that, it
- * scrolls inside the box, which is then a labelled, focusable region with an edge fade on each side with more to see.
+ * scrolls inside the box, which is then a labelled, focusable group with an edge fade on each side with more to see.
  * Without `fit` (full size), it is its natural size. Recomputed when the box resizes.
  */
 function Svg({ svg, part, fit = false, onFailure }: { svg: SVGSVGElement; part: string; fit?: boolean; onFailure?: (error: unknown) => void }) {
@@ -167,7 +167,7 @@ function Svg({ svg, part, fit = false, onFailure }: { svg: SVGSVGElement; part: 
       frame.current!.dataset.overflow = `${node.scrollLeft > 1 ? "start " : ""}${end > 1 ? "end" : ""}`.trim();
       if (node.scrollWidth > node.clientWidth + 1) {
         node.tabIndex = 0;
-        node.setAttribute("role", "region");
+        node.setAttribute("role", "group"); // not a region landmark: a transcript can hold many diagrams
         node.setAttribute("aria-label", `${copy.getAttribute("aria-label") ?? "diagram"}, scrolls sideways`);
       } else {
         node.removeAttribute("tabindex");
