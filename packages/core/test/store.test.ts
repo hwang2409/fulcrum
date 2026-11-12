@@ -747,21 +747,20 @@ test.each(["resync", "prepend"] as const)("a throwing events iterator: %s throws
   expect({ calls, outline: ids(store.getOutline()) }).toEqual({ calls: 1, outline: ["message:a", "message:b"] });
 });
 
-test("a proxy that throws while a prepend compares items: reads never throw, the store desyncs, and onError runs once", () => {
+test("prepend reuses the compact tool snapshot without reading tool arguments again", () => {
   const jobs: Array<() => void> = [];
   const errors: unknown[] = [];
   const store = createRunStore((job) => jobs.push(job), { onError: (error) => errors.push(error) });
-  // Each read of tool_call returns a new arguments proxy, so the prepend's re-reduction holds a different object and
-  // the identity check walks into it.
+  // The accepted tool snapshot owns replay; history paging must not inspect this host object a second time.
   const args = () => new Proxy({}, { ownKeys() { throw new Error("ownKeys trap"); } });
   store.beginHistory();
   store.dispatch({ type: "tool_start", get tool_call() { return { id: "t", name: "x", arguments: args() }; } } as RunEvent);
   jobs.shift()!();
   store.prepend([commit("b")]);
   expect(() => store.getState()).not.toThrow();
-  expect(store.getDiagnostics()).toMatchObject({ desynced: true, reason: "ownKeys trap" });
-  expect(errors.map((error) => (error as Error).message)).toEqual(["ownKeys trap"]);
-  expect(ids(store.getOutline())).toEqual(["tool:t"]);
+  expect(store.getDiagnostics()).toMatchObject({ desynced: false });
+  expect(errors).toEqual([]);
+  expect(ids(store.getOutline())).toEqual(["message:b", "tool:t"]);
   expect(jobs.shift()!).not.toThrow();
 });
 

@@ -94,6 +94,52 @@ export interface ToolResult {
   /** A retained structured result was bounded by the wire. */
   truncated?: boolean;
 }
+
+export interface TextOmission {
+  readonly kind: "omitted";
+  readonly reason: "item-cap" | "run-cap";
+  readonly start: number;
+  readonly end: number;
+  readonly bytes: number;
+  readonly whole: boolean;
+}
+export interface TextChunk {
+  readonly start: number;
+  readonly line: number;
+  readonly text: string;
+}
+/** An immutable, bounded tool-text source. Chunks own their strings and never retain a larger input string. */
+export interface TextSourceSnapshot {
+  readonly version: number;
+  readonly length: number;
+  readonly bytes: number;
+  readonly lines: number;
+  readonly retainedBytes: number;
+  readonly omission: TextOmission | null;
+  readonly protocolTruncated: boolean;
+  chunks(): IterableIterator<TextChunk>;
+}
+export type StoredToolView =
+  | { kind: "shell"; command: string; cwd?: string; exitCode?: number; stdout?: TextSourceSnapshot; stderr?: TextSourceSnapshot; durationMs?: number }
+  | { kind: "read"; path: string; range?: { offset?: number; limit?: number }; durationMs?: number }
+  | { kind: "edit"; path: string; diff: TextSourceSnapshot; durationMs?: number }
+  | { kind: "write"; path: string; content?: TextSourceSnapshot; bytes?: number; durationMs?: number }
+  | { kind: "search"; pattern: string; path?: string; matches?: readonly TextSourceSnapshot[]; durationMs?: number }
+  | ({ kind: "fetch"; title?: string; bytes?: number; status?: number; contentType?: string; durationMs?: number } & ({ url: string; query?: never } | { query: string; url?: never }));
+export interface StoredResultBlock {
+  /** Original block metadata with any top-level text removed into `text`. */
+  readonly metadata: ContentBlock;
+  readonly text?: TextSourceSnapshot;
+}
+export interface StoredToolResult {
+  readonly tool_call_id: string;
+  readonly is_error: boolean;
+  readonly is_canceled?: boolean;
+  readonly blocks?: readonly StoredResultBlock[];
+  readonly truncated?: boolean;
+  readonly relation: "same" | "append" | "replace" | "unknown";
+  readonly finalContent?: TextSourceSnapshot;
+}
 export type SubAgentStatus =
   | "running"
   | "waiting_approval"
@@ -139,11 +185,11 @@ export type RunItem =
       id: string;
       type: "tool";
       tool_call: ToolCall;
-      view?: ToolView;
-      output: string;
+      view?: StoredToolView;
+      output: TextSourceSnapshot;
       version: number;
       active: boolean;
-      result?: ToolResult;
+      result?: StoredToolResult;
       is_error: boolean;
       canceled: boolean;
       /** The end of this call's approval, once it resolved: the approval's row folds into the tool's row. */
@@ -209,6 +255,8 @@ export type RunEvent =
       type: "tool_end";
       tool_call: ToolCall;
       tool_result?: ToolResult;
+      /** How result content relates to streamed output. `auto` preserves the legacy inferred relation when complete. */
+      resultContent?: "same" | "append" | "replace" | "auto";
       view?: ToolView;
       data?: Record<string, unknown>;
     }

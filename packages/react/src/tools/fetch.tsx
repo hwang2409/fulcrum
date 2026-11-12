@@ -1,7 +1,7 @@
 import { languageForContentType, languageForPath } from "@fulcrum/highlight/languages";
 import type { ToolBodyProps } from "../parts.js";
 import type { Block } from "../highlight.js";
-import { Arguments, asking, boundText, bytes, Empty, Foot, Output, outputBlocks } from "./common.js";
+import { Arguments, asking, boundText, bytes, Empty, Foot, Output, outputBlocks, sourceText } from "./common.js";
 
 // The body's language: the Content-Type's when it names one, else the url path's extension (`/data.json`), else none.
 const bodyLanguage = (url: string | undefined, contentType: string | undefined) => {
@@ -17,6 +17,7 @@ const bodyLanguage = (url: string | undefined, contentType: string | undefined) 
 export function FetchBody({ item, output, state }: ToolBodyProps) {
   if (item.view?.kind !== "fetch") return null;
   const { url, query, status, title, bytes: size, contentType } = item.view;
+  const text = sourceText(output);
   return (
     <>
       <div data-part="fetch-meta">
@@ -25,9 +26,9 @@ export function FetchBody({ item, output, state }: ToolBodyProps) {
         {contentType ? <span data-part="fetch-type">{boundText(contentType.split(";")[0]!, 80).text}</span> : null}
         {title ? <span data-part="fetch-title">{boundText(title).text}</span> : null}
       </div>
-      {output ? <Output text={output} id={`${item.id}:body`} done={state !== "streaming"} language={bodyLanguage(url, contentType)} pretty follow={false} /> : <Empty state={state} noun="response" />}
+      {text ? <Output text={text} id={`${item.id}:body`} done={state !== "streaming"} language={bodyLanguage(url, contentType)} pretty follow={false} /> : <Empty state={state} noun="response" />}
       {asking(state) ? <Arguments call={item.tool_call} id={item.id} /> : null}
-      <Foot copy={[url !== undefined ? ["url", url] : ["query", query], ["output", output]]}>
+      <Foot copy={[url !== undefined ? ["url", url] : ["query", query], ["output", text]]}>
         {size !== undefined ? <span data-part="tool-size">{bytes(size)}</span> : null}
       </Foot>
     </>
@@ -36,6 +37,7 @@ export function FetchBody({ item, output, state }: ToolBodyProps) {
 
 /** The highlight blocks FetchBody asks for when it first mounts. */
 export function fetchBlocks({ item, output, state }: ToolBodyProps): Block[] {
-  if (item.view?.kind !== "fetch" || !output) return [];
-  return outputBlocks({ text: output, id: `${item.id}:body`, done: state !== "streaming", language: bodyLanguage(item.view.url, item.view.contentType), pretty: true });
+  if (item.view?.kind !== "fetch") return [];
+  const text = sourceText(output);
+  return text ? outputBlocks({ text, id: `${item.id}:body`, done: state !== "streaming", language: bodyLanguage(item.view.url, item.view.contentType), pretty: true }) : [];
 }

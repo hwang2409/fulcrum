@@ -153,9 +153,10 @@ test("tool call start/output/end with error result", () => {
   const store = replay("tool.jsonl").get("tool")!;
   expect(store.getOutline()).toEqual([{ id: "tool:tool-call-1", kind: "tool" }]);
   const item = store.getItem("tool:tool-call-1");
-  expect(item?.type === "tool" ? item.output : undefined).toBe("permission denied");
+  expect(item?.type === "tool" ? [...item.output.chunks()].map((chunk) => chunk.text).join("") : undefined).toBe("permission denied");
   expect(item?.type === "tool" ? item.is_error : undefined).toBe(true);
-  expect(item?.type === "tool" ? item.result?.content : undefined).toBe("permission denied");
+  // The result repeats the streamed output, so it is not shown twice.
+  expect(item?.type === "tool" ? item.result?.relation : undefined).toBe("same");
 });
 
 test("approval request then approval end", () => {

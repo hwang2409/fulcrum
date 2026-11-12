@@ -39,8 +39,21 @@ export type PrependScalingResult = {
   rows: number;
 };
 
+export type ToolOutputScalingResult = {
+  appendPerKibRatio: number;
+  cutAppendRatio: number;
+  smallCutAppendCpu: number;
+  largeCutAppendCpu: number;
+  replacementRatio: number;
+  smallAppendCpu: number;
+  largeAppendCpu: number;
+  smallReplacementCpu: number;
+  largeReplacementCpu: number;
+};
+
 export type WorkloadResult = {
   streams: StreamResult[];
+  toolOutput: ToolOutputScalingResult;
   queuedPrepends: PrependScalingResult[];
   timedCpu: number;
   prepend: { elapsed: number; rows: number };
@@ -170,6 +183,59 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
     };
   });
 
+  const toolCpu = (seedBytes: number, replacement = false) => {
+    const store = createRunStore((flush) => flush(), { toolOutputItemBytes: 3 * 1024 * 1024, toolOutputRunBytes: 12 * 1024 * 1024 });
+    const tool_call = { id: "bench", name: "bench", arguments: {} };
+    store.dispatch({ type: "tool_output", tool_call, output: "s".repeat(seedBytes) });
+    const iterations = replacement ? 8 : 100;
+    const value = replacement ? "r".repeat(seedBytes) : "x".repeat(1024);
+    const start = process.cpuUsage();
+    for (let index = 0; index < iterations; index++) store.dispatch({ type: "tool_output", tool_call, output: value, ...(replacement ? { replace: true } : {}) });
+    const usage = process.cpuUsage(start);
+    const item = store.getItem("tool:bench");
+    if (item?.type !== "tool" || item.output.retainedBytes > 3 * 1024 * 1024) throw new Error("invalid bounded tool output result");
+    return (usage.user + usage.system) / 1_000 / iterations;
+  };
+  // Streaming after the item cut: a log arriving line by line keeps sliding its tail. 10x more 100-byte lines past the
+  // default 2 MiB cap must cost about the same per line; a tail that fragments or recopies per line grows with the count.
+  const cutCpu = (lines: number) => {
+    const store = createRunStore((flush) => flush());
+    const tool_call = { id: "cut", name: "bench", arguments: {} };
+    store.dispatch({ type: "tool_output", tool_call, output: "s".repeat(2_200 * 1024) });
+    const line = `${"y".repeat(99)}\n`;
+    const start = process.cpuUsage();
+    for (let index = 0; index < lines; index++) store.dispatch({ type: "tool_output", tool_call, output: line });
+    const usage = process.cpuUsage(start);
+    const item = store.getItem("tool:cut");
+    if (item?.type !== "tool") throw new Error("invalid cut tool output result");
+    // bench-ab also runs this workload on a base whose core keeps tool output as one unbounded string: check its length.
+    const output: unknown = item.output;
+    const valid = typeof output === "string"
+      ? output.length === 2_200 * 1024 + lines * 100
+      : item.output.retainedBytes <= 2 * 1024 * 1024 && item.output.bytes === 2_200 * 1024 + lines * 100 && item.output.omission?.reason === "item-cap";
+    if (!valid) throw new Error("invalid cut tool output result");
+    return (usage.user + usage.system) / 1_000 / lines;
+  };
+  toolCpu(190 * 1024);
+  toolCpu(1_900 * 1024);
+  cutCpu(20_000);
+  const cutMeasurements = Array.from({ length: runs }, () => ({ small: cutCpu(5_000), large: cutCpu(50_000) }));
+  const smallCutAppendCpu = median(cutMeasurements.map(({ small }) => small));
+  const largeCutAppendCpu = median(cutMeasurements.map(({ large }) => large));
+  const appendMeasurements = Array.from({ length: runs }, () => ({ small: toolCpu(190 * 1024), large: toolCpu(1_900 * 1024) }));
+  const replacementMeasurements = Array.from({ length: runs }, () => ({ small: toolCpu(200 * 1024, true), large: toolCpu(2_000 * 1024, true) }));
+  const smallAppendCpu = median(appendMeasurements.map(({ small }) => small));
+  const largeAppendCpu = median(appendMeasurements.map(({ large }) => large));
+  const smallReplacementCpu = median(replacementMeasurements.map(({ small }) => small));
+  const largeReplacementCpu = median(replacementMeasurements.map(({ large }) => large));
+  const toolOutput = {
+    appendPerKibRatio: largeAppendCpu / Math.max(smallAppendCpu, 0.001),
+    replacementRatio: largeReplacementCpu / Math.max(smallReplacementCpu, 0.001),
+    cutAppendRatio: largeCutAppendCpu / Math.max(smallCutAppendCpu, 0.001),
+    smallCutAppendCpu, largeCutAppendCpu,
+    smallAppendCpu, largeAppendCpu, smallReplacementCpu, largeReplacementCpu,
+  };
+
   const prependStore = createRunStore(() => {});
   prependStore.beginHistory();
   for (let i = 0; i < 100_000; i++) prependStore.dispatch({ type: "message_commit", message_id: `current-${i}`, message: { role: "assistant", content: [{ type: "text", text: "seed" }] } });
@@ -178,5 +244,5 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
   for (let page = 0; page < 50; page++) prependStore.prepend(Array.from({ length: 200 }, (_, row) => ({ type: "message_commit" as const, message_id: `older-${page}-${row}`, message: { role: "assistant", content: [{ type: "text", text: "old" }] } })));
   const prependUsage = process.cpuUsage(prependStart);
   const prepend = { elapsed: (prependUsage.user + prependUsage.system) / 1_000, rows: prependStore.getOutline().length };
-  return { streams, queuedPrepends, timedCpu, prepend, outlineSize: prepend.rows };
+  return { streams, toolOutput, queuedPrepends, timedCpu, prepend, outlineSize: prepend.rows };
 }

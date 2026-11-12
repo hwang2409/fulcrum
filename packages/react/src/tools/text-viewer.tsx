@@ -348,11 +348,13 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
     enabled: true,
     outlineUpdate: update,
   });
-  // A text row is one segment: it draws from the segment's own text, never from a slice of the whole text.
-  const ranges = list.snapshot.rows.map((row) => {
+  // A text row is one segment: it draws from the segment's own text, never from a slice of the whole text. The list's
+  // rows are one render behind a text that was replaced rather than extended (a cut output's tail slid), so a row past
+  // the new segments is skipped until the list catches up.
+  const ranges = list.snapshot.rows.filter((row) => row.index < segments.length).map((row) => {
     const last = row.index === segments.length - 1;
     const slice = texts ? segmentTextAt(texts, row.index) : "";
-    return { start: segments[row.index]!.start, end: segments[row.index + 1]?.start ?? (rows ? rows.count : text.length), done: done || !last, slice };
+    return { row, start: segments[row.index]!.start, end: segments[row.index + 1]?.start ?? (rows ? rows.count : text.length), done: done || !last, slice };
   });
   const whole = useWholeTokens(rows ? "" : text, metrics.lines, format, id, done, rows ? [] : ranges.map(({ start, end, done, slice }) => styledBlock(slice, start, end, format, id, done, start)), seed);
   useLayoutEffect(() => {
@@ -403,7 +405,9 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
         ref={scrollRef}
         data-part="text-viewer"
         data-language={rows ? undefined : format?.language}
-        role="region"
+        // A named group, not a region landmark: a transcript can hold dozens of viewers, and landmarks are for the page's few
+        // main areas. The name still announces the focusable scroll box.
+        role="group"
         aria-label={`${label} viewer`}
         tabIndex={0}
         onScroll={(event) => onScroll(event.currentTarget)}
@@ -416,8 +420,7 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
         onTouchMove={(event) => event.stopPropagation()}
       >
         <div ref={list.timelineRef} data-part="text-viewer-content" style={{ height: list.snapshot.totalSize }}>
-          {list.snapshot.rows.map((row, index) => {
-            const { start, end, done: rangeDone, slice } = ranges[index]!;
+          {ranges.map(({ row, start, end, done: rangeDone, slice }) => {
             const Row = rows ? "div" : "pre";
             return (
               <Row

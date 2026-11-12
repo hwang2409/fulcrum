@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { createRunStore, resolveToolView, type RunItem, type ToolView } from "@fulcrum/core";
+import { createRunStore, resolveToolView, type RunItem, type StoredToolView, type TextSourceSnapshot, type ToolView } from "@fulcrum/core";
 import { fromZetaEvent, zetaTools } from "../src/index.js";
+
+// Stored tool text is a bounded source; these fixtures are small, so their retained text is the whole text.
+const text = (source: TextSourceSnapshot | undefined) => source && [...source.chunks()].map((chunk) => chunk.text).join("");
+const plainView = (view: StoredToolView | undefined) => view?.kind === "shell"
+  ? { ...view, ...(view.stdout ? { stdout: text(view.stdout) } : {}), ...(view.stderr ? { stderr: text(view.stderr) } : {}) }
+  : view;
 
 const call = (name: string, args: Record<string, unknown>) => ({ id: "1", name, arguments: args });
 
@@ -82,8 +88,8 @@ test("a finished bash call carries its exit code and split streams from structur
     fromZetaEvent(JSON.parse(line).params).forEach(store.dispatch);
   const ok = store.getItem("tool:call-1");
   const failed = store.getItem("tool:call-2");
-  expect(ok?.type === "tool" ? ok.view : undefined).toEqual({ kind: "shell", command: "ls packages", cwd: "/repo", exitCode: 0, stdout: "core\nreact\n", stderr: "" });
-  expect(failed?.type === "tool" ? failed.view : undefined).toEqual({ kind: "shell", command: "bun test", exitCode: 1, stdout: "", stderr: "error: 1 failing\n" });
+  expect(ok?.type === "tool" ? plainView(ok.view) : undefined).toEqual({ kind: "shell", command: "ls packages", cwd: "/repo", exitCode: 0, stdout: "core\nreact\n", stderr: "" });
+  expect(failed?.type === "tool" ? plainView(failed.view) : undefined).toEqual({ kind: "shell", command: "bun test", exitCode: 1, stdout: "", stderr: "error: 1 failing\n" });
 });
 
 test("malformed structured_content is ignored, not trusted", () => {
