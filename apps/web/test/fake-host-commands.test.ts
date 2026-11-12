@@ -285,9 +285,11 @@ test("fake zeta joins replay before assigning positions and replaces its socket 
     const client = await connectZeta({ url: connection.url, token: connection.token, features: ["session_replay_seq"] });
     const first = await client.openSessionReplay("s-reconnect");
     expect(client.features).toContain("session_replay_seq");
-    expect(first.state.replay).toMatchObject({ phase: "joined", lastSeq: 0 });
+    expect(first.state.replay.phase).toBe("joined");
+    expect(first.lastSeq).toBe(0);
     const replacement = await client.openSessionReplay("s-reconnect");
-    expect(replacement.state.replay).toMatchObject({ phase: "joined", lastSeq: 0 });
+    expect(replacement.state.replay.phase).toBe("joined");
+    expect(replacement.lastSeq).toBe(0);
     expect(first.state.replay.phase).toBe("joined");
     replacement.release();
     first.release();

@@ -110,7 +110,8 @@ test("join baseline is installed before the contiguous tail and no status call i
   const lease = await open;
   fake.event({ event: "turn_end", session_id: "session-a", stream_id: "stream-a", seq: 5, data: {} });
 
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 5 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a" });
+  expect(lease.lastSeq).toBe(5);
   expect(fake.sent.map(({ method }) => method)).toEqual(["session_history_and_subscribe"]);
   expect(lease.store.getState()).toMatchObject({ turn: "idle" });
 });
@@ -235,6 +236,24 @@ test("reasonless and restart cleanup ends both close the joined approval", async
   }
 });
 
+// An approval's first end is final: a later tail end for the same request cannot rewrite its decision.
+test("a later tail end cannot rewrite the decision of an approval the page or the tail already ended", async () => {
+  const tailEnd = (seq: number, decision: string): EventParams =>
+    ({ event: "approval_end", session_id: "session-a", stream_id: "stream-a", seq, request_id: "a", data: { decision } });
+  for (const [name, messages, frames, decision] of [
+    ["page ended", [approvalRequest(), approvalEnd()], [tailEnd(1, "allow")], "abort"],
+    ["tail ended", [approvalRequest()], [tailEnd(1, "deny"), tailEnd(2, "allow")], "deny"],
+  ] as const) {
+    const fake = harness();
+    await fake.ready;
+    const lease = await joined(fake, { messages });
+    for (const frame of frames) fake.event(frame);
+
+    expect(approval(fake.client), name).toMatchObject({ type: "approval", ended: { type: "approval_end", decision } });
+    expect(lease.lastSeq, name).toBe(frames.length);
+  }
+});
+
 test("an unmatched sequenced approval end is quiet for both roles and never creates a card", async () => {
   // zeta #1218 gives observers the controller's pending rows, but until zeta #1227 a durable approval can be missing
   // from either role's join baseline after a zeta restart, so its later end has no request to close.
@@ -258,7 +277,8 @@ test("an unmatched sequenced approval end is quiet for both roles and never crea
       fake.event({ event: "approval_end", session_id: "session-a", stream_id: "stream-a", seq: 1, request_id: "outside-page", data: {} });
 
       expect(lease.state.approvals.incomplete, role).toBeNull();
-      expect(lease.state.replay, role).toMatchObject({ phase: "joined", lastSeq: 1 });
+      expect(lease.state.replay.phase, role).toBe("joined");
+      expect(lease.lastSeq, role).toBe(1);
       expect(fake.client.stores.get("session-a")!.getOutline().some(({ kind }) => kind === "approval"), role).toBe(false);
       expect(warnings, role).toEqual([]);
     } finally {
@@ -346,7 +366,8 @@ test("selecting another session aborts the first session's pending join; its ope
   expect(leaseA.state.replay).toEqual({ phase: "suspended" });
   expect(notified).toBe(0);
   expect(outlineText(fake.client)).toEqual([]);
-  expect(leaseB.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 0 });
+  expect(leaseB.state.replay).toEqual({ phase: "joined", streamId: "stream-b" });
+  expect(leaseB.lastSeq).toBe(0);
   expect(fake.joins()).toHaveLength(2);
 });
 
@@ -389,6 +410,51 @@ test("a stream end right after the join reply waits for that join and then rejoi
   expect(fake.joins()).toHaveLength(2);
 });
 
+test("a frame that arrives while the join reply is settling applies once the join commits", async () => {
+  const fake = harness();
+  await fake.ready;
+  const open = fake.client.openSessionReplay("session-a");
+  await waitFor(() => fake.joins().length === 1);
+  fake.reply(fake.joins()[0]!.id, joinResult());
+  fake.event(delta(1, "held"));
+  const lease = await open;
+  await Bun.sleep(1);
+
+  expect(assistantText(fake.client, "session-a")).toBe("held");
+  expect(lease.lastSeq).toBe(1);
+  expect(fake.joins()).toHaveLength(1);
+});
+
+// Fail-first on 7cd2f5c: the owner looked for an error code the adapter never emits, so it applied the error row.
+test("a positioned frame whose payload cannot be read is never applied and starts one rejoin", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake);
+  fake.event({ ...delta(1, "x"), delta: 5 } as unknown as EventParams);
+  await Bun.sleep(1);
+
+  expect(fake.joins()).toHaveLength(2);
+  expect(lease.state.replay.phase).toBe("rejoining");
+  expect(lease.store.getOutline().some(({ id }) => lease.store.getItem(id)?.type === "error")).toBe(false);
+  expect(lease.lastSeq).toBe(0);
+});
+
+test("live text deltas advance lastSeq without notifying replay listeners", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake);
+  let notified = 0;
+  lease.subscribeReplay(() => notified++);
+  for (let seq = 1; seq <= 200; seq++) fake.event(delta(seq, "x"));
+
+  expect(notified, "replay state changes only with phase, history, or approvals").toBe(0);
+  expect(assistantText(fake.client, "session-a")).toBe("x".repeat(200));
+  expect(lease.lastSeq).toBe(200);
+  fake.event(delta(202, "gap"));
+  await Bun.sleep(1);
+  expect(notified, "a rejoin is a phase change").toBeGreaterThan(0);
+});
+
 test("a gap and a matching stream end in one turn start one join", async () => {
   const fake = harness();
   await fake.ready;
@@ -400,19 +466,18 @@ test("a gap and a matching stream end in one turn start one join", async () => {
   expect(fake.joins()).toHaveLength(2);
 });
 
-// Design: this proof plants "set lastSeq before dispatch". Every dispatch failure retires the stream and the rejoin
-// installs the frontier from history_seq, so that mutation cannot change behavior; this test pins the failure path.
+// Design: this proof plants "set lastSeq before dispatch": the failed frame must never count as applied.
 test("a store failure rejoins and never counts its frame as applied", async () => {
   const fake = harness();
   await fake.ready;
   const lease = await joined(fake);
-  const seen: unknown[] = [];
-  lease.subscribeReplay(() => seen.push(lease.state.replay));
   const restore = shimProperty(lease.store, "dispatch", { configurable: true, writable: true, value: () => { throw new Error("store failed"); } });
   const errors: unknown[] = [];
   const restoreReport = shimProperty(globalThis, "reportError", { configurable: true, writable: true, value: (error: unknown) => { errors.push(error); } });
   try {
     fake.event(delta(1, "lost"));
+    // The failed frame is never counted as applied on its stream.
+    expect(lease.lastSeq).toBe(0);
   } finally {
     restore();
     restoreReport();
@@ -423,9 +488,8 @@ test("a store failure rejoins and never counts its frame as applied", async () =
   fake.event(delta(1, " more", "stream-b"));
 
   expect(errors).toHaveLength(1);
-  // The failed frame is never published as applied on its stream.
-  expect(seen).not.toContainEqual({ phase: "joined", streamId: "stream-a", lastSeq: 1 });
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 1 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b" });
+  expect(lease.lastSeq).toBe(1);
 });
 
 test("an older page that resolves as the owner rejoins is not prepended", async () => {
@@ -462,7 +526,8 @@ test("a continuation page that never answers times out at 15 s, keeps the stream
     fake.event(delta(1, "live"));
 
     expect([...histories], "one history notice").toEqual([{ phase: "incomplete", messages: 1, reason: "timeout" }]);
-    expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 1 });
+    expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a" });
+    expect(lease.lastSeq).toBe(1);
     expect(fake.joins()).toHaveLength(1);
   } finally {
     jest.useRealTimers();
@@ -544,7 +609,8 @@ test("retrySession on a sequenced session starts one fresh join on the same owne
   await retried;
   await waitFor(() => lease.state.replay.phase === "joined");
 
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 0 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b" });
+  expect(lease.lastSeq).toBe(0);
   expect(lease.store).toBe(fake.client.stores.get("session-a")!);
   expect(outlineText(fake.client)).toEqual(["one", "two"]);
 });
@@ -617,7 +683,8 @@ test("an already-aborted reopen rejects and leaves the joined owner and its stre
   await expect(fake.client.openSessionReplay("session-a", { signal: navigation.signal })).rejects.toMatchObject({ name: "AbortError" });
   fake.event(delta(1, "live"));
 
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 1 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a" });
+  expect(lease.lastSeq).toBe(1);
   expect(assistantText(fake.client, "session-a")).toBe("live");
   expect(fake.joins()).toHaveLength(1);
 });
@@ -647,7 +714,8 @@ test("retryHistory supersedes the walk with one fresh join and a fresh page walk
   await waitFor(() => lease.state.history.phase === "complete");
 
   expect(lease.state.history).toEqual({ phase: "complete", messages: 2 });
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-c", lastSeq: 0 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-c" });
+  expect(lease.lastSeq).toBe(0);
   expect(outlineText(fake.client)).toEqual(["old", "new"]);
   expect(fake.joins()).toHaveLength(3);
 });
@@ -689,6 +757,34 @@ test("a same-session legacy retry keeps the displayed store until its own load c
   lease.release();
 });
 
+// Fail-first on 7cd2f5c: the replaced store was dropped from the cache but never disposed.
+test("a same-session legacy reload disposes the store it replaced once no view holds it", async () => {
+  for (const held of [false, true]) {
+    const fake = harness();
+    await fake.ready;
+    const text = (store: ReturnType<typeof fake.client.forSession>["store"]) => store.getOutline().map(({ id }) => {
+      const item = store.getItem(id);
+      return item?.type === "message" ? item.message.content.map((block) => block.type === "text" ? block.text : "").join("") : item?.type;
+    });
+    const displayed = await fake.client.replay("session-a", async () => fromZetaHistory([row("one", "one")]));
+    const viewer = fake.client.forSession("session-a");
+    if (!held) displayed.release(), viewer.release();
+    const evictions = fake.client.evictionCount;
+    const lease = await fake.client.replay("session-a", async () => fromZetaHistory([row("two", "two")]));
+
+    expect(text(displayed.store), `held ${held}: a view still holds the replaced store`).toEqual(held ? ["one"] : []);
+    if (held) {
+      displayed.release();
+      expect(text(displayed.store), "one view holder remains").toEqual(["one"]);
+      viewer.release();
+      expect(text(displayed.store), "the last holder's release disposes it").toEqual([]);
+    }
+    expect(text(lease.store)).toEqual(["two"]);
+    expect(fake.client.evictionCount, `held ${held}: counted once, like main's eviction`).toBe(evictions + 1);
+    lease.release();
+  }
+});
+
 // Design section 6: the client side of every named fake-zeta case.
 test.each([
   ["accepted-new-session", "session_replaced"], ["accepted-resume-same", "session_replaced"],
@@ -704,7 +800,8 @@ test.each([
   fake.reply(fake.joins()[1]!.id, joinResult({ messages: [row("one", "one")], replay: { stream_id: "stream-b", history_seq: 0 } }));
   await waitFor(() => lease.state.replay.phase === "joined");
 
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 0 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b" });
+  expect(lease.lastSeq).toBe(0);
   expect(fake.joins()).toHaveLength(2);
 });
 
@@ -721,7 +818,8 @@ test("matrix second-valid-join-rejoined: the old stream's rejoined end after a s
   await Bun.sleep(1);
 
   expect(fake.joins()).toHaveLength(2);
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 1 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b" });
+  expect(lease.lastSeq).toBe(1);
 });
 
 test.each(["second-join-stale-after-begin", "pending-join-reset"])("matrix %s: an exact stale join reply backs off and never restores the old stream", async () => {
@@ -760,7 +858,8 @@ test("matrix join-rejected-before-validation: a rejected raw join leaves the own
   await expect(raw).rejects.toMatchObject({ code: -32602 });
   fake.event(delta(1, "next"));
 
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 1 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a" });
+  expect(lease.lastSeq).toBe(1);
   expect(fake.client.stores.get("session-a")).toBe(store);
   expect(outlineText(fake.client)).toEqual(["one", "next"]);
 });
@@ -774,7 +873,8 @@ test("matrix accepted-resume-other: selecting another session suspends the first
   fake.event(delta(1, "live", "stream-b", "session-b"));
 
   expect(first.state.replay).toEqual({ phase: "suspended" });
-  expect(second.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 1 });
+  expect(second.state.replay).toEqual({ phase: "joined", streamId: "stream-b" });
+  expect(second.lastSeq).toBe(1);
   expect(assistantText(fake.client, "session-a")).toBeUndefined();
 });
 
@@ -814,7 +914,8 @@ test.each([
   await Bun.sleep(1);
 
   expect(fake.joins()).toHaveLength(1);
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 2 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a" });
+  expect(lease.lastSeq).toBe(2);
   expect(assistantText(fake.client, "session-a")).toBe("next");
 });
 
@@ -828,6 +929,7 @@ test("matrix older-history-read-no-end: reading an older page leaves the stream 
   fake.event(delta(1, "next"));
 
   expect(fake.joins()).toHaveLength(1);
-  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a", lastSeq: 1 });
+  expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-a" });
+  expect(lease.lastSeq).toBe(1);
   expect(outlineText(fake.client)).toEqual(["old", "new", "next"]);
 });

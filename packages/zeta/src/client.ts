@@ -154,16 +154,34 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   // packages/zeta/README.md, "listener contract". test/host-calls-guard.test.ts fails on any other host call.
   const store = createRunStore(scheduler); // host code: outside; README row "scheduler"
   let evictionCount = 0;
-  const evict = (id: string) => {
-    if (replayRegistry && !replayRegistry.prepareEvict(id)) return false;
+  // Stores a legacy reload replaced while views still held them, with their holder counts; the last release disposes.
+  const retired = new Map<SessionStore, number>();
+  /** Drops `id`'s cached store and its delivery identities. `keepHeld` defers disposal until its view holders release. */
+  const dropStore = (id: string, keepHeld: boolean) => {
     deliveryIdentity.evictSession(id);
     const value = stores.get(id);
     if (!value) return false;
+    const count = holders.get(id) ?? 0;
     stores.delete(id);
     holders.delete(id);
-    value.dispose(); // host code: outside; README row "store dispose"
     evictionCount++;
+    if (keepHeld && count > 0) retired.set(value, count);
+    else value.dispose(); // host code: outside; README row "store dispose"
     return true;
+  };
+  const evict = (id: string) => replayRegistry && !replayRegistry.prepareEvict(id) ? false : dropStore(id, false);
+  const releaseHolder = (session: string, value: SessionStore) => {
+    const held = retired.get(value);
+    if (held !== undefined) {
+      if (held > 1) retired.set(value, held - 1);
+      else {
+        retired.delete(value);
+        value.dispose(); // host code: outside; README row "store dispose"
+      }
+      return;
+    }
+    const count = holders.get(session);
+    if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1));
   };
   const touch = (session: string) => {
     const value = stores.get(session);
@@ -216,9 +234,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       release() {
         if (released) return;
         released = true;
-        const count = holders.get(session);
-        if (stores.get(session) === value && count !== undefined)
-          holders.set(session, Math.max(0, count - 1));
+        releaseHolder(session, value);
       },
     };
   };
@@ -515,11 +531,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       holders.set(session, count);
       touch(session);
     },
-    releaseHolder(session, value) {
-      const count = holders.get(session);
-      if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1));
-    },
+    releaseHolder,
     evictStore: evict,
+    retireStore: (session) => void dropStore(session, true),
     servedTurn: (session) => servedTurns.get(session),
     adaptHistory: fromZetaHistory,
     adaptEvent: fromZetaEvent,

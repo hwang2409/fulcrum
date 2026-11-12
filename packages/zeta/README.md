@@ -96,19 +96,20 @@ The web app marks an outcome only when a session was running at an `output_overf
 
 ## sequenced replay
 
-When the server offers `session_replay_seq`, `client.openSessionReplay(sessionId, { signal })` opens a session with one `session_history_and_subscribe` call. Pass the full id that `resume` returned. The client installs the newest history page, the joined `status` baseline (run state and pending approvals), and the live stream position as one store commit, then loads older pages in the background. Live events must carry the stream's `stream_id` and the next `seq`: a duplicate is dropped, and a gap, a bad position, a matching `replay_stream_ended`, or a store failure starts one fresh join. The transcript on screen stays readable during a rejoin.
+When the server offers `session_replay_seq`, `client.openSessionReplay(sessionId, { signal })` opens a session with one `session_history_and_subscribe` call. Pass the full id that `resume` returned. The client installs the newest history page, the joined `status` baseline (run state and pending approvals), and the live stream position as one store commit, then loads older pages in the background. Live events must carry the stream's `stream_id` and the next `seq`: a duplicate is dropped, and a gap, a bad position, a payload the adapter cannot read, a matching `replay_stream_ended`, or a store failure starts one fresh join. An approval's first end is final; a later end for the same request is dropped. The transcript on screen stays readable during a rejoin.
 
 The returned lease holds the session's store, like `forSession`:
 
 - `lease.store` is the current store. A rejoin replaces it, so read it again after `subscribeReplay` fires.
-- `lease.state` has `replay` (`joining`, `joined` with `streamId` and `lastSeq`, `rejoining`, `failed`, or `suspended`), `history` (`loading`, `complete`, or `incomplete` with reason `timeout`, `rpc_error`, or `stale_limit`), and `approvals.incomplete` (`"server_truncated"` when zeta reported a truncated pending list, else `null`). `subscribeReplay(listener)` calls the listener after each change.
+- `lease.state` has `replay` (`joining`, `joined` with `streamId`, `rejoining`, `failed`, or `suspended`), `history` (`loading`, `complete`, or `incomplete` with reason `timeout`, `rpc_error`, or `stale_limit`), and `approvals.incomplete` (`"server_truncated"` when zeta reported a truncated pending list, else `null`). `subscribeReplay(listener)` calls the listener after each change of `state`. Live text does not change `state`, so a status view does not render per token; the store notifies its own views once per frame.
+- `lease.lastSeq` is the newest applied `seq` of the joined stream. It is a plain read and has no listener.
 - `retry()` starts a fresh join after `failed`. `retryHistory()` does the same and walks older history again with fresh limits. `retrySession(id)` reaches the same retry for a sequenced session.
 - `suspend()` stops live updates and keeps the transcript. Opening another session suspends the current one, because zeta allows one stream per connection. Aborting `signal` suspends the session too.
 - `release()` drops the lease. The last release stops all work for the session.
 
 An exact `-32009` `stale_event_sequence` join error retries after 0.5, 1, 2, 4, and 8 seconds (six attempts), then sets `failed`. Each older page has a 15 second timeout. A stale older page (`stale_history_snapshot`) starts a fresh join, at most three times in a row; after that the stream stops with `failed` and history `incomplete` (`stale_limit`). Each request in the client rejects a timeout with an error named `TimeoutError`.
 
-A session has one replay owner. `replay` (legacy) and `openSessionReplay` on the same session reject with `ReplayOwnershipError` until the other mode's leases are released. A second open of the same session, in either mode, replaces the earlier one's work but keeps its transcript readable until the new one commits.
+A session has one replay owner. `replay` (legacy) and `openSessionReplay` on the same session reject with `ReplayOwnershipError` until the other mode's leases are released. A second open of the same session, in either mode, replaces the earlier one's work but keeps its transcript readable until the new one commits. A legacy `replay` then drops the store it replaced and disposes it when the last view holding it releases.
 
 ## listener contract
 

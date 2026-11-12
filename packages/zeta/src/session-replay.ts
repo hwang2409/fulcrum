@@ -7,7 +7,7 @@ import { parseJoinStatus, type EventParams, type HistoryValidator, type JoinStat
 
 export type ReplayJoinState =
   | { phase: "joining"; attempt: number }
-  | { phase: "joined"; streamId: string; lastSeq: number }
+  | { phase: "joined"; streamId: string }
   | { phase: "rejoining"; attempt: number }
   | { phase: "failed"; message: string; retryable: true }
   | { phase: "suspended" };
@@ -21,7 +21,10 @@ export type SessionReplayState = {
   readonly approvals: { readonly incomplete: "server_truncated" | null };
 };
 export interface SessionReplayLease extends SessionLease {
+  /** Changes, and notifies `subscribeReplay`, only when the join phase, history, or approval completeness changes. */
   readonly state: SessionReplayState;
+  /** The joined stream's newest applied sequence number. A plain read: live frames advance it without a notification. */
+  readonly lastSeq: number;
   subscribeReplay(listener: () => void): () => void;
   retry(): void;
   retryHistory(): void;
@@ -52,8 +55,9 @@ type Owner = {
   controller?: AbortController;
   timer?: ReturnType<typeof setTimeout>;
   wake?: () => void;
-  /** The live stream; its applied frontier is the published `state.replay.lastSeq`. */
+  /** The live stream and its applied frontier: a frame counts as applied only once `lastSeq` holds its number. */
   streamId?: string;
+  lastSeq: number;
   joining: boolean;
   suspended: boolean;
   released: boolean;
@@ -62,7 +66,6 @@ type Owner = {
   openApprovals: Set<string>;
   state: SessionReplayState;
   listeners: Set<() => void>;
-  navigationSignal?: AbortSignal;
   navigationCleanup?: () => void;
 };
 
@@ -125,6 +128,8 @@ export function createReplayRegistry(deps: {
   readonly commitStore: (session: string, store: SessionStore, holders: number) => void;
   readonly releaseHolder: (session: string, store: SessionStore) => void;
   readonly evictStore: (session: string) => void;
+  /** Drops the session's cached store like an eviction, but a store views still hold is disposed on their last release. */
+  readonly retireStore: (session: string) => void;
   readonly servedTurn: (session: string) => string | undefined;
   readonly adaptHistory: (rows: readonly unknown[]) => RunEvent[];
   readonly adaptEvent: (params: EventParams) => RunEvent[];
@@ -178,7 +183,7 @@ export function createReplayRegistry(deps: {
       return existing;
     }
     const owner: Owner = {
-      session, mode, generation: 1, leases: 0, joining: false, suspended: false, released: false,
+      session, mode, generation: 1, leases: 0, lastSeq: 0, joining: false, suspended: false, released: false,
       buffer: [], retainedApprovalEnds: new Map(), openApprovals: new Set(), listeners: new Set(),
       state: { replay: { phase: "joining", attempt: 1 }, history: { phase: "loading", messages: 0 }, approvals: { incomplete: null } },
     };
@@ -230,6 +235,8 @@ export function createReplayRegistry(deps: {
       if (controller.signal.aborted || !active(owner, generation)) throw abortError();
       const store = deps.makeStore(session);
       owner.store = store;
+      // A same-session supersede kept the old store on screen until now; drop it, and dispose it once no view holds it.
+      deps.retireStore(session);
       deps.commitStore(session, store, 1);
       let released = false;
       const lease = { store, release() {
@@ -344,6 +351,7 @@ export function createReplayRegistry(deps: {
   /** Installs a validated join: newest history, status baseline, and stream frontier in one store commit. */
   const commitJoin = (owner: Owner, generation: number, result: SessionReplayJoinResult, staleCycles: number) => {
     owner.streamId = result.replay.stream_id;
+    owner.lastSeq = result.replay.history_seq;
     const candidate = deps.makeStore(owner.session);
     call(() => candidate.beginHistory());
     call(() => candidate.resync(joinedEvents(owner, result)));
@@ -354,7 +362,7 @@ export function createReplayRegistry(deps: {
     owner.joining = false;
     const messages = result.messages.length;
     publish(owner, generation, {
-      replay: { phase: "joined", streamId: owner.streamId, lastSeq: result.replay.history_seq },
+      replay: { phase: "joined", streamId: owner.streamId },
       history: result.next_before === null ? { phase: "complete", messages } : { phase: "loading", messages },
       approvals: { incomplete: truncated ? "server_truncated" : null },
     });
@@ -376,9 +384,6 @@ export function createReplayRegistry(deps: {
       publish(owner, generation, { ...owner.state, replay: { phase: rejoining ? "rejoining" : "joining", attempt: index + 1 } });
       const controller = new AbortController();
       owner.controller = controller;
-      const navigation = owner.navigationSignal;
-      const abort = () => controller.abort();
-      navigation?.addEventListener("abort", abort, { once: true });
       try {
         const result = parseJoin(await deps.request("session_history_and_subscribe", { session_id: owner.session }, { signal: controller.signal, timeoutMs: PAGE_TIMEOUT_MS }));
         if (!current() || controller.signal.aborted) return;
@@ -392,8 +397,6 @@ export function createReplayRegistry(deps: {
         owner.buffer = [];
         publish(owner, generation, { ...owner.state, replay: JOIN_FAILED });
         return;
-      } finally {
-        navigation?.removeEventListener("abort", abort);
       }
     }
   };
@@ -446,7 +449,6 @@ export function createReplayRegistry(deps: {
     if (options.signal?.aborted) throw abortError();
     const owner = acquire(session, "sequenced");
     owner.navigationCleanup?.();
-    owner.navigationSignal = options.signal;
     if (options.signal) {
       const onAbort = () => { if (owners.get(session) === owner) suspend(owner); };
       options.signal.addEventListener("abort", onAbort, { once: true });
@@ -463,6 +465,7 @@ export function createReplayRegistry(deps: {
     return {
       get store() { return owner.store!; },
       get state() { return owner.state; },
+      get lastSeq() { return owner.lastSeq; },
       subscribeReplay(listener) { owner.listeners.add(listener); return () => owner.listeners.delete(listener); },
       retry() { if (live()) supersede(owner); },
       retryHistory() { if (live()) supersede(owner, 0, true); },
@@ -491,18 +494,18 @@ export function createReplayRegistry(deps: {
     // One join at a time: every frame, a stream end too, waits for the join in flight and then meets its stream id.
     if (owner.joining) return void owner.buffer.push(params);
     const streamId = owner.streamId;
-    const replay = owner.state.replay;
     if (activeSequencedOwner !== owner || owner.suspended || streamId === undefined) return;
     if (params.event === "replay_stream_ended") {
       if (params.stream_id === streamId) supersede(owner);
       return;
     }
-    if (replay.phase !== "joined") return;
+    if (owner.state.replay.phase !== "joined") return;
     if (typeof params.stream_id !== "string" || !safeInteger(params.seq, 1)) return supersede(owner);
-    if (params.stream_id !== streamId || params.seq <= replay.lastSeq) return;
-    if (params.seq !== replay.lastSeq + 1) return supersede(owner);
+    if (params.stream_id !== streamId || params.seq <= owner.lastSeq) return;
+    if (params.seq !== owner.lastSeq + 1) return supersede(owner);
     const events = deps.adaptEvent(params).map((event) => deps.stampEvent(event, owner.session));
-    if (events.some((event) => event.type === "error" && event.error.code === "adapter_invalid_frame")) return supersede(owner);
+    // A frame the adapter cannot read leaves the store behind the stream: drop it and rejoin, like a gap.
+    if (events.some((event) => event.type === "error" && event.error.code === "adapter_invalid_payload")) return supersede(owner);
     const generation = owner.generation;
     let dispatched = true;
     for (const event of filterTailApprovals(owner, events))
@@ -510,8 +513,9 @@ export function createReplayRegistry(deps: {
     // A store failure can already have started a new generation through its recovery hook.
     if (!active(owner, generation) || owner.streamId !== streamId) return;
     if (!dispatched) return supersede(owner);
-    // Publishing the frontier is what counts the frame as applied, so it happens only after every event reduced.
-    publish(owner, generation, { ...owner.state, replay: { phase: "joined", streamId, lastSeq: params.seq } });
+    // Advancing the frontier is what counts the frame as applied, so it happens only after every event reduced. No
+    // publish: a text delta changes the store, which batches its own notifications, not the replay state.
+    owner.lastSeq = params.seq;
   };
   /** Takes an owned session's frame. Returns false when the frame should use ordinary routing. */
   const route = (params: EventParams) => {
