@@ -39,7 +39,6 @@ export interface SessionLease {
 }
 const adapterError = (message: string) => ({ type: "error" as const, error: { code: "adapter_invalid_frame", message } });
 const encoder = new TextEncoder();
-const RESYNC_BACKOFF_MS = [500, 1_000, 2_000, 4_000, 8_000] as const;
 export const MAX_CONTENT_BYTES = 32 * 1024 * 1024;
 export class ApprovalPersistenceError extends Error {
   readonly name = "ApprovalPersistenceError";
@@ -148,31 +147,8 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   const stores = new Map<string, SessionStore>();
   const holders = new Map<string, number>();
   let replayRegistry: ReturnType<typeof createReplayRegistry> | undefined;
-  const quarantined = new Set<string>();
   // The last served turn each session started (feature `served_turn_end`), so a host can look up its recorded end.
   const servedTurns = new Map<string, string>();
-  const quarantineRevisions = new Map<string, number>();
-  const replayLoads = new Map<string, (signal: AbortSignal) => Promise<RunEvent[]>>();
-  const activeLoads = new Map<string, AbortController>();
-  type Recovery = { canceled: boolean; controller?: AbortController; timer?: ReturnType<typeof setTimeout>; wake?: () => void };
-  const recoveries = new Map<string, Recovery>();
-  const cancelRecovery = (session: string) => {
-    const recovery = recoveries.get(session);
-    if (!recovery) return;
-    recovery.canceled = true;
-    recovery.controller?.abort();
-    if (recovery.timer) clearTimeout(recovery.timer);
-    recovery.wake?.(); // host code: outside; README row "client functions held as values"
-    recoveries.delete(session);
-  };
-  const cancelLoad = (session: string) => {
-    activeLoads.get(session)?.abort();
-    activeLoads.delete(session);
-  };
-  const cancelLoads = () => {
-    for (const session of recoveries.keys()) cancelRecovery(session);
-    for (const session of activeLoads.keys()) cancelLoad(session);
-  };
   // Host code runs only through call() and deliver() (listeners, the closeError callback, and store entries that can
   // rethrow a store listener's error), plus the lines marked "host code: outside", one per "outside" row of
   // packages/zeta/README.md, "listener contract". test/host-calls-guard.test.ts fails on any other host call.
@@ -180,11 +156,6 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   let evictionCount = 0;
   const evict = (id: string) => {
     if (replayRegistry && !replayRegistry.prepareEvict(id)) return false;
-    cancelRecovery(id);
-    cancelLoad(id);
-    quarantined.delete(id);
-    quarantineRevisions.delete(id);
-    replayLoads.delete(id);
     deliveryIdentity.evictSession(id);
     const value = stores.get(id);
     if (!value) return false;
@@ -199,57 +170,10 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     if (!value) return;
     stores.delete(session); stores.set(session, value);
   };
-  const waitForRecovery = (recovery: Recovery, delay: number) => new Promise<void>((resolve) => {
-    recovery.wake = resolve;
-    recovery.timer = setTimeout(resolve, delay);
-  });
-  const failRecovery = (session: string, target: SessionStore, recovery: Recovery, failure: unknown) => {
-    if (recovery.canceled) return;
-    if (stores.get(session) === target) call(() => target.resyncFailed(failure));
-    throw failure;
-  };
-  const resyncSession = async (session: string, target: SessionStore) => {
-    const load = replayLoads.get(session);
-    if (!load) return;
-    cancelRecovery(session);
-    const recovery: Recovery = { canceled: false };
-    recoveries.set(session, recovery);
-    quarantined.add(session);
-    let failure: unknown;
-    try {
-      for (const delay of [0, ...RESYNC_BACKOFF_MS]) {
-        if (delay) {
-          await waitForRecovery(recovery, delay);
-          recovery.wake = undefined;
-          recovery.timer = undefined;
-        }
-        if (recovery.canceled) return;
-        try {
-          const controller = new AbortController();
-          recovery.controller = controller;
-          // A throw, or a value that cannot be iterated, is a load failure here, not a listener error.
-          const history = [...await load(controller.signal)]; // host code: outside; README row "load(signal)"
-          recovery.controller = undefined;
-          if (recovery.canceled || stores.get(session) !== target) return;
-          call(() => target.resync(history));
-          quarantined.delete(session);
-          return;
-        } catch (error) {
-          if (recovery.canceled) return;
-          recovery.controller = undefined;
-          failure = error;
-        }
-      }
-      failRecovery(session, target, recovery, failure);
-    } finally {
-      recovery.controller?.abort();
-      if (recoveries.get(session) === recovery) recoveries.delete(session);
-    }
-  };
   const makeSession = (session: string) => {
     let value!: SessionStore;
     value = createRunStore(scheduler, { onError: () => { // host code: outside; README row "scheduler"
-      if (!replayRegistry?.retrySession(session)) void resyncSession(session, value).catch(() => {});
+      void replayRegistry?.recover(session, value)?.catch(() => {});
     } });
     return value;
   };
@@ -261,11 +185,13 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   };
   const trimUnheld = () => {
     let unheld = 0;
-    for (const id of stores.keys()) if ((holders.get(id) ?? 0) === 0) unheld++;
+    // A replay owner holds its store even without a view holder, so it is never a victim.
+    const evictable = (id: string) => (holders.get(id) ?? 0) === 0 && !replayRegistry?.owned(id);
+    for (const id of stores.keys()) if (evictable(id)) unheld++;
     while (unheld >= maxSessions) {
       let victim: string | undefined;
       for (const id of stores.keys()) {
-        if ((holders.get(id) ?? 0) === 0) { victim = id; break; }
+        if (evictable(id)) { victim = id; break; }
       }
       if (victim === undefined) break;
       evict(victim);
@@ -296,59 +222,6 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       },
     };
   };
-  /** Opens `session` on a fresh store while its previous committed replay remains readable. */
-  const replay = async (session: string, load: (signal: AbortSignal) => Promise<RunEvent[]>, keepQuarantined = false): Promise<SessionLease> => {
-    if (!replayRegistry) throw new Error("replay registry is not ready");
-    if (!replayRegistry.mode(session)) evict(session);
-    const generation = replayRegistry.acquireLegacy(session);
-    cancelRecovery(session);
-    cancelLoad(session);
-    replayLoads.set(session, load);
-    quarantined.add(session);
-    quarantineRevisions.set(session, 0);
-    const controller = new AbortController();
-    activeLoads.set(session, controller);
-    try {
-      const history = await load(controller.signal); // host code: outside; README row "load(signal)"
-      if (controller.signal.aborted || replayRegistry.generation(session) !== generation)
-        throw Object.assign(new Error("request aborted"), { name: "AbortError" });
-      if (!keepQuarantined) activeLoads.delete(session);
-      const value = makeSession(session);
-      stores.set(session, value);
-      holders.set(session, 1);
-      let released = false;
-      const lease = { store: value, release() {
-        if (released) return;
-        released = true;
-        const count = holders.get(session);
-        if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1));
-        replayRegistry?.releaseLegacy(session, generation);
-      } };
-      for (const event of history) call(() => lease.store.dispatch(event));
-      if (!keepQuarantined) {
-        quarantined.delete(session);
-        quarantineRevisions.delete(session);
-      }
-      return lease;
-    } catch (error) {
-      replayRegistry.releaseLegacy(session, generation);
-      replayLoads.delete(session);
-      quarantined.delete(session);
-      quarantineRevisions.delete(session);
-      throw error;
-    } finally {
-      if (!quarantined.has(session) && activeLoads.get(session) === controller) activeLoads.delete(session);
-    }
-  };
-  const replayRevision = (session: string) => quarantineRevisions.get(session) ?? 0;
-  /** Opens live routing only if no event arrived after `revision` was captured. */
-  const finishReplay = (session: string, revision: number) => {
-    if (!quarantined.has(session) || replayRevision(session) !== revision) return false;
-    quarantined.delete(session);
-    quarantineRevisions.delete(session);
-    activeLoads.delete(session);
-    return true;
-  };
   const canMatchDeliveryId = () => negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("user_message_event") && negotiatedFeatures.includes("user_message_delivery_id");
   const canSendImagesDeliveryId = () => negotiatedFeatures.includes("delivery_id") && negotiatedFeatures.includes("send_images_delivery_id");
   const stampIntent = (event: RunEvent, sessionId?: string): RunEvent => {
@@ -378,15 +251,11 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       if (event) deliver(sessionGrantsListeners, event);
       return;
     }
-    if (replayRegistry?.route(message.params)) return;
     const session = typeof message.params.session_id === "string" ? message.params.session_id : undefined;
-    // The newest served turn id is valid metadata even while its event stays quarantined.
+    // The newest served turn id is valid metadata even while its event stays quarantined or waits for its sequence.
     const turnId = message.params.event === "turn_start" ? (message.params.data as { turn_id?: unknown } | undefined)?.turn_id : undefined;
     if (session !== undefined && typeof turnId === "string") servedTurns.set(session, turnId);
-    if (session !== undefined && quarantined.has(session)) {
-      quarantineRevisions.set(session, (quarantineRevisions.get(session) ?? 0) + 1);
-      return;
-    }
+    if (replayRegistry?.route(message.params)) return;
     const sessionStore = eventStore(session);
     for (const event of fromZetaEvent(message.params).map((item) => stampIntent(item, session))) call(() => sessionStore.dispatch(event));
   };
@@ -492,7 +361,6 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     closeWaiters.clear();
     attachmentIdentity.clear();
     replayRegistry?.close();
-    cancelLoads();
     deliver(closeListeners, error);
   };
   transport.onClose?.((code) => { closeClient(code); }); // host code: outside; README row "transport"
@@ -640,13 +508,19 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     return approvalPersistenceMethods.has(method) ? recovered.catch(typeApprovalPersistenceError) : recovered;
   };
   replayRegistry = createReplayRegistry({
-    request: (method, params, requestOptions) => request(method, params as Record<string, unknown>, requestOptions),
+    request,
     makeStore: makeSession,
-    commitStore(session, value) {
-      stores.set(session, value as SessionStore);
-      holders.set(session, 0);
+    commitStore(session, value, count) {
+      stores.set(session, value);
+      holders.set(session, count);
       touch(session);
     },
+    releaseHolder(session, value) {
+      const count = holders.get(session);
+      if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1));
+    },
+    evictStore: evict,
+    servedTurn: (session) => servedTurns.get(session),
     adaptHistory: fromZetaHistory,
     adaptEvent: fromZetaEvent,
     stampEvent: stampIntent,
@@ -668,11 +542,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return result;
     });
   };
-  const retrySession = (session: string) => {
-    if (replayRegistry?.retrySession(session)) return Promise.resolve();
-    const target = stores.get(session);
-    return target ? resyncSession(session, target) : Promise.reject(new Error(`session ${session} is not open`));
-  };
+  /** Reloads `session` through its replay owner; a store without an owner has nothing to reload. */
+  const retrySession = (session: string): Promise<void> =>
+    replayRegistry?.recover(session) ?? (stores.has(session) ? Promise.resolve() : Promise.reject(new Error(`session ${session} is not open`)));
   const readContent = async (handle: string, options: { signal?: AbortSignal; maxBytes?: number } = {}) => {
     const cap = Math.min(options.maxBytes ?? MAX_CONTENT_BYTES, MAX_CONTENT_BYTES);
     if (!Number.isSafeInteger(cap) || cap < 0) throw new ContentReadError("too_large", "content size limit is invalid");
@@ -680,7 +552,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       return await readContentChunks(handle, cap, (offset) => request("content_read", { handle, offset }, { signal: options.signal }));
     } catch (error) { return contentReadError(error); }
   };
-  return { store, stores, forSession, servedTurn: (sessionId: string) => servedTurns.get(sessionId), replay, replayRevision, finishReplay, openSessionReplay: replayRegistry.openSessionReplay, retrySession, readContent, request, hello, onClose, onSessionGrantsChanged, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { replayRegistry?.close(); closeClient(); transport.close(); } }; // host code: outside; README row "transport"
+  return { store, stores, forSession, servedTurn: (sessionId: string) => servedTurns.get(sessionId), replay: replayRegistry.replay, replayRevision: replayRegistry.replayRevision, finishReplay: replayRegistry.finishReplay, openSessionReplay: replayRegistry.openSessionReplay, retrySession, readContent, request, hello, onClose, onSessionGrantsChanged, get features() { return negotiatedFeatures; }, get protocolVersion() { return negotiatedProtocol; }, get evictionCount() { return evictionCount; }, get hostCommandWaiterCount() { return closeWaiters.size; }, evictSession: evict, close: () => { replayRegistry?.close(); closeClient(); transport.close(); } }; // host code: outside; README row "transport"
 }
 export type ZetaClient = ReturnType<typeof createClient>;
 export function connect(transport: Transport, scheduler?: Scheduler, options?: ClientOptions) { return createClient(transport, scheduler, undefined, options); }

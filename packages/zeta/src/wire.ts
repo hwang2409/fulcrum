@@ -26,7 +26,6 @@ export type HistoryValidator = {
   readonly entry_id: string | null;
   readonly [field: string]: unknown;
 };
-export type ReplayPosition = { readonly stream_id: string; readonly seq: number };
 export type PendingApproval = {
   readonly request_id: string;
   readonly tool_call: ToolCall;
@@ -46,12 +45,6 @@ export type SessionReplayJoinResult = {
   readonly history_validator: HistoryValidator;
   readonly replay: { readonly stream_id: string; readonly history_seq: number };
   readonly status: JoinStatus & { readonly pending_approvals_truncated: boolean };
-};
-export type ReplayStreamEndedEvent = {
-  readonly event: "replay_stream_ended";
-  readonly session_id: string;
-  readonly stream_id: string;
-  readonly reason: string;
 };
 
 const optionalString = (value: unknown) => value === undefined || typeof value === "string";

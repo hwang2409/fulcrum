@@ -1,7 +1,7 @@
 export * from "./wire.js";
 export * from "./adapter.js";
-export * from "./backward-history.js";
-export type { ReplayJoinState, ReplayHistoryState, SessionReplayState, SessionReplayLease, ReplayStore } from "./session-replay.js";
+export { BackwardHistoryError, openBackwardHistory, type BackwardHistoryCursor, type BackwardHistoryRequest, type BackwardHistorySnapshot } from "./backward-history.js";
+export type { ReplayJoinState, ReplayHistoryState, SessionReplayState, SessionReplayLease } from "./session-replay.js";
 export { ReplayOwnershipError, SessionReplayError } from "./session-replay.js";
 export * from "./transport.js";
 export * from "./client.js";
