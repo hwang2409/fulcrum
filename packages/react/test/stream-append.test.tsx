@@ -383,3 +383,21 @@ test("streamTail and sourceTail through @fulcrum/core/internal read what the pub
   expect(sourceTail(tool.output, (store.getItem("tool:shared") as Tool).output)).toBe("bc");
   expect(streamTail(message, store.getItem("message:shared") as Message, "text")).toBe("yz");
 });
+
+test("an open viewer on a cut output keeps drawing when its tail slides and the text gets shorter", () => {
+  // A 64 KiB cap: the tail keeps 48 KiB in 6 KiB grains, so a 10 KiB line makes the tail drop whole grains.
+  const store = createRunStore((job) => job(), { toolOutputItemBytes: 64 * 1024, toolOutputRunBytes: 1024 * 1024 });
+  store.dispatch(start("a"));
+  store.dispatch(out("a", big(60_000)));
+  mount(store, ["a"]);
+  openViewer("a");
+  const before = shown("a");
+  expect(card("a").querySelectorAll('[data-part="text-viewer-row"]').length).toBeGreaterThan(0);
+  // Fail-first on 4c1968a: the viewer's rows were one render behind the shorter text and the render threw
+  // ("Cannot read properties of undefined (reading 'start')").
+  act(() => store.dispatch(out("a", `${"y".repeat(10 * 1024)}\n`)));
+  const item = store.getItem("tool:a");
+  expect(item?.type === "tool" && item.output.omission?.end).toBeGreaterThan(60_000 * 2 - 64 * 1024);
+  expect(shown("a")).toContain("y".repeat(100));
+  expect(shown("a")).not.toBe(before);
+});

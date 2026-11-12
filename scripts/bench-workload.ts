@@ -207,7 +207,13 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
     for (let index = 0; index < lines; index++) store.dispatch({ type: "tool_output", tool_call, output: line });
     const usage = process.cpuUsage(start);
     const item = store.getItem("tool:cut");
-    if (item?.type !== "tool" || item.output.retainedBytes > 2 * 1024 * 1024 || item.output.bytes !== 2_200 * 1024 + lines * 100) throw new Error("invalid cut tool output result");
+    if (item?.type !== "tool") throw new Error("invalid cut tool output result");
+    // bench-ab also runs this workload on a base whose core keeps tool output as one unbounded string: check its length.
+    const output: unknown = item.output;
+    const valid = typeof output === "string"
+      ? output.length === 2_200 * 1024 + lines * 100
+      : item.output.retainedBytes <= 2 * 1024 * 1024 && item.output.bytes === 2_200 * 1024 + lines * 100 && item.output.omission?.reason === "item-cap";
+    if (!valid) throw new Error("invalid cut tool output result");
     return (usage.user + usage.system) / 1_000 / lines;
   };
   toolCpu(190 * 1024);

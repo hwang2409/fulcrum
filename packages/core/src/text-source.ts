@@ -194,6 +194,11 @@ function appendChunks(values: Chunk[], added: string, start: number, line: numbe
  * slide keeps all but at most one chunk of it.
  */
 const tailGrain = (budget: number) => Math.max(4, Math.min(CHUNK_BYTES, Math.floor(budget / 8)));
+/**
+ * What a tail keeps when it slides: one grain under its budget. A slide replaces the kept text (a reader rebuilds it),
+ * so this headroom makes the next slide wait for at least one more grain of output instead of the next append.
+ */
+const slidBudget = (budget: number) => Math.max(0, budget - tailGrain(budget));
 /** `chunks` split so none holds more than `size` bytes (a one-time copy when a source is first cut). */
 const regrain = (chunks: readonly Chunk[], size: number) => {
   const out: Chunk[] = [];
@@ -253,7 +258,7 @@ function fromText(
   const headEnd = Math.max(0, safeCut(value, prefixEnd(value, 0, value.length, Math.floor(limit / 4)), "left"));
   const head = chunksOf(value, 0, headEnd, 0, 0);
   const headBytes = sumBytes(head);
-  const tailStart = Math.max(headEnd, safeCut(value, suffixStart(value, headEnd, value.length, limit - headBytes), "right"));
+  const tailStart = Math.max(headEnd, safeCut(value, suffixStart(value, headEnd, value.length, slidBudget(limit - headBytes)), "right"));
   const values = chunksOf(value, tailStart, value.length, tailStart, newlines(value, 0, tailStart), [...head], tailGrain(limit - headBytes));
   const retained = sumBytes(values);
   const cut = omission(reason, headEnd, tailStart, bytes - retained, retained === 0);
@@ -261,16 +266,17 @@ function fromText(
 }
 
 /**
- * The tail after dropping whole leading chunks until it holds at most `budget` bytes, its new first chunk moved to a
- * safe start. Chunk edges respect pairs and CRLF only within one delta and may sit inside an escape sequence, so the
+ * The tail unchanged while it holds at most `budget` bytes; over it, the tail after dropping whole leading chunks until
+ * it holds at most slidBudget(budget), its new first chunk moved to a safe start. Chunk edges respect pairs and CRLF only within one delta and may sit inside an escape sequence, so the
  * first kept chunk is checked against the dropped text before it. Whole-chunk steps keep a streamed append's cost
  * independent of how much output came before.
  */
 function slideTail(tail: readonly Chunk[], budget: number): Chunk[] {
   let bytes = sumBytes(tail);
+  if (bytes <= budget) return tail.slice();
+  const target = slidBudget(budget);
   let index = 0;
-  while (index < tail.length && bytes > budget) bytes -= tail[index++]!.bytes;
-  if (index === 0) return tail.slice();
+  while (index < tail.length && bytes > target) bytes -= tail[index++]!.bytes;
   for (; index < tail.length; index++) {
     let context = "";
     for (let back = index - 1; back >= 0 && context.length < ANSI_LOOKBACK; back--) context = tail[back]!.text + context;
@@ -428,6 +434,8 @@ export function sourceTail(previous: TextSourceSnapshot | undefined, next: TextS
   const after = asSource(next);
   if (before === after) return "";
   if (!before.lineage || before.lineage !== after.lineage || after.length < before.length) return undefined;
+  // A cut that kept no tail shows its notice last; the added text then starts a new line after it, so it is no append.
+  if (before.omission && before.omission.end === before.length) return undefined;
   let tail = "";
   for (let index = after.values.length - 1; index >= 0; index--) {
     const { start, text } = after.values[index]!;

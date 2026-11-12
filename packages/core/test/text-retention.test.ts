@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createRunStore, type RunEvent, type RunItem, type TextSourceSnapshot } from "../src/index.js";
+import { sourceTail } from "../src/internal.js";
 
 type Tool = Extract<RunItem, { type: "tool" }>;
 type Store = ReturnType<typeof createRunStore>;
@@ -64,7 +65,10 @@ test("an oversized output keeps a quarter for its head, the rest for its tail, a
   expect(source.omission).toMatchObject({ kind: "omitted", reason: "item-cap", whole: false });
   expectTruthful(source, whole, 100_000);
   expect(utf8(whole.slice(0, source.omission!.start))).toBeLessThanOrEqual(25_000);
-  expect(source.retainedBytes).toBeGreaterThan(99_990);
+  // The tail keeps its budget less one grain (an eighth of it), so the next append does not slide it at once.
+  const tailBudget = 100_000 - utf8(whole.slice(0, source.omission!.start));
+  expect(source.retainedBytes).toBeGreaterThan(100_000 - Math.floor(tailBudget / 8) - 10);
+  expect(source.retainedBytes).toBeLessThanOrEqual(100_000 - Math.floor(tailBudget / 8));
   expect(text(source).endsWith("TAIL")).toBe(true);
 });
 
@@ -83,12 +87,37 @@ test("streamed deltas cut where one whole string cuts: surrogates, CRLF, and lin
     expectTruthful(streamed, canonical, 4_000);
     expectTruthful(tool(oneShot, "s").output, canonical, 4_000);
     // The head is cut where one whole string cuts it; the streamed tail slides by whole chunks of at most an eighth of
-    // its budget, so it keeps all but at most one such chunk (plus a unit moved off a CRLF) of the cap.
+    // its budget down to one such grain under it, so it keeps all but at most two grains (plus a unit moved off a CRLF).
     const once = tool(oneShot, "s").output;
     expect({ size, start: streamed.omission!.start }).toEqual({ size, start: once.omission!.start });
     const grain = Math.floor((4_000 - utf8(canonical.slice(0, streamed.omission!.start))) / 8);
-    expect(streamed.retainedBytes, `size ${size}`).toBeGreaterThanOrEqual(4_000 - grain - 1);
+    expect(streamed.retainedBytes, `size ${size}`).toBeGreaterThanOrEqual(4_000 - 2 * grain - 1);
   }
+});
+
+test("a cut leaves its tail one grain of headroom, so a small append after it is an append, not a slide", () => {
+  for (const stream of [false, true]) {
+    const store = createRunStore((flush) => flush(), { toolOutputItemBytes: 64 * 1024, toolOutputRunBytes: 1_000_000 });
+    const whole = "line\n".repeat(40_000);
+    if (stream) for (let at = 0; at < whole.length; at += 1_000) store.dispatch(output("h", whole.slice(at, at + 1_000)));
+    else store.dispatch(output("h", whole));
+    const cut = tool(store, "h").output;
+    expect(cut.omission?.whole).toBe(false);
+    // Fail-first on 4c1968a: a one-shot cut filled its tail to the byte, so this append slid it and replaced the text.
+    store.dispatch(output("h", "next\n"));
+    const next = tool(store, "h").output;
+    expect({ stream, end: next.omission!.end, tail: sourceTail(cut, next) }).toEqual({ stream, end: cut.omission!.end, tail: "next\n" });
+  }
+});
+
+test("an append after a cut that kept no tail is not a known append, so it starts a new line after the notice", () => {
+  // An unterminated escape sequence longer than the tail budget: the safe tail start is past it, so the tail is empty.
+  const store = createRunStore((flush) => flush(), { toolOutputItemBytes: 40, toolOutputRunBytes: 1_000_000 });
+  store.dispatch(output("e", `${"h".repeat(10)}\n\u001b]8;;${"u".repeat(200)}`));
+  const cut = tool(store, "e").output;
+  expect(cut.omission!.end).toBe(cut.length);
+  store.dispatch(output("e", "\u0007rest\n"));
+  expect(sourceTail(cut, tool(store, "e").output)).toBeUndefined();
 });
 
 test("a cut never lands inside an escape sequence, so no control fragment shows", () => {
@@ -115,10 +144,12 @@ test("item accounting covers every output-bearing view and result source, in a s
   store.dispatch({ type: "tool_end", tool_call: call("all"), tool_result: { tool_call_id: "all", content: big("final"), is_error: false, blocks: [{ type: "text", text: big("block") }] } });
   const item = tool(store, "all");
   expect(retained(item)).toBeLessThanOrEqual(cap);
-  // The primary output comes first and takes the whole budget; every later source keeps its totals and no body.
-  expect(item.output.retainedBytes).toBeGreaterThan(cap - 10);
+  // The primary output comes first and takes the whole budget less its tail's one-grain headroom; the later sources,
+  // in order, share what is left of it (each slid tail leaves its own headroom), and each says what it did not keep.
+  expect(item.output.retainedBytes).toBeGreaterThan(cap - cap / 8 - 10);
   const later = sources(item).slice(1);
-  expect(later.map((source) => [source.retainedBytes, source.omission?.whole])).toEqual(later.map(() => [0, true]));
+  expect(later[0]!.retainedBytes).toBeGreaterThan(0);
+  expect(later.every((source) => source.omission && source.retainedBytes < 100)).toBe(true);
   // `auto` after a cut cannot tell whether the result repeats the output: it is its own source.
   expect(item.result?.relation).toBe("unknown");
   expect(item.result?.finalContent?.bytes).toBe(utf8(big("final")));
