@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { domShimAlarm, shimGlobal } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 domShimAlarm(import.meta.path);
 import { renderToStaticMarkup } from "react-dom/server";
 import { Markdown, type FenceProps, type Fences } from "../src/react.js";
@@ -39,6 +39,82 @@ test("an open fence is not done; the language matches in any case; fences nest i
   calls.length = 0;
   renderToStaticMarkup(<Markdown source={"- item\n\n  ```mermaid\n  pie\n  ```\n\n> ```mermaid\n> pie\n> ```\n"} fences={fences} />);
   expect(calls.map((call) => call.code)).toEqual(["pie\n", "pie\n"]);
+});
+
+test("a code block is a named tab stop only while it overflows, measured only when the observer reports", async () => {
+  const { Window } = await import("happy-dom");
+  const { act } = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const window = new Window();
+  const observed = new Set<Element>();
+  const callbacks: ResizeObserverCallback[] = [];
+  const content = new Map<Element, number>(); // scrollWidth by box; 100 when unset
+  const box = new Map<Element, number>(); // clientWidth by box; 100 when unset
+  let reads = 0;
+  const restores = [
+    shimGlobal("window", window),
+    shimGlobal("document", window.document),
+    shimGlobal("IS_REACT_ACT_ENVIRONMENT", true),
+    shimProperty(window.HTMLElement.prototype, "clientWidth", { configurable: true, get(this: HTMLElement) { reads++; return box.get(this) ?? 100; } }),
+    shimProperty(window.HTMLElement.prototype, "scrollWidth", { configurable: true, get(this: HTMLElement) { reads++; return content.get(this) ?? 100; } }),
+    // Like the browser's, this observer reports later, never inside observe().
+    shimGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { callbacks.push(callback); }
+      observe(target: Element) { observed.add(target); }
+      unobserve(target: Element) { observed.delete(target); }
+      disconnect() { observed.clear(); }
+    } as unknown as typeof ResizeObserver),
+  ];
+  restoreBrowser = () => { for (const restore of restores.reverse()) restore(); };
+  const report = (...targets: Element[]) => act(() => callbacks.at(-1)!(targets.map((target) => ({ target })) as ResizeObserverEntry[], {} as ResizeObserver));
+  const container = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.appendChild(container as never);
+  const root = createRoot(container);
+  const source = (language: string) => `\`\`\`${language}\nconst deliberatelyLongName = true\n\`\`\`\n\n\`\`\`sh\necho ok\n\`\`\``;
+  await act(() => root.render(<Markdown source={source("ts")} />));
+  const [long, short] = container.querySelectorAll<HTMLElement>('[data-part="md-code-block"]');
+  // A mount reads no layout: a row that content-visibility skips is never laid out early.
+  expect(reads).toBe(0);
+  expect(long!.hasAttribute("tabindex")).toBe(false);
+  expect(callbacks).toHaveLength(1); // one observer for every box
+  expect(observed).toEqual(new Set([long!, long!.firstElementChild!, short!, short!.firstElementChild!]));
+
+  content.set(long!, 200);
+  await report(long!, short!);
+  expect(long!.tabIndex).toBe(0);
+  expect(long!.getAttribute("aria-label")).toBe("ts code, scrollable");
+  expect(short!.hasAttribute("tabindex")).toBe(false);
+  expect(short!.hasAttribute("aria-label")).toBe(false);
+
+  // Grows past its box (the code inside it reports): a tab stop.
+  content.set(short!, 150);
+  await report(short!.firstElementChild!);
+  expect(short!.tabIndex).toBe(0);
+  expect(short!.getAttribute("aria-label")).toBe("sh code, scrollable");
+
+  // Shrinks back while focused: it keeps the tab stop, so focus stays, until focus leaves.
+  short!.focus();
+  content.delete(short!);
+  await report(short!.firstElementChild!);
+  expect(window.document.activeElement).toBe(short as never);
+  expect(short!.tabIndex).toBe(0);
+  short!.blur();
+  expect(short!.hasAttribute("tabindex")).toBe(false);
+  expect(short!.hasAttribute("aria-label")).toBe(false);
+
+  // Its own box narrows (a container resize): a tab stop again.
+  box.set(short!, 50);
+  await report(short!);
+  expect(short!.tabIndex).toBe(0);
+
+  // A new language renames the stop without measuring.
+  reads = 0;
+  await act(() => root.render(<Markdown source={source("py")} />));
+  expect(long!.getAttribute("aria-label")).toBe("py code, scrollable");
+  expect(reads).toBe(0);
+
+  await act(() => root.unmount());
+  expect(observed.size).toBe(0);
 });
 
 test("a closed fence does not render again while later text streams in", async () => {

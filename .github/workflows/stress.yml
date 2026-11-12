@@ -49,9 +49,12 @@ jobs:
           bunx tsc -b
           bun run --cwd packages/highlight build
           bun run --cwd apps/playground build
-      - name: counted-work gate
-        if: ${{ github.event_name == 'pull_request' && inputs.inject == '' }}
-        run: bun run --cwd apps/playground stress
+      - name: counted-work and retained-heap gates
+        if: ${{ inputs.inject == '' }}
+        run: |
+          bun run --cwd apps/playground stress
+          # Ten 4x-throttle runs retained 20/36/41 KiB median/p90/max. The 1 MiB cap is well above noise but catches a retained viewer-sized copy.
+          bun apps/playground/scripts/viewer-retention.ts --fixture read --lines 1000000 --warmup 600 --runs 3 --max-growth-kib 1024
       - name: calibrated core a/b report
         env:
           BENCH_BASE_ROOT: ${{ github.workspace }}/../fulcrum-stress-base

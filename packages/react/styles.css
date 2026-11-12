@@ -541,7 +541,7 @@ summary[data-part="tool-header"]:focus-visible { outline: 2px solid var(--fulcru
   color: var(--fulcrum-fg);
   contain: layout paint style;
 }
-[data-part="text-viewer"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
+:is([data-part="text-viewer"], [data-part="tool-output"], [data-part="tool-args"], [data-part="tool-lines"], [data-part="tool-matches"], [data-part="tool-diff"]):focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 [data-part="text-viewer-content"] { position: relative; min-height: 100%; }
 /* Structured rows (diff, search) draw their own gutters. */
 div[data-part="text-viewer-row"] { padding: 0; }
@@ -958,8 +958,8 @@ a[data-action="open"]:hover { background: var(--fulcrum-surface); color: var(--f
 [data-part="message-content"] > :last-child { margin-bottom: 0; }
 [data-part="md-paragraph"] { margin: 0 0 0.75em; }
 [data-part="md-heading"] { margin: 1.5em 0 0.5em; font-size: 14px; line-height: 1.35; font-weight: 700; text-wrap: balance; }
-h1[data-part="md-heading"] { font-size: 18px; }
-h2[data-part="md-heading"] { font-size: 16px; }
+[data-level="1"][data-part="md-heading"] { font-size: 18px; }
+[data-level="2"][data-part="md-heading"] { font-size: 16px; }
 [data-part="md-strong"] { font-weight: 700; }
 [data-part="md-emphasis"] { font-style: italic; }
 [data-part="md-strike"] { color: var(--fulcrum-muted); }
@@ -998,7 +998,9 @@ ul[data-part="md-list"] { list-style: "- "; }
   tab-size: 2;
   white-space: pre;
 }
-[data-part="md-code-block"] > code { --cursor-gap: 0px; --cursor-hang: 0px; padding: 0; border: 0; background: none; font: inherit; }
+[data-part="md-code-block"] > code { --cursor-gap: 0px; --cursor-hang: 0px; display: inline-block; min-width: 100%; padding: 0; border: 0; background: none; font: inherit; }
+[data-part="md-code-block"]:focus-visible,
+[data-part="md-table"]:focus-visible { outline: 2px solid var(--fulcrum-accent); outline-offset: -2px; }
 /* A large block is the shared code viewer (counts, copy, a scroll box); its rows bring their own padding. */
 [data-part="md-code-block"][data-size="large"] { padding: 0; white-space: normal; }
 /* As tall as the most lines an inline block shows (INLINE_LINES), so a fence that becomes the viewer keeps its height. */
