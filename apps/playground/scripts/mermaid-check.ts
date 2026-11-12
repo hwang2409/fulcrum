@@ -11,7 +11,7 @@
 //   html, script, a link, or an outside url into the page, or sanitizeSvg keeps one;
 // - the page fetches mermaid before the first fence closes;
 // - a gallery diagram at 1440, 768, or 390 px is scaled up, scaled so its smallest label is under 11 px, scrolls when
-//   it could shrink and stay readable, or overflows its box without an edge fade and a labelled focusable region;
+//   it could shrink and stay readable, or overflows its box without an edge fade and a labelled focusable scroll group;
 // - a gallery diagram, in tokyo-night at every width and github-light at 1440 px, is narrower than its content column
 //   (held to the 80ch text measure), hides no less than a box at that measure would, or its text exceeds the measure;
 // - at 1440 px the short flowchart (too wide for the 80ch measure, not for the content width) does not fit fully;
@@ -92,7 +92,7 @@ try {
 
   // Fit: every gallery diagram at 1440, 768, and 390 px either fits its box with its smallest label at 11 px or more
   // (or at its own size, never scaled up), or scrolls inside it at that readable scale with a visible edge fade and
-  // a labelled, focusable scroll region. Full size is always the natural size. A diagram is a wide block: it gets the
+  // a labelled, focusable scroll group. Full size is always the natural size. A diagram is a wide block: it gets the
   // message's whole content width, not the 80ch text measure.
   for (const [width, theme] of [[1440, "tokyo-night"], [1440, "github-light"], [768, "tokyo-night"], [390, "tokyo-night"]] as const) {
     const gallery = await context.newPage();
@@ -129,7 +129,7 @@ try {
         id: box.closest("article")!.id, column: message.parentElement!.clientWidth, frame: frame.offsetWidth, box: box.clientWidth,
         text: message.querySelector<HTMLElement>(":scope > p")!.offsetWidth, measure: parseFloat(getComputedStyle(message).getPropertyValue("--fulcrum-measure")), natural: Math.round(natural), scale: Math.round(scale * 1000) / 1000,
         smallest: Math.round(least * scale * 10) / 10, natural_smallest: least, overflows, hidden: box.scrollWidth - box.clientWidth, scroll: box.scrollWidth,
-        cue: overflows ? { fade: fade.content !== "none" && Number(fade.opacity) > 0.5 && parseFloat(fade.width) >= 16, region: box.tabIndex === 0 && box.getAttribute("role") === "region" && !!box.getAttribute("aria-label") } : null,
+        cue: overflows ? { fade: fade.content !== "none" && Number(fade.opacity) > 0.5 && parseFloat(fade.width) >= 16, group: box.tabIndex === 0 && box.getAttribute("role") === "group" && !!box.getAttribute("aria-label") } : null,
       };
     }));
     await gallery.close();
@@ -143,7 +143,7 @@ try {
       if (fit.frame < fit.column - 1) failures.push(`${name}: the diagram is ${fit.frame} px wide in a ${fit.column} px content column (held to the text measure)`);
       if (fit.scale > 1.001) failures.push(`${name}: scaled up to ${fit.scale}`);
       if (fit.scale < 0.999 && fit.smallest < 10.95) failures.push(`${name}: scaled to ${fit.scale}, its smallest label is ${fit.smallest} px (under 11)`);
-      if (fit.overflows && !(fit.cue!.fade && fit.cue!.region)) failures.push(`${name}: overflows its ${fit.box} px box without a cue (${JSON.stringify(fit.cue)})`);
+      if (fit.overflows && !(fit.cue!.fade && fit.cue!.group)) failures.push(`${name}: overflows its ${fit.box} px box without a cue (${JSON.stringify(fit.cue)})`);
       if (fit.overflows && fit.scale * fit.natural_smallest > 11.05 && fit.scale < 0.999) failures.push(`${name}: scrolls though it could shrink further and stay readable`);
     }
   }

@@ -249,6 +249,28 @@ test("opening a row resolves the child through the source, nests, and releases w
   expect(document.activeElement).toBe(q('[data-part="sub-agent"]'));
 });
 
+test("the breadcrumb is a navigation landmark only while it holds a path, named for its root run", async () => {
+  const runs = { a: storeOf([commit("in-a")]) };
+  const { source } = fakeSource(runs);
+  mount(<>
+    <RunNavigator store={storeOf([child("a", { name: "reviewer" })]).store} source={source} label="first" virtual={false} />
+    <RunNavigator store={storeOf([child("a", { name: "reviewer" })]).store} source={source} label="second" virtual={false} />
+  </>);
+  // At the root a breadcrumb is one label with nowhere to go: several navigators on a page add no landmarks.
+  expect(all("nav")).toHaveLength(0);
+  expect(all('[data-part="run-breadcrumb"] li').map((node) => node.textContent)).toEqual(["first", "second"]);
+
+  act(() => all('[data-part="sub-agent"]')[0]!.click());
+  // The first navigator now shows the child, which has no sub-agent rows: the second navigator's row is the only one.
+  act(() => all('[data-part="sub-agent"]')[0]!.click());
+  expect(all("nav").map((node) => node.getAttribute("aria-label"))).toEqual(["run path: first", "run path: second"]);
+  expect(document.activeElement).toBe(all('[aria-current="page"]')[1]!);
+
+  act(() => all('[data-part="run-back"]')[0]!.click());
+  await frames();
+  expect(all("nav").map((node) => node.getAttribute("aria-label"))).toEqual(["run path: second"]);
+});
+
 test("Escape and the back button each return one level, and the default navigator never touches browser history", async () => {
   const runs = { a: storeOf([commit("in-a"), child("a1")]), a1: storeOf([]) };
   const { source } = fakeSource(runs);

@@ -403,7 +403,9 @@ function VirtualText({ text, label, follow, metrics, segments, texts, rows, form
         ref={scrollRef}
         data-part="text-viewer"
         data-language={rows ? undefined : format?.language}
-        role="region"
+        // A named group, not a region landmark: a transcript can hold dozens of viewers, and landmarks are for the page's few
+        // main areas. The name still announces the focusable scroll box.
+        role="group"
         aria-label={`${label} viewer`}
         tabIndex={0}
         onScroll={(event) => onScroll(event.currentTarget)}

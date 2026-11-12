@@ -254,6 +254,7 @@ export function RunNavigator({ store, source, path, onPathChange, runId, label =
     back,
   }), [back, label, runId, store, view]);
   const viewport = viewports.current.byPath;
+  const Breadcrumb = view.length ? "nav" : "div";
 
   return (
     <div
@@ -267,7 +268,8 @@ export function RunNavigator({ store, source, path, onPathChange, runId, label =
     >
       <div data-part="run-bar">
         {view.length ? <button type="button" data-part="run-back" aria-label={`back to ${parentLabel}`} onClick={back}>back</button> : null}
-        <nav data-part="run-breadcrumb" aria-label="run path">
+        {/* A navigation landmark only while there is a path to go back along, named for the root so several navigators differ. */}
+        <Breadcrumb data-part="run-breadcrumb" aria-label={view.length ? `run path: ${label}` : undefined}>
           <ol>
             {stores.map((_, index) => {
               const content = index > 0
@@ -282,7 +284,7 @@ export function RunNavigator({ store, source, path, onPathChange, runId, label =
               );
             })}
           </ol>
-        </nav>
+        </Breadcrumb>
         {/* Always mounted, so screen readers announce what appears in it. */}
         <span data-part="run-notice" role="status" data-tone={notice.error ? "error" : undefined} title={notice.text || undefined}>{notice.text}</span>
         {barExtra}
