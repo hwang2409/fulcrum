@@ -2,3 +2,4 @@
 // and the copy control those use.
 export { Code, HighlightContext, Tokens } from "./highlight.js";
 export { CodeViewer, CopyButton, INLINE_SPANS, isLargeCode } from "./tools/text-viewer.js";
+export { useOverflowFocus } from "./overflow.js";

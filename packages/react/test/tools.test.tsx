@@ -3,7 +3,7 @@ GlobalRegistrator.register();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { domShimAlarm, shimProperty } from "../../../test-support/dom-shim.js";
+import { domShimAlarm, shimGlobal, shimProperty } from "../../../test-support/dom-shim.js";
 domShimAlarm(import.meta.path);
 import { readFileSync } from "node:fs";
 import { act, type ReactNode } from "react";
@@ -166,6 +166,33 @@ test("copy buttons copy the command, the path, and the full output", async () =>
   for (const button of buttons) await act(async () => button.click());
   expect(copied).toEqual(["ls -la", long, "src/a.ts", "x"]);
   expect(buttons[0]!.textContent).toBe("copied");
+});
+
+test("only an output that overflows is a named keyboard tab stop", () => {
+  restoreShims.push(
+    shimProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get(this: HTMLElement) { return this.closest('[data-id="tool:overflow"]') ? 400 : 100; },
+    }),
+    shimProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 100 }),
+    shimGlobal("ResizeObserver", class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) { this.callback([{ target }] as ResizeObserverEntry[], this as unknown as ResizeObserver); }
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver),
+  );
+  render([
+    ...tool("overflow", "bash", { kind: "shell", command: "long" }, "long output"),
+    ...tool("fits", "bash", { kind: "shell", command: "short" }, "short output"),
+  ], ["tool:overflow", "tool:fits"]);
+
+  const overflow = q('[data-id="tool:overflow"] [data-part="tool-output"]');
+  const fits = q('[data-id="tool:fits"] [data-part="tool-output"]');
+  expect(overflow.tabIndex).toBe(0);
+  expect(overflow.getAttribute("aria-label")).toBe("output, scrollable");
+  expect(fits.hasAttribute("tabindex")).toBe(false);
+  expect(fits.hasAttribute("aria-label")).toBe(false);
 });
 
 test("large output opens in the shared bounded viewer", () => {
