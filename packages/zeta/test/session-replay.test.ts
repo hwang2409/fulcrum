@@ -18,7 +18,8 @@ const joinResult = (overrides: Record<string, unknown> = {}) => ({
   status: { state: "running", pending_approvals: [], pending_approvals_truncated: false },
   ...overrides,
 });
-const harness = (options: { maxSessions?: number } = {}) => {
+const harness = (options: { maxSessions?: number; features?: string[] } = {}) => {
+  const features = options.features ?? ["session_replay_seq"];
   let receive!: (text: string) => void;
   let drop = (_code?: number) => {};
   const sent: Array<{ id: number; method: string; params: Record<string, unknown> }> = [];
@@ -32,8 +33,8 @@ const harness = (options: { maxSessions?: number } = {}) => {
   const reply = (id: number, result: unknown) => receive(JSON.stringify({ jsonrpc: "2.0", id, result }));
   const fail = (id: number | null, code: number, data?: unknown, message = "failed") => receive(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message, ...(data ? { data } : {}) } }));
   const event = (params: EventParams) => receive(JSON.stringify({ jsonrpc: "2.0", method: "event", params }));
-  const hello = client.hello(["session_replay_seq"]);
-  reply(sent[0]!.id, { protocol_version: "1.2", capabilities: { features: ["session_replay_seq"] } });
+  const hello = client.hello(features);
+  reply(sent[0]!.id, { protocol_version: "1.2", capabilities: { features } });
   const ready = hello.then(() => { sent.splice(0); });
   const joins = () => sent.filter(({ method }) => method === "session_history_and_subscribe");
   return { client, sent, reply, fail, event, ready, joins, close: (code?: number) => drop(code) };
@@ -67,6 +68,19 @@ const outlineText = (client: ReturnType<typeof createClient>, session = "session
 };
 const staleEvent = { code: "stale_event_sequence" };
 const staleSnapshot = { code: "stale_history_snapshot" };
+const history = (text: string) => fromZetaHistory([row(text, text)]);
+const deferredLoad = () => {
+  let resolve!: (events: RunEvent[]) => void;
+  return { promise: new Promise<RunEvent[]>((done) => { resolve = done; }), resolve };
+};
+const send = (fake: Harness, session: string, id: string, method: "send" | "steer" = "send") =>
+  void fake.client.request(method, { session_id: session, text: id, delivery_id: id }, { intent: id }).catch(() => {});
+const echo = (fake: Harness, session: string, id: string, mode: "send" | "steer" = "send") =>
+  fake.event({ event: "user_message", session_id: session, text: id, mode, delivery_id: id } as EventParams);
+const userIds = (store: ReturnType<ReturnType<typeof createClient>["forSession"]>["store"]) =>
+  store.getOutline().filter(({ kind }) => kind === "user").map(({ id }) => id);
+// A disposed store is empty again; every store these tests check has at least one row while it lives.
+const shown = (store: ReturnType<ReturnType<typeof createClient>["forSession"]>["store"]) => store.getOutline().length > 0;
 
 // Fail-first on c04b167: this reaches the final assertion and receives "xx" because positioned duplicates are ordinary events.
 test("positioned duplicate frames are not reduced twice", async () => {
@@ -130,6 +144,13 @@ test("a gap starts one fresh join and drops the gap frame", async () => {
   expect(assistantText(fake.client, "session-a")).toBe("one");
   expect(fake.sent.filter(({ method }) => method === "session_history_and_subscribe")).toHaveLength(2);
   expect(lease.state.replay.phase).toBe("rejoining");
+
+  // Real zeta starts every stream at history_seq 0, so the new stream's first frame applies after the old one's.
+  fake.reply(fake.joins()[1]!.id, joinResult({ replay: { stream_id: "stream-b", history_seq: 0 }, messages: [row("one", "one")] }));
+  await waitFor(() => lease.state.replay.phase === "joined");
+  fake.event(delta(1, " two", "stream-b"));
+  expect(lease.lastSeq).toBe(1);
+  expect(outlineText(fake.client)).toEqual(["one", " two"]);
 });
 
 test("foreign streams and retired stream ends cannot mutate or rejoin", async () => {
@@ -437,6 +458,30 @@ test("a positioned frame whose payload cannot be read is never applied and start
   expect(lease.state.replay.phase).toBe("rejoining");
   expect(lease.store.getOutline().some(({ id }) => lease.store.getItem(id)?.type === "error")).toBe(false);
   expect(lease.lastSeq).toBe(0);
+});
+
+test("unreadable payloads spend the shared rejoin budget: three rejoins, then the stream stops", async () => {
+  const fake = harness();
+  await fake.ready;
+  const lease = await joined(fake);
+  const unreadable = (stream: string): EventParams => ({ ...delta(1, "x", stream), delta: 5 } as unknown as EventParams);
+  let stream = "stream-a";
+  for (const next of ["stream-b", "stream-c", "stream-d"]) {
+    fake.event(unreadable(stream));
+    await waitFor(() => lease.state.replay.phase === "rejoining");
+    fake.reply(fake.joins().at(-1)!.id, joinResult({ replay: { stream_id: next, history_seq: 0 } }));
+    await waitFor(() => lease.state.replay.phase === "joined");
+    stream = next;
+  }
+  fake.event(unreadable("stream-d"));
+  await Bun.sleep(1);
+
+  expect(fake.joins()).toHaveLength(4);
+  expect(lease.state.replay).toEqual({ phase: "failed", message: "could not join live updates", retryable: true });
+  fake.event(delta(1, "after", "stream-d"));
+  await Bun.sleep(1);
+  expect(fake.joins(), "the retired stream starts no join").toHaveLength(4);
+  expect(assistantText(fake.client, "session-a")).toBeUndefined();
 });
 
 test("live text deltas advance lastSeq without notifying replay listeners", async () => {
@@ -757,32 +802,115 @@ test("a same-session legacy retry keeps the displayed store until its own load c
   lease.release();
 });
 
-// Fail-first on 7cd2f5c: the replaced store was dropped from the cache but never disposed.
-test("a same-session legacy reload disposes the store it replaced once no view holds it", async () => {
-  for (const held of [false, true]) {
-    const fake = harness();
-    await fake.ready;
-    const text = (store: ReturnType<typeof fake.client.forSession>["store"]) => store.getOutline().map(({ id }) => {
-      const item = store.getItem(id);
-      return item?.type === "message" ? item.message.content.map((block) => block.type === "text" ? block.text : "").join("") : item?.type;
-    });
-    const displayed = await fake.client.replay("session-a", async () => fromZetaHistory([row("one", "one")]));
-    const viewer = fake.client.forSession("session-a");
-    if (!held) displayed.release(), viewer.release();
-    const evictions = fake.client.evictionCount;
-    const lease = await fake.client.replay("session-a", async () => fromZetaHistory([row("two", "two")]));
-
-    expect(text(displayed.store), `held ${held}: a view still holds the replaced store`).toEqual(held ? ["one"] : []);
-    if (held) {
-      displayed.release();
-      expect(text(displayed.store), "one view holder remains").toEqual(["one"]);
+// The store cache has one owner (client storeStep). Each row checks delivery identity, disposal, and the cached store.
+// Fail-first on 832abea: the "send and steer during" row; the install evicted identities a send made during the load.
+test.each([
+  {
+    name: "first open: identities tracked before the replay go; the unheld cached store is disposed at install",
+    async run(fake: Harness) {
+      fake.event({ event: "assistant_delta", session_id: "s", delta: "cached", kind: "assistant" });
+      const cached = fake.client.stores.get("s")!;
+      send(fake, "s", "before");
+      const lease = await fake.client.replay("s", async () => history("one"));
+      echo(fake, "s", "before");
+      return { users: userIds(lease.store), shown: { old: shown(cached), current: shown(lease.store) }, cached: fake.client.stores.get("s") === lease.store };
+    },
+    expected: { users: ["user:delivery:before"], shown: { old: false, current: true }, cached: true },
+  },
+  {
+    name: "same-session supersede: a send during the new load keeps its intent; the held old store waits for its release",
+    async run(fake: Harness) {
+      const first = await fake.client.replay("s", async () => history("one"));
+      const load = deferredLoad();
+      const second = fake.client.replay("s", () => load.promise);
+      send(fake, "s", "during");
+      load.resolve(history("two"));
+      const lease = await second;
+      echo(fake, "s", "during");
+      const whileHeld = shown(first.store);
+      first.release();
+      return { users: userIds(lease.store), shown: { whileHeld, afterRelease: shown(first.store), current: shown(lease.store) }, cached: fake.client.stores.get("s") === lease.store };
+    },
+    expected: { users: ["user:intent:during"], shown: { whileHeld: true, afterRelease: false, current: true }, cached: true },
+  },
+  {
+    name: "switch to another session: the first session's store and identities are untouched",
+    async run(fake: Harness) {
+      const a = await fake.client.replay("a", async () => history("a"));
+      send(fake, "a", "for-a");
+      const b = await fake.client.replay("b", async () => history("b"));
+      echo(fake, "a", "for-a");
+      return { users: userIds(a.store), shown: { a: shown(a.store), b: shown(b.store) }, cached: fake.client.stores.get("a") === a.store && fake.client.stores.get("b") === b.store };
+    },
+    expected: { users: ["user:intent:for-a"], shown: { a: true, b: true }, cached: true },
+  },
+  {
+    name: "send and steer during an in-flight first load keep their intents",
+    async run(fake: Harness) {
+      const load = deferredLoad();
+      const open = fake.client.replay("s", () => load.promise);
+      send(fake, "s", "sent");
+      send(fake, "s", "steered", "steer");
+      load.resolve(history("one"));
+      const lease = await open;
+      echo(fake, "s", "sent");
+      echo(fake, "s", "steered", "steer");
+      return { users: userIds(lease.store), shown: { current: shown(lease.store) }, cached: fake.client.stores.get("s") === lease.store };
+    },
+    expected: { users: ["user:intent:sent", "user:intent:steered"], shown: { current: true }, cached: true },
+  },
+  {
+    name: "cap eviction: the oldest unheld store and its identities go at once; a held store and its identities stay",
+    options: { maxSessions: 2 },
+    async run(fake: Harness) {
+      const held = fake.client.forSession("held");
+      for (const session of ["held", "x"]) fake.event({ event: "assistant_delta", session_id: session, delta: session, kind: "assistant" });
+      const x = fake.client.stores.get("x")!;
+      send(fake, "held", "h");
+      send(fake, "x", "x-send");
+      for (const session of ["y", "z"]) fake.event({ event: "assistant_delta", session_id: session, delta: session, kind: "assistant" });
+      const evicted = !fake.client.stores.has("x");
+      echo(fake, "held", "h");
+      echo(fake, "x", "x-send");
+      return { users: [...userIds(held.store), ...userIds(fake.client.stores.get("x")!)], shown: { held: shown(held.store), x: shown(x) }, cached: evicted && fake.client.stores.get("held") === held.store };
+    },
+    expected: { users: ["user:intent:h", "user:delivery:x-send"], shown: { held: true, x: false }, cached: true },
+  },
+  {
+    name: "a store a view still holds is never disposed by a replay install, only by that view's release",
+    async run(fake: Harness) {
+      const viewer = fake.client.forSession("s");
+      fake.event({ event: "assistant_delta", session_id: "s", delta: "shown", kind: "assistant" });
+      const load = deferredLoad();
+      const open = fake.client.replay("s", () => load.promise);
+      send(fake, "s", "during");
+      load.resolve(history("one"));
+      const lease = await open;
+      echo(fake, "s", "during");
+      const whileHeld = shown(viewer.store);
       viewer.release();
-      expect(text(displayed.store), "the last holder's release disposes it").toEqual([]);
-    }
-    expect(text(lease.store)).toEqual(["two"]);
-    expect(fake.client.evictionCount, `held ${held}: counted once, like main's eviction`).toBe(evictions + 1);
-    lease.release();
-  }
+      return { users: userIds(lease.store), shown: { whileHeld, afterRelease: shown(viewer.store), current: shown(lease.store) }, cached: fake.client.stores.get("s") === lease.store };
+    },
+    expected: { users: ["user:intent:during"], shown: { whileHeld: true, afterRelease: false, current: true }, cached: true },
+  },
+  {
+    name: "abort mid-load: nothing is installed or disposed; the shown store keeps a send made during the load",
+    async run(fake: Harness) {
+      const displayed = await fake.client.replay("s", async () => history("one"));
+      const aborted = fake.client.replay("s", async () => {
+        send(fake, "s", "during");
+        throw Object.assign(new Error("request aborted"), { name: "AbortError" });
+      });
+      await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+      echo(fake, "s", "during");
+      return { users: userIds(displayed.store), shown: { displayed: shown(displayed.store) }, cached: fake.client.stores.get("s") === displayed.store };
+    },
+    expected: { users: ["user:intent:during"], shown: { displayed: true }, cached: true },
+  },
+])("store lifecycle: $name", async ({ run, expected, options }) => {
+  const fake = harness({ ...options, features: ["delivery_id", "user_message_event", "user_message_delivery_id"] });
+  await fake.ready;
+  expect(await run(fake)).toEqual(expected);
 });
 
 // Design section 6: the client side of every named fake-zeta case.

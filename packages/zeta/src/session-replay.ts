@@ -40,6 +40,14 @@ export class SessionReplayError extends Error {
   constructor(readonly kind: "invalid_response", message = "session replay response is invalid") { super(message); }
 }
 
+/**
+ * Steps of the client's store cache: create an empty store, start a legacy replay, install a replay's store with
+ * `holders` view holders, release one holder, or evict the session.
+ */
+export type StoreStep =
+  | { readonly kind: "create" | "replay" | "evict" }
+  | { readonly kind: "install"; readonly store: SessionStore; readonly holders: number }
+  | { readonly kind: "release"; readonly store: SessionStore };
 type Request = (method: string, params: Record<string, unknown>, options: { signal: AbortSignal; timeoutMs: number }) => Promise<unknown>;
 type Load = (signal: AbortSignal) => Promise<RunEvent[]>;
 type Recovery = { canceled: boolean; controller?: AbortController; timer?: ReturnType<typeof setTimeout>; wake?: () => void };
@@ -58,6 +66,8 @@ type Owner = {
   /** The live stream and its applied frontier: a frame counts as applied only once `lastSeq` holds its number. */
   streamId?: string;
   lastSeq: number;
+  /** Rejoins in a row spent from the REJOIN_LIMIT budget; an ordinary join resets it. */
+  rejoinCycles: number;
   joining: boolean;
   suspended: boolean;
   released: boolean;
@@ -71,7 +81,8 @@ type Owner = {
 
 // Join retries and legacy store recovery share one schedule: 15.5 s of waiting over six attempts.
 const RETRY_DELAYS = [0, 500, 1_000, 2_000, 4_000, 8_000] as const;
-const STALE_CYCLES = 3;
+// Automatic rejoins that cannot make progress (a stale older page, an unreadable live payload) share one budget.
+const REJOIN_LIMIT = 3;
 const PAGE_TIMEOUT_MS = 15_000;
 const JOIN_FAILED = { phase: "failed", message: "could not join live updates", retryable: true } as const;
 const rpcCode = (error: unknown, code: string) => {
@@ -124,12 +135,8 @@ const baselineApproval = (approval: JoinStatus["pending_approvals"][number]): Ap
 export function createReplayRegistry(deps: {
   readonly request: Request;
   readonly makeStore: (session: string) => SessionStore;
-  /** Makes `store` the session's cached store with `holders` view holders. */
-  readonly commitStore: (session: string, store: SessionStore, holders: number) => void;
-  readonly releaseHolder: (session: string, store: SessionStore) => void;
-  readonly evictStore: (session: string) => void;
-  /** Drops the session's cached store like an eviction, but a store views still hold is disposed on their last release. */
-  readonly retireStore: (session: string) => void;
+  /** The client's one store-cache owner; every store and delivery-identity change goes through it. */
+  readonly storeStep: (session: string, step: StoreStep) => SessionStore | undefined;
   readonly servedTurn: (session: string) => string | undefined;
   readonly adaptHistory: (rows: readonly unknown[]) => RunEvent[];
   readonly adaptEvent: (params: EventParams) => RunEvent[];
@@ -183,7 +190,7 @@ export function createReplayRegistry(deps: {
       return existing;
     }
     const owner: Owner = {
-      session, mode, generation: 1, leases: 0, lastSeq: 0, joining: false, suspended: false, released: false,
+      session, mode, generation: 1, leases: 0, lastSeq: 0, rejoinCycles: 0, joining: false, suspended: false, released: false,
       buffer: [], retainedApprovalEnds: new Map(), openApprovals: new Set(), listeners: new Set(),
       state: { replay: { phase: "joining", attempt: 1 }, history: { phase: "loading", messages: 0 }, approvals: { incomplete: null } },
     };
@@ -223,8 +230,8 @@ export function createReplayRegistry(deps: {
 
   // Legacy mode: `replay`, `replayRevision`, `finishReplay`, and store recovery for one generation.
   const replayLegacy = async (session: string, load: Load, keepQuarantined = false): Promise<SessionLease> => {
-    if (!owners.has(session)) deps.evictStore(session);
     const owner = acquire(session, "legacy");
+    deps.storeStep(session, { kind: "replay" });
     owner.leases++;
     const generation = owner.generation;
     const controller = new AbortController();
@@ -235,14 +242,13 @@ export function createReplayRegistry(deps: {
       if (controller.signal.aborted || !active(owner, generation)) throw abortError();
       const store = deps.makeStore(session);
       owner.store = store;
-      // A same-session supersede kept the old store on screen until now; drop it, and dispose it once no view holds it.
-      deps.retireStore(session);
-      deps.commitStore(session, store, 1);
+      // The store shown so far stays until now; the install disposes it once no view holds it.
+      deps.storeStep(session, { kind: "install", store, holders: 1 });
       let released = false;
       const lease = { store, release() {
         if (released) return;
         released = true;
-        deps.releaseHolder(session, store);
+        deps.storeStep(session, { kind: "release", store });
         releaseLease(owner);
       } };
       for (const event of history) call(() => store.dispatch(event));
@@ -349,14 +355,15 @@ export function createReplayRegistry(deps: {
     call(() => owner.store?.endHistory());
   };
   /** Installs a validated join: newest history, status baseline, and stream frontier in one store commit. */
-  const commitJoin = (owner: Owner, generation: number, result: SessionReplayJoinResult, staleCycles: number) => {
+  const commitJoin = (owner: Owner, generation: number, result: SessionReplayJoinResult, rejoinCycles: number) => {
     owner.streamId = result.replay.stream_id;
+    owner.rejoinCycles = rejoinCycles;
     owner.lastSeq = result.replay.history_seq;
     const candidate = deps.makeStore(owner.session);
     call(() => candidate.beginHistory());
     call(() => candidate.resync(joinedEvents(owner, result)));
     owner.store = candidate;
-    deps.commitStore(owner.session, candidate, 0);
+    deps.storeStep(owner.session, { kind: "install", store: candidate, holders: 0 });
     const truncated = result.status.pending_approvals_truncated;
     if (truncated) violation("replay join reported truncated pending approvals");
     owner.joining = false;
@@ -369,9 +376,9 @@ export function createReplayRegistry(deps: {
     for (const frame of owner.buffer.splice(0)) route(frame);
     if (!active(owner, generation)) return;
     if (result.next_before === null) return finishHistory(owner, generation);
-    void backfill(owner, generation, { messages: result.messages, nextBefore: result.next_before, validator: result.history_validator }, staleCycles);
+    void backfill(owner, generation, { messages: result.messages, nextBefore: result.next_before, validator: result.history_validator });
   };
-  const startJoin = async (owner: Owner, rejoining: boolean, staleCycles = 0): Promise<void> => {
+  const startJoin = async (owner: Owner, rejoining: boolean, rejoinCycles = 0): Promise<void> => {
     const generation = owner.generation;
     const current = () => active(owner, generation) && !owner.suspended && activeSequencedOwner === owner;
     transferSlot(owner);
@@ -388,7 +395,7 @@ export function createReplayRegistry(deps: {
         const result = parseJoin(await deps.request("session_history_and_subscribe", { session_id: owner.session }, { signal: controller.signal, timeoutMs: PAGE_TIMEOUT_MS }));
         if (!current() || controller.signal.aborted) return;
         owner.controller = undefined;
-        return commitJoin(owner, generation, result, staleCycles);
+        return commitJoin(owner, generation, result, rejoinCycles);
       } catch (error) {
         if (owner.controller === controller) owner.controller = undefined;
         if (!active(owner, generation) || controller.signal.aborted || isAbort(error)) return;
@@ -400,7 +407,7 @@ export function createReplayRegistry(deps: {
       }
     }
   };
-  const backfill = async (owner: Owner, generation: number, joinPage: BackwardHistoryPage, staleCycles: number) => {
+  const backfill = async (owner: Owner, generation: number, joinPage: BackwardHistoryPage) => {
     const controller = new AbortController();
     owner.controller = controller;
     let messages = joinPage.messages.length;
@@ -422,14 +429,7 @@ export function createReplayRegistry(deps: {
       finishHistory(owner, generation);
     } catch (error) {
       if (!active(owner, generation) || controller.signal.aborted || isAbort(error)) return;
-      if (rpcCode(error, "stale_history_snapshot")) {
-        if (staleCycles < STALE_CYCLES) return supersede(owner, staleCycles + 1);
-        // The stale budget is spent: retire the stream so state and routing agree that live updates stopped.
-        finishHistory(owner, generation);
-        cancel(owner);
-        publish(owner, generation, { replay: JOIN_FAILED, history: { phase: "incomplete", messages, reason: "stale_limit" }, approvals: owner.state.approvals });
-        return;
-      }
+      if (rpcCode(error, "stale_history_snapshot")) return rejoinOrStop(owner, generation, { phase: "incomplete", messages, reason: "stale_limit" });
       finishHistory(owner, generation);
       const timeout = (error as { name?: unknown } | null)?.name === "TimeoutError";
       publish(owner, generation, { ...owner.state, history: { phase: "incomplete", messages, reason: timeout ? "timeout" : "rpc_error" } });
@@ -438,12 +438,19 @@ export function createReplayRegistry(deps: {
     }
   };
   /** Starts a fresh atomic join in a new generation of the same owner; the committed store stays readable. */
-  const supersede = (owner: Owner, staleCycles = 0, historyRetry = false) => {
+  /** Spends one rejoin from the budget, or, when it is spent, retires the stream so state and routing agree it stopped. */
+  const rejoinOrStop = (owner: Owner, generation: number, history: ReplayHistoryState) => {
+    if (owner.rejoinCycles < REJOIN_LIMIT) return supersede(owner, owner.rejoinCycles + 1);
+    finishHistory(owner, generation);
+    cancel(owner);
+    publish(owner, generation, { replay: JOIN_FAILED, history, approvals: owner.state.approvals });
+  };
+  const supersede = (owner: Owner, rejoinCycles = 0, historyRetry = false) => {
     cancel(owner);
     owner.generation++;
     owner.suspended = false;
     if (historyRetry) owner.state = { ...owner.state, history: { phase: "loading", messages: 0 } };
-    void startJoin(owner, true, staleCycles);
+    void startJoin(owner, true, rejoinCycles);
   };
   const openSessionReplay = async (session: string, options: { signal?: AbortSignal } = {}): Promise<SessionReplayLease> => {
     if (options.signal?.aborted) throw abortError();
@@ -458,7 +465,7 @@ export function createReplayRegistry(deps: {
     await startJoin(owner, owner.store !== undefined);
     if (!owner.store) {
       owner.store = deps.makeStore(session);
-      deps.commitStore(session, owner.store, 0);
+      deps.storeStep(session, { kind: "install", store: owner.store, holders: 0 });
     }
     let released = false;
     const live = () => !released && active(owner, owner.generation);
@@ -504,8 +511,12 @@ export function createReplayRegistry(deps: {
     if (params.stream_id !== streamId || params.seq <= owner.lastSeq) return;
     if (params.seq !== owner.lastSeq + 1) return supersede(owner);
     const events = deps.adaptEvent(params).map((event) => deps.stampEvent(event, owner.session));
-    // A frame the adapter cannot read leaves the store behind the stream: drop it and rejoin, like a gap.
-    if (events.some((event) => event.type === "error" && event.error.code === "adapter_invalid_payload")) return supersede(owner);
+    // A frame the adapter cannot read leaves the store behind the stream: drop it and rejoin. A server that keeps sending
+    // such frames (version skew) cannot make progress, so these rejoins spend the shared budget.
+    if (events.some((event) => event.type === "error" && event.error.code === "adapter_invalid_payload")) {
+      const history = owner.state.history;
+      return rejoinOrStop(owner, owner.generation, history.phase === "loading" ? { phase: "incomplete", messages: history.messages, reason: "stale_limit" } : history);
+    }
     const generation = owner.generation;
     let dispatched = true;
     for (const event of filterTailApprovals(owner, events))

@@ -1,6 +1,6 @@
 import { createRunStore, type RunEvent, type Scheduler, type RunState } from "@fulcrum/core";
 import { fromZetaEvent, fromZetaHistory } from "./adapter.js";
-import { createReplayRegistry } from "./session-replay.js";
+import { createReplayRegistry, type StoreStep } from "./session-replay.js";
 import { createDeliveryIdentity } from "./delivery-identity.js";
 import type { HelloResult, TransportMessage } from "./wire.js";
 import type { Transport } from "./transport.js";
@@ -154,35 +154,9 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   // packages/zeta/README.md, "listener contract". test/host-calls-guard.test.ts fails on any other host call.
   const store = createRunStore(scheduler); // host code: outside; README row "scheduler"
   let evictionCount = 0;
-  // Stores a legacy reload replaced while views still held them, with their holder counts; the last release disposes.
+  // Stores a replay replaced while views still held them, with their holder counts; the last release disposes.
   const retired = new Map<SessionStore, number>();
-  /** Drops `id`'s cached store and its delivery identities. `keepHeld` defers disposal until its view holders release. */
-  const dropStore = (id: string, keepHeld: boolean) => {
-    deliveryIdentity.evictSession(id);
-    const value = stores.get(id);
-    if (!value) return false;
-    const count = holders.get(id) ?? 0;
-    stores.delete(id);
-    holders.delete(id);
-    evictionCount++;
-    if (keepHeld && count > 0) retired.set(value, count);
-    else value.dispose(); // host code: outside; README row "store dispose"
-    return true;
-  };
-  const evict = (id: string) => replayRegistry && !replayRegistry.prepareEvict(id) ? false : dropStore(id, false);
-  const releaseHolder = (session: string, value: SessionStore) => {
-    const held = retired.get(value);
-    if (held !== undefined) {
-      if (held > 1) retired.set(value, held - 1);
-      else {
-        retired.delete(value);
-        value.dispose(); // host code: outside; README row "store dispose"
-      }
-      return;
-    }
-    const count = holders.get(session);
-    if (stores.get(session) === value && count !== undefined) holders.set(session, Math.max(0, count - 1));
-  };
+  const dispose = (value: SessionStore) => value.dispose(); // host code: outside; README row "store dispose"
   const touch = (session: string) => {
     const value = stores.get(session);
     if (!value) return;
@@ -195,12 +169,61 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
     } });
     return value;
   };
-  const createSession = (session: string) => {
-    const value = makeSession(session);
-    stores.set(session, value);
-    holders.set(session, 0);
-    return value;
+  /**
+   * The one owner of the session store cache and of delivery-identity eviction. A legacy replay drops the session's
+   * delivery identities when it starts, before its load (as main did), so a send made during the load keeps its intent.
+   * A replay's install only replaces the cached store: the old one is disposed now, or on its last view's release.
+   * Eviction (the cap or `evictSession`) drops both and disposes at once.
+   */
+  const storeStep = (session: string, step: StoreStep): SessionStore | undefined => {
+    const current = stores.get(session);
+    switch (step.kind) {
+      case "create": {
+        const value = makeSession(session);
+        stores.set(session, value);
+        holders.set(session, 0);
+        return value;
+      }
+      case "replay":
+        deliveryIdentity.evictSession(session);
+        return current;
+      case "install": {
+        if (current && current !== step.store) {
+          const count = holders.get(session) ?? 0;
+          evictionCount++;
+          if (count > 0) retired.set(current, count);
+          else dispose(current);
+        }
+        stores.set(session, step.store);
+        holders.set(session, step.holders);
+        touch(session);
+        return step.store;
+      }
+      case "release": {
+        const held = retired.get(step.store);
+        if (held === undefined) {
+          const count = holders.get(session);
+          if (current === step.store && count !== undefined) holders.set(session, Math.max(0, count - 1));
+        } else if (held > 1) retired.set(step.store, held - 1);
+        else {
+          retired.delete(step.store);
+          dispose(step.store);
+        }
+        return undefined;
+      }
+      case "evict":
+        if (replayRegistry && !replayRegistry.prepareEvict(session)) return undefined;
+        deliveryIdentity.evictSession(session);
+        if (!current) return undefined;
+        stores.delete(session);
+        holders.delete(session);
+        evictionCount++;
+        dispose(current);
+        return current;
+    }
   };
+  const evict = (id: string) => storeStep(id, { kind: "evict" }) !== undefined;
+  const createSession = (session: string) => storeStep(session, { kind: "create" })!;
   const trimUnheld = () => {
     let unheld = 0;
     // A replay owner holds its store even without a view holder, so it is never a victim.
@@ -234,7 +257,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
       release() {
         if (released) return;
         released = true;
-        releaseHolder(session, value);
+        storeStep(session, { kind: "release", store: value });
       },
     };
   };
@@ -526,14 +549,7 @@ export function createClient(transport: Transport, scheduler?: Scheduler, closeE
   replayRegistry = createReplayRegistry({
     request,
     makeStore: makeSession,
-    commitStore(session, value, count) {
-      stores.set(session, value);
-      holders.set(session, count);
-      touch(session);
-    },
-    releaseHolder,
-    evictStore: evict,
-    retireStore: (session) => void dropStore(session, true),
+    storeStep,
     servedTurn: (session) => servedTurns.get(session),
     adaptHistory: fromZetaHistory,
     adaptEvent: fromZetaEvent,
