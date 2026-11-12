@@ -91,8 +91,12 @@ async function runAxe(page: Page, surface: string, mode: string, plant = false) 
     if (missed.length) throw new Error(`the sweep missed planted real defects in ${mode}: ${missed.map(([rule]) => rule).join(", ")}`);
   }
   const violations = scan.violations.map((v: any) => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodes.filter((n: any) => !planted(n)).map((n: any) => ({ target: n.target, html: n.html, failureSummary: n.failureSummary })) })).filter((v: any) => v.nodes.length);
-  // Incomplete nodes are counted so a finding that moves out of violations stays visible.
-  const incomplete = Object.fromEntries(scan.incomplete.map((v: any) => [v.id, v.nodes.filter((n: any) => !planted(n)).length]));
+  // Incomplete nodes are counted, with axe's reason per node, so a finding that moves out of violations stays visible.
+  const incomplete = Object.fromEntries(scan.incomplete.map((v: any) => {
+    const reasons: Record<string, number> = {};
+    for (const n of v.nodes) if (!planted(n)) { const key = n.any[0]?.data?.messageKey ?? "none"; reasons[key] = (reasons[key] ?? 0) + 1; }
+    return [v.id, reasons];
+  }));
   result.axe.push({ surface, mode, planted: plant ? Object.keys(plants) : [], violations, incomplete });
 }
 async function contract(page: Page, browserName: string, surface: string) {
@@ -203,8 +207,17 @@ try {
     const b = await launch(engine);
     const p = await page(b, { viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
     await p.goto(webOrigin, { waitUntil: "networkidle" });
-    // The fake's live turn ends its setup by asking for approval, so the approve button means the turn has settled.
-    await p.locator('[data-part="approval"] button[data-action="approve"]').waitFor({ timeout: 15_000 });
+    await p.waitForSelector('[data-part="timeline"]', { timeout: 15_000 });
+    // Settled: the run no longer streams (chromium meets the fake's live turn waiting on its approval; webkit opens
+    // after that approval expired, so it shows history), and the live region has not changed for longer than the
+    // announcer's 1 s batch window (packages/react/src/parts.tsx LiveAnnouncer), so no batch can merge with the append.
+    await p.waitForFunction(() => {
+      const w = window as any;
+      const text = document.querySelector('[data-part="timeline-live"]')?.textContent ?? "";
+      const running = document.querySelector('[data-part="run-status"]')?.getAttribute("data-status") === "running";
+      if (running || w.a11yLive?.text !== text) w.a11yLive = { text, since: performance.now() };
+      return performance.now() - w.a11yLive.since > 1_200;
+    }, undefined, { polling: 100, timeout: 15_000 });
     const historyAnnouncer = await p.locator('[data-part="timeline-live"]').textContent();
     for (let index = 0; index < 4; index++) fake.emit({
       event: "sub_agent_receipt",
@@ -227,7 +240,7 @@ try {
     const b = await launch(engine);
     const p = await page(b, { viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
     await p.goto(webOrigin, { waitUntil: "networkidle" });
-    await p.getByText("no sessions yet", { exact: false }).first().waitFor({ timeout: 15_000 });
+    await p.getByText("this zeta has no sessions yet", { exact: false }).waitFor({ timeout: 15_000 });
     await contract(p, engine, "apps/web empty");
     if (engine === "chromium") await runAxe(p, "apps/web empty", "light-390");
     await closeTrackedBrowser(b);
