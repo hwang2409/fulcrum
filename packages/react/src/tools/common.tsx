@@ -17,20 +17,32 @@ export const omissionNotice = ({ reason, whole, bytes }: NonNullable<TextSourceS
   whole && reason === "run-cap" ? `output not kept (${humanBytes(bytes)}) to save memory in this long run` : `${humanBytes(bytes)} not kept`;
 const PROTOCOL_NOTICE = "host did not provide the complete output";
 const shownText = new WeakMap<TextSourceSnapshot, string>();
+// The shown text's length at its last flat copy, per snapshot (see sourceText).
+const flatLength = new WeakMap<TextSourceSnapshot, number>();
 const withNotice = (text: string, notice: string) => `${text}${text && !text.endsWith("\n") ? "\n" : ""}${notice}`;
 /**
  * A source as the viewer shows it: the retained text, with one plain line where the middle (or all of it) was not kept,
  * and a last line when the host itself cut the output. Each snapshot is read once; pass the snapshot it grew from
- * (`previous`) and an append costs only the added chunks.
+ * (`previous`), and the text it added when already known (`added`), and an append costs only the added chunks.
  */
-export function sourceText(source: TextSourceSnapshot, previous?: TextSourceSnapshot): string {
+export function sourceText(source: TextSourceSnapshot, previous?: TextSourceSnapshot, added?: string): string {
   const known = shownText.get(source);
   if (known !== undefined) return known;
   const base = previous && shownText.get(previous);
-  const tail = base !== undefined && !previous!.protocolTruncated ? sourceTail(previous, source) : undefined;
+  const tail = base !== undefined && !previous!.protocolTruncated ? added ?? sourceTail(previous, source) : undefined;
   let text: string;
-  if (tail !== undefined) text = base + tail;
-  else {
+  if (tail !== undefined) {
+    // Each append is a rope node over the previous text. Once the text has grown by an eighth since its last flat copy,
+    // join (one flat string) so the nodes behind it are free; the copies cost at most nine characters per added one.
+    const rebuilt = flatLength.get(previous!) ?? base!.length;
+    if (base!.length + tail.length - rebuilt > rebuilt / 8) {
+      text = [base, tail].join("");
+      flatLength.set(source, text.length);
+    } else {
+      text = base + tail;
+      flatLength.set(source, rebuilt);
+    }
+  } else {
     const omission = source.omission;
     let head = "", rest = "";
     for (const chunk of source.chunks()) {
@@ -64,8 +76,13 @@ export function cutRows(source: TextSourceSnapshot): { row: number; line: number
     if (chunk.start >= omission.end) { line = chunk.line; break; }
     last = chunk;
   }
-  return { row: last ? last.line + lineCount(last.text) : 0, line };
+  if (!last) return { row: 0, line };
+  // Snapshots of one stream share their head chunks: count the last one's lines once, not on every append.
+  let row = headRows.get(last);
+  if (row === undefined) headRows.set(last, row = last.line + lineCount(last.text));
+  return { row, line };
 }
+const headRows = new WeakMap<TextChunk, number>();
 
 type BoundedText = { text: string; shown: number; total: number; truncated: boolean };
 

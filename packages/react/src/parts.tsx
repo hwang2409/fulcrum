@@ -160,10 +160,9 @@ function useGrownOutput(output: TextSourceSnapshot | undefined) {
   const prior = seen.current;
   seen.current = output;
   if (!output) return null;
-  const text = sourceText(output, prior);
-  if (!prior || prior === output) return null;
-  const tail = sourceTail(prior, output);
-  return tail === undefined ? null : { text, previous: sourceText(prior), tail };
+  const tail = prior && prior !== output ? sourceTail(prior, output) : undefined;
+  const text = sourceText(output, prior, tail);
+  return tail === undefined ? null : { text, previous: sourceText(prior!), tail };
 }
 
 export const ToolCall = memo(function ToolCall({ id, className, summary, body: Body = ToolBody }: ItemProps & ToolViewProps) {
