@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { useItem } from "./hooks.js";
-import { boundText, MAX_SUMMARY_CHARS } from "./tools/common.js";
+import { boundText, clipSummary, MAX_SUMMARY_CHARS } from "./tools/common.js";
 
 // A notification's data has no fixed shape. Only these keys are read, and only string (or, for time, finite number)
 // values count: nested objects, arrays, and every other key stay unread, so an adapter's private payload never renders.
@@ -28,12 +28,7 @@ const firstString = (data: Data, keys: string[]) => {
     if (typeof value === "string" && value.trim()) return value;
   }
 };
-// One line, cut at a code point boundary with an ellipsis.
-const line = (value: string, limit: number) => {
-  const flat = value.replace(/\s+/g, " ").trim();
-  if (flat.length <= limit) return flat;
-  return `${flat.slice(0, limit - 1).replace(/[\uD800-\uDBFF]$/, "")}…`;
-};
+const line = (value: string, limit: number) => clipSummary(value.replace(/\s+/g, " ").trim(), limit);
 const timeOf = (data: Data) => {
   for (const key of TIME_KEYS) {
     const value = read(data, key);

@@ -392,6 +392,111 @@ test("open arguments serialize once across 1,000 output tokens and once per argu
   }
 });
 
+test("generic collapsed tool headers keep real adapter argument text", () => {
+  const zeta = readFileSync(new URL("../../zeta/test/fixtures/tools.jsonl", import.meta.url), "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line))
+    .filter((row) => row.params?.event === "tool_start" && ["agent", "todo"].includes(row.params.tool_call?.name))
+    .map((row) => row.params.tool_call);
+  const ai = readFileSync(new URL("../../ai-sdk/test/fixtures/conformance.jsonl", import.meta.url), "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line).part)
+    .filter((part) => part?.type === "tool-input-available" && ["weather", "deploy"].includes(part.toolName))
+    .map((part) => ({ id: part.toolCallId, name: part.toolName, arguments: part.input }));
+  const calls = [...zeta, ...ai];
+  render(calls.map((tool_call) => ({ type: "tool_start", tool_call })), calls.map(({ id }) => `tool:${id}`));
+  expect(calls.map(({ id }) => q(`[data-id="tool:${id}"] [data-part="tool-summary"]`).textContent)).toEqual([
+    "look around",
+    '{"items":[]}',
+    "San Francisco",
+    "production",
+  ]);
+});
+
+test("generic collapsed tool headers share one property-read budget", () => {
+  const counters = { nested: 0, wide: 0, sparse: 0 };
+  const counted = <T extends object>(value: T, key: keyof typeof counters): T => new Proxy(value, {
+    get(target, property, receiver) {
+      counters[key]++;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  let nested: Record<string, unknown> = counted({ value: 1 }, "nested");
+  for (let depth = 0; depth < 10; depth++) nested = counted({ child: nested }, "nested");
+  const wide: Record<string, unknown> = {};
+  for (let index = 0; index < 1_000; index++) wide[`key${index}`] = index;
+  const countedWide = counted(wide, "wide");
+  let sparse: Record<string, unknown> = counted({ value: 1 }, "sparse");
+  for (let depth = 0; depth < 6; depth++) {
+    const parent: Record<string, unknown> = {};
+    for (let index = 0; index < 23; index++) parent[`empty${index}`] = undefined;
+    parent.child = sparse;
+    sparse = counted(parent, "sparse");
+  }
+  const calls = [[nested, "nested"], [countedWide, "wide"], [sparse, "sparse"]].map(([value, key], index) => {
+    const rows = counted([value], key as keyof typeof counters);
+    return { id: `summary-budget-${index}`, name: "custom", arguments: counted({ rows }, key as keyof typeof counters) };
+  });
+  render(calls.map((tool_call) => ({ type: "tool_start", tool_call } as RunEvent)), calls.map(({ id }) => `tool:${id}`));
+  expect(counters.nested).toBeLessThanOrEqual(64);
+  expect(counters.wide).toBeLessThanOrEqual(64);
+  expect(counters.sparse).toBeLessThanOrEqual(64);
+});
+
+test("generic collapsed tool headers read proxy array length once", () => {
+  let lengthReads = 0;
+  const rows = new Proxy([{ title: "safe" }], {
+    get(target, key, receiver) {
+      if (key === "length" && ++lengthReads > 1) throw new Error("proxy threw second length");
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  expect(() => render([{ type: "tool_start", tool_call: { id: "summary-proxy", name: "custom", arguments: { rows } } }], ["tool:summary-proxy"])).not.toThrow();
+  expect(q('[data-part="tool-summary"]').textContent).toBe("1 item · safe");
+  expect(lengthReads).toBe(1);
+});
+
+test("generic collapsed tool headers clip at a unicode boundary", () => {
+  render([{ type: "tool_start", tool_call: { id: "summary-unicode", name: "custom", arguments: { text: `${"a".repeat(238)}😀x` } } }], ["tool:summary-unicode"]);
+  expect(q('[data-part="tool-summary"]').textContent).toBe(`${"a".repeat(238)}…`);
+});
+
+test("generic collapsed tool headers bound hostile argument depth and text", () => {
+  let deep: Record<string, unknown> = {};
+  for (let index = 0; index < 10_000; index++) deep = { child: deep };
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  const calls = [
+    { id: "summary-long", name: "custom", arguments: { text: "x".repeat(50_000_000) } },
+    { id: "summary-deep", name: "custom", arguments: { rows: [deep] } },
+    { id: "summary-cycle", name: "custom", arguments: { rows: [cyclic] } },
+    { id: "summary-bigint", name: "custom", arguments: { value: 1n } },
+    { id: "summary-symbol", name: "custom", arguments: { value: Symbol("value") } },
+    { id: "summary-array", name: "custom", arguments: { rows: new Array(1_000_000).fill(undefined) } },
+  ];
+  const original = JSON.stringify;
+  let stringifiedWholeValue = false;
+  restoreShims.push(shimProperty(JSON, "stringify", {
+    configurable: true,
+    writable: true,
+    value: ((value: unknown, ...rest: unknown[]) => {
+      if (value === deep || value === cyclic || value === calls[0]!.arguments.text || value === calls[5]!.arguments.rows) stringifiedWholeValue = true;
+      return original(value, ...(rest as [((key: string, value: unknown) => unknown) | null, string | number | undefined]));
+    }) as typeof JSON.stringify,
+  }));
+  const events = calls.map(({ id, name, arguments: arguments_ }) => ({ type: "tool_start", tool_call: { id, name, arguments: arguments_ as never } } as RunEvent));
+  expect(() => render(events, calls.map(({ id }) => `tool:${id}`))).not.toThrow();
+  expect(stringifiedWholeValue).toBe(false);
+  const summaryLengths = calls.map(({ id }) => q(`[data-id="tool:${id}"] [data-part="tool-summary"]`).textContent!.length);
+  expect(summaryLengths.every((length) => length <= 240)).toBe(true);
+  expect(q('[data-id="tool:summary-array"] [data-part="tool-summary"]').textContent).toStartWith("1000000 items ·");
+});
+
+test("generic collapsed tool headers survive throwing getters", () => {
+  const bad = Object.defineProperty({}, "value", { enumerable: true, get() { throw new Error("no value"); } });
+  const events = [{ type: "tool_start", tool_call: { id: "summary-getter", name: "custom", arguments: { rows: [bad] } } } as RunEvent];
+  expect(() => render(events, ["tool:summary-getter"])).not.toThrow();
+  expect(q('[data-part="tool-summary"]').textContent).toContain("unavailable");
+});
+
 test("unknown tools show output and collapsed json arguments", () => {
   render(tool("unknown", "custom", undefined, "done"), ["tool:unknown"]);
   const card = q('[data-id="tool:unknown"]');
