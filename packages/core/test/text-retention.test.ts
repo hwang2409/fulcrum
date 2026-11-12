@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { heapStats } from "bun:jsc";
 import { createRunStore, type RunEvent, type RunItem, type TextSourceSnapshot } from "../src/index.js";
 
 type Tool = Extract<RunItem, { type: "tool" }>;
@@ -83,7 +82,12 @@ test("streamed deltas cut where one whole string cuts: surrogates, CRLF, and lin
     const streamed = tool(store, "s").output;
     expectTruthful(streamed, canonical, 4_000);
     expectTruthful(tool(oneShot, "s").output, canonical, 4_000);
-    expect({ size, omission: streamed.omission, text: text(streamed) }).toEqual({ size, omission: tool(oneShot, "s").output.omission, text: text(tool(oneShot, "s").output) });
+    // The head is cut where one whole string cuts it; the streamed tail slides by whole chunks of at most an eighth of
+    // its budget, so it keeps all but at most one such chunk (plus a unit moved off a CRLF) of the cap.
+    const once = tool(oneShot, "s").output;
+    expect({ size, start: streamed.omission!.start }).toEqual({ size, start: once.omission!.start });
+    const grain = Math.floor((4_000 - utf8(canonical.slice(0, streamed.omission!.start))) / 8);
+    expect(streamed.retainedBytes, `size ${size}`).toBeGreaterThanOrEqual(4_000 - grain - 1);
   }
 });
 
@@ -260,17 +264,43 @@ test("history replay keeps no tool payloads and equals a store that never prepen
   store.endHistory();
 });
 
-test("with history open, the accepted log does not hold streamed tool payloads", () => {
-  Bun.gc(true);
-  const store = createRunStore((flush) => flush(), { toolOutputItemBytes: 32 * 1024, toolOutputRunBytes: 1024 * 1024 });
-  store.beginHistory();
-  const before = heapStats().heapSize;
-  // 32 MiB of fresh one-mebibyte payloads; the old log kept each one until the history walk ended.
-  for (let index = 0; index < 32; index++) store.dispatch(output("big", `${index}`.padEnd(1024 * 1024, "p").toLowerCase()));
-  Bun.gc(true);
-  const grown = (heapStats().heapSize - before) / (1024 * 1024);
-  expect(grown, `heap grew ${grown.toFixed(1)} MiB while history was open`).toBeLessThan(8);
-  store.endHistory();
+test("with history open, the accepted log does not hold streamed tool payloads (8 vs 32 payloads of 1 MiB)", () => {
+  // Each count runs in a fresh child process and the result is the slope, so a conservative stack scan that keeps one
+  // or two payloads alive in either run cannot decide it; a log that keeps every payload grows by 24 MiB.
+  const grown = (count: number) => {
+    const child = Bun.spawnSync([process.execPath, new URL("./retention-probe.ts", import.meta.url).pathname, "history", String(count)], { timeout: 120_000 });
+    if (child.exitCode !== 0) throw new Error(`retention probe failed: ${child.stderr.toString()}`);
+    return (JSON.parse(child.stdout.toString()) as { grownBytes: number }).grownBytes / (1024 * 1024);
+  };
+  const slope = grown(32) - grown(8);
+  expect(slope, `heap grew ${slope.toFixed(1)} MiB more for 24 more payloads while history was open`).toBeLessThan(8);
+}, 240_000);
+
+test("a stream whose last delta crosses the item cap keeps that delta's end", () => {
+  const store = createRunStore((flush) => flush(), { toolOutputItemBytes: 4_000, toolOutputRunBytes: 1_000_000 });
+  store.dispatch(output("x", "start\n"));
+  const crossing = `${"line of build output\n".repeat(400)}error: link failed\n`;
+  store.dispatch(output("x", crossing));
+  store.dispatch(end("x", true));
+  const source = tool(store, "x").output;
+  expectTruthful(source, `start\n${crossing}`, 4_000);
+  expect(text(source).endsWith("error: link failed\n"), "the tail keeps the end of the crossing delta").toBe(true);
+  expect(source.retainedBytes).toBeGreaterThan(3_000);
+});
+
+test("output of exactly the item cap is kept whole; one byte more is cut", () => {
+  for (const streamed of [false, true]) {
+    const store = createRunStore((flush) => flush(), { toolOutputItemBytes: 1_000, toolOutputRunBytes: 1_000_000 });
+    const at = "a".repeat(1_000);
+    if (streamed) { store.dispatch(output("at", at.slice(0, 600))); store.dispatch(output("at", at.slice(600))); }
+    else store.dispatch(output("at", at));
+    expect({ streamed, omission: tool(store, "at").output.omission, retained: tool(store, "at").output.retainedBytes }).toEqual({ streamed, omission: null, retained: 1_000 });
+    store.dispatch(output("at", "b"));
+    expect({ streamed, cut: tool(store, "at").output.omission?.reason }).toEqual({ streamed, cut: "item-cap" });
+    const once = createRunStore((flush) => flush(), { toolOutputItemBytes: 1_000, toolOutputRunBytes: 1_000_000 });
+    once.dispatch(output("over", `${at}b`));
+    expect(tool(once, "over").output.omission?.reason).toBe("item-cap");
+  }
 });
 
 test("invalid caps are rejected at creation", () => {

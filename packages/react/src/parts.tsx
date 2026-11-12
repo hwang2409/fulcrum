@@ -96,6 +96,8 @@ function ViewSummary({ item }: { item: ToolItem }) {
       return <>{path(view.path)}{summary.length > view.path.length ? <span data-part="summary-range">{summary.slice(view.path.length)}</span> : null}</>;
     }
     case "edit": {
+      // Counts over a diff that was not all kept would be wrong: say only the path.
+      if (view.diff.omission) return path(view.path);
       const { insert, remove } = diffStatText(sourceText(view.diff));
       return <>{path(view.path)} <span data-part="diff-stat" data-change="insert">+{insert}</span> <span data-part="diff-stat" data-change="delete">-{remove}</span></>;
     }

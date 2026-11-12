@@ -22,9 +22,12 @@ test("ending history releases accepted event objects and later dispatches are no
     store.dispatch(ordinary);
   })();
 
-  // JSC scans the stack conservatively: a stale slot from the dispatch can hold the event until the stack unwinds.
-  await Bun.sleep(0);
-  Bun.gc(true);
+  // JSC scans the stack conservatively: a stale slot can hold an event for a collection or two. Collect over a few
+  // turns; an event the store really keeps survives every one of them.
+  for (let attempt = 0; attempt < 10 && (first!.deref() || after!.deref()); attempt++) {
+    await Bun.sleep(1);
+    Bun.gc(true);
+  }
   expect(first!.deref()).toBeUndefined();
   expect(after!.deref()).toBeUndefined();
   expect(store.getState().usage).toEqual({ input: 3, output: 3 });

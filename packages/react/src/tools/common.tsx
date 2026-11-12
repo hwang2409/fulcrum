@@ -1,5 +1,5 @@
 import { Children, createContext, useContext, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { TextSourceSnapshot, ToolCall } from "@fulcrum/core";
+import type { TextChunk, TextSourceSnapshot, ToolCall } from "@fulcrum/core";
 import { sourceTail } from "@fulcrum/core/internal";
 import type { ItemState } from "../parts.js";
 import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
@@ -38,14 +38,33 @@ export function sourceText(source: TextSourceSnapshot, previous?: TextSourceSnap
       else head += chunk.text;
     }
     if (omission) {
-      // Style never crosses the cut: what the omitted text opened (a color, a bold run) must not paint the notice or the tail.
-      const reset = head.includes("\u001b") || rest.includes("\u001b") ? "\u001b[0m" : "";
+      // Style never crosses the cut: a color or bold run the head opened must not paint the notice or the tail. (The
+      // parser never sees the omitted text, so only the head can leave a style open; deciding by the head alone keeps
+      // the shown text the same whether it was built at once or grown append by append.)
+      const reset = head.includes("\u001b") ? "\u001b[0m" : "";
       text = withNotice(head, reset + omissionNotice(omission)) + (rest ? `\n${rest}` : "");
     } else text = head;
     if (source.protocolTruncated) text = withNotice(text, PROTOCOL_NOTICE);
   }
   shownText.set(source, text);
   return text;
+}
+
+/**
+ * Where a cut source's notice line sits among the rows sourceText shows (`row`), and the zero-based line of the source
+ * the next row shows (`line`), so numbered rows keep the file's own numbers past the cut. Undefined unless part of the
+ * source is kept on either side of the cut.
+ */
+export function cutRows(source: TextSourceSnapshot): { row: number; line: number } | undefined {
+  const omission = source.omission;
+  if (!omission || omission.whole) return undefined;
+  let last: TextChunk | undefined;
+  let line = source.lines;
+  for (const chunk of source.chunks()) {
+    if (chunk.start >= omission.end) { line = chunk.line; break; }
+    last = chunk;
+  }
+  return { row: last ? last.line + lineCount(last.text) : 0, line };
 }
 
 type BoundedText = { text: string; shown: number; total: number; truncated: boolean };
@@ -195,11 +214,11 @@ export function outputBlocks({ text, id, done = true, language, pretty = false }
   return viewerBlocks({ text: shown, id, format, done });
 }
 
-const Row = ({ number, children }: { number: number; children: ReactNode }) => (
+const Row = ({ number, children }: { number: number | undefined; children: ReactNode }) => (
   <div data-part="line"><span data-part="line-number">{number}</span><span data-part="line-text">{children}</span></div>
 );
 
-type NumberedProps = { text: string; start?: number; id: string; language?: string; done?: boolean };
+type NumberedProps = { text: string; start?: number; id: string; language?: string; done?: boolean; cut?: { row: number; line: number } };
 
 /** The highlight blocks NumberedLines asks for when it first mounts. */
 export function numberedBlocks({ text, id, language, done = true }: NumberedProps): Block[] {
@@ -207,7 +226,7 @@ export function numberedBlocks({ text, id, language, done = true }: NumberedProp
 }
 
 /** Numbered text uses rich rows while small and the shared viewer while large. */
-export function NumberedLines({ text, start = 1, id, language, done = true }: NumberedProps) {
+export function NumberedLines({ text, start = 1, id, language, done = true, cut }: NumberedProps) {
   const known = useContext(GrownText);
   const grown = known?.text === text ? known : undefined;
   const metrics = useTextMetrics(text, true, grown);
@@ -217,10 +236,12 @@ export function NumberedLines({ text, start = 1, id, language, done = true }: Nu
   if (large) return <TextViewer text={text} id={id} label="content" appendOnly grown={grown} metrics={metrics} format={format} done={done} />;
   const lines = splitLines(text);
   const tokenRows = tokens ? tokenLines(tokens) : undefined;
-  const digits = String(start + lines.length).length;
+  // Past a cut's notice row, rows resume at the source line the kept tail starts on.
+  const number = (index: number) => !cut || index < cut.row ? start + index : index === cut.row ? undefined : start + cut.line + index - cut.row - 1;
+  const digits = String(number(lines.length - 1) ?? start + lines.length).length;
   return (
     <div data-part="tool-lines" data-language={language} style={{ "--gutter": `${digits}ch` } as CSSProperties}>
-      {lines.map((line, index) => <Row key={index} number={start + index}>{tokenRows?.[index] ? <Tokens tokens={tokenRows[index]} /> : line}</Row>)}
+      {lines.map((line, index) => <Row key={index} number={number(index)}>{tokenRows?.[index] ? <Tokens tokens={tokenRows[index]} /> : line}</Row>)}
     </div>
   );
 }

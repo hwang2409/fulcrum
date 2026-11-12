@@ -11,6 +11,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { createRunStore, type ApprovalDecision, type RunEvent, type ToolView } from "@fulcrum/core";
 import { Approval, deliveryNoteText, Fallback, RunProvider, Timeline, ToolCall, useItem, type Renderers } from "../src/index.js";
 import { segmentText } from "../src/tools/text-viewer.js";
+import { humanBytes } from "../src/tools/common.js";
 
 afterAll(() => GlobalRegistrator.unregister());
 let root: Root | undefined;
@@ -729,4 +730,57 @@ test("a notification row says what the notification says", () => {
 test("a part asked for an id the store does not have renders nothing", () => {
   mount(<RunProvider store={createRunStore(() => {})}><ToolCall id="tool:missing" /><Fallback id="notification:9" /></RunProvider>);
   expect(container.innerHTML).toBe("");
+});
+
+// Bounded tool output: what the store did not keep is always said on the row, in plain words.
+const boundedStore = (itemBytes: number, runBytes: number) => createRunStore(() => {}, { toolOutputItemBytes: itemBytes, toolOutputRunBytes: runBytes });
+const shellRun = (id: string, command: string, output: string, exitCode: number): RunEvent[] => {
+  const tool_call = { id, name: "bash", arguments: { command } };
+  return [
+    { type: "tool_start", tool_call, view: { kind: "shell", command } },
+    { type: "tool_output", tool_call, output },
+    { type: "tool_end", tool_call, view: { kind: "shell", command, exitCode }, tool_result: { tool_call_id: id, content: "", is_error: exitCode !== 0 } },
+  ];
+};
+const textOf = (selector: string) => q(selector).textContent ?? "";
+
+test("a body the run let go of and an output cut in the middle each say what was not kept", () => {
+  const store = boundedStore(400, 900);
+  const build = `${"build line ".padEnd(99, "·")}\n`.repeat(8) + "error: link failed\n";
+  [...shellRun("old", "bun test", "t".repeat(299) + "\n", 0), ...["a", "b", "c"].flatMap((id) => shellRun(id, `echo ${id}`, id.repeat(299) + "\n", 0)), ...shellRun("cut", "make build", build, 2)].forEach(store.dispatch);
+  mount(<RunProvider store={store}><ToolCall id="tool:old" /><ToolCall id="tool:cut" /></RunProvider>);
+  openCard("tool:old");
+  openCard("tool:cut");
+  // Run cap: the whole body is gone, and the row says so with how much; name, status, and exit code stay.
+  expect(textOf('[data-id="tool:old"] [data-part="tool-body"]')).toContain("output not kept (300 bytes) to save memory in this long run");
+  expect(textOf('[data-id="tool:old"] [data-part="tool-header"]')).toContain("bun test");
+  expect(textOf('[data-id="tool:old"] [data-part="tool-header"]')).toContain("done");
+  expect(textOf('[data-id="tool:old"] [data-part="tool-foot"]')).toContain("exit 0");
+  // Item cap: head and tail stay, with one line between them that says how much was not kept.
+  const cut = store.getItem("tool:cut");
+  if (cut?.type !== "tool" || !cut.output.omission) throw new Error("expected a cut output");
+  const notice = `${humanBytes(cut.output.omission.bytes)} not kept`;
+  const rows = [...container.querySelectorAll('[data-id="tool:cut"] [data-part="tool-body"] pre, [data-id="tool:cut"] [data-part="text-viewer"]')].map((el) => el.textContent ?? "").join("\n");
+  expect(rows.split("\n")).toContain(notice);
+  expect(rows.trimEnd().endsWith("error: link failed")).toBe(true);
+  expect(textOf('[data-id="tool:cut"] [data-part="tool-header"]')).toContain("failed");
+  expect(textOf('[data-id="tool:cut"] [data-part="tool-foot"]')).toContain("exit 2");
+});
+
+test("a read cut in the middle stays a numbered file view whose tail keeps the file's line numbers", () => {
+  const store = boundedStore(600, 100_000);
+  const file = Array.from({ length: 100 }, (_, index) => `const line${index + 11} = ${index};\n`).join("");
+  const tool_call = { id: "r", name: "read", arguments: { path: "src/a.ts" } };
+  const view: ToolView = { kind: "read", path: "src/a.ts", range: { offset: 10 } };
+  [{ type: "tool_start", tool_call, view }, { type: "tool_output", tool_call, output: file }, { type: "tool_end", tool_call, tool_result: { tool_call_id: "r", content: "", is_error: false } }].forEach((event) => store.dispatch(event as RunEvent));
+  mount(<RunProvider store={store}><ToolCall id="tool:r" /></RunProvider>);
+  openCard("tool:r");
+  const rows = [...container.querySelectorAll('[data-id="tool:r"] [data-part="tool-lines"] [data-part="line"]')].map((row) => [row.querySelector('[data-part="line-number"]')!.textContent, row.querySelector('[data-part="line-text"]')!.textContent]);
+  expect(rows[0]).toEqual(["11", "const line11 = 0;"]);
+  const at = rows.findIndex(([, text]) => text?.endsWith("not kept"));
+  expect(at, "the cut line is a row of the file view").toBeGreaterThan(0);
+  expect(rows[at]![0]).toBe("");
+  // Every row after the cut shows its own line: `const lineN` sits on line N.
+  for (const [number, text] of rows.slice(at + 1)) if (text?.startsWith("const line")) expect(text).toStartWith(`const line${number} =`);
+  expect(rows.at(-1)).toEqual(["110", "const line110 = 99;"]);
 });

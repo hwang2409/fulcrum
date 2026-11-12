@@ -5,7 +5,7 @@ const injection = process.env.BENCH_INJECT === "quadratic";
 const result = await runWorkload(root, injection);
 console.log(JSON.stringify({
   ...result,
-  gates: { perDeltaRatio: "enforced per named case", toolOutputAppendRatio: 1.5, toolOutputReplacementRatio: 12, absoluteTimings: "report-only" },
+  gates: { perDeltaRatio: "enforced per named case", toolOutputAppendRatio: 1.5, toolOutputCutAppendRatio: 1.5, toolOutputReplacementRatio: 12, absoluteTimings: "report-only" },
   injection: injection
     ? { mode: "quadratic", purpose: "manual sensitivity check; adds per-event work proportional to seed size" }
     : null,
@@ -18,6 +18,10 @@ if (result.prepend.rows !== 110_000 || result.outlineSize !== 110_000) {
 }
 if (result.toolOutput.appendPerKibRatio > 1.5) {
   console.error(`tool output append scaling failed: 10x retained history took ${result.toolOutput.appendPerKibRatio.toFixed(3)}x CPU per new KiB (limit 1.5x)`);
+  process.exit(1);
+}
+if (result.toolOutput.cutAppendRatio > 1.5) {
+  console.error(`tool output append after the item cut failed: 10x more lines took ${result.toolOutput.cutAppendRatio.toFixed(3)}x CPU per line (limit 1.5x)`);
   process.exit(1);
 }
 if (result.toolOutput.replacementRatio > 12) {

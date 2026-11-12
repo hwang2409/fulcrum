@@ -158,11 +158,11 @@ const owned = (text: string, start: number, end: number) => {
 
 type Chunk = TextChunk & { readonly bytes: number };
 const chunk = (start: number, line: number, text: string, bytes: number): Chunk => Object.freeze({ start, line, text, bytes });
-/** Owned chunks of at most CHUNK_BYTES for text[from, to), whose first unit is at logical `start` on logical `line`. */
-const chunksOf = (text: string, from: number, to: number, start: number, line: number, into: Chunk[] = []) => {
+/** Owned chunks of at most `size` bytes for text[from, to), whose first unit is at logical `start` on logical `line`. */
+const chunksOf = (text: string, from: number, to: number, start: number, line: number, into: Chunk[] = [], size = CHUNK_BYTES) => {
   for (let at = from; at < to;) {
-    let end = prefixEnd(text, at, to, CHUNK_BYTES);
-    // Keep CR with its LF, so a chunk ends a whole line ending (end > at + 1 always: a pair is 4 of 32k bytes).
+    let end = prefixEnd(text, at, to, size);
+    // Keep CR with its LF, so a chunk ends a whole line ending (end > at + 1 always: size >= 4 holds a pair or CRLF).
     if (end < to && text.charCodeAt(end - 1) === 13 && text.charCodeAt(end) === 10) end--;
     const value = owned(text, at, end);
     into.push(chunk(start + at - from, line, value, utf8Length(value)));
@@ -170,6 +170,38 @@ const chunksOf = (text: string, from: number, to: number, start: number, line: n
     at = end;
   }
   return into;
+};
+/**
+ * Appends `added`, which starts at logical `start` on logical `line`, to `values` in place. The last chunk fills to
+ * `size` first, so a stream of small deltas keeps few chunks; both halves of a filled chunk are owned strings.
+ */
+function appendChunks(values: Chunk[], added: string, start: number, line: number, size: number) {
+  const last = values.at(-1);
+  let from = 0;
+  if (last && added && last.bytes < size) {
+    let end = prefixEnd(added, 0, added.length, size - last.bytes);
+    if (end < added.length && added.charCodeAt(end - 1) === 13 && added.charCodeAt(end) === 10) end--;
+    if (end > 0) {
+      const value = owned(added, 0, end);
+      values[values.length - 1] = chunk(last.start, last.line, last.text + value, last.bytes + utf8Length(value));
+      from = end;
+    }
+  }
+  return chunksOf(added, from, added.length, start + from, line + newlines(added, 0, from), values, size);
+}
+/**
+ * Chunk size for a cut source's tail, which slides by dropping whole chunks: small against the tail's budget, so a
+ * slide keeps all but at most one chunk of it.
+ */
+const tailGrain = (budget: number) => Math.max(4, Math.min(CHUNK_BYTES, Math.floor(budget / 8)));
+/** `chunks` split so none holds more than `size` bytes (a one-time copy when a source is first cut). */
+const regrain = (chunks: readonly Chunk[], size: number) => {
+  const out: Chunk[] = [];
+  for (const value of chunks) {
+    if (value.bytes <= size) out.push(value);
+    else chunksOf(value.text, 0, value.text.length, value.start, value.line, out, size);
+  }
+  return out;
 };
 
 // A lineage is an identity token, so two equal texts compare equal structurally whatever their history.
@@ -222,46 +254,36 @@ function fromText(
   const head = chunksOf(value, 0, headEnd, 0, 0);
   const headBytes = sumBytes(head);
   const tailStart = Math.max(headEnd, safeCut(value, suffixStart(value, headEnd, value.length, limit - headBytes), "right"));
-  const values = chunksOf(value, tailStart, value.length, tailStart, newlines(value, 0, tailStart), [...head]);
+  const values = chunksOf(value, tailStart, value.length, tailStart, newlines(value, 0, tailStart), [...head], tailGrain(limit - headBytes));
   const retained = sumBytes(values);
   const cut = omission(reason, headEnd, tailStart, bytes - retained, retained === 0);
   return new Source(meta.version, value.length, bytes, retained, cut, meta.protocolTruncated, values, head.length, count, endsNewline, meta.pendingHigh, lineage());
 }
 
 /**
- * Chunks from the back of `chunks` worth at most `budget` bytes, cutting the first kept one at a safe place.
- * `before` is the chunk preceding chunks[0] (context for the escape-sequence check only).
+ * The tail after dropping whole leading chunks until it holds at most `budget` bytes, its new first chunk moved to a
+ * safe start. Chunk edges respect pairs and CRLF only within one delta and may sit inside an escape sequence, so the
+ * first kept chunk is checked against the dropped text before it. Whole-chunk steps keep a streamed append's cost
+ * independent of how much output came before.
  */
-function keepTail(chunks: readonly Chunk[], budget: number, before?: Chunk): Chunk[] {
-  let index = chunks.length;
-  let used = 0;
-  while (index > 0 && used + chunks[index - 1]!.bytes <= budget) used += chunks[--index]!.bytes;
-  const kept = chunks.slice(index);
-  // The cut lands in chunks[index - 1] (partly kept) or at the start of chunks[index] (a chunk edge, which may sit
-  // inside an escape sequence: chunk edges only respect pairs and CRLF). Check it against the text before it.
-  const cutChunk = index > 0 ? chunks[index - 1]! : undefined;
-  const first = kept[0];
-  const previous = cutChunk ?? before;
-  if (cutChunk) {
-    const start = suffixStart(cutChunk.text, 0, cutChunk.text.length, budget - used);
-    if (start < cutChunk.text.length) {
-      const context = (index > 1 ? chunks[index - 2]!.text.slice(-ANSI_LOOKBACK) : before?.text.slice(-ANSI_LOOKBACK) ?? "");
-      const text = context + cutChunk.text;
-      const at = safeCut(text, context.length + start, "right") - context.length;
-      if (at < cutChunk.text.length) {
-        const value = owned(cutChunk.text, at, cutChunk.text.length);
-        return [chunk(cutChunk.start + at, cutChunk.line + newlines(cutChunk.text, 0, at), value, utf8Length(value)), ...kept];
-      }
+function slideTail(tail: readonly Chunk[], budget: number): Chunk[] {
+  let bytes = sumBytes(tail);
+  let index = 0;
+  while (index < tail.length && bytes > budget) bytes -= tail[index++]!.bytes;
+  if (index === 0) return tail.slice();
+  for (; index < tail.length; index++) {
+    let context = "";
+    for (let back = index - 1; back >= 0 && context.length < ANSI_LOOKBACK; back--) context = tail[back]!.text + context;
+    context = context.slice(-ANSI_LOOKBACK);
+    const first = tail[index]!;
+    const at = safeCut(context + first.text, context.length, "right") - context.length;
+    if (at === 0) return tail.slice(index);
+    if (at < first.text.length) {
+      const value = owned(first.text, at, first.text.length);
+      return [chunk(first.start + at, first.line + newlines(first.text, 0, at), value, utf8Length(value)), ...tail.slice(index + 1)];
     }
   }
-  if (!first || !previous) return kept;
-  const context = previous.text.slice(-ANSI_LOOKBACK);
-  const text = context + first.text;
-  const at = safeCut(text, context.length, "right") - context.length;
-  if (at === 0) return kept;
-  if (at >= first.text.length) return keepTail(kept.slice(1), budget, first);
-  const value = owned(first.text, at, first.text.length);
-  return [chunk(first.start + at, first.line + newlines(first.text, 0, at), value, utf8Length(value)), ...kept.slice(1)];
+  return [];
 }
 
 /** The chunks from text offset `at` on; a chunk that `at` falls inside keeps its own copy of the part after `at`. */
@@ -327,41 +349,29 @@ export function appendTextSource(source: TextSourceSnapshot, delta: string, limi
   const count = prior.newlineCount + newlines(added);
   const endsNewline = added ? added.endsWith("\n") : prior.endsNewline;
   if (!prior.omission && bytes <= limit) {
-    // Fill the last chunk first, so a stream of small deltas keeps few chunks; both halves are owned strings.
-    const values = prior.values.slice();
-    const last = values.at(-1);
-    let from = 0;
-    if (last && added) {
-      let end = prefixEnd(added, 0, added.length, CHUNK_BYTES - last.bytes);
-      if (end < added.length && added.charCodeAt(end - 1) === 13 && added.charCodeAt(end) === 10) end--;
-      if (end > 0) {
-        const value = owned(added, 0, end);
-        values[values.length - 1] = chunk(last.start, last.line, last.text + value, last.bytes + utf8Length(value));
-        from = end;
-      }
-    }
-    chunksOf(added, from, added.length, prior.length + from, prior.newlineCount + newlines(added, 0, from), values);
+    const values = appendChunks(prior.values.slice(), added, prior.length, prior.newlineCount, CHUNK_BYTES);
     return new Source(prior.version + 1, length, bytes, bytes, null, prior.protocolTruncated, values, values.length, count, endsNewline, step.pending, prior.lineage);
   }
+  let head: Chunk[];
+  let tail: Chunk[];
   if (!prior.omission) {
     // The first cut, over the chunks already held (never one joined string): a quarter for the head, the rest the tail.
-    const values = chunksOf(added, 0, added.length, prior.length, prior.newlineCount, prior.values.slice());
-    const head = keepHead(values, Math.floor(limit / 4));
-    const headBytes = sumBytes(head);
-    const start = head.length ? head.at(-1)!.start + head.at(-1)!.text.length : 0;
-    const tail = keepTail(chunksFrom(values, start), limit - headBytes, head.at(-1));
-    const retained = headBytes + sumBytes(tail);
-    const cut = omission("item-cap", start, tail[0]?.start ?? length, bytes - retained, retained === 0);
-    return new Source(prior.version + 1, length, bytes, retained, cut, prior.protocolTruncated, [...head, ...tail], head.length, count, endsNewline, step.pending, lineage());
+    const values = appendChunks(prior.values.slice(), added, prior.length, prior.newlineCount, CHUNK_BYTES);
+    head = keepHead(values, Math.floor(limit / 4));
+    const end = head.length ? head.at(-1)!.start + head.at(-1)!.text.length : 0;
+    tail = regrain(chunksFrom(values, end), tailGrain(limit - sumBytes(head)));
+  } else {
+    head = prior.values.slice(0, prior.headCount);
+    tail = appendChunks(prior.values.slice(prior.headCount), added, prior.length, prior.newlineCount, tailGrain(limit - sumBytes(head)));
   }
-  const head = prior.values.slice(0, prior.headCount);
   const headBytes = sumBytes(head);
-  const candidates = prior.values.slice(prior.headCount);
-  chunksOf(added, 0, added.length, prior.length, prior.newlineCount, candidates);
-  const tail = keepTail(candidates, Math.max(0, limit - headBytes), head.at(-1));
+  tail = slideTail(tail, Math.max(0, limit - headBytes));
   const retained = headBytes + sumBytes(tail);
-  const cut = omission(prior.omission.reason, prior.omission.start, tail[0]?.start ?? length, bytes - retained, retained === 0);
-  return new Source(prior.version + 1, length, bytes, retained, cut, prior.protocolTruncated, [...head, ...tail], head.length, count, endsNewline, step.pending, lineage());
+  const start = prior.omission ? prior.omission.start : head.length ? head.at(-1)!.start + head.at(-1)!.text.length : 0;
+  const cut = omission(prior.omission?.reason ?? "item-cap", start, tail[0]?.start ?? length, bytes - retained, retained === 0);
+  // While the tail only grew (no chunk slid out), the kept text is the prior kept text plus the delta: same lineage.
+  const grew = prior.omission !== null && cut.end === prior.omission.end;
+  return new Source(prior.version + 1, length, bytes, retained, cut, prior.protocolTruncated, [...head, ...tail], head.length, count, endsNewline, step.pending, grew ? prior.lineage : lineage());
 }
 
 /** Ends a stream: a held high surrogate that never met its low half becomes U+FFFD. */
@@ -392,8 +402,8 @@ export function limitTextSource(source: TextSourceSnapshot, limit: number, reaso
   if (!prior.omission) return fromText(retainedText(prior), limit, reason, { version: prior.version + 1, protocolTruncated: prior.protocolTruncated, pendingHigh: prior.pendingHigh, lineage: undefined });
   const head = keepHead(prior.values.slice(0, prior.headCount), Math.floor(limit / 4));
   const headBytes = sumBytes(head);
-  const rest = prior.values.slice(head.length);
-  const tail = keepTail(rest, limit - headBytes, head.at(-1));
+  // Only the old tail: old head text past the new head joins the omission, so the source keeps one cut.
+  const tail = slideTail(regrain(prior.values.slice(prior.headCount), tailGrain(limit - headBytes)), limit - headBytes);
   const retained = headBytes + sumBytes(tail);
   const start = head.length ? head.at(-1)!.start + head.at(-1)!.text.length : 0;
   const cut = omission(reason, start, tail[0]?.start ?? prior.length, prior.bytes - retained, retained === 0);
@@ -408,11 +418,12 @@ export function retainedText(source: TextSourceSnapshot): string {
 }
 
 /**
- * The text `next` added after `previous` when `next` only appended to it (both complete), else undefined. Reads only
- * the added chunks, so a streaming viewer continues from the tail instead of reading the whole text again.
+ * The text `next` added after `previous` when `next` only appended to its kept text (the same cut, if any), else
+ * undefined. Reads only the added chunks, so a streaming viewer continues from the tail instead of reading it all again.
  */
 export function sourceTail(previous: TextSourceSnapshot | undefined, next: TextSourceSnapshot): string | undefined {
-  if (!previous || previous.omission || next.omission || previous.protocolTruncated !== next.protocolTruncated) return undefined;
+  if (!previous || previous.protocolTruncated !== next.protocolTruncated) return undefined;
+  if (previous.omission?.start !== next.omission?.start || previous.omission?.end !== next.omission?.end) return undefined;
   const before = asSource(previous);
   const after = asSource(next);
   if (before === after) return "";

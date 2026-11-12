@@ -41,6 +41,9 @@ export type PrependScalingResult = {
 
 export type ToolOutputScalingResult = {
   appendPerKibRatio: number;
+  cutAppendRatio: number;
+  smallCutAppendCpu: number;
+  largeCutAppendCpu: number;
   replacementRatio: number;
   smallAppendCpu: number;
   largeAppendCpu: number;
@@ -193,8 +196,26 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
     if (item?.type !== "tool" || item.output.retainedBytes > 3 * 1024 * 1024) throw new Error("invalid bounded tool output result");
     return (usage.user + usage.system) / 1_000 / iterations;
   };
+  // Streaming after the item cut: a log arriving line by line keeps sliding its tail. 10x more 100-byte lines past the
+  // default 2 MiB cap must cost about the same per line; a tail that fragments or recopies per line grows with the count.
+  const cutCpu = (lines: number) => {
+    const store = createRunStore((flush) => flush());
+    const tool_call = { id: "cut", name: "bench", arguments: {} };
+    store.dispatch({ type: "tool_output", tool_call, output: "s".repeat(2_200 * 1024) });
+    const line = `${"y".repeat(99)}\n`;
+    const start = process.cpuUsage();
+    for (let index = 0; index < lines; index++) store.dispatch({ type: "tool_output", tool_call, output: line });
+    const usage = process.cpuUsage(start);
+    const item = store.getItem("tool:cut");
+    if (item?.type !== "tool" || item.output.retainedBytes > 2 * 1024 * 1024 || item.output.bytes !== 2_200 * 1024 + lines * 100) throw new Error("invalid cut tool output result");
+    return (usage.user + usage.system) / 1_000 / lines;
+  };
   toolCpu(190 * 1024);
   toolCpu(1_900 * 1024);
+  cutCpu(20_000);
+  const cutMeasurements = Array.from({ length: runs }, () => ({ small: cutCpu(5_000), large: cutCpu(50_000) }));
+  const smallCutAppendCpu = median(cutMeasurements.map(({ small }) => small));
+  const largeCutAppendCpu = median(cutMeasurements.map(({ large }) => large));
   const appendMeasurements = Array.from({ length: runs }, () => ({ small: toolCpu(190 * 1024), large: toolCpu(1_900 * 1024) }));
   const replacementMeasurements = Array.from({ length: runs }, () => ({ small: toolCpu(200 * 1024, true), large: toolCpu(2_000 * 1024, true) }));
   const smallAppendCpu = median(appendMeasurements.map(({ small }) => small));
@@ -204,6 +225,8 @@ export async function runWorkload(root: string, injectQuadratic = false): Promis
   const toolOutput = {
     appendPerKibRatio: largeAppendCpu / Math.max(smallAppendCpu, 0.001),
     replacementRatio: largeReplacementCpu / Math.max(smallReplacementCpu, 0.001),
+    cutAppendRatio: largeCutAppendCpu / Math.max(smallCutAppendCpu, 0.001),
+    smallCutAppendCpu, largeCutAppendCpu,
     smallAppendCpu, largeAppendCpu, smallReplacementCpu, largeReplacementCpu,
   };
 

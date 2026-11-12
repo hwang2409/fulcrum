@@ -12,7 +12,10 @@ const kept: string[] = [];
 const store = createRunStore((flush) => flush(), { toolOutputItemBytes: KEEP, toolOutputRunBytes: 1024 * 1024 * 1024 });
 Bun.gc(true);
 const before = heapStats().heapSize;
+// `history`: one tool streams `count` fresh 1 MiB payloads while history is open; the accepted log must not keep them.
+if (mode === "history") store.beginHistory();
 for (let index = 0; index < count; index++) {
+  if (mode === "history") { store.dispatch({ type: "tool_output", tool_call: { id: "big", name: "bash", arguments: {} }, output: `${index}`.padEnd(1024 * 1024, "p").toLowerCase() }); continue; }
   if (mode === "slice") { kept.push(parent(index).slice(-KEEP)); continue; }
   const tool_call = { id: String(index), name: "bash", arguments: {} };
   store.dispatch({ type: "tool_output", tool_call, output: parent(index) });

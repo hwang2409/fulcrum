@@ -58,41 +58,48 @@ const failed = (item: ToolItem) => item.is_error || (item.view?.kind === "shell"
 /**
  * The store's one owner of tool-text retention. Every tool item change passes through `enforce` before the store
  * publishes: each item keeps at most `itemBytes` across its sources, and while the run holds more than `runBytes`,
- * completed tools lose their bodies oldest first. Running tools, failed tools, and the newest
+ * completed tools lose their bodies, the earliest finished first. Running tools, failed tools, and the newest
  * PROTECTED_COMPLETED_TOOLS completed tools never lose their whole body, so the run cap is soft when they alone exceed it.
  */
 export function createToolRetention(itemBytes: number, runBytes: number) {
   if (!(Number.isSafeInteger(itemBytes) && itemBytes > 0)) throw new RangeError("toolOutputItemBytes must be a positive integer");
   if (!(Number.isSafeInteger(runBytes) && runBytes > 0)) throw new RangeError("toolOutputRunBytes must be a positive integer");
-  // Tools that retain bytes, in the order they started retaining them (oldest first): eviction walks from the front
-  // and skips only protected tools, so a long run does not rescan the tools it already emptied.
+  // Retained bytes per tool, and their sum.
   let retained = new Map<string, number>();
   let total = 0;
+  // Completed, not failed tools that retain bytes, in the order they became so: the only tools eviction can take, so
+  // a run held over its cap by protected tools does not rescan them on every event.
+  let evictable = new Set<string>();
   // Ids of the most recently finished tools, newest last.
   let recent: string[] = [];
-  const account = (id: string, bytes: number) => {
+  const account = (id: string, item: ToolItem | undefined) => {
+    const bytes = item ? toolRetainedBytes(item) : 0;
     total += bytes - (retained.get(id) ?? 0);
     if (bytes) retained.set(id, bytes);
     else retained.delete(id);
+    if (bytes && !item!.active && !failed(item!)) evictable.add(id);
+    else evictable.delete(id);
   };
   const evict = (target: Map<string, RunItem>, changed: Set<string>) => {
     if (total <= runBytes) return;
-    for (const id of retained.keys()) {
+    // Deleting the visited id (account does) while iterating a Set is safe: iteration continues with the next.
+    for (const id of evictable) {
+      if (recent.includes(id)) continue;
       const item = target.get(id);
-      if (item?.type !== "tool" || item.active || failed(item) || recent.includes(id)) continue;
+      if (item?.type !== "tool") { account(id, undefined); continue; }
       const omitted = omitToolItem(item);
       target.set(id, omitted);
       changed.add(id);
-      account(id, toolRetainedBytes(omitted));
+      account(id, omitted);
       if (total <= runBytes) return;
     }
   };
   const limit = (target: Map<string, RunItem>, id: string, changed: Set<string>) => {
     const item = target.get(id);
-    if (item?.type !== "tool") return void account(id, 0);
+    if (item?.type !== "tool") return void account(id, undefined);
     const limited = limitToolItem(item, itemBytes);
     if (limited !== item) target.set(id, limited), changed.add(id);
-    account(id, toolRetainedBytes(limited));
+    account(id, limited);
     return limited;
   };
   return {
@@ -104,21 +111,27 @@ export function createToolRetention(itemBytes: number, runBytes: number) {
       }
       evict(target, changed);
     },
-    /** Recounts `target` from nothing in outline order, as after a history prepend rebuilt every item. */
+    /**
+     * Recounts `target` from nothing in outline order, as after a history prepend rebuilt every item. The tools that
+     * finished last before the prepend stay the newest; an older page only fills the protected places they leave.
+     */
     reset(target: Map<string, RunItem>, outline: readonly { id: string }[], changed: Set<string>) {
+      const live = recent;
       retained = new Map();
+      evictable = new Set();
       total = 0;
       recent = [];
       const seen = new Set<string>();
       for (const { id } of outline) {
         seen.add(id);
         const item = limit(target, id, changed);
-        if (item && !item.active) recent = [...recent, id].slice(-PROTECTED_COMPLETED_TOOLS);
+        if (item && !item.active && !live.includes(id)) recent = [...recent, id].slice(-PROTECTED_COMPLETED_TOOLS);
       }
       for (const [id, item] of target) if (item.type === "tool" && !seen.has(id)) limit(target, id, changed);
+      recent = [...recent, ...live.filter((id) => { const item = target.get(id); return item?.type === "tool" && !item.active; })].slice(-PROTECTED_COMPLETED_TOOLS);
       evict(target, changed);
     },
-    clear() { retained = new Map(); total = 0; recent = []; },
+    clear() { retained = new Map(); evictable = new Set(); total = 0; recent = []; },
     /** Retained bytes across every tool source the pool owns (tests and diagnostics). */
     get bytes() { return total; },
   };

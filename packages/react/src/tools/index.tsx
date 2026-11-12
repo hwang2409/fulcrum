@@ -68,6 +68,7 @@ export function toolSummary({ view, tool_call }: ToolItem): string {
       return limit !== undefined ? `${view.path}:${start}-${start + limit - 1}` : view.range?.offset ? `${view.path}:${start}` : view.path;
     }
     case "edit": {
+      if (view.diff.omission) return view.path; // counts over a diff that was not all kept would be wrong
       const { insert, remove } = diffStatText(sourceText(view.diff));
       return `${view.path} +${insert} -${remove}`;
     }
