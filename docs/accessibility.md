@@ -5,7 +5,7 @@ this page records the accessibility matrix for the playground component gallery 
 ## baseline
 
 - date: 2026-11-12
-- revision: `bc3ea0e13b35e0004b5bd000072ad2c46b93e42a` (the sweep code of this record; later commits change only this page)
+- revision: `6e142c0cf9c3968a2ffc73d20313e76d92163f47` (the sweep code of this record merged with main `d7c33dc`, which has #182 and #183; later commits change only this page)
 - host: macos 26.6.2, arm64
 - tools: bun 1.4.4, playwright 1.64.1, axe-core 4.11.1
 - automated browser engines: chromium 156.0.8078.4 and webkit 27.2
@@ -31,7 +31,7 @@ so that this cannot hide real defects, the sweep plants two real ones in the las
 
 | surface and state | light 1440 | dark 1440 | forced colors 1440 | light 390 |
 | --- | ---: | ---: | ---: | ---: |
-| playground `/gallery.html`: every component card and state | 1 rule, 2 nodes | 1 rule, 2 nodes | 1 rule, 2 nodes | 1 rule, 2 nodes |
+| playground `/gallery.html`: every component card and state | 0 | 0 | 0 | 0 |
 | apps/web: history, running message, tools, approval pending, and errors | 0 | 0 | 0 | 0 |
 | apps/web: no sessions | not run | not run | not run | 0 |
 
@@ -40,14 +40,14 @@ the first record (`f1c7b66`) listed four defect classes. their state on this rev
 - `heading-order`: fixed by #174 (message headings start at h3).
 - `region`: fixed by #180 (the mobile jump control sits inside a landmark).
 - `scrollable-region-focusable`: fixed by #177 (scrollable code and output are keyboard reachable). 6 of the 12 gallery nodes at 390 in the first record were placeholder overlap, not real overflow.
-- `color-contrast`: 0 real failures. the earlier 2 copy-button nodes (2.58:1 light, 2.60:1 dark, 1.84:1 forced colors) and the ansi cyan node at 390 (4.37:1) were placeholder overlap: axe's own related nodes were the approve button and a diff insert row of other cards. scrolled into view, the copy button is about 6.1:1 on its white card and the cyan is 4.93:1 on white. the same sweep with the override removed still reports them (2, 2, 2, and 3 nodes); the scan above reports 0. this is why pr #173 was closed.
-- `landmark-unique`: still open on main, 2 nodes in every mode: a repeated `code viewer` region name and a repeated `run path` navigation name. #183 fixes them.
+- `color-contrast`: 0 real failures. the earlier 2 copy-button nodes (2.58:1 light, 2.60:1 dark, 1.84:1 forced colors) and the ansi cyan node at 390 (4.37:1) were placeholder overlap: axe's own related nodes were the approve button and a diff insert row of other cards. scrolled into view, the copy button is about 6.1:1 on its white card and the cyan is 4.93:1 on white. the same sweep with the override removed still reports them (2, 2, 2, and 3 nodes); the scan above reports 0. this is why pr #173 was closed. #182 then raised every ansi color in the default themes to 4.5:1 by measured math on the real backgrounds; this sweep still reports 0.
+- `landmark-unique`: fixed by #183. the earlier 2 nodes in every mode were a repeated `code viewer` region name and a repeated `run path` navigation name; viewers are now `role="group"` and the breadcrumb navigation renders only at depth > 0.
 
 axe leaves some nodes as "needs review" (incomplete) rather than pass or fail, and the json report counts them per rule with axe's reason. on this revision the gallery has 304 to 425 incomplete `color-contrast` nodes per mode, mostly `pseudoContent` (a background from a pseudo-element) and `elmPartiallyObscured` (axe found another element over part of the text). this sweep does not judge those nodes, so "0 real failures" covers only what axe could decide.
 
 the two apps/web mobile `scrollable-region-focusable` nodes from the first record are fixed by #177. the full selectors, html, impact, and axe failure summaries are in the generated json report.
 
-on this revision the full command (packages already built once, so the build step reused its outputs) took 49 seconds, and the browser-only script (`bun apps/playground/scripts/a11y.ts`) took 33 seconds, both at a load average of about 36 to 43 from other work on the host. the web scans wait for conditions (the run no longer streams and the live region is stable for longer than the announcer's 1 s batch window), not fixed sleeps, and each axe run has a 60 s deadline. the sweep is not in ci yet; when `landmark-unique` is fixed, add the browser-only script to an existing browser job, with the package build kept as that job's existing setup.
+on this revision the full command (packages already built once, so the build step reused its outputs) took 31 seconds at a load average of about 6. the web scans wait for conditions (the run no longer streams and the live region is stable for longer than the announcer's 1 s batch window), not fixed sleeps, and each axe run has a 60 s deadline. the sweep is not in ci yet; now that it reports 0 violations, the next step is to add the browser-only script (`bun apps/playground/scripts/a11y.ts`) to an existing browser job, with the package build kept as that job's existing setup.
 
 ## accessibility-tree and interaction checks
 
