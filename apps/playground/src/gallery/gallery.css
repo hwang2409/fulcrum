@@ -146,7 +146,7 @@ a { color: inherit; text-decoration: none; }
 }
 .jump { display: none; }
 @media (max-width: 860px) {
-  .gallery { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto 1fr; }
+  .gallery { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   html { scroll-padding-top: 72px; }
   .jump {
     position: sticky;

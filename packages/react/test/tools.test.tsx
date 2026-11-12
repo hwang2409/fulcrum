@@ -209,7 +209,8 @@ test("large output opens in the shared bounded viewer", () => {
   expect(button.textContent).toBe("open all 500 lines / 4,389 characters");
   act(() => button.click());
   const viewer = q('[data-part="text-viewer"]');
-  expect(viewer.getAttribute("role")).toBe("region");
+  // A named group, not a region landmark: a transcript holds many viewers, and a landmark each would flood landmark navigation.
+  expect(viewer.getAttribute("role")).toBe("group");
   expect(viewer.getAttribute("aria-label")).toBe("output viewer");
   expect(viewer.getAttribute("tabindex")).toBe("0");
   expect(q('[data-action="show-more"]')).toBeNull();
