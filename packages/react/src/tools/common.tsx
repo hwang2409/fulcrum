@@ -1,5 +1,6 @@
 import { Children, createContext, useContext, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { ToolCall } from "@fulcrum/core";
+import type { TextChunk, TextSourceSnapshot, ToolCall } from "@fulcrum/core";
+import { sourceTail } from "@fulcrum/core/internal";
 import type { ItemState } from "../parts.js";
 import { tokenLines, Tokens, useTokens, type Block } from "../highlight.js";
 import { continueAnsi, hasControls, parseAnsi, type AnsiText } from "./ansi.js";
@@ -9,6 +10,79 @@ import { CopyButton, needsTextViewer, TextViewer, useTextMetrics, viewerBlocks, 
 const JSON_FORMAT: TextFormat = { language: "json" };
 export const MAX_DOM_CHARS = 100_000;
 export const MAX_SUMMARY_CHARS = 240;
+
+export const humanBytes = (value: number) => value < 1024 ? `${value} bytes` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
+/** The visible line at a local cut: a whole body the run let go of, or the middle an item kept out. */
+export const omissionNotice = ({ reason, whole, bytes }: NonNullable<TextSourceSnapshot["omission"]>) =>
+  whole && reason === "run-cap" ? `output not kept (${humanBytes(bytes)}) to save memory in this long run` : `${humanBytes(bytes)} not kept`;
+const PROTOCOL_NOTICE = "host did not provide the complete output";
+const shownText = new WeakMap<TextSourceSnapshot, string>();
+// The shown text's length at its last flat copy, per snapshot (see sourceText).
+const flatLength = new WeakMap<TextSourceSnapshot, number>();
+const withNotice = (text: string, notice: string) => `${text}${text && !text.endsWith("\n") ? "\n" : ""}${notice}`;
+/**
+ * A source as the viewer shows it: the retained text, with one plain line where the middle (or all of it) was not kept,
+ * and a last line when the host itself cut the output. Each snapshot is read once; pass the snapshot it grew from
+ * (`previous`), and the text it added when already known (`added`), and an append costs only the added chunks.
+ */
+export function sourceText(source: TextSourceSnapshot, previous?: TextSourceSnapshot, added?: string): string {
+  const known = shownText.get(source);
+  if (known !== undefined) return known;
+  const base = previous && shownText.get(previous);
+  const tail = base !== undefined && !previous!.protocolTruncated ? added ?? sourceTail(previous, source) : undefined;
+  let text: string;
+  if (tail !== undefined) {
+    // Each append is a rope node over the previous text. Once the text has grown by an eighth since its last flat copy,
+    // join (one flat string) so the nodes behind it are free; the copies cost at most nine characters per added one.
+    const rebuilt = flatLength.get(previous!) ?? base!.length;
+    if (base!.length + tail.length - rebuilt > rebuilt / 8) {
+      text = [base, tail].join("");
+      flatLength.set(source, text.length);
+    } else {
+      text = base + tail;
+      flatLength.set(source, rebuilt);
+    }
+  } else {
+    const omission = source.omission;
+    let head = "", rest = "";
+    for (const chunk of source.chunks()) {
+      if (omission && chunk.start >= omission.end) rest += chunk.text;
+      else head += chunk.text;
+    }
+    if (omission) {
+      // Style never crosses the cut: a color or bold run the head opened must not paint the notice or the tail. (The
+      // parser never sees the omitted text, so only the head can leave a style open; deciding by the head alone keeps
+      // the shown text the same whether it was built at once or grown append by append.)
+      const reset = head.includes("\u001b") ? "\u001b[0m" : "";
+      text = withNotice(head, reset + omissionNotice(omission)) + (rest ? `\n${rest}` : "");
+    } else text = head;
+    if (source.protocolTruncated) text = withNotice(text, PROTOCOL_NOTICE);
+  }
+  shownText.set(source, text);
+  return text;
+}
+
+/**
+ * Where a cut source's notice line sits among the rows sourceText shows (`row`), and the zero-based line of the source
+ * the next row shows (`line`), so numbered rows keep the file's own numbers past the cut. Undefined unless part of the
+ * source is kept on either side of the cut.
+ */
+export function cutRows(source: TextSourceSnapshot): { row: number; line: number } | undefined {
+  const omission = source.omission;
+  if (!omission || omission.whole) return undefined;
+  let last: TextChunk | undefined;
+  let line = source.lines;
+  for (const chunk of source.chunks()) {
+    if (chunk.start >= omission.end) { line = chunk.line; break; }
+    last = chunk;
+  }
+  if (!last) return { row: 0, line };
+  // Snapshots of one stream share their head chunks: count the last one's lines once, not on every append.
+  let row = headRows.get(last);
+  if (row === undefined) headRows.set(last, row = last.line + lineCount(last.text));
+  return { row, line };
+}
+const headRows = new WeakMap<TextChunk, number>();
 
 type BoundedText = { text: string; shown: number; total: number; truncated: boolean };
 
@@ -159,11 +233,11 @@ export function outputBlocks({ text, id, done = true, language, pretty = false }
   return viewerBlocks({ text: shown, id, format, done });
 }
 
-const Row = ({ number, children }: { number: number; children: ReactNode }) => (
+const Row = ({ number, children }: { number: number | undefined; children: ReactNode }) => (
   <div data-part="line"><span data-part="line-number">{number}</span><span data-part="line-text">{children}</span></div>
 );
 
-type NumberedProps = { text: string; start?: number; id: string; language?: string; done?: boolean };
+type NumberedProps = { text: string; start?: number; id: string; language?: string; done?: boolean; cut?: { row: number; line: number } };
 
 /** The highlight blocks NumberedLines asks for when it first mounts. */
 export function numberedBlocks({ text, id, language, done = true }: NumberedProps): Block[] {
@@ -171,7 +245,7 @@ export function numberedBlocks({ text, id, language, done = true }: NumberedProp
 }
 
 /** Numbered text uses rich rows while small and the shared viewer while large. */
-export function NumberedLines({ text, start = 1, id, language, done = true }: NumberedProps) {
+export function NumberedLines({ text, start = 1, id, language, done = true, cut }: NumberedProps) {
   const known = useContext(GrownText);
   const grown = known?.text === text ? known : undefined;
   const metrics = useTextMetrics(text, true, grown);
@@ -181,10 +255,12 @@ export function NumberedLines({ text, start = 1, id, language, done = true }: Nu
   if (large) return <TextViewer text={text} id={id} label="content" appendOnly grown={grown} metrics={metrics} format={format} done={done} />;
   const lines = splitLines(text);
   const tokenRows = tokens ? tokenLines(tokens) : undefined;
-  const digits = String(start + lines.length).length;
+  // Past a cut's notice row, rows resume at the source line the kept tail starts on.
+  const number = (index: number) => !cut || index < cut.row ? start + index : index === cut.row ? undefined : start + cut.line + index - cut.row - 1;
+  const digits = String(number(lines.length - 1) ?? start + lines.length).length;
   return (
     <div data-part="tool-lines" data-language={language} style={{ "--gutter": `${digits}ch` } as CSSProperties}>
-      {lines.map((line, index) => <Row key={index} number={start + index}>{tokenRows?.[index] ? <Tokens tokens={tokenRows[index]} /> : line}</Row>)}
+      {lines.map((line, index) => <Row key={index} number={number(index)}>{tokenRows?.[index] ? <Tokens tokens={tokenRows[index]} /> : line}</Row>)}
     </div>
   );
 }

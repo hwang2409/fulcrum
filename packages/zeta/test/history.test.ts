@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
-import { createRunStore } from "@fulcrum/core";
+import { createRunStore, type StoredToolView, type TextSourceSnapshot } from "@fulcrum/core";
 import { fromZetaEvent, fromZetaHistory } from "../src/index.js";
+
+// Stored tool text is a bounded source; these fixtures are small, so their retained text is the whole text.
+const text = (source: TextSourceSnapshot | undefined) => source && [...source.chunks()].map((chunk) => chunk.text).join("");
+const plainView = (view: StoredToolView | undefined) => view?.kind === "shell"
+  ? { ...view, ...(view.stdout ? { stdout: text(view.stdout) } : {}), ...(view.stderr ? { stderr: text(view.stderr) } : {}) }
+  : view;
 
 // Shapes from zeta's `session_history` (src/zeta/server/ergonomics.py): tool_use arguments are emptied and results are bounded.
 const rows = [
@@ -34,7 +40,8 @@ test("maps history rows into one ordered transcript", () => {
   for (const event of fromZetaHistory(rows)) store.dispatch(event);
   expect(store.getOutline().map((entry) => entry.kind)).toEqual(["user", "message", "tool", "message", "error", "sub_agent"]);
   const tool = store.getItem(store.getOutline()[2]!.id);
-  expect(tool).toMatchObject({ type: "tool", active: false, output: "", result: { content: "a\nb" }, tool_call: { name: "bash" } });
+  expect(tool).toMatchObject({ type: "tool", active: false, result: { relation: "append" }, tool_call: { name: "bash" } });
+  expect(tool?.type === "tool" ? text(tool.output) : undefined).toBe("a\nb");
   const message = store.getItem(store.getOutline()[1]!.id);
   expect(message).toMatchObject({ type: "message", message: { content: [{ type: "text", text: "running ls" }] } });
 });
@@ -236,7 +243,7 @@ test("reopened bash cards get the live view: command from the approval, split st
   const store = createRunStore((flush) => flush());
   for (const event of fromZetaHistory(rows)) store.dispatch(event);
   const tools = store.getOutline().filter((entry) => entry.kind === "tool").map(({ id }) => store.getItem(id));
-  expect(tools.map((item) => item?.type === "tool" ? item.view : undefined)).toEqual([
+  expect(tools.map((item) => item?.type === "tool" ? plainView(item.view) : undefined)).toEqual([
     { kind: "shell", command: "printf 'alpha\\nbeta\\n'; echo warn-line >&2", stdout: "alpha\nbeta\n", stderr: "warn-line\n", exitCode: 0 },
     // A failed call's exit code is not in history (zeta keeps only is_error), so none is guessed.
     { kind: "shell", command: "ls /nonexistent-dir-xyz", stdout: "", stderr: "ls: /nonexistent-dir-xyz: No such file or directory\n" },

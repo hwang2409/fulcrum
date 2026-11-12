@@ -1,5 +1,6 @@
-import type { RunEndOutcome, RunEvent, RunItem, SubAgentEvent } from "./events.js";
+import type { RunEndOutcome, RunEvent, RunItem, StoredToolResult, SubAgentEvent, TextSourceSnapshot } from "./events.js";
 import { appendText } from "./stream.js";
+import { appendTextSource, createStreamingTextSource, createTextSource, DEFAULT_TOOL_OUTPUT_ITEM_BYTES, emptyTextSource, finalizeTextSource, markProtocolTruncated, retainedText, storeToolResult, storeToolView } from "./text-source.js";
 import { messageAlias } from "./message-identity.js";
 
 /** Maximum durable notification ids retained for replay dedupe. */
@@ -74,6 +75,8 @@ interface EntityDraft {
   splice(splice: OutlineSplice): void;
   getMessageAlias(key: string): string | undefined;
   setMessageAlias(key: string, id: string): void;
+  /** Retained UTF-8 bytes per tool text source (the store passes its item cap). */
+  readonly toolTextBytes?: number;
 }
 type SpliceOutline = (index: number, deleteCount: number, items: readonly OutlineItem[]) => void;
 
@@ -128,7 +131,7 @@ export const eventSchemas = {
   tool_start: { tool_call: required(toolCall, toolCallFields), view: optional(object), data: optional(object) },
   tool_input: { tool_call: required(toolCall, toolCallFields), input: required(string), view: optional(object), data: optional(object) },
   tool_output: { tool_call: required(toolCall, toolCallFields), output: required(string), replace: optional(boolean), view: optional(object), data: optional(object) },
-  tool_end: { tool_call: required(toolCall, toolCallFields), tool_result: optional(object, toolResultFields, true), view: optional(object), data: optional(object) },
+  tool_end: { tool_call: required(toolCall, toolCallFields), tool_result: optional(object, toolResultFields, true), resultContent: optional(oneOf("same", "append", "replace", "auto")), view: optional(object), data: optional(object) },
   approval_request: { request_id: required(string), tool_call: required(toolCall, toolCallFields), view: optional(object), delegated: required(boolean), state: optional(oneOf("reconnecting", "resolving")), status: optional(string), disabled_reason: optional(string) },
   approval_end: { request_id: required(string), decision: optional(oneOf("approve", "deny", "abort")), data: optional(object) },
   usage: { usage: required(usage) },
@@ -338,6 +341,7 @@ export function reduceAllWithEntities(
   const isEmptyDelta = (event: RunEvent | null) => event?.type === "message_delta" && event.delta === "";
   if (events.some(isEmptyDelta)) events = events.filter((event) => !isEmptyDelta(event));
   if (events.length === 0) return state;
+  const textBytes = entities.toolTextBytes ?? DEFAULT_TOOL_OUTPUT_ITEM_BYTES;
 
   const next: RunState = {
     turns: state.turns,
@@ -409,7 +413,7 @@ export function reduceAllWithEntities(
     for (const toolId of Object.keys(next.activeToolIds)) {
       const item = getItem(toolItemId(toolId));
       if (item?.type === "tool" && item.active)
-        setItem({ ...item, active: false });
+        setItem({ ...item, output: finalizeTextSource(item.output, textBytes), active: false });
     }
     next.activeToolIds = {};
   };
@@ -486,8 +490,8 @@ export function reduceAllWithEntities(
           id: itemId,
           type: "tool",
           tool_call: event.tool_call,
-          view: event.view,
-          output: "",
+          view: storeToolView(event.view, textBytes),
+          output: emptyTextSource(),
           version: 1,
           active: true,
           is_error: false,
@@ -506,12 +510,12 @@ export function reduceAllWithEntities(
         const old = getItem(itemId);
         const prior = old?.type === "tool" ? old : undefined;
         if (!prior) {
-          appendItem({ id: itemId, type: "tool", tool_call: event.tool_call, view: event.view, output: "", version: 1, active: true, is_error: false, canceled: false });
+          appendItem({ id: itemId, type: "tool", tool_call: event.tool_call, view: storeToolView(event.view, textBytes), output: emptyTextSource(), version: 1, active: true, is_error: false, canceled: false });
           setToolActive(id, true);
           foldApproval(id);
           break;
         }
-        setItem({ ...prior, tool_call: event.tool_call, view: event.view ?? prior.view, version: prior.version + 1 });
+        setItem({ ...prior, tool_call: event.tool_call, view: event.view ? storeToolView(event.view, textBytes) : prior.view, version: prior.version + 1 });
         foldApproval(id);
         break;
       }
@@ -523,25 +527,20 @@ export function reduceAllWithEntities(
         // Output events report output; only tool_start and tool_input define a tool row's call.
         const replace = event.replace === true;
         const continuing = !replace && Boolean(next.activeToolIds[id]);
-        const item = appendText<RunItem>(
-          {
-            id: itemId,
-            type: "tool",
-            tool_call: prior?.tool_call ?? event.tool_call,
-            view: event.view ?? prior?.view,
-            output: "",
-            version: (prior?.version ?? 0) + 1,
-            active: true,
-            result: replace ? undefined : prior?.result,
-            is_error: replace ? false : prior?.is_error ?? false,
-            canceled: replace ? false : prior?.canceled ?? false,
-            ...(prior?.approval ? { approval: prior.approval } : {}),
-          },
-          continuing ? prior : undefined,
-          "output",
-          () => prior?.output ?? "",
-          event.output,
-        );
+        const output = continuing && prior ? appendTextSource(prior.output, event.output, textBytes) : createStreamingTextSource(event.output, textBytes);
+        const item: RunItem = {
+          id: itemId,
+          type: "tool",
+          tool_call: prior?.tool_call ?? event.tool_call,
+          view: event.view ? storeToolView(event.view, textBytes) : prior?.view,
+          output,
+          version: (prior?.version ?? 0) + 1,
+          active: true,
+          result: replace ? undefined : prior?.result,
+          is_error: replace ? false : prior?.is_error ?? false,
+          canceled: replace ? false : prior?.canceled ?? false,
+          ...(prior?.approval ? { approval: prior.approval } : {}),
+        };
         if (prior) setItem(item);
         else appendItem(item);
         setToolActive(id, true);
@@ -554,26 +553,45 @@ export function reduceAllWithEntities(
         const old = getItem(itemId);
         const prior = old?.type === "tool" ? old : undefined;
         const result = event.tool_result;
-        // The output stays the same stream (an empty append), so a viewer reads no text again when the tool ends.
-        const item = appendText<RunItem>(
-          {
-            id: itemId,
-            type: "tool",
-            tool_call: prior?.tool_call ?? event.tool_call,
-            view: event.view ?? prior?.view,
-            output: "",
-            version: (prior?.version ?? 0) + 1,
-            active: false,
-            result,
-            is_error: result?.is_error ?? false,
-            canceled: result?.is_canceled ?? false,
-            ...(prior?.approval ? { approval: prior.approval } : {}),
-          },
-          prior,
-          "output",
-          () => prior?.output ?? "",
-          "",
-        );
+        let output = finalizeTextSource(prior?.output ?? emptyTextSource(), textBytes);
+        let relation: StoredToolResult["relation"] = "same";
+        let finalContent: TextSourceSnapshot | undefined;
+        if (result) {
+          const content = result.content;
+          const requested = event.resultContent ?? "auto";
+          // A result appended to output starts on its own line, as it always has.
+          const appendResult = () => {
+            let last: string | undefined;
+            for (const chunk of output.chunks()) last = chunk.text.at(-1);
+            output = appendTextSource(output, `${last !== undefined && last !== "\n" ? "\n" : ""}${content}`, textBytes, true);
+            relation = "append";
+          };
+          if (!content) relation = "same";
+          else if (requested === "replace") output = createTextSource(content, textBytes), relation = "replace";
+          else if (requested === "append" || (requested === "same" && output.length === 0)) appendResult();
+          else if (requested === "same") relation = "same";
+          // `auto` after a local cut cannot know whether the content repeats the output: keep it as its own source.
+          else if (output.omission) finalContent = createTextSource(content, textBytes), relation = "unknown";
+          else if (content.length <= output.length && retainedText(output).includes(content)) relation = "same";
+          else appendResult();
+          if (result.truncated) {
+            if (finalContent) finalContent = markProtocolTruncated(finalContent);
+            else output = markProtocolTruncated(output);
+          }
+        }
+        const item: RunItem = {
+          id: itemId,
+          type: "tool",
+          tool_call: prior?.tool_call ?? event.tool_call,
+          view: event.view ? storeToolView(event.view, textBytes) : prior?.view,
+          output,
+          version: (prior?.version ?? 0) + 1,
+          active: false,
+          result: result ? storeToolResult(result, relation, finalContent, textBytes) : undefined,
+          is_error: result?.is_error ?? false,
+          canceled: result?.is_canceled ?? false,
+          ...(prior?.approval ? { approval: prior.approval } : {}),
+        };
         if (prior) setItem(item);
         else appendItem(item);
         setToolActive(id, false);

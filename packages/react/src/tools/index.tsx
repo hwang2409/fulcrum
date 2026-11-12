@@ -10,7 +10,7 @@ import { SearchBody } from "./search.js";
 import { ShellBody } from "./shell.js";
 import { WriteBody } from "./write.js";
 import { argumentSummary } from "./argument-summary.js";
-import { lineCount } from "./common.js";
+import { lineCount, sourceText } from "./common.js";
 
 export { EditBody, FetchBody, GenericBody, ReadBody, SearchBody, ShellBody, WriteBody };
 
@@ -42,11 +42,12 @@ export function toolSummary({ view, tool_call }: ToolItem): string {
       return limit !== undefined ? `${view.path}:${start}-${start + limit - 1}` : view.range?.offset ? `${view.path}:${start}` : view.path;
     }
     case "edit": {
-      const { insert, remove } = diffStatText(view.diff);
+      if (view.diff.omission) return view.path; // counts over a diff that was not all kept would be wrong
+      const { insert, remove } = diffStatText(sourceText(view.diff));
       return `${view.path} +${insert} -${remove}`;
     }
     case "write":
-      return view.content !== undefined ? `${view.path} +${lineCount(view.content)}` : view.path;
+      return view.content !== undefined ? `${view.path} +${view.content.lines}` : view.path;
     case "search":
       return view.path ? `"${view.pattern}" ${view.path}` : `"${view.pattern}"`;
     case "fetch":

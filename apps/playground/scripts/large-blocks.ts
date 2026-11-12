@@ -163,6 +163,62 @@ for (let sample = 0; sample < 6; sample++) {
 results.readWarmup = readWarmup;
 results.readSamples = readSamples;
 results.read = readSamples.at(-1);
+// Bounded tool output: 10 MiB streamed as 1 KiB appends into a store with a synchronous scheduler, so each sample is
+// one dispatch through every subscriber's return, under the page's CPU throttle (CI calibrates it to 2x; the design's
+// budgets were set at 4x, the local default). A frame every 64 appends keeps each observed task a real work slice.
+results.toolOutput = await measure(async () => {
+  const outputStore = createRunStore((flush) => flush());
+  const outputCall = { id: "bounded", name: "shell", arguments: { command: "generate-output" } };
+  const samples = [];
+  for (let index = 0; index < 10 * 1024; index++) {
+    const started = performance.now();
+    outputStore.dispatch({ type: "tool_output", tool_call: outputCall, output: "x".repeat(1023) + "\\n" });
+    samples.push(performance.now() - started);
+    if (index % 64 === 63) await nextFrame();
+  }
+  outputStore.dispatch({ type: "tool_end", tool_call: outputCall, tool_result: { tool_call_id: "bounded", content: "", is_error: false } });
+  samples.sort((a, b) => a - b);
+  const item = outputStore.getItem("tool:bounded");
+  const postsBefore = window.__posted.length;
+  flushSync(() => root.render(createElement(RunProvider, { store: outputStore, highlight }, createElement(ToolCall, { id: "tool:bounded" }))));
+  await nextFrame();
+  const closedPosts = window.__posted.length - postsBefore;
+  const outputCard = document.querySelector("[data-id='tool:bounded']");
+  const openStarted = performance.now();
+  if (outputCard.tagName === "DETAILS" && !outputCard.open) { outputCard.open = true; outputCard.dispatchEvent(new Event("toggle")); }
+  await nextFrame();
+  const openMs = performance.now() - openStarted;
+  return {
+    p95DispatchMs: samples[Math.floor(samples.length * 0.95)], maxDispatchMs: samples.at(-1), logicalBytes: item?.type === "tool" ? item.output.bytes : 0,
+    retainedBytes: item?.type === "tool" ? item.output.retainedBytes : 0, closedHighlightRequests: closedPosts, openMs,
+    notice: !!outputCard.textContent.match(/\\d+\\.\\d MB of 10.0 MB not kept/),
+    mountedRanges: document.querySelectorAll("[data-id='tool:bounded'] [data-part=text-viewer-row]").length,
+    outputNodes: document.querySelectorAll("[data-id='tool:bounded'] [data-part=tool-body] *").length,
+  };
+});
+// One oversized replacement (a third-party event carrying 64 MiB): exact bytes and the tail's line numbers need one
+// scan on the main thread. Reported, not bounded: the 10 MiB streaming bounds above are the gate.
+{
+  const replaceStore = createRunStore((flush) => flush());
+  const replaceCall = { id: "replace", name: "shell", arguments: {} };
+  const huge = "r".repeat(64 * 1024 * 1024 - 1) + "\\n";
+  const started = performance.now();
+  replaceStore.dispatch({ type: "tool_output", tool_call: replaceCall, output: huge, replace: true });
+  const item = replaceStore.getItem("tool:replace");
+  results.toolReplacement = { dispatchMs: Math.round(performance.now() - started), retainedBytes: item.output.retainedBytes, logicalBytes: item.output.bytes };
+}
+// Heap probe (run from the gate through CDP): keep 32 KiB of each of "count" fresh 10 MiB parents, as plain slices
+// (the control, which V8 backs by the parent) or as one store's tool outputs.
+window.__retain = (mode, count) => {
+  const kept = [];
+  const store = createRunStore((flush) => flush(), { toolOutputItemBytes: 32 * 1024, toolOutputRunBytes: 1024 * 1024 * 1024 });
+  for (let index = 0; index < count; index++) {
+    const parent = String(index).padStart(8, "0").concat("x".repeat(10 * 1024 * 1024)).toLowerCase();
+    if (mode === "slice") kept.push(parent.slice(-32 * 1024));
+    else store.dispatch({ type: "tool_output", tool_call: { id: String(index), name: "bash", arguments: {} }, output: parent });
+  }
+  window.__kept = [kept, store];
+};
 root.render(createElement(Markdown, { id: "large", source: fence, highlight }));
 await nextFrame();
 await nextFrame();
@@ -237,7 +293,7 @@ try {
     .then((handle) => handle.jsonValue()).catch((error) => { throw new Error([...failures, String(error)].join("\n")); })
     .finally(() => console.log("page result wait end")) as Record<string, Measured>;
   for (const [name, result] of Object.entries(results)) {
-    if (name === "readSamples" || name === "readWarmup") continue;
+    if (name === "readSamples" || name === "readWarmup" || name === "toolReplacement") continue;
     const { longTasks, ...rest } = result as Measured;
     console.log(`${name}\tlong tasks ${longTasks.length}\tmax ${result.maxLongTask.toFixed(1)} ms\tmax probe gap ${result.maxProbeGap.toFixed(1)} ms\t${JSON.stringify(rest)}`);
     if (name !== "read" && longTasks.length) failures.push(`${name}: a main-thread task reached 50 ms`);
@@ -255,6 +311,31 @@ try {
   if (affectedReadSamples >= 2) failures.push(`read: ${affectedReadSamples} of five samples had a main-thread task over 80 ms`);
   if (readMaxTask > 150) failures.push(`read: pathological main-thread task ${readMaxTask.toFixed(1)} ms`);
   if (!results.read?.colored) failures.push("read: the scrolled-to rows of the opened read viewer never colored");
+  const { toolOutput, toolReplacement } = results;
+  console.log(`tool output replacement: ${JSON.stringify(toolReplacement)}`);
+  if ((toolOutput.p95DispatchMs as number) > 1) failures.push(`tool output: p95 append dispatch took ${Number(toolOutput.p95DispatchMs).toFixed(3)} ms (limit 1 ms)`);
+  if ((toolOutput.logicalBytes as number) !== 10 * 1024 * 1024 || (toolOutput.retainedBytes as number) > 2 * 1024 * 1024) failures.push(`tool output: retention result was invalid (${JSON.stringify(toolOutput)})`);
+  if ((toolReplacement.logicalBytes as number) !== 64 * 1024 * 1024 || (toolReplacement.retainedBytes as number) > 2 * 1024 * 1024) failures.push(`tool output: the replacement was not bounded (${JSON.stringify(toolReplacement)})`);
+  if (!toolOutput.notice) failures.push("tool output: the opened card does not say how much was not kept");
+  if ((toolOutput.openMs as number) > 50) failures.push(`tool output: open took ${Number(toolOutput.openMs).toFixed(1)} ms (limit 50 ms)`);
+  if ((toolOutput.mountedRanges as number) > 200 || (toolOutput.outputNodes as number) > 500) failures.push(`tool output: mounted work exceeded the viewer bounds (${JSON.stringify(toolOutput)})`);
+  // Retained tool text owns its strings: 24 more 10 MiB parents must not stay alive. The control (plain slices) must
+  // show them, or this engine cannot tell the difference and the probe proves nothing.
+  const heapCdp = await context.newCDPSession(page);
+  const heapGrowth = async (mode: string, count: number) => {
+    await heapCdp.send("HeapProfiler.collectGarbage");
+    const before = (await heapCdp.send("Runtime.getHeapUsage")).usedSize;
+    await page.evaluate(([retainMode, retainCount]) => (window as typeof window & { __retain(mode: string, count: number): void }).__retain(retainMode as string, retainCount as number), [mode, count]);
+    await heapCdp.send("HeapProfiler.collectGarbage");
+    const after = (await heapCdp.send("Runtime.getHeapUsage")).usedSize;
+    await page.evaluate(() => { (window as typeof window & { __kept?: unknown }).__kept = undefined; });
+    return (after - before) / (1024 * 1024);
+  };
+  const sliceGrowth = (await heapGrowth("slice", 32)) - (await heapGrowth("slice", 8));
+  const storeGrowth = (await heapGrowth("store", 32)) - (await heapGrowth("store", 8));
+  console.log(`tool output heap, 8 -> 32 parents of 10 MiB: plain slices +${sliceGrowth.toFixed(1)} MiB, store +${storeGrowth.toFixed(1)} MiB`);
+  if (sliceGrowth < 100) failures.push(`tool output heap: the control kept only ${sliceGrowth.toFixed(1)} MiB for 24 more parents, so the probe cannot see a retained parent`);
+  if (storeGrowth > 2) failures.push(`tool output heap: the store kept ${storeGrowth.toFixed(1)} MiB for 24 more parents (32 KiB each is under 1 MiB)`);
   const { queue } = results;
   if (!queue.smallColored || !queue.bigColored) failures.push(`queue: both blocks must color (${JSON.stringify(queue)})`);
   // The regression this guards is the small block waiting for the whole large one: 325-335 ms on main before the fix.

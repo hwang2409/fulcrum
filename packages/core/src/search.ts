@@ -1,4 +1,4 @@
-import type { RunItem, ToolView } from "./events.js";
+import type { RunItem, StoredToolView, ToolView } from "./events.js";
 import type { OutlineChange, OutlineSnapshot } from "./store.js";
 
 export interface RunSearchStore {
@@ -76,7 +76,7 @@ const fold = (value: string) => {
   return { folded, starts, ends };
 };
 
-const viewFields = (prefix: string, view: ToolView | undefined): Array<[string, string | undefined]> => {
+const viewFields = (prefix: string, view: ToolView | StoredToolView | undefined): Array<[string, string | undefined]> => {
   if (!view) return [];
   switch (view.kind) {
     case "shell": return [[`${prefix}.command`, view.command], [`${prefix}.cwd`, view.cwd]];
