@@ -119,3 +119,19 @@ test("holding every read snapshot of a 2 MB stream keeps strings in proportion t
   // The limit sits near the geometric middle of the two.
   expect(stringBytesPerChar).toBeLessThanOrEqual(6);
 }, 60_000);
+
+// Bounded tool text owns its strings: a store fed 8 or 32 fresh 10 MiB outputs keeps 32 KiB per item, and nothing
+// it keeps holds a parent alive. The control keeps the same bytes as plain slices and must scale with the parents,
+// or this engine cannot show the difference and the probe proves nothing.
+test("retained tool text does not keep its 10 MiB parents alive (Bun/JSC, 8 vs 32 parents)", () => {
+  const grown = (mode: string, count: number) => {
+    const child = Bun.spawnSync([process.execPath, new URL("./retention-probe.ts", import.meta.url).pathname, mode, String(count)], { timeout: 120_000 });
+    if (child.exitCode !== 0) throw new Error(`retention probe failed: ${child.stderr.toString()}`);
+    return (JSON.parse(child.stdout.toString()) as { grownBytes: number }).grownBytes / (1024 * 1024);
+  };
+  const slices = grown("slice", 32) - grown("slice", 8);
+  const store = grown("store", 32) - grown("store", 8);
+  console.log(`8 -> 32 parents: plain slices +${slices.toFixed(1)} MiB, store +${store.toFixed(1)} MiB`);
+  expect(slices, "the control must show retained parents (24 more parents are 240 MiB)").toBeGreaterThan(100);
+  expect(store, "24 more items of 32 KiB are under 1 MiB; a retained parent is 10 MiB").toBeLessThan(2);
+}, 240_000);
