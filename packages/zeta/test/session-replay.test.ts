@@ -328,6 +328,28 @@ test("suspending for another session prevents the old owner from rejoining", asy
   await openB;
 });
 
+test("selecting another session aborts the first session's pending join; its open settles and a late reply changes nothing", async () => {
+  const fake = harness();
+  await fake.ready;
+  let settled = false;
+  const openA = fake.client.openSessionReplay("session-a").finally(() => { settled = true; });
+  await waitFor(() => fake.joins().length === 1);
+  const joinA = fake.joins()[0]!;
+  const leaseB = await joined(fake, { replay: { stream_id: "stream-b", history_seq: 0 } }, "session-b");
+  await waitFor(() => settled);
+  const leaseA = await openA;
+  let notified = 0;
+  leaseA.subscribeReplay(() => notified++);
+  fake.reply(joinA.id, joinResult({ messages: [row("late", "late")] }));
+  await Bun.sleep(1);
+
+  expect(leaseA.state.replay).toEqual({ phase: "suspended" });
+  expect(notified).toBe(0);
+  expect(outlineText(fake.client)).toEqual([]);
+  expect(leaseB.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 0 });
+  expect(fake.joins()).toHaveLength(2);
+});
+
 test("navigation abort synchronously suspends and blocks a late join", async () => {
   const fake = harness();
   await fake.ready;
@@ -384,6 +406,8 @@ test("a store failure rejoins and never counts its frame as applied", async () =
   const fake = harness();
   await fake.ready;
   const lease = await joined(fake);
+  const seen: unknown[] = [];
+  lease.subscribeReplay(() => seen.push(lease.state.replay));
   const restore = shimProperty(lease.store, "dispatch", { configurable: true, writable: true, value: () => { throw new Error("store failed"); } });
   const errors: unknown[] = [];
   const restoreReport = shimProperty(globalThis, "reportError", { configurable: true, writable: true, value: (error: unknown) => { errors.push(error); } });
@@ -399,6 +423,8 @@ test("a store failure rejoins and never counts its frame as applied", async () =
   fake.event(delta(1, " more", "stream-b"));
 
   expect(errors).toHaveLength(1);
+  // The failed frame is never published as applied on its stream.
+  expect(seen).not.toContainEqual({ phase: "joined", streamId: "stream-a", lastSeq: 1 });
   expect(lease.state.replay).toEqual({ phase: "joined", streamId: "stream-b", lastSeq: 1 });
 });
 
@@ -499,9 +525,10 @@ test("four stale continuations make three replacement joins, then stop the strea
   }
   await waitFor(() => lease.state.replay.phase === "failed");
   fake.event(delta(1, " live"));
+  fake.event({ event: "replay_stream_ended", session_id: "session-a", stream_id: "stream-a", reason: "rejoined" });
   await Bun.sleep(1);
 
-  expect(fake.joins()).toHaveLength(4);
+  expect(fake.joins(), "the retired stream's end starts no join").toHaveLength(4);
   expect(lease.state).toMatchObject({ replay: { phase: "failed" }, history: { phase: "incomplete", reason: "stale_limit" } });
   expect(outlineText(fake.client), "a retired stream dispatches nothing").toEqual(["new"]);
 });
